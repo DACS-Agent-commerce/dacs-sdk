@@ -43,3 +43,41 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:96
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:103
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:104
+
+# Seller kit (client): all eight are test `idempotencyKey` labels added by 5c7d5e0, reviewed 2026-10-18; not credentials.
+# d5d0ebd moved these files unchanged to evidence/source-tests/*.mjs.txt (no new fingerprint). Re-review any finding at another commit.
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:517
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:580
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:610
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:643
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:781
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:830
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:903
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/showcase-ledger-integration.test.mjs:generic-api-key:77
+# PR #268: ed25519 PUBLIC signer key in a SettlementEvidence test fixture, not a credential.
+# Source: a2dcd490, test/rails/crossChainHtlc.test.ts:6307, the signature's `signer` field.
+# Exact historical fingerprint only; re-review any finding at a rewritten commit.
+a2dcd490c4a0bd535f37c19a3d476768f0b0594e:test/rails/crossChainHtlc.test.ts:generic-api-key:6307
+
+# Seller kit draft PRs (wire, seller, client): test idempotency labels and a fixture file digest in their
+# initial commits, reviewed 2026-10-18; not credentials. CI scans every branch, so they are recorded here.
+49463e76100441e947cd0ea3270c169d8e6eee76:test/wire/originalFixture.test.ts:generic-api-key:84
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-purchase-source-node2.test.mjs:generic-api-key:352
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:832
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:905
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/mcp-seller-diagnostics.test.mjs:generic-api-key:517
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/mcp-seller-diagnostics.test.mjs:generic-api-key:580
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/mcp-seller-diagnostics.test.mjs:generic-api-key:610
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/mcp-seller-diagnostics.test.mjs:generic-api-key:643
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/mcp-seller-diagnostics.test.mjs:generic-api-key:781
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:832
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:905
+d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/seller-policy-purchase-source-node2.test.mjs:generic-api-key:352
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:517
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:580
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:610
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:643
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:781
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:830
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:903
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/showcase-ledger-integration.test.mjs:generic-api-key:77
