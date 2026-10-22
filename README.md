@@ -794,6 +794,8 @@ pinned. No-repayment across a whole-process crash additionally requires a durabl
 alone cannot prove whether a lost rail response moved value. The legacy native-ref
 input remains available for callers with a separate trusted pin.
 
+Native recovery follows [DACS-4 v0.8 at the SDK Standard pin `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`](https://github.com/DACS-Agent-commerce/DACS-Standard/blob/d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20/spec/DACS-4-SETTLE.md), especially §9.5.1 PC-7, §9.5.8 SB-2 and §9.5.9.
+
 A saved native DEM outcome is not reused on trust. A resume that holds one,
 including a re-run of a completed session, calls `resumeSettlement` once as a
 read-only audit of the retained transaction hash, except in the cases below
@@ -852,7 +854,7 @@ when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
 connection, for that rail's wallet only. It takes the
 record's status, block, nonce, parties, amount and fee from it. This is the
-only rail the adapter lets make a fresh payment. A native session requires a
+only rail the adapter lets make a fresh payment. A fresh native session requires a retained `SessionStore` as well as a
 caller-supplied settlement store and reconciler on its recovery adapter, plus
 a caller-supplied store on its paying adapter, before claiming or paying, so a
 session paid through it can be resumed or repeated
@@ -860,8 +862,13 @@ with those dependencies restored. Use a durable rail log implementing
 `readOutcome`, `putAttempt` and `readAttempt`; the SDK cannot determine whether
 a caller-supplied log persists across process restarts. The adapter's default
 in-memory log remains available for direct, process-local rail calls.
-Every native resume, including a completed-session replay, requires the node
-to still serve the transaction record. Pruning, a node reset or an unavailable
+Every native resume, including a completed-session replay, requires a trusted
+node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
+recoveryRpc })` to use an operator-authenticated archival RPC when the primary
+record is unavailable. The archive supplies its own fork state and record; the
+SDK applies the same transfer, execution, block and fee checks. It never
+connects a wallet to the archive or uses it to sign or broadcast. A terminal
+primary verdict cannot be overridden by the archive. Pruning, a node reset or an unavailable
 record leaves that replay unresolved; it never reverses the saved payment or
 causes another submission. A fresh success reports that same record
 fee as `networkFeeOs`, which the session saves and signs: the rail's own
@@ -1283,3 +1290,9 @@ bootstrap are documented in
 ## License
 
 MIT — matching the DACS standard.
+
+When a retained `SessionStore` has saved a successful payment but evidence
+publication is unavailable, `runSession` returns `outcome: "settlement-pending"`
+with `payment.ok: true` and `pendingEvidenceAddress`. Resume that same job to
+publish its evidence and bundle; the saved payment is never submitted again.
+`settlementRef` and `bundleRef` are available only on terminal results.

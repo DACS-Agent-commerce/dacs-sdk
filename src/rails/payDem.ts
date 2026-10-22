@@ -978,6 +978,14 @@ export async function payDemSettleCore(
 export interface PayDemRailConfig {
   /** Demos node RPC URL. */
   rpc: string;
+  /**
+   * Optional trusted archival Demos RPC for recovery after the primary prunes
+   * a record. Recovery uses its fork state and transaction record together,
+   * with the same wallet, transfer, status, block and fee checks. No wallet is
+   * connected to the archive and it is never used to sign or broadcast.
+   * The operator authenticates this endpoint just like the primary RPC.
+   */
+  recoveryRpc?: string;
   /** Buyer wallet secret — mnemonic or private key — used to sign the transfer. */
   secret: string;
   /** Network label recorded on the evidence (default "demos"). */
@@ -1732,7 +1740,8 @@ function recordSignedDenomination(transaction: Record<string, unknown>): "os" | 
  * malformed fee, a timeout or a failed read included, is indeterminate with
  * its reason. This makes one `getTxByHash` call within `timeoutMs` and never
  * polls or broadcasts; demosdk's transport may itself retry that one request
- * (4.0.16 `_doPost` retries a refused connection and HTTP 502-504 up to four
+ * (4.0.16 `_doPost` retries ECONNRESET, ECONNREFUSED, ETIMEDOUT, ENOTFOUND
+ * and HTTP 502-504 up to four
  * times), all within the same deadline.
  */
 async function readDemosRecordByHash(
@@ -1762,7 +1771,7 @@ async function readDemosRecordByHash(
   // (`{result: 400, response: "error"}`), which reads as malformed below. Both
   // are indeterminate.
   if (snapshot === null) {
-    return { state: "indeterminate", reason: "transaction record was not found" };
+    return { state: "indeterminate", reason: "transaction record was not found or lookup failed" };
   }
   if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
     return { state: "indeterminate", reason: "transaction record is missing or malformed" };
@@ -1835,6 +1844,7 @@ async function readDemosRecordByHash(
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
   const rpc = requiredStableString(config, "rpc", "pay-dem rail rpc");
+  const recoveryRpc = optionalStableString(config, "recoveryRpc", "pay-dem archival recovery rpc");
   const secret = requiredStableString(config, "secret", "pay-dem rail secret");
   const network = optionalStableString(config, "network", "pay-dem rail network");
   const maxTotalDebitProperty = stableDataProperty(
@@ -2263,10 +2273,32 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   sdkRecordReadingSettles.add(settle);
   // Recovery reads the record of a hash the SDK holds through this same
   // connection, so payDemSettle's recovered verdicts are the SDK's read too.
-  sdkRailRecordReaders.set(
-    settle,
-    sdkRecoveryReader(address, nodeCall, getTxByHash, statusRequestTimeoutMs),
-  );
+  const primaryReader = sdkRecoveryReader(address, nodeCall, getTxByHash, statusRequestTimeoutMs);
+  let archiveReader: SdkRecordReader | undefined;
+  if (recoveryRpc !== undefined) {
+    const archive = new Demos();
+    const archiveConnect = stableMethod<(url: string) => Promise<unknown>>(
+      archive, "connect", "pay-dem archive Demos.connect",
+    );
+    const archiveCall = stableMethod<(message: string, args: Record<string, unknown>) => Promise<unknown>>(
+      archive, "nodeCall", "pay-dem archive Demos.nodeCall",
+    );
+    const archiveGet = stableMethod<(hash: string) => Promise<unknown>>(
+      archive, "getTxByHash", "pay-dem archive Demos.getTxByHash",
+    );
+    await archiveConnect(recoveryRpc);
+    archiveReader = sdkRecoveryReader(address, archiveCall, archiveGet, statusRequestTimeoutMs);
+  }
+  sdkRailRecordReaders.set(settle, async (expected) => {
+    const primary = await primaryReader(expected);
+    // A terminal primary result remains authoritative; an archive cannot
+    // override a failed record or a mismatch with the retained success.
+    const unavailable = primary.state === "indeterminate" &&
+      /^(?:transaction record (?:read timed out|read failed|was not found or lookup failed)|denomination fork state (?:read timed out|read failed|is unavailable))$/.test(primary.reason);
+    return unavailable && archiveReader !== undefined
+      ? archiveReader(expected)
+      : primary;
+  });
   return {
     address: client.address,
     settle,
@@ -3216,6 +3248,16 @@ export function payDemSettle(
       const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash ??
         (recoveryOnly ? (await recordedAttempt() ?? undefined) : undefined);
       if (recoveryOnly && retainedTxHash === undefined) {
+        // An operator may have closed an expired, provably unattempted intent
+        // through the SDK store. Reuse that exact unpaid outcome; never turn
+        // an absent attempt into permission to pay, or trust an injected lookup.
+        if (storeLookupsPaired && storeReadOutcome !== undefined) {
+          const raw = await storeReadOutcome(key, binding);
+          if (raw !== null) {
+            const closed = capturePayDemResult(raw, context, "unattempted native intent closure");
+            if (!closed.ok && closed.txHash === "") return publicPayDemResult(closed, expectedPayee);
+          }
+        }
         throw new DacsError(
           "pay-dem recovery has no recorded attempt for this payment; refusing a new transfer (never resubmitted)",
         );

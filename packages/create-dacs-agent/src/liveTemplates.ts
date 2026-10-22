@@ -28,8 +28,8 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
-      // The host loader fixes only demosdk 4.0.16's published extensionless ESM
-      // directory import; generated production services need no TS transformer.
+      // Retain the host's narrow loader for optional dependency compatibility;
+      // generated production services need no TS transformer.
       test: "npm run build && node --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js",
       "dacs:doctor": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor",
       "dacs:doctor:funded": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor-funded",
@@ -49,7 +49,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
-      "@kynesyslabs/demosdk": "4.0.16",
+      "@kynesyslabs/demosdk": "4.0.18",
       "better-sqlite3": BETTER_SQLITE_VERSION,
       ...(x402 ? {
         "@x402/core": "2.15.0",

@@ -286,10 +286,17 @@ For native DEM sessions, retain a durable rail `SettlementLog` with its immutabl
 attempt records alongside the `SessionStore`, and reopen it with a reconciler
 after a process restart. The default in-memory rail log supports retries only
 while its process survives in direct rail calls; a native session refuses that
-default configuration before payment. The SDK checks that a store was supplied
-and supports the required operations; callers must ensure its log is durable.
-Every native resume, including a completed-session replay, requires the node
-to still serve the transaction record. A pruned record, node reset or outage
+default configuration before payment. A fresh native session also requires a retained `SessionStore`: its existing
+intent prevents a lost rail log from authorizing another payment. The SDK
+checks that both stores were supplied and support the required operations;
+callers must ensure their stores are durable.
+Every native resume, including a completed-session replay, requires a trusted
+node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
+recoveryRpc })` to use an operator-authenticated archival RPC when the primary
+record is unavailable. The archive supplies its own fork state and record; the
+SDK applies the same transfer, execution, block and fee checks. It never
+connects a wallet to the archive or uses it to sign or broadcast. A terminal
+primary verdict cannot be overridden by the archive. A pruned record, node reset or outage
 keeps replay unresolved without changing the saved payment or submitting again.
 A `SessionStore` alone cannot recover a payment
 whose rail records were discarded. Restore the original rail log and attempt
@@ -300,7 +307,7 @@ Which capabilities the SDK built (its client, its rail's `settle` and
 recovery read, `payDemSettle`'s submissions and the adapters it returned), and
 which successes its own client returned, is kept private to the rails module,
 keyed by object identity. No file in the package exports a way to add to it.
-The exports are four read-only checks: the ones the settlement store and
+The exports are five read-only checks: the ones the settlement store and
 `runSession` use; `isPayDemRecordVerifyingRail`; and
 `payDemRecordVerifiedTransfer`, which gives the exact transfer terms (payer,
 payee, `amountOs`, network and recovery settlement key) of a frozen success
@@ -349,6 +356,10 @@ Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
 reading a bound `confirmed` record.
 
+## Standard revision
+
+Native recovery follows [DACS-4 v0.8 at `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`](https://github.com/DACS-Agent-commerce/DACS-Standard/blob/d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20/spec/DACS-4-SETTLE.md), the revision in `package.json` and the conformance sync. PC-7, SB-2 and §9.5.9 references in this document use that revision.
+
 ## Finality
 
 DACS-4 §9.5.9 treats Demos inclusion as BFT-final, and the rail stamps
@@ -394,3 +405,39 @@ fixture is therefore a historical set of envelopes node2 served on the dates it
 records, not a pin of a deployment, and cannot be re-read today. The rail does
 not depend on that build: a record without the fields listed above, or with
 any of them different, is indeterminate.
+
+## Closing an unattempted native intent
+
+An operator may call `store.abandonUnattempted(key, originalBinding)` on the
+`createIdempotencyStore` opened over the intact original rail log. This is an
+explicit decision to end an unpaid phase, never an authorization to replace a
+payment. The method acquires an expired generation, fencing the old worker,
+and checks that no attempt was recorded before writing an immutable empty-hash
+unpaid outcome. `payDemSettle` returns that outcome on the next recovery-only
+resume, so the session can end failed without any transfer. The key and complete
+`SettlementBinding` must be the original values.
+
+Live intents, completed payments, changed bindings and recorded transactions
+are refused. If the crash preceded the rail intent itself, the operator must
+explicitly confirm that this is the intact original log with
+`store.abandonUnattempted(key, originalBinding, { originalLogRetained: true })`.
+The store then installs a fenced unpaid outcome before an old worker can start.
+Never use this confirmation on a replaced, lost or restored-incompletely log:
+it is a trusted local operator assertion, not information from a counterparty.
+Without it a missing intent stays unresolved. This operation closes the original
+job as unpaid and never authorizes another broadcast.
+A malformed record fee also stays indeterminate; an archive must provide a
+well-formed record rather than treating an unparseable fee as zero.
+
+## Rail-final payment while evidence publication is unavailable
+
+With a retained `SessionStore`, an evidence-anchor outage after a successful
+payment returns `outcome: "settlement-pending"`, `payment.ok: true`, the confirmed
+transaction metadata, and `pendingEvidenceAddress`. There is no `settlementRef`
+or `bundleRef` yet. The session stays non-terminal. Its immutable `settle:0`
+outcome is the durable retry item: an operator or worker resumes the same job,
+which audits the original payment and retries that same write-once evidence
+address before publishing the bundle. Never start a new payment from this result.
+Failed payments and failures before the paid checkpoint is durable retain their
+existing error behavior. Direct sessions without a durable store cannot offer
+durable evidence catch-up; fresh native sessions require that store.

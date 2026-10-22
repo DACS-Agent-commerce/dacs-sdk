@@ -185,7 +185,11 @@ export interface SettleResult {
   txRef?: ChainTxRef;
   /** Authoritative rail finality observation time, not local wall-clock time. */
   finalityObservedAt?: number;
-  /** Authenticated native DEM network fee paid by the payer, in integer OS. */
+  /**
+   * Native DEM fee in integer OS. On payDemSettle this is the transaction
+   * record's declared fee, which can differ from the payer's actual debit.
+   * The low-level PayDemRail result instead reports the confirmation debit fee.
+   */
   networkFeeOs?: string;
   /** Durable raw x402 settlement-response input used to re-derive its receipt hash. */
   x402Receipt?: {
@@ -284,7 +288,7 @@ export interface SessionDeps {
    * before it is called, so no payment is made. Each native adapter must
    * configure a caller-supplied settlement store, and the recovery adapter
    * must configure a reconciler before a fresh payment; retain their durable
-   * rail log across restarts.
+   * rail log and a SessionStore across restarts.
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -450,7 +454,8 @@ export interface SessionDeps {
     raw: Record<string, unknown>,
   ) => Promise<ListingValidationResult> | ListingValidationResult;
   /**
-   * OPTIONAL durable session store (#55). When wired, the store is the
+   * Durable session store (#55), required before a fresh native DEM payment
+   * and optional for other rails. When wired, the store is the
    * settlement BOUNDARY PROTOCOL (#52/#67), not just an after-the-fact log:
    *   1. BEFORE paying, fail CLOSED on corrupt/unsupported durable state and
    *      REJECT a replayed agreement hash — so a second session over the same
@@ -461,12 +466,13 @@ export interface SessionDeps {
    *      `resumeSettlement`, never blindly re-paid.
    *   3. The agreement/settlement/bundle receipts + final status are recorded
    *      for restart-safe status/receipt queries without an app-specific job DB.
-   * Fully additive: with no store wired the session behaves exactly as before.
+   * Without a store, other rails retain their process-local behavior and
+   * cannot return durable evidence-publication catch-up after an outage.
    */
   sessionStore?: SessionStore;
 }
 
-export interface SessionResult {
+interface SessionResultCommon {
   /**
    * Explicit quarantine marker for the pre-v0.3 buyer-only producer. This path
    * stops after settlement and therefore MUST NOT be interpreted as delivery,
@@ -475,16 +481,25 @@ export interface SessionResult {
   profile: "legacy-mvp-settlement-only";
   /** Always false: this producer has no fulfilment or delivery-evidence phase. */
   commerceComplete: false;
-  outcome: "completed" | "failed";
   jobId: string;
   /** Exact DACS-1 §6.3.4 LR-1 Listing tuple used for this session. */
   listingPin: ListingPin;
   /** Set when a Vet step ran — the anchored CompositeVerificationRecord. */
   vetRef?: string;
   agreementRef: string;
-  settlementRef: string;
-  bundleRef: string;
 }
+
+export type SessionResult = SessionResultCommon & (
+  | { outcome: "completed" | "failed"; settlementRef: string; bundleRef: string }
+  | {
+      /** Payment is final; the durable settlement outcome queues evidence catch-up. */
+      outcome: "settlement-pending";
+      payment: Readonly<SettleResult>;
+      pendingEvidenceAddress: string;
+      settlementRef?: never;
+      bundleRef?: never;
+    }
+);
 
 export interface SessionVetRequest {
   jobId: string;
@@ -3392,6 +3407,8 @@ export async function runSessionCore(
    * agreement/evidence (and overwriting evidence could double-pay). Returns the
    * ref + the artifact now at that ref so callers can content-hash it.
    */
+  let paidForPublication: DurableSettlementOutcome | undefined;
+  let failedEvidencePublication = false;
   const anchorOnce = async (
     name: string,
     match: (v: Record<string, unknown>) => Match | Promise<Match>,
@@ -3510,7 +3527,15 @@ export async function runSessionCore(
       snapshotCanonicalJson(built, `publication for "${name}"`),
     );
     const builtCanonical = canonicalize(built);
-    const rawRef = await deps.anchor(name, publication);
+    let rawRef: string;
+    try {
+      rawRef = await deps.anchor(name, publication);
+    } catch (cause) {
+      if (name === legacyMvpSessionAnchorName.evidence(jobId) && paidForPublication?.ok) {
+        failedEvidencePublication = true;
+      }
+      throw cause;
+    }
     const ref = protocolString(rawRef, `anchor result for "${name}"`, {
       allowColon: true,
     });
@@ -4369,6 +4394,12 @@ export async function runSessionCore(
           "retain the durable rail log across restarts (no payment is made)",
       );
     }
+    if (!store) {
+      throw new CounterpartyError(
+        "fresh native settlement requires a SessionStore retained across restarts; " +
+          "its intent prevents a lost rail log from authorizing another payment (no payment is made)",
+      );
+    }
   };
 
   /**
@@ -4593,11 +4624,7 @@ export async function runSessionCore(
   // Settle on the chosen rail — but only if evidence isn't already anchored
   // (the no-double-pay guard: a present evidence record means we already paid).
   let settledOk = false;
-  const {
-    ref: settlementRef,
-    value: evidenceValue,
-    existing: evidenceExisting,
-  } = await anchorOnce(
+  const evidenceAnchor = await anchorOnce(
     legacyMvpSessionAnchorName.evidence(jobId),
     matchSettlementEvidence,
     async () => {
@@ -4673,6 +4700,7 @@ export async function runSessionCore(
         }
       }
       settledOk = settlement.ok;
+      paidForPublication = settlement.ok ? settlement : undefined;
       const observedAt = deps.nowMs();
       // Current rails that return a discriminated ChainTxRef emit normative
       // DACS-4 evidence. Historical/custom rails remain inside the explicit
@@ -4743,7 +4771,32 @@ export async function runSessionCore(
     recoveredEvidence,
     ARTIFACT_SEPARATORS.SettlementEvidence,
     true,
-  );
+  ).catch((cause) => {
+    // The immutable paid checkpoint is the durable retry item: resuming this
+    // job audits the original payment and publishes at the same write-once
+    // evidence address. A publication outage never reverses its rail result.
+    if (!failedEvidencePublication || !paidForPublication?.ok || !store) throw cause;
+    return { pending: true as const, settlement: paidForPublication };
+  });
+  if ("pending" in evidenceAnchor) {
+    const paid = evidenceAnchor.settlement;
+    const finality = settlementFinalityFromDurable(paid);
+    const txRef = settlementTxRefFromDurable(paid);
+    return {
+      profile: "legacy-mvp-settlement-only", commerceComplete: false,
+      outcome: "settlement-pending", jobId, listingPin: listingView.pin, vetRef, agreementRef,
+      pendingEvidenceAddress: legacyMvpSessionAnchorName.evidence(jobId),
+      payment: {
+        ok: true, txHash: paid.txHash, chainId: paid.chainId, payer: paid.payer, payee: paid.payee,
+        ...(finality === undefined ? {} : { finality }),
+        ...(txRef === undefined ? {} : { txRef }),
+        ...(paid.blockNumber === undefined ? {} : { blockNumber: paid.blockNumber }),
+        ...(paid.txRefKind === undefined ? {} : { txRefKind: paid.txRefKind }),
+        ...(paid.networkFeeOs === undefined ? {} : { networkFeeOs: paid.networkFeeOs }),
+      },
+    };
+  }
+  const { ref: settlementRef, value: evidenceValue, existing: evidenceExisting } = evidenceAnchor;
   if (evidenceExisting) {
     // Reused a prior settlement — take the outcome from the anchored evidence.
     const unsignedEvidence = stripSignature(
@@ -5031,7 +5084,7 @@ export async function runSessionCore(
   // Strict DACS-5 consumers reject terminal completed/failed bundles that lack the
   // seller signature; use buildTwoSidedBundle for conformant two-sided bundles.
   // Refs are content-addressed; registry versions are pinned at 1.
-  const outcome: SessionResult["outcome"] = settledOk ? "completed" : "failed";
+  const outcome: "completed" | "failed" = settledOk ? "completed" : "failed";
   const evidenceRef = refTo("dacs-4-evidence", `settlement-${jobId}`, evidenceValue);
   const phaseSummary: PhaseSummaryEntry[] = [];
   const vetRecords: AttestationRef[] = [];

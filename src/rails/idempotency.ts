@@ -235,6 +235,18 @@ export interface SettlementReplayAuthorization {
 
 export interface SettlementIdempotencyStore {
   /**
+   * Operator action: close an expired native intent as unpaid only after
+   * fencing its old worker and proving its original log has no attempt.
+   * Requires the intact original log. A missing intent additionally requires
+   * the operator's explicit originalLogRetained confirmation. Refuses live,
+   * completed or tx-bearing intents. Never submits or grants a replacement.
+   */
+  abandonUnattempted?(
+    key: string,
+    binding: Readonly<SettlementBinding>,
+    options?: Readonly<{ originalLogRetained: true }>,
+  ): Promise<SettleResult>;
+  /**
    * Read and validate a recorded outcome under these exact terms, without
    * claiming an intent. Required for native retained-transaction audits:
    * `payDemSettle` refuses a request carrying `priorAttempts` without it.
@@ -1059,6 +1071,48 @@ function buildIdempotencyStore(
   return {
     ...attemptLookup,
     readOutcome,
+    async abandonUnattempted(key, binding, options) {
+      const captured = frozenClone(binding, "unattempted settlement binding");
+      const originalLogRetained = options !== undefined &&
+        frozenClone(options, "unattempted original-log confirmation").originalLogRetained === true;
+      const bindingHash = settlementBindingHash(captured);
+      if (captured.phase !== "pay-dem" || captured.agreementAsset !== "DEM" ||
+          captured.settlementAsset !== "DEM" || captured.finality.model !== "bft-final" ||
+          settlementKey(captured.railId, captured.jobId, captured.phaseIndex) !== key ||
+          readAttempt === undefined || durable.readOutcome === undefined) {
+        throw new DacsError("abandon requires the original native settlement log and exact binding");
+      }
+      // claimIntent atomically advances the generation before we inspect the
+      // attempt. An old worker cannot record its first hash after this fence;
+      // the native rail awaits that write before every broadcast.
+      const claim = captureIntentClaim(await durable.claimIntent({
+        key, bindingHash, owner: policy.owner, now: now(), leaseDurationMs: policy.leaseDurationMs,
+      }));
+      if (claim.status !== "acquired" || claim.bindingHash !== bindingHash ||
+          claim.lease.owner !== policy.owner) {
+        throw new DacsError("cannot abandon a live, completed or conflicting settlement intent");
+      }
+      if (claim.lease.stage !== "reconcile" && !originalLogRetained) {
+        await durable.releaseIntent({ key, bindingHash, lease: claim.lease, now: now() });
+        throw new DacsError("cannot abandon without an expired intent in the original log");
+      }
+      const attempt = await readAttempt(key);
+      if (attempt !== null) {
+        throw new DacsError("cannot abandon a recorded transaction; reconcile it without resubmitting");
+      }
+      const result = captureBoundResult({
+        ok: false, txHash: "", chainId: captured.network, payer: captured.payer, payee: captured.payee,
+      }, captured, "unattempted settlement outcome");
+      const write = captureOutcomeWrite(await durable.putOutcome({
+        key, bindingHash, lease: claim.lease, result, now: now(),
+      }));
+      if ((write.status !== "recorded" && write.status !== "existing") ||
+          write.outcome.bindingHash !== bindingHash ||
+          canonicalize(write.outcome.result) !== canonicalize(result)) {
+        throw new DacsError("unattempted settlement closure lost its generation or conflicts");
+      }
+      return result as SettleResult;
+    },
     async once(key, binding, submit, reconcile) {
       const capturedBinding = frozenClone(
         binding,

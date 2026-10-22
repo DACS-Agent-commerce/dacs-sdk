@@ -1,3 +1,4 @@
+import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
@@ -600,6 +601,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           deliveryFormat: "application/json",
         },
         settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(), reconcile: async () => null }),
+        sessionStore: createInMemorySessionStore(),
       }),
     ).rejects.toThrow(/remains indeterminate; refusing terminal failure evidence/);
     expect(demosNode.transfers).toBe(1);
@@ -664,6 +666,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     const first = await agent.runSession(ref, {
       terms,
+      sessionStore: createInMemorySessionStore(),
       settle,
     });
     expect(first.outcome).toBe("completed");
@@ -734,7 +737,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
 
     await expect(
       verifyComponentSignature(
-        store.get(res.settlementRef)!,
+        store.get(res.settlementRef!)!,
         ARTIFACT_SEPARATORS.SettlementEvidence,
         {
           isSignerAuthorized: (_artifact, signature) =>
@@ -786,12 +789,12 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     ).resolves.toEqual(first);
     expect(settleCalls).toBe(1);
 
-    const bundle = structuredClone(store.get(first.bundleRef)!);
+    const bundle = structuredClone(store.get(first.bundleRef!)!);
     const signature = (bundle.signatures as Array<{ value: string }>)[0]!;
     // Padding is a decodable alias in permissive codecs, but is not canonical
     // Base64URL and therefore must not authenticate on resume.
     signature.value += "=";
-    store.set(first.bundleRef, bundle);
+    store.set(first.bundleRef!, bundle);
     await expect(
       agent.runSession(ref, {
         jobId: "completed-bundle-retry",
