@@ -680,5 +680,34 @@
       "packages/dacs-client/test/public-api.test.mjs",
       "packages/dacs-client/test/sweep-contracts.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 require concrete SQLite state and clarify the JavaScript candidate",
+    "files": [
+      ".github/workflows/ci.yml",
+      "package-lock.json",
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/src/public-verification.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/src/wallet/payload-helpers.mjs",
+      "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+      "packages/dacs-client/test/helpers/store-crash-worker.mjs",
+      "packages/dacs-client/test/public-api.test.mjs",
+      "packages/dacs-client/test/purchase-executed-only.test.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs",
+      "packages/dacs-client/test/sweep-contracts.test.mjs"
+    ]
   }
 ]

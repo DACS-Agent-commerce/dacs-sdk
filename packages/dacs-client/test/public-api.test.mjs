@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const ROOT = {
-  functions: ['createPurchaseService', 'purchaseNext', 'networkIdentityLabel', 'createProtocolPurchases', 'protocolView', 'usesAgreementContext',
+  functions: ['createSqlitePurchaseStore', 'createPurchaseService', 'purchaseNext', 'networkIdentityLabel', 'createProtocolPurchases', 'protocolView', 'usesAgreementContext',
     'usesNativeDemDelivery', 'createDeliveryDeadlineWatch', 'createCoordinateStore', 'createDirectoryClient', 'createListingVerifier',
-    'createDemosChainReader', 'deliveryEvidenceAddress', 'sellerFailureCause', 'usesNativePaymentEvidence', 'isOperatorContextAuthority',
-    'demDeliveryContextUsage', 'isDemDeliveryContextAuthority', 'createDemosSr2WalletBridge', 'isDevnetAgreementTransport',
-    'isDevnetNativeTransport', 'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
+    'deliveryEvidenceAddress', 'sellerFailureCause', 'usesNativePaymentEvidence', 'isOperatorContextAuthority',
+    'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
+    'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
@@ -16,20 +16,21 @@ const ROOT = {
     'SR2_WALLET_KIND', 'DEVNET_AGREEMENT_KIND', 'DEVNET_AGREEMENT_PROFILE', 'DEVNET_NATIVE_BINDING_PATH', 'DEVNET_NATIVE_RPC_PATH', 'SDK_PROVENANCE'],
 };
 const modules = {
+  "seams/purchase-store-not-wired.mjs": "createSqlitePurchaseStore",
   "purchases.mjs": "createPurchaseService purchaseNext PURCHASE_STATUS_HELP networkIdentityLabel",
   "dacs/protocol-purchases.mjs": "createProtocolPurchases protocolView usesAgreementContext usesNativeDemDelivery StaleProtocolCheck",
   "dacs/delivery-deadline-watch.mjs": "createDeliveryDeadlineWatch",
   "dacs/wallet-transactions.mjs": "createCoordinateStore",
   "dacs/directory.mjs": "createDirectoryClient",
-  "dacs/verification.mjs": "createListingVerifier NotConfiguredError",
-  "dacs/chain.mjs": "createDemosChainReader DEM_DECIMAL OS_INTEGER",
+  "public-verification.mjs": "createListingVerifier NotConfiguredError",
+  "dacs/chain.mjs": "DEM_DECIMAL OS_INTEGER",
   "dacs/purchase-protocol.mjs": "deliveryEvidenceAddress vetNotPerformedRef",
   "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError",
   "dacs/native-payment-evidence-consumer.mjs": "usesNativePaymentEvidence",
   "dacs/agreement-context-consumer.mjs": "AGREEMENT_CONTEXT_SOURCE isOperatorContextAuthority",
   "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority",
-  "dacs/demos-sr2-wallet-bridge.mjs": "createDemosSr2WalletBridge SR2_WALLET_KIND DemosSr2BridgeError",
-  "wallet/devnet-native-transport.mjs": "isDevnetAgreementTransport isDevnetNativeTransport rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
+  "dacs/demos-sr2-wallet-bridge.mjs": "SR2_WALLET_KIND DemosSr2BridgeError",
+  "wallet/devnet-native-transport.mjs": "rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
   "dacs/seller-session-lifecycle.mjs": "sellerSessionTransitionState",
   "util/purchase-readback-cache.mjs": "createPurchaseReadbackCache",
   "util/http.mjs": "OutboundError",
@@ -72,7 +73,8 @@ for (const subpath of ['src/purchases.mjs', 'src/config.mjs', 'util/http', 'brow
 test('candidate manifest uses release metadata and the exact public boundary', async () => {
   const client = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs-client'))));
   const core = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs'))));
-  assert.notEqual(client.private, true);
+  assert.equal(client.private, true);
+  assert.equal(client.engines.node, '^22.13.0 || >=23.4.0');
   assert.equal(client.type, 'module');
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
@@ -85,12 +87,20 @@ test('candidate manifest uses release metadata and the exact public boundary', a
 });
 
 test('root import never loads SQLite', () => {
-  const loader = `export async function resolve(specifier, context, next) {
-    if (specifier === 'node:sqlite') throw new Error('unexpected SQLite import');
-    return next(specifier, context);
-  }`;
-  const script = `import { register } from 'node:module';
-    register('data:text/javascript,' + encodeURIComponent(${JSON.stringify(loader)}), import.meta.url);
+  const script = `import * as module from 'node:module';
+    const refuse = (specifier, context, next) => {
+      if (specifier === 'node:sqlite') throw new Error('unexpected SQLite import');
+      return next(specifier, context);
+    };
+    if (module.registerHooks) module.registerHooks({ resolve: refuse });
+    else {
+      module.register('data:text/javascript,' + encodeURIComponent('export const resolve = ' + refuse.toString()), import.meta.url);
+      const original = module.default._load;
+      module.default._load = function(specifier, ...args) {
+        if (specifier === 'node:sqlite') throw new Error('unexpected SQLite require');
+        return original.call(this, specifier, ...args);
+      };
+    }
     await import('@kynesyslabs/dacs-client');`;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', cwd: process.cwd() });
   assert.equal(child.status, 0, child.stdout + child.stderr);
@@ -99,6 +109,22 @@ test('root import never loads SQLite', () => {
 test('public refusals retain the exported error identity', async () => {
   const client = await import('@kynesyslabs/dacs-client');
   assert.throws(() => client.createProtocolPurchases({}), error => error instanceof client.NotWiredError && error instanceof client.OperationError);
-  const buyer = client.createProtocolPurchases({ store: { transaction: (_db, fn) => fn(), isUniqueViolation: () => false } });
+  const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore() });
   assert.throws(() => buyer.prepareTerms({}), error => error instanceof client.OperationError && error.code === 'profile_not_admitted');
+});
+
+for (const profileAuthority of [undefined, {}, { standardRevision: 'old' }, { standardRevision: 'd45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20' }]) {
+  test('public Listing verification refuses before resolution with caller authority ' + JSON.stringify(profileAuthority), async () => {
+    const client = await import('@kynesyslabs/dacs-client');
+    let reads = 0;
+    const forbidden = () => { reads++; throw new Error('unexpected resolution'); };
+    const verifier = client.createListingVerifier({ directory: { findSummary: forbidden },
+      chain: { readStorageProgram: forbidden }, profileAuthority });
+    await assert.rejects(verifier.verify({ listingId: 'TEST-listing', version: 1, seller: 'TEST-seller' }), { code: 'profile_not_admitted' });
+    assert.equal(reads, 0);
+  });
+}
+test('unqualified node reader and held transport constructors are outside the public candidate', async () => {
+  const client = await import('@kynesyslabs/dacs-client');
+  for (const name of ['createDemosChainReader', 'createDemosSr2WalletBridge', 'isDevnetAgreementTransport', 'isDevnetNativeTransport']) assert.equal(client[name], undefined);
 });

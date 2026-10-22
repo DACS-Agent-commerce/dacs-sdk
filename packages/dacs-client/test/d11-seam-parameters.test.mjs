@@ -6,7 +6,9 @@ import assert from 'node:assert/strict';
 import { createPurchaseService } from '../src/purchases.mjs';
 import { createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
 import { createDeliveryDeadlineWatch } from '../src/dacs/delivery-deadline-watch.mjs';
-import { purchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { purchaseStore, createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 import { walletPurposes } from '../src/seams/wallet-actions-not-wired.mjs';
 import { DEVNET_NATIVE_COMMITMENT_MARKER } from '../src/devnet-demo/commitment-consumer.mjs';
 import * as wallet from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
@@ -15,7 +17,7 @@ import * as transport from '../src/wallet/devnet-native-transport.mjs';
 const notWired = (seam) => (error) => error.name === 'NotWiredError' && error.code === 'client_not_wired' && error.seam === seam;
 // Any use of these throws: a factory that refuses first never touches them.
 const untouched = new Proxy({}, { get(_target, key) { throw new Error(`unexpected use of ${String(key)}`); } });
-const store = { transaction: (_db, fn) => fn(), isUniqueViolation: () => false };
+const store = createSqlitePurchaseStore();
 const purposes = { APPROVE_PURCHASE: 'approve-purchase' };
 
 for (const bad of [undefined, null, {}, { transaction: () => {} }, { isUniqueViolation: () => false }, { transaction: 'x', isUniqueViolation: () => false }]) {
@@ -37,7 +39,8 @@ for (const bad of [undefined, null, {}, { APPROVE_PURCHASE: '' }, { APPROVE_PURC
 test('the store seam keeps only the two host functions, and purposes only the approval purpose', () => {
   const extra = { ...store, other: () => {} };
   assert.deepEqual(Object.keys(purchaseStore(extra)), ['transaction', 'isUniqueViolation']);
-  assert.equal(purchaseStore(extra).transaction(null, () => 'TEST-result'), 'TEST-result');
+  const db = new DatabaseSync(':memory:');
+  try { assert.equal(purchaseStore(extra).transaction(db, () => 'TEST-result'), 'TEST-result'); } finally { db.close(); }
   assert.deepEqual(walletPurposes({ ...purposes, LOGIN: 'login' }), purposes);
   assert.equal(Object.isFrozen(walletPurposes(purposes)), true);
 });
@@ -77,10 +80,11 @@ test('resolved buyer capability keeps its receiver and original refusal', () => 
 
 test('store methods retain their host receiver and original errors', () => {
   const cause = new Error('TEST-store-refused');
-  const host = { marker: 'TEST-host', transaction(_db, fn) { assert.equal(this.marker, 'TEST-host'); return fn(); },
+  const host = { marker: 'TEST-host', transaction: store.transaction,
     isUniqueViolation(error) { assert.equal(this.marker, 'TEST-host'); return error === cause; } };
   const seam = purchaseStore(host);
-  assert.throws(() => seam.transaction(null, () => { throw cause; }), error => error === cause);
+  const db = new DatabaseSync(':memory:');
+  try { assert.throws(() => seam.transaction(db, () => { throw cause; }), error => error === cause); } finally { db.close(); }
   assert.equal(seam.isUniqueViolation(cause), true);
 });
 
@@ -102,21 +106,21 @@ test('an asynchronous buyer assertion cannot grant synchronous wallet authority'
   assert.throws(() => buyer.assertBuyerAccess('TEST-wallet'), notWired('buyer-access-not-wired'));
 });
 
-test('deadline observation uses the injected transaction and refuses a stale repeat', () => {
+test('deadline observation uses the concrete transaction and refuses a stale repeat', t => {
   const operation = { id: 'TEST-operation', accountId: 'TEST-buyer', kind: 'purchase', status: 'settled_verified',
     terms: { seller: { claim: 'TEST-seller' }, protocol: {} },
     state: { protocol: { stage: 'payment-evidenced', agreement: { hash: 'TEST-hash', ref: { contentHash: 'TEST-hash' },
       artifact: { terms: { deadline: 1 }, parties: [{ role: 'seller', primaryClaim: 'TEST-seller' }] }, terms: { seller: 'TEST-seller', deadline: 1 } },
       commitment: { verifiedAt: 'TEST-verified' } } } };
-  let current = operation, writes = 0, transactions = 0;
-  const hostStore = { transaction(_db, fn) { transactions++; return fn(); }, isUniqueViolation: () => false };
-  const watch = createDeliveryDeadlineWatch({ enabled: true, db: { prepare: () => ({}) },
-    coordinates: { get: () => ({ verifiedAt: 'TEST-verified' }) }, store: hostStore,
+  let current = operation, writes = 0;
+  const db = openDatabase(':memory:');
+  t.after(() => db.close());
+  const watch = createDeliveryDeadlineWatch({ enabled: true, db,
+    coordinates: { get: () => ({ verifiedAt: 'TEST-verified' }) }, store,
     ops: { get: () => current, transition(_id, _before, _after, { state }) { writes++; current = { ...current, state }; return current; } } });
   const readback = { notPresent: true, delivery: { status: 'absent' }, checkedAt: 120002 };
   watch.observe(operation, readback);
   watch.observe(operation, readback);
-  assert.equal(transactions, 2);
   assert.equal(writes, 1);
   assert.equal(current.state.protocol.deliveryDeadline.overdue.disposition, 'indeterminate');
 });
@@ -133,9 +137,8 @@ for (const transaction of [async () => {}, function* () {}, async function* () {
 
 for (const rejected of [false, true]) {
   test(`a disguised async transaction refuses synchronously and drains rejection=${rejected}`, async () => {
-    const seam = purchaseStore({ transaction: () => rejected ? Promise.reject(new Error('TEST-store-refusal')) : Promise.resolve('TEST'),
-      isUniqueViolation: () => false });
-    assert.throws(() => seam.transaction(null, () => 'TEST'), notWired('purchase-store-not-wired'));
+    assert.throws(() => purchaseStore({ transaction: () => rejected ? Promise.reject(new Error('TEST-store-refusal')) : Promise.resolve('TEST'),
+      isUniqueViolation: () => false }), notWired('purchase-store-not-wired'));
     await new Promise(resolve => setImmediate(resolve));
   });
 }
@@ -170,4 +173,17 @@ test('package wallet helpers preserve the provider digest and confirmation contr
     { transaction: { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 }, custom_charges: [] }]) {
     assert.equal(helpers.storageConfirmationShapeMatches(confirmation), wallet.storageConfirmationShapeMatches(confirmation));
   }
+});
+
+
+test('post-fork prepared digest agrees with demosdk 4.0.16 serialized signing content', async () => {
+  const { serializeTransactionContent } = await import(new URL('denomination/serializerGate.js', import.meta.resolve('@kynesyslabs/demosdk')));
+  const content = { type: 'native', from: '0x' + 'a'.repeat(64), to: '0x' + 'b'.repeat(64), amount: '1000000000',
+    data: ['native', { nativeOperation: 'send', args: ['0x' + 'b'.repeat(64), '1000000000'] }], nonce: 7, timestamp: 1 };
+  const signed = JSON.parse(serializeTransactionContent({ ...content,
+    transaction_fee: { network_fee: 1, rpc_fee: 1, additional_fee: 0 }, gcr_edits: [] }, true));
+  assert.equal(signed.amount, '1000000000');
+  assert.equal(signed.transaction_fee.network_fee, '1000000000');
+  assert.equal(await wallet.nativePayloadDigest(signed), await wallet.nativePayloadDigest(content));
+  assert.notEqual(await wallet.nativePayloadDigest({ ...content, amount: 1 }), await wallet.nativePayloadDigest(signed));
 });

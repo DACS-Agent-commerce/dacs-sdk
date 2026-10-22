@@ -12,7 +12,8 @@ import {createProtocolPurchases} from '../src/dacs/protocol-purchases.mjs';
 import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
 // The held buyer API is inspected with a store that refuses every write and no
 // operator capability; no authority, wallet or native check is mocked.
-const noWrites={transaction(){throw Error('unexpected store write');},isUniqueViolation:()=>false};
+import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
+const noWrites=createSqlitePurchaseStore();
 const jobId='01ARZ3NDEKTSV4RRFFQ69G5FAV',seller='did:demos:agent:'+'a'.repeat(64);
 const operation={terms:{buyer:{wallet:'0x'+'e'.repeat(64)},seller:{claim:seller},protocol:{jobId,profile:'dacs-chatgpt-plugin/fixed-price-pay-dem/v1'}},state:{protocol:{revision:7,stage:'delivery-ready',agreement:null,commitment:null,paymentEvidence:null,delivery:{report:{jobId}},bundle:null}}};
 const view={jobId,profile:operation.terms.protocol.profile,revision:7,stage:'delivery-ready',agreement:null,commitment:null,paymentEvidence:null,delivery:{report:{jobId}},bundle:null};

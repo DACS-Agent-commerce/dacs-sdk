@@ -4,9 +4,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPurchaseService, createCoordinateStore } from '@kynesyslabs/dacs-client';
 import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
+import { OFFLINE_AGREEMENT_MODE } from '../src/dacs/protocol-purchases.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 
-function world(t) {
+function world(t, { protocolMode } = {}) {
   const db = openDatabase(':memory:');
   t.after(() => db.close());
   const at = new Date().toISOString(), chainIdentity = 'c'.repeat(64);
@@ -21,7 +22,7 @@ function world(t) {
     request: {}, status: 'awaiting_approval', terms, termsHash: chainIdentity, expiresAt: new Date(Date.now() + 3600000).toISOString() });
   const calls = [];
   const purposes = { APPROVE_PURCHASE: 'TEST-host-approval-purpose' };
-  const store = { transactions: 0, transaction(db, fn) { this.transactions++; return transaction(db, fn); }, isUniqueViolation };
+  const store = { transaction, isUniqueViolation };
   const challenges = {
     issue({ purpose, binding }) {
       assert.equal(this, challenges);
@@ -42,8 +43,10 @@ function world(t) {
   const chain = { network: 'testnet', pinnedIdentity: chainIdentity,
     networkIdentity: async () => { calls.push(['network']); return { identity: chainIdentity, mode: 'public-chain-read' }; },
     getAddressNonce: async () => { calls.push(['nonce']); return 6; } };
-  const verifier = { verify: async () => { calls.push(['listing']); return { transactable: true, contentHash: chainIdentity, price: terms.price, payee, evidence: { chainMode: 'TEST' } }; } };
-  const service = createPurchaseService({ db, ops, coordinates, store, purposes, challenges, chain, verifier, config: { demAmountEncoding: 'os-string' } });
+  const verifier = { verify: async () => { calls.push(['listing']); return { transactable: true, anchor: { kind: 'storage-program', locator: 'TEST-locator' }, checks: [], contentHash: chainIdentity, price: terms.price, payee, evidence: { chainMode: 'TEST' } }; } };
+  const accounts = { listWallets: () => [{ address: wallet }] };
+  const protocol = protocolMode ? { supportsMode: () => true, prepareTerms() { calls.push(['protocol']); throw Object.assign(new Error('TEST-profile-held'), { code: 'profile_not_admitted' }); } } : null;
+  const service = createPurchaseService({ db, ops, coordinates, store, purposes, challenges, chain, verifier, accounts, protocol, config: { demAmountEncoding: 'os-string' } });
   return { db, ops, coordinates, store, calls, service, args: { operationId: operation.id, token: handoffToken }, wallet };
 }
 
@@ -63,7 +66,6 @@ for (const status of ['awaiting_approval', 'approved', 'payment_handoff']) {
           challengeId: 'TEST-challenge', signature: 'TEST-approval-answer' }), { code: 'profile_not_admitted' });
       }
       assert.deepEqual(w.calls, [], 'no challenge, chain or listing request');
-      assert.equal(w.store.transactions, 0, 'no approval or handoff transaction');
       assert.equal(w.db.prepare('SELECT count(*) n FROM approvals').get().n, 0);
       assert.equal(w.db.prepare('SELECT count(*) n FROM write_coordinates').get().n, 0);
       assert.equal(w.ops.get('TEST-buyer', w.args.operationId).status, status);
@@ -81,3 +83,22 @@ test('nested serializing store calls join the outer transaction and roll back to
   assert.equal(w.db.prepare("SELECT count(*) n FROM meta WHERE key LIKE 'TEST-%'").get().n, 0);
   assert.equal(w.store.transaction(w.db, () => 'TEST-retry'), 'TEST-retry');
 });
+
+for (const mode of [undefined, OFFLINE_AGREEMENT_MODE]) {
+  test(`prepare refuses before Listing resolution or durable state, mode=${mode}`, async t => {
+    const w = world(t, { protocolMode: mode });
+    w.db.prepare('DELETE FROM operation_events').run();
+    w.db.prepare('DELETE FROM operations').run();
+    await assert.rejects(w.service.prepare({ accountId: 'TEST-buyer', listingId: 'TEST-listing', version: 1,
+      seller: 'TEST-seller', idempotencyKey: 'TEST-prepare', walletAddress: w.wallet, protocol: mode }), { code: 'profile_not_admitted' });
+    assert.deepEqual(w.calls, []);
+    assert.equal(w.db.prepare('SELECT count(*) n FROM operations').get().n, 0);
+  });
+}
+for (const method of ['nativePaymentLane', 'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign']) {
+  test(`${method} refuses before state, network and protocol calls`, async t => {
+    const w = world(t);
+    await assert.rejects(async () => w.service[method]({}), { code: 'profile_not_admitted' });
+    assert.deepEqual(w.calls, []);
+  });
+}

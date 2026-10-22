@@ -64,10 +64,11 @@
     "src/wallet/durable-journal.mjs",
     "src/wallet/payload-helpers.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "src/public-verification.mjs"
   ],
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": "^22.13.0 || >=23.4.0"
   },
   "license": "MIT",
   "repository": {
@@ -81,5 +82,6 @@
   },
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"
-  }
+  },
+  "private": true
 }

@@ -1376,6 +1376,77 @@
           "after": "24364d91175a246788e23c7a468f36e211ec2121"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 require concrete SQLite state and clarify the JavaScript candidate",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b6ee076fbf6c024a1cb488b8e59cd02ad87c55da",
+          "after": "2da2dd379d8373233fc27cf5a16596dbcfef5766"
+        },
+        {
+          "path": "packages/dacs-client/src/public-verification.mjs",
+          "before": null,
+          "after": "eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "ab7661e952a984eb711fd041497949e5f5239d0b",
+          "after": "4ad468a36eaa8d89fedbf93481fc4efe4bd37310"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "9af6dee1556c940482e4dff7100d07a6fdacb8bf",
+          "after": "a285fa77b2f41fff3a4e5fd4033429df9fb3d696"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": "89d097c2d72b9e6a9404be2a3319cb5792f3679b",
+          "after": "32c65aec6b18cde12321600f9eb1c6ba4e439cae"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": "475c49173398676ca8097cba29a5f51226c8c6d3",
+          "after": "9af505a6cee4fe8a7858cdf209a7b7ca7e3ff523"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "a190884d5fdc2b7b302a5b01b00e0eb7573da4d3",
+          "after": "4275b38d62ca99910a4fdbcc6e7ad605986eebaa"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "4fd59007caab514e62aaf8b58505c1ab72af7d21",
+          "after": "b152062ad8810d03bfe013de4eae86e4b157e942"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/store-crash-worker.mjs",
+          "before": null,
+          "after": "f19662c277f9bcc86145487d72230cdfbdde2d50"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "81d21ca67b218c48f96968961363b54ebd985e35",
+          "after": "32c6607d4d19ec0baf82f2371c958709e4289fc6"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "4ec34580242522b7dd18b98233d911029ae4e143",
+          "after": "498f20be5b423d6328ffb0031d71d4e3d8233c43"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": null,
+          "after": "880e4ff8689135615f7c0271066eed24afd454e5"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "24364d91175a246788e23c7a468f36e211ec2121",
+          "after": "3ba7301a4ed8d3b7808ad92e3e439a6e6a15b1fb"
+        }
+      ]
     }
   ]
 }

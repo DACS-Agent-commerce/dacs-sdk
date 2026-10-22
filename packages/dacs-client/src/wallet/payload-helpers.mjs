@@ -42,7 +42,8 @@ const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArr
 
 // The identity of one prepared native transfer, shared with the operator's
 // source (devnet-native-transport.mjs): the SHA-256 of the canonical JSON of
-// every field Demos.sign keeps as prepared (type, from, to, amount, data,
+// every field Demos.sign keeps when the prepared amount encoding matches
+// the connected node fork (type, from, to, amount, data,
 // nonce, timestamp; it fills the fee, balance edits, hash and signature), so
 // the signed transaction carries the same digest as its payload.
 export async function nativePayloadDigest(content) {
