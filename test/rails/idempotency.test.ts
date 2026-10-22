@@ -41,6 +41,22 @@ const binding = (
 });
 const KEY = "evm-erc20-usdc:job-1:0";
 
+test.each([
+  " padded-hash", "padded-hash ", "\thash\n", { trim() { return this; } },
+])("the generic attempt recorder rejects an inexact hash before touching the log: %s", async (hash) => {
+  const log = createInMemorySettlementLog();
+  const putAttempt = vi.spyOn(log, "putAttempt");
+  const store = createIdempotencyStore(log);
+  await store.once(KEY, binding(), async (fence) => {
+    await expect(fence!.recordAttempt!(hash as string)).rejects.toThrow(/non-empty exact transaction hash/);
+    expect(putAttempt).not.toHaveBeenCalled();
+    await fence!.recordAttempt!("exact-hash");
+    expect(putAttempt).toHaveBeenCalledTimes(1);
+    return ok("exact-hash");
+  });
+  await expect(log.readAttempt!(KEY)).resolves.toMatchObject({ txHash: "exact-hash" });
+});
+
 describe("settlement idempotency store (#43)", () => {
   test("a repeated call for the same key returns the recorded result WITHOUT resubmitting", async () => {
     const store = createIdempotencyStore();

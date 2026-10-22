@@ -115,7 +115,7 @@ below).
   record, or a result this bridge submitted and the attempt record accepted.
   Otherwise, when no attempt record names any hash for the key, the audit is
   finished only through the store's own `once`: a held generation refuses,
-  and an expired one is reconciled as a restart without history would (the
+  and an expired one is reconciled under the key's own generation (the
   reconciler is asked for the key's payment, without the hash); only an
   answer naming the retained hash is accepted, recorded as the key's attempt
   and saved. Over a log without `readOutcome` the same path also accepts the
@@ -182,10 +182,11 @@ below).
   nonce) and clears the key in the durable log.
 - A restart without history reconciles in the store. With an attempt record
   the reconciler receives its hash as `txHash`, and any other transaction is
-  refused. Without one, the reconciler's answer for the key is still accepted
-  and saved, so that path relies on the reconciler to look up this exact
-  payment. On a log that keeps attempts the saved outcome never binds a later
-  audit.
+  refused. Without one, a success is refused unless this same bridge already
+  submitted and bound the hash to the key. The same check runs before saving a
+  reconciled success and before returning a cached success: another job's
+  same-party, same-amount payment cannot complete this job through a key-only
+  reconciliation or saved outcome.
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).

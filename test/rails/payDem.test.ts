@@ -647,12 +647,17 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(settle).not.toHaveBeenCalled();
   });
 
-  // A payment a custom rail made before the upgrade must still reconcile:
-  // the bridge is built for any rail, and recovery never calls its settle.
-  test("reconciles a custom rail's retained attempt without calling the rail", async () => {
+  // Recovery never calls a custom rail. It still needs this job's recorded
+  // transaction identity before a reconciled success can complete the job.
+  test.each([false, true])("a custom rail restart requires a recorded attempt (recorded=%s)", async (recorded) => {
     const log = createInMemorySettlementLog();
     const request = req({ jobId: "job-retained-custom" });
-    await seedExpiredIntent(log, request);
+    const claim = await seedExpiredIntent(log, request);
+    if (claim.status !== "acquired") throw new Error("expected a fresh test intent");
+    const key = settlementKey("pay-dem", "job-retained-custom", 0);
+    if (recorded) {
+      await log.putAttempt!({ key, bindingHash: claim.bindingHash, lease: claim.lease, txHash: TX_HASH, now: 0 });
+    }
     const settle = vi.fn<PayDemRail["settle"]>();
     const rail: PayDemRail = { address: PAYER, settle };
     const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
@@ -672,20 +677,21 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       reconcile,
     });
 
-    await expect(bridge()(request)).resolves.toMatchObject({
-      ok: true,
-      txHash: TX_HASH,
-      blockNumber: 4242,
-      payee: SELLER_HEX,
-    });
-    // After another restart the recorded outcome is re-authenticated, again
-    // without calling the rail.
-    await expect(bridge()(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
-    expect(reconcile).toHaveBeenCalledTimes(2);
+    if (recorded) {
+      await expect(bridge()(request)).resolves.toMatchObject({
+        ok: true, txHash: TX_HASH, blockNumber: 4242, payee: SELLER_HEX,
+      });
+      // After another restart the recorded outcome is re-authenticated.
+      await expect(bridge()(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      await expect(log.readOutcome!(key)).resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
+    } else {
+      await expect(bridge()(request)).rejects.toThrow(/no SDK record binds.*this payment/);
+      await expect(log.readOutcome!(key)).resolves.toBeNull();
+      expect(reconcile).toHaveBeenCalledTimes(1);
+    }
     expect(settle).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
-    await expect(log.readOutcome!(settlementKey("pay-dem", "job-retained-custom", 0)))
-      .resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
   });
 
   test("calls only the SDK's own rail and a caller's object carrying its settle", async () => {
