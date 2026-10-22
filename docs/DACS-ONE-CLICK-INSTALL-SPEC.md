@@ -277,9 +277,9 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   fail closed and require explicit removal of the recorded containers before
   restarting;
 - ignore `COMPOSE_*` environment variables and compose override files, and
-  refuse to run while `.env` mentions `COMPOSE_`, while Compose is outside
-  v2.10.x through v2.40.x, while the compose project has a container created for another
-  project directory, while a project recorded from another directory still
+  refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than
+  v2.10 or its version is unreadable, while the compose project has a container
+  created for another project directory, while a project recorded from another directory still
   has containers, or while the compose project has containers and the record
   does not name this project, path, device and inode (as for a copy put at a
   path the project was moved from), as the generated `dacs:down` and
@@ -289,13 +289,16 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   once the project has a container created for another directory, and report a
   failure to stop them or confirm that they stopped.
 
-The supported toolchain is Docker CLI and Engine 24.x through 28.x, and
-Compose 2.10.x through 2.40.x. Doctor MUST check both Docker versions and the
-Compose version. Each lifecycle invocation also checks Compose before its first compose call.
+The supported toolchain is Docker CLI and Engine 24 or later, and
+Compose 2.10 or later. Doctor MUST check both Docker versions and the
+Compose version. These checks MUST NOT impose upper version bounds, including
+on stop, down and maintenance. Each lifecycle invocation also checks Compose
+before its first compose call.
 CI builds the generated Dockerfile and runs its zero-spend image smoke for
-x402 and pay-dem on Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose
-2.40.3. It uses this checkout's packed release set in the build lock while
-keeping the generated manifest and Dockerfile unchanged. The image smoke
+x402 and pay-dem on Docker 24.0.9 / Compose 2.10.2, Docker 28.5.1 / Compose
+2.40.3 and Docker 29.9.1 / Compose 5.6.0. It uses this checkout's packed release
+set in the build lock while keeping the generated manifest and Dockerfile
+unchanged. The image smoke
 checks Node.js, production dependencies, the native SQLite binding and the
 service command's missing-role exit. Unit tests use a Docker CLI model for
 failure paths.
@@ -708,7 +711,13 @@ including the receipt needed for exact native-address authentication.
 This permits the buyer's Vet of the seller and the seller's Vet of the buyer to
 run concurrently under separate actor wallets. Each challenge is fresh,
 single-session and durably reserved, and every later message hashes the exact
-preceding payload. The buyer MUST authenticate finality and exact native
+preceding payload. The five-minute challenge deadline starts at the verifier's
+first send attempt, includes peer downtime, and is never refreshed by retries.
+A presentation must reach the durable inbox within that deadline. Recovery
+uses its original receipt time and may resume validation of the exact same
+authenticated envelope after the deadline; another envelope is a new attempt.
+A peer outage that outlasts the deadline requires a fresh job.
+The buyer MUST authenticate finality and exact native
 readback of the returned buyer Vet before including its reference in an
 agreement proposal. Native receipt verification and exact native-address
 readback are the gate; logical-name index visibility is not on this path. The

@@ -134,7 +134,7 @@ async function authenticated<Type extends Exclude<DacsHttpMessageType, "acknowle
     authenticationHash: dacsHttpEnvelopeHashV1(captured),
     identityEvidenceHash: "4".repeat(64),
     identityRole: input.role,
-    receivedAt: 1_800_000_000_001,
+    receivedAt: Date.now(),
   });
 }
 

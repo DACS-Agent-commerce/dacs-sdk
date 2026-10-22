@@ -1320,7 +1320,7 @@ process.exit(1);
     expect(readme).toContain("If you moved the project, remove the old\ncontainers with " +
       "`docker compose --project-name <recorded project> down`");
     expect(readme).not.toContain("never share one");
-    expect(readme).toContain("Docker CLI and Engine 24.x through 28.x with\nCompose 2.10.x through 2.40.x");
+    expect(readme).toContain("Docker CLI and Engine 24 or later with\nCompose 2.10 or later");
     expect(readme).not.toContain("which added");
     expect(readme).toContain(`requires the image to run Node.js ${GENERATED_IMAGE_NODE_VERSION}`);
     // The script's --up, --stop and --down modes are exercised directly below; the
@@ -1828,6 +1828,18 @@ process.exit(1);
       }), up);
       expect(valid.stderr).toBe("");
       expect(valid.status).toBe(0);
+      // Docker merges daemon defaults into json-file options. Compression
+      // preserves the required rotation bounds and must not stop either role.
+      for (const compress of ["true", "false"]) {
+        const inherited = await runGeneratedDockerSmoke(target, passingDockerScenario({
+          inspectChanges: { [role]: { HostConfig: { LogConfig: {
+            Type: "json-file", Config: { "max-size": "10m", "max-file": "3", compress },
+          } } } },
+        }), up);
+        expect(inherited.stderr, compress).toBe("");
+        expect(inherited.status, compress).toBe(0);
+        expect(inherited.containers?.filter((container) => container.running)).toHaveLength(2);
+      }
     },
     SPAWNING_TEST_TIMEOUT_MS,
   );
@@ -2099,23 +2111,26 @@ process.exit(1);
       }
 
       // Compose before v2.10, or a version it cannot read, is refused.
-      for (const composeVersion of ["2.9.0", "v2.9.9", "1.29.2", "dev", "2.10", "2.41.0", "5.6.0"]) {
+      for (const composeVersion of ["2.9.0", "v2.9.9", "1.29.2", "dev", "2.10"]) {
         for (const args of lifecycle) {
           const refused = await runGeneratedDockerSmoke(production, passingDockerScenario({
             composeVersion,
           }), { args });
           expect(refused.status, `${composeVersion} ${args.join(" ")}`).toBe(2);
           expect(refused.stderr).toContain(
-            "this project needs the Docker Compose plugin v2.10 through v2.40",
+            "this project needs the Docker Compose plugin v2.10 or later",
           );
           expect(refused.invocations.filter(isComposeInvocation)).toEqual([]);
         }
       }
-      for (const composeVersion of ["2.10.0", "v2.10.2", "2.40.3-desktop.1"]) {
-        const accepted = await runGeneratedDockerSmoke(production, passingDockerScenario({
-          composeVersion,
-        }), { args: ["--down"] });
-        expect(accepted.status, composeVersion).toBe(0);
+      for (const composeVersion of ["2.10.0", "v2.10.2", "2.40.3-desktop.1", "2.41.0", "3.0.0", "v5.6.0"]) {
+        for (const args of lifecycle) {
+          const accepted = await runGeneratedDockerSmoke(production, passingDockerScenario({
+            composeVersion,
+          }), { args });
+          expect(accepted.status, `${composeVersion} ${args.join(" ")}`).toBe(0);
+          expect(accepted.invocations.filter(isComposeInvocation)).toHaveLength(1);
+        }
       }
       // A check that cannot complete runs no compose command either.
       for (const overrides of [

@@ -154,8 +154,13 @@ identity, links every step by its canonical payload hash, reserves challenges
 durably against reuse, and carries the seller-produced buyer Vet back to the
 buyer with its finality receipt. Each verifier retains its challenge's job,
 presenter and issuance time in SQLite with a five-minute deadline. The first
-presentation attempt consumes that challenge before presentation validation;
-only an exact accepted authenticated delivery can be deduplicated. Pending
+presentation attempt consumes that challenge before presentation validation.
+The deadline starts at the first send attempt, includes peer downtime and is
+never refreshed by retries. Presentations must reach the durable inbox before
+the deadline; a peer outage that outlasts it requires a fresh job. Recovery
+uses that original inbox receipt time, so the exact authenticated delivery can
+resume interrupted validation after the deadline or be deduplicated after
+acceptance. Another envelope remains a new attempt. Pending
 bootstraps from an older runtime without these records require a fresh job. This is an operational transport transcript,
 not a DACS artifact or an authorization to pay. The agreement track
 authenticates the receipt and exact native-address readback before using the

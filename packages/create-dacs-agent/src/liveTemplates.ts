@@ -980,14 +980,14 @@ async function dockerRuntime(
   const versions = runtime.split(/\\s+/);
   if (versions.length !== 2 || versions.some((value) => {
     const version = /^v?(\\d+)\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$/.exec(value);
-    return version === null || Number(version[1]) < 24 || Number(version[1]) > 28;
+    return version === null || Number(version[1]) < 24;
   })) return fail("docker-version-unsupported");
   const compose = await inspect(["compose", "version", "--short"]);
   if (compose === undefined) return blocked(context.signal.aborted
     ? "docker-runtime-timeout" : "docker-compose-unavailable");
   const version = /^v?(\\d+)\\.(\\d+)\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$/.exec(compose);
-  if (version === null || Number(version[1]) !== 2 ||
-      Number(version[2]) < 10 || Number(version[2]) > 40) {
+  if (version === null || Number(version[1]) < 2 ||
+      (Number(version[1]) === 2 && Number(version[2]) < 10)) {
     return fail("docker-compose-version-unsupported");
   }
   return pass({ servicePortCount: endpoints.length, dockerVersion: runtime, composeVersion: compose });
@@ -4832,8 +4832,8 @@ function requireOwnProject() {
   try {
     const version = /^v?(\\d+)\\.(\\d+)\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$/.exec(
       docker(["compose", "version", "--short"]));
-    if (version === null || Number(version[1]) !== 2 || Number(version[2]) < 10 || Number(version[2]) > 40) {
-      refusal = "this project needs the Docker Compose plugin v2.10 through v2.40";
+    if (version === null || Number(version[1]) < 2 || (Number(version[1]) === 2 && Number(version[2]) < 10)) {
+      refusal = "this project needs the Docker Compose plugin v2.10 or later";
     } else {
       const record = recordedProject();
       if (record !== undefined && record.project !== projectName &&
@@ -4962,8 +4962,8 @@ function containerPolicyMismatch(container, service, imageEnvironment) {
       host.RestartPolicy?.Name !== "unless-stopped" ||
       (host.RestartPolicy?.MaximumRetryCount ?? 0) !== 0 ||
       host.LogConfig?.Type !== "json-file" ||
-      sorted(Object.entries(host.LogConfig?.Config ?? {}).map(([key, value]) => key + "=" + value)) !==
-        sorted(["max-size=10m", "max-file=3"]) ||
+      host.LogConfig?.Config?.["max-size"] !== "10m" ||
+      host.LogConfig?.Config?.["max-file"] !== "3" ||
       !health || JSON.stringify(health.Test) !== JSON.stringify(${quotedList(ROLE_HEALTHCHECK_COMMAND)}) ||
       health.Interval !== 10_000_000_000 || health.Timeout !== 3_000_000_000 ||
       health.Retries !== 3 || health.StartPeriod !== 10_000_000_000 ||
@@ -5800,11 +5800,12 @@ confirms neither still runs and exits non-zero. If it cannot stop them, or the
 project now has a container that compose created for another directory, it
 stops nothing more, says so and exits 1.
 
-The supported toolchain is Docker CLI and Engine 24.x through 28.x with
-Compose 2.10.x through 2.40.x. Doctor checks both Docker versions and Compose;
-each lifecycle invocation checks \`docker compose version\` and refuses a
-plugin outside that range. CI builds this Dockerfile for x402 and pay-dem with
-Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose 2.40.3, then runs its
+The supported toolchain is Docker CLI and Engine 24 or later with
+Compose 2.10 or later. Doctor checks both Docker versions and Compose;
+each lifecycle invocation checks \`docker compose version\` and refuses an
+older or unreadable plugin version. Newer releases are accepted. CI builds this
+Dockerfile for x402 and pay-dem with Docker 24.0.9 / Compose 2.10.2,
+Docker 28.5.1 / Compose 2.40.3 and Docker 29.9.1 / Compose 5.6.0, then runs its
 image smoke. The smoke accepts the image configuration that Docker CLI
 versions both before and after 28.2 print, and
 requires the image to run Node.js ${IMAGE_NODE_VERSION}, the release the

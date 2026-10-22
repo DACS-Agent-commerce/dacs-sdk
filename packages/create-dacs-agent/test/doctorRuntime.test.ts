@@ -68,18 +68,21 @@ finally { clearTimeout(timer); }
 const dockerCall = ["version", "--format", "{{.Client.Version}} {{.Server.Version}}"];
 const composeCall = ["compose", "version", "--short"];
 
-test.runIf(process.platform !== "win32")("doctor checks the supported Docker and Compose range before passing", async () => {
-  for (const [docker, compose] of [["24.0.9 24.0.9", "v2.10.2"], ["28.5.1 28.5.1", "2.40.3-desktop.1"]]) {
+test.runIf(process.platform !== "win32")("doctor checks minimum Docker and Compose versions and accepts newer releases", async () => {
+  for (const [docker, compose] of [
+    ["24.0.9 24.0.9", "v2.10.2"], ["28.5.1 28.5.1", "2.40.3-desktop.1"],
+    ["29.9.1 29.9.1", "v5.6.0"], ["28.5.1 29.0.0", "2.41.0"], ["30.0.0 30.0.0", "3.0.0"],
+  ]) {
     const result = await probe({ docker, compose });
     expect(result.report).toMatchObject({ status: "pass", facts: { dockerVersion: docker, composeVersion: compose } });
     expect(result.calls).toEqual([dockerCall, composeCall]);
   }
-  for (const compose of ["1.29.2", "2.9.9", "2.41.0", "3.0.0", "5.6.0", "dev", "2.10", "2.10.bad"]) {
+  for (const compose of ["1.29.2", "2.9.9", "dev", "2.10", "2.10.bad"]) {
     const result = await probe({ compose });
     expect(result.report, compose).toEqual({ status: "fail", reasonCode: "docker-compose-version-unsupported" });
     expect(result.calls).toEqual([dockerCall, composeCall]);
   }
-  for (const docker of ["23.0.6 28.5.1", "28.5.1 29.0.0", "28.5.1", "dev dev"]) {
+  for (const docker of ["23.0.6 28.5.1", "28.5.1 23.0.6", "28.5.1", "dev dev"]) {
     const result = await probe({ docker });
     expect(result.report, docker).toEqual({ status: "fail", reasonCode: "docker-version-unsupported" });
     expect(result.calls).toEqual([dockerCall]);

@@ -245,7 +245,7 @@ async function authenticated<Type extends Exclude<DacsHttpMessageType, "acknowle
     authenticationHash: dacsHttpEnvelopeHashV1(capturedEnvelope),
     identityEvidenceHash: "4".repeat(64),
     identityRole: input.role,
-    receivedAt: 1_800_000_000_001,
+    receivedAt: Date.now(),
   });
 }
 
@@ -452,7 +452,8 @@ describe("pre-agreement session bootstrap transport", () => {
     expect(database.loadEffectInput("session", id)).toEqual(record);
     expect(record.issuedAt).toBe(issuedAt);
     expect(record.expiresAt).toBe(issuedAt + 300_000);
-    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    const envelope = { ...(role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope()),
+      receivedAt: issuedAt + elapsed };
     await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({
       disposition: elapsed >= 0 && elapsed < 300_000 ? "accepted" : "rejected",
     });
@@ -489,6 +490,41 @@ describe("pre-agreement session bootstrap transport", () => {
       role: role === "buyer" ? "seller" : "buyer", nonceByte: 70,
     });
     await expect(restarted.handleMessage(fresh, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+  });
+
+  it.each(["buyer", "seller"] as const)("%s resumes an interrupted exact attempt after restart and expiry", async (role) => {
+    const issuedAt = 1_900_000_000_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(issuedAt);
+    const value = await presentationFixture();
+    const { database, runtime, challenge } = issuance(value, role);
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    // Model the committed reservation immediately before a process dies
+    // during verification, without an accepted transcript to deduplicate.
+    expect(database.reserveIdentity({
+      kind: "session", identity: `session-challenge-attempt:${challenge}`,
+      bindingHash: role === "buyer" ? value.pair.buyerLocalBindingHash : value.pair.sellerLocalBindingHash,
+      jobId: JOB_ID,
+      payloadHash: contentHash({ envelopeId: envelope.envelope.envelopeId,
+        authenticationHash: envelope.authenticationHash, identityEvidenceHash: envelope.identityEvidenceHash }),
+    }).status).toBe("created");
+    expect(role === "buyer" ? runtime.resolveChallenge(value.buyerOperation)
+      : value.sellerRuntime.resolvePresentation(value.sellerOperation)).toBeUndefined();
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const reopened = await openDacsNodeSqliteDatabase({ databasePath: join(value.root, `${role}.sqlite`),
+      mode: "live-demos", profile: DACS_NODE_LIVE_PROFILE, role, authority: value[role] });
+    databases.push(reopened);
+    const restarted = role === "buyer"
+      ? createDacsBuyerSessionBootstrapTransportRuntimeV1({ role, database: reopened } as never)
+      : createDacsSellerSessionBootstrapTransportRuntimeV1({ context: { role, database: reopened } as never,
+        admitInit: value.admitInit });
+    clock.mockReturnValue(issuedAt + 600_000);
+    await expect(restarted.handleMessage({ ...envelope, identityEvidenceHash: "f".repeat(64) }, { role } as never))
+      .resolves.toMatchObject({ disposition: "rejected" });
+    await expect(restarted.handleMessage(envelope, { role } as never)).resolves.toEqual({ disposition: "accepted" });
+    expect(role === "buyer" ? restarted.resolveChallenge(value.buyerOperation)
+      : (restarted as typeof value.sellerRuntime).resolvePresentation(value.sellerOperation))
+      .toEqual(role === "buyer" ? value.challenge : value.presentation);
   });
 
   it.each(["buyer", "seller"] as const)("%s reserves its verifier challenge for exactly one presenter and job", async (role) => {
@@ -580,7 +616,8 @@ describe("pre-agreement session bootstrap transport", () => {
     if (role === "buyer") await value.buyerRuntime.publishInit(value.buyerOperation, value.init);
     else await value.sellerRuntime.publishChallenge(value.sellerOperation, value.challenge);
     const runtime = role === "buyer" ? value.buyerRuntime : value.sellerRuntime;
-    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    const envelope = { ...(role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope()),
+      receivedAt: 1_900_000_300_000 };
     await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
   });
 

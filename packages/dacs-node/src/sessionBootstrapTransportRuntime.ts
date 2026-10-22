@@ -423,10 +423,10 @@ function challengeIssue(
   return value as unknown as Readonly<{ issuedAt: number; expiresAt: number }>;
 }
 
-// Only an already accepted, byte-identical authenticated delivery may be
-// deduplicated. A fresh envelope (even for the same signed presentation) is a
-// new attempt. SQLite's unique reservation consumes the challenge atomically
-// before any presentation binding or signature validation, including failures.
+// An exact authenticated delivery can resume validation after a crash, or be
+// deduplicated after acceptance. A fresh envelope (even for the same signed
+// presentation) is a new attempt. SQLite's unique reservation consumes the
+// challenge before any presentation binding or signature validation.
 function consumeChallenge(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   order: Readonly<DacsLiveOrderRecordV1>,
@@ -463,11 +463,11 @@ function consumeChallenge(
       return "accepted-delivery";
     }
   }
-  if (attempt.status !== "created") {
+  if (attempt.status === "conflict") {
     throw new DacsSessionBootstrapTransportError("session-challenge-consumed");
   }
-  const now = Date.now();
-  if (now < issued.issuedAt || now >= issued.expiresAt) {
+  // The durable inbox receipt time survives recovery and processing delays.
+  if (authenticated.receivedAt < issued.issuedAt || authenticated.receivedAt >= issued.expiresAt) {
     throw new DacsSessionBootstrapTransportError("session-challenge-expired");
   }
   return "attempt";
