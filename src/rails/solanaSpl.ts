@@ -358,6 +358,11 @@ export interface SolanaSplSettlementStore {
    * Claims expose the complete preparation until recordAttempt replaces it
    * atomically with the matching signed bytes. Failure closure is refused
    * while a preparation stands.
+   * The exact unsigned message must also be reserved across settlement keys,
+   * including messages in retained attempts. A cross-key collision is refused
+   * without retaining a preparation or invoking the wallet, so a later call can
+   * build with a fresh blockhash. This reservation is local coordination, not
+   * settlement-side session-binding evidence.
    */
   recordPreparation(input: {
     settlementKey: string;
@@ -367,6 +372,16 @@ export interface SolanaSplSettlementStore {
     attempt: number;
     preparation: Readonly<SolanaSplPreparation>;
   }): Promise<SolanaSplStoreWrite>;
+  /**
+   * Refuse signatures owned by another key. For an older colliding preparation,
+   * atomically clear only that preparation when the supplied attempt matches it
+   * exactly AND its complete signed bytes equal an attempt retained by the
+   * owning key for the same cluster and transfer instruction. Keep that
+   * signature's ownership and the owning attempt forever;
+   * never record or settle the duplicate under this key. A signature-only
+   * match, unknown owner, stale generation or mismatched preparation cannot
+   * release anything. A later call may then reserve a different message.
+   */
   recordAttempt(input: {
     settlementKey: string;
     bindingHash: string;
@@ -2087,6 +2102,7 @@ interface MemoryRecord {
 export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementStore {
   const records = new Map<string, MemoryRecord>();
   const signatures = new Map<string, string>();
+  const messages = new Map<string, string>();
   const current = (
     record: MemoryRecord | undefined,
     input: { bindingHash: string; owner: string; generation: number },
@@ -2174,7 +2190,13 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
       if (record.preparation !== undefined) {
         return { status: "conflict", reason: "solana-preparation-conflict" };
       }
+      const message = preparation.transaction.unsignedMessageBase64;
+      const messageOwner = messages.get(message);
+      if (messageOwner && messageOwner !== input.settlementKey) {
+        return { status: "conflict", reason: "solana-message-cross-settlement-reuse" };
+      }
       record.preparation = preparation;
+      messages.set(message, input.settlementKey);
       return { status: "recorded" };
     },
     async recordAttempt(input) {
@@ -2183,6 +2205,23 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
       if (record.failure) return closed;
       const owner = signatures.get(input.attempt.signature);
       if (owner && owner !== input.settlementKey) {
+        const owningRecord = records.get(owner);
+        const owned = owningRecord?.attempts.find((attempt) =>
+          attempt.signature === input.attempt.signature);
+        // Older stores could reserve the same message for two keys. A wallet
+        // may still return its original result, so never discard a preparation
+        // merely on a signature conflict. Exact bytes already retained under
+        // the other key prove that all deterministic re-signings can produce
+        // only that same transaction, whose ownership stays with the other key.
+        if (record.preparation && owned && owningRecord?.intent.cluster === record.intent.cluster &&
+            owned.transferInstructionIndex === input.attempt.transferInstructionIndex &&
+            owned.signedTransactionBase64 === input.attempt.signedTransactionBase64) {
+          try {
+            assertPreparedMessage(input.attempt, record.preparation);
+            messages.set(record.preparation.transaction.unsignedMessageBase64, owner);
+            record.preparation = undefined;
+          } catch { /* An uncertain preparation must remain reserved. */ }
+        }
         return { status: "conflict", reason: "solana-signature-cross-settlement-reuse" };
       }
       const at = record.attempts[input.attempt.attempt - 1];
@@ -2198,6 +2237,11 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
         try { assertPreparedMessage(input.attempt, record.preparation); }
         catch { return { status: "conflict", reason: "solana-prepared-message-mismatch" }; }
       }
+      // Include historical attempts that were recorded without a preparation.
+      const bytes = Buffer.from(input.attempt.signedTransactionBase64, "base64");
+      const [count, offset] = compactU16(bytes, 0);
+      const message = bytes.subarray(offset + count * 64).toString("base64");
+      if (!messages.has(message)) messages.set(message, input.settlementKey);
       record.attempts.push(Object.freeze({ ...input.attempt }));
       if (record.preparation?.attempt === input.attempt.attempt) record.preparation = undefined;
       signatures.set(input.attempt.signature, input.settlementKey);

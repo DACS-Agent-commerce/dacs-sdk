@@ -478,18 +478,20 @@ describe("durable-nonce and malformed messages", () => {
   const SECOND_SIGNER = Buffer.alloc(32, 9);
   const SECOND_SIGNATURE = Buffer.alloc(64);
 
-  async function prepareWith(wireMessage: Buffer, otherSignatures: readonly Buffer[] = [], retain = false) {
+  async function prepareWith(wireMessage: Buffer, otherSignatures: readonly Buffer[] = []) {
     const store = createInMemorySolanaSplSettlementStore();
+    const recordPreparation = vi.spyOn(store, "recordPreparation");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
     const recordAttempt = vi.spyOn(store, "recordAttempt");
     const broadcastRetained = vi.fn(adapter().broadcastRetained);
     const result = await advanceSolanaSplSettlement(input({
       store,
       adapter: adapter({
         async prepareUnsignedTransfer(plan, attempt, fence) {
-          return { ...(await adapter().prepareUnsignedTransfer(plan, attempt, fence)), unsignedMessageBase64: retain ? wireMessage.toString("base64") : (await adapter().prepareUnsignedTransfer(plan, attempt, fence)).unsignedMessageBase64 };
+          return { ...(await adapter().prepareUnsignedTransfer(plan, attempt, fence)), unsignedMessageBase64: wireMessage.toString("base64") };
         },
         async prepareSignedTransfer(plan, attempt, fence) {
-          const prepared = await adapter().prepareSignedTransfer(plan, attempt, fence);
+          const prepared = await prepareSignedTransfer(plan, attempt, fence);
           return {
             ...prepared,
             signedTransactionBase64: Buffer.concat([
@@ -501,7 +503,7 @@ describe("durable-nonce and malformed messages", () => {
         broadcastRetained,
       }),
     }));
-    return { result, recordAttempt, broadcastRetained };
+    return { result, recordPreparation, prepareSignedTransfer, recordAttempt, broadcastRetained };
   }
 
   // The shapes a real adapter builds: the system program past static index 1,
@@ -520,8 +522,10 @@ describe("durable-nonce and malformed messages", () => {
       { program: 1, accounts: [0], data: padded(NONCE) },
     ]), []],
   ])("a nonce transaction with %s is refused before it is retained", async (_name, wireMessage, others) => {
-    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others);
-    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" });
+    const { result, recordPreparation, prepareSignedTransfer, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others);
+    expect(result).toEqual({ status: "transient", reason: "solana-spl-unsigned-preparation-unavailable" });
+    expect(recordPreparation).not.toHaveBeenCalled();
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
     expect(recordAttempt).not.toHaveBeenCalled();
     expect(broadcastRetained).not.toHaveBeenCalled();
   });
@@ -537,8 +541,10 @@ describe("durable-nonce and malformed messages", () => {
       { program: 1, accounts: [0], data: padded([12]) },
     ]), []],
   ])("a transfer with %s is retained and settles", async (_name, wireMessage, others) => {
-    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others, true);
+    const { result, recordPreparation, prepareSignedTransfer, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others);
     expect(result).toMatchObject({ status: "settled" });
+    expect(recordPreparation).toHaveBeenCalledTimes(1);
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
     expect(recordAttempt).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
@@ -557,8 +563,10 @@ describe("durable-nonce and malformed messages", () => {
     ["a message cut inside its header", TRANSFER.subarray(0, 2)],
     ["no message", Buffer.alloc(0)],
   ])("%s is refused before it is retained or broadcast", async (_name, wireMessage) => {
-    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage);
-    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" });
+    const { result, recordPreparation, prepareSignedTransfer, recordAttempt, broadcastRetained } = await prepareWith(wireMessage);
+    expect(result).toEqual({ status: "transient", reason: "solana-spl-unsigned-preparation-unavailable" });
+    expect(recordPreparation).not.toHaveBeenCalled();
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
     expect(recordAttempt).not.toHaveBeenCalled();
     expect(broadcastRetained).not.toHaveBeenCalled();
   });
@@ -575,11 +583,63 @@ describe("durable-nonce and malformed messages", () => {
       message([PAYER_KEY, NEARLY_SYSTEM], [{ program: 1, data: NONCE }])],
     ["a message with no instructions", message([PAYER_KEY], [], 0)],
   ])("%s is retained and settles", async (_name, wireMessage) => {
-    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, [], true);
+    const { result, recordPreparation, prepareSignedTransfer, recordAttempt, broadcastRetained } = await prepareWith(wireMessage);
     expect(result).toMatchObject({ status: "settled" });
+    expect(recordPreparation).toHaveBeenCalledTimes(1);
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
     expect(recordAttempt).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
+
+  const retainedNonces = [
+    ["legacy", message([PAYER_KEY, SYSTEM], [{ program: 1, accounts: [0], data: NONCE }]), []],
+    ["v0", message(WEB3_KEYS, [{ program: 4, accounts: [1, 5, 0], data: NONCE }], 0), []],
+    ["two signers", message([PAYER_KEY, SECOND_SIGNER, SYSTEM], [
+      { program: 2, accounts: [0, 1], data: NONCE },
+    ], undefined, 2), [SECOND_SIGNATURE]],
+    ["128-byte data", message([PAYER_KEY, SYSTEM], [{ program: 1, accounts: [0], data: padded(NONCE) }]), []],
+  ] as const;
+  for (const kind of ["attempt", "preparation"] as const) {
+    test.each(retainedNonces)(`a retained %s nonce is refused during ${kind} recovery`, async (_name, wireMessage, others) => {
+      await checkRetainedNonce(wireMessage, others, kind);
+    });
+  }
+
+  async function checkRetainedNonce(wireMessage: Buffer, others: readonly Buffer[], kind: "preparation" | "attempt") {
+    const base = createInMemorySolanaSplSettlementStore();
+    const store: SolanaSplSettlementStore = { ...base, async claim(request) {
+      const claim = await base.claim(request);
+      if (claim.status !== "acquired" || claim.lease.generation === 1) return claim;
+      if (kind === "preparation" && claim.preparation) return { ...claim, preparation: {
+        ...claim.preparation, transaction: { ...claim.preparation.transaction,
+          unsignedMessageBase64: wireMessage.toString("base64") },
+      } };
+      return { ...claim, attempts: claim.attempts.map(({ attemptHash: _old, ...row }) => {
+        const unsigned = { ...row, signedTransactionBase64: Buffer.concat([
+          Buffer.from([1 + others.length]), base58Decode(row.signature, 64), ...others, wireMessage,
+        ]).toString("base64") };
+        return { ...unsigned, attemptHash: sha256Hex(canonicalize(unsigned)) };
+      }) };
+    } };
+    let clock = 1_000;
+    const common = input({ store, now: () => clock, adapter: adapter({ reconcile: async () => lost,
+      ...(kind === "preparation" ? { prepareSignedTransfer: async () => { throw new Error("wallet timeout"); } } : {}),
+    }) });
+    await advanceSolanaSplSettlement(common);
+    clock += 101;
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(adapter().reconcile);
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    expect(await advanceSolanaSplSettlement({ ...common, owner: "worker-b",
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }) }))
+      .toEqual({ status: "indeterminate", reason: kind === "preparation"
+        ? "solana-spl-settlement-store-claim-invalid" : "solana-spl-retained-state-corrupt" });
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(recordAttempt).not.toHaveBeenCalled();
+  }
 
   // A transfer wire whose compact-u16 counts are written as given, each one
   // canonical unless overridden.

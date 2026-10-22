@@ -1,9 +1,10 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, test, vi } from "vitest";
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
   advanceSolanaSplSettlement, createInMemorySolanaSplSettlementStore,
   createSolanaSplSettlementIntent, type SolanaSplAdapter, type SolanaSplPreparation,
-  type SolanaSplSettlementAuthority, type SolanaSplSettlementStore,
+  type SolanaSplSettlementAuthority, type SolanaSplSettlementStore, type SolanaSplSignedAttempt,
 } from "../../src/rails/solanaSpl.js";
 
 const PAYEE = `${"1".repeat(31)}2`;
@@ -18,6 +19,15 @@ function base58(bytes: Uint8Array): string {
   for (const byte of bytes) { if (byte !== 0) break; result = `1${result}`; }
   return result;
 }
+function decode58(value: string): Buffer {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let n = 0n;
+  for (const c of value) n = n * 58n + BigInt(alphabet.indexOf(c));
+  const bytes = Buffer.alloc(32);
+  for (let i = 31; n > 0n; i--) { bytes[i] = Number(n & 255n); n >>= 8n; }
+  return bytes;
+}
+const BLOCKHASH_OFFSET = 4 + 5 * 32;
 
 function fixture() {
   const keys = generateKeyPairSync("ed25519");
@@ -33,8 +43,11 @@ function fixture() {
   const signatures: string[] = [];
   const submitted = new Set<string>();
   // This offline fixture signs a real Ed25519 message; the mocked ledger never submits it.
-  const message = Buffer.concat([Buffer.from([1, 0, 1, 2]), publicKey, Buffer.alloc(32, 2),
-    Buffer.alloc(32, 3), Buffer.from([1, 1, 0, 1, 12])]);
+  const data = Buffer.alloc(10);
+  data[0] = 12; data.writeBigUInt64LE(1_250_000n, 1); data[9] = 6;
+  const message = Buffer.concat([Buffer.from([1, 0, 2, 5]), publicKey,
+    decode58(`${"1".repeat(31)}4`), decode58(ATA), decode58(MINT), decode58(TOKEN),
+    Buffer.alloc(32, 3), Buffer.from([1, 4, 4, 1, 3, 2, 0, 10]), data]);
   const adapter: SolanaSplAdapter = {
     preflight: vi.fn<SolanaSplAdapter["preflight"]>(async () => ({
       mintTokenProgram: TOKEN, payerTokenAccount: `${"1".repeat(31)}4`,
@@ -68,13 +81,147 @@ function fixture() {
       commitmentLevel: "confirmed", finalityObservedAt: clock.now, authenticationHash: "c".repeat(64),
     } }) : ({ disposition: "absent-valid", authenticationHash: "d".repeat(64) })),
   };
-  const advance = (overrides: { store?: SolanaSplSettlementStore; adapter?: SolanaSplAdapter } = {}) =>
+  const advance = (overrides: { store?: SolanaSplSettlementStore; adapter?: SolanaSplAdapter; authority?: SolanaSplSettlementAuthority } = {}) =>
     advanceSolanaSplSettlement({ authority, owner: `worker-${clock.now}`, store, adapter,
       now: () => clock.now, leaseDurationMs: 100, ...overrides });
   return { authority, store, clock, signatures, adapter, advance };
 }
 
 describe("recovering the exact reserved Solana message", () => {
+  const otherAuthority = (f: ReturnType<typeof fixture>) => ({ ...f.authority,
+    jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E" });
+  const freshBlockhash = (f: ReturnType<typeof fixture>): SolanaSplAdapter => ({ ...f.adapter,
+    async prepareUnsignedTransfer(...args) {
+      const transaction = await f.adapter.prepareUnsignedTransfer(...args);
+      const bytes = Buffer.from(transaction.unsignedMessageBase64, "base64");
+      bytes[BLOCKHASH_OFFSET] = 4;
+      return { ...transaction, unsignedMessageBase64: bytes.toString("base64"), lastValidBlockHeight: 200 };
+    },
+  });
+
+  test("concurrent identical payments reserve the message once and the other job retries with a fresh blockhash", async () => {
+    const f = fixture();
+    const other = otherAuthority(f);
+    const [first, second] = await Promise.all([f.advance(), f.advance({ authority: other })]);
+    expect(first.status).toBe("settled");
+    expect(second).toEqual({ status: "indeterminate", reason: "solana-spl-preparation-reservation-uncertain" });
+    expect(f.adapter.prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(f.adapter.broadcastRetained).toHaveBeenCalledTimes(1);
+    const intent = createSolanaSplSettlementIntent(other);
+    const claim = await f.store.claim({ intent, owner: "inspect", now: f.clock.now, leaseDurationMs: 100 });
+    expect(claim).toMatchObject({ status: "waiting", attempts: [] });
+    expect(claim).not.toHaveProperty("preparation");
+    f.clock.now += 101;
+    expect((await f.advance({ authority: other, adapter: freshBlockhash(f) })).status).toBe("settled");
+    expect(new Set(f.signatures).size).toBe(2);
+    expect(f.adapter.broadcastRetained).toHaveBeenCalledTimes(2);
+    f.clock.now += 101;
+    expect((await f.advance()).status).toBe("settled");
+    expect((await f.advance({ authority: other })).status).toBe("settled");
+    expect(f.adapter.broadcastRetained).toHaveBeenCalledTimes(2);
+  });
+
+  // Reproduce a migrated store containing a preparation written before global
+  // message reservations existed. The owning attempt is imported through the
+  // legacy recordAttempt path, which does not require a preparation.
+  async function oldCollision(coordinate?: "cluster" | "instruction") {
+    const f = fixture();
+    const other = { ...otherAuthority(f), ...(coordinate === "cluster" ? { cluster: "testnet" as const } : {}) };
+    await f.advance({ authority: other, adapter: { ...f.adapter,
+      ...(coordinate === "instruction" ? { prepareUnsignedTransfer: async (...args: Parameters<SolanaSplAdapter["prepareUnsignedTransfer"]>) => {
+        const transaction = await f.adapter.prepareUnsignedTransfer(...args);
+        const bytes = Buffer.from(transaction.unsignedMessageBase64, "base64");
+        const instructionCountAt = BLOCKHASH_OFFSET + 32;
+        const instruction = bytes.subarray(instructionCountAt + 1);
+        // A real batch: both instruction 0 and instruction 1 transfer funds.
+        const batch = Buffer.concat([bytes.subarray(0, instructionCountAt), Buffer.from([2]), instruction, instruction]);
+        return { ...transaction, unsignedMessageBase64: batch.toString("base64"), transferInstructionIndex: 1 };
+      } } : {}),
+      async prepareSignedTransfer() { throw new Error("old wallet lost its reply"); },
+    } });
+    const otherIntent = createSolanaSplSettlementIntent(other);
+    const pending = await f.store.claim({ intent: otherIntent, owner: "inspect", now: f.clock.now, leaseDurationMs: 100 });
+    if (pending.status !== "waiting" || !pending.preparation) throw new Error("missing preparation");
+    const intent = createSolanaSplSettlementIntent(f.authority);
+    await f.store.claim({ intent, owner: "legacy", now: f.clock.now, leaseDurationMs: 100 });
+    const signed = { ...(await f.adapter.prepareSignedTransfer({ ...pending.preparation.plan, intent }, 1,
+      { settlementKey: intent.settlementKey, bindingHash: intent.bindingHash, owner: "legacy", generation: 1,
+        assertCurrent: async () => undefined }, pending.preparation)), transferInstructionIndex: 0 };
+    const attempt = { ...signed, attemptHash: sha256Hex(canonicalize(signed)) };
+    expect(await f.store.recordAttempt({ settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: "legacy", generation: 1, attempt })).toEqual({ status: "recorded" });
+    return { f, other, otherIntent, attempt, preparation: pending.preparation };
+  }
+
+  test.each(["before broadcast", "after broadcast"])("an older colliding preparation recovers %s without assigning the owned transfer twice", async (when) => {
+    const { f, other, otherIntent, attempt } = await oldCollision();
+    if (when === "after broadcast") await f.adapter.broadcastRetained(attempt, {} as never);
+    f.clock.now += 101;
+    expect(await f.advance({ authority: other }))
+      .toEqual({ status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" });
+    const cleared = await f.store.claim({ intent: otherIntent, owner: "inspect", now: f.clock.now, leaseDurationMs: 100 });
+    expect(cleared).toMatchObject({ status: "waiting", attempts: [] });
+    expect(cleared).not.toHaveProperty("preparation");
+    // The signature is still owned by the original key, even after recovery.
+    expect(await f.store.recordAttempt({ settlementKey: otherIntent.settlementKey, bindingHash: otherIntent.bindingHash,
+      owner: `worker-${f.clock.now}`, generation: 2,
+      attempt: { ...attempt, authorityHash: otherIntent.bindingHash } }))
+      .toEqual({ status: "conflict", reason: "solana-signature-cross-settlement-reuse" });
+    f.clock.now += 101;
+    expect((await f.advance({ authority: other, adapter: freshBlockhash(f) })).status).toBe("settled");
+    expect(f.signatures.at(-1)).not.toBe(attempt.signature);
+  });
+
+  test.each(["cluster", "instruction"] as const)("a different settlement %s never releases an older preparation", async (coordinate) => {
+    const { f, other, otherIntent } = await oldCollision(coordinate);
+    f.clock.now += 101;
+    expect((await f.advance({ authority: other })).status).toBe("indeterminate");
+    const claim = await f.store.claim({ intent: otherIntent, owner: "inspect", now: f.clock.now, leaseDurationMs: 100 });
+    expect(claim).toMatchObject({ status: "waiting", attempts: [], preparation: { attempt: 1 } });
+    expect(f.adapter.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each(["wire", "additional signature", "metadata", "generation"])("a collision with different %s never releases the preparation", async (fault) => {
+    const { f, otherIntent, attempt } = await oldCollision();
+    const candidate: SolanaSplSignedAttempt = { ...attempt, authorityHash: otherIntent.bindingHash };
+    if (fault === "wire") {
+      const bytes = Buffer.from(candidate.signedTransactionBase64, "base64");
+      bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1;
+      candidate.signedTransactionBase64 = bytes.toString("base64");
+    }
+    if (fault === "additional signature") {
+      const bytes = Buffer.from(candidate.signedTransactionBase64, "base64");
+      candidate.signedTransactionBase64 = Buffer.concat([
+        Buffer.from([2]), bytes.subarray(1, 65), Buffer.alloc(64, 9), bytes.subarray(65),
+      ]).toString("base64");
+    }
+    if (fault === "metadata") candidate.lastValidBlockHeight++;
+    const result = await f.store.recordAttempt({ settlementKey: otherIntent.settlementKey,
+      bindingHash: otherIntent.bindingHash, owner: `worker-${f.clock.now}`,
+      generation: fault === "generation" ? 0 : 1, attempt: candidate });
+    expect(result.status).not.toBe("recorded");
+    const claim = await f.store.claim({ intent: otherIntent, owner: "inspect", now: f.clock.now, leaseDurationMs: 100 });
+    expect(claim).toMatchObject({ status: "waiting", attempts: [], preparation: { attempt: 1 } });
+  });
+
+  test("a lost collision-clearance reply and a late old worker cannot revive the duplicate", async () => {
+    const { f, other, otherIntent, attempt } = await oldCollision();
+    f.clock.now += 101;
+    const store = { ...f.store, async recordAttempt(request: Parameters<typeof f.store.recordAttempt>[0]) {
+      await f.store.recordAttempt(request);
+      throw new Error("clearance committed, reply lost");
+    } };
+    expect((await f.advance({ authority: other, store })).status).toBe("indeterminate");
+    // An old wallet operation may finish with these exact bytes afterwards.
+    expect(await f.store.recordAttempt({ settlementKey: otherIntent.settlementKey, bindingHash: otherIntent.bindingHash,
+      owner: "worker-1000", generation: 1, attempt: { ...attempt, authorityHash: otherIntent.bindingHash } }))
+      .toEqual({ status: "stale", reason: "stale-lease" });
+    f.clock.now += 101;
+    expect((await f.advance({ authority: other, adapter: freshBlockhash(f) })).status).toBe("settled");
+    expect(f.adapter.broadcastRetained).toHaveBeenCalledTimes(1);
+    expect(f.signatures.at(-1)).not.toBe(attempt.signature);
+  });
+
   test.each(["before signing", "after signing"])("wallet failure %s recovers without another preflight or message", async (when) => {
     const f = fixture();
     const signMessage = f.adapter.prepareSignedTransfer;
@@ -207,7 +354,7 @@ describe("recovering the exact reserved Solana message", () => {
         const transaction = await f.adapter.prepareUnsignedTransfer(...args);
         if (++builds === 1) return transaction;
         const bytes = Buffer.from(transaction.unsignedMessageBase64, "base64");
-        bytes[68] = 4; // A fresh blockhash, with its own last-valid height.
+        bytes[BLOCKHASH_OFFSET] = 4; // A fresh blockhash, with its own last-valid height.
         return { ...transaction, unsignedMessageBase64: bytes.toString("base64"), lastValidBlockHeight: 200 };
       },
       async reconcile(intent, attempt, fence) {

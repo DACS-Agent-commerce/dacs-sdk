@@ -183,8 +183,10 @@ pass before the caller builds an authority for this core.
 Build the authority only from the authenticated agreement and the rail
 descriptor it pins: `agreementHash` and `railDescriptorHash` are their hashes,
 and every other field must match what they carry. The core binds both hashes
-into the settlement key, but it cannot authenticate them or check that the
-other fields came from them.
+into the intent's `bindingHash`, but it cannot authenticate them or check that
+the other fields came from them. The `settlementKey` depends only on `jobId`,
+`railId` and `phaseIndex`: changing an authority hash conflicts with the existing
+binding rather than silently opening the same payment phase again.
 
 PC-5 requires `amount.currency` to resolve to the rail's asset symbol. The
 caller checks this before calling, from the pinned agreement and rail, and
@@ -226,6 +228,13 @@ exact `unsignedMessageBase64`, `lastValidBlockHeight`,
 its last-valid height must come from the same blockhash lookup. No wallet
 may be invoked until the store acknowledges this write as `recorded`.
 A repeated identical write is `existing`; conflicting data is refused.
+Stores must atomically reserve the exact unsigned message across settlement
+keys, including messages in retained attempts. A cross-key message collision
+refuses the reservation without saving a preparation or invoking the wallet.
+Retry the same authority with a fresh blockhash; no stranded preparation blocks
+that rebuild. This local reservation supplies no SB-3 settlement-side binding
+or SB-2 authority for counting evidence from competing sessions. Ordinary SPL
+transfers remain supported without a Memo instruction.
 Both acquired and waiting claims return isolated copies of the complete
 preparation until `recordAttempt` atomically replaces it with signed bytes.
 The signed message and metadata must match the reservation exactly.
@@ -241,6 +250,21 @@ must support signing retained messages, including expired ones, without
 refreshing their blockhash. A temporary wallet refusal leaves a recoverable
 reservation and returns `solana-spl-preparation-unavailable`.
 
+For preparations written before cross-key message reservations, `recordAttempt`
+must still refuse a signature already owned by another key. It may atomically
+clear the colliding preparation only when the submitted attempt matches that
+preparation's exact message and metadata and its complete signed bytes equal
+the owning key's retained attempt at the same cluster and transfer instruction
+index (the exact SB-1 settlement coordinate). The owning signature and attempt stay
+retained; the duplicate is never recorded or settled under the second key.
+A signature-only collision, a mismatched preparation or a stale generation
+leaves the preparation intact. After safe clearance, the current call returns
+`indeterminate`; the next call can build a different message. This works even
+if an old wallet call is still outstanding: deterministic signing can only
+return the same transaction already retained under the other key. Stores must
+retain the cross-key message reservations and implement this atomic recovery
+when upgrading; updating only the adapter does not migrate store behavior.
+
 `recordFailure` refuses closure while a preparation stands or any retained
 attempt lacks finalized expiry or authenticated finalized refusal evidence.
 `landedFailure` carries a single refusal; `landedFailures` accounts for multiple
@@ -251,7 +275,7 @@ with the terminal outcome. Once closed, claims return the same supported
 `recordSettlement` likewise requires every other attempt to have finalized
 expiry or refusal evidence and retains the supplied `landedFailures` with the
 settlement. A live, unobserved or successful conflicting transfer prevents
-closure. There is no preparation release or wallet-audit API.
+closure. There is no general preparation release or wallet-audit API.
 
 Every store object the core relies on must be plain data, and plain data has
 one meaning, enforced the same way for each of them. These objects are the
