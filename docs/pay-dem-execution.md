@@ -165,9 +165,14 @@ below).
   reconciler finds nothing for the recorded hash, the restart is refused and
   the key stays held until the operator establishes that the transaction
   did not land and can no longer land before clearing the key in the durable
-  log. This requires the finalized transaction at the payer's journaled nonce
+  log. This requires an executed, finalized transaction at the payer's journaled nonce
   on a node that serves that block, with a hash different from the recorded
-  hash. A moved nonce alone is insufficient: it also matches the recorded
+  hash. Verify the replacement's hash, payer and nonce against its finalized node
+  record with `status: "confirmed"`: it must have executed and consumed the journaled
+  nonce. An included transaction with `status: "failed"` is not proof of nonce
+  consumption and does not authorize clearing the key. If execution or the original
+  payment's disposition cannot be established, retain the key.
+  A moved nonce alone is insufficient: it also matches the recorded
   transaction having landed. If the hashes match, recover that payment's
   outcome and retain the key. Missing records or a lagging node leave the key
   held; they do not authorize a replacement payment.
