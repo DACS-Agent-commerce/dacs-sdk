@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   createInMemoryLiquidityTankStore,
@@ -16,6 +16,22 @@ import * as rails from "../../src/rails/index.js";
 import * as root from "../../src/index.js";
 
 const VOLATILE = { acknowledgeVolatile: true } as const;
+
+test.each([undefined, "", "production", "staging"])("conformance requires an explicit isolated test/development environment, got %s", async (mode) => {
+  const createStore = vi.fn();
+  vi.stubEnv("NODE_ENV", mode);
+  try {
+    await expect(runLiquidityTankStoreConformance({ createStore, reopenStore: vi.fn() }))
+      .rejects.toThrow("requires NODE_ENV=test or NODE_ENV=development in a dedicated conformance process");
+    expect(createStore).not.toHaveBeenCalled();
+  } finally { vi.unstubAllEnvs(); }
+});
+
+test.each(["test", "development"])("conformance accepts its documented %s environment", async (mode) => {
+  vi.stubEnv("NODE_ENV", mode);
+  try { expect(failedNames(await runLiquidityTankStoreConformance(database()))).toEqual([]); }
+  finally { vi.unstubAllEnvs(); }
+});
 const IDENTITY_REOPEN =
   "reopenStore returned the handle it was given; it must open a new handle on the same durable state";
 

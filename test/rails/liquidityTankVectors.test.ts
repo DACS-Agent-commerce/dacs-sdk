@@ -1392,7 +1392,7 @@ describe("raw identifier admission", () => {
   });
 });
 
-test("expiry correction is an atomic CAS and rejects the wrong lock and late release", async () => {
+test("expiry correction is an atomic CAS and rejects the wrong lock and checkpoint", async () => {
   const p = phase();
   await lockDurably(p);
   p.at(D + 100);
@@ -1405,7 +1405,6 @@ test("expiry correction is an atomic CAS and rejects the wrong lock and late rel
     expectedEvidence: claim.observation, completion: completed(D - 1) as Extract<LiquidityTankObservation, { status: "completed" }> };
   const reconcile = p.store.reconcileRecoveryExpired!.bind(p.store);
   await expect(reconcile({ ...input, completion: { ...input.completion, lockTxHash: "wrong-lock" } })).resolves.toMatchObject({ status: "conflict" });
-  await expect(reconcile({ ...input, completion: { ...input.completion, finalityObservedAt: D + 1 } })).resolves.toMatchObject({ status: "conflict" });
   await expect(reconcile({ ...input, expectedEvidence: locked(D + 2) as never })).resolves.toMatchObject({ status: "conflict" });
   await expect(reconcile(input)).resolves.toEqual({ status: "recorded" });
   await expect(reconcile(input)).resolves.toEqual({ status: "existing" });

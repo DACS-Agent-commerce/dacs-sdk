@@ -1342,10 +1342,15 @@ async function concurrentStart(
  * store keeps the contract in these sequences and races; it does not prove
  * that the store commits atomically under every interleaving. Every result
  * must pass before a store is used in production.
+ * Run in a dedicated NODE_ENV=test or NODE_ENV=development process: the model
+ * bridge and wrapped store intentionally do not carry production capabilities.
  */
 export async function runLiquidityTankStoreConformance(
   options: LiquidityTankStoreConformanceOptions,
 ): Promise<readonly LiquidityTankStoreConformanceResult[]> {
+  if (process.env["NODE_ENV"] !== "test" && process.env["NODE_ENV"] !== "development") {
+    throw new TypeError("runLiquidityTankStoreConformance requires NODE_ENV=test or NODE_ENV=development in a dedicated conformance process");
+  }
   // A handle reopened as itself would make every restart and race case test
   // nothing, so such a run is refused outright.
   let identity = false;

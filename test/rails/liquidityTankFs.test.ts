@@ -498,6 +498,34 @@ describe("createFsLiquidityTankStore", () => {
     expect((await readdir(records)).filter((name) => name !== `${sha256Hex(intent.settlementKey)}.json`)).toEqual([]);
   });
 
+  test("reservation recovery fsyncs an existing publication without a staging name before acknowledging its row", async () => {
+    const dir = await freshDir();
+    const bridges = join(dir, "bridges");
+    const reservation = join(bridges, `${sha256Hex(BRIDGE_ID)}.json`);
+    const row = join(dir, "records", `${sha256Hex(intent.settlementKey)}.json`);
+    const store = await createFsLiquidityTankStore({ dir });
+    const first = await acquire(store, "first", T0);
+    trace.root = dir;
+    trace.fault = (operation, path) => operation === "sync" && path === bridges ? "EIO" : undefined;
+    await expect(store.recordSubmission({ ...first.write, submission: submission() })).rejects.toMatchObject({ code: "EIO" });
+    expect((await lstat(reservation)).nlink).toBe(1);
+    expect(await readdir(bridges)).toEqual([`${sha256Hex(BRIDGE_ID)}.json`]);
+    const reopened = await createFsLiquidityTankStore({ dir });
+    const second = await acquire(reopened, "retry", T0 + 1_001);
+    // Recovery must also fail if that barrier still cannot be completed.
+    await expect(reopened.recordSubmission({ ...second.write, submission: submission() })).rejects.toMatchObject({ code: "EIO" });
+    expect(JSON.parse(await readFile(row, "utf8")).submission).toBeUndefined();
+    trace.fault = undefined;
+    trace.events.length = 0;
+    await expect(reopened.recordSubmission({ ...second.write, submission: submission() })).resolves.toEqual({ status: "recorded" });
+    const barrier = trace.events.indexOf(`sync ${bridges}`);
+    const published = trace.events.findIndex((event) => event.startsWith("rename ") && event.endsWith(` -> ${row}`));
+    expect(barrier).toBeGreaterThanOrEqual(0);
+    expect(barrier).toBeLessThan(published);
+    const final = await acquire(await createFsLiquidityTankStore({ dir }), "inspect", T0 + 2_002);
+    expect(final.claimed.submission).toEqual(submission());
+  });
+
   test("a phase that loses the bridge-ID reservation race reports the conflict and commits nothing", async () => {
     const dir = await freshDir();
     const store = await createFsLiquidityTankStore({ dir });

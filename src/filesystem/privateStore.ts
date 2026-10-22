@@ -628,7 +628,9 @@ export async function exclusiveWritePrivateFile(
  * for `path`, in the same directory and on the same inode, loses the staging
  * name, so `readPrivateFile` accepts it; a staging file that was never linked
  * is removed. Any other extra link is left for `readPrivateFile` to refuse.
- * The directory is fsynced after a removal. The caller must serialize this
+ * The directory is fsynced whenever a publication exists or a name was removed,
+ * including a retry after publication's final directory fsync failed with no
+ * staging name left. The caller must serialize this
  * with every publisher of `path`: a live publisher's staging name looks the
  * same as one left by a killed process.
  */
@@ -668,7 +670,7 @@ export async function completeExclusivePublication(
       await unlinkTemporaryIfSameIdentity(staging, identityOf(metadata), label);
       removed = true;
     }
-    if (removed) {
+    if (published !== undefined || removed) {
       await verifyDirectoryIdentity(parent, directory.identity, label);
       await directory.handle.sync();
     }

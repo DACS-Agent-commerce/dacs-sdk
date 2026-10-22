@@ -237,7 +237,9 @@ reconcile from that evidence. Expiries committed from other evidence are
 reconciled with a read-only bridge observation on replay. A subsequently proven
 timely completion of the exact same lock corrects the exact retained expiry
 atomically through `reconcileRecoveryExpired`; it never prepares or broadcasts
-another submission. A failed correction returns indeterminate. Existing expiry
+another submission. A late completion of that lock enriches the expiry with
+the release evidence in the same atomic operation, preserving
+`failed-substrate` across restarts. A failed reconciliation returns indeterminate. Existing expiry
 is preserved if no correcting completion is proven. Never pay the phase again
 on an expiry result without reconciling its bridge record.
 
@@ -253,6 +255,8 @@ silently. Once that pending is durable, a later read the store refuses (such
 as an authenticated `empty`, a regression it does not commit) or a failed
 observation write returns the same `waiting` `liquidity-tank-pending` with its
 `pendingDeadline` and `pastDeadline`, not a transient reason.
+Bridge-read and verifier outages retain their retryable reason and also carry
+the durable unlocked pending's `pendingDeadline` and `pastDeadline`.
 
 ## Timestamp units
 
@@ -415,7 +419,10 @@ still apply; an authenticator that simply returns `true` cannot establish them.
 retained submission and its original receipt. The core validates their exact
 bytes and binding, reads the current authenticated bridge completion and checks
 source finality through the mandatory wrapper before returning stored success.
-The fresh completion must reproduce the saved settlement. An outage or mismatch
+The fresh completion must reproduce the saved transaction references, payment
+amount and decisive finality time. Its snapshot time and authentication hash
+may change; the stored settlement and its original authentication hash remain
+unchanged. An outage or mismatch
 returns indeterminate and never prepares or broadcasts a replacement. Explicit
 test/development mode checks stored settlement shape and bindings without a
 network read, so deterministic store tests can inject their own evidence.
@@ -445,7 +452,8 @@ a value it could not check. What it returns instead:
   that lock's `settle-asymmetric` progress from the stored checkpoint, with
   `pastDeadline` against this call's clock reading, so an overdue lock keeps
   alerting through the outage. Without a lock it returns the retryable
-  `liquidity-tank-verifier-unavailable`. It does not read the bridge.
+  `liquidity-tank-verifier-unavailable`, retaining an unlocked pending's
+  `pendingDeadline` and `pastDeadline` when present. It does not read the bridge.
 - **A fresh observation it could not check**: as for an unavailable bridge
   read, the durable lock's progress (or expiry from retained terminal
   evidence that was checked), or else `liquidity-tank-verifier-unavailable`.
@@ -689,13 +697,18 @@ durable. `recordObservation` must accept a timely completion of the same lock
 and deadline in place of a durable `failed` that carries them, and refuse any
 other observation after it. Whichever
 eligible terminal transition commits first wins; the loser must report a
-non-successful write. Once expiry commits, every claim from a host whose clock
-is after the deadline returns the same terminal state and no later
-completion may settle. A replayed `failed-after-lock` expiry carries no time of
+non-successful write. Once expiry commits, claims return `recovery-expired`.
+Continue read-only reconciliation through the core before treating this as a
+final unpaid disposition or considering another payment. An authenticated
+completion of the same lock and deadline that was final within the window
+atomically corrects the expiry to `settled`, even when discovered later. A late
+completion keeps the reputation-neutral `failed-substrate` classification and
+durably adds its release transaction and finality time to the expiry result.
+Neither path prepares or broadcasts another submission. A replayed `failed-after-lock` expiry carries no time of
 its own, so a worker whose clock has not passed the deadline reports the
-retry-safe `liquidity-tank-recovery-expiry-not-due` instead. A terminal result
-is final: hosts must act on it and not re-poll, since a host clock that steps
-back across the deadline would briefly report that retry-safe result again.
+retry-safe `liquidity-tank-recovery-expiry-not-due` instead. A host clock that
+steps back across the deadline can briefly report that retry-safe result again;
+keep reconciling the retained operation rather than submitting a replacement.
 
 A timely durable completed observation is also a settlement replay record. On worker
 takeover the coordinator deterministically reconstructs and records its
@@ -707,6 +720,12 @@ observation, preparation or broadcast. Stores must accept an exact replay as
 
 `runLiquidityTankStoreConformance({ createStore, reopenStore })` runs the store
 contract against any `LiquidityTankStore` and returns one result per case.
+Run it in a dedicated process with `NODE_ENV=test` (or `development`), for
+example `NODE_ENV=test node conformance.mjs`. Its model bridge and wrapped
+stores are test fixtures; they do not carry production capabilities. Other
+environments are rejected before any store is opened, with an actionable
+`TypeError`. The helper never changes the process environment or production
+execution policy.
 **A production store must pass every case before the core relies on it.**
 `createStore` returns a store with no liquidity-tank rows and is called once
 per case, plus once before the cases to check `reopenStore`.
@@ -1208,15 +1227,18 @@ atomically, and pass `runLiquidityTankStoreConformance`.
   [DACS-Standard#422](https://github.com/DACS-Agent-commerce/DACS-Standard/issues/422).
 
 
-### Correcting an expiry
+### Reconciling an expiry
 
 `reconcileRecoveryExpired({ settlementKey, bindingHash, expectedEvidence,
 completion })` is an atomic comparison against the exact saved expiry. The
-completion must carry the same bridge operation, lock and recovery deadline,
-and have `finalityObservedAt <= recoveryDeadline`. It replaces expiry and
-retained failure with the authenticated completion and its settlement in one
-write. A repeated identical completion returns `existing`; a different lock,
-late completion, changed binding or stale evidence is refused. Both bundled
+completion must carry the same bridge operation, lock and recovery deadline.
+With `finalityObservedAt <= recoveryDeadline`, it replaces expiry and retained
+failure with the authenticated completion and its settlement in one write.
+A later finality time preserves the expired state and its original checkpoint
+and failure, and replaces the expiry evidence with the authenticated completion,
+so subsequent replays report the paid disposition. A replay of the same payment
+facts returns `existing`, including a refreshed authentication hash. A different
+lock, conflicting completion, changed binding or stale evidence is refused. Both bundled
 stores implement it; the filesystem store commits it under the phase lock.
-It is optional for development-only custom stores; without it a proven timely
-release returns indeterminate until it can be persisted, never the old failure.
+It is optional for development-only custom stores; without it a proven release
+returns indeterminate until it can be persisted, never the old unpaid disposition.
