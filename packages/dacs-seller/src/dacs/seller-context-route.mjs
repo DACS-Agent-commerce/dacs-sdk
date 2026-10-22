@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import { identityBundleHash, isCanonicalJobId, isIdentityBundle } from '@kynesyslabs/dacs';
 import { sellerData } from '../mcp/seller-content.mjs';
-import { addressForClaim } from './demos-claims.mjs';
+import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
 import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './listing.mjs';
 import { listingPin } from './purchase-protocol.mjs';
@@ -45,7 +45,7 @@ function bundleAuthentic(bundle) {
   try {
     if (!isIdentityBundle(bundle) || bundle.claims.length !== 1 || bundle.claims[0].ref !== bundle.presentedBy) return false;
     const proof = bundle.presentation?.kind === 'per-claim' && bundle.presentation.signatures.find((entry) => entry.ref === bundle.presentedBy);
-    return Boolean(proof && verifyComponent({ signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
+    return Boolean(proof && isCanonicalEd25519Signature(proof.signature) && verifyComponent({ signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
       signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature } }));
   } catch { return false; }
 }

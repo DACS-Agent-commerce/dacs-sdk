@@ -179,7 +179,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000 } = {}) {
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -204,7 +204,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [] };
-  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {} };
+  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [] };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     if (faults.sign[0] === 'throw-evidence' && evidenceBytes(bytes)) { faults.sign.shift(); throw new Error('TEST the seller signer failed'); }
@@ -233,10 +233,12 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // The buyer's Agreement CREATEs, read back by the seller.
   const agreements = new Map();
   const agreementAnchor = { source: 'TEST-host-native-delivery/agreement',
-    readAgreement: async ({ logicalAddress }) => (agreements.has(logicalAddress)
+    readAgreement: async ({ logicalAddress }) => {
+      if (faults.agreementRead.shift() === 'throw') throw new Error('TEST Agreement reader unavailable');
+      return (agreements.has(logicalAddress)
       ? { disposition: 'present', artifact: clone(agreements.get(logicalAddress)), ref: { anchor: { kind: 'storage-program', locator: logicalAddress }, contentHash: core.contentHash(agreements.get(logicalAddress)) },
         native: { source: 'TEST-host-native-delivery/agreement', evidenceMode: 'TEST-scripted', nativeAddress: 'TEST-native-agreement', txRef: { kind: 'demos', txHash: 'c3'.repeat(32), blockNumber: 1 } } }
-      : { disposition: 'absent', reason: 'TEST not anchored' }) };
+      : { disposition: 'absent', reason: 'TEST not anchored' }); } };
   // Seller CREATEs, by logical address; each is read back through the SR-2 adapter.
   const signedCreates = new Map(), written = new Map();
   const readBack = async (logicalAddress, artifactKind, deliveryBinding) => {
@@ -256,6 +258,8 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
     publish: async ({ logicalAddress, artifact, artifactKind, authorize }) => {
+      if (faults.artifactPublish[0] === artifactKind + ':land-throw') { faults.artifactPublish.shift(); effects.published.push(artifactKind); writeOnce(logicalAddress, artifact, artifactKind); throw new Error('TEST publication response lost after CREATE'); }
+      if (faults.artifactPublish[0] === artifactKind) { faults.artifactPublish.shift(); throw new Error('TEST publisher unavailable before intent'); }
       if (!signedCreates.has(logicalAddress)) {
         if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
         effects.published.push(artifactKind);
@@ -263,7 +267,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       }
       return readBack(logicalAddress, artifactKind);
     },
-    readRetained: async ({ logicalAddress, artifactKind }) => readBack(logicalAddress, artifactKind),
+    readRetained: async ({ logicalAddress, artifactKind }) => faults.artifactRead.shift() === 'unknown' ? { status: 'indeterminate', reason: 'TEST uncertain retained CREATE' } : readBack(logicalAddress, artifactKind),
     verifyReceipt: async ({ logicalAddress, artifact, artifactKind, receipt, signedProjection }) =>
       node.reader.verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection }),
   };
@@ -357,9 +361,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const hosts = [];
   t.after(async () => { for (const host of hosts) await host.close(); });
   const capabilities = () => ({ signer: sellerSigner, listing,
-    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer, maxJobs,
+    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
-    observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
+    ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: rails.authority,
     sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}) });
   const start = async () => {
@@ -371,7 +375,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
 
   // One buyer purchase: the buyer signs, finalizes and anchors the Agreement,
   // asks the seller to commit, and pays the Agreement's payee.
-  const purchase = async () => {
+  const purchase = async ({ commit = true } = {}) => {
     const jobId = core.generateCanonicalJobId();
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
     const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
@@ -383,7 +387,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
-    assert.equal((await client().commit(jobId)).status, 'committed');
+    if (commit) assert.equal((await client().commit(jobId)).status, 'committed');
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
     return { jobId, agreement, agreementHash: plan.agreementHash, payout, amountOs, client,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
@@ -1065,7 +1069,7 @@ test('a seller signer failure while signing the payment evidence does not strand
     const p = await w.purchase(), tx = p.pay();
     w.faults.sign.push('throw-evidence');
     const refused = await p.claim(tx);
-    assert.deepEqual([refused.status, refused.reason, refused.step], ['rejected', 'seller_native_evidence_not_started', 'evidence-signing'], shown(refused));
+    assert.deepEqual([refused.status, refused.reason, refused.step], ['indeterminate', 'seller_native_evidence_not_started', 'evidence-signing'], shown(refused));
     if (restart) await w.restart();
     const answer = await p.claim(tx);
     assert.equal(answer.delivery?.status, 'delivery-ready', `restart ${restart}: ${shown(answer)}`);
@@ -1307,4 +1311,76 @@ test('host close retains its directory lock until a disconnected signing handler
     }, { code: 'seller_state_locked' });
   } finally { release(); await closing; }
   assert.equal(closed, true);
+});
+
+
+test('a delivery evidence publisher outage remains retryable through crash reconciliation until publication completes', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay();
+  w.faults.artifactPublish.push('SettlementEvidence');
+  const first = await p.claim(tx);
+  assert.equal(first.delivery?.evidencePublication, 'held-readback-only', shown(first));
+  await w.crashMidClaim(p, tx);
+  w.faults.artifactPublish.push('SettlementEvidence');
+  const held = await p.claim(tx);
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  await w.restart();
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(done.delivery?.evidencePublication, 'native-read-back', shown(done));
+  assert.equal(w.effects.published.filter(kind => kind === 'SettlementEvidence').length, 1);
+  assert.equal(w.createsAt(paymentAddress(p)), 1);
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('ordinary commitments recover after Agreement-read and pre-publication failures, across restart, and never repeat a CREATE', async (t) => {
+  for (const failure of ['agreement', 'publisher']) {
+    const w = await world(t), p = await w.purchase({ commit: false });
+    if (failure === 'agreement') w.faults.agreementRead.push('throw');
+    else w.faults.artifactPublish.push('FinalityCommitmentRecord');
+    await assert.rejects(p.client().commit(p.jobId));
+    assert.equal(w.effects.published.length, 0);
+    await w.restart();
+    assert.equal((await p.client().commit(p.jobId)).status, 'committed', failure);
+    assert.equal((await p.client().commit(p.jobId)).status, 'committed', failure);
+    assert.equal(w.effects.published.filter(kind => kind === 'FinalityCommitmentRecord').length, 1);
+  }
+});
+
+test('the native host delivers without the unused compatibility observer', async (t) => {
+  const w = await world(t, { compatibilityObserver: false });
+  const p = await w.purchase();
+  assert.equal((await p.claim(p.pay())).delivery?.status, 'delivery-ready');
+});
+
+
+test('an uncertain commitment CREATE only reads back after restart and is never published twice', async t => {
+ const w = await world(t), p = await w.purchase({ commit: false });
+ w.faults.artifactPublish.push('FinalityCommitmentRecord:land-throw');
+ await assert.rejects(p.client().commit(p.jobId));
+ assert.equal(w.effects.published.length, 1);
+ await w.restart();
+ w.faults.artifactRead.push('unknown');
+ await assert.rejects(p.client().commit(p.jobId));
+ assert.equal(w.effects.published.length, 1, 'uncertainty authorizes no new publication');
+ assert.equal((await p.client().commit(p.jobId)).status, 'committed');
+ assert.equal(w.effects.published.length, 1);
+});
+
+test('read-only commitment reconciliation cannot start provably unsent work', async t => {
+ const w = await world(t), p = await w.purchase({ commit: false });
+ w.faults.artifactPublish.push('FinalityCommitmentRecord');
+ await assert.rejects(p.client().commit(p.jobId));
+ const agent = await w.agentFor();
+ try {
+  const body = { jobId: p.jobId }, text = JSON.stringify(body);
+  const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
+   resolveJob: () => ({ listingPin: seller.listingPin(w.listing), agreementHash: p.agreementHash }), now: w.capabilities().now }).request('/dacs/v1/commitments', body, text);
+  const answer = await agent.reconcileTransport({ request: payload, body, rawBody: Buffer.from(text), readOnly: true });
+  assert.equal(answer.disposition, 'indeterminate');
+  assert.equal(w.effects.published.length, 0);
+ } finally { agent.close(); }
+ await w.restart();
+ assert.equal((await p.client().commit(p.jobId)).status, 'committed');
+ assert.equal(w.effects.published.length, 1);
 });

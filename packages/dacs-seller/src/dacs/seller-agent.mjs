@@ -1,5 +1,5 @@
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
-import { addressForClaim } from './demos-claims.mjs';
+import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 // Seller agent for one verified fixed-price DEM Listing, acting as phase
 // orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
 // method takes and returns plain JSON; seller-http.mjs is a narrow adapter.
@@ -32,7 +32,6 @@ import {
   finalizeFixedPriceAgreementContributions,
   finalityCommitmentAddress,
   identityBundleHash,
-  isCanonicalBase64Url,
   isCanonicalJobId,
   isIdentityBundle,
   paymentEvidenceAddress,
@@ -395,7 +394,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!isIdentityBundle(bundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
     const proof = bundle.presentation?.kind === 'per-claim' && bundle.presentation.signatures.find((entry) => entry.ref === bundle.presentedBy);
     // CORE SIG-6: exactly the canonical unpadded Base64URL of 64 bytes.
-    const ok = proof && typeof proof.signature === 'string' && proof.signature.length === 86 && isCanonicalBase64Url(proof.signature) && verifyComponent({
+    const ok = proof && isCanonicalEd25519Signature(proof.signature) && verifyComponent({
       signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
       signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature },
     });
@@ -474,11 +473,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // A new session is admitted before anything of it is kept, read, signed or sent.
     if (newSession) {
       // CORE SN-1..SN-3: the bundle's sessionNonce must be a challenge this
-      // seller issued for this job and buyer (issueSessionChallenge), not expired.
+      // seller issued for this job and buyer (issueSessionChallenge), not expired
+      // on first admission. DACS-1 §6.3.2 reverifies the retained accepted
+      // presentation on retry; it does not accept its consumed nonce anew.
       const challengeProblem = !issued ? 'the presentation nonce is not a challenge this seller issued'
         : issued.jobId !== jobId || issued.buyer !== buyerIdentityBundle.presentedBy ? 'the presentation nonce is a challenge issued for another job or buyer'
           : issued.attempt !== null && !(issued.attempt.presentationHash === presentationHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
-            : !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
+            : issued.attempt === null && !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
       if (challengeProblem) throw new SellerAgentError('session_not_admitted', challengeProblem, 409);
       // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
       // checkListingRevocation) over the operator's readings; only `absent` opens.
@@ -1437,12 +1438,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // Everything before the durable work checkpoint is free of external effects:
   // the commitment is only read back, and the SDK permit claim, settlement
   // binding and evidence signature are local and replay-idempotent for this
-  // exact job/payment. A failure here is a definite no-effect answer. Thrown,
+  // exact job/payment. A failure here is a no-effect transport answer; after
+  // verified intake it remains indeterminate so the buyer retries the paid order.
+  // Thrown,
   // it would leave the authenticated transport fenced as uncertain with no
   // retained work for its read-only reconciliation to reduce, so the paid
   // order could never be delivered. A durable checkpoint keeps throwing.
   async function startNativePaymentEvidence({ session, jobId, hash, payerPayingKey }) {
-    let step = 'commitment-readback';
+    let step = 'commitment-readback', paymentVerified = false;
     try {
       await commit({ jobId }, { readbackOnly: true });
       const terms = agreementTerms(session.agreement);
@@ -1450,6 +1453,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const intake = await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash: hash } }, { ...intakeDepsFor(jobId), observeDemosTransfer: nativeEvidence.observeDemosTransfer });
       if ([...settlementJobs].some(([id,claims]) => claims.has(jobId) && !hasSettlementCredit(id,jobId))) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       if (intake.disposition !== 'verified' || !['claim', 'already-claimed'].includes(intake.fulfilment)) return { answer: { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason } };
+      paymentVerified = true;
       step = 'settlement-binding';
       if (!bindSettlement(intake.settlementId, jobId)) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       step = 'evidence-signing';
@@ -1468,7 +1472,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (durable.loadSession(jobId)?.nativeEvidenceWork) throw error;
       delete session.nativeEvidenceWork;
       const cause = typeof error?.code === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(error.code) ? error.code : 'unclassified';
-      return { answer: { status: step === 'commitment-readback' || error?.status === 503 ? 'indeterminate' : 'rejected', reason: 'seller_native_evidence_not_started', step, cause } };
+      return { answer: { status: paymentVerified || step === 'commitment-readback' || error?.status === 503 ? 'indeterminate' : 'rejected', reason: 'seller_native_evidence_not_started', step, cause } };
     }
   }
 
@@ -1680,7 +1684,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return check;
   }
 
-  // A read-only reducer for an ALREADY reserved authenticated HTTP command.
+  // A reducer for an ALREADY reserved authenticated HTTP command.
+  // Ordinary commitments resume under their anchor journal and the job fence
+  // while the delegation is live; uncertain sends require readback.
   // Commit-on-signature reconciliation uses the readback-only gate; it cannot
   // sign or submit. An interrupted proposal resumes through the durable
   // responder under its original authenticated request and live delegation.
@@ -1838,6 +1844,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!session.signatureCommitmentAttempt) return held('seller_signature_attempt_absent');
           return present(await commit({ jobId: request.jobId, signedProjection: body.signedProjection }, { readbackOnly: true, signatureAgreement: body.agreement }));
         case '/dacs/v1/commitments': {
+          // The original authenticated command may have stopped before any
+          // publication intent. Under the job fence, commit's anchor journal
+          // permits that unsent work and only reads uncertain/retained sends.
+          if (!readOnly) return present(await commit({ jobId: request.jobId, signedProjection: body.signedProjection }));
           const verified = await commitment();
           return present({ status: 'committed', address: verified.logicalAddress, resumed: true, ...(session.agreementAnchor ? { agreementAnchor: json(session.agreementAnchor) } : {}) });
         }
@@ -1867,7 +1877,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             const answer = work
               ? await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence })
               : await submitPayment({ jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, nativePaymentEvidence: body.nativePaymentEvidence });
-            if (['delivery-ready','delivered'].includes(answer?.delivery?.status)) return present(answer);
+            if (['delivery-ready','delivered'].includes(answer?.delivery?.status) && answer.delivery.evidencePublication !== 'held-readback-only') return present(answer);
             if (!work && !session.nativeEvidenceWork && ['rejected', 'indeterminate'].includes(answer?.status)) return { disposition: 'no-effect', value: answer };
             return !work || ['held', 'payment-evidenced'].includes(answer?.status) ? { disposition: 'retry', value: answer } : held(answer?.reason ?? 'seller_native_evidence_readback_required');
           }

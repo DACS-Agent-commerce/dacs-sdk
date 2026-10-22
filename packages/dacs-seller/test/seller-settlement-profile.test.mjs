@@ -1258,3 +1258,27 @@ test('the default store admits job 1001 and atomically reserves the last configu
     await limited.withJob(core.generateCanonicalJobId(), () => {});
   } finally { limited.close(); }
 });
+
+
+test('an admitted unsigned proposal resumes after challenge expiry, including across restart; an unused expired challenge stays refused', async t => {
+ const w = await world(t), durableDirectory = w.dir();
+ let clock = w.now;
+ const options = complete(w, { durableDirectory, now: () => clock });
+ let agent = await w.agent(options);
+ t.after(() => agent.close());
+ const request = await w.proposalFor(w.vetted);
+ w.admission.verifyReceiptWith(() => 'indeterminate');
+ assert.notEqual((await agent.receiveProposal(request)).disposition, 'complete');
+ assert.equal(agent.stageOf(w.jobId), 'proposed');
+ clock += SESSION_CHALLENGE_LIFETIME_MS;
+ agent.close(); agent = await seller.createSellerAgent(options);
+ w.admission.verifyReceiptWith(null);
+ const done = await agent.receiveProposal(request);
+ assert.equal(done.disposition, 'complete');
+ assert.deepEqual((await agent.receiveProposal(request)).contribution, done.contribution);
+ const other = await world(t), late = await seller.createSellerAgent(complete(other, { durableDirectory: other.dir(), now: () => clock }));
+ t.after(() => late.close());
+ late.issueSessionChallenge({ jobId: other.jobId, buyer: other.buyerKey.claim, sessionNonce: other.buyerBundle.sessionNonce });
+ clock += SESSION_CHALLENGE_LIFETIME_MS;
+ assert.deepEqual(await refused(async () => late.receiveProposal(await other.proposalFor(other.vetted))), { code: 'session_not_admitted', status: 409 });
+});

@@ -371,3 +371,19 @@ test('B37 an authenticated malformed context consumes its recognized nonce befor
  const db=new DatabaseSync(w.path,{readOnly:true});try{assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce=?').get(nonce).attempted,1);}finally{db.close();}
  const replay=await exchange(w.handler,input);assert.equal(replay.status,409);assert.equal(JSON.parse(replay.text).error,'context_challenge_consumed');
 });
+
+
+test('context presentation signatures use canonical Ed25519 Base64URL before reserving Vet writes', async t => {
+ for (const mutate of [s => s + '=', s => ' ' + s, s => Buffer.from(s, 'base64url').toString('hex'), s => s.slice(0, -1) + String.fromCharCode(s.charCodeAt(s.length - 1) + 1)]) {
+  const w = await world(t), input = await w.wire(), body = JSON.parse(input.text);
+  const valid = body.buyerIdentityBundle.presentation.signatures[0].signature;
+  body.buyerIdentityBundle.presentation.signatures[0].signature = mutate(valid);
+  const before = w.effects(), out = await exchange(w.handler, await signed(w, body));
+  assert.equal(out.status, 409, out.text);
+  assert.equal(JSON.parse(out.text).error, 'buyer_bundle_unauthenticated');
+  assert.deepEqual(w.effects(), before, 'no policy holds or Vet provider writes');
+ }
+ const w = await world(t), input = await w.wire();
+ assert.equal((await exchange(w.handler, input)).status, 200, 'canonical signed presentation remains allowed');
+ assert.equal(w.effects().writes, 1);
+});

@@ -33,7 +33,7 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
-  observeDemosTransfer, // compatibility option; native intake uses nativePaymentEvidence's observer
+  observeDemosTransfer, // optional compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
                          // agent reads the signed CREATE's projection from the same journal
@@ -291,18 +291,18 @@ per-client limiter so one client cannot exhaust the shared request budget.
     included, so after a refused attempt the buyer asks the operator for a
     new challenge. After an admitted one, the buyer sends the admitted
     presentation again (a new challenge would be another bundle, refused as
-    `job_taken`). Only the configuration gates, the operator's buyer access, a
-    bundle that is not an IdentityBundle at all, a presentation that carries
-    no session nonce (refused as `session_not_admitted`, DACS-1 §6.3.2) and
-    the rail selection, which read the seller's own state, come first: those
-    refusals consume nothing.
+    `session_not_admitted`). Configuration, Listing validity and rail selection
+    gates come first, as does a presentation with no session nonce
+    (`session_not_admitted`, DACS-1 §6.3.2); those refusals consume nothing.
+    Buyer-access and malformed-bundle refusals consume a recognized challenge.
   - **Later presentations.** Any later presentation that carries the nonce is
     refused (`session_not_admitted`): another one, a re-signed one, or one
     for another job. The presentation that was admitted is the one exception:
-    sent again (a retry after a lost answer), it continues its own session.
-  - **Refused before `admit`.** A nonce the seller did not issue, one issued
-    for another job or buyer, or an expired one is refused before `admit` is
-    asked.
+    sent again (a retry after a lost answer), it continues its own session,
+    including after the challenge lifetime. Expiry bounds first admission.
+  - **Refused before `admit`.** On first admission, a nonce the seller did
+    not issue, one issued for another job or buyer, or an expired one is
+    refused before `admit` is asked.
 
   **Revocation.** The agent decides whether its Listing is revoked itself,
   with the core SDK's DACS-1 RB-4..RB-6 check (`checkListingRevocation`), for

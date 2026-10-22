@@ -7,7 +7,7 @@
 //  - a wallet signs the raw UTF-8 bytes of a message and answers the 64-byte
 //    signature as canonical base64url, or as hex behind any number of "0x"
 //    prefixes, or as base64url behind them.
-import { ed25519Verify, publicKeyFromRaw } from '@kynesyslabs/dacs';
+import { ed25519Verify, publicKeyFromRaw, isCanonicalBase64Url } from '@kynesyslabs/dacs';
 
 // Only the `did` scheme is read without case; `demos:agent:` is case-sensitive
 // (DACS-1 §6.3.1).
@@ -34,6 +34,12 @@ export function addressForClaim(claim) {
   const key = CLAIM_PREFIX.test(text) ? text.slice('did:demos:agent:'.length) : '';
   if (!HEX64.test(key)) throw new DemosClaimFormatError('claim must be did:demos:agent:<64 lowercase hex>');
   return `0x${key}`;
+}
+
+// CORE §B.7 SIG-6: conforming DACS verification never normalizes legacy
+// wallet spellings. Both proposal admission and context Vet writes use this.
+export function isCanonicalEd25519Signature(value) {
+  return typeof value === 'string' && value.length === 86 && isCanonicalBase64Url(value);
 }
 
 export function decodeSignature(value) {

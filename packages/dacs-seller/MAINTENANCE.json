@@ -4,14 +4,14 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "3aee8aa8b67ad3e52b47283dcb60cc7f9bbc60be1c1138965fab80231c3d7c6a",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+      "sha256": "b8f0a1ac6819dcf921cad669b9cf4c8d4ad6240c88616b5eeb8ee17f2a94d6a7",
+      "reason": "Retain retries for unfinished native publication and journaled commitments; reverify admitted presentations after challenge expiry."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-context-route.mjs",
       "originalSha256": "ca0377f1d93a5af069547bc6a1a63d2ba53fd84d92357909b3307e74d8f60fba",
-      "sha256": "2181ea59fd9fd005fb98b9c4b3cd27f0166ea6cae2458cb4ab86e2e12624882f",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+      "sha256": "f554622645e27ce49382ce358001bb87e250731b9c4431227d3c1b1ce5ebba25",
+      "reason": "Validate canonical presentation signatures before reserving Vet writes."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-durable-state.mjs",
@@ -70,8 +70,8 @@
     {
       "path": "packages/dacs-seller/test/d5-limits-before-effects.test.mjs",
       "originalSha256": "7f3d8c7c6f62cb90fae6fb2dad6ca8d99b380be8bb0466d23a6b9927dd8415f7",
-      "sha256": "33d001b679e51354fa85553b58430119d4fa70e1763096f2aed0eb16cacdeddb",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+      "sha256": "96cf3e457cdfba098bf05d593a51c8a279655c9a73f453720ba83ff931ace473",
+      "reason": "Cover canonical accepted and noncanonical refused presentation signatures before Vet writes."
     },
     {
       "path": "packages/dacs-seller/test/d5-recovery.test.mjs",
@@ -233,13 +233,13 @@
       "path": "packages/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs",
       "originalSha256": null,
       "sha256": "31a2072b8f6d975fea2d564232d21021e227d58962469731b8a861a26c3c6ec0",
-      "reason": "Seller run time: port from the plugin seller kit, changed only for the counterparty Vet verifier (DACS-2 §7.7.2; RUNTIME-PORTS.json)."
+      "reason": "Seller run time: port from the plugin seller kit, changed only for the counterparty Vet verifier (DACS-2 \u00a77.7.2; RUNTIME-PORTS.json)."
     },
     {
       "path": "packages/dacs-seller/src/dacs/demos-claims.mjs",
       "originalSha256": null,
-      "sha256": "3e384cea9f846b5dafb80c2945db95930cc71a9b1d26003ae699a7516f890418",
-      "reason": "Seller run time: SDK code in place of an excluded plugin wallet module (README.md)."
+      "sha256": "a2e5384cfdee249dcef3eba1c9ce14de311fef5ead258f52c8faa9dd9d042636",
+      "reason": "Share canonical Ed25519 presentation encoding checks between proposal and Vet context admission."
     },
     {
       "path": "packages/dacs-seller/src/dacs/demos-sr2-adapter.mjs",
@@ -304,8 +304,8 @@
     {
       "path": "packages/dacs-seller/src/host.mjs",
       "originalSha256": null,
-      "sha256": "4477b133454344f327de923c0cee5ba0b9eff829b4cddd35b2c221675eb6505a",
-      "reason": "Seller run time: standalone host and public entry (README.md)."
+      "sha256": "54674f6bd6bd86b5dc5bced870a57ecaf7ac61e48a0d1f4da2ebcf9d42c170a1",
+      "reason": "Allow the native host to omit the unused compatibility transfer observer."
     },
     {
       "path": "packages/dacs-seller/src/index.mjs",
@@ -382,8 +382,8 @@
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "8369e8849c7ba7e24c4f0fa3d8ee05c0dfde5bec752719e31a4d45a010aa3723",
-      "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
+      "sha256": "479148b74a20becb9ab49869d0559d30beb34f157754a4fc9240d8cfc53f1fae",
+      "reason": "Pin retained unsigned proposal recovery after challenge expiry and restart, preserving first-admission expiry."
     },
     {
       "path": "packages/dacs-seller/test/dacs-seller-transport.test.mjs",
@@ -430,8 +430,8 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "9a0f0648caed1b5cbd970f7c036d57314777c8f024b9af248af199e2322f8c4d",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+      "sha256": "176da9149889230469924db468cf4e320ee2f9b19793184f939d9f079c4bbe46",
+      "reason": "Pin publication and commitment recovery, read-only and uncertain-send fences, paid signer retry status and optional observer composition."
     },
     {
       "path": "packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs",
