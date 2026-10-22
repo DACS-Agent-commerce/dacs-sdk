@@ -1,0 +1,11 @@
+# Subtest: native supersession marker after another purchase settles
+not ok 1 - native supersession marker after another purchase settles
+# Subtest: late same-hash failed read after settlement
+not ok 2 - late same-hash failed read after settlement
+# Subtest: late same-hash TEST-unknown read after settlement
+not ok 3 - late same-hash TEST-unknown read after settlement
+1..3
+# tests 3
+# pass 0
+# fail 3
+# skipped 0

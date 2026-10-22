@@ -499,6 +499,31 @@ describe("runSession orchestration (T4)", () => {
     expect(settles).toBe(0);
   });
 
+  test.each([
+    ["failureProof", { failureProof: { kind: "demos-failed-record" } }],
+    ["errorClass", { errorClass: "permanent" }],
+  ])("rejects a rail result carrying %s before evidence publication", async (_name, extra) => {
+    const anchored: string[] = [];
+    const deps = makeDeps({
+      settle: async () => ({
+        ok: false,
+        txHash: "0xfailed",
+        chainId: "eip155:11155111",
+        payer: "0xbob",
+        payee: "0xalice",
+        ...extra,
+      } as never),
+      anchor: async (name) => {
+        anchored.push(name);
+        return `stor-${name}`;
+      },
+    });
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
+      /settlement rail returned a malformed result/,
+    );
+    expect(anchored.some((name) => name.includes("evidence"))).toBe(false);
+  });
+
   test("rejects non-boolean or aliased rail results before evidence publication", async () => {
     const nonBoolean = makeDeps({
       settle: async () => ({

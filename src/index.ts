@@ -310,6 +310,7 @@ export {
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
   demosWriteEvidenceBindsReceiptContent,
+  demosTransactionContentMatches,
   demosWriteEvidenceToAnchorReceipt,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,
@@ -1889,3 +1890,5 @@ export {
   type VerifyComponentSignatureInput,
   type VerifyComponentSignatureDeps,
 } from "./artifacts/index.js";
+
+export { jid1AttestationAddress, jid1PaymentEvidenceAddress, jid1RatingAddress, jid1BundleAddress } from "./canonical/jid1Addressing.js";
