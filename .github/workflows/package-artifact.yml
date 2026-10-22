@@ -38,6 +38,14 @@ jobs:
       - name: Require all five packages and check public imports
         if: github.event_name == 'workflow_dispatch'
         run: npm run release:check
+      - name: Preserve strict consumer dependency evidence
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: five-package-consumers-node-${{ matrix.node-version }}
+          path: package-artifacts/five-package/
+          if-no-files-found: warn
+          retention-days: 30
       - name: Show release plan and offline npm publish dry-runs
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run release:dry-run

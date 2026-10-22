@@ -17,16 +17,20 @@
     },
     {
       "name": "@kynesyslabs/dacs-node", "directory": "packages/dacs-node",
+      "preparationBlockers": ["non-registry dependency in devDependencies: file:../.."],
       "requiredExports": [".", "./transport", "./sqlite", "./demos-loader", "./vectors/dacs-http-envelope-v1.json"],
       "allow": ["package.json", "README.md", "LICENSE", "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map", "vectors/dacs-http-envelope-v1.json"]
     },
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
+      "preparationBlockers": ["private package is not releasable"],
+      "preparationFileListSha256": "eab1bbc42fd417315f554d5351520c7ff027112e470d385ac72e7e27d403348c",
       "requiredExports": ["."],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
     },
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
+      "preparationBlockers": ["missing package manifest"],
       "requiredExports": ["."],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
     },
