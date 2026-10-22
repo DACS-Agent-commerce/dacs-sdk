@@ -6,6 +6,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { describe, test } from "vitest";
 
 import { sha256Hex } from "../../src/canonical/index.js";
+import type { DacsPublicHttpsDependenciesV1 } from "../../src/rails/x402Outbound.js";
 import {
   createX402BuyerSettlementIntent,
   type X402BuyerEffectFence,
@@ -84,6 +85,12 @@ const factories = [
   },
 ];
 
+const incompleteHttpsDependencies: Array<Partial<DacsPublicHttpsDependenciesV1>> = [
+  {},
+  { resolveHost: async () => ["8.8.8.8"] },
+  { request: async () => new Response(null, { status: 200 }) },
+];
+
 // Intercept the same built-in effect boundaries as the cold review probe.
 // No test in this file may perform a real lookup, connection, or fetch.
 async function withBlockedNetwork(run: () => void | Promise<void>) {
@@ -124,15 +131,12 @@ describe("x402 simulation transport isolation", () => {
       });
     }
 
-    for (const dependencies of [
-      {},
-      { resolveHost: async () => ["8.8.8.8"] },
-      { request: async () => new Response(null, { status: 200 }) },
-    ]) {
+    for (const dependencies of incompleteHttpsDependencies) {
       test(`${factory.name} refuses incomplete HTTPS dependencies (${Object.keys(dependencies)})`, async () => {
         await withBlockedNetwork(() => {
           assert.throws(() => factory.create({
-            publicHttpsDependencies: dependencies as X402BuyerPaidRequestTransportOptions["publicHttpsDependencies"],
+            // @ts-expect-error Exercise runtime rejection of missing required methods.
+            publicHttpsDependencies: dependencies,
           }), /stable method/);
         });
       });
