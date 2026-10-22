@@ -230,7 +230,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     expect(f.submit).not.toHaveBeenCalled();
   });
 
-  test.each(["0", "1001", undefined])("refuses fee %s inconsistent with the journal's confirmed debit", async (networkFeeOs) => {
+  test.each(["0", "1001"])("refuses fee %s inconsistent with the journal's confirmed debit", async (networkFeeOs) => {
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({
       ...executed(hashA), preparedTransfer: entry({ confirmedTotalDebitOs: "1000001000" }) as PayDemPreparedTransfer,
       ...(networkFeeOs === undefined ? {} : { networkFeeOs }),

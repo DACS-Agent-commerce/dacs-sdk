@@ -181,9 +181,12 @@ below).
   payee, OS amount and network, a `recovery` tuple equal to this rail, job and
   phase, and (when present) a known denomination and debit bounds no lower
   than the amount; a permanent failure's proof must also carry the journaled
-  nonce. A successful result's OS amount plus reported network fee must equal
-  `confirmedTotalDebitOs` whenever that field is present. Recovery preserves a
-  previously authenticated network fee if the reconciler omits it, and refuses a
+  nonce. When a network fee is reported or preserved from an authenticated
+  outcome, the successful result's OS amount plus that fee must equal
+  `confirmedTotalDebitOs` whenever that field is present. A missing fee with
+  no authenticated value to preserve does not prevent recovery or authenticate
+  a fee from the supplied journal. Recovery preserves a
+  previously authenticated network fee if the reader omits it, and refuses a
   conflicting fee without changing the recorded success. The SDK's own node-record
   read must still match the saved fee. The entry is the reconciler's object, not the one the rail wrote
   before broadcast, so it can refuse an audit but never counts the hash on its

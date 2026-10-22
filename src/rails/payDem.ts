@@ -2666,9 +2666,11 @@ function assertPreparedTransferBinds(
       "pay-dem failed-record proof does not match the journaled signed nonce; refusing reuse or rebroadcast",
     );
   }
+  // A later transaction record may omit the confirmation's gas-operation fee.
+  // Missing accounting is not a contradiction; a known fee must still agree.
   if (captured.ok && prepared.confirmedTotalDebitOs !== undefined &&
-      (captured.networkFeeOs === undefined ||
-        BigInt(context.amountOs) + BigInt(captured.networkFeeOs) !== BigInt(prepared.confirmedTotalDebitOs as string))) {
+      captured.networkFeeOs !== undefined &&
+      BigInt(context.amountOs) + BigInt(captured.networkFeeOs) !== BigInt(prepared.confirmedTotalDebitOs as string)) {
     throw new DacsError(
       "pay-dem reconciliation fee does not match the journal's confirmed total debit; refusing inconsistent accounting",
     );
@@ -3368,15 +3370,16 @@ export function payDemSettle(
         if (recovered === null) {
           throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
         }
+        // A different store/bridge can finish while the chain read is pending.
+        // Gather its authenticated fee before checking the journal's debit,
+        // without a lease or outcome write.
+        const after = await readOutcome();
         // A failure the SDK read is compared with every recorded success below;
         // it is returned only for a hash this key's own record binds.
         let captured = await readRecovered(
-          capturePayDemReconciliation(recovered, context, retainedTxHash, [priorAuthenticated?.result, before]),
+          capturePayDemReconciliation(recovered, context, retainedTxHash, [priorAuthenticated?.result, before, after]),
           true,
         );
-        // A different store/bridge can finish while the chain read is pending.
-        // Recheck without a lease or outcome write before returning any verdict.
-        const after = await readOutcome();
         // A held result reports no outcome, so it contradicts none.
         for (const existing of isHeldPayDemResult(captured)
           ? []
