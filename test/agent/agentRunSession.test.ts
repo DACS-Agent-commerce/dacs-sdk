@@ -329,6 +329,33 @@ function listingValidationDeps(
 }
 
 describe("Agent.runSession wires the #41 listing verifier (public surface)", () => {
+  test("public non-native settlement callbacks receive an empty frozen receiver", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem", wallet: "x",
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      listingValidationDeps: listingValidationDeps(),
+    });
+    const receivers: unknown[] = [];
+    const result = await agent.runSession(ref, {
+      terms: TERMS,
+      settle: async function (this: unknown, req) {
+        receivers.push(this);
+        expect(Object.isFrozen(this)).toBe(true);
+        expect(Object.getPrototypeOf(this)).toBeNull();
+        expect(Reflect.ownKeys(this as object)).toEqual([]);
+        for (const capability of ["sign", "signBytes", "anchor", "sessionStore", "settle"]) {
+          expect(Reflect.get(this as object, capability)).toBeUndefined();
+        }
+        return { ok: true, txHash: "0xreceiver", chainId: "eip155:84532",
+          payer: buyerDid, payee: req.expectedPayee };
+      },
+    });
+    expect(result.outcome).toBe("completed");
+    expect(receivers).toHaveLength(1);
+  });
+
   test("rejects a configured bundle for a different agent at construction", () => {
     const { adapter } = memAdapter();
     expect(() => buildAgent(adapter as never, {

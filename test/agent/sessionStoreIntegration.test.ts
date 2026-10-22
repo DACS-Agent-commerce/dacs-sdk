@@ -45,7 +45,7 @@ import {
   type SettlementBinding,
   type SettlementReconcile,
 } from "../../src/rails/idempotency.js";
-import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import { createInMemorySessionStore, type SessionCheckpoint } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { isSettlementEvidence } from "../../src/artifacts/validators.js";
@@ -2229,6 +2229,141 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
   });
 
+  test.each([
+    { rail: "pay-x402", asset: "DEM" },
+    { rail: "pay-dem", asset: "USDC" },
+  ])("sweep native checks require both pay-dem and DEM: $rail/$asset", async ({ rail, asset }) => {
+    const kv = new Map<string, Record<string, unknown>>([["stor:listing",
+      await buildSignedArtifact({ ...listing, supportedPaymentRails: [rail] },
+        ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>]]);
+    const selectedTerms = { ...terms, price: { amount: "1", asset, decimals: 9, rail } };
+    const store = createInMemorySessionStore();
+    const settle = vi.fn(async (req: SettleRequest): Promise<SettleResult> => ({
+      ok: true, txHash: "0xnon-native", chainId: "test:non-native", payer: buyerDid, payee: req.expectedPayee,
+    }));
+    const first = await makeDeps(store, { kv, settle, anchor: async (name, value) => {
+      if (name === sessionAnchorName.evidence("job-1")) throw new Error("sweep non-native boundary");
+      kv.set(`stor:${name}`, value as Record<string, unknown>);
+      return `stor:${name}`;
+    } });
+    await expect(runSessionCore(first.listingRef, selectedTerms, first.deps)).rejects.toThrow("sweep non-native boundary");
+    expect(settle).toHaveBeenCalledOnce();
+    const changed: typeof store = { ...store, load: async (jobId) => {
+      const loaded = await store.load(jobId);
+      if (loaded.status !== "ok") return loaded;
+      const record = structuredClone(loaded.record);
+      record.checkpoints.find((cp) => cp.stage === "outcome")!.data!.networkFeeOs = "12";
+      return { status: "ok", record };
+    } };
+    const resume = vi.fn(async (): Promise<SettleResult> => { throw new Error("must not reconcile malformed state"); });
+    const refused = await makeDeps(changed, { kv, settle, resumeSettlement: resume });
+    await expect(runSessionCore(refused.listingRef, selectedTerms, refused.deps, "job-1"))
+      .rejects.toThrow(/malformed/);
+    expect(resume).not.toHaveBeenCalled();
+    expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
+    const allowed = await makeDeps(store, { kv, settle });
+    await expect(runSessionCore(allowed.listingRef, selectedTerms, allowed.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "completed" });
+    expect(settle).toHaveBeenCalledOnce();
+  });
+
+  test("sweep orphan proof on a non-native success refuses before reconciliation", async () => {
+    const store = createInMemorySessionStore();
+    const first = await makeDeps(store, { anchor: async () => { throw new Error("sweep stop"); } });
+    // Let agreement anchoring complete, then stop at the evidence boundary.
+    first.deps.anchor = async (name, value) => {
+      if (name === sessionAnchorName.evidence("job-1")) throw new Error("sweep stop");
+      first.kv.set(`stor:${name}`, value as Record<string, unknown>);
+      return `stor:${name}`;
+    };
+    await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow("sweep stop");
+    const changed: typeof store = { ...store, load: async (jobId) => {
+      const loaded = await store.load(jobId);
+      if (loaded.status !== "ok") return loaded;
+      const record = structuredClone(loaded.record);
+      record.checkpoints.find((cp) => cp.stage === "outcome")!.data!.failureProofJson = "{}";
+      return { status: "ok", record };
+    } };
+    const resume = vi.fn(async (): Promise<SettleResult> => { throw new Error("must not reconcile"); });
+    const resumed = await makeDeps(changed, { kv: first.kv, resumeSettlement: resume });
+    await expect(runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"))
+      .rejects.toThrow(/invalid durable terminal-failure proof/);
+    expect(resume).not.toHaveBeenCalled();
+    expect(resumed.settleCalls.n).toBe(0);
+  });
+
+  test("sweep non-native signed payer extension stays inert through evidence migration and repeat", async () => {
+    const first = await makeDeps(undefined);
+    first.deps.anchor = async (name, value) => {
+      const ref = `stor:${name}`;
+      first.kv.set(ref, value as Record<string, unknown>);
+      if (name === sessionAnchorName.evidence("job-1")) throw new Error("sweep evidence ack lost");
+      return ref;
+    };
+    await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow("sweep evidence ack lost");
+    const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
+    const { signature: _signature, ...unsigned } = first.kv.get(evidenceRef)!;
+    first.kv.set(evidenceRef, await signComponentArtifact(JSON.parse(JSON.stringify({
+      ...unsigned, dacsSdkSettlementPayer: "inert-extension",
+    })),
+      ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: "ed25519", signer: buyerDid, sign }) as Record<string, unknown>);
+    const store = createInMemorySessionStore();
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      const resumed = await makeDeps(store, { kv: first.kv });
+      await expect(runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      const loaded = await store.load("job-1");
+      if (loaded.status !== "ok") throw new Error("missing fixture session");
+      const checkpoint = loaded.record.checkpoints.find((cp) => cp.stage === "outcome")!.data!;
+      expect(checkpoint.outcomeSource).toBe("authenticated-evidence");
+      expect(checkpoint).not.toHaveProperty("payer");
+      expect(checkpoint).not.toHaveProperty("networkFeeOs");
+      expect(resumed.settleCalls.n).toBe(0);
+    }
+    const conflicting: typeof store = { ...store, load: async (jobId) => {
+      const loaded = await store.load(jobId);
+      if (loaded.status !== "ok") return loaded;
+      const record = structuredClone(loaded.record);
+      const evidence = record.checkpoints.find((cp) => cp.stage === "outcome")!;
+      record.checkpoints.unshift({ ...evidence, data: { ...evidence.data, ok: false } });
+      return { status: "ok", record };
+    } };
+    const refused = await makeDeps(conflicting, { kv: first.kv });
+    await expect(runSessionCore(refused.listingRef, terms, refused.deps, "job-1"))
+      .rejects.toThrow(/conflicting entries/);
+    expect(refused.settleCalls.n).toBe(0);
+  });
+
+  test.each([
+    { withStore: true, anchored: true },
+    { withStore: true, anchored: false },
+    { withStore: false, anchored: true },
+  ])(
+    "sweep repeats empty-hash definitive failures: store=$withStore, anchored=$anchored", async ({ withStore, anchored }) => {
+      const store = withStore ? createInMemorySessionStore() : undefined;
+      const settle = vi.fn(async (req: SettleRequest): Promise<SettleResult> => ({
+        ok: false, txHash: "", chainId: "test:failure", payer: buyerDid, payee: req.expectedPayee,
+      }));
+      const first = await makeDeps(store, { settle });
+      first.deps.anchor = async (name, value) => {
+        const ref = `stor:${name}`;
+        if (name === sessionAnchorName.evidence("job-1")) {
+          if (anchored) first.kv.set(ref, value as Record<string, unknown>);
+          throw new Error("sweep failed evidence boundary");
+        }
+        first.kv.set(ref, value as Record<string, unknown>);
+        return ref;
+      };
+      await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow("sweep failed evidence boundary");
+      for (let repeat = 0; repeat < 2; repeat += 1) {
+        const resumed = await makeDeps(store, { kv: first.kv, settle });
+        await expect(runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "failed" });
+      }
+      expect(settle).toHaveBeenCalledOnce();
+    },
+  );
+
   describe("a native verdict is final only from the SDK's own node record read", () => {
     const txHash = "cd".repeat(32);
     const payer = "ab".repeat(32);
@@ -2250,6 +2385,282 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const, amountOs: "1000000000",
       failureProof: { kind: "demos-failed-record" as const, txHash: hash, payer, payee, nonce: 9,
         blockNumber: 42, amountOs: "1000000000" } });
+
+    // Every checkpoint and anchor in these sweep fixtures is first written by
+    // the current SDK over its own rail; only the retained test input changes.
+    async function sweepNative(ok = true, anchored = false, withStore = true, withFee = true) {
+      const store = withStore ? createInMemorySessionStore() : undefined;
+      const log = createInMemorySettlementLog();
+      const kv = await demKv();
+      demosNode.recordStatus = ok ? "confirmed" : "failed";
+      demosNode.feeOs = withFee ? "12" : undefined;
+      const reconcile = vi.fn<PayDemSettlementReconcile>(async () =>
+        ok ? { ...executedClaim(txHash), blockNumber: demosNode.blockNumber } : failedClaim(txHash));
+      const adapter = () => payDemSettle(sdkRail, {}, { store: createIdempotencyStore(log), reconcile });
+      const sdkRail = await sdkPayDemRail();
+      const first = await makeDeps(store, { kv, settle: adapter(), anchor: async (name, value) => {
+        const ref = `stor:${name}`;
+        if (name === sessionAnchorName.evidence("job-1")) {
+          if (anchored) kv.set(ref, value as Record<string, unknown>);
+          throw new Error("sweep evidence boundary");
+        }
+        kv.set(ref, value as Record<string, unknown>);
+        return ref;
+      } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("sweep evidence boundary");
+      reconcile.mockClear();
+      demosNode.reads = [];
+      return { store, kv, reconcile, adapter };
+    }
+
+    function sweepCheckpoints(
+      base: ReturnType<typeof createInMemorySessionStore>, change: (checkpoints: SessionCheckpoint[]) => void,
+    ): typeof base {
+      return { ...base, load: async (jobId) => {
+        const loaded = await base.load(jobId);
+        if (loaded.status !== "ok") return loaded;
+        const record = structuredClone(loaded.record);
+        change(record.checkpoints);
+        return { status: "ok", record };
+      } };
+    }
+
+    test("sweep current native checkpoint without a fee survives later record fee metadata unchanged", async () => {
+      const f = await sweepNative(true, false, true, false);
+      const original = await lastOutcome(f.store!);
+      expect(original).not.toHaveProperty("networkFeeOs");
+      demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee,
+        amountOs: "1000000000", feeOs: "12" }));
+      const resumed = await makeDeps(f.store, { kv: f.kv, settle: f.adapter() });
+      resumed.deps.nowMs = () => 1780000999999;
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(await lastOutcome(f.store!)).toEqual(original);
+      expect(f.reconcile).toHaveBeenCalledOnce();
+      expect(demosNode.reads).toEqual([txHash]);
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
+    });
+
+    test("sweep current evidence signing a payer without a fee migrates and repeats without adopting an unsigned fee", async () => {
+      const f = await sweepNative(true, true, false, false);
+      const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
+      const evidence = structuredClone(f.kv.get(evidenceRef)!);
+      expect(evidence.dacsSdkSettlementPayer).toBe(payer);
+      expect(evidence).not.toHaveProperty("dacsSdkNetworkFeeOs");
+      demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee,
+        amountOs: "1000000000", feeOs: "12" }));
+      const store = createInMemorySessionStore();
+      for (let repeat = 0; repeat < 2; repeat += 1) {
+        const resumed = await makeDeps(store, { kv: f.kv, settle: f.adapter() });
+        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "completed" });
+        expect(await lastOutcome(store)).toMatchObject({ outcomeSource: "authenticated-evidence", payer });
+        expect(await lastOutcome(store)).not.toHaveProperty("networkFeeOs");
+        expect(f.kv.get(evidenceRef)).toEqual(evidence);
+      }
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
+    });
+
+    test.each([0, 42])("sweep accepts matching current rail-to-evidence history at block %s", async (blockNumber) => {
+      demosNode.blockNumber = blockNumber;
+      const f = await sweepNative(true, true);
+      const railState = await f.store!.load("job-1");
+      if (railState.status !== "ok") throw new Error("missing rail fixture");
+      const rail = railState.record.checkpoints.find((cp) => cp.stage === "outcome")!;
+      const store = createInMemorySessionStore();
+      const migrate = await makeDeps(store, { kv: f.kv, settle: f.adapter() });
+      await expect(runSessionCore(migrate.listingRef, demTerms, migrate.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(await lastOutcome(store)).toMatchObject({ outcomeSource: "authenticated-evidence", blockNumber });
+      const history = sweepCheckpoints(store, (checkpoints) => checkpoints.unshift(structuredClone(rail)));
+      const resumed = await makeDeps(history, { kv: f.kv, settle: f.adapter() });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
+    });
+
+    test.each([
+      { field: "payer", value: "ef".repeat(32) },
+      { field: "finalityModel", value: "provider-receipt" },
+    ])("sweep saved success $field must equal the valid SDK audit", async ({ field, value }) => {
+      const f = await sweepNative();
+      const before = await f.store!.load("job-1");
+      const anchors = structuredClone([...f.kv]);
+      const changed = sweepCheckpoints(f.store!, (checkpoints) => {
+        checkpoints.find((cp) => cp.stage === "outcome")!.data![field] = value;
+      });
+      const resumed = await makeDeps(changed, { kv: f.kv, settle: f.adapter() });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/conflicts with the saved success/);
+      expect(f.reconcile).toHaveBeenCalledOnce();
+      expect(demosNode.reads).toEqual([txHash]);
+      expect([...f.kv]).toEqual(anchors);
+      expect(await f.store!.load("job-1")).toEqual(before);
+      const allowed = await makeDeps(f.store, { kv: f.kv, settle: f.adapter() });
+      await expect(runSessionCore(allowed.listingRef, demTerms, allowed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(demosNode.transfers).toBe(1);
+    });
+
+    test.each([
+      { failureProofJson: "{}" },
+      { errorClass: "permanent" },
+      { errorClass: "permanent", failureProofJson: "{" },
+      { errorClass: "permanent", failureProofJson: JSON.stringify(failedClaim(txHash).failureProof) },
+    ])("sweep rejects orphan or invalid terminal proof fields on a current success: %j", async (fields) => {
+      const f = await sweepNative();
+      const changed = sweepCheckpoints(f.store!, (checkpoints) => {
+        Object.assign(checkpoints.find((cp) => cp.stage === "outcome")!.data!, fields);
+      });
+      const before = await f.store!.load("job-1");
+      const anchors = structuredClone([...f.kv]);
+      const resumed = await makeDeps(changed, { kv: f.kv, settle: f.adapter() });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/invalid durable terminal-failure proof/);
+      expect(f.reconcile).not.toHaveBeenCalled();
+      expect(demosNode.reads).toEqual([]);
+      expect(await f.store!.load("job-1")).toEqual(before);
+      expect([...f.kv]).toEqual(anchors);
+      expect(demosNode.transfers).toBe(1);
+    });
+
+    test("sweep contradictory valid failed-record proofs are rejected before reconciliation", async () => {
+      const f = await sweepNative(false);
+      const changed = sweepCheckpoints(f.store!, (checkpoints) => {
+        const outcome = checkpoints.find((cp) => cp.stage === "outcome")!;
+        const proof = JSON.parse(outcome.data!.failureProofJson as string);
+        checkpoints.unshift({ ...outcome, data: { ...outcome.data,
+          failureProofJson: JSON.stringify({ ...proof, nonce: proof.nonce + 1 }) } });
+      });
+      const resumed = await makeDeps(changed, { kv: f.kv, settle: f.adapter() });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/conflicting entries/);
+      expect(f.reconcile).not.toHaveBeenCalled();
+      expect(demosNode.reads).toEqual([]);
+      expect(demosNode.transfers).toBe(1);
+    });
+
+    test.each(["payer", "kind", "finality", "matching"] as const)(
+      "sweep authenticated saved success facts are compared to a valid audit: %s", async (field) => {
+        const f = await sweepNative(true, true, false);
+        const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
+        const { signature: _signature, ...unsigned } = f.kv.get(evidenceRef)!;
+        const changed = structuredClone(unsigned);
+        if (field === "payer") changed.dacsSdkSettlementPayer = "ef".repeat(32);
+        if (field === "kind") (changed.paymentTxRefs as Record<string, unknown>[])[0]!.kind = "payment";
+        if (field === "finality") changed.settlementFinality = {
+          ...(changed.settlementFinality as Record<string, unknown>), model: "provider-receipt",
+        };
+        f.kv.set(evidenceRef, await signComponentArtifact(changed, ARTIFACT_SEPARATORS.SettlementEvidence,
+          { algorithm: "ed25519", signer: buyerDid, sign }) as Record<string, unknown>);
+        const anchors = structuredClone([...f.kv]);
+        const resumed = await makeDeps(undefined, { kv: f.kv, settle: f.adapter() });
+        const run = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
+        if (field === "matching") await expect(run).resolves.toMatchObject({ outcome: "completed" });
+        else {
+          await expect(run).rejects.toThrow("saved native success evidence contradicts chain execution");
+          expect([...f.kv]).toEqual(anchors);
+        }
+        expect(f.reconcile).toHaveBeenCalledOnce();
+        expect(demosNode.reads).toEqual([txHash]);
+        expect(demosNode.transfers).toBe(1);
+      },
+    );
+
+    test("sweep failure evidence with another tx-ref kind refuses before the real adapter audits", async () => {
+      const f = await sweepNative(false, true);
+      const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
+      const { signature: _signature, ...unsigned } = structuredClone(f.kv.get(evidenceRef)!);
+      (unsigned.paymentTxRefs as Record<string, unknown>[])[0]!.kind = "payment";
+      f.kv.set(evidenceRef, await signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence,
+        { algorithm: "ed25519", signer: buyerDid, sign }) as Record<string, unknown>);
+      const before = await f.store!.load("job-1");
+      const anchors = structuredClone([...f.kv]);
+      const resumed = await makeDeps(f.store, { kv: f.kv, settle: f.adapter() });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/cannot become a terminal checkpoint/);
+      expect(f.reconcile).not.toHaveBeenCalled();
+      expect(demosNode.reads).toEqual([]);
+      expect(await f.store!.load("job-1")).toEqual(before);
+      expect([...f.kv]).toEqual(anchors);
+      expect(demosNode.transfers).toBe(1);
+    });
+
+    test.each(["payer", "networkFeeOs", "ok"] as const)(
+      "sweep contradictory evidence checkpoint $field refuses before reconciliation", async (field) => {
+        const f = await sweepNative(true, true, false);
+        const store = createInMemorySessionStore();
+        const migrate = await makeDeps(store, { kv: f.kv, settle: f.adapter() });
+        await expect(runSessionCore(migrate.listingRef, demTerms, migrate.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "completed" });
+        const data = await lastOutcome(store);
+        expect(data).toMatchObject({ outcomeSource: "authenticated-evidence", payer, networkFeeOs: "12" });
+        const changed = sweepCheckpoints(store, (checkpoints) => {
+          const outcome = checkpoints.find((cp) => cp.stage === "outcome")!;
+          checkpoints.unshift({ ...outcome, data: { ...outcome.data,
+            [field]: field === "payer" ? "ef".repeat(32) : field === "networkFeeOs" ? "13" : false } });
+        });
+        f.reconcile.mockClear();
+        demosNode.reads = [];
+        const resumed = await makeDeps(changed, { kv: f.kv, settle: f.adapter() });
+        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+          .rejects.toThrow(/conflicting entries|malformed/);
+        expect(f.reconcile).not.toHaveBeenCalled();
+        expect(demosNode.reads).toEqual([]);
+        expect(demosNode.transfers).toBe(1);
+      },
+    );
+
+    test.each(["payer", "networkFeeOs"] as const)(
+      "sweep current evidence checkpoint rejects numeric %s before reconciliation", async (field) => {
+        const f = await sweepNative(true, true, false);
+        const store = createInMemorySessionStore();
+        const migrate = await makeDeps(store, { kv: f.kv, settle: f.adapter() });
+        await expect(runSessionCore(migrate.listingRef, demTerms, migrate.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "completed" });
+        const changed = sweepCheckpoints(store, (checkpoints) => {
+          checkpoints.find((cp) => cp.stage === "outcome")!.data![field] = 12;
+        });
+        f.reconcile.mockClear();
+        demosNode.reads = [];
+        const before = await store.load("job-1");
+        const anchors = structuredClone([...f.kv]);
+        const resumed = await makeDeps(changed, { kv: f.kv, settle: f.adapter() });
+        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+          .rejects.toThrow(/authenticated-evidence outcome has malformed or extra fields/);
+        expect(f.reconcile).not.toHaveBeenCalled();
+        expect(demosNode.reads).toEqual([]);
+        expect(await store.load("job-1")).toEqual(before);
+        expect([...f.kv]).toEqual(anchors);
+        expect(demosNode.transfers).toBe(1);
+      },
+    );
+
+    test("sweep an unrelated checkpoint cannot claim a refused native settlement", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const first = await makeDeps(store, { kv, settle: payDemSettle(await sdkPayDemRail()) });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/caller-supplied settlement store and reconciler/);
+      const loaded = await store.load("job-1");
+      if (loaded.status !== "ok") throw new Error("missing fixture session");
+      await store.transition({ jobId: "job-1", expectedRevision: loaded.record.revision,
+        phase: loaded.record.phase, now: 1780000000001, checkpoint: { key: "unrelated", stage: "intent" } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps, "job-1"))
+        .rejects.toThrow(/caller-supplied settlement store and reconciler/);
+      const refused = await store.load("job-1");
+      expect(refused.status === "ok" && refused.record.checkpoints.some((cp) => cp.key === "settle:0")).toBe(false);
+      expect(demosNode.transfers).toBe(0);
+      const allowed = await makeDeps(store, { kv, settle: payDemSettle(await sdkPayDemRail(), {}, {
+        store: createIdempotencyStore(), reconcile: async () => executedClaim(txHash),
+      }) });
+      await expect(runSessionCore(allowed.listingRef, demTerms, allowed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(demosNode.transfers).toBe(1);
+    });
 
     test.each([false, true].flatMap((explicitResume) => [false, true].map((keepLog) =>
       ({ explicitResume, keepLog }))))(
@@ -2293,7 +2704,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     );
 
-    test.each([true, false].flatMap((sessionStore) => ["neither", "store", "reconciler"].map((configured) =>
+    test.each([true, false].flatMap((sessionStore) => ["neither", "store", "reconciler", "undefined store"].map((configured) =>
       ({ sessionStore, configured }))))(
       "refuses unrecoverable fresh configuration before claiming: sessionStore=$sessionStore, configured=$configured",
       async ({ sessionStore, configured }) => {
@@ -2301,7 +2712,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         const kv = await demKv();
         const adapter = payDemSettle(await sdkPayDemRail(), {}, {
           ...(configured === "store" ? { store: createIdempotencyStore() } : {}),
-          ...(configured === "reconciler" ? { reconcile: async () => null } : {}),
+          ...(configured === "undefined store" ? { store: undefined } : {}),
+          ...(configured === "reconciler" || configured === "undefined store" ? { reconcile: async () => null } : {}),
         });
         const first = await makeDeps(store, { kv, settle: adapter });
         await expect(runSessionCore(first.listingRef, demTerms, first.deps))
