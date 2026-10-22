@@ -62,19 +62,18 @@ describe("terminal failed Demos record", () => {
 
   it("refuses failure reconciliation from a different configured network", async () => {
     const log = createInMemorySettlementLog();
-    demosNode.transfer.mockRejectedValue(new Error("lost response"));
     const rail = await sdkRail({ network: "demos:testnet" });
     const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
       payee: `did:demos:agent:${payee}`, expectedPayee: payee, jobId: "failure-proof", phaseIndex: 0 };
-    await expect(payDemSettle(rail, { network: "demos:testnet" }, {
-      store: createIdempotencyStore(log, { owner: "before", now: () => 1, leaseDurationMs: 1 }),
-    })(request)).rejects.toThrow("lost response");
+    await expect(createIdempotencyStore(log, { owner: "before", now: () => 1, leaseDurationMs: 1 })
+      .once(key, { ...binding, network: "demos:testnet" }, async () => { throw new Error("process killed"); }))
+      .rejects.toThrow("process killed");
     await expect(payDemSettle(rail, { network: "demos:testnet" }, {
       store: createIdempotencyStore(log, { owner: "after", now: () => 3, leaseDurationMs: 1 }),
       reconcile: async () => ({ ...failure, ok: false as const, errorClass: "permanent" as const,
         amountOs: proof.amountOs, failureProof: proof }),
     })(request)).rejects.toThrow(/network/);
-    expect(sdkTransfers()).toBe(1);
+    expect(sdkTransfers()).toBe(0);
   });
 
   // A reconciler is the caller's statement, so its failure never becomes the
@@ -93,14 +92,13 @@ describe("terminal failed Demos record", () => {
 
   it.each(["demos", "demos:testnet"])("holds a reconciled permanent failure on %s through the pay-dem bridge after restart", async (network) => {
     const log = createInMemorySettlementLog();
-    demosNode.transfer.mockRejectedValue(new Error("lost transfer response"));
     const rail = await sdkRail({ network });
     const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
       payee: `did:demos:agent:${payee}`, expectedPayee: `did:demos:agent:${payee}`,
       jobId: "failure-proof", phaseIndex: 0 };
-    const first = payDemSettle(rail, { network }, { store: createIdempotencyStore(log,
-      { owner: "before", now: () => 1, leaseDurationMs: 1 }) });
-    await expect(first(request)).rejects.toThrow("lost transfer response");
+    await expect(createIdempotencyStore(log, { owner: "before", now: () => 1, leaseDurationMs: 1 })
+      .once(key, { ...binding, network }, async () => { throw new Error("process killed"); }))
+      .rejects.toThrow("process killed");
     // The node's failed record of the hash the reconciler names, which the SDK reads itself.
     serveNodeRecord(txHash, { payer, payee, nonce: proof.nonce, blockNumber: proof.blockNumber, status: "failed" });
     const reconcile = vi.fn(async () => ({ ...failure, chainId: network, amountOs: proof.amountOs, ok: false as const,
@@ -108,7 +106,7 @@ describe("terminal failed Demos record", () => {
     const after = payDemSettle(rail, { network }, { store: createIdempotencyStore(log,
       { owner: "after", now: () => 3, leaseDurationMs: 1 }), reconcile });
     await expect(after(request)).rejects.toThrow(/reconciliation was not definitive/);
-    expect(sdkTransfers()).toBe(1);
+    expect(sdkTransfers()).toBe(0);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 

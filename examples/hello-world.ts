@@ -218,7 +218,7 @@ async function main(): Promise<void> {
   console.log("session", session.outcome, "→ bundle", session.bundleRef);
 
   if (session.outcome === "settlement-pending") {
-    console.log("Payment is final; resume job", session.jobId, "to publish its evidence.");
+    console.log("Payment is final; resume job", session.jobId, "while its Listing is valid to retry evidence publication.");
     return;
   }
 

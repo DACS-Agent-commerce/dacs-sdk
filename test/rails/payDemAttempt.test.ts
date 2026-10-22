@@ -325,7 +325,7 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     const reconcile = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) =>
       context.txHash === undefined ? null : executed(hashA));
     const settle = payDemSettle(await sdkRail(), {}, { store, reconcile: reconcile as PayDemSettlementReconcile });
-    await expect(settle(request("job-a"))).rejects.toThrow(/effect fence is stale/);
+    await expect(settle(request("job-a"))).rejects.toThrow(/effect fence is stale|clean attempt release is stale/);
     await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
 
     await expect(settle(request("job-a", hashA, true))).rejects.toThrow(

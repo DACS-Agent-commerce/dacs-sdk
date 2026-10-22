@@ -93,10 +93,8 @@ describe("retained audits read existing payment bindings without acquiring autho
     },
   );
 
-  it.each([
-    { debit: "9500000019", conflicts: false },
-    { debit: "9500000020", conflicts: true },
-  ])("checks a journal's $debit debit against a fee first learned from the SDK record", async ({ debit, conflicts }) => {
+  it.each(["9500000019", "9500000020"])(
+    "keeps journal debit %s independent of the fee learned from the SDK record", async (debit) => {
     const log = createInMemorySettlementLog();
     let clock = 1_000_000;
     const options = () => ({ now: () => clock, leaseDurationMs: LEASE_MS });
@@ -115,9 +113,7 @@ describe("retained audits read existing payment bindings without acquiring autho
         ...executed(), preparedTransfer: { ...prepared!, confirmedTotalDebitOs: debit },
       }),
     });
-    if (conflicts) await expect(recover(resumed("job-fee")))
-      .rejects.toThrow(/fee.*confirmed.*debit/);
-    else await expect(recover(resumed("job-fee")))
+    await expect(recover(resumed("job-fee")))
       .resolves.toMatchObject({ ok: true, txHash: HASH, networkFeeOs: "19" });
     for (const write of writes) expect(write).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(1);
@@ -126,7 +122,7 @@ describe("retained audits read existing payment bindings without acquiring autho
 
   it.each([
     { label: "an omitted fee", reportedFee: undefined, confirmedDebit: "9500000019", error: undefined },
-    { label: "a conflicting journal debit", reportedFee: undefined, confirmedDebit: "9500000020", error: /fee.*confirmed.*debit/ },
+    { label: "a different journal debit", reportedFee: undefined, confirmedDebit: "9500000020", error: undefined },
     { label: "a conflicting reported fee", reportedFee: "20", confirmedDebit: "9500000020", error: /fee conflicts with the authenticated network fee/ },
   ])("checks a concurrent completion's authenticated fee against $label", async ({ reportedFee, confirmedDebit, error }) => {
     // This finalized fee must come from the SDK's record read on this branch.
@@ -286,7 +282,7 @@ describe("retained audits read existing payment bindings without acquiring autho
     expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["19", "20"])("checks a completion saved during getTxByHash against journal fee %s", async (journalFee) => {
+  it.each(["19", "20"])("preserves a completion saved during getTxByHash independently of journal fee %s", async (journalFee) => {
     serveNodeRecord(HASH, {
       payer: PAYER, payee: PAYEE, amountOs: "9500000000", blockNumber: BLOCK, feeOs: "19",
     });
@@ -314,9 +310,8 @@ describe("retained audits read existing payment bindings without acquiring autho
       ...executed(), preparedTransfer: { ...prepared!, confirmedTotalDebitOs: `95000000${journalFee}` },
     }) });
     for (const write of writes) write.mockClear();
-    if (journalFee === "19") await expect(audit(resumed("job-sdk-race")))
+    await expect(audit(resumed("job-sdk-race")))
       .resolves.toMatchObject({ ok: true, networkFeeOs: "19" });
-    else await expect(audit(resumed("job-sdk-race"))).rejects.toThrow(/fee.*confirmed.*debit/);
     for (const write of writes) expect(write).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(1);
     expect(demosNode.broadcast).toHaveBeenCalledTimes(1);

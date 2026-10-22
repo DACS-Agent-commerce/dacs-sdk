@@ -38,6 +38,7 @@ import {
   payDemSettle,
   type PayDemRail,
   type PayDemSettlementReconcile,
+  type PayDemPreparedTransfer,
 } from "../../src/rails/payDem.js";
 import {
   createIdempotencyStore,
@@ -227,6 +228,147 @@ async function demAudit(
     return (await onRead({ txHash, claim }) ?? claim) as never;
   } });
 }
+
+describe("cold review native restart regressions", () => {
+  const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+  async function fixture() {
+    const store = createInMemorySessionStore();
+    const log = createInMemorySettlementLog();
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing, supportedPaymentRails: ["pay-dem"] },
+      ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const journal: PayDemPreparedTransfer[] = [];
+    const reconcile: PayDemSettlementReconcile = async () => ({ ok: true, execution: "executed",
+      txHash: demosNode.nextHash, chainId: "demos", payer: demosNode.address,
+      payee: sellerDid.split(":").at(-1)!, amountOs: "1000000000", blockNumber: 42,
+      txRefKind: "demos", finality: { model: "bft-final" },
+      ...(demosNode.feeOs === undefined ? {} : { networkFeeOs: demosNode.feeOs }),
+      ...(journal.length ? { preparedTransfer: journal[0] } : {}) });
+    const adapter = async (recipient?: string) => payDemSettle(await sdkPayDemRail(undefined, {
+      journalPreparedTransfer: async (entry) => { journal.push(entry); },
+    }), { recipient }, { store: createIdempotencyStore(log), reconcile });
+    return { store, log, kv, adapter, reconcile };
+  }
+
+  test.each([["0", "2000000000"], ["12", "6"], ["6", "6"]])(
+    "pending evidence and completed replay accept record fee %s with confirmation fee %s", async (feeOs, confirmFeeOs) => {
+      Object.assign(demosNode, { feeOs, confirmFeeOs });
+      const f = await fixture();
+      const first = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter(),
+        anchor: async (name, value) => {
+          if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor outage");
+          f.kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
+        } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({
+        outcome: "settlement-pending", payment: { ok: true, networkFeeOs: feeOs } });
+      for (let replay = 0; replay < 2; replay++) {
+        const resumed = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
+        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "completed" });
+      }
+      expect(demosNode.broadcasts).toBe(1);
+    },
+  );
+
+  test.each(["missing", "outage", "failed"])(
+    "paid evidence catch-up handles a %s record without a second payment", async (state) => {
+      const f = await fixture();
+      const first = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter(),
+        anchor: async (name, value) => {
+          if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor outage");
+          f.kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
+        } });
+      const paid = await runSessionCore(first.listingRef, demTerms, first.deps);
+      expect(paid.outcome).toBe("settlement-pending");
+      const before = await f.store.load("job-1");
+      const anchors = [...f.kv];
+      demosNode.reply = () => {
+        if (state === "outage") throw new Error("RPC outage");
+        return state === "missing" ? null : { ...demosNode.records.get(demosNode.nextHash) as object, status: "failed" };
+      };
+      const resumed = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
+      const resume = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
+      if (state === "failed") await expect(resume).rejects.toThrow(/contradicts/);
+      else await expect(resume).resolves.toEqual(paid);
+      expect(await f.store.load("job-1")).toEqual(before);
+      expect([...f.kv]).toEqual(anchors);
+      demosNode.reply = undefined;
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(demosNode.broadcasts).toBe(1);
+    },
+  );
+
+  test.each(["claim", "recipient", "before attempt"])(
+    "a corrected %s failure resumes and pays exactly once", async (fault) => {
+      const f = await fixture();
+      if (fault === "claim") vi.spyOn(f.log, "claimIntent").mockRejectedValueOnce(new Error("DB outage"));
+      if (fault === "before attempt") demosNode.onTransfer = () => { throw new Error("signer unavailable"); };
+      const first = await makeDeps(f.store, { kv: f.kv,
+        settle: await f.adapter(fault === "recipient" ? "ef".repeat(32) : undefined) });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(
+        fault === "recipient" ? /destination mismatch/ : /before/);
+      expect(demosNode.broadcasts).toBe(0);
+      demosNode.onTransfer = undefined;
+      const resumed = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(demosNode.broadcasts).toBe(1);
+    },
+  );
+
+  test("a crash between claims can be reopened only with explicit independent proof", async () => {
+    const f = await fixture();
+    const interrupted = { ...f.store, claimCheckpoint: async (...args: Parameters<typeof f.store.claimCheckpoint>) => {
+      await f.store.claimCheckpoint(...args);
+      throw new Error("process died between claims");
+    } };
+    const first = await makeDeps(interrupted, { kv: f.kv, settle: await f.adapter() });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/between claims/);
+    const held = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
+    await expect(runSessionCore(held.listingRef, demTerms, held.deps, "job-1"))
+      .rejects.toThrow(/no recorded attempt/);
+    expect(demosNode.broadcasts).toBe(0);
+    const absence = vi.fn(async () => null);
+    const reopened = await makeDeps(f.store, { kv: f.kv, settle: payDemSettle(await sdkPayDemRail(), {}, {
+      store: createIdempotencyStore(f.log), reconcile: f.reconcile,
+      retryUnattempted: { originalLogRetained: true, reconcile: absence },
+    }) });
+    await expect(runSessionCore(reopened.listingRef, demTerms, reopened.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "completed" });
+    await expect(runSessionCore(reopened.listingRef, demTerms, reopened.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "completed" });
+    expect(absence).toHaveBeenCalledOnce();
+    expect(demosNode.broadcasts).toBe(1);
+  });
+
+  test("a consumed pre-attempt refusal cannot pay again after the rail log is lost", async () => {
+    const f = await fixture();
+    vi.spyOn(f.log, "claimIntent").mockRejectedValueOnce(new Error("DB outage"));
+    const first = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/before invoking/);
+    const crashAtBinding = { ...f.store, bindHash: async (input: Parameters<typeof f.store.bindHash>[0]) => {
+      if (input.kind === "transaction") throw new Error("process died after payment");
+      return f.store.bindHash(input);
+    } };
+    const second = await makeDeps(crashAtBinding, { kv: f.kv, settle: await f.adapter() });
+    await expect(runSessionCore(second.listingRef, demTerms, second.deps, "job-1"))
+      .rejects.toThrow(/died after payment/);
+    expect(demosNode.broadcasts).toBe(1);
+    const lostLog = await makeDeps(f.store, { kv: f.kv, settle: payDemSettle(await sdkPayDemRail(), {}, {
+      store: createIdempotencyStore(), reconcile: f.reconcile,
+    }) });
+    await expect(runSessionCore(lostLog.listingRef, demTerms, lostLog.deps, "job-1"))
+      .rejects.toThrow(/no recorded attempt/);
+    expect(demosNode.broadcasts).toBe(1);
+    const restored = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
+    await expect(runSessionCore(restored.listingRef, demTerms, restored.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "completed" });
+    expect(demosNode.broadcasts).toBe(1);
+  });
+});
 
 describe("runSessionCore records to the durable SessionStore (#55 integration)", () => {
   test("a completed session is recorded with receipts, status, and an anti-replay binding", async () => {
@@ -1535,7 +1677,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const expected: Record<string, RegExp> = {
       absent: unread("transaction record was not found or lookup failed"),
       indeterminate: unread("transaction record has no terminal execution status"),
-      timeout: unread("transaction record read timed out"),
+      timeout: unread("transaction record read (?:timed out|failed)"),
       hash: /does not match the retained transaction/,
       network: /does not bind the exact pay-dem network, payer, and payee/,
       // Another wallet's bridge cannot read this key's rail log at all.
@@ -1558,8 +1700,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       "custom callback": /resumeSettlement is not the payDemSettle adapter, so it is not called/,
       "missing reconciler": /requires authenticated rail reconciliation/,
     };
-    await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-      .rejects.toThrow(expected[reply]);
+    const recovery = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
+    if (saved === "checkpoint" && ["absent", "indeterminate", "timeout"].includes(reply)) {
+      await expect(recovery).resolves.toMatchObject({ outcome: "settlement-pending", payment: success });
+    } else await expect(recovery).rejects.toThrow(expected[reply]);
     expect(custom).not.toHaveBeenCalled();
     expect(demosNode.transfers).toBe(0);
     expect(reconciliations)
@@ -2425,7 +2569,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const lastOutcome = async (store: ReturnType<typeof createInMemorySessionStore>) => {
       const loaded = await store.load("job-1");
       return loaded.status === "ok"
-        ? loaded.record.checkpoints.filter((cp) => cp.stage === "outcome").at(-1)?.data
+        ? loaded.record.checkpoints.filter((cp) => cp.key === "settle:0" && cp.stage === "outcome").at(-1)?.data
         : undefined;
     };
     const executedClaim = (retained: string) => ({ ok: true as const, execution: "executed" as const,
@@ -3194,11 +3338,18 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         reconcile: async () => null,
       }) });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("transfer response lost");
+      // Model a killed process: it could not persist the not-invoked response.
+      const crashedStore = { ...store, load: async (jobId: string) => {
+        const loaded = await store.load(jobId);
+        if (loaded.status === "ok") loaded.record.checkpoints = loaded.record.checkpoints
+          .filter((cp) => cp.key !== "settle:unattempted");
+        return loaded;
+      } };
       const otherJob = "ef".repeat(32);
       demosNode.records.set(otherJob, nodeRecord({ txHash: otherJob, payer, payee, amountOs: "1000000000",
         status: "failed" }));
       const reconcile = vi.fn(async () => failedClaim(otherJob));
-      const resumed = await makeDeps(store, { kv, resumeSettlement: payDemSettle(await sdkPayDemRail(), {}, {
+      const resumed = await makeDeps(crashedStore, { kv, resumeSettlement: payDemSettle(await sdkPayDemRail(), {}, {
         store: createIdempotencyStore(log, { owner: "after", now: () => 3, leaseDurationMs: 1 }), reconcile,
       }) });
       await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))

@@ -181,9 +181,9 @@ below).
   payee, OS amount and network, a `recovery` tuple equal to this rail, job and
   phase, and (when present) a known denomination and debit bounds no lower
   than the amount; a permanent failure's proof must also carry the journaled
-  nonce. When a network fee is reported or preserved from an authenticated
-  outcome, the successful result's OS amount plus that fee must equal
-  `confirmedTotalDebitOs` whenever that field is present. A missing fee with
+  nonce. A supplied confirmation debit must be at least the OS amount and
+  no greater than the declared debit ceiling. The confirmation debit and
+  the record's fee are independent quantities and may differ. A missing fee with
   no authenticated value to preserve does not prevent recovery or authenticate
   a fee from the supplied journal. Recovery preserves a
   previously authenticated network fee if the reader omits it, and refuses a
@@ -269,9 +269,17 @@ below).
   function. When `resumeSettlement` is omitted, the registered native DEM
   `settle` adapter serves as the recovery implementation.
   Native recovery requests carry `recoveryOnly: true`, even when a crash left
-  only the session intent. The adapter uses the rail log's original attempt
-  record and never submits on these requests. Without that record, it refuses
-  recovery without claiming a new rail intent or broadcasting.
+  only the session intent. Without an attempt record, it refuses recovery.
+  An SDK-confirmed pre-attempt failure instead records a single-use retry
+  checkpoint, consumed durably before retrying the original rail key. The
+  rail's atomic claim still refuses an unresolved earlier generation.
+  Deterministic recipient checks run before the session claims settlement.
+  If the process died without recording its refusal, operators may configure
+  `payDemSettle`'s `retryUnattempted` with `originalLogRetained: true` and an
+  independent absence reconciler. It fences the old worker, verifies the intact
+  original log has no attempt, and reopens the exact key for one fresh payment.
+  Live, completed, tx-bearing, conflicting, and independently observed payments
+  refuse. `reopenUnattempted` exposes the same fenced operation on the store.
   Before claiming or paying, a fresh native session requires a
   caller-supplied settlement store and reconciler on its recovery adapter,
   plus a caller-supplied store on its paying adapter. A supplied
@@ -516,7 +524,11 @@ transaction metadata, and `pendingEvidenceAddress`. There is no `settlementRef`
 or `bundleRef` yet. The session stays non-terminal. Its immutable `settle:0`
 outcome is the durable retry item: an operator or worker resumes the same job,
 which audits the original payment and retries that same write-once evidence
-address before publishing the bundle. Never start a new payment from this result.
+address before publishing the bundle, while the Listing remains valid. The
+existing expired-Listing admission gate can still prevent catch-up after expiry.
+An unavailable native record re-read returns the saved `payment.ok: true` in
+`settlement-pending`, without publishing unchecked evidence; contradictions
+still refuse. Never start a new payment from this result.
 Failed payments and failures before the paid checkpoint is durable retain their
 existing error behavior. Direct sessions without a durable store cannot offer
 durable evidence catch-up; fresh native sessions require that store.

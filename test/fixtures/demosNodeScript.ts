@@ -11,6 +11,7 @@
  * serves through `demosNode`.
  */
 import { createPayDemRail, type PayDemRail } from "../../src/rails/payDem.js";
+import { vi } from "vitest";
 
 type NodeRecord = Record<string, unknown>;
 
@@ -60,6 +61,7 @@ export const demosNode = {
   /** The node each `getTxByHash` read went to, in order. */
   readNodes: [] as (string | undefined)[],
   reset(): void {
+    vi.stubGlobal("fetch", demosRpcFetch);
     this.address = "ab".repeat(32);
     this.nextHash = "cd".repeat(32);
     this.nonce = 9;
@@ -266,7 +268,10 @@ export const demosRpcFetch: typeof fetch = async (input, init) => {
   const request = JSON.parse(init!.body as string);
   const { message, data } = request.params[0];
   let response: unknown;
-  if (message === "getNetworkInfo") response = networkInfo(rpc);
+  if (message === "getNetworkInfo") {
+    demosNode.networkInfoReads.push(demosNode.postFork);
+    response = await networkInfo(rpc);
+  }
   else if (message === "getBlockByNumber") {
     const number = Number(data.blockNumber);
     if (number === 0) {
@@ -280,7 +285,7 @@ export const demosRpcFetch: typeof fetch = async (input, init) => {
     demosNode.reads.push(data.hash);
     demosNode.readNodes.push(rpc);
     response = demosNode.reply === undefined ? demosNode.records.get(data.hash) ?? null
-      : demosNode.reply(data.hash, rpc);
+      : await demosNode.reply(data.hash, rpc);
   } else throw new Error(`unexpected recovery RPC ${message}`);
   return new Response(JSON.stringify({ result: 200, response }), {
     headers: { "Content-Type": "application/json" },

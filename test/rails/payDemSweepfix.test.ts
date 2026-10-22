@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createIdempotencyStore, createInMemorySettlementLog,
   settlementBindingHash, type SettlementBinding, type SettlementEffectFence } from "../../src/rails/idempotency.js";
-import { payDemSettle } from "../../src/rails/payDem.js";
+import { payDemSettle, type PayDemPreparedTransfer } from "../../src/rails/payDem.js";
 import { demosNode, demosRpcFetch, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
@@ -19,6 +19,114 @@ const key = "pay-dem:sweepfix:0";
 const absence = { originalLogRetained: true as const, reconcile: async () => null };
 const req = { rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "sweepfix",
   amount: "1", asset: "DEM", payee: `did:demos:agent:${payee}`, expectedPayee: payee };
+
+test("a lost attempt-write acknowledgement keeps the intent held", async () => {
+  const log = createInMemorySettlementLog();
+  const putAttempt = log.putAttempt!.bind(log);
+  vi.spyOn(log, "putAttempt").mockImplementation(async (input) => {
+    await putAttempt(input); throw new Error("attempt acknowledgement lost");
+  });
+  const release = vi.spyOn(log, "releaseIntent");
+  const adapter = payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log) });
+  await assert.rejects(adapter(req), /acknowledgement lost/);
+  assert.equal(release.mock.calls.length, 0);
+  assert.equal(demosNode.broadcasts, 0);
+  assert.equal(demosNode.transfers, 1);
+  assert.equal((await log.readAttempt!(key))?.txHash, demosNode.nextHash);
+  await assert.rejects(adapter(req), /in-flight/);
+  assert.equal(demosNode.transfers, 1);
+});
+
+test.each([["12", "6"], ["0", "2000000000"], ["6", "6"]])(
+  "restart recovery keeps record fee %s separate from confirmation fee %s", async (feeOs, confirmFeeOs) => {
+    Object.assign(demosNode, { feeOs, confirmFeeOs });
+    const journal: PayDemPreparedTransfer[] = [];
+    const log = createInMemorySettlementLog();
+    const first = await payDemSettle(await sdkPayDemRail(undefined, {
+      journalPreparedTransfer: async (entry) => { journal.push(entry); },
+    }), {}, { store: createIdempotencyStore(log) })(req);
+    assert.equal(first.networkFeeOs, feeOs);
+    assert.equal(journal[0]!.confirmedTotalDebitOs, (1000000000n + BigInt(confirmFeeOs!)).toString());
+    for (const history of [false, true]) {
+      const resumed = payDemSettle(await sdkPayDemRail(), {}, {
+        store: createIdempotencyStore(log), reconcile: async () => ({ ...first,
+          amountOs: binding.amount, execution: "executed", preparedTransfer: journal[0] }),
+      });
+      assert.deepEqual(await resumed({ ...req, ...(history ? { recoveryOnly: true } : {}) }), first);
+    }
+    assert.equal(demosNode.broadcasts, 1);
+  },
+);
+
+test.each(["getNetworkInfo", "getTxByHash"])(
+  "archive recovery cancels stalled primary %s requests", async (message) => {
+    const { log, first, record } = await savedPayment();
+    let active = 0, peak = 0, calls = 0, primaryInfoReads = 0;
+    demosNode.reply = (_hash, rpc) => {
+      // Also exercise the former SDK transport on the review-head control.
+      if (message === "getTxByHash" && rpc === "https://node.test") {
+        active++; calls++; peak = Math.max(peak, active);
+        return new Promise(() => undefined);
+      }
+      return record;
+    };
+    vi.stubGlobal("fetch", (...args: Parameters<typeof fetch>) => {
+      const request = JSON.parse(args[1]!.body as string).params[0];
+      if (args[0] !== "https://node.test" || request.message !== message) return demosRpcFetch(...args);
+      if (message === "getNetworkInfo" && ++primaryInfoReads % 2 === 0) return demosRpcFetch(...args);
+      active++; calls++; peak = Math.max(peak, active);
+      return new Promise((_resolve, reject) => args[1]!.signal!.addEventListener("abort", () => {
+        active--; reject(args[1]!.signal!.reason);
+      }, { once: true }));
+    });
+    const adapter = payDemSettle(await sdkPayDemRail(undefined, {
+      recoveryRpc: "https://archive.test", statusRequestTimeoutMs: 10,
+    }), {}, { store: createIdempotencyStore(log), reconcile: async () => ({ ...first,
+      amountOs: binding.amount, execution: "executed" }) });
+    for (let retry = 0; retry < 3; retry++) {
+      assert.deepEqual(await adapter({ ...req, recoveryOnly: true }), first);
+      assert.equal(active, 0);
+    }
+    assert.equal(calls, 3);
+    assert.equal(peak, 1);
+    assert.equal(demosNode.broadcasts, 1);
+  },
+);
+
+test("operator reopening fences a crashed worker and permits exactly one fresh payment", async () => {
+  const log = createInMemorySettlementLog();
+  let oldFence: Readonly<SettlementEffectFence> | undefined;
+  await assert.rejects(createIdempotencyStore(log, { now: () => 1, leaseDurationMs: 10 }).once(
+    key, binding, async (fence) => { oldFence = fence; throw new Error("crash"); },
+  ));
+  const adapter = payDemSettle(await sdkPayDemRail(), {}, {
+    store: createIdempotencyStore(log, { now: () => 12 }), retryUnattempted: absence,
+  });
+  assert.equal((await adapter({ ...req, recoveryOnly: true })).ok, true);
+  await assert.rejects(oldFence!.recordAttempt!("12".repeat(32)), /stale generation|another transaction/);
+  assert.equal((await adapter({ ...req, recoveryOnly: true })).ok, true);
+  assert.equal(demosNode.broadcasts, 1);
+});
+
+test.each(["live", "attempted", "present", "unavailable"])(
+  "operator reopening refuses %s payment state", async (state) => {
+    const log = createInMemorySettlementLog();
+    await assert.rejects(createIdempotencyStore(log, { now: () => 1, leaseDurationMs: 10 }).once(
+      key, binding, async (fence) => {
+        if (state === "attempted") await fence!.recordAttempt!("12".repeat(32));
+        throw new Error("crash");
+      },
+    ));
+    const operator = createIdempotencyStore(log, { now: () => state === "live" ? 2 : 12 });
+    await assert.rejects(operator.reopenUnattempted!(key, binding, {
+      originalLogRetained: true, reconcile: async () => {
+        if (state === "unavailable") throw new Error("journal unavailable");
+        return state === "present" ? { ok: true, txHash: "12".repeat(32), payer, payee, chainId: "demos" } : null;
+      },
+    }), /live|recorded transaction|independent proof|unavailable/);
+    assert.equal(demosNode.broadcasts, 0);
+  },
+);
 
 test("an operator closes an expired unattempted intent; restart reports unpaid without a transfer", async () => {
   const log = createInMemorySettlementLog();

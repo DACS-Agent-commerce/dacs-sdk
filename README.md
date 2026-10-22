@@ -365,7 +365,7 @@ if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only"
 }
 
 if (session.outcome === "settlement-pending") {
-  // Retain the job and resume it to finish evidence publication.
+  // Retain the job and resume it while the Listing remains valid to retry publication.
   console.log(`Payment ${session.payment.txHash} is final; resume job ${session.jobId}`);
 } else {
   // anyone — verify the bundle's structure, signatures, referenced artifacts,
@@ -671,9 +671,10 @@ The raw node record's `content` and `status` are not this SDK result shape;
 see the [normalization example](docs/pay-dem-execution.md#normalizing-a-reconciliation-result).
 Recovery preserves a known network fee when the reader omits it and refuses
 a different fee for the same finalized payment. The SDK's own node-record read
-must still match the saved fee. When a fee is reported or preserved from an
-authenticated outcome, a supplied journal's confirmed total debit must equal
-the successful result's OS amount plus that fee. An omitted fee with no
+must still match the saved fee. A supplied journal's confirmation debit must
+be at least the OS amount and no greater than its declared debit ceiling.
+The confirmation debit and the record's fee are independent quantities and
+may differ. An omitted fee with no
 authenticated value to preserve does not prevent recovery or authenticate a
 fee from the supplied journal.
 
@@ -836,8 +837,15 @@ that are held without a rail call. When `resumeSettlement` is omitted, the
 registered native DEM `settle` adapter serves as the recovery implementation.
 Native recovery requests carry `recoveryOnly: true`, including intent-only
 checkpoints with no saved transaction. The adapter reads the original attempt
-from the rail log and never submits on these requests. If that record is
-missing, recovery remains unresolved without making another payment.
+from the rail log. If that record is missing, recovery remains unresolved.
+An SDK-confirmed pre-attempt failure records a single-use retry checkpoint;
+resume consumes it before invoking the original rail key again. The rail's
+atomic claim still refuses any unresolved earlier generation. Deterministic
+recipient checks run before the session claims settlement. For a process that
+died without recording that refusal, operators may configure
+`payDemSettle`'s `retryUnattempted` with `originalLogRetained: true` and an
+independent absence reconciler. This fences the old worker, requires no attempt
+record, and reopens only that exact key; live, paid, and tx-bearing intents refuse.
 Only the SDK's `payDemSettle` adapter
 (directly, from `settleFromRail`, or passed through `Agent.runSession`) is
 called for it, as for every native settlement (see below). With the
@@ -884,8 +892,12 @@ stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
 
 When a retained `SessionStore` has saved a successful payment but evidence
 publication is unavailable, `runSession` returns `outcome: "settlement-pending"`
-with `payment.ok: true` and `pendingEvidenceAddress`. Resume that same job to
-publish its evidence and bundle; the saved payment is never submitted again.
+with `payment.ok: true` and `pendingEvidenceAddress`. An unavailable native
+record re-read also returns this pending result for a saved rail-final payment,
+without publishing unchecked evidence. Contradictory records still refuse.
+Resume that same job while its Listing remains valid to retry publication;
+the saved payment is never submitted again. The existing expired-Listing
+admission gate can still prevent catch-up after expiry.
 `settlementRef` and `bundleRef` are available only on terminal results.
 
 A recovered native success, and any native permanent failure, is final only

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
 import { DacsError } from "../../src/errors.js";
+import { baseUnits } from "../../src/canonical/index.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
@@ -94,14 +95,17 @@ async function settledLog(outcome: "executed" | "failed", network = "demos") {
   return log;
 }
 
-// A transfer whose response was lost: the SDK rail's transfer throws before it
-// signs, so only the intent is in the log. Its lease (owner "a") has expired by
-// the time owner "b" looks the key up.
+// A process killed before its rail attempt: unlike a returned pre-attempt
+// error, it cannot release its intent. Owner "b" sees that expired intent.
 async function lostResponse(log: SettlementLog, req: SettleRequest) {
-  submit.mockImplementationOnce(async () => { throw new Error("response lost"); });
-  await expect(payDemSettle(rail, {}, {
-    store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }),
-  })(req)).rejects.toThrow("response lost");
+  await expect(createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }).once(
+    `${req.rail}:${req.jobId}:${req.phaseIndex}`, {
+      bindingVersion: "1", railId: req.rail, jobId: req.jobId, phaseIndex: req.phaseIndex!, phase: req.phase,
+      amount: baseUnits(req.amount, 9), agreementAsset: "DEM", settlementAsset: "DEM",
+      payer: demosNode.address, payee: req.expectedPayee.split(":").at(-1)!, network: "demos",
+      finality: { model: "bft-final" },
+    }, async () => { throw new Error("response lost"); },
+  )).rejects.toThrow("response lost");
   submit.mockClear();
 }
 
@@ -435,7 +439,7 @@ describe("a by-key failed record another writer finds is never this key's outcom
     await expect(other(fresh)).rejects.toThrow(/reconciliation was not definitive/);
     finish();
     // The stalled writer lost its generation, so it never records or broadcasts.
-    await expect(slow).rejects.toThrow(/effect fence is stale/);
+    await expect(slow).rejects.toThrow(/effect fence is stale|clean attempt release is stale/);
     await expect(log.readAttempt!("pay-dem:retained-native:0")).resolves.toBeNull();
     expect(demosNode.broadcasts).toBe(0);
     // The other writer's held generation is never resubmitted or demoted.

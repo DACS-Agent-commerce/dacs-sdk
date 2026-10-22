@@ -220,7 +220,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const networkFeeOs = preparedTransfer.confirmedTotalDebitOs === undefined ? undefined
       : (BigInt(preparedTransfer.confirmedTotalDebitOs) - 1000000000n).toString();
     // The current SDK authenticates the fee from its own transaction read.
-    serveNodeRecord(hashA, { payer, payee, feeOs: networkFeeOs });
+    serveNodeRecord(hashA, { payer, payee, nonce: 7, feeOs: networkFeeOs });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({ ...executed(hashA), preparedTransfer,
       ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
     }));
@@ -230,13 +230,14 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     expect(f.submit).not.toHaveBeenCalled();
   });
 
-  test.each(["0", "1001"])("refuses fee %s inconsistent with the journal's confirmed debit", async (networkFeeOs) => {
+  test.each(["0", "1001"])("accepts record fee %s independently of the confirmation debit", async (networkFeeOs) => {
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({
       ...executed(hashA), preparedTransfer: entry({ confirmedTotalDebitOs: "1000001000" }) as PayDemPreparedTransfer,
       ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
     }));
     const f = await auditor(reconcile, await settledJobA());
-    await expect(f.settle(request("job-a", 0, hashA))).rejects.toThrow(/fee.*confirmed.*debit/);
+    serveNodeRecord(hashA, { payer, payee, feeOs: networkFeeOs });
+    await expect(f.settle(request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, networkFeeOs });
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
   });

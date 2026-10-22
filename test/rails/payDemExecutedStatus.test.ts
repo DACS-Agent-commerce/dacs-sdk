@@ -137,6 +137,13 @@ const NOT_OK = {
 };
 
 beforeEach(() => {
+  vi.stubGlobal("fetch", async (_input: unknown, init: RequestInit) => {
+    const { message, data } = JSON.parse(init.body as string).params[0];
+    const response = message === "getNetworkInfo" ? await sdk.getNetworkInfo()
+      : message === "getTxByHash" ? await sdk.getTxByHash(data.hash)
+      : await sdk.nodeCall(message, data);
+    return new Response(JSON.stringify({ result: 200, response }));
+  });
   vi.clearAllMocks();
   sdk.connect.mockResolvedValue(undefined);
   sdk.connectWallet.mockResolvedValue(undefined);
