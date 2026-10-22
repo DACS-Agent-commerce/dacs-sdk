@@ -91,6 +91,17 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
  const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
  return {op,ops,service};
 }
+test('host chain-readback bookkeeping keeps its source and records a repeated hold once', t => {
+ const {op,ops,service}=coordinator(t);
+ const held=service.holdChainReadback(op,'TEST-host-retired-key');
+ assert.equal(held.state.protocol.chainReadbackHeld.source,'host-supplied');
+ assert.equal(held.state.protocol.chainReadbackHeld.reason,'TEST-host-retired-key');
+ assert.equal(service.holdChainReadback(op,'TEST-repeat').state.protocol.chainReadbackHeld.reason,'TEST-host-retired-key');
+ const events=ops.history(op.id).filter(event=>event.type==='protocol_chain_readback_held');
+ assert.equal(events.length,1);
+ assert.equal(events[0].data.source,'host-supplied');
+ assert.equal(held.status,'settled_verified');
+});
 for(const [label,error] of errors)test(`delivered purchase recheck: ${label}`,async t=>{
  state.adapter={read:async()=>{throw error();},verifyReceipt:async()=> 'valid'};
  state.seller={origin:'https://seller.invalid'};

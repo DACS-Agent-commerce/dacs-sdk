@@ -23,6 +23,24 @@ export function normalizeCatalogObservedAt(value) {
   return Number.isSafeInteger(observedAt) && observedAt >= 0 ? observedAt : undefined;
 }
 
+// DACS-1 RevocationBinding is discovery data; post-fetch RB-4 verification
+// still belongs to the artifact verifier. Do not pass extension objects on.
+function projectRevocationBinding(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const bounds = { sellerPrimaryClaim: 256, listingId: 128, listingContentHash: 64,
+    logicalAddress: 1024, markerContentHash: 64 };
+  for (const [field, max] of Object.entries(bounds)) {
+    if (typeof value[field] !== 'string' || !value[field].length || value[field].length > max) return undefined;
+  }
+  if (!Number.isSafeInteger(value.listingVersion) || value.listingVersion < 1
+    || !value.markerAnchor || Array.isArray(value.markerAnchor)
+    || typeof value.markerAnchor.kind !== 'string' || !value.markerAnchor.kind.length || value.markerAnchor.kind.length > 64
+    || typeof value.markerAnchor.locator !== 'string' || !value.markerAnchor.locator.length || value.markerAnchor.locator.length > 1024) return undefined;
+  return { ...Object.fromEntries(Object.keys(bounds).map(field => [field, value[field]])),
+    listingVersion: value.listingVersion,
+    markerAnchor: { kind: value.markerAnchor.kind, locator: value.markerAnchor.locator } };
+}
+
 // Whitelist projection: only these fields ever reach the model, with lengths
 // capped, so a hostile directory cannot inject arbitrary payloads.
 export function projectSummary(raw) {
@@ -53,7 +71,7 @@ export function projectSummary(raw) {
     publicEndpoint: str(raw.publicEndpoint, 512),
     artifactProfile: str(raw.artifactProfile, 64),
     status: raw.status,
-    revocationBinding: raw.revocationBinding && typeof raw.revocationBinding === 'object' ? raw.revocationBinding : undefined,
+    revocationBinding: projectRevocationBinding(raw.revocationBinding),
     catalogObservedAt: normalizeCatalogObservedAt(raw.catalogObservedAt),
   };
 }

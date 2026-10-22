@@ -95,6 +95,7 @@ function assertCommitted(s, kind) {
   } else {
     const overdue = s.operation.state.protocol.deliveryDeadline.overdue;
     assert.equal(overdue.authority, 'local-observation');
+    assert.equal(overdue.source, 'host-supplied');
     assert.equal(overdue.disposition, 'indeterminate');
     assert.equal(s.operation.accountId, ACCOUNT);
     const events = s.events.filter(event => event.type === 'protocol_delivery_deadline_overdue');

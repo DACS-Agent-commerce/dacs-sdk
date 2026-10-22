@@ -878,6 +878,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function diagnosticReadback(operation, rawHash) {
+    operation = projectExpiry(operation);
     const hash = coordinates.get(operation.id)?.reportedTxHash;
     if (rawHash != null && canonicalHash(rawHash) !== hash) throw new OperationError('invalid_state', 'diagnostic readback only accepts the recorded transaction hash');
     let observation = null;
@@ -939,7 +940,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       await assertBoundDomain(operation);
     } catch (error) {
       const refused = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, ...scope };
-      if (!(error instanceof OperationError)) return { operation, verification: { outcome: 'chain_unavailable', reason: error.message, ...refused } };
+      if (!(error instanceof OperationError)) return { operation, verification: { outcome: 'chain_unavailable', reason: String(error?.message ?? error).slice(0, 240), ...refused } };
       ops.record(operation.id, 'readback_refused', { txHash: hash, reason: error.code });
       return { operation, verification: { outcome: 'network_identity_mismatch', reason: error.code, mismatches: [error.message], ...refused } };
     }

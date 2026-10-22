@@ -208,7 +208,7 @@ test(`public host readers remain diagnostic and cannot settle or consume a nonce
 }
 
 for (const status of ['awaiting_approval', 'agreement_pending']) {
-  test(`public expired ${status} portal/status/evidence reads never persist or offer approval`, t => {
+  test(`public expired ${status} portal/status/evidence reads never persist or offer approval`, async t => {
     const w = world(t, INCLUDED, { publicApi: true });
     w.db.prepare('UPDATE operations SET status=?, expires_at=? WHERE id=?').run(status, new Date(0).toISOString(), w.op.id);
     const before = w.ops.get(w.op.accountId, w.op.id), history = w.ops.history(w.op.id), coords = w.coordinates.get(w.op.id);
@@ -223,12 +223,23 @@ for (const status of ['awaiting_approval', 'agreement_pending']) {
     const evidence = w.purchases.portalEvidence(portal);
     assert.equal(evidence.actionable, false);
     assert.match(evidence.next, /historical.*held/);
+    assert.deepEqual((await w.verify()).operation, portal);
     assert.deepEqual(w.ops.get(w.op.accountId, w.op.id), before);
     assert.deepEqual(w.ops.history(w.op.id), history);
     assert.deepEqual(w.coordinates.get(w.op.id), coords);
     assert.throws(() => w.purchases.portalOperation(w.op.id, 'TEST-wrong-token'), { code: 'not_found' });
   });
 }
+
+test('expired diagnostic readback with closed buyer access uses the same read-only status projection', async t => {
+  const refusal = Object.assign(new Error('TEST-closed'), { code: 'buyer_access_closed' });
+  const w = world(t, INCLUDED, { publicApi: true, buyerRefusal: refusal });
+  w.db.prepare('UPDATE operations SET status=?, expires_at=? WHERE id=?').run('awaiting_approval', new Date(0).toISOString(), w.op.id);
+  const before = w.ops.get(w.op.accountId, w.op.id), history = w.ops.history(w.op.id);
+  assert.equal((await w.verify()).operation.status, 'expired');
+  assert.deepEqual(w.ops.get(w.op.accountId, w.op.id), before);
+  assert.deepEqual(w.ops.history(w.op.id), history);
+});
 
 for (const status of ['awaiting_approval', 'agreement_pending', 'approved', 'settled_verified']) {
   test(`public portal/status preserve ${status} outside an elapsed approval window`, t => {
@@ -299,6 +310,18 @@ for (const failure of [null, undefined, 'TEST-reader-failed']) {
 }
 
 for (const failure of [null, undefined, 'TEST-reader-failed', new Error('TEST-long-'.repeat(100))]) {
+  test(`retained domain reader rejection preserves its bounded cause ${String(failure).slice(0, 40)}`, async t => {
+    const w = world(t, INCLUDED), reader = w.chain.networkIdentity;
+    w.chain.networkIdentity = async () => { throw failure; };
+    const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
+    const result = await w.verify();
+    assert.equal(result.verification.outcome, 'chain_unavailable');
+    assert.equal(result.verification.reason, String(failure?.message ?? failure).slice(0, 240));
+    assert.deepEqual(w.coordinates.get(w.op.id), before);
+    assert.deepEqual(w.ops.history(w.op.id), history);
+    w.chain.networkIdentity = reader;
+    assert.equal((await w.verify()).verification.outcome, 'verified');
+  });
   test(`ordinary retained readback converts and bounds reader rejection ${String(failure).slice(0, 40)}`, async t => {
     const w = world(t, INCLUDED);
     const reader = w.chain.observeTransfer;

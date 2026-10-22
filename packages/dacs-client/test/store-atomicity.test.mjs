@@ -127,6 +127,88 @@ for (const rejected of [false, true]) {
     assert.equal(store.transaction(db, () => 'TEST-retry'), 'TEST-retry');
   });
 }
+
+for (const depth of ['outer', 'nested']) for (const kind of ['conflict', 'trigger']) {
+  test(`${depth} body catching its own ${kind} rollback cannot autocommit any later write`, t => {
+    const { db, path } = database(t), store = createSqlitePurchaseStore();
+    db.exec("INSERT INTO records VALUES ('TEST-existing'); CREATE TABLE sibling (id TEXT PRIMARY KEY)");
+    if (kind === 'trigger') db.exec(`CREATE TRIGGER abort_insert BEFORE INSERT ON records
+      WHEN NEW.id = 'TEST-abort' BEGIN SELECT RAISE(ROLLBACK, 'TEST-trigger-rollback'); END`);
+    // Statements prepared before guard installation must be protected too.
+    const insert = db.prepare('INSERT INTO records VALUES (?)');
+    const update = db.prepare('UPDATE records SET id=? WHERE id=?');
+    const remove = db.prepare('DELETE FROM records');
+    const returning = db.prepare('INSERT INTO sibling VALUES (?) RETURNING id');
+    let cause;
+    const body = () => {
+      insert.run('TEST-before');
+      try {
+        if (kind === 'conflict') db.exec("INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')");
+        else insert.run('TEST-abort');
+      } catch (error) { cause = error; }
+      assert.match(cause?.message ?? '', kind === 'conflict' ? /UNIQUE constraint/ : /TEST-trigger-rollback/);
+      for (const write of [
+        () => insert.run('TEST-after'),
+        () => db.exec("INSERT INTO records VALUES ('TEST-exec')"),
+        () => db.exec("INSERT OR IGNORE INTO records VALUES ('TEST-existing')"),
+        () => db.exec("INSERT OR REPLACE INTO records VALUES ('TEST-existing')"),
+        () => db.exec("INSERT INTO records VALUES ('TEST-existing') ON CONFLICT(id) DO UPDATE SET id='TEST-upsert'"),
+        () => update.run('TEST-changed', 'TEST-existing'),
+        () => remove.run(),
+        () => returning.get('TEST-get'),
+        () => returning.all('TEST-all'),
+        () => [...returning.iterate('TEST-iterate')],
+      ]) assert.throws(write, /transaction ended|closed|not open|finalized/i);
+      return 'TEST-caught';
+    };
+    assert.throws(() => store.transaction(db, () => depth === 'nested' ? store.transaction(db, body) : body()));
+    assert.throws(() => db.prepare('SELECT 1'), /closed|not open/i);
+    const reopened = new DatabaseSync(path);
+    try {
+      assert.deepEqual(reopened.prepare('SELECT id FROM records').all().map(row => row.id), ['TEST-existing']);
+      assert.deepEqual(reopened.prepare('SELECT id FROM sibling').all(), []);
+      store.transaction(reopened, () => reopened.prepare('INSERT INTO records VALUES (?)').run('TEST-retry'));
+      assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 2);
+      // Guards are local to the outer call, not a new restriction on host writes.
+      reopened.exec("INSERT INTO sibling VALUES ('TEST-outside')");
+    } finally { reopened.close(); }
+  });
+}
+
+test('a caught recoverable statement error still permits a complete commit', t => {
+  const { db, path } = database(t), store = createSqlitePurchaseStore();
+  db.exec("INSERT INTO records VALUES ('TEST-existing')");
+  store.transaction(db, () => {
+    db.exec("INSERT INTO records VALUES ('TEST-before')");
+    assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST-existing')"), /UNIQUE constraint/);
+    db.exec("INSERT INTO records VALUES ('TEST-after')");
+  });
+  const reopened = new DatabaseSync(path);
+  try { assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 3); }
+  finally { reopened.close(); }
+  assert.deepEqual(db.prepare("SELECT name FROM sqlite_temp_master WHERE name LIKE 'dacs_purchase_%'").all(), []);
+});
+
+test('automatic rollback guards TEMP and attached tables, including quoted host identifiers', t => {
+  const { db, path } = database(t), store = createSqlitePurchaseStore();
+  db.exec(`INSERT INTO records VALUES ('TEST-existing');
+    CREATE TEMP TABLE "TEST-temp" (id TEXT);`);
+  db.prepare('ATTACH DATABASE ? AS "TEST-attached"').run(`${path}.attached`);
+  db.exec('CREATE TABLE "TEST-attached"."TEST-table" (id TEXT)');
+  const tempInsert = db.prepare('INSERT INTO "TEST-temp" VALUES (?)');
+  const attachedInsert = db.prepare('INSERT INTO "TEST-attached"."TEST-table" VALUES (?)');
+  assert.throws(() => store.transaction(db, () => {
+    tempInsert.run('TEST-before');
+    attachedInsert.run('TEST-before');
+    assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')"), /UNIQUE constraint/);
+    assert.throws(() => tempInsert.run('TEST-after'), /transaction ended/);
+    assert.throws(() => attachedInsert.run('TEST-after'), /transaction ended/);
+    assert.equal(db.prepare('SELECT count(*) n FROM "TEST-temp"').get().n, 0);
+  }), { code: 'client_not_wired' });
+  const reopened = new DatabaseSync(`${path}.attached`);
+  try { assert.equal(reopened.prepare('SELECT count(*) n FROM "TEST-table"').get().n, 0); }
+  finally { reopened.close(); }
+});
 test('BEGIN IMMEDIATE blocks a second connection before its callback and permits retry', t => {
   const { db, path } = database(t), second = new DatabaseSync(path), store = createSqlitePurchaseStore();
   t.after(() => second.close());

@@ -1734,6 +1734,67 @@
           "after": "9212823cdcedd1af814e8e6c06f164c69a84a938"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 guard SQLite writes and align diagnostic projections",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "9418b11c221fddcf4f596ccd4b250e8b136f3ee1",
+          "after": "04b6618fe3d5a5e6450e52759e98c08163a3c2ab"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "c91e7f4769c14fa8b8306ef38647c65230cce881",
+          "after": "7848ec38a093fbd36993aa3ce6782224c4c48d86"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f4be20324f8b8168e1b07cfcdf673b82b0e37a95",
+          "after": "d4c59725d479e429657f000f7638e899c0c51b94"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3f3422c49edbf1af5bc5249909032c49a6518c8e",
+          "after": "2fb90ca5361cb8894fea31ba068e195a75472f38"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "3a70798e2e4bca6c1d8b9a9eb17756a9fae740d8",
+          "after": "bf39c769581827691f7851f2f007ba5f90c80a71"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "f7dfbda21d62e38e7e254569818d0fb3034bd72a",
+          "after": "5da633d98fd8bff71935417101105d2dc081ce62"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "ad06ad3f730a4b61f626a3eef35317bd839047b1",
+          "after": "ce11cbefbf4a92ef6f4b4d0a4797dc1ca26734c6"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": "3ccf8dc128d961d553aa8c09bc3caf64d8e24f4b",
+          "after": "85a1e20d8b277d37db3c38f93b8ef191e86e147d"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "222356f64ecbf3d674e34685e4602f4f75f5653d",
+          "after": "71d3ee0f2d75534c349560f55e36c08a834c7d73"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "9ae65eb7f89d25542189d0e7e9242cdf63afe8b0",
+          "after": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "9212823cdcedd1af814e8e6c06f164c69a84a938",
+          "after": "7e50ae142d79dc0e244fe143b0d151f3d458c2be"
+        }
+      ]
     }
   ]
 }

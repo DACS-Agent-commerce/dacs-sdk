@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createPurchaseService } from '../src/purchases.mjs';
 import { createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
-import { createDeliveryDeadlineWatch } from '../src/dacs/delivery-deadline-watch.mjs';
+import { createDeliveryDeadlineWatch, deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { purchaseStore, createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
@@ -129,6 +129,10 @@ test('deadline observation uses the concrete transaction and refuses a stale rep
   watch.observe(operation, readback);
   assert.equal(writes, 1);
   assert.equal(current.state.protocol.deliveryDeadline.overdue.disposition, 'indeterminate');
+  assert.equal(current.state.protocol.deliveryDeadline.overdue.source, 'host-supplied');
+  const view = deliveryDeadlineView(current, { now: () => 120003, enabled: true });
+  assert.match(view.message, /host's local report/);
+  assert.doesNotMatch(view.message, /plugin checked|plugin's own observation/);
 });
 
 for (const transaction of [async () => {}, function* () {}, async function* () {}]) {
@@ -194,6 +198,8 @@ test('the statically served wallet provider loads without files outside the publ
 
 
 test('post-fork prepared digest agrees with demosdk 4.0.16 serialized signing content', async () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/demosdk')), 'utf8'));
+  assert.equal(manifest.version, '4.0.16');
   const { serializeTransactionContent } = await import(new URL('denomination/serializerGate.js', import.meta.resolve('@kynesyslabs/demosdk')));
   const content = { type: 'native', from: '0x' + 'a'.repeat(64), to: '0x' + 'b'.repeat(64), amount: '1000000000',
     data: ['native', { nativeOperation: 'send', args: ['0x' + 'b'.repeat(64), '1000000000'] }], nonce: 7, timestamp: 1 };

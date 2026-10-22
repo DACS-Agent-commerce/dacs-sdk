@@ -249,3 +249,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - SQLite recovery closes and retires a connection when rollback cannot complete. File-backed transaction tests cover automatic rollback, prepared statements, fresh-handle retry and persistence after reopen alongside recoverable nested failures.
 - Public portal and status reads share a read-only expiry projection. Diagnostic tuple matching accounts for the reader's source disposition, and retained reader errors use bounded text conversion.
 - Packed-consumer installation prefers cached locked tarballs and can download missing tarballs. The README describes connection recovery, diagnostic results and validation prerequisites.
+
+## D11 guarded writes and host projections
+
+- Connection-local SQLite triggers guard existing ordinary tables with a transactional marker, including statements prepared before entry. Automatic rollback prevents subsequent DML writes; marker checks precede savepoint release and outer commit. File-backed tests cover both callback depths, conflict/trigger rollback, all statement result methods, sibling/TEMP/attached tables, fresh-handle retry and recoverable constraint errors.
+- Public diagnostic reads share the expiry projection, including the recorded-hash exception for closed buyer access. Retained domain-reader failures keep bounded, null-safe causes.
+- Directory revocation discovery projects the bounded seven-field binding and copies its native anchor. Local deadline and operator-hold records identify host-supplied input. The serializer test verifies the resolved demosdk version, and the README states historical testnet availability and the synchronous DML boundary.

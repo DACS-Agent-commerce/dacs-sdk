@@ -18,7 +18,7 @@ export function deliveryDeadlineView(operation, { now = () => Date.now(), enable
   const prefix = `The delivery deadline was ${deadlineIso} (${Math.floor(pastDueMs / 1000)} seconds ago).`;
   const overdue = stored?.overdue, later = stored?.laterDelivery;
   let message;
-  if (overdue) message = `${prefix} When this plugin checked at ${new Date(overdue.checkedAt).toISOString()}, it found no Deliverable from the seller on chain. Demos can't prove a record is absent, so this is the plugin's own observation, not a recorded fault. Nothing has been refunded. Do not pay again.`;
+  if (overdue) message = `${prefix} The host's local report at ${new Date(overdue.checkedAt).toISOString()} says no Deliverable from the seller was present. Demos can't prove a record is absent, so this remains a host observation, not a recorded fault. Nothing has been refunded. Do not pay again.`;
   else if (pastDueMs > 0) message = verifiedDelivery(p) ? `${prefix} Delivery is verified.` : `${prefix} Delivery is not confirmed yet; verify_deal checks the chain again.`;
   const deliveryMessage = later ? (later.deliveredAt <= deadline
     ? `A Deliverable was verified later, and its ${later.deliveredAtSource} delivery time is within the deadline: the earlier check had not seen it yet.`
@@ -68,7 +68,7 @@ export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = fa
         || p.agreement.hash !== operation.state.protocol.agreement.hash
         || !Number.isSafeInteger(checkedAt) || checkedAt <= deadline + DELIVERY_DEADLINE_GRACE_MS) return current ?? operation;
       const overdue = { deadline, checkedAt, read: 'not-present', disposition: 'indeterminate', obligatedParty: 'seller',
-        seller: p.agreement.terms.seller, authority: 'local-observation' };
+        seller: p.agreement.terms.seller, authority: 'local-observation', source: 'host-supplied' };
       return ops.transition(current.id, current.status, current.status, { state: { protocol: { ...p, deliveryDeadline: { overdue } } },
         event: 'protocol_delivery_deadline_overdue', data: overdue });
     });

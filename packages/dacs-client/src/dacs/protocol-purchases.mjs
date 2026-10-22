@@ -438,7 +438,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       if (!stored || stored.status !== 'settled_verified' || !deliveryIsFinal(stored.state.protocol) || stored.state.protocol.chainReadbackHeld) return stored ?? null;
       const missing = missingChainPointers(stored);
       if (!missing.length) return stored;
-      const held = heldForOperator(missing, reason);
+      const held = { ...heldForOperator(missing, reason), source: 'host-supplied' };
       return ops.transition(stored.id, stored.status, stored.status, { state: { protocol: { ...stored.state.protocol, chainReadbackHeld: held } }, event: 'protocol_chain_readback_held', data: held });
     });
   }

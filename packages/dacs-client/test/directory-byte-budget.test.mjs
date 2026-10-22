@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDirectoryClient } from '../src/dacs/directory.mjs';
+import { createDirectoryClient, projectSummary } from '../src/dacs/directory.mjs';
 
 const DIRECTORY_LIMIT = 10_000_000;
 const origin = 'https://directory.invalid';
@@ -10,6 +10,28 @@ const summary = {
   seller: { primaryClaim: `did:demos:agent:${'c'.repeat(64)}` },
   offering: { title: 'Example', description: '' }, status: 'active',
 };
+const revocationBinding = {
+  sellerPrimaryClaim: summary.seller.primaryClaim, listingId: summary.listingId, listingVersion: 1,
+  listingContentHash: summary.contentHash, logicalAddress: `dacs1-revoked:${summary.seller.primaryClaim}:example:v1`,
+  markerAnchor: { kind: 'storage-program', locator: `stor-${'d'.repeat(40)}` }, markerContentHash: 'e'.repeat(64),
+};
+test('Directory revocation discovery projects seven bounded fields and copies nested anchors', () => {
+  const raw = { ...revocationBinding, extra: { text: 'TEST-untrusted-extension' },
+    markerAnchor: { ...revocationBinding.markerAnchor, extra: ['TEST-extension'] } };
+  const projected = projectSummary({ ...summary, status: 'revoked', revocationBinding: raw }).revocationBinding;
+  assert.deepEqual(projected, revocationBinding);
+  assert.notEqual(projected, raw);
+  assert.notEqual(projected.markerAnchor, raw.markerAnchor);
+});
+for (const binding of [[], {}, { ...revocationBinding, logicalAddress: 'x'.repeat(1025) },
+  { ...revocationBinding, markerContentHash: {} }, { ...revocationBinding, listingVersion: 0 },
+  { ...revocationBinding, markerAnchor: { kind: 'TEST', locator: 'x'.repeat(1025) } }]) {
+  test(`Directory drops malformed or oversized revocation discovery ${JSON.stringify(binding).slice(0, 70)}`, () => {
+    const result = projectSummary({ ...summary, status: 'revoked', revocationBinding: binding });
+    assert.equal(result.revocationBinding, undefined);
+    assert.equal(result.listingId, summary.listingId);
+  });
+}
 function listingBytes(length) {
   const body = { listings: Array.from({ length: 50 }, (_, i) => ({
     ...summary, listingId: `example-${i}`, offering: { ...summary.offering },
