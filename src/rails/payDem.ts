@@ -131,6 +131,9 @@ const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
  * native-send body, parties and amount; callers must also bind its returned
  * nonce and block to their retained checkpoint and proposed settlement.
  * A caller-built rail has no SDK reader and cannot establish execution.
+ * Read-only: it adds to none of the sets or maps above, and its answer is a
+ * new plain object that no check here accepts, so it reports a record and is
+ * never a verdict. Exported for `@kynesyslabs/dacs-node`'s recovery re-read.
  */
 export async function readPayDemTransferRecord(
   rail: Readonly<PayDemRail>,

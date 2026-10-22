@@ -273,7 +273,42 @@ const readerClientBridge = await outcome(() => sdk.payDemSettle(
   { network: "demos" },
 )({ ...request, jobId: "reader-client" }));
 
+// Forgery 7: the shipped record read only reports a record. Over a rail
+// `createPayDemRail` did not build, even one whose settle is the SDK's own
+// payDemSettle adapter, it has no reader to call, and no answer it gives, or a
+// success assembled from one, passes any shipped check.
+const readTransferRecord = modules.get("dist/rails/payDem.js")?.readPayDemTransferRecord;
+const retained = { txHash: TX_HASH, payer: PAYER, payee: SELLER, amountOs: AMOUNT_OS, network: "demos" };
+const recordReads = [];
+for (const rail of [forgedRail, { address: PAYER, settle: genuine }]) {
+  try {
+    recordReads.push(await readTransferRecord(rail, retained));
+  } catch (error) {
+    recordReads.push({ threw: String(error?.message ?? error).slice(0, 200) });
+  }
+}
+const readOffers = [
+  ...recordReads,
+  { state: "executed", blockNumber: 42, nonce: 7, networkFeeOs: "0" },
+  { ...forgedResult, ...retained, state: "executed", nonce: 7 },
+];
+const shippedChecks = [
+  ["payDemRecordVerifiedTransfer", (value) => sdk.payDemRecordVerifiedTransfer(value) !== undefined],
+  ["isPayDemRecordVerifyingRail", (value) => sdk.isPayDemRecordVerifyingRail(value)],
+  ["isRecordVerifiedSource", (value) =>
+    modules.get("dist/rails/payDem.js").isRecordVerifiedSource(value)],
+  ["isPayDemSettleAdapter", (value) => isAdapter(value)],
+];
+const recordReadVouches = readOffers.flatMap((value, index) => shippedChecks
+  .filter(([, check]) => check(value) === true)
+  .map(([name]) => `${name}(offer ${index})`));
+
 process.stdout.write(`${JSON.stringify({
+  recordRead: {
+    shipped: typeof readTransferRecord === "function",
+    reads: recordReads,
+    vouches: recordReadVouches,
+  },
   readerFactories,
   readerClient: {
     core: readerClientCore,

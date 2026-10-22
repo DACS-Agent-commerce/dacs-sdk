@@ -297,7 +297,11 @@ The exports are four read-only checks: the ones the settlement store and
 `payDemRecordVerifiedTransfer`, which gives the exact transfer terms (payer,
 payee, `amountOs`, network and recovery settlement key) of a frozen success
 `payDemSettleCore` returned from the SDK's own record read, and `undefined`
-for anything else, including a copy of that success.
+for anything else, including a copy of that success. The one other export
+that consults them, `readPayDemTransferRecord`, only reads a retained
+transfer's record through the SDK rail's connection: it adds to none of them
+and returns a new plain object that none of the checks accepts, so its answer
+is never a verdict.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail
