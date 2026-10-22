@@ -128,23 +128,51 @@ test.each(["live", "attempted", "present", "unavailable"])(
   },
 );
 
-test("an operator closes an expired unattempted intent; restart reports unpaid without a transfer", async () => {
-  const log = createInMemorySettlementLog();
-  let oldFence: Readonly<SettlementEffectFence> | undefined;
-  await assert.rejects(createIdempotencyStore(log, { now: () => 1, leaseDurationMs: 10 }).once(
-    key, binding, async (fence) => { oldFence = fence; throw new Error("death before signing"); },
-  ), /death before signing/);
-  const operator = createIdempotencyStore(log, { now: () => 12 });
-  assert.equal((await operator.abandonUnattempted!(key, binding, absence)).ok, false);
-  await assert.rejects(oldFence!.recordAttempt!("12".repeat(32)), /stale generation/);
+test.each([undefined, false, true])(
+  "an operator closes an expired unattempted intent; recoveryOnly=%s reports unpaid without a transfer", async (recoveryOnly) => {
+    const log = createInMemorySettlementLog();
+    let oldFence: Readonly<SettlementEffectFence> | undefined;
+    await assert.rejects(createIdempotencyStore(log, { now: () => 1, leaseDurationMs: 10 }).once(
+      key, binding, async (fence) => { oldFence = fence; throw new Error("death before signing"); },
+    ), /death before signing/);
+    const operator = createIdempotencyStore(log, { now: () => 12 });
+    assert.equal((await operator.abandonUnattempted!(key, binding, absence)).ok, false);
+    await assert.rejects(oldFence!.recordAttempt!("12".repeat(32)), /stale generation/);
+    const resumed = payDemSettle(await sdkPayDemRail(), {}, {
+      store: createIdempotencyStore(log), reconcile: async () => { throw new Error("no tx to read"); },
+    });
+    assert.deepEqual(await resumed({ ...req, ...(recoveryOnly === undefined ? {} : { recoveryOnly }) }), {
+      ok: false, txHash: "", chainId: "demos", payer, payee,
+    });
+    assert.equal(demosNode.transfers, 0);
+    assert.equal(demosNode.broadcasts, 0);
+    assert.equal(demosNode.reads.length, 0);
+  },
+);
+
+test("an empty-hash result without a durable operator closure still refuses", async () => {
+  const store = createIdempotencyStore(createInMemorySettlementLog());
+  vi.spyOn(store, "once").mockResolvedValue({ ok: false, txHash: "", chainId: "demos", payer, payee });
   const resumed = payDemSettle(await sdkPayDemRail(), {}, {
-    store: createIdempotencyStore(log), reconcile: async () => { throw new Error("no tx to read"); },
+    store, reconcile: async () => ({ ok: true, execution: "executed", txHash: demosNode.nextHash,
+      chainId: "demos", payer, payee, amountOs: binding.amount, blockNumber: 42,
+      txRefKind: "demos", finality: { model: "bft-final" } }),
   });
-  assert.deepEqual(await resumed({ ...req, recoveryOnly: true }), {
-    ok: false, txHash: "", chainId: "demos", payer, payee,
-  });
+  await assert.rejects(resumed(req), /does not match the authoritative reconciled transaction/);
   assert.equal(demosNode.transfers, 0);
   assert.equal(demosNode.broadcasts, 0);
+});
+
+test("a durable payment at a different reconciled block still refuses without another transfer", async () => {
+  const { log, first } = await savedPayment();
+  const resumed = payDemSettle(await sdkPayDemRail(), {}, {
+    store: createIdempotencyStore(log), reconcile: async () => ({ ...first,
+      execution: "executed", amountOs: binding.amount, blockNumber: first.blockNumber! + 1 }),
+  });
+  await assert.rejects(resumed(req), /does not match the authoritative reconciled transaction/);
+  assert.deepEqual((await log.readOutcome!(key))?.result, first);
+  assert.equal(demosNode.transfers, 1);
+  assert.equal(demosNode.broadcasts, 1);
 });
 
 test("operator closure refuses missing and live intents and any recorded transaction", async () => {

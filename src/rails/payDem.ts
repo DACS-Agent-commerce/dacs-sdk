@@ -3676,6 +3676,18 @@ export function payDemSettle(
         throw new DacsError(NO_READABLE_ATTEMPT_RECORD);
       }
       const known = authenticatedResults.get(key);
+      // A pre-attempt session retry can reach an operator's unpaid closure
+      // through once, rather than the recoveryOnly lookup above. It names no
+      // transaction to reconcile; require the same bound SDK outcome and no attempt.
+      if (storeLookupsPaired && !captured.ok && captured.txHash === "" &&
+          await recordedAttempt() === null) {
+        const raw = await storeReadOutcome!(key, binding);
+        if (raw !== null && samePayDemResult(captured,
+          capturePayDemResult(raw, context, "unattempted native intent closure"))) {
+          assertPayDemSuccessKept(known?.result.ok === true, captured);
+          return publicPayDemResult(captured, expectedPayee);
+        }
+      }
       if (
         known === undefined ||
         !sameRecoveryContext(known.context, context) ||
