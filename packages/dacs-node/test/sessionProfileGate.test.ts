@@ -144,6 +144,55 @@ describe("session profile admission gate", () => {
     }
   }
 
+  it("after release reports unreadable file admission as blocked and action-time reads as retryable", async () => {
+    vi.resetModules();
+    vi.doMock("@kynesyslabs/dacs/commerce", async (original) => ({
+      ...await original<Record<string, unknown>>(), DACS_STANDARD_PROFILE_STATUS: "released",
+    }));
+    const gate = await import("../src/sessionProfileGate.js");
+    const filePath = join(root(), "admission.json");
+    const admit = gate.createDacsFileSessionProfileAdmissionV1({ filePath,
+      buyerAuthority: BUYER, sellerAuthority: SELLER });
+    expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toMatchObject({
+      status: "blocked", reasonCode: "session-profile-admission-unavailable" });
+    let error: unknown;
+    try { admit(JOB_ID); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ name: "IndeterminateSubstrateError", category: "substrate" });
+    const create = vi.fn();
+    const graph = await gate.createDacsSessionProfileGatedCommerceGraphV1(create)({
+      role: "buyer", authenticateSessionProfile: admit,
+      config: { rail: { enabledProfiles: ["pay-dem"] } },
+    } as never);
+    expect(create).not.toHaveBeenCalled();
+    await expect(Promise.resolve(graph.validatePayload({ jobId: JOB_ID } as never))).resolves.toMatchObject({
+      status: "unavailable", reasonCode: "session-profile-admission-unavailable" });
+    await expect(graph.payDemOperations!.payment!({} as never)).rejects.toMatchObject({ category: "substrate" });
+    writeFileSync(filePath, JSON.stringify({ releasePin: DACS_STANDARD_PIN,
+      profileStatus: "released", moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS }));
+    expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toEqual({ status: "configured" });
+    expect(admit(JOB_ID)).toMatchObject({ status: "valid" });
+    rmSync(filePath);
+    expect(gate.dacsLiveSessionProfileAvailabilityV1(admit).status).toBe("blocked");
+  });
+
+  it("refuses standalone terminal actions at the real unreleased pin before any effect", async () => {
+    const { createDacsVetTerminalBundleTransportRuntimeV1 } = await import("../src/terminalBundleTransportRuntime.js");
+    const authenticateProduction = vi.fn();
+    const sendMessage = vi.fn();
+    const signComponent = vi.fn();
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context: { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+        authenticateSessionProfile: vi.fn(), sendMessage, demos: { signComponent } } as never,
+      authenticateProduction,
+    });
+    await expect(runtime.registerLocalTerminal({ jobId: JOB_ID } as never)).rejects.toThrow(/unreleased candidate/);
+    await expect(runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toThrow(/unreleased candidate/);
+    await expect(runtime.transport.resolveProposal({ jobId: JOB_ID } as never)).rejects.toThrow(/unreleased candidate/);
+    expect(authenticateProduction).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(signComponent).not.toHaveBeenCalled();
+  });
+
   it("refuses a missing graph factory", () => {
     expect(() => createDacsSessionProfileGatedCommerceGraphV1(undefined as never))
       .toThrow(TypeError);

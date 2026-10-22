@@ -491,7 +491,8 @@ const packageName = (spec) => typeof spec === "string" ? spec.replace(/(?<=.)@[^
 const gitIdentity = sameIdentity(["location", "field", "value"]);
 const engineIdentity = (item, known) => typeof item?.package === "string" &&
   packageName(item.package) === packageName(known?.package) && sameIdentity(["location", "required"])(item, known);
-const imageIdentity = sameIdentity(["name", "location"]);
+const imageIdentity = (item, known) => sameIdentity(["name", "location"])(item, known) &&
+  (item?.name !== "pqcrypto" || sameIdentity(["version"])(item, known));
 const sbomProblemRule = (line) => typeof line === "string" ? line
   .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,]+/, "$1@*")
   .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@\S+$/, "$1@*") : line;

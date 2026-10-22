@@ -1226,20 +1226,12 @@ export class DemosAdapter implements SubstrateAdapter {
     if (await this.resolveChainIdentity() !== proof.chainIdentity) return false;
     const nonce = Number(receipt.nonce);
     const blockNumber = Number(receipt.blockRef!.height);
-    let observations: unknown[];
-    try {
-      observations = await Promise.all([
-        this.#demos.getTxByHash(receipt.transactionRef.value),
-        this.#demos.getBlockByNumber(blockNumber),
-        this.#demos.storagePrograms.read(receipt.nativeAddress),
-      ]) as unknown[];
-    } catch (error) {
-      // demosdk's storage read throws on any non-2xx HTTP status.
-      throw new IndeterminateSubstrateError(
-        "Demos anchor receipt observation unavailable",
-        { cause: error },
-      );
-    }
+    const replies = await Promise.allSettled([
+      this.#demos.getTxByHash(receipt.transactionRef.value),
+      this.#demos.getBlockByNumber(blockNumber),
+      this.#demos.storagePrograms.read(receipt.nativeAddress),
+    ]);
+    const observations = replies.map((reply) => reply.status === "fulfilled" ? reply.value : undefined);
     // An unanswered observation cannot establish that a receipt is invalid:
     // CORE §5.1 keeps it from demoting the receipt, so retry it. A storage
     // read without the program, or a block without its validation data, is a
@@ -1257,6 +1249,32 @@ export class DemosAdapter implements SubstrateAdapter {
     const block = isRecord(blockResult) && isRecord(blockResult.response)
       ? blockResult.response
       : blockResult;
+    // CORE §5.1: an unanswered read preserves prior state, but cannot erase
+    // a contradiction established by another independently answered record.
+    if (!demosObservationUnanswered(transactionResult) && isRecord(transaction) && typeof transaction.hash === "string") {
+      if (transaction.hash !== receipt.transactionRef.value ||
+          (transaction.blockNumber !== undefined && transaction.blockNumber !== blockNumber)) return false;
+      if (isRecord(transaction.content)) {
+        if (demosSignedTransactionProofHash(transaction) !== proof.signedTransactionHash) return false;
+      }
+    }
+    if (!demosObservationUnanswered(blockResult) && isRecord(block) && typeof block.hash === "string") {
+      if (block.hash !== receipt.blockRef!.id ||
+          (block.number !== undefined && block.number !== null && block.number !== blockNumber)) return false;
+      if (block.validation_data !== undefined &&
+          sha256Hex(serializeSignedTransaction(block.validation_data)) !== proof.finalityProofHash) return false;
+    }
+    if (!demosObservationUnanswered(nativeResult) && isRecord(nativeResult) && nativeResult.success === true) {
+      if (nativeResult.storageAddress !== receipt.nativeAddress ||
+          typeof nativeResult.owner !== "string" ||
+          nativeResult.owner.toLowerCase() !== proof.writer.toLowerCase() ||
+          nativeResult.programName !== proof.nativeRead.programName ||
+          !isJsonObject(nativeResult.data) ||
+          exactJsonHash(nativeResult.data) !== proof.nativeRead.valueHash) return false;
+      const metadataHash = nativeResult.metadata === undefined || nativeResult.metadata === null
+        ? undefined : isJsonObject(nativeResult.metadata) ? exactJsonHash(nativeResult.metadata) : null;
+      if (metadataHash === null || metadataHash !== proof.nativeRead.metadataHash) return false;
+    }
     if (observations.some(demosObservationUnanswered) || !isRecord(transaction) ||
         typeof transaction.hash !== "string" || !isRecord(block) ||
         typeof block.hash !== "string" || block.number === undefined ||

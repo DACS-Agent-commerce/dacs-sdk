@@ -1314,10 +1314,13 @@ async function completionHarness(
 async function driveCopy(role: "buyer" | "seller", input: CompletionInput, deps: CompletionDeps) {
   const copy = input.copies[role];
   const readback = await deps.readBundleCopy(copy.nativeAddress, role);
-  if (readback === null || canonicalize(readback) !== canonicalize(copy.bundle)) {
+  if (readback === null) throw new IndeterminateSubstrateError("bundle not yet readable");
+  if (canonicalize(readback) !== canonicalize(copy.bundle)) {
     throw new DacsError(`completed ${role} bundle is not independently readable`);
   }
   const anchor = await deps.verifyBundleAnchor(structuredClone(copy));
+  if (anchor.disposition === "indeterminate" || anchor.disposition === "error")
+    throw new IndeterminateSubstrateError("anchor unavailable");
   if (anchor.disposition !== "valid") {
     throw new DacsError(`completed ${role} bundle anchor verification is ${anchor.disposition}`);
   }
@@ -1329,6 +1332,8 @@ async function driveCopy(role: "buyer" | "seller", input: CompletionInput, deps:
     throw new DacsError(`completed ${role} BundleBinding is not independently resolvable and exact`);
   }
   const verified = await deps.verifyBundleBinding(structuredClone(copy.binding));
+  if (verified.disposition === "indeterminate" || verified.disposition === "error")
+    throw new IndeterminateSubstrateError("binding unavailable");
   if (verified.disposition !== "valid") {
     throw new DacsError(`completed ${role} BundleBinding verification is ${verified.disposition}`);
   }
@@ -1648,9 +1653,8 @@ describe("buyer two-copy completion adapter", () => {
       await expect(harness.authorize()).resolves.toBe("indeterminate");
     });
 
-    it(`keeps ${paymentProfile} retryable when an unattributed rejection meets an unanswered read`, async () => {
-      // The strict verifier's own checks (signatures, roster, pair) do not
-      // name a copy, so they cannot be shown independent of the unanswered read.
+    it(`preserves ${paymentProfile} permanent rejection when it meets an unanswered read`, async () => {
+      // A permanent gate rejection remains definitive alongside an outage.
       const harness = await completionHarness(paymentProfile);
       mocks.verifyCompleted.mockImplementationOnce(async (input: CompletionInput, deps: CompletionDeps) => {
         await driveCopiesFailFast(input, deps).catch(() => undefined);
@@ -1658,10 +1662,10 @@ describe("buyer two-copy completion adapter", () => {
       });
       harness.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
         new SubstrateError("Demos anchor receipt observation unavailable"));
-      await expect(harness.authorize()).resolves.toBe("indeterminate");
+      await expect(harness.authorize()).resolves.toBe(false);
     });
 
-    it(`keeps ${paymentProfile} retryable when the unanswered read is a BundleBinding verification`, async () => {
+    it(`preserves ${paymentProfile} permanent rejection when the unanswered read is a BundleBinding verification`, async () => {
       const harness = await completionHarness(paymentProfile);
       let verdict: unknown;
       mocks.verifyCompleted.mockImplementationOnce(async (input: CompletionInput, deps: CompletionDeps) => {
@@ -1670,11 +1674,11 @@ describe("buyer two-copy completion adapter", () => {
       });
       harness.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
         new SubstrateError("Demos anchor receipt observation unavailable"));
-      await expect(harness.authorize()).resolves.toBe("indeterminate");
+      await expect(harness.authorize()).resolves.toBe(false);
       expect(verdict).toMatchObject({ disposition: expect.stringMatching(/^(?:indeterminate|error)$/) });
     });
 
-    it(`keeps ${paymentProfile} retryable when the unanswered read is a bundle anchor verification`, async () => {
+    it(`preserves ${paymentProfile} permanent rejection when the unanswered read is a bundle anchor verification`, async () => {
       // The anchor verdict alone marks the read unanswered: the verifier then
       // fails with an error that names no answer from Demos.
       const harness = await completionHarness(paymentProfile);
@@ -1685,7 +1689,7 @@ describe("buyer two-copy completion adapter", () => {
       });
       harness.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
         new IndeterminateSubstrateError("Demos anchor receipt observation unavailable"));
-      await expect(harness.authorize()).resolves.toBe("indeterminate");
+      await expect(harness.authorize()).resolves.toBe(false);
       expect(verdict).toMatchObject({ disposition: "error",
         reason: "demos-seller-bundle-anchor-error" });
     });
@@ -1750,7 +1754,7 @@ describe("buyer two-copy completion adapter", () => {
   }
 
   it.each(["x402", "pay-dem"] as const)(
-    "keeps a %s audit retryable when an unattributed rejection meets a read that never settles",
+    "preserves a %s permanent audit rejection when it meets a read that never settles",
     async (paymentProfile) => {
       const clock = manualDeadline();
       const harness = await completionHarness(paymentProfile, { start: clock.start });
@@ -1762,7 +1766,7 @@ describe("buyer two-copy completion adapter", () => {
       const outcome = Promise.resolve(harness.authorize());
       await flush();
       clock.expire();
-      await expect(outcome).resolves.toBe("indeterminate");
+      await expect(outcome).resolves.toBe(false);
     },
   );
 

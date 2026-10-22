@@ -14,6 +14,8 @@ import type {
   DacsLiveRoleOperationContextV1,
 } from "./roleRuntime.js";
 
+const fileAdmissionChecks = new WeakMap<Function, () => void>();
+
 /** Largest operator admission statement the file source reads. */
 export const DACS_SESSION_PROFILE_ADMISSION_FILE_MAX_BYTES = 4_096;
 
@@ -34,6 +36,8 @@ export function dacsLiveSessionProfileAvailabilityV1(
       status: "blocked", reasonCode: "session-profile-admission-unconfigured",
     });
   }
+  try { fileAdmissionChecks.get(authenticateSessionProfile)?.(); }
+  catch { return Object.freeze({ status: "blocked", reasonCode: "session-profile-admission-unavailable" }); }
   return Object.freeze({ status: "configured" });
 }
 
@@ -61,13 +65,24 @@ export function createDacsSessionProfileGatedCommerceGraphV1(
       role: context.role,
       reasonCode: availability.reasonCode,
     });
-    // Both rails close over the same role tracks; every one ends at
-    // operator action with the reason.
+    // An operator file outage is retryable even when it was absent at startup.
+    // Permanent profile/configuration refusals still require operator action.
+    const retryable = availability.reasonCode === "session-profile-admission-unavailable";
+    const retry = async (): Promise<never> => {
+      throw new IndeterminateSubstrateError("session profile admission file is unavailable");
+    };
+    const roleOperations = retryable ? Object.freeze(Object.fromEntries(
+      Object.keys(operations).map((key) => [key, retry]))) : operations;
+    const validatePayload = retryable ? () => Object.freeze({
+      status: "unavailable" as const, reasonCode: availability.reasonCode,
+    }) : unavailable.validatePayload;
+    const handleMessage = retryable ? retry : unavailable.handleMessage;
     return Object.freeze({
-      ...unavailable,
-      ...(rails.includes("x402") ? { operations } : {}),
+      ...unavailable, validatePayload, handleMessage,
+      router: Object.freeze({ ...unavailable.router, validatePayload, handleMessage }),
+      ...(rails.includes("x402") ? { operations: roleOperations } : {}),
       ...(rails.includes("pay-dem")
-        ? { payDemOperations: operations as unknown as DacsLiveRoleCommerceGraphV1["payDemOperations"] }
+        ? { payDemOperations: roleOperations as unknown as DacsLiveRoleCommerceGraphV1["payDemOperations"] }
         : {}),
     }) as Readonly<DacsLiveRoleCommerceGraphV1>;
   };
@@ -100,7 +115,7 @@ export function createDacsFileSessionProfileAdmissionV1(
   const filePath = resolve(options.filePath);
   const buyer = options.buyerAuthority;
   const seller = options.sellerAuthority;
-  return (jobId) => {
+  const authenticate = (jobId: string) => {
     const statement = readAdmissionStatement(filePath);
     return Object.freeze({
       status: "valid",
@@ -113,6 +128,8 @@ export function createDacsFileSessionProfileAdmissionV1(
       ]),
     });
   };
+  fileAdmissionChecks.set(authenticate, () => { readAdmissionStatement(filePath); });
+  return authenticate;
 }
 
 function readAdmissionStatement(filePath: string): Readonly<Record<string, unknown>> {
@@ -141,10 +158,10 @@ function readAdmissionStatement(filePath: string): Readonly<Record<string, unkno
     if (error instanceof DacsError) throw error;
     const code = (error as { code?: unknown } | null)?.code;
     if (code === "ENOENT") {
-      throw new DacsError("session profile admission file is absent", { cause: error });
+      throw new IndeterminateSubstrateError("session profile admission file is absent", { cause: error });
     }
     if (code === "EACCES" || code === "EPERM" || code === "EISDIR") {
-      throw new DacsError("session profile admission file is not readable", { cause: error });
+      throw new IndeterminateSubstrateError("session profile admission file is not readable", { cause: error });
     }
     throw new IndeterminateSubstrateError("session profile admission file read failed", { cause: error });
   } finally {

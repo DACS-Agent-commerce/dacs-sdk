@@ -856,7 +856,16 @@ function captureStore(value: unknown): FencedSessionStoreV2 {
         "buyer store list result",
       ),
   };
-  return Object.freeze(captured);
+  return Object.freeze(Object.fromEntries(Object.entries(captured).map(([key, value]) =>
+    [key, typeof value !== "function" ? value : async (...args: unknown[]) => {
+      try { return await Reflect.apply(value, undefined, args); }
+      catch (error) {
+        if (error instanceof SubstrateError) {
+          throw new IndeterminateSubstrateError(`buyer store ${key} unavailable`, { cause: error });
+        }
+        throw error;
+      }
+    }]))) as unknown as FencedSessionStoreV2;
 }
 
 function captureSettlementProvider(
@@ -1043,7 +1052,7 @@ function captureTransportResolution<T>(
 ): BuyerBundleTransportResolution<T> {
   const snapshot = snapshotData(value, `${subject} output`) as unknown;
   if (!isRecord(snapshot) || !isNonEmpty(snapshot.disposition)) {
-    throw new SubstrateError(`${subject} returned a malformed disposition`);
+    throw new DacsError(`${subject} returned a malformed disposition`);
   }
   if (
     snapshot.disposition === "present" &&
@@ -1054,7 +1063,7 @@ function captureTransportResolution<T>(
     exactOwnKeys(snapshot, ["disposition", "reason"]) &&
     isNonEmpty(snapshot.reason)
   ) return snapshot as BuyerBundleTransportResolution<T>;
-  throw new SubstrateError(`${subject} returned a malformed disposition`);
+  throw new DacsError(`${subject} returned a malformed disposition`);
 }
 
 function capturePublication(value: unknown): BuyerCounterSignaturePublication {
@@ -1597,7 +1606,7 @@ class DurableBuyerCoordinator {
           "seller request resolver",
         );
       } catch (error) {
-        if (error instanceof DacsError) throw error;
+        if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
         throw new ProgressSignal(
           "indeterminate",
           "seller-request",
@@ -2132,7 +2141,7 @@ class DurableBuyerCoordinator {
           "counter-signature set resolver",
         );
       } catch (error) {
-        if (error instanceof DacsError) throw error;
+        if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
         throw new ProgressSignal(
           "indeterminate",
           "counter-signature-set",

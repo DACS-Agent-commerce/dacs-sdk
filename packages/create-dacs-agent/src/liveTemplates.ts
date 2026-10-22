@@ -1228,8 +1228,16 @@ function baseProbes(
       : fail("node-version-unsupported"),
     "local.package-integrity": inspectDacsNodePackageIntegrityV1,
     "local.version-bindings": versionBindings,
-    "local.configuration": () => {
+    "local.configuration": async () => {
       try {
+        const admissionFile = process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
+        if (admissionFile) {
+          try {
+            const file = await open(admissionFile, constants.O_RDONLY);
+            try { if (!(await file.stat()).isFile()) return fail("session-profile-admission-unavailable"); }
+            finally { await file.close(); }
+          } catch { return fail("session-profile-admission-unavailable"); }
+        }
         const [buyer, seller] = ROLES.map((role) => loadRoleConfig(role));
         if (buyer === undefined || seller === undefined ||
             buyer.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS ||
@@ -4375,6 +4383,20 @@ test("malformed configuration still produces the complete fail-closed report", a
   }
 });
 
+test("doctor reports a missing configured profile admission file", async () => {
+  const previous = process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
+  process.env.DACS_SESSION_PROFILE_ADMISSION_FILE = "./missing-profile-admission.json";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const configuration = report.checks.find((item) => item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "session-profile-admission-unavailable");
+  } finally {
+    if (previous === undefined) delete process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
+    else process.env.DACS_SESSION_PROFILE_ADMISSION_FILE = previous;
+  }
+});
+
 test("doctor rejects a shared buyer and seller data directory", async () => {
   const previousDeployment = process.env.DACS_DEPLOYMENT;
   const previousBuyerDirectory = process.env.DACS_BUYER_DATA_DIRECTORY;
@@ -4554,7 +4576,7 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_DEMOS_STORAGE_READ_URL: \${DACS_DEMOS_STORAGE_READ_URL:-}
   DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
-  DACS_SESSION_PROFILE_ADMISSION_FILE: \${DACS_SESSION_PROFILE_ADMISSION_FILE:-}
+  DACS_SESSION_PROFILE_ADMISSION_FILE: /run/dacs/session-profile/admission.json
   DACS_X402_RAIL_ID: \${DACS_X402_RAIL_ID:-x402:default}
   DACS_PAY_DEM_RAIL_ID: \${DACS_PAY_DEM_RAIL_ID:-demos-native:DEM}
   DACS_X402_FACILITATOR_URL: \${DACS_X402_FACILITATOR_URL:-}
@@ -4625,6 +4647,10 @@ services:
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
+      - type: bind
+        source: \${DACS_SESSION_PROFILE_ADMISSION_DIRECTORY:-./session-profile}
+        target: /run/dacs/session-profile
+        read_only: true
       - \${DACS_BUYER_DATA_DIRECTORY:?set DACS_BUYER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_BUYER_DEMOS_SECRET_FILE:?set DACS_BUYER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_BUYER_EVM_SECRET_FILE:?set DACS_BUYER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
@@ -4643,6 +4669,10 @@ services:
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
+      - type: bind
+        source: \${DACS_SESSION_PROFILE_ADMISSION_DIRECTORY:-./session-profile}
+        target: /run/dacs/session-profile
+        read_only: true
       - \${DACS_SELLER_DATA_DIRECTORY:?set DACS_SELLER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_SELLER_DEMOS_SECRET_FILE:?set DACS_SELLER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_SELLER_EVM_SECRET_FILE:?set DACS_SELLER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
@@ -4694,6 +4724,9 @@ DACS_RAIL_STEWARD_AUTHORITY=
 # moduleVersions). Unset, or while the pinned Standard profile is unreleased,
 # the role services start with commerce blocked and report the reason.
 DACS_SESSION_PROFILE_ADMISSION_FILE=
+# Local deployment uses the file path above.
+# Docker uses this host directory mounted read-only; place admission.json in it.
+DACS_SESSION_PROFILE_ADMISSION_DIRECTORY=./session-profile
 DACS_X402_RAIL_ID=x402:default
 DACS_PAY_DEM_RAIL_ID=demos-native:DEM
 DACS_X402_FACILITATOR_URL=
@@ -4858,7 +4891,13 @@ Doctor exit 5 means **blocked**, not failed: no credential, balance, signed rail
 Listing or reviewed adapter was guessed and no write occurred. Buyer and seller
 services open the SDK's role-owned SQLite, Demos identity, authenticated HTTP and
 readiness runtime when their prerequisites exist. Commerce remains blocked until
-the exact Listing, signed rail authority and operation graph pass doctor. Never
+the exact Listing, signed rail authority and operation graph pass doctor.
+For local deployment, set \`DACS_SESSION_PROFILE_ADMISSION_FILE\` to the operator
+statement. For Docker, put \`admission.json\` inside
+\`DACS_SESSION_PROFILE_ADMISSION_DIRECTORY\` (default \`./session-profile\`);
+Compose mounts that directory read-only for both roles at
+\`/run/dacs/session-profile\`. The services remain blocked until the pinned
+profile is released and readable admission authority is configured. Never
 bypass that gate.
 
 Payment capability: **${options.rails}**. Dual-rail mode publishes two separately

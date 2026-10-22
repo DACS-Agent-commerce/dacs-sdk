@@ -663,3 +663,13 @@ describe("DACS HTTP envelope v1", () => {
     expect(resolver).not.toHaveBeenCalled();
   });
 });
+
+
+it("preserves established vector nonce assignments when terminal message types are appended", () => {
+  const types = ["acknowledgement", "diagnostic-probe-buyer", "diagnostic-probe-seller",
+    "session-init", "session-challenge", "session-presentation", "session-admission"];
+  for (const [index, type] of types.entries()) {
+    expect(vectorDocument.cases.find((entry) => entry.type === type)?.nonce)
+      .toBe(Buffer.alloc(32, 8 + index).toString("base64url"));
+  }
+});

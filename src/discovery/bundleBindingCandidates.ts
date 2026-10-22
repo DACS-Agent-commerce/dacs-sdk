@@ -188,8 +188,12 @@ export async function resolveBundleBindingCandidates(
 ): Promise<BundleBindingCandidateResolution> {
   requireCanonicalJobId(input.jobId, "BundleBinding requested jobId");
   // Capture the request and candidate bytes before invoking application code.
-  if (!Array.isArray(input.candidates) || nodeTypes.isProxy(input.candidates) || input.candidates.length > 1024) {
+  if (!Array.isArray(input.candidates) || nodeTypes.isProxy(input.candidates)) {
     throw new IndeterminateSubstrateError("BundleBinding candidate list exceeds its admission limit");
+  }
+  if (input.candidates.length > 1024) {
+    await authenticateSessionProfile(input.authenticateSessionProfile, { jobId: input.jobId }, input.role);
+    return { disposition: "indeterminate", reason: "bundle-binding-budget-exhausted" };
   }
   const candidates = Array.from({ length: input.candidates.length }, (_, index) => {
     const entry = Object.getOwnPropertyDescriptor(input.candidates, String(index));

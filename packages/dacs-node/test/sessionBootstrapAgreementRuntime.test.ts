@@ -407,6 +407,19 @@ describe("session bootstrap agreement tracks", () => {
       nonceByte: 4,
     }), { role: "buyer" } as never)).resolves.toEqual({ disposition: "accepted" });
 
+    const buyerDatabase = (value.buyerContext as unknown as { database: DacsNodeSqliteDatabase }).database;
+    const put = buyerDatabase.putEffectIntent.bind(buyerDatabase);
+    const busy = vi.spyOn(buyerDatabase, "putEffectIntent").mockImplementation((input) => {
+      if ((input.input as { phase?: string }).phase === "agreement") {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      return put(input);
+    });
+    await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
+      status: "indeterminate", reasonCode: "pre-agreement-phase-corrupt-busy",
+    });
+    expect(buyerAgreement).not.toHaveBeenCalled();
+    busy.mockRestore();
     await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
       status: "final",
       reference: "buyer-agreement",

@@ -265,13 +265,14 @@ function operatorUnlessBusy(
 // Returns the operator result when the role already committed to a terminal.
 function claimAgreementPhase(
   context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
   operation: Readonly<FixedPriceX402TrackOperationInput>,
 ): Readonly<FixedPriceX402TrackOperationResult> | undefined {
   try {
     claimDacsPreAgreementPhaseV1(context, operation.order, "agreement");
     return undefined;
   } catch (error) {
-    return operator(error instanceof DacsPreAgreementPhaseError
+    return operatorUnlessBusy(context, delay, error, error instanceof DacsPreAgreementPhaseError
       ? error.reasonCode : "pre-agreement-phase-corrupt");
   }
 }
@@ -1011,7 +1012,7 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
     } catch {
       return operator("buyer-session-agreement-handoff-invalid");
     }
-    const phaseConflict = claimAgreementPhase(context, operation);
+    const phaseConflict = claimAgreementPhase(context, delay, operation);
     if (phaseConflict !== undefined) return phaseConflict;
     try {
       await operation.fence.assertCurrent();
@@ -1060,7 +1061,7 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         ? error.reasonCode : "seller-agreement-binding-unavailable");
     }
     if (responseRetained) {
-      const phaseConflict = claimAgreementPhase(context, operation);
+      const phaseConflict = claimAgreementPhase(context, delay, operation);
       if (phaseConflict !== undefined) return phaseConflict;
       try {
         await operation.fence.assertCurrent();
@@ -1245,7 +1246,7 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
     } catch {
       return pending(context, delay, "seller-agreement-proposal-pending");
     }
-    const phaseConflict = claimAgreementPhase(context, operation);
+    const phaseConflict = claimAgreementPhase(context, delay, operation);
     if (phaseConflict !== undefined) return phaseConflict;
     try {
       return await options.agreement(operation);

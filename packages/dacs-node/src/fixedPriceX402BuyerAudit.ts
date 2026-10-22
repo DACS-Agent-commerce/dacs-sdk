@@ -9,6 +9,7 @@ import {
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
+  DacsError,
   IndeterminateSubstrateError,
   verifyCompletedTwoSidedSession,
   validateFixedPriceAgreementBinding,
@@ -1793,7 +1794,8 @@ export function createDacsFixedPriceBuyerAuditV1(
           const settled = await Promise.race([drained(), expired]) === "drained";
           // Retry only unanswered reads. Authoritative absence and malformed
           // provider output need operator action, even when classified as substrate faults.
-          if (answeredRejection) return false;
+          if (answeredRejection || (error instanceof DacsError &&
+              !(error instanceof IndeterminateSubstrateError))) return false;
           if (!settled) return "indeterminate";
           return unavailable || error instanceof IndeterminateSubstrateError ? "indeterminate" : false;
         }

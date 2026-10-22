@@ -724,6 +724,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     databases.push(second);
     const runtimeOn = (database: DacsNodeSqliteDatabase) => createDacsVetTerminalBundleTransportRuntimeV1({
       context: {
+        authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
         role: "buyer", authority: BUYER, peerAuthority: SELLER, database,
         demos: { signComponent: vi.fn() },
         sessionStore: createInMemoryFencedSessionStore(),
@@ -1520,6 +1521,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     const sendMessage = vi.fn();
     const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: {
+        authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, OTHER),
         role: "buyer", authority: BUYER, peerAuthority: OTHER,
         database: buyerDatabase, sendMessage,
       } as unknown as DacsLiveRoleOperationContextV1,
@@ -1538,6 +1540,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     const sellerSend = vi.fn();
     const seller = createDacsVetTerminalBundleTransportRuntimeV1({
       context: {
+        authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
         role: "seller", authority: SELLER, peerAuthority: BUYER,
         database: sellerDatabase, sendMessage: sellerSend,
       } as unknown as DacsLiveRoleOperationContextV1,
@@ -3054,19 +3057,16 @@ describe("authenticated peer plans on the Vet terminal", () => {
   for (const rail of ["x402", "pay-dem"] as const) {
     it(`${rail}: records one result when a pass lands between a failure's check and its first write`, async () => {
       const actor = memoryRoleDatabase("buyer", undefined, rail);
-      const database = actor.context.database as unknown as {
-        putEffectIntent: (input: Readonly<{ effectId: string }>) => unknown;
-      };
-      const put = database.putEffectIntent;
-      let passed: Promise<void> | undefined;
-      database.putEffectIntent = (input) => {
-        database.putEffectIntent = put;
-        passed = actor.passOwnVet();
-        return put(input);
-      };
-      await expect(actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+      let passed = false;
+      const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+        context: actor.context, expectedRegistryVersions: REGISTRY_VERSIONS,
+        authenticateProduction: async () => {
+          if (!passed) { passed = true; await actor.passOwnVet(); }
+          return { status: "valid" };
+        },
+      });
+      await expect(runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
         .rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-conflict" });
-      await expect(passed).resolves.toBeUndefined();
       expect(actor.effects.get(`session:${terminalTransportEffectId("buyer", "local-vet")}`))
         .toMatchObject({ kind: "local-vet-pass" });
       expect(row(actor, "selection")).toBeUndefined();
@@ -3386,6 +3386,20 @@ describe("bootstrap tracks read this role's own Vet before a peer's plan", () =>
     };
     return { actors, runtimes, tick, agreement };
   };
+  it.each(["x402", "pay-dem"] as const)("%s retries local failure evidence delivery after a network outage", async (rail) => {
+    const value = tracks(rail, { buyer: "fail", seller: "pass" }, undefined, false);
+    vi.mocked(value.actors.buyer.context.sendMessage).mockRejectedValueOnce(new Error("network unavailable"));
+    await expect(value.tick("buyer")).resolves.toMatchObject({
+      status: "indeterminate", reasonCode: "vet-terminal-production-indeterminate" });
+    const resumed = tracks(rail, { buyer: "fail", seller: "pass" }, value.actors, false);
+    for (let turn = 0; turn < 4; turn++) {
+      await resumed.tick("seller");
+      await resumed.tick("buyer");
+    }
+    expect(resumed.actors.buyer.signComponent).toHaveBeenCalled();
+    expect(resumed.actors.seller.signComponent).toHaveBeenCalled();
+  });
+
   const effect = (actor: Actor, kind: "selection" | "local-vet") =>
     actor.effects.get(`session:${terminalTransportEffectId(actor.context.role, kind)}`);
 
@@ -3579,4 +3593,98 @@ it("keeps exchanged Vet evidence retryable while independent authentication is u
   await expect(runtime.validatePayload(query)).resolves.toMatchObject({ status: "valid" });
   await expect(runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", payload, SELLER, BUYER),
     { role: "buyer" } as never)).resolves.toEqual({ disposition: "accepted" });
+});
+
+
+describe("retained terminal evidence and admission", () => {
+  it("re-admits direct runtime calls and recovered signing before effects", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.runtime.registerLocalTerminal(terminalInput("fail"));
+    const count = actor.effects.size;
+    (actor.context as { authenticateSessionProfile?: unknown }).authenticateSessionProfile = undefined;
+    await expect(actor.runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toThrow(/session profile/);
+    await expect(actor.runtime.registerLocalTerminal(terminalInput("fail"))).rejects.toThrow(/session profile/);
+    expect(actor.effects.size).toBe(count);
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
+
+  it.each(["pass", "fail"] as const)("reuses and re-authenticates retained %s production after a fresh receipt", async (decision) => {
+    const actor = memoryRoleDatabase("buyer");
+    const authenticateProduction = vi.fn(() => ({ status: "valid" as const }));
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({ context: actor.context,
+      expectedRegistryVersions: REGISTRY_VERSIONS, authenticateProduction });
+    const input = terminalInput(decision, "pay-x402", "seller", false);
+    // The exact local binding is available from the retained application/order.
+    const { record } = await (actor.context.database as any).createLiveCoordinatorStore("buyer").load(JOB_ID);
+    const run = (value: typeof input) => decision === "pass"
+      ? runtime.registerLocalVetPass!({ jobId: JOB_ID, localBindingHash: (record as any).localBindingHash }, value)
+      : runtime.registerLocalTerminal(value).catch((error) => {
+          expect(error).toMatchObject({ reasonCode: "vet-terminal-production-indeterminate" });
+        });
+    await run(input);
+    const fresh = structuredClone(input);
+    fresh.production.anchorReceipt.observedAt += 1;
+    await run(fresh);
+    expect(authenticateProduction).toHaveBeenLastCalledWith(expect.objectContaining({
+      production: expect.objectContaining({ anchorReceipt: input.production.anchorReceipt }),
+    }));
+  });
+
+  it("retains evidence and retries a failed send", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    vi.mocked(actor.context.sendMessage).mockRejectedValueOnce(new Error("network unavailable"));
+    const input = terminalInput("fail", "pay-x402", "seller", false);
+    await expect(actor.runtime.registerLocalTerminal(input)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-production-indeterminate" });
+    const count = actor.effects.size;
+    await expect(actor.runtime.registerLocalTerminal(input)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-production-indeterminate" });
+    expect(actor.effects.size).toBe(count);
+    expect(actor.context.sendMessage).toHaveBeenCalledTimes(2);
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
+
+  it("refuses complete proposals that replace retained peer evidence, including recovery", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.passOwnVet();
+    const retained = terminalInput("fail", "pay-x402", "buyer", false);
+    const evidence = { vetEvidenceVersion: "1", terminalInput: retained };
+    const inbound = { role: "buyer" } as DacsLiveRoleInboundOperationContextV1;
+    await actor.runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", evidence, SELLER, BUYER), inbound);
+    const replacement = terminalInput("fail", "pay-x402", "buyer");
+    replacement.production.record.generatedAt += 1;
+    replacement.production.recordRef.contentHash = contentHash(replacement.production.record as any);
+    replacement.production.anchorReceipt.contentHash = replacement.production.recordRef.contentHash;
+    const proposal = await terminalProposal(replacement);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const runtime = createDacsVetTerminalBundleTransportRuntimeV1({ context: actor.context,
+        expectedRegistryVersions: REGISTRY_VERSIONS, authenticateProduction: () => ({ status: "valid" }) });
+      await expect(runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER), inbound))
+        .resolves.toMatchObject({ disposition: "rejected" });
+      expect(actor.signComponent).not.toHaveBeenCalled();
+    }
+    const refreshed = terminalInput("fail", "pay-x402", "buyer", false);
+    refreshed.production.anchorReceipt.observedAt += 1;
+    await expect(actor.runtime.handleMessage(authenticated("terminal-bundle-proposal-seller",
+      { vetEvidenceVersion: "1", terminalInput: refreshed }, SELLER, BUYER), inbound))
+      .resolves.toEqual({ disposition: "accepted" });
+    const allowedInput = terminalInput("fail", "pay-x402", "buyer");
+    allowedInput.production.anchorReceipt.observedAt += 2;
+    const allowed = await terminalProposal(allowedInput);
+    await expect(actor.runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", allowed, SELLER, BUYER), inbound))
+      .resolves.toEqual({ disposition: "accepted" });
+    // Model a retained conflicting proposal from an earlier process/version.
+    const conflicting = memoryRoleDatabase("buyer");
+    await conflicting.passOwnVet();
+    await conflicting.runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER), inbound);
+    for (const kind of ["proposal", "selection"] as const) {
+      const key = `session:${terminalTransportEffectId("buyer", kind)}`;
+      actor.effects.set(key, structuredClone(conflicting.effects.get(key)));
+    }
+    const recovered = createDacsVetTerminalBundleTransportRuntimeV1({ context: actor.context,
+      expectedRegistryVersions: REGISTRY_VERSIONS, authenticateProduction: () => ({ status: "valid" }) });
+    await expect(recovered.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-local-vet-conflict" });
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
 });

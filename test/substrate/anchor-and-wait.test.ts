@@ -1281,6 +1281,15 @@ describe("DemosAdapter.anchorAndWait", () => {
       raw.getBlockByNumber.mockResolvedValueOnce(reply);
       await unanswered();
     }
+    // Independent contradictions survive another observation being unavailable.
+    const originalTx = raw.getTxByHash.getMockImplementation()!;
+    const tx = await originalTx("receipt");
+    for (const unavailable of [undefined, new Error("block transport unavailable")]) {
+      raw.getTxByHash.mockResolvedValueOnce({ ...tx, content: { ...tx.content, from: "wrong-writer" } });
+      if (unavailable instanceof Error) raw.getBlockByNumber.mockRejectedValueOnce(unavailable);
+      else raw.getBlockByNumber.mockResolvedValueOnce(unavailable);
+      await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    }
     // Answered: a fetched transaction, block or program that contradicts the
     // receipt, while every other read of it answers. (An unanswered read of
     // the same receipt keeps the whole verification indeterminate.)

@@ -1,7 +1,9 @@
 import { types as nodeTypes } from "node:util";
+import { admitDacsSessionProfile } from "./sessionProfileAdmission.js";
 
 import {
   advanceTerminalBundleDurable,
+  faultCategory,
   createTerminalBundlePlan,
   createTerminalBundleSignatureContribution,
   prepareVetTerminalBundle,
@@ -1242,14 +1244,47 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     context.database.loadEffectInput("session", transportId(role, kind, jobId)) as
       Readonly<DacsVetTerminalEvidenceV1> | undefined;
 
+  // Receipt observations are immutable snapshots, not CVR identity (CORE
+  // SR2-7). Both receipts are authenticated separately; compare signed record
+  // bytes and their exact reference, so a newer observation is still allowed.
+  const sameProduction = (left: PrepareVetTerminalBundleInput["production"] | undefined,
+    right: PrepareVetTerminalBundleInput["production"] | undefined) =>
+    left !== undefined && right !== undefined && canonicalEqual(
+      { record: left.record, recordRef: left.recordRef },
+      { record: right.record, recordRef: right.recordRef });
+
   const storeEvidence = async (kind: "local-evidence" | "peer-evidence",
     evidence: Readonly<DacsVetTerminalEvidenceV1>, localBindingHash?: string) => {
     const jobId = evidence.terminalInput.jobId;
     const bindingHash = localBindingHash ?? (await loadOrder(context, jobId)).localBindingHash;
+    // Evidence and full proposals share one immutable production per direction.
+    // An evidence message arriving after selection cannot replace that CVR.
+    for (const retainedKind of ["material", "proposal"] as const) {
+      const value = context.database.loadEffectInput("session", transportId(role, retainedKind, jobId));
+      if (value === undefined) continue;
+      const binding = captureBinding(value);
+      if (binding.localBindingHash !== bindingHash || binding.kind !== retainedKind) {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+      }
+      const retained = captureProposal(binding.payload).terminalInput;
+      const evaluated = kind === "local-evidence" ? peerRole : role;
+      const production = retained.evaluatedRole === evaluated
+        ? retained.production : retained.complementaryProduction;
+      if (!sameProduction(production, evidence.terminalInput.production)) {
+        throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      }
+    }
     const id = transportId(role, kind, jobId);
     const put = context.database.putEffectIntent({ kind: "session", effectId: id,
       bindingHash, input: evidence, idempotencyKey: id, jobId });
-    if (put.status === "conflict") throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+    if (put.status === "conflict") {
+      const retained = evidenceAt(kind, jobId);
+      if (retained === undefined || !canonicalEqual(
+        { ...retained.terminalInput, production: { ...retained.terminalInput.production, anchorReceipt: null } },
+        { ...evidence.terminalInput, production: { ...evidence.terminalInput.production, anchorReceipt: null } })) {
+        throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      }
+    }
   };
 
   const captureEvidence = async (value: unknown, jobId: string) => {
@@ -1278,9 +1313,42 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
   const sendEvidence = async (evidence: Readonly<DacsVetTerminalEvidenceV1>) => {
     const message = { jobId: evidence.terminalInput.jobId, payload: evidence,
       idempotencyKey: `vet-terminal-evidence:v1:${sha256Hex(canonicalize(evidence))}` };
-    await context.sendMessage(role === "buyer"
-      ? { ...message, type: "terminal-bundle-proposal-buyer" }
-      : { ...message, type: "terminal-bundle-proposal-seller" });
+    try {
+      await context.sendMessage(role === "buyer"
+        ? { ...message, type: "terminal-bundle-proposal-buyer" }
+        : { ...message, type: "terminal-bundle-proposal-seller" });
+    } catch {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-production-indeterminate");
+    }
+  };
+
+  const retainedLocalInput = (input: Readonly<PrepareVetTerminalBundleInput>) => {
+    const retained = evidenceAt("local-evidence", input.jobId)?.terminalInput;
+    if (retained === undefined) return input;
+    const scope = (value: Readonly<PrepareVetTerminalBundleInput>) => {
+      const { anchorReceipt: _receipt, ...production } = value.production;
+      const { complementaryProduction: _peer, ...rest } = value;
+      return { ...rest, production };
+    };
+    if (!canonicalEqual(scope(retained), scope(input))) {
+      throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+    }
+    return frozenJsonSnapshot({ ...input, production: retained.production }, "vet-terminal-retained-input") as
+      Readonly<PrepareVetTerminalBundleInput>;
+  };
+
+  const assertRetainedEvidence = (input: Readonly<PrepareVetTerminalBundleInput>,
+    kinds: readonly ("local-evidence" | "peer-evidence")[] = ["local-evidence", "peer-evidence"]) => {
+    for (const kind of kinds) {
+      const retained = evidenceAt(kind, input.jobId);
+      if (retained === undefined) continue;
+      const evaluated = kind === "local-evidence" ? peerRole : role;
+      const production = input.evaluatedRole === evaluated
+        ? input.production : input.complementaryProduction;
+      if (!sameProduction(retained.terminalInput.production, production)) {
+        throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      }
+    }
   };
 
   const assessProposalCandidate = async (
@@ -1301,6 +1369,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     }
     try {
       await assertProposalOrder(proposal, true);
+      assertRetainedEvidence(proposal.terminalInput, ["peer-evidence"]);
     } catch (error) {
       rethrowBusy(error);
       if (isPendingValidationPrerequisite(error)) {
@@ -1712,10 +1781,11 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       : proposal.terminalInput.evaluatedRole !== role) {
       throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
     }
+    assertRetainedEvidence(proposal.terminalInput);
     if (local.status === "passed") {
       const evidence = evidenceAt("local-evidence", proposal.terminalInput.jobId);
       if (evidence === undefined) throw new DacsVetTerminalBundleTransportError(DACS_VET_TERMINAL_LOCAL_VET_PENDING);
-      if (!canonicalEqual(evidence.terminalInput.production, proposal.terminalInput.complementaryProduction)) {
+      if (!sameProduction(evidence.terminalInput.production, proposal.terminalInput.complementaryProduction)) {
         throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
       }
     }
@@ -1805,6 +1875,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
             },
       );
     }
+    assertRetainedEvidence(captureProposal(binding.payload).terminalInput);
     const assessment = await assessProposal(binding.payload, true);
     if (assessment.disposition !== "authorized") {
       throw new DacsVetTerminalBundleTransportError(assessment.reasonCode);
@@ -1917,6 +1988,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           return { disposition: "authoritatively-absent",
             reason: "vet-terminal-proposal-absent" };
         }
+        assertRetainedEvidence(captureProposal(binding.payload).terminalInput);
         const assessment = await assessProposal(binding.payload);
         if (assessment.disposition === "rejected") {
           return stopsTerminal(assessment.reasonCode)
@@ -2088,8 +2160,8 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     },
     loadPlanDisagreementEvidence: loadDisagreement,
     async registerLocalTerminal(input) {
-      let terminalInput = frozenJsonSnapshot(input, "vet-terminal-input") as
-        Readonly<PrepareVetTerminalBundleInput>;
+      let terminalInput = retainedLocalInput(frozenJsonSnapshot(input, "vet-terminal-input") as
+        Readonly<PrepareVetTerminalBundleInput>);
       if (terminalInput.complementaryProduction === undefined) {
         const evidence = Object.freeze({ vetEvidenceVersion: "1" as const, terminalInput });
         // Exact bytes survive a crash before the peer answers or a plan is selected.
@@ -2107,6 +2179,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         terminalInput = frozenJsonSnapshot({ ...terminalInput,
           complementaryProduction: authenticated.terminalInput.production }, "vet-terminal-input") as PrepareVetTerminalBundleInput;
       }
+      assertRetainedEvidence(terminalInput);
       await assertNoPlanConflict(context, terminalInput.jobId);
       let prepared: PreparedVetTerminalBundle;
       try {
@@ -2189,7 +2262,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       }));
       let evidence: Readonly<DacsVetTerminalEvidenceV1> | undefined;
       if (input !== undefined) {
-        const terminalInput = frozenJsonSnapshot(input, "vet-terminal-pass-input") as PrepareVetTerminalBundleInput;
+        const terminalInput = retainedLocalInput(frozenJsonSnapshot(input, "vet-terminal-pass-input") as PrepareVetTerminalBundleInput);
         if (terminalInput.jobId !== jobId || terminalInput.evaluatedRole !== peerRole ||
             terminalInput.complementaryProduction !== undefined) {
           throw new DacsVetTerminalBundleTransportError("vet-terminal-evidence-invalid");
@@ -2254,14 +2327,12 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         local: {
           role,
           primaryClaim: context.authority,
-          signer: async (bytes) => await invokeConflictFenced(
-            context,
-            jobId,
-            () => context.demos.signComponent(
-              Uint8Array.from(bytes),
-              { algorithm: "ed25519", signer: context.authority },
-            ),
-          ),
+          signer: async (bytes) => {
+            await admitDacsSessionProfile(context, jobId);
+            assertRetainedEvidence(assessment.proposal.terminalInput);
+            return await invokeConflictFenced(context, jobId, () => context.demos.signComponent(
+              Uint8Array.from(bytes), { algorithm: "ed25519", signer: context.authority }));
+          },
         },
         signerKeys,
       }, terminalProvider(assessment.proposal), {
@@ -2381,5 +2452,29 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       }
     },
   };
-  return Object.freeze(runtime);
+  const guard = <T extends (...args: any[]) => any>(action: T, job: (...args: Parameters<T>) => string): T =>
+    (async (...args: Parameters<T>) => {
+      await admitDacsSessionProfile(context, job(...args));
+      return action(...args);
+    }) as T;
+  const guardedTransport = Object.freeze(Object.fromEntries(Object.entries(runtime.transport).map(([name, action]) =>
+    [name, guard(action as (...args: any[]) => any, (input: { jobId?: string; identity?: { jobId: string } }) =>
+      input.identity?.jobId ?? input.jobId!)])) as unknown as TerminalBundleTransport);
+  return Object.freeze({
+    ...Object.fromEntries(Object.entries(runtime).filter(([, action]) => typeof action === "function")
+      .map(([name, action]) => [name, guard(action, (input: any) =>
+        typeof input === "string" ? input : input.envelope?.jobId ?? input.jobId)])),
+    transport: guardedTransport,
+    validatePayload: async (input: Parameters<typeof runtime.validatePayload>[0]) => {
+      try { await admitDacsSessionProfile(context, input.jobId); }
+      catch (error) {
+        const category = faultCategory(error);
+        if (category === "substrate" || category === "transient") {
+          return { status: "unavailable" as const, reasonCode: "session-profile-admission-unavailable" };
+        }
+        throw error;
+      }
+      return runtime.validatePayload(input);
+    },
+  }) as unknown as Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
 }

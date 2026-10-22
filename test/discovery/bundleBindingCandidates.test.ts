@@ -537,12 +537,10 @@ it("refuses resolution while the pinned profile is unreleased, whatever the auth
   expect(fetched).toEqual([]);
 });
 
-it("bounds decoded candidate lists before any admission or native read", async () => {
+it("reports raw candidate overflow as budget exhaustion without native reads", async () => {
   const { value, fetched } = input(new Array(1025).fill(null), {});
-  let admissions = 0;
-  value.authenticateSessionProfile = () => { admissions++; throw new Error("unreachable"); };
-  await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/candidate list exceeds/);
-  expect(admissions).toBe(0);
+  await expect(resolveBundleBindingCandidates(value)).resolves.toEqual({
+    disposition: "indeterminate", reason: "bundle-binding-budget-exhausted" });
   expect(fetched).toEqual([]);
 });
 

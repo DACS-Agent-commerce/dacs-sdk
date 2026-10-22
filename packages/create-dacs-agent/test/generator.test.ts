@@ -283,6 +283,9 @@ describe("create-dacs-agent", () => {
       }
     }
     const compose = await readFile(join(target, "compose.yaml"), "utf8");
+    expect(compose).toContain("DACS_SESSION_PROFILE_ADMISSION_FILE: /run/dacs/session-profile/admission.json");
+    expect(compose.match(/target: \/run\/dacs\/session-profile/g)).toHaveLength(2);
+    expect(compose).toContain("source: ${DACS_SESSION_PROFILE_ADMISSION_DIRECTORY:-./session-profile}");
     expect(compose).toContain("DACS_BUYER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_BUYER_DEMOS_SECRET_FILE");
@@ -427,7 +430,7 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("process.env.DACS_SESSION_PROFILE_ADMISSION_FILE");
     expect(environmentExample).toContain("\nDACS_SESSION_PROFILE_ADMISSION_FILE=\n");
     expect(combined).toContain(
-      "DACS_SESSION_PROFILE_ADMISSION_FILE: ${DACS_SESSION_PROFILE_ADMISSION_FILE:-}");
+      "DACS_SESSION_PROFILE_ADMISSION_FILE: /run/dacs/session-profile/admission.json");
     expect(combined).toContain("post-start-doctor-required");
     expect(combined).toContain("DACS_SETUP_WRITE_CONFIRM=1");
     expect(combined).toContain("DACS_PURCHASE_CONFIRM=1");

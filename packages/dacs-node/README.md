@@ -55,11 +55,16 @@ pass its own admission.
 `createDacsSessionProfileGatedCommerceGraphV1` builds a live graph only when
 `dacsLiveSessionProfileAvailabilityV1` reports admission is possible. Otherwise
 the role service starts with `commerce: blocked` and names the reason:
-`session-profile-unreleased`, or `session-profile-admission-unconfigured`.
+`session-profile-unreleased`, `session-profile-admission-unconfigured`, or
+`session-profile-admission-unavailable` when the operator file cannot be read.
 Generated projects use it with `createDacsFileSessionProfileAdmissionV1`, which
 re-reads the operator's statement in `DACS_SESSION_PROFILE_ADMISSION_FILE`
 (`releasePin`, `profileStatus`, `moduleVersions`) for every action and binds it
-to the configured buyer and seller authorities. When the release is cut, the
+to the configured buyer and seller authorities. Docker projects mount
+`DACS_SESSION_PROFILE_ADMISSION_DIRECTORY` read-only and read its `admission.json`
+at `/run/dacs/session-profile/admission.json`. Local projects use the file path
+directly. Missing or unreadable files remain retryable at action time.
+When the release is cut, the
 pin and that status move to it together. Orders and
 databases bound to the historical
 `965df755aba4ff392f1fb37a93d287242b177ba4` revision are refused;
@@ -217,11 +222,12 @@ requires byte-equivalent canonical output before retaining or signing it.
 `pass` creates no terminal authority, and a verifier outage remains retryable
 and produces no blame. Every authenticated non-pass decision ends the Vet phase
 at `vet-failed` (DACS-2 VPC-4, VP-R4): `fail` is the evaluated party's
-`counterparty` fault. An `indeterminate` or `error` requires independently
-authenticated `cause` evidence binding the job, record hash and both identity
-hashes. A sole counterparty-presentation parse cause maps to `counterparty`;
-an established verifier cause maps to `permanent`. Missing or mismatched cause
-evidence remains indeterminate and produces no terminal blame.
+`counterparty` fault. An authenticated `indeterminate` or `error` defaults to
+permanent verifier fault under VPC-4. Independently authenticated `cause` evidence
+binding the job, record hash and both identity hashes can establish a sole
+counterparty-presentation parse cause, which maps to `counterparty`. A supplied
+cause bound to another production remains indeterminate and produces no terminal
+blame, as does unavailable production authentication.
 
 When configured, the returned graph exposes `terminalBundles`.
 `registerLocalTerminal(input)` durably binds locally observed failure material,

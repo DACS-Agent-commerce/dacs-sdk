@@ -1942,3 +1942,16 @@ describe("acceptance failure class", () => {
     expect(runWorkflowStep(4, summary).status).toBe(4);
   });
 });
+
+
+it("pins the recorded pqcrypto image version while accepting its recorded metadata spelling", () => {
+  const known = { name: "pqcrypto", location: "node_modules/pqcrypto", version: "1.0.01" };
+  const baseline = { policyFindings: { productionImageDependencies: [known] } };
+  const summary = (version: string) => ({ securityGate: {
+    productionImageDependencyPolicyPassed: false, engineStrictExitCode: 0,
+    lockSbomExitCode: 0, physicalSbomExitCode: 0,
+    findings: { productionImageDependencies: [{ ...known, version }], productionImageInventory: completeInventory },
+  } });
+  expect(classifyPolicyChecks(summary("1.0.01"), baseline).productionImage).toBe("baseline");
+  expect(classifyPolicyChecks(summary("9.0.0"), baseline).productionImage).toBe("blocked");
+});

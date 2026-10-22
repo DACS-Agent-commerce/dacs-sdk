@@ -1904,3 +1904,18 @@ test("retries missing settled session state and completes when it becomes readab
   expect(f.state.fences).toHaveLength(0);
   await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider, durability)).resolves.toMatchObject({ disposition: "finalised" });
 });
+
+
+test.each(["load", "resolveSellerRequest", "resolveCounterSignatures"] as const)(
+  "retries a thrown substrate outage at %s", async (boundary) => {
+    const f = await fixture("pure", true);
+    if (boundary === "load") {
+      f.durability = { ...f.durability, store: { ...f.store, load: async () => { throw new SubstrateError("store unavailable"); } } };
+    } else {
+      f.durability = { ...f.durability, transport: { ...f.durability.transport,
+        [boundary]: async () => { throw new SubstrateError("transport unavailable"); } } };
+    }
+    await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability))
+      .resolves.toMatchObject({ disposition: "indeterminate" });
+    expect(f.state.anchored).toBeUndefined();
+  });
