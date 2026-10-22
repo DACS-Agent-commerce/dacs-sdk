@@ -7,8 +7,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalize, contentHash, demosSignedTransactionProofHash, finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, logicalToStorageProgramName, paymentEvidenceAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+const store={transaction,isUniqueViolation},buyerAccess={assertWallet(){}};
 const state=globalThis[Symbol.for('d15.review.readers')]={};
 const moduleAt=name=>new URL('../src/'+name,import.meta.url).href;
 const fake=source=>({url:'data:text/javascript,'+encodeURIComponent(source),shortCircuit:true});
@@ -16,8 +17,6 @@ registerHooks({resolve(specifier,context,next){
  // Exercise retained-state reducers behind the unconditional production action
  // hold. The separate sweep-contracts tests pin that real hold and zero effects.
  if(specifier.endsWith('/action-admission.mjs'))return fake('export const assertPurchaseActionsAdmitted=()=>{};');
-  if(specifier.endsWith('/seams/purchase-store-not-wired.mjs'))return {url:new URL('./helpers/purchase-integrity-database.mjs',import.meta.url).href,shortCircuit:true};
-  if(specifier.endsWith('/seams/buyer-access-not-wired.mjs'))return fake('export const operatorBuyerAccessConfig=()=>({assertWallet(){}});');
   if(specifier.endsWith('/demos-sr2-adapter.mjs') && !context.parentURL?.endsWith('readback-review-decisions.test.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/demos-sr2-adapter.mjs')+'?actual')}; export const createDemosSr2Adapter=()=>globalThis[Symbol.for('d15.review.readers')].adapter;`);
   if(specifier.endsWith('/seller-http.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/seller-http.mjs')+'?actual')}; export const createSellerAgentClient=()=>globalThis[Symbol.for('d15.review.readers')].seller;`);
   if(specifier.endsWith('/purchase-protocol.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/purchase-protocol.mjs')+'?actual')}; export const exchangeAgreement=async()=>globalThis[Symbol.for('d15.review.readers')].anchored;`);
@@ -103,7 +102,7 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
    ...(retainedDelivery?{delivery:{...delivery,report},nativeEvidence:{status:'verified'},paymentEvidence:{ref:{contentHash:'d'.repeat(64)}}}:{}),...protocolPatch};
  const op=ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:'TEST',request:{},status,terms,termsHash:CHAIN,state:{protocol},expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
  const nativeEvidence=createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
- const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'}});
+ const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
  return {op,ops,service};
 }
 for(const [label,error] of errors)test(`delivered purchase recheck: ${label}`,async t=>{

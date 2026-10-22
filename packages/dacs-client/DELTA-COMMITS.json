@@ -615,5 +615,41 @@
       "packages/dacs-client/test/price-bound.test.mjs",
       "packages/dacs-client/test/storage-read-nonobservation.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 inject host seams and publish the buyer API",
+    "files": [
+      "package-lock.json",
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/LICENSE",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/delta-map.mjs",
+      "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "packages/dacs-client/src/dacs/seller-agent-error.mjs",
+      "packages/dacs-client/src/dacs/seller-agent.mjs",
+      "packages/dacs-client/src/dacs/seller-http.mjs",
+      "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs",
+      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs",
+      "packages/dacs-client/test/purchase-executed-only.test.mjs",
+      "packages/dacs-client/test/purchase-integrity.test.mjs",
+      "packages/dacs-client/test/purchase-review-races.test.mjs",
+      "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "packages/dacs-client/test/sweep-contracts.test.mjs"
+    ]
   }
 ]

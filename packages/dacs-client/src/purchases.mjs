@@ -30,10 +30,10 @@
 // Legacy purchases (no terms.protocol) are unchanged.
 import { createHash } from 'node:crypto';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
-import { PURPOSES } from './seams/wallet-actions-not-wired.mjs';
+import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
 import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
-import { transaction, isUniqueViolation } from './seams/purchase-store-not-wired.mjs';
+import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
 import { OutboundError } from './util/http.mjs';
 import { nodeProjectedNonce } from './dacs/chain.mjs';
@@ -160,7 +160,9 @@ export function approvalBinding(operation) {
   };
 }
 
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null }) {
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }) {
+  const { transaction, isUniqueViolation } = purchaseStore(store);
+  const PURPOSES = walletPurposes(purposes);
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
   const insertApproval = db.prepare(`INSERT INTO approvals (id, operation_id, challenge_id, signer_address, terms_hash, signature, approved_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);

@@ -1,0 +1,122 @@
+// D11 seams are factory parameters. A host passes its PurchaseStore and its
+// wallet-challenge purposes; a factory built without them refuses at
+// construction, before any read, write or wallet request.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createPurchaseService } from '../src/purchases.mjs';
+import { createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
+import { createDeliveryDeadlineWatch } from '../src/dacs/delivery-deadline-watch.mjs';
+import { purchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
+import { walletPurposes } from '../src/seams/wallet-actions-not-wired.mjs';
+import { DEVNET_NATIVE_COMMITMENT_MARKER } from '../src/devnet-demo/commitment-consumer.mjs';
+import * as wallet from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
+import * as transport from '../src/wallet/devnet-native-transport.mjs';
+
+const notWired = (seam) => (error) => error.name === 'NotWiredError' && error.code === 'client_not_wired' && error.seam === seam;
+// Any use of these throws: a factory that refuses first never touches them.
+const untouched = new Proxy({}, { get(_target, key) { throw new Error(`unexpected use of ${String(key)}`); } });
+const store = { transaction: (_db, fn) => fn(), isUniqueViolation: () => false };
+const purposes = { APPROVE_PURCHASE: 'approve-purchase' };
+
+for (const bad of [undefined, null, {}, { transaction: () => {} }, { isUniqueViolation: () => false }, { transaction: 'x', isUniqueViolation: () => false }]) {
+  test(`a missing or partial PurchaseStore is refused at construction: ${JSON.stringify(bad)}`, () => {
+    assert.throws(() => purchaseStore(bad), notWired('purchase-store-not-wired'));
+    assert.throws(() => createPurchaseService({ db: untouched, ops: untouched, coordinates: untouched, chain: untouched, challenges: untouched, store: bad, purposes }), notWired('purchase-store-not-wired'));
+    assert.throws(() => createProtocolPurchases({ db: untouched, ops: untouched, coordinates: untouched, store: bad }), notWired('purchase-store-not-wired'));
+    assert.throws(() => createDeliveryDeadlineWatch({ db: untouched, ops: untouched, coordinates: untouched, store: bad }), notWired('purchase-store-not-wired'));
+  });
+}
+
+for (const bad of [undefined, null, {}, { APPROVE_PURCHASE: '' }, { APPROVE_PURCHASE: '  ' }, { APPROVE_PURCHASE: 1 }]) {
+  test(`missing wallet purposes are refused at construction: ${JSON.stringify(bad)}`, () => {
+    assert.throws(() => walletPurposes(bad), notWired('wallet-actions-not-wired'));
+    assert.throws(() => createPurchaseService({ db: untouched, ops: untouched, coordinates: untouched, chain: untouched, challenges: untouched, store, purposes: bad }), notWired('wallet-actions-not-wired'));
+  });
+}
+
+test('the store seam keeps only the two host functions, and purposes only the approval purpose', () => {
+  const extra = { ...store, other: () => {} };
+  assert.deepEqual(Object.keys(purchaseStore(extra)), ['transaction', 'isUniqueViolation']);
+  assert.equal(purchaseStore(extra).transaction(null, () => 'TEST-result'), 'TEST-result');
+  assert.deepEqual(walletPurposes({ ...purposes, LOGIN: 'login' }), purposes);
+  assert.equal(Object.isFrozen(walletPurposes(purposes)), true);
+});
+
+test('protocol purchases without an operator capability build, and their paths that need one stay closed', () => {
+  const buyer = createProtocolPurchases({ db: {}, ops: {}, coordinates: {}, store });
+  assert.equal(buyer.actionsAdmitted, false);
+});
+
+test('the native transport links to the package wallet helpers, not a throwing stub', async () => {
+  // The wallet seam exports only walletPurposes, so the transport (imported
+  // above) could not link if it still imported the old stub names.
+  assert.deepEqual(Object.keys(await import('../src/seams/wallet-actions-not-wired.mjs')), ['walletPurposes']);
+  assert.equal(typeof transport.createDevnetNativeTransport, 'function');
+  const content = { type: 'native', from: 'A'.repeat(64), to: '0x' + 'b'.repeat(64), amount: 1, data: ['native', { args: [] }], nonce: 7, timestamp: 1 };
+  assert.match(await wallet.nativePayloadDigest(content), /^[0-9a-f]{64}$/);
+  assert.equal(wallet.storageConfirmationShapeMatches({ transaction: { content: {}, signature: {}, hash: 'h', status: 'confirmed', blockNumber: 1 } }), true);
+});
+
+for (const buyerAccess of [false, {}, { assertWallet: 'TEST' }]) {
+  test('malformed resolved buyer capability refuses construction', () => {
+    assert.throws(() => createProtocolPurchases({ db: untouched, ops: untouched, coordinates: untouched, store, buyerAccess }), notWired('buyer-access-not-wired'));
+  });
+}
+
+test('missing buyer capability refuses a native purchase before touching host state', () => {
+  const buyer = createProtocolPurchases({ db: untouched, ops: untouched, coordinates: untouched, store });
+  assert.throws(() => buyer.assertBuyerAccess('TEST-wallet', { terms: { protocol: { sellerCommitment: DEVNET_NATIVE_COMMITMENT_MARKER } } }), { code: 'buyer_access_closed' });
+});
+
+test('resolved buyer capability keeps its receiver and original refusal', () => {
+  const cause = new Error('TEST-wallet-refused');
+  const buyerAccess = { wallet: 'TEST-wallet', assertWallet(wallet) { assert.equal(this.wallet, wallet); throw cause; } };
+  const buyer = createProtocolPurchases({ db: {}, ops: {}, coordinates: {}, store, buyerAccess });
+  assert.throws(() => buyer.assertBuyerAccess('TEST-wallet'), error => error === cause);
+});
+
+test('store methods retain their host receiver and original errors', () => {
+  const cause = new Error('TEST-store-refused');
+  const host = { marker: 'TEST-host', transaction(_db, fn) { assert.equal(this.marker, 'TEST-host'); return fn(); },
+    isUniqueViolation(error) { assert.equal(this.marker, 'TEST-host'); return error === cause; } };
+  const seam = purchaseStore(host);
+  assert.throws(() => seam.transaction(null, () => { throw cause; }), error => error === cause);
+  assert.equal(seam.isUniqueViolation(cause), true);
+});
+
+test('injected seams do not lift trusted profile admission on any protocol action', async () => {
+  const buyer = createProtocolPurchases({ db: untouched, ops: untouched, coordinates: untouched, store, buyerAccess: { assertWallet() {} } });
+  assert.equal(buyer.actionsAdmitted, false);
+  assert.throws(() => buyer.prepareTerms({}), { code: 'profile_not_admitted' });
+  for (const method of ['identityRequest', 'planRequest', 'signRequest', 'submitAgreement', 'recheck', 'withNativePaymentLane', 'readNativePaymentLane']) {
+    assert.equal(typeof buyer[method], 'function', method);
+    await assert.rejects(async () => buyer[method]({}), { code: 'profile_not_admitted' });
+  }
+});
+
+test('an asynchronous buyer assertion cannot grant synchronous wallet authority', () => {
+  assert.throws(() => createProtocolPurchases({ db: untouched, ops: untouched, coordinates: untouched, store,
+    buyerAccess: { async assertWallet() {} } }), notWired('buyer-access-not-wired'));
+  const buyer = createProtocolPurchases({ db: {}, ops: {}, coordinates: {}, store,
+    buyerAccess: { assertWallet: () => Promise.resolve() } });
+  assert.throws(() => buyer.assertBuyerAccess('TEST-wallet'), notWired('buyer-access-not-wired'));
+});
+
+test('deadline observation uses the injected transaction and refuses a stale repeat', () => {
+  const operation = { id: 'TEST-operation', accountId: 'TEST-buyer', kind: 'purchase', status: 'settled_verified',
+    terms: { seller: { claim: 'TEST-seller' }, protocol: {} },
+    state: { protocol: { stage: 'payment-evidenced', agreement: { hash: 'TEST-hash', ref: { contentHash: 'TEST-hash' },
+      artifact: { terms: { deadline: 1 }, parties: [{ role: 'seller', primaryClaim: 'TEST-seller' }] }, terms: { seller: 'TEST-seller', deadline: 1 } },
+      commitment: { verifiedAt: 'TEST-verified' } } } };
+  let current = operation, writes = 0, transactions = 0;
+  const hostStore = { transaction(_db, fn) { transactions++; return fn(); }, isUniqueViolation: () => false };
+  const watch = createDeliveryDeadlineWatch({ enabled: true, db: { prepare: () => ({}) },
+    coordinates: { get: () => ({ verifiedAt: 'TEST-verified' }) }, store: hostStore,
+    ops: { get: () => current, transition(_id, _before, _after, { state }) { writes++; current = { ...current, state }; return current; } } });
+  const readback = { notPresent: true, delivery: { status: 'absent' }, checkedAt: 120002 };
+  watch.observe(operation, readback);
+  watch.observe(operation, readback);
+  assert.equal(transactions, 2);
+  assert.equal(writes, 1);
+  assert.equal(current.state.protocol.deliveryDeadline.overdue.disposition, 'indeterminate');
+});

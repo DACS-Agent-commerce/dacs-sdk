@@ -1,11 +1,40 @@
-# Private buyer client snapshot
+# @kynesyslabs/dacs-client
 
-This PR is an isolated development snapshot. It is **not launch-ready**. The package is private, its exports are empty, and purchase actions remain held.
+ESM buyer services and protocol readers for experimental DACS testnet integrations. Install this package with the matching `@kynesyslabs/dacs` version.
 
-Live wiring requires a real D11 PurchaseStore with synchronous, re-entrant, serializing transactions and the destination regressions rerun against it; approved immutable DEC-16 testnet identity admission before effects; independent programme review; and coordinated Standard release and trusted profile admission. The current tests use an isolated test store and do not satisfy those prerequisites.
+The public root exports purchase and protocol factories, Listing and chain readers, verification and receipt helpers. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal and its format/version constants. The root supports Node ^20.19.0 or >=22.12.0 and does not load SQLite; the journal requires Node >=22.13.0. Source paths are private. Browser and wallet-session entry points await the coordinated signing-domain change.
 
-After `npm ci --no-audit` and `npm run build` at the SDK root, run `npm test --workspace @kynesyslabs/dacs-client`. Every executable package test is discovered, run one file at a time, and reported with its registered test count. Separately supplied source-repository acceptance tests report explicit skips when unavailable. Historical copied tests requiring missing application components are labelled text evidence under `evidence/source-tests/`, outside executable discovery; their historical pass counts establish no current coverage.
+## Factory integration
 
-The hold gate pins only this package. Unrelated SDK files and later main/PR commits need no client re-pin. The gate establishes package integrity, not the absence of external callers. Client changes still require reviewed reciprocal hold/gate pins and provenance records.
+```js
+import {
+  createPurchaseService,
+  createProtocolPurchases,
+  createDeliveryDeadlineWatch,
+} from '@kynesyslabs/dacs-client';
 
-The SDK raw JSON default remains 1 MiB. The explicit maximum supports bounded 4 MiB RPC reads and configured Directory reads up to 10,000,000 bytes; streaming and exact-byte admission use the same validated bound. The root `demosTransactionContentMatches` export is used by both the native transport and SR-2 adapter to compare signed and executed content.
+// Supply the application's existing state and wallet challenge services.
+const store = { transaction, isUniqueViolation };
+const purposes = { APPROVE_PURCHASE: 'purchase-approval' };
+const protocol = createProtocolPurchases({
+  db, ops, coordinates, dacsProtocol, store,
+  buyerAccess: resolvedBuyerAccess, // optional; null denies paths that require it
+});
+const purchases = createPurchaseService({
+  db, config, ops, coordinates, accounts, verifier, chain, challenges,
+  protocol, store, purposes,
+});
+const watch = createDeliveryDeadlineWatch({ db, ops, coordinates, store });
+```
+
+`store.transaction(db, fn)` must run synchronous bodies in a serializing transaction (`BEGIN IMMEDIATE` or equivalent); nested calls join the outer transaction, exceptions roll back, and original errors propagate. `store.isUniqueViolation(error)` identifies only unique-constraint errors. Both methods keep their receiver. The application owns the DB schema and operations/coordinate stores and must run the destination race/restart tests against its actual adapter.
+
+The purchase factory requires a nonempty `purposes.APPROVE_PURCHASE`. Its injected `challenges.issue` and `challenges.verifyAndConsume` use exactly that purpose. Approval and challenge consumption commit together before a payment payload is handed to the wallet. The service never holds a signing key or broadcasts. Missing or malformed seams throw `NotWiredError` with code `client_not_wired` before any state access. A resolved buyer capability supplies synchronous `assertWallet(address)`; its refusals propagate unchanged.
+
+The injected seams enable host approval handoffs and payment readback. They do not confer protocol profile authority. Protocol purchase actions still refuse with `profile_not_admitted`: the trusted profile and participant admission and approved immutable testnet identity prerequisites remain required. `actionsAdmitted` remains false. Public HTTPS transport, the Directory schema transition and browser signing-domain convergence require their own protocol changes before a remote-seller deployment.
+
+## Validation
+
+After `npm ci` and `npm run build` at the SDK root, run `npm test --workspace @kynesyslabs/dacs-client`. Every executable test runs once, one file at a time. Tests cover explicit store injection, one-use approval/rollback, pointer races, restart, executed-only settlement and broadcast-once recovery. Source-repository acceptance cases report explicit skips when the source inputs are unavailable.
+
+The reciprocal integrity record and gate still pin the complete package tree, including exact bytes and Git modes. New entry points or other package changes require a reviewed re-pin and an enumerated source delta. The raw JSON default remains 1 MiB; bounded opt-in RPC and Directory limits and exact signed-content comparisons are unchanged.

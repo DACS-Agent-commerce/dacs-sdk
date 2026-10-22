@@ -1,4 +1,4 @@
-import { transaction } from '../seams/purchase-store-not-wired.mjs';
+import { purchaseStore } from '../seams/purchase-store-not-wired.mjs';
 import { usesNativeAgreementPayment } from './native-agreement-payment-consumer.mjs';
 
 export const DELIVERY_DEADLINE_SWEEP_MS = 5 * 60 * 1000;
@@ -32,7 +32,8 @@ const defaultTimer = {
   after: (run, ms) => setTimeout(run, ms), cancelAfter: clearTimeout,
 };
 
-export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = false, now = () => Date.now(), logger, timer = defaultTimer }) {
+export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = false, now = () => Date.now(), logger, timer = defaultTimer, store }) {
+  const { transaction } = purchaseStore(store);
   let handle = null, stopped = false, running = null, cursor = '', checkDelivery;
   // Select a bounded page of plausible rows; all authority gates are repeated
   // in memory, and again inside the observation transaction.

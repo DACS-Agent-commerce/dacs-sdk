@@ -3,16 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerHooks } from 'node:module';
 import { test } from 'node:test';
-import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
-registerHooks({ resolve(specifier, context, next) {
-  if (specifier.endsWith('/seams/purchase-store-not-wired.mjs')) return { url: new URL('./helpers/purchase-integrity-database.mjs', import.meta.url).href, shortCircuit: true };
-  return next(specifier, context);
-} });
-const { createPurchaseService } = await import('../src/purchases.mjs');
-const { createCoordinateStore } = await import('../src/dacs/wallet-transactions.mjs');
+import { createPurchaseService } from '../src/purchases.mjs';
+import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
+const store = { transaction, isUniqueViolation }, purposes = { APPROVE_PURCHASE: 'approve-purchase' };
 const CHAIN='f'.repeat(64), WALLET='0x'+'a'.repeat(64), PAYEE='0x'+'7'.repeat(64), A='1'.repeat(64), B='2'.repeat(64), AMOUNT='2500000000';
 function world(t, { observe, native = false, resolve = async () => true, failMarker = false } = {}) {
   const dir=mkdtempSync(join(tmpdir(),'d15-review-')),file=join(dir,'state.sqlite'),connections=[];
@@ -28,7 +24,7 @@ function world(t, { observe, native = false, resolve = async () => true, failMar
     const db=openDatabase(file);connections.push(db);
     const ops=createOperationStore({db,handoffSecret:'TEST-only-d15-review-secret-000000000'}),real=createCoordinateStore({db});
     const coordinates=failMarker?{...real,recordObservation:(id,obs,...args)=>obs.nativeLaneResolved ? false : real.recordObservation(id,obs,...args)}:real;
-    const purchases=createPurchaseService({db,ops,coordinates,config:{},chain,protocol});
+    const purchases=createPurchaseService({db,ops,coordinates,config:{},chain,protocol,store,purposes});
     active={db,ops,coordinates,purchases};
   };
   open();

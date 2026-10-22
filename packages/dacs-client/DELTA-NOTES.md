@@ -1,6 +1,6 @@
 # client package deltas
 
-Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
+Scope: PLAN §8 and §0.3, D10, D9, D1, D11, D15 and the recorded D16 corrections. The public API is the explicit root and durable-journal map; protocol actions remain held.
 Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes
@@ -178,3 +178,14 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - `src/dacs/listing.mjs`: DACS-1 LRR-3 / LRR-6. A present `railVersion` must be exactly 1; an absent one means the latest version, which in the client's in-code PA-1 resolution is that same version, so it is admitted.
 - `src/dacs/chain.mjs`: CORE §5.1. A storage-program 404 or a malformed success body carries no authenticated absence proof, so `readStorageProgram` reports it as `indeterminate`, never `absent`. Both callers already admitted only `found`.
 - Tests: `test/delivery-evidence-gate.test.mjs` drives the delivery-evidence gate with seller evidence signed by a runtime Ed25519 key and checked by the SDK `verifySettlementEvidence`. The control reaches `delivered`; a different `deliverableContentHash`, receipt writer, `jobId`, evidence hash, outcome, phase or signing key each keeps `delivery-ready` with the evidence rejected, and the first four are refused only by the client's own clauses. `test/price-bound.test.mjs` pins the bound at 9007199254740991 and 9007199254740992 OS on every admission path and against a node-shaped transaction body. `test/storage-read-nonobservation.test.mjs` pins the non-observation results. `test/delivery-access-model.test.mjs` now admits an absent `railVersion` and refuses a null one.
+
+
+## D11: explicit host seams and public buyer boundary
+
+- `src/purchases.mjs`, `src/dacs/protocol-purchases.mjs` and `src/dacs/delivery-deadline-watch.mjs` validate an injected PurchaseStore before using state. Store methods preserve their receiver. The purchase service also requires the host approval purpose; protocol purchases take an already-resolved optional buyer access capability.
+- `src/wallet/devnet-native-transport.mjs` imports the package pure wallet digest and confirmation helpers. The original exact-byte, broadcast-once and indeterminate-read rules stay in force.
+- `src/index.mjs` lists the reviewed root names; the only additional subpath is `wallet/durable-journal`. The package uses the workspace version and an exact matching core dependency. Runtime source, README and license ship; source evidence and control scripts do not ship.
+- `src/dacs/seller-agent-error.mjs` shares the existing error identity without pulling seller storage into buyer imports. SQLite loads only when the private seller authentication journal is constructed or the separate wallet journal is imported.
+- Factory tests refuse absent/malformed seams before dependency access and retain missing-capability/profile refusals. Host challenge tests prove exact purpose use, approval/consumption rollback and one coordinate after a repeat. Existing D15 races and executed-payment tests pass their SQLite adapter explicitly, without loader substitutions.
+- Package integrity still checks the complete file set, reciprocal pins and HEAD/index/working bytes and modes. The manifest policy now requires exactly the reviewed public export map; all unreviewed additions remain refused.
+- Historical sections above describe their respective checkpoints. This D11 change supersedes their empty-export/private-package status. The protocol action hold, production store qualification and immutable identity prerequisites remain binding. Browser exports await the signing-domain/profile change; no old-domain public browser entry is added.

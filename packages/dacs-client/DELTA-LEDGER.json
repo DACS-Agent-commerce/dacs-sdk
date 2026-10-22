@@ -1204,6 +1204,107 @@
           "after": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 inject host seams and publish the buyer API",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "36d4ac4177132e7de0708a4f4e90c418d3858a9d",
+          "after": "9418b11c221fddcf4f596ccd4b250e8b136f3ee1"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "479bd5b726f9e0752ca1618212e174330b800af0",
+          "after": "d4d98b62c5e3ac90ed8f4a9a265e2956802ae8e5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent-error.mjs",
+          "before": null,
+          "after": "a701b193b0b8e1b01237d684ca33c4ee8ea001b6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b",
+          "after": "f4040282b697373ed8c41585699c049b8230f325"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "afac16899f4f2d95463ce7f3ab6e9aa7e03e0ef1",
+          "after": "b7e0ec6e243d6e81499a97dcbbb609566a0a4134"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "0997b8a6390c44daf9f5075711406d9f2d60dd98",
+          "after": "1e18fb0c5c16b8b2d131912f0f82ed1027b48274"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": null,
+          "after": "538928ef8a691684d87066133fea0286c05d90f4"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "30b6914f51a037b698d9a71d5e6cecc0629e4a8b",
+          "after": "541b61d7a3ffff50ee61161d33257ab135bd40b2"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "944247d4ce8b2622389c79b71de1a21d6b83e239",
+          "after": "8614e7c371643a855c65589d9ab3788c94a1702c"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs",
+          "before": "24d09b80ffce1129e878685ef01a21b798de3d20",
+          "after": "2fd8da35f4657e607784dcd339900dfe03d7fb9f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "54bead46b8880560f26cacda3d10f6024e24596d",
+          "after": "941c53a69f951f1dc2a6336c0b7df1c025606a5d"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": null,
+          "after": "01d1783b61bcb6d5328436e574322006cf6b9f34"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": null,
+          "after": "ea5b81bd70eb7336933c9a098a0ae48e5cc642f3"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": null,
+          "after": "bf5273e1ee3a55e417b891a04110f27c23cc6650"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "a90c09c6855bf640d1c1ae01251d66b783c36ee1",
+          "after": "4ec34580242522b7dd18b98233d911029ae4e143"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-integrity.test.mjs",
+          "before": "80fe7f93a5306cbe4392ac1529b1f9789b050504",
+          "after": "174d67c16132706497904b28250c6135e97d1497"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-review-races.test.mjs",
+          "before": "48b8e059fc05a3495be61151feda3793d08de7f7",
+          "after": "0f6b4617a40d7d1a888b9f065abc794d9b00b5b4"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "a3260b7e24020f9a6a3b6e8ba637d59d17ebae06",
+          "after": "cd4d6c9e6e2ca652a2d4a342b21862c83863abb2"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6",
+          "after": "2ff0ad8abdbb060c2651be671a9f3bd254e1c1b9"
+        }
+      ]
     }
   ]
 }
