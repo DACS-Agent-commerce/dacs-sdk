@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
+import type { Demos } from "@kynesyslabs/demosdk/websdk";
 
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
@@ -8,6 +9,7 @@ import {
   DemosAdapter,
   createInMemoryDemosWriteJournal,
   type DemosAdapterConfig,
+  type DemosRawClient,
 } from "../../src/substrate/index.js";
 import {
   ed25519Verify,
@@ -426,6 +428,57 @@ describe("DemosAdapter", () => {
     await expect(
       adapter.findSubjectsByClaim(`cci-nomis:0x${"11".repeat(20)}`),
     ).rejects.toThrow(/not a reverse-resolvable/);
+  });
+
+  it("refuses a domain claim before calling the web2 reverse lookup (#339)", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const web2 = vi.spyOn(Identities.prototype, "getDemosIdsByWeb2Identity");
+
+    await expect(
+      adapter.findSubjectsByClaim("domain:alice.example"),
+    ).rejects.toThrow(/domain reverse lookup is not exposed/);
+    expect(web2).not.toHaveBeenCalled();
+  });
+
+  it("accepts network and address info shapes without an index signature (#339)", async () => {
+    // demosdk's own methods: `any` under the locked 4.0.16 (its declarations
+    // do not resolve with NodeNext), concrete under 4.0.18, which CI also
+    // typechecks against.
+    const real: Pick<DemosRawClient, "getNetworkInfo" | "getAddressInfo"> =
+      {} as Pick<Demos, "getNetworkInfo" | "getAddressInfo">;
+    void real;
+    // Subsets of 4.0.18's interfaces (AddressInfo omits assignedTxs and
+    // identities), with no index signature like the originals, so this
+    // assignment is checked even while the installed SDK types are `any`.
+    interface StubForkStatus {
+      activationHeight: number | null;
+      activated: boolean;
+      currentHeight: number;
+    }
+    interface StubNetworkInfo {
+      forks: { osDenomination: StubForkStatus; signatureDomain?: StubForkStatus };
+      chainId?: number | null;
+    }
+    interface StubAddressInfo {
+      pubkey: string;
+      nonce: number;
+      balance: bigint;
+    }
+    const network: StubNetworkInfo = {
+      forks: {
+        osDenomination: { activationHeight: 10, activated: true, currentHeight: 12 },
+      },
+      chainId: null,
+    };
+    const account: StubAddressInfo = { pubkey: "ab".repeat(32), nonce: 3, balance: 7n };
+    const getNetworkInfo: DemosRawClient["getNetworkInfo"] =
+      async (): Promise<StubNetworkInfo | null> => network;
+    const getAddressInfo: DemosRawClient["getAddressInfo"] =
+      async (): Promise<StubAddressInfo | null> => account;
+
+    await expect(getNetworkInfo()).resolves.toBe(network);
+    await expect(getAddressInfo(account.pubkey)).resolves.toBe(account);
   });
 
   it("anchorWriteOnce returns only an exact existing envelope", async () => {

@@ -1,0 +1,25 @@
+# Subtest: native agreement-signing help, source binding true
+ok 1 - native agreement-signing help, source binding true
+# Subtest: native agreement-anchored help, source binding true
+not ok 2 - native agreement-anchored help, source binding true
+# Subtest: native seller-committed help, source binding true
+not ok 3 - native seller-committed help, source binding true
+# Subtest: native payment-observed help, source binding true
+not ok 4 - native payment-observed help, source binding true
+# Subtest: native native-payment-evidence-held help, source binding true
+not ok 5 - native native-payment-evidence-held help, source binding true
+# Subtest: native agreement-signing help, source binding false
+not ok 6 - native agreement-signing help, source binding false
+# Subtest: native agreement-anchored help, source binding false
+not ok 7 - native agreement-anchored help, source binding false
+# Subtest: native seller-committed help, source binding false
+not ok 8 - native seller-committed help, source binding false
+# Subtest: native payment-observed help, source binding false
+not ok 9 - native payment-observed help, source binding false
+# Subtest: native native-payment-evidence-held help, source binding false
+not ok 10 - native native-payment-evidence-held help, source binding false
+1..10
+# tests 10
+# pass 1
+# fail 9
+# skipped 0
