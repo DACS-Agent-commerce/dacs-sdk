@@ -1131,7 +1131,10 @@ test('rail key history authenticates only in-flight pins, including legacy pins,
   assert.equal(sameIdentity.evaluate(sameIdentity.pin(), 'new').decision, 'pass');
   const altered = structuredClone(pin); altered.rail.parameters = { changed: true };
   assert.equal(rotated.evaluate(altered, 'in-flight').decision, 'fail');
-  assert.throws(() => railAuthorityConfig({ ...current.railAuthority(), historicalStewards: Array(65).fill({}) }), /at most 64/);
+  assert.throws(() => railAuthorityConfig({ ...current.railAuthority(), historicalStewards: {} }), /must be an array/);
+  const many = Array.from({ length: 65 }, () => railSteward());
+  const completeHistory = railAuthorityConfig({ ...current.railAuthority(), historicalStewards: many.map(({ stewardClaim, stewardPublicKey }) => ({ stewardClaim, stewardPublicKey })) });
+  for (const identity of [many[0], many[64]]) assert.equal(completeHistory.evaluate(railAuthorityConfig(identity.railAuthority()).pin(), 'in-flight').decision, 'pass', 'every configured historical identity remains authorized');
 });
 
 

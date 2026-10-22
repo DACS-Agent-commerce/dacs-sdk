@@ -246,14 +246,14 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   seller has not signed (a rejected one, for example) has no session yet, and
   its retry selects the rail again under the current authority. A pin the
   trusted steward did not sign is refused. During key rotation, configure
-  `railAuthority.historicalStewards` as an array of up to 64 distinct
+  `railAuthority.historicalStewards` as an array of distinct
   `{ stewardClaim, stewardPublicKey }` pairs from the operator's trusted key
   history. The same claim may have multiple historical keys. Keep each old identity while its sessions remain in flight. Those
   sessions reverify their exact signed pins under that identity after restart;
   new sessions always use the current steward and definition. Saved pins
   supply no trusted keys: a saved key selects only from that trusted history.
   Existing pins without explicit steward identity use their signed definition
-  and the bounded trusted key history.
+  and the trusted key history for their claim.
 - It opens a new session only for a presentation of a challenge it issued,
   on a Listing its own revocation check finds not revoked, and only under
   `sessionAdmission`, before anything of it is kept, read, signed or sent.

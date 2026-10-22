@@ -33,10 +33,10 @@ export function railAuthorityConfig(value) {
   const { stewardClaim, stewardPublicKey, railRegistryVersion, production } = value;
   if (!Number.isSafeInteger(railRegistryVersion) || railRegistryVersion <= 0) throw new TypeError('railAuthority.railRegistryVersion must be a positive integer');
   if (typeof production !== 'boolean') throw new TypeError('railAuthority.production must be the local operator policy (true or false)');
-  // Trusted local key history, never keys supplied by a retained pin. Bound
-  // the list and copy it now so later config mutation cannot change authority.
+  // Trusted local key history, never a peer/network reply or keys supplied
+  // by a retained pin. Copy it so later config mutation cannot change authority.
   const history = value.historicalStewards ?? [];
-  if (!Array.isArray(history) || history.length > 64) throw new TypeError('railAuthority.historicalStewards must be an array of at most 64 steward identities');
+  if (!Array.isArray(history)) throw new TypeError('railAuthority.historicalStewards must be an array of trusted steward identities');
   const trustedStewards = new Map([[stewardClaim, [stewardPublicKey]]]);
   for (const entry of history) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
@@ -86,7 +86,7 @@ export function railAuthorityConfig(value) {
       const keys = sessionState === 'in-flight' ? trustedStewards.get(claim) ?? [] : claim === stewardClaim ? [stewardPublicKey] : [];
       if (claim !== retained.rail?.signature?.signer) return { decision: 'fail', reason: 'signature-invalid' };
       // A claim may keep its identity across key rotation. New pins retain the
-      // exact key identity; legacy pins try the bounded trusted history. A key
+      // exact key identity; legacy pins try the trusted history for their claim. A key
       // in saved data is only a selector, never an additional trust root.
       for (const key of keys) {
         if (retained.stewardPublicKey !== undefined && retained.stewardPublicKey !== key) continue;

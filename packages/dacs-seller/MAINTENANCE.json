@@ -382,7 +382,7 @@
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "39038cb9da81bdc0de9fb97ca42c2fe8d4e23b95eeaf10a11e95619fcf5f510f",
+      "sha256": "3b7e547a217a021f1394e113d5decdce50c86b806608dbdf02d7a49f58f1bdf8",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -400,7 +400,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/rail-authority.mjs",
       "originalSha256": null,
-      "sha256": "ebe7d0a9d4ea657c3e92217b8eecb55c671a95f604dd2e75d164cebb1bbe1bc5",
+      "sha256": "4746bae86fa3c7d7a68637b4c592a12526278bd231dc0ce3806fe35c8374b48f",
       "reason": "Seller rail authority: steward-signed demos-native:DEM definition pinned per session (DACS-4 RAV-R1..R5, DACS-1 LRR-6)."
     },
     {
