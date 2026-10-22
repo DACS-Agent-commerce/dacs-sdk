@@ -65,9 +65,9 @@ export interface RailDispatchOptions {
    * `SettlementLog` with `readOutcome` and the `putAttempt`/`readAttempt` pair
    * (or an object carrying that store's own `once`, `readOutcome` and
    * `readAttempt`): an injected store's
-   * own lookups never bind a hash, any other store starts no new transfer,
-   * and without that record the audit finishes only through that store's
-   * expired generation, whose reconciliation of the key must name the hash.
+   * own lookups never bind a hash and any other store starts no new transfer.
+   * A retained audit reads the existing SDK payment binding without claiming
+   * a generation or writing a record; without that binding it refuses.
    * A store over a log without the pair starts no new transfer and binds only
    * the hashes the outcomes the log holds name.
    */

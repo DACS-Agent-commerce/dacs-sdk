@@ -955,6 +955,17 @@ const attemptRecorders = new WeakMap<object, {
 }>();
 
 /**
+ * Internal (not re-exported): these SDK recorder closures capture their store,
+ * key, terms and lease without using a receiver. Fence composition must retain
+ * their identity so the bridge can still verify the recorder's store, key and terms.
+ */
+export function isStoreAttemptRecorderClosure(
+  value: unknown,
+): value is NonNullable<SettlementEffectFence["recordAttempt"]> {
+  return typeof value === "function" && attemptRecorders.has(value);
+}
+
+/**
  * Internal (not re-exported): true only when `recordAttempt` is a fence
  * recorder `createIdempotencyStore` built for exactly this `key` and these
  * `terms`, and `readAttempt` is the lookup of that same store, so the hash it

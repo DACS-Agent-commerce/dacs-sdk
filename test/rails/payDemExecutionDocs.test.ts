@@ -95,16 +95,26 @@ describe("pay-dem execution docs match the code (#338)", () => {
     }
   });
 
-  it("requires a different finalized transaction at the journaled nonce before clearing a key", () => {
+  it("requires a different executed transaction consuming the journaled nonce before clearing a key", () => {
     for (const path of ["README.md", "docs/pay-dem-execution.md"]) {
       const text = read(path).replace(/\s+/g, " ");
       expect(text).toContain("did not land and can no longer land");
       expect(text).toContain("finalized transaction at the payer's journaled nonce");
       expect(text).toContain("on a node that serves that block, with a hash different from the recorded hash");
+      expect(text).toContain("Verify the replacement's hash, payer and nonce against its finalized node record with `status: \"confirmed\"`");
+      expect(text).toContain("it must have executed and consumed the journaled nonce");
+      expect(text).toContain("An included transaction with `status: \"failed\"` is not proof of nonce consumption and does not authorize clearing the key");
+      expect(text).toContain("If execution or the original payment's disposition cannot be established, retain the key");
       expect(text).toContain("A moved nonce alone is insufficient: it also matches the recorded transaction having landed.");
       expect(text).toContain("If the hashes match, recover that payment's outcome and retain the key.");
       expect(text).toContain("Missing records or a lagging node leave the key held");
     }
+  });
+
+  it("describes registry retained audits as reading an existing binding without acquiring authority", () => {
+    const source = read("src/registry/dispatch.ts").replace(/\s*\*\s*/g, " ");
+    expect(source).toContain("A retained audit reads the existing SDK payment binding without claiming a generation or writing a record; without that binding it refuses.");
+    expect(source).not.toContain("audit finishes only through that store's");
   });
 
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {
