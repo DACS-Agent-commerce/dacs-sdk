@@ -59,9 +59,12 @@ export interface RailDispatchOptions {
    * restart recovery should supply all three of `settlementStore`,
    * `reconcile`, and `journalPreparedTransfer`. Native runSession preflight
    * requires a caller-supplied store and reconciler before payment. Direct
-   * rail calls may still use the default process-local store.
-   * A new transfer, and auditing a retained hash after a restart, need
-   * `settlementStore` to be a `createIdempotencyStore` store over a
+   * rail calls may still use the default in-memory store to start payments;
+   * omitting these dependencies preserves low-level process-local behavior
+   * (a resumed call can return the bridge's own bound definitive result) but
+   * is not restart-safe.
+   * A supplied store for new transfers or restart audits must be a
+   * `createIdempotencyStore` store over a
    * `SettlementLog` with `readOutcome` and the `putAttempt`/`readAttempt` pair
    * (or an object carrying that store's own `once`, `readOutcome` and
    * `readAttempt`): an injected store's

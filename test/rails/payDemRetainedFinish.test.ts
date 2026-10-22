@@ -11,6 +11,7 @@ import {
   payDemSettle,
   normalizeDemosNativeAddress,
   type PayDemReconciledSettlement,
+  type PayDemPreparedTransfer,
 } from "../../src/rails/payDem.js";
 import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers, serveNodeRecord } from "../fixtures/demosNodeMock.js";
 import { combineWalletSpendEffectFenceV1 } from "../../src/rails/walletSpendAuthority.js";
@@ -55,6 +56,86 @@ function watchWrites(log: SettlementLog) {
 }
 
 describe("retained audits read existing payment bindings without acquiring authority", () => {
+  it.each((["retained", "cached", "lost-outcome", "store-reconcile"] as const)
+    .flatMap((path) => [false, true].map((journal) => ({ path, journal }))))(
+    "preserves a finalized fee through $path recovery and refuses a conflicting fee (journal=$journal)",
+    async ({ path, journal }) => {
+      const log = createInMemorySettlementLog();
+      let clock = 1_000_000;
+      // The SDK confirms and authenticates this exact debit before broadcast.
+      demosNode.confirm.mockImplementation(async (tx) => ({ response: { data: {
+        transaction: { ...tx, content: { ...tx.content, transaction_fee: {
+          network_fee: "19", rpc_fee: "0", additional_fee: "0",
+        } } },
+      } } }));
+      serveNodeRecord(HASH, {
+        payer: PAYER, payee: PAYEE, amountOs: "9500000000", blockNumber: BLOCK, feeOs: "19",
+      });
+      const putOutcome = path === "lost-outcome" || path === "store-reconcile"
+        ? vi.spyOn(log, "putOutcome").mockRejectedValueOnce(new Error("lost outcome write"))
+        : undefined;
+      const store = createIdempotencyStore(log, { now: () => clock, leaseDurationMs: LEASE_MS });
+      let prepared: Readonly<PayDemPreparedTransfer> | undefined;
+      let reportedFee: string | undefined = "0";
+      const reconcile = vi.fn(async () => ({ ...executed(),
+        ...(reportedFee === undefined ? {} : { networkFeeOs: reportedFee }),
+        ...(journal ? { preparedTransfer: prepared } : {}),
+      }));
+      const first = payDemSettle(await sdkRail({ journalPreparedTransfer: async (entry) => { prepared = entry; } }), { network: "demos" }, { store, reconcile });
+      if (putOutcome) await expect(first(request("job-fee"))).rejects.toThrow(/lost outcome write/);
+      else await expect(first(request("job-fee"))).resolves.toMatchObject({ ok: true, networkFeeOs: "19" });
+      if (path === "store-reconcile") clock += LEASE_MS + 1;
+      const recover = putOutcome ? first : payDemSettle(await sdkRail(), {}, {
+        store: createIdempotencyStore(log), reconcile,
+      });
+      const writes = watchWrites(log);
+      for (const write of writes) write.mockClear();
+      const req = path === "cached" || path === "store-reconcile" ? request("job-fee") : resumed("job-fee");
+      await expect(recover(req)).rejects.toThrow(/fee conflicts with the authenticated network fee/);
+      // A refused store reconciliation retains its lease; retry only once that
+      // generation has expired, without granting authority to submit again.
+      if (path === "store-reconcile") clock += LEASE_MS + 1;
+      for (reportedFee of [undefined, "19"]) {
+        await expect(recover(req))
+          .resolves.toMatchObject({ ok: true, txHash: HASH, networkFeeOs: "19" });
+      }
+      if (path !== "store-reconcile") for (const write of writes) expect(write).not.toHaveBeenCalled();
+      if (path !== "lost-outcome") await expect(log.readOutcome!(settlementKey("pay-dem", "job-fee", 0)))
+        .resolves.toMatchObject({ result: { ok: true, networkFeeOs: "19" } });
+      expect(sdkTransfers()).toBe(1);
+      expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("refuses a concurrently saved fee absent from the node record the SDK read", async () => {
+    const memory = createInMemorySettlementLog();
+    let concurrentFee = false;
+    const log: SettlementLog = {
+      ...memory,
+      readOutcome: async (key) => {
+        const saved = await memory.readOutcome!(key);
+        return saved === null || !concurrentFee ? saved : {
+          ...saved, result: { ...saved.result, networkFeeOs: "19" },
+        };
+      },
+    };
+    const store = createIdempotencyStore(log);
+    await expect(payDemSettle(await sdkRail(), {}, { store })(request("job-fee-race")))
+      .resolves.toMatchObject({ ok: true, txHash: HASH });
+    const readRecord = demosNode.getTxByHash.getMockImplementation()!;
+    demosNode.getTxByHash.mockImplementation(async (...args: unknown[]) => {
+      const record = await readRecord(...args);
+      concurrentFee = true;
+      return record;
+    });
+    const writes = watchWrites(log);
+    const recover = payDemSettle(await sdkRail(), {}, { store, reconcile: async () => executed() });
+    await expect(recover(resumed("job-fee-race"))).rejects.toThrow(/contradicts the node record the SDK read/);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(1);
+    expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["absent", "held", "expired"])(
     "never attributes job A's transfer to unpaid job B with an %s intent, even after restart",
     async (state) => {

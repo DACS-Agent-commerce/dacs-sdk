@@ -389,9 +389,10 @@ export interface PayDemSettlementAuditContext extends PayDemSettlementRecoveryCo
    * digits without `0x`. `getTxByHash` matches the stored lower-case form
    * exactly and answers any other form as not found; `getTransactionStatus`
    * lower-cases hex but rejects a `0x` prefix, so a reader that mixes them can
-   * see `included` with no record. Reconciliation returns the node's record
-   * for this hash and, whenever it can load one, the original prepared-transfer
-   * journal entry for it as `preparedTransfer`. On a log keeping attempts,
+   * see `included` with no record. Reconciliation returns a normalized
+   * settlement result derived from that record and, whenever it can load one,
+   * the original prepared-transfer journal entry for it as `preparedTransfer`.
+   * On a log keeping attempts,
    * the audit needs the SDK's own record naming this hash for this key: the
    * attempt record a `createIdempotencyStore` store wrote when this key signed
    * it, or a result this bridge submitted or already bound. A returned entry
@@ -2154,6 +2155,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // second submission. The settlement store records the signed hash under
       // this generation first, so a restart after the broadcast can tie the
       // transfer to its key; a failed record aborts before broadcast.
+      if (effectFence?.recordAttempt !== undefined) await effectFence.assertCurrent();
       await effectFence?.recordAttempt?.(txHash);
       await effectFence?.assertCurrent();
       const broadcastAttempt = Promise.resolve().then(() => broadcast(validity));
@@ -2432,14 +2434,26 @@ function sameFailureProof(left: SettleResult, right: SettleResult): boolean {
 
 /**
  * Whether two results for the same transaction and block report the same
- * outcome: success, or failure under the same canonical proof. Fee accounting
- * and other presentation fields are not part of a success's identity; a failure
- * carries none, and a result that presents them is refused on capture.
+ * outcome: success, or failure under the same canonical proof, with matching
+ * network-fee accounting. preservePayDemFee restores an omitted authenticated
+ * fee before this comparison and refuses a contradictory one.
  */
 function sameSettledOutcome(left: SettleResult, right: SettleResult): boolean {
   return left.ok === right.ok &&
     left.errorClass === right.errorClass &&
+    left.networkFeeOs === right.networkFeeOs &&
     sameFailureProof(left, right);
+}
+
+/** Preserve an omitted authenticated fee, and refuse a contradictory debit. */
+function preservePayDemFee(result: SettleResult, saved?: SettleResult | null): SettleResult {
+  if (result.ok && saved?.ok && saved.networkFeeOs !== undefined &&
+      result.networkFeeOs !== undefined && result.networkFeeOs !== saved.networkFeeOs) {
+    throw new DacsError("pay-dem reconciliation fee conflicts with the authenticated network fee; refusing inconsistent accounting");
+  }
+  return result.ok && saved?.ok && saved.networkFeeOs !== undefined
+    ? { ...result, networkFeeOs: saved.networkFeeOs }
+    : result;
 }
 
 function samePayDemResult(left: SettleResult, right: SettleResult): boolean {
@@ -2652,6 +2666,13 @@ function assertPreparedTransferBinds(
       "pay-dem failed-record proof does not match the journaled signed nonce; refusing reuse or rebroadcast",
     );
   }
+  if (captured.ok && prepared.confirmedTotalDebitOs !== undefined &&
+      (captured.networkFeeOs === undefined ||
+        BigInt(context.amountOs) + BigInt(captured.networkFeeOs) !== BigInt(prepared.confirmedTotalDebitOs as string))) {
+    throw new DacsError(
+      "pay-dem reconciliation fee does not match the journal's confirmed total debit; refusing inconsistent accounting",
+    );
+  }
 }
 
 /**
@@ -2663,6 +2684,7 @@ function capturePayDemReconciliation(
   value: unknown,
   context: Readonly<PayDemSettlementRecoveryContext>,
   retainedTxHash?: string,
+  savedResults: readonly (SettleResult | null | undefined)[] = [],
 ): SettleResult {
   const snapshot = snapshotCanonicalJsonRead(
     value,
@@ -2684,7 +2706,7 @@ function capturePayDemReconciliation(
   delete settlement.amountOs;
   delete settlement.execution;
   delete settlement.preparedTransfer;
-  const captured = capturePayDemResult(
+  let captured = capturePayDemResult(
     settlement,
     context,
     "pay-dem reconciliation result",
@@ -2708,6 +2730,7 @@ function capturePayDemReconciliation(
   if (retainedTxHash !== undefined && captured.txHash !== retainedTxHash) {
     throw new DacsError("pay-dem reconciliation does not match the retained transaction; refusing reuse or rebroadcast");
   }
+  for (const saved of savedResults) captured = preservePayDemFee(captured, saved);
   if (record.preparedTransfer !== undefined) {
     assertPreparedTransferBinds(record.preparedTransfer, context, captured);
   }
@@ -3347,8 +3370,8 @@ export function payDemSettle(
         }
         // A failure the SDK read is compared with every recorded success below;
         // it is returned only for a hash this key's own record binds.
-        const captured = await readRecovered(
-          capturePayDemReconciliation(recovered, context, retainedTxHash),
+        let captured = await readRecovered(
+          capturePayDemReconciliation(recovered, context, retainedTxHash, [priorAuthenticated?.result, before]),
           true,
         );
         // A different store/bridge can finish while the chain read is pending.
@@ -3368,6 +3391,13 @@ export function payDemSettle(
           if (existing.errorClass === "permanent" && !sameSettledOutcome(existing, captured)) {
             throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
           }
+          const preserved = preservePayDemFee(captured, existing);
+          // A concurrent outcome may introduce a fee after the node read.
+          // It cannot supply a fee the record itself did not carry.
+          if (preserved.networkFeeOs !== captured.networkFeeOs) {
+            throw new DacsError("pay-dem reconciliation contradicts the node record the SDK read; refusing reuse or rebroadcast");
+          }
+          captured = preserved;
         }
         if (!isHeldPayDemResult(captured)) assertPayDemSuccessKept(historySucceeded, captured);
         // On a log that keeps no attempt records, its own outcome for these
@@ -3479,13 +3509,13 @@ export function payDemSettle(
       };
       // A restart reconciliation asks for the exact recorded hash when this key
       // has one, and refuses any other transaction.
-      const reconcileRecorded = async (recorded: string | null) => {
+      const reconcileRecorded = async (recorded: string | null, saved?: SettleResult) => {
         const found = await reconcile!(recorded === null
           ? context
           : Object.freeze({ ...context, txHash: recorded }));
         return found === null
           ? null
-          : capturePayDemReconciliation(found, context, recorded ?? undefined);
+          : capturePayDemReconciliation(found, context, recorded ?? undefined, [authenticatedResults.get(key)?.result, saved]);
       };
       const reconcileForStore: SettlementReconcile | undefined = reconcile === undefined
         ? undefined
@@ -3549,7 +3579,7 @@ export function payDemSettle(
           );
         }
         const recorded = await recordedAttempt();
-        const reconciled = await reconcileRecorded(recorded);
+        const reconciled = await reconcileRecorded(recorded, captured);
         if (reconciled === null) {
           throw new DacsError(
             "pay-dem durable outcome contradicts reconciliation proof of absence; refusing reuse or rebroadcast",

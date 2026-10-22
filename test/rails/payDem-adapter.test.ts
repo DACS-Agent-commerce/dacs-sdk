@@ -588,6 +588,7 @@ describe("createPayDemRail nonce coordination", () => {
     expect(order).toEqual([
       "generation-fence",
       "journal",
+      "generation-fence",
       `record:${TX_HASH}`,
       "generation-fence",
       "broadcast",

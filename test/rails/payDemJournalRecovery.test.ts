@@ -101,6 +101,7 @@ describe("recovery of the SDK's own prepared-transfer journal", () => {
       const first = await payDemSettle(rail, config, { store: createIdempotencyStore(log) })(request());
       expect(first).toMatchObject({ ok: true, txHash, chainId: expectedNetwork });
       expect(journal).toHaveLength(1);
+      expect(journal[0]!.network).toBe(expectedNetwork);
       expect(journal[0]!.recovery).toMatchObject({ network: expectedNetwork });
       const reconcile: PayDemSettlementReconcile = vi.fn(async () => ({
         ...first, amountOs: "1000000000", execution: "executed" as const, preparedTransfer: journal[0],
@@ -118,6 +119,25 @@ describe("recovery of the SDK's own prepared-transfer journal", () => {
         await expect(restarted(req)).resolves.toEqual(first);
       }
       expect(sdkTransfers()).toBe(1);
+      expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([
+    { railNetwork: undefined, invocationNetwork: undefined, expectedNetwork: "demos" },
+    { railNetwork: "demos:mainnet", invocationNetwork: undefined, expectedNetwork: "demos:mainnet" },
+    { railNetwork: "demos:mainnet", invocationNetwork: "demos:testnet", expectedNetwork: "demos:testnet" },
+  ])("direct rail journals $expectedNetwork without a bridge recovery tuple",
+    async ({ railNetwork, invocationNetwork, expectedNetwork }) => {
+      const journal: Readonly<PayDemPreparedTransfer>[] = [];
+      const rail = await sdkRail({ network: railNetwork,
+        journalPreparedTransfer: async (prepared) => { journal.push(prepared); },
+      });
+      await expect(rail.settle({ recipient: payee, amount: "1000000000", network: invocationNetwork }))
+        .resolves.toMatchObject({ ok: true, chainId: expectedNetwork, txHash });
+      expect(journal).toHaveLength(1);
+      expect(journal[0]!.network).toBe(expectedNetwork);
+      expect(journal[0]!.recovery).toBeUndefined();
       expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
     },
   );

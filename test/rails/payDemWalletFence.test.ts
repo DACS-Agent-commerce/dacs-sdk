@@ -115,5 +115,10 @@ describe("pay-dem bridge with combined wallet and settlement fences", () => {
     expect(walletAssert).toHaveBeenCalled();
     expect(sdkTransfers()).toBe(1);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
+    await expect(inner.readAttempt!(settlementKey("pay-dem", request.jobId, 0), {
+      bindingVersion: "1", railId: "pay-dem", jobId: request.jobId, phaseIndex: 0, phase: "pay-dem",
+      amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer: PAYER,
+      payee: PAYEE, network: "demos", finality: { model: "bft-final" },
+    })).resolves.toBeNull();
   });
 });

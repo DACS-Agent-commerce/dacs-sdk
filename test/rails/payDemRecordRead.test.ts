@@ -434,8 +434,9 @@ describe("a by-key failed record another writer finds is never this key's outcom
       {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
     await expect(other(fresh)).rejects.toThrow(/reconciliation was not definitive/);
     finish();
-    // The stalled writer lost its generation, so it never broadcasts.
-    await expect(slow).rejects.toThrow(/attempt was produced by a stale generation/);
+    // The stalled writer lost its generation, so it never records or broadcasts.
+    await expect(slow).rejects.toThrow(/effect fence is stale/);
+    await expect(log.readAttempt!("pay-dem:retained-native:0")).resolves.toBeNull();
     expect(demosNode.broadcasts).toBe(0);
     // The other writer's held generation is never resubmitted or demoted.
     await expect(settle(fresh)).rejects.toThrow(/in-flight current generation; refusing to resubmit/);

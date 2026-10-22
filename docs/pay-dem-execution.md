@@ -121,8 +121,9 @@ below).
   an older log without `readOutcome` it refuses.
   The reconciler then receives a
   `PayDemSettlementAuditContext` with `txHash`, the retained hash in canonical
-  form (64 lower-case hex digits, no `0x`). It returns the node's record for
-  that hash and, whenever it can load one, the prepared-transfer journal entry
+  form (64 lower-case hex digits, no `0x`). It returns a normalized reconciliation
+  result derived from the node's record for that hash, not the raw record's
+  `content`/`status` shape (see the example below), and, whenever it can load one, the prepared-transfer journal entry
   for that hash as `preparedTransfer`. The hash counts for this payment only
   through the SDK's own record that this key signed it: the key's attempt
   record, or a result this bridge submitted and the attempt record accepted.
@@ -180,7 +181,11 @@ below).
   payee, OS amount and network, a `recovery` tuple equal to this rail, job and
   phase, and (when present) a known denomination and debit bounds no lower
   than the amount; a permanent failure's proof must also carry the journaled
-  nonce. The entry is the reconciler's object, not the one the rail wrote
+  nonce. A successful result's OS amount plus reported network fee must equal
+  `confirmedTotalDebitOs` whenever that field is present. Recovery preserves a
+  previously authenticated network fee if the reconciler omits it, and refuses a
+  conflicting fee without changing the recorded success. The SDK's own node-record
+  read must still match the saved fee. The entry is the reconciler's object, not the one the rail wrote
   before broadcast, so it can refuse an audit but never counts the hash on its
   own. Nor does an injected store's records, or a rail-log outcome on a log
   that keeps attempts, which a key-only restart reconciliation can have
@@ -216,7 +221,8 @@ below).
   reports another fee is refused. `runSession` re-asserts a saved fee, so a
   record with another fee, or none, leaves the saved success unresolved (not
   completed, never reported unpaid).
-- A crash after the record and before the broadcast leaves a recorded hash
+- Any failure after the record and before the broadcast, including a crash or
+  fence refusal, leaves a recorded hash
   that nothing sent. The SDK never signs or sends again for the key: when the
   reconciler finds nothing for the recorded hash, the restart is refused and
   the key stays held until the operator establishes that the transaction
@@ -232,6 +238,13 @@ below).
   transaction having landed. If the hashes match, recover that payment's
   outcome and retain the key. Missing records or a lagging node leave the key
   held; they do not authorize a replacement payment.
+  Once those conditions are proved, clearing the key is an
+  operator action outside the `SettlementLog` contract: remove its whole durable record
+  (lease, attempt and outcome). Removing only the lease leaves the immutable
+  attempt in place. If the session still retains that hash, clearing the rail
+  log alone cannot permit replacement: abandon the job and use a new `jobId`,
+  or explicitly clear the session's retained settlement outcome together with
+  the whole rail-log record under the same operator procedure.
 - A restart without history reconciles in the store. With an attempt record
   the reconciler receives its hash as `txHash`, and any other transaction is
   refused. The store records no reconciled failure as the definitive
@@ -361,6 +374,46 @@ SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
 Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
 reading a bound `confirmed` record.
+
+Direct `createPayDemRail().settle()` use without a fence that implements
+`recordAttempt` is supported at the low level, but records no durable payment
+binding in the SDK settlement log and cannot provide the bridge's restart-audit
+guarantees. A host's prepared-transfer journal is a separate recovery mechanism.
+
+### Normalizing a reconciliation result
+
+The callback returns `PayDemReconciledSettlement` or `PayDemReconciledFailure`,
+not a raw `getTxByHash` reply. For success, first validate the record's hash,
+native-send payer, payee, amount and nonce against the requested payment and
+prepared journal, and check both inclusion and `record.status === "confirmed"`.
+Decode the amount and fees into integer OS using the record's denomination.
+After those checks, the success mapping looks like this:
+
+```ts
+const result: PayDemReconciledSettlement = {
+  ok: true,
+  execution: "executed",
+  txHash: record.hash,
+  chainId: context.network,
+  payer: record.content.from,
+  payee: record.content.to,
+  amountOs: verifiedAmountOs,
+  blockNumber: record.blockNumber,
+  txRefKind: "demos",
+  finality: { model: "bft-final" },
+  ...(verifiedFeeOs === undefined ? {} : { networkFeeOs: verifiedFeeOs }),
+  ...(preparedTransfer === undefined ? {} : { preparedTransfer }),
+};
+```
+
+`verifiedAmountOs` and `verifiedFeeOs` come from those validated chain facts,
+not the requested amount or an estimated fee. A bound `failed` record instead
+maps to the permanent failure shape with its exact `failureProof` and no
+`execution` assertion. Throw for an indeterminate read; a missing record for a
+retained hash must never return `null` as permission to pay again. See the
+exported result types for the full shapes. The SDK checks the callback's
+normalized statement and bindings; the integrator is responsible for its
+chain reads.
 
 ## Standard revision
 
