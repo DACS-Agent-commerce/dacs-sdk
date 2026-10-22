@@ -262,8 +262,8 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       preparedTransfer: entry({ payee: "ef".repeat(32) }) })) as unknown as PayDemSettlementReconcile;
     await expect(payDemSettle(rail, {}, { store, reconcile: mismatched })(request("job-a", 0, hashA)))
       .rejects.toThrow(binds);
-    // Only job B's refused lookup reached the store's `once`; no rail ran.
-    expect(once).toHaveBeenCalledTimes(1);
+    // All audits are read-only, including the refused audit of unpaid job B.
+    expect(once).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(1);
   });
 

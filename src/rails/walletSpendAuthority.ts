@@ -390,11 +390,18 @@ export function combineWalletSpendEffectFenceV1(
       "wallet spend permit does not bind the active settlement generation",
     );
   }
+  const recordProperty = stableProperty(settlement, "recordAttempt", "settlement attempt recorder");
+  const recordAttempt = recordProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementEffectFence["recordAttempt"]>>(
+        settlement, "recordAttempt", "settlement attempt recorder",
+      );
   return Object.freeze({
     settlementKey,
     bindingHash,
     owner,
     generation,
+    ...(recordAttempt === undefined ? {} : { recordAttempt }),
     ...(effectIdentity === undefined
       ? {}
       : { effectIdentity }),

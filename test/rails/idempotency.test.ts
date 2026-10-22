@@ -709,6 +709,39 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
 
+  test.each([false, true])("optional undefined log methods work across ERC-20 bridge restarts (readOutcome undefined=%s)", async (omitOutcome) => {
+    const log = {
+      ...createInMemorySettlementLog(),
+      putAttempt: undefined,
+      readAttempt: undefined,
+      ...(omitOutcome ? { readOutcome: undefined } : {}),
+    };
+    const rail = countingRail();
+    await expect(evmErc20Settle(rail, cfg, { store: createIdempotencyStore(log) })(req))
+      .resolves.toMatchObject({ ok: true, txHash: "0x1" });
+    await expect(evmErc20Settle(rail, cfg, { store: createIdempotencyStore(log) })(req))
+      .resolves.toMatchObject({ ok: true, txHash: "0x1" });
+    expect(rail.transferCalls).toBe(1);
+  });
+
+  test.each(["putAttempt", "readAttempt", "readOutcome"] as const)("undefined optional %s shadows inherited methods", (name) => {
+    const log = Object.create(createInMemorySettlementLog()) as SettlementLog;
+    Object.defineProperty(log, "putAttempt", { value: undefined, configurable: true });
+    Object.defineProperty(log, "readAttempt", { value: undefined, configurable: true });
+    Object.defineProperty(log, name, { value: undefined });
+    expect(() => createIdempotencyStore(log)).not.toThrow();
+  });
+
+  test.each(["putAttempt", "readAttempt", "readOutcome"] as const)("still rejects invalid optional %s without invoking accessors", (name) => {
+    const log = createInMemorySettlementLog();
+    Object.defineProperty(log, name, { value: null, configurable: true });
+    expect(() => createIdempotencyStore(log)).toThrow(/stable callable data/);
+    let reads = 0;
+    Object.defineProperty(log, name, { get() { reads += 1; return undefined; } });
+    expect(() => createIdempotencyStore(log)).toThrow(/stable callable data/);
+    expect(reads).toBe(0);
+  });
+
   test("direct EVM bridge rejects a destination mismatch before transfer", async () => {
     const rail = countingRail();
     expect(() =>
