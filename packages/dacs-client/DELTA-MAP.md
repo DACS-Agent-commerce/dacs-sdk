@@ -4,6 +4,14 @@
 Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
 Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
 
+## D16 — Preserve admission failures at the corrective profile boundary
+
+- `src/dacs/verification.mjs`: propagate a chain read's CF-5 admission error with its original code and stage. Treating rejected JSON as a transport outage let the SDK's later profile refusal hide `DUPLICATE-MEMBER`; canonicalization still runs only after raw admission.
+- `test/ingress-admission.test.mjs`: require `DUPLICATE-MEMBER` at the profile stage for duplicate signed Listing members from both Directory and storage ingress. Neither path can return a verified or transactable result.
+- `test/sweep-contracts.test.mjs`: require the specific `UnsupportedCapabilityError` for the unreleased JID-1 profile for all five caller-supplied rail availability labels. This refusal precedes the ordered reader's disposition and returns no purchase eligibility. The independent `purchaseSupport(...).supported === false` and disabled DEM rail assertions remain.
+
+The private package's reciprocal freeze pins and delta records are updated together. Purchase and release authority remain held.
+
 ## D10 — Strip unused modes
 
 Plan row: “The engine's fixture and simulated-devnet profiles exist only for the in-process demo. Delete them instead of moving them.”
@@ -423,6 +431,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/delivery-evidence-gate.test.mjs:1` | 14d7f1261fe9abe495e3da20d975221d051adfc7 |
 | | `packages/dacs-client/test/price-bound.test.mjs:1` | 867d8e64bdc654107ea24f4416f71cb95fa42f9c |
 | | `packages/dacs-client/test/storage-read-nonobservation.test.mjs:1` | 3e3d956374b8a297f027ceba8bbb0a929b991ef7 |
+| D16 | delta(client): D16 preserve Listing admission errors at the corrective profile gate | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/verification.mjs:2`, `packages/dacs-client/src/dacs/verification.mjs:61` | d1c19925caa67106e837be7a6b3d3ddf8b72d292 |
+| | `packages/dacs-client/test/ingress-admission.test.mjs:1` | 049f2c4639602e72e349361da1d24c828cbdb365 |
+| | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | 42b77ee928db87007ecdba9f71e2a6facf85f077 |
 
 ## Complete commit and file inventory
 
@@ -951,6 +963,15 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/test/delivery-evidence-gate.test.mjs:1` |
 | delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/test/price-bound.test.mjs:1` |
 | delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/test/storage-read-nonobservation.test.mjs:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/src/dacs/verification.mjs:2`, `packages/dacs-client/src/dacs/verification.mjs:61` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/test/ingress-admission.test.mjs:1` |
+| delta(client): D16 preserve Listing admission errors at the corrective profile gate | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
 
 ## Original moved files
 
@@ -986,7 +1007,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/dacs/seller-sr2-agreement-consumer.mjs` | `http-mcp/src/dacs/seller-sr2-agreement-consumer.mjs` | 14a0693cb2484eb39c9db122914b46ef31503757 | unchanged | 14a0693cb2484eb39c9db122914b46ef31503757 |
 | `packages/dacs-client/src/dacs/seller-transport-auth.mjs` | `http-mcp/src/dacs/seller-transport-auth.mjs` | a4a3da3c29388fa03bb12d184b506a8e4824269e | changed by D16 | 0997b8a6390c44daf9f5075711406d9f2d60dd98 |
 | `packages/dacs-client/src/dacs/source-demo-seller-transport.mjs` | `http-mcp/src/dacs/source-demo-seller-transport.mjs` | 208a59efea2ceed0f8b76d96aaf66444ac51cc40 | unchanged | 208a59efea2ceed0f8b76d96aaf66444ac51cc40 |
-| `packages/dacs-client/src/dacs/verification.mjs` | `http-mcp/src/dacs/verification.mjs` | de51f5bc8faf3b14b707783e03bc8e303fb44ca5 | unchanged | de51f5bc8faf3b14b707783e03bc8e303fb44ca5 |
+| `packages/dacs-client/src/dacs/verification.mjs` | `http-mcp/src/dacs/verification.mjs` | de51f5bc8faf3b14b707783e03bc8e303fb44ca5 | changed by D16 | d1c19925caa67106e837be7a6b3d3ddf8b72d292 |
 | `packages/dacs-client/src/dacs/wallet-transactions.mjs` | `http-mcp/src/dacs/wallet-transactions.mjs` | 85118d1b56e0695da13499e8878abe27af8254bb | unchanged | 85118d1b56e0695da13499e8878abe27af8254bb |
 | `packages/dacs-client/src/devnet-demo/commitment-consumer.mjs` | `http-mcp/src/devnet-demo/commitment-consumer.mjs` | 7bb3b241b531f8bab3843663648c476f81b0add1 | unchanged | 7bb3b241b531f8bab3843663648c476f81b0add1 |
 | `packages/dacs-client/src/devnet-demo/deliverable.mjs` | `http-mcp/src/devnet-demo/deliverable.mjs` | fc85372db90d6780070efc1eff696418ba62f4b2 | unchanged | fc85372db90d6780070efc1eff696418ba62f4b2 |
