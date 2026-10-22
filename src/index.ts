@@ -1499,6 +1499,7 @@ export {
   verifyX402ReceiptClaim,
   X402_V1_CHAIN_IDS,
   createPayDemSellerObserver,
+  demosExecutedTransferNetworkFeeOs,
   observePayDemTransferCore,
   verifySellerPaymentIntake,
   canonicalSellerSettlementId,

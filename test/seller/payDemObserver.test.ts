@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createPayDemSellerObserver,
+  demosExecutedTransferNetworkFeeOs,
   isDemosExecutedTransferObservation,
   observePayDemTransferCore,
   type PayDemObservationClient,
@@ -65,6 +66,39 @@ function deferred<T>() {
 }
 
 describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
+  it.each([
+    ["numeric OS projection", "2398", { network_fee: 400000000, rpc_fee: 500000000, additional_fee: 100000000 }, "1000000000"],
+    ["string OS projection", "2398", { network_fee: "400000000", rpc_fee: "500000000", additional_fee: "100000000" }, "1000000000"],
+    ["large string OS projection", "2398", { network_fee: "9007199254740993", rpc_fee: "0", additional_fee: "0" }, "9007199254740993"],
+    ["numeric DEM projection", 2, { network_fee: 1, rpc_fee: 2, additional_fee: 3 }, "6000000000"],
+    ["explicit zero", "2398", { network_fee: 0, rpc_fee: 0, additional_fee: 0 }, "0"],
+    ["missing", "2398", undefined, undefined],
+    ["null", "2398", null, undefined],
+    ["incomplete", "2398", { network_fee: 1, rpc_fee: 0 }, undefined],
+    ["fractional", "2398", { network_fee: 0.5, rpc_fee: 0, additional_fee: 0 }, undefined],
+    ["negative", "2398", { network_fee: -1, rpc_fee: 0, additional_fee: 0 }, undefined],
+    ["noncanonical", "2398", { network_fee: "01", rpc_fee: 0, additional_fee: 0 }, undefined],
+  ] as const)("binds %s record fee evidence to the original executed observation", async (
+    _label, amount, fee, expected,
+  ) => {
+    const fixture = includedFixture(amount);
+    fixture.transaction.status = "confirmed";
+    if (fee !== undefined) Object.assign(fixture.transaction.content, { transaction_fee: fee });
+    const observation = await observePayDemTransferCore(HASH, fixtureClient(fixture));
+    expect(isDemosExecutedTransferObservation(observation)).toBe(true);
+    expect(demosExecutedTransferNetworkFeeOs(observation)).toBe(expected);
+    expect(demosExecutedTransferNetworkFeeOs({ ...observation })).toBeUndefined();
+    // The evidence is the SDK's captured record fee, independent of later
+    // changes to the client's record or fee properties supplied by a caller.
+    Object.assign(fixture.transaction.content, { transaction_fee: null });
+    expect(demosExecutedTransferNetworkFeeOs(observation)).toBe(expected);
+    expect(demosExecutedTransferNetworkFeeOs({ ...observation, networkFeeOs: "0" } as never))
+      .toBeUndefined();
+    fixture.transaction.status = "included";
+    const inclusionOnly = await observePayDemTransferCore(HASH, fixtureClient(fixture));
+    expect(demosExecutedTransferNetworkFeeOs(inclusionOnly)).toBeUndefined();
+  });
+
   it("returns post-fork OS facts from one mutually-consistent confirmed block", async () => {
     await expect(
       observePayDemTransferCore(`0X${HASH.toUpperCase()}`, fixtureClient()),

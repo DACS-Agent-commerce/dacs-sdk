@@ -339,6 +339,7 @@ function recoveryEvidenceDatabase(
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
   withPreparedCheckpoint: boolean,
   nonce = 7,
+  confirmedTotalDebitOs = payment.maxTotalDebitOs,
 ): DacsNodeSqliteDatabase {
   const effectId = recoveryEffectId(payment);
   const checkpoint = {
@@ -351,7 +352,7 @@ function recoveryEvidenceDatabase(
       denomination: "os",
       network: payment.network,
       maxTotalDebitOs: payment.maxTotalDebitOs,
-      confirmedTotalDebitOs: payment.maxTotalDebitOs,
+      confirmedTotalDebitOs,
       recovery: {
         railId: payment.railId,
         jobId: payment.jobId,
@@ -1698,7 +1699,7 @@ describe("native DEM buyer payment track", () => {
         ? createDacsFixedPricePayDemBuyerReconciliationV1(() => sdkExecutedObservation({
             nonce: 7, txHash: TX_HASH, payer: PAYER, payee: PAYEE,
             amountOs: AUTHORITY.amountOs, blockNumber: 42, includedAt: 1_000,
-          }))
+          }, RECORD_FEE))
         : ({ prepared }) => ({ status: "completed", settlement: {
         execution: "executed", nonce: prepared!.nonce, ok: true,
         txHash: prepared!.txHash, chainId: "demos", payer: PAYER, payee: PAYEE,
@@ -2477,7 +2478,7 @@ describe("native DEM buyer payment track", () => {
     await expect(claim.permit.settle(exact)).rejects.toThrow(/authentication failed/);
     expect((await wallet.inspect()).activeEffects).toBe(1);
 
-    chain = await sdkExecutedObservation(facts);
+    chain = await sdkExecutedObservation(facts, RECORD_FEE);
     await expect(claim.permit.settle({
       ...exact,
       debits: [exact.debits[0]!, { ...exact.debits[1]!, amount: "0" }],
@@ -2489,6 +2490,79 @@ describe("native DEM buyer payment track", () => {
       activeEffects: 0,
       assets: [{ cumulativeSettledDebit: payment.maxTotalDebitOs }],
     });
+  });
+
+  it.each([
+    ["matching numeric fee", { network_fee: 400000000, rpc_fee: 500000000, additional_fee: 100000000 }, "1000000000", true],
+    ["matching string fee", { network_fee: "400000000", rpc_fee: "500000000", additional_fee: "100000000" }, "1000000000", true],
+    ["explicit zero fee", { network_fee: 0, rpc_fee: 0, additional_fee: 0 }, "0", true],
+    ["lower record fee", { network_fee: 500000000, rpc_fee: 0, additional_fee: 0 }, "1000000000", false],
+    ["higher record fee", { network_fee: 1000000001, rpc_fee: 0, additional_fee: 0 }, "1000000000", false],
+    ["zero record fee against nonzero checkpoint", { network_fee: 0, rpc_fee: 0, additional_fee: 0 }, "1000000000", false],
+    ["nonzero record fee against zero checkpoint", { network_fee: 1, rpc_fee: 0, additional_fee: 0 }, "0", false],
+    ["missing record fee", undefined, "1000000000", false],
+    ["null record fee", null, "1000000000", false],
+    ["incomplete record fee", { network_fee: 1000000000, rpc_fee: 0 }, "1000000000", false],
+    ["negative record fee", { network_fee: -1, rpc_fee: 0, additional_fee: 0 }, "1000000000", false],
+    ["fractional record fee", { network_fee: 0.5, rpc_fee: 0, additional_fee: 0 }, "1000000000", false],
+    ["unsafe record fee", { network_fee: Number.MAX_SAFE_INTEGER + 1, rpc_fee: 0, additional_fee: 0 }, "1000000000", false],
+    ["noncanonical record fee", { network_fee: "01000000000", rpc_fee: 0, additional_fee: 0 }, "1000000000", false],
+  ] as const)("binds wallet recovery to the executed record's fee: %s", async (
+    _label, transactionFee, confirmedFeeOs, accepted,
+  ) => {
+    const payment = recoveryPayment();
+    const reservation = recoveryReservation(payment);
+    const chain = await observePayDemTransferCore(TX_HASH, {
+      getTransactionStatus: async () => ({ state: "included", blockNumber: 42 }),
+      getTxByHash: async () => ({
+        hash: TX_HASH, status: "confirmed", blockNumber: 42,
+        content: {
+          type: "native", nonce: "7", from: PAYER, to: PAYEE,
+          amount: payment.amountOs,
+          ...(transactionFee === undefined ? {} : { transaction_fee: transactionFee }),
+          data: ["native", { nativeOperation: "send", args: [PAYEE, payment.amountOs] }],
+        },
+      }),
+      getBlockByNumber: async () => ({
+        number: 42, status: "confirmed",
+        content: { timestamp: 1, ordered_transactions: [TX_HASH] },
+      }),
+    });
+    // Unsafe JSON is refused before observation; other fee cases still attest
+    // genuine execution, which alone cannot authenticate wallet accounting.
+    expect(chain).toMatchObject(_label === "unsafe record fee"
+      ? { status: "unavailable" }
+      : { status: "included", execution: "executed", nonce: 7 });
+    const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+      database: recoveryEvidenceDatabase(payment, true, 7,
+        (BigInt(payment.amountOs) + BigInt(confirmedFeeOs)).toString()),
+      observeDemosTransfer: async () => chain,
+    });
+    const wallet = recoveryWalletAuthority(authenticateRecovery, { value: 1_000 });
+    const claim = await wallet.reserve(reservation);
+    if (claim.status !== "reserved") throw new Error("expected wallet permit");
+    await claim.permit.beginEffect();
+    const before = await wallet.inspect();
+    const exact = {
+      disposition: "settled" as const, evidenceHash: TX_HASH,
+      debits: [
+        { asset: "DEM", purpose: "service" as const, amount: payment.amountOs },
+        { asset: "DEM", purpose: "network-fee" as const, amount: confirmedFeeOs },
+      ],
+    };
+    await expect(authenticateRecovery(reservation, exact)).resolves.toBe(accepted);
+    if (accepted) {
+      await expect(claim.permit.settle(exact)).resolves.toBeUndefined();
+      expect(await wallet.inspect()).toMatchObject({ activeEffects: 0,
+        assets: [{ cumulativeSettledDebit:
+          (BigInt(payment.amountOs) + BigInt(confirmedFeeOs)).toString(), reservedWorstCaseDebit: "0" }] });
+    } else {
+      await expect(claim.permit.settle(exact)).rejects.toThrow(/authentication failed/);
+      expect(await wallet.inspect()).toEqual(before);
+      await expect(wallet.reserve(reservation)).resolves.toMatchObject({
+        status: "held", stage: "effect-pending",
+      });
+    }
   });
 
   it.each([
@@ -2616,6 +2690,7 @@ describe("native DEM buyer payment track", () => {
         content: {
           type: "native", nonce: String(recordNonce), from: PAYER, to: PAYEE,
           amount: payment.amountOs,
+          transaction_fee: RECORD_FEE,
           data: ["native", { nativeOperation: "send", args: [PAYEE, payment.amountOs] }],
         },
       }),
@@ -2676,7 +2751,7 @@ describe("native DEM buyer payment track", () => {
       amountOs: payment.amountOs,
       blockNumber: 42,
       includedAt: 1_780_000_000_000,
-    });
+    }, RECORD_FEE);
     const options = {
       database,
       async observeDemosTransfer() {

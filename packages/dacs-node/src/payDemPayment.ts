@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import {
   combineWalletSpendEffectFenceV1,
+  demosExecutedTransferNetworkFeeOs,
   isDemosExecutedTransferObservation,
   isPayDemRecordVerifyingRail,
   payDemRecordVerifiedTransfer,
@@ -216,7 +217,7 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
 export interface DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1 {
   /** Integrity-checked generated buyer effect/checkpoint store. */
   database: DacsNodeSqliteDatabase;
-  /** Finalized Demos transfer observer, including the exact prepared hash and nonce. */
+  /** SDK observer binding the prepared hash, nonce and executed record's fee. */
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
 }
 
@@ -436,7 +437,8 @@ function generatedBuyerPaymentEffectId(
 
 /**
  * Authenticate generated native-DEM wallet recovery against both finalized
- * chain facts and the pre-broadcast checkpoint's exact confirmed fee debit.
+ * chain facts, including the executed record's fee, and the pre-broadcast
+ * checkpoint's exact confirmed fee debit.
  * Missing checkpoints never authenticate absence because actor-local backups
  * can roll back independently of the wallet authority and the Demos chain.
  */
@@ -500,6 +502,7 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
       const networkFeeOs = (
         BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
       ).toString();
+      if (demosExecutedTransferNetworkFeeOs(chain) !== networkFeeOs) return false;
       const expected: WalletSpendSettlementObservationV1 = Object.freeze({
         disposition: "settled",
         evidenceHash: prepared.txHash,

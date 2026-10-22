@@ -49,6 +49,7 @@ const prepared = Object.freeze({
 });
 
 const fence = Object.freeze({ assertCurrent: vi.fn(async () => undefined) });
+const RECORD_FEE = Object.freeze({ network_fee: 1000000000, rpc_fee: 0, additional_fee: 0 });
 
 describe("fixed-price pay-dem buyer reconciliation", () => {
   it("requires operator recovery when the prepared checkpoint is missing", async () => {
@@ -73,7 +74,7 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
         amountOs: payment.amountOs,
         blockNumber: 42,
         includedAt: 1_000,
-      })),
+      }, RECORD_FEE)),
     );
     const exact = { ...prepared, nonce };
     await expect(reconcile({ payment, prepared: exact, fence } as never)).resolves.toEqual({
@@ -92,6 +93,23 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
         amountOs: payment.amountOs,
         networkFeeOs: "1000000000",
       },
+    });
+  });
+
+  it.each([
+    ["missing", undefined, "pay-dem-network-fee-accounting-missing"],
+    ["malformed", { network_fee: "invalid", rpc_fee: 0, additional_fee: 0 }, "pay-dem-network-fee-accounting-missing"],
+    ["lower", { ...RECORD_FEE, network_fee: 500000000 }, "pay-dem-chain-observation-conflict"],
+    ["higher", { ...RECORD_FEE, network_fee: 1000000001 }, "pay-dem-chain-observation-conflict"],
+  ] as const)("holds recovery when the executed record's fee is %s", async (_label, fee, reasonCode) => {
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(() =>
+      sdkExecutedObservation({
+        nonce: prepared.nonce, txHash: prepared.txHash, payer: payment.payer,
+        payee: payment.payee, amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_000,
+      }, fee),
+    );
+    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+      status: "operator-action", reasonCode,
     });
   });
 
@@ -168,6 +186,7 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
             from: payment.payer,
             to: payment.payee,
             amount: payment.amountOs,
+            transaction_fee: RECORD_FEE,
             data: ["native", {
               nativeOperation: "send",
               args: [payment.payee, payment.amountOs],

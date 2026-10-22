@@ -1,7 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
-import { normalizeDemosNativeAddress } from "../rails/payDem.js";
+import { normalizeDemosNativeAddress, recordTransactionFeeOs } from "../rails/payDem.js";
 import type {
   DemosExecutedTransferObservation,
   DemosTransferObservation,
@@ -14,7 +14,7 @@ import type {
  * shipped file adds to it, and a copy or a caller-built object with the same
  * fields is not in it.
  */
-const sdkExecutedObservations = new WeakSet<object>();
+const sdkExecutedObservations = new WeakMap<object, string | undefined>();
 
 /**
  * The one rule for an execution attestation (#338): an observation the SDK's
@@ -30,8 +30,20 @@ const sdkExecutedObservations = new WeakSet<object>();
 export function isDemosExecutedTransferObservation(
   observation: Readonly<DemosTransferObservation>,
 ): observation is DemosExecutedTransferObservation {
-  // WeakSet#has answers false for any value it cannot hold.
+  // WeakMap#has answers false for any value it cannot hold.
   return sdkExecutedObservations.has(observation as object);
+}
+
+/**
+ * The executed record's total network fee in OS, captured by the SDK observer
+ * and bound to the original immutable observation. Copies and caller-built
+ * observations carry no evidence. A missing or malformed record fee returns
+ * `undefined`, never zero; execution alone cannot authenticate wallet fees.
+ */
+export function demosExecutedTransferNetworkFeeOs(
+  observation: Readonly<DemosTransferObservation>,
+): string | undefined {
+  return sdkExecutedObservations.get(observation as object);
 }
 
 const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
@@ -475,7 +487,11 @@ export async function observePayDemTransferCore(
     execution: "executed" as const,
     nonce,
   });
-  sdkExecutedObservations.add(executed);
+  // The signed payload disambiguates denomination, just as in the record
+  // reader. Keep fee evidence private so serialized or copied observations
+  // cannot manufacture it, and use the same parser as fresh/recovered rails.
+  const feeOs = recordTransactionFeeOs(content, typeof native.args[1] === "string");
+  sdkExecutedObservations.set(executed, feeOs == null ? undefined : feeOs.toString());
   return executed;
 }
 

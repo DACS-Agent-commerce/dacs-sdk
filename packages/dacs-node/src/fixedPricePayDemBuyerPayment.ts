@@ -1,4 +1,5 @@
 import {
+  demosExecutedTransferNetworkFeeOs,
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
   isDemosExecutedTransferObservation,
@@ -267,6 +268,17 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
         return Object.freeze({ status: "operator-action" as const,
           reasonCode: "pay-dem-chain-observation-conflict" });
       }
+      const networkFeeOs = demosExecutedTransferNetworkFeeOs(observation);
+      if (networkFeeOs === undefined) {
+        return Object.freeze({ status: "operator-action" as const,
+          reasonCode: "pay-dem-network-fee-accounting-missing" });
+      }
+      if (networkFeeOs !== (
+        BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
+      ).toString()) {
+        return Object.freeze({ status: "operator-action" as const,
+          reasonCode: "pay-dem-chain-observation-conflict" });
+      }
       return Object.freeze({
         status: "completed" as const,
         settlement: Object.freeze({
@@ -281,9 +293,7 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
           blockNumber: observation.blockNumber,
           txRefKind: "demos" as const,
           amountOs: observation.amountOs,
-          networkFeeOs: (
-            BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
-          ).toString(),
+          networkFeeOs,
         }),
       });
     }

@@ -20,6 +20,7 @@ const MILLISECOND_TIMESTAMPS = 1_000_000_000_000;
  */
 export async function observedBySdk(
   facts: Readonly<Record<string, unknown>>,
+  transactionFee?: unknown,
 ): Promise<DemosTransferObservation> {
   const { txHash, payer, payee, amountOs, blockNumber, includedAt, nonce } = facts;
   if (facts.status !== "included" || facts.execution !== "executed" ||
@@ -44,6 +45,7 @@ export async function observedBySdk(
         to: payee,
         amount: amountOs,
         nonce: String(nonce),
+        ...(transactionFee === undefined ? {} : { transaction_fee: transactionFee }),
         data: ["native", { nativeOperation: "send", args: [payee, amountOs] }],
       },
     }),
@@ -61,8 +63,11 @@ export async function observedBySdk(
 /** {@link observedBySdk} for facts the test requires the SDK to attest. */
 export async function sdkExecutedObservation(
   facts: Readonly<ExecutedFacts>,
+  transactionFee?: unknown,
 ): Promise<DemosExecutedTransferObservation> {
-  const observed = await observedBySdk({ status: "included", execution: "executed", ...facts });
+  const observed = await observedBySdk(
+    { status: "included", execution: "executed", ...facts }, transactionFee,
+  );
   if (observed.status !== "included" || observed.execution !== "executed" ||
       !Object.isFrozen(observed)) {
     throw new Error(`the SDK observer did not attest these facts: ${JSON.stringify(observed)}`);

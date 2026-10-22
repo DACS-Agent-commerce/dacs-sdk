@@ -71,6 +71,7 @@ export {
 } from "./x402Spine.js";
 export {
   createPayDemSellerObserver,
+  demosExecutedTransferNetworkFeeOs,
   observePayDemTransferCore,
   type PayDemObservationClient,
   type PayDemSellerObserver,

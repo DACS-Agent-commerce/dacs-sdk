@@ -1197,8 +1197,10 @@ function confirmedTransactionFeeOs(
  * the record was signed in. `undefined` when the record carries none, `null`
  * when it carries one in any other form. A fresh success and a recovery read
  * of the same record take its fee from here, so they agree.
+ * @internal Shared with the SDK transfer observer; not re-exported from the
+ * rails index or package root.
  */
-function recordTransactionFeeOs(
+export function recordTransactionFeeOs(
   content: Record<string, unknown>,
   postFork: boolean,
 ): bigint | null | undefined {
