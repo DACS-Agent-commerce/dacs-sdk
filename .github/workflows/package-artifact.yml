@@ -11,6 +11,32 @@ permissions:
   contents: read
 
 jobs:
+  release-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20.19.0", "22.21.1"]
+    name: five-package release (node ${{ matrix.node-version }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install build tools
+        id: install
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test release gate regressions
+        run: npm run release:test
+      - name: Build, pack, check allow-lists and import every public entry
+        run: npm run release:check
+      - name: Show release plan and offline npm publish dry-runs
+        if: always() && steps.install.outcome == 'success' && matrix.node-version == '22.21.1'
+        run: npm run release:dry-run
+
   package-artifact:
     runs-on: ubuntu-latest
     name: reproducible package + Bun consumer

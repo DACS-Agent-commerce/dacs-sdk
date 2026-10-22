@@ -1,0 +1,42 @@
+{
+  "plannedVersion": "0.1.0-alpha.1",
+  "packages": [
+    {
+      "name": "@kynesyslabs/dacs", "directory": ".",
+      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate"],
+      "allow": [
+        "package.json", "README.md", "LICENSE", "SECURITY.md",
+        "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map",
+        "docs/parser-engine.md", "docs/presence-conformance-adoption.md",
+        "docs/alternative-payment-projection.md", "docs/demos-cci-identities.md",
+        "docs/fixed-price-offline-coordinator.md", "docs/fixed-price-x402-coordinator.md",
+        "docs/settlement-verified-reputation.md", "docs/rfq-negotiation-core.md",
+        "docs/pay-solana-spl.md", "docs/pay-ap2.md", "docs/filesystem-store-safety.md",
+        "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md",
+        "docs/testnet-profile-tp1.md", "docs/about-the-testnet-release.md",
+        "docs/dacs-seller-http-v1.md", "docs/pay-dem-execution.md",
+        "conformance/tp1-register.json", "vectors/dacs-seller-http-v1.json"
+      ]
+    },
+    {
+      "name": "@kynesyslabs/dacs-node", "directory": "packages/dacs-node",
+      "requiredExports": [".", "./transport", "./sqlite", "./demos-loader", "./vectors/dacs-http-envelope-v1.json"],
+      "allow": ["package.json", "README.md", "LICENSE", "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map", "vectors/dacs-http-envelope-v1.json"]
+    },
+    {
+      "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
+      "requiredExports": ["."],
+      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
+    },
+    {
+      "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
+      "requiredExports": ["."],
+      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
+    },
+    {
+      "name": "create-dacs-agent", "directory": "packages/create-dacs-agent",
+      "requiredExports": ["."],
+      "allow": ["package.json", "README.md", "LICENSE", "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map"]
+    }
+  ]
+}
