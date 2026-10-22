@@ -255,11 +255,19 @@ export class StaleProtocolCheck extends OperationError {
   }
 }
 
+// Public projections describe saved protocol state without offering actions.
+export function diagnosticProtocolView(operation, options = {}) {
+  const view = protocolView(operation, options);
+  return view ? { ...view, historical: true,
+    next: 'Stored protocol state is historical. Purchase actions are held; public readback cannot establish settlement or delivery.' } : null;
+}
+
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
 // that need one refuse with buyer_access_closed).
 export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null }) {
   const { transaction } = purchaseStore(store);
+  if (deliveryDeadlineWatch !== null) throw new TypeError('deliveryDeadlineWatch is not wired; invoke the separate watch.observe method explicitly');
   if (dacsProtocol?.buyerAccess !== undefined) throw new TypeError('buyerAccess moved to the top-level createProtocolPurchases option');
   if (buyerAccess !== null && (typeof buyerAccess?.assertWallet !== 'function' || Object.prototype.toString.call(buyerAccess.assertWallet) === '[object AsyncFunction]')) throw new NotWiredError('buyer-access-not-wired');
   const commitOnSignature = commitOnSignatureConfig(dacsProtocol?.commitOnSignature);

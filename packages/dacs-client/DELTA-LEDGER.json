@@ -1662,6 +1662,47 @@
           "after": "91b95b00fd131578299078bbe36febc22c29344c"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 align host diagnostic contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "755d14a97ab96202d6c3c642758b5511573521e6",
+          "after": "f4be20324f8b8168e1b07cfcdf673b82b0e37a95"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "3a2f791deae7661e27d0545c7bb54a3cf694d494",
+          "after": "a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "6b7b8ac62e0f6381b9262b9f567f43812a578e0c",
+          "after": "f49c239f15c4a6af56b56a179fba840424b82c2d"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "1dee137ce9cec397a23f7fecbd8e0f90a1b90713",
+          "after": "f7dfbda21d62e38e7e254569818d0fb3034bd72a"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "91b95b00fd131578299078bbe36febc22c29344c",
+          "after": "f36b23ae79db9a58b48efae0ad65acc6ce72eff9"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "4d6a27d69f6d53dbd1f64f85c0f223826ff48e33",
+          "after": "2fc3afd8f75c10c33f256e2f32abdf6b62985a6a"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "0bb22ecb3c4906984740d7507195b1436857ece7",
+          "after": "c0d259390c30873269d2a1c9b306b8867dcc63b0"
+        }
+      ]
     }
   ]
 }

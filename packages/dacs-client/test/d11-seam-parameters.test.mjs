@@ -51,6 +51,11 @@ test('protocol purchases without an operator capability build, and their paths t
   assert.equal(buyer.actionsAdmitted, false);
 });
 
+test('protocol purchases refuse an unwired deadline watch instead of silently ignoring it', () => {
+  assert.throws(() => createProtocolPurchases({ db: untouched, ops: untouched, coordinates: untouched, store,
+    deliveryDeadlineWatch: {} }), /deliveryDeadlineWatch is not wired/);
+});
+
 test('the native transport links to the package wallet helpers, not a throwing stub', async () => {
   // The wallet seam exports only walletPurposes, so the transport (imported
   // above) could not link if it still imported the old stub names.

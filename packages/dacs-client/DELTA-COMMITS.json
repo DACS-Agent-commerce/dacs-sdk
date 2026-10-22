@@ -826,5 +826,25 @@
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/test/host-observations.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 align host diagnostic contracts",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs"
+    ]
   }
 ]

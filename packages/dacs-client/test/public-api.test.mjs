@@ -51,7 +51,8 @@ for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
     if (ROOT.functions.includes(name) || ROOT.classes.includes(name)) assert.equal(typeof client[name], 'function');
     const module = Object.keys(modules).find(path => modules[path].split(' ').includes(name));
     const original = await import(new URL(module, import.meta.resolve('@kynesyslabs/dacs-client')));
-    assert.equal(client[name], original[name === 'createPurchaseService' ? 'createPublicPurchaseService' : name], 'export retains its defining identity');
+    const alias = { createPurchaseService: 'createPublicPurchaseService', purchaseNext: 'diagnosticPurchaseNext', PURCHASE_STATUS_HELP: 'DIAGNOSTIC_PURCHASE_STATUS_HELP', protocolView: 'diagnosticProtocolView' };
+    assert.equal(client[name], original[alias[name] ?? name], 'export retains its defining identity');
   });
 }
 
@@ -112,6 +113,17 @@ test('public refusals retain the exported error identity', async () => {
   assert.throws(() => client.createProtocolPurchases({}), error => error instanceof client.NotWiredError && error instanceof client.OperationError);
   const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore() });
   assert.throws(() => buyer.prepareTerms({}), error => error instanceof client.OperationError && error.code === 'profile_not_admitted');
+});
+
+test('public status helpers describe diagnostic holds and historical state', async () => {
+  const client = await import('@kynesyslabs/dacs-client');
+  for (const status of ['awaiting_approval', 'approved', 'payment_handoff', 'settled_verified']) {
+    assert.match(client.purchaseNext({ status }), /historical.*held/);
+    assert.match(client.PURCHASE_STATUS_HELP[status], /historical.*held/);
+  }
+  const view = client.protocolView({ terms: { protocol: {} }, state: { protocol: { stage: 'agreement-signing' } } });
+  assert.equal(view.historical, true);
+  assert.match(view.next, /historical.*held/);
 });
 
 for (const profileAuthority of [undefined, {}, { standardRevision: 'old' }, { standardRevision: 'd45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20' }]) {

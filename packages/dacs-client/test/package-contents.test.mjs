@@ -105,15 +105,19 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       }
       // A fully matching host projection is diagnostic in the installed API.
       const hash = 'a'.repeat(64), identity = 'f'.repeat(64), wallet = '0x' + 'b'.repeat(64), payee = '0x' + 'c'.repeat(64);
-      const saved = { id: 'first', accountId: 'buyer', kind: 'purchase', status: 'broadcast_reported',
-        terms: { buyer: { wallet }, seller: { payee }, price: { amountOs: '1' },
+      const saved = { id: 'first', accountId: 'buyer', kind: 'purchase', status: 'broadcast_reported', termsHash: identity,
+        terms: { buyer: { wallet }, seller: { payee }, price: { amountOs: '1' }, network: 'testnet', rail: 'demos-native:DEM',
+          listing: { listingId: 'TEST-listing', version: 1, contentHash: identity },
           domain: { network: 'testnet', rail: 'demos-native:DEM', mode: 'public-chain-read', chainIdentity: identity } } };
       const forbidden = () => { throw new Error('host observations cannot authorize a write'); };
       const chain = { network: 'testnet', pinnedIdentity: identity,
         networkIdentity: async () => ({ identity, mode: 'public-chain-read' }),
         observeTransfer: async () => ({ status: 'included', txHash: hash, payer: wallet, payee, amountOs: '1', blockNumber: 10 }),
         getTransaction: async () => ({ hash, status: 'confirmed', blockNumber: 10, content: { from: wallet, nonce: 1 } }) };
-      const ops = { get: (account, id) => account === 'buyer' && id === 'first' ? saved : null,
+      // Deliberately mis-scoped host seam: the installed client must check ownership.
+      let secondaryReads = 0;
+      const ops = { get: (_account, id) => id === 'first' ? saved : null,
+        history: () => { secondaryReads++; return []; }, handoffTokenFor: forbidden,
         transition: forbidden, record: forbidden };
       const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store,
         diagnosticOnly: false, settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }, false);
@@ -122,10 +126,20 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       assert.equal(result.verification.outcome, 'readback_only');
       assert.equal(result.verification.authority, 'unqualified_host');
       assert.equal(result.verification.observation.status, 'included');
+      assert.equal(result.verification.termsMatch, true);
       assert.deepEqual(coordinates.get('first'), snapshot);
       assert.equal(db.prepare('SELECT status FROM operations WHERE id=?').get('first').status, 'broadcast_reported');
       assert.equal(db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n, 0);
       await assert.rejects(service.verifyDeal({ accountId: 'someone-else', operationId: 'first' }), { code: 'not_found' });
+      assert.throws(() => service.status('someone-else', 'first'), { code: 'not_found' });
+      assert.equal(secondaryReads, 0);
+      for (const status of ['awaiting_approval', 'approved', 'payment_handoff', 'settled_verified']) {
+        saved.status = status;
+        assert.equal(service.status('buyer', 'first').approvalUrl, null);
+        assert.match(service.status('buyer', 'first').next, /historical.*held/);
+        assert.equal(service.portalEvidence(saved).actionable, false);
+      }
+      saved.status = 'broadcast_reported';
       for (const method of ['cancel', 'reportWalletResult', 'protocolRecheck']) {
         await assert.rejects(service[method]({ accountId: 'buyer', operationId: 'first' }), { code: 'profile_not_admitted' });
       }

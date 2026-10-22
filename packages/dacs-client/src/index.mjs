@@ -1,6 +1,6 @@
 // Public buyer API. The root loads SQLite lazily when a transaction runs.
-export { createPublicPurchaseService as createPurchaseService, purchaseNext, PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
-export { createProtocolPurchases, protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
+export { createPublicPurchaseService as createPurchaseService, diagnosticPurchaseNext as purchaseNext, DIAGNOSTIC_PURCHASE_STATUS_HELP as PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
+export { createProtocolPurchases, diagnosticProtocolView as protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
 export { createDeliveryDeadlineWatch } from './dacs/delivery-deadline-watch.mjs';
 export { createCoordinateStore } from './dacs/wallet-transactions.mjs';
 export { createDirectoryClient } from './dacs/directory.mjs';

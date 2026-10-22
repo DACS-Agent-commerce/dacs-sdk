@@ -8,7 +8,7 @@ import { createOperationStore } from './helpers/purchase-integrity-operations.mj
 
 const HASH = '1'.repeat(64), CHAIN = 'f'.repeat(64), WALLET = '0x' + 'a'.repeat(64), PAYEE = '0x' + '7'.repeat(64);
 const INCLUDED = { status: 'included', txHash: HASH, payer: WALLET, payee: PAYEE, amountOs: '2500000000', blockNumber: 10 };
-function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, signingAddress = WALLET, publicApi = false } = {}) {
+function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false } = {}) {
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) }), coordinates = createCoordinateStore({ db });
@@ -28,13 +28,79 @@ function world(t, observation, { native = false, observer = 'TEST-host-reader', 
   coordinates.save({ operationId: op.id, kind: 'native-dem-transfer', network: 'testnet', from: WALLET, nonceFence: 6, expectedNonce: 7,
     target: PAYEE, amountOs: INCLUDED.amountOs, payload: {} });
   coordinates.reportHash(op.id, HASH);
-  const protocol = native || buyerRefusal ? createProtocolPurchases({ db, ops, coordinates, store,
-    buyerAccess: buyerRefusal ? { assertWallet() { throw buyerRefusal; } } : null }) : null;
+  const protocol = native || buyerRefusal || buyerAccess ? createProtocolPurchases({ db, ops, coordinates, store,
+    buyerAccess: buyerRefusal ? { assertWallet() { throw buyerRefusal; } } : buyerAccess }) : null;
   const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
-  return { coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
+  return { db, chain, protocol, coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
     consumed: () => db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n,
     verify: () => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id }) };
 }
+
+for (const method of ['status', 'verifyDeal', 'cancel']) {
+  test(`account lookup refuses a wrong-owner operation before secondary reads (${method})`, async t => {
+    const w = world(t, INCLUDED, { publicApi: method !== 'cancel' });
+    w.db.prepare('UPDATE operations SET status=? WHERE id=?').run('awaiting_approval', w.op.id);
+    const get = w.ops.get;
+    w.ops.get = (_account, id) => get(w.op.accountId, id);
+    const calls = [];
+    w.coordinates.get = () => { calls.push('coordinates'); };
+    w.ops.history = () => { calls.push('history'); };
+    w.ops.handoffTokenFor = () => { calls.push('token'); };
+    w.chain.networkIdentity = async () => { calls.push('chain'); };
+    const run = () => method === 'status' ? w.purchases.status('TEST-other', w.op.id)
+      : w.purchases[method]({ accountId: 'TEST-other', operationId: w.op.id });
+    if (method === 'status') assert.throws(run, { code: 'not_found' });
+    else await assert.rejects(run, { code: 'not_found' });
+    assert.deepEqual(calls, []);
+  });
+}
+
+test('public readback preserves a host access refusal before chain reads', async t => {
+  const cause = new Error('TEST-revoked');
+  const w = world(t, INCLUDED, { publicApi: true, buyerRefusal: cause });
+  const calls = [];
+  w.coordinates.get = () => { calls.push('coordinates'); throw new Error('TEST-denied-coordinate-read'); };
+  w.chain.networkIdentity = async () => { calls.push('chain'); };
+  await assert.rejects(w.verify(), error => error === cause);
+  assert.deepEqual(calls, []);
+});
+
+test('public readback honors an allowed buyer capability for the authenticated owner', async t => {
+  const checked = [];
+  const w = world(t, INCLUDED, { publicApi: true, buyerAccess: { assertWallet(address) { checked.push(address); } } });
+  assert.equal((await w.verify()).verification.termsMatch, true);
+  assert.deepEqual(checked, [WALLET]);
+});
+
+test('public readback does not bypass a missing-capability refusal', async t => {
+  const cause = Object.assign(new Error('TEST-missing-capability'), { code: 'buyer_access_closed', details: { buyerAccessMissing: true } });
+  const w = world(t, INCLUDED, { publicApi: true, buyerRefusal: cause });
+  await assert.rejects(w.verify(), error => error === cause);
+});
+
+test('account lookup refuses an operation with another id', async t => {
+  const w = world(t, INCLUDED, { publicApi: true });
+  w.ops.get = () => ({ ...w.op, id: 'TEST-other-operation' });
+  assert.throws(() => w.purchases.status(w.op.accountId, w.op.id), { code: 'not_found' });
+  await assert.rejects(w.verify(), { code: 'not_found' });
+});
+
+test('public readback allows a closed buyer capability only for its recorded hash', async t => {
+  const cause = Object.assign(new Error('TEST-closed'), { code: 'buyer_access_closed' });
+  const w = world(t, INCLUDED, { publicApi: true, buyerRefusal: cause });
+  assert.deepEqual((await w.verify()).verification.observation, INCLUDED);
+  await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, txHash: '2'.repeat(64) }), error => error === cause);
+  w.coordinates.get = () => null;
+  await assert.rejects(w.verify(), error => error === cause);
+});
+
+test('public readback refuses a hash other than its saved pointer before reading the chain', async t => {
+  const w = world(t, INCLUDED, { publicApi: true });
+  const calls = [];
+  w.chain.networkIdentity = async () => { calls.push('chain'); };
+  await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, txHash: '2'.repeat(64) }), { code: 'invalid_state' });
+  assert.deepEqual(calls, []);
+});
 
 for (const [label, observation] of [
   ['Number amount', { ...INCLUDED, amountOs: 2500000000 }],
@@ -44,6 +110,8 @@ for (const [label, observation] of [
   ['non-string payer', { ...INCLUDED, payer: 7 }],
   ['unreadable payee', { ...INCLUDED, payee: 'TEST-invalid' }],
   ['string block', { ...INCLUDED, blockNumber: '10' }],
+  ['string inclusion time', { ...INCLUDED, includedAt: 'TEST-time' }],
+  ['out of range inclusion time', { ...INCLUDED, includedAt: 8640000000000001 }],
   ['different hash', { ...INCLUDED, txHash: '2'.repeat(64) }],
   ['bigint extension', { ...INCLUDED, extra: 1n }],
   ['null result', null],
@@ -126,8 +194,10 @@ test(`public host readers remain diagnostic and cannot settle or consume a nonce
   assert.equal(w.consumed(), 0);
   for (const attachOnly of [false, true]) {
     const diagnostic = await w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id,
-      txHash: '2'.repeat(64), attachOnly });
+      txHash: HASH, attachOnly });
     assert.equal(diagnostic.verification.outcome, 'readback_only');
+    await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id,
+      txHash: '2'.repeat(64), attachOnly }), { code: 'invalid_state' });
     assert.deepEqual(w.coordinates.get(w.op.id), before, 'optional hashes are never attached');
     assert.deepEqual(w.ops.history(w.op.id), history);
   }
@@ -136,6 +206,79 @@ test(`public host readers remain diagnostic and cannot settle or consume a nonce
   }
 });
 }
+
+for (const status of ['awaiting_approval', 'agreement_pending']) {
+  test(`public expired ${status} portal/status/evidence reads never persist or offer approval`, t => {
+    const w = world(t, INCLUDED, { publicApi: true });
+    w.db.prepare('UPDATE operations SET status=?, expires_at=? WHERE id=?').run(status, new Date(0).toISOString(), w.op.id);
+    const before = w.ops.get(w.op.accountId, w.op.id), history = w.ops.history(w.op.id), coords = w.coordinates.get(w.op.id);
+    const token = w.ops.handoffTokenFor(w.op.id);
+    const portal = w.purchases.portalOperation(w.op.id, token);
+    assert.deepEqual(portal, before);
+    const read = w.purchases.status(w.op.accountId, w.op.id);
+    assert.equal(read.operation.status, 'expired');
+    assert.equal(read.approvalUrl, null);
+    assert.match(read.next, /historical.*held/);
+    const evidence = w.purchases.portalEvidence(portal);
+    assert.equal(evidence.actionable, false);
+    assert.match(evidence.next, /historical.*held/);
+    assert.deepEqual(w.ops.get(w.op.accountId, w.op.id), before);
+    assert.deepEqual(w.ops.history(w.op.id), history);
+    assert.deepEqual(w.coordinates.get(w.op.id), coords);
+    assert.throws(() => w.purchases.portalOperation(w.op.id, 'TEST-wrong-token'), { code: 'not_found' });
+  });
+}
+
+test('handoff lookup rejects an operation with another id before buyer or coordinate reads', t => {
+  const w = world(t, INCLUDED, { publicApi: true });
+  w.ops.getByHandoff = () => ({ ...w.op, id: 'TEST-other-operation' });
+  assert.throws(() => w.purchases.portalOperation(w.op.id, 'TEST-token'), { code: 'not_found' });
+});
+
+test('public nested protocol guidance remains historical and held', t => {
+  const w = world(t, INCLUDED, { publicApi: true, native: true });
+  w.db.prepare('UPDATE operations SET state=? WHERE id=?').run(JSON.stringify({ protocol: { stage: 'agreement-signing' } }), w.op.id);
+  const read = w.purchases.status(w.op.accountId, w.op.id);
+  assert.equal(read.protocol.historical, true);
+  assert.match(read.protocol.next, /historical.*held/);
+  assert.match(w.purchases.portalEvidence(read.operation).protocol.next, /historical.*held/);
+});
+
+for (const field of ['payer', 'payee', 'amountOs']) {
+  test(`public diagnostic explicitly reports a ${field} mismatch`, async t => {
+    const value = { ...INCLUDED, [field]: field === 'amountOs' ? '1' : '0x' + 'c'.repeat(64) };
+    const w = world(t, value, { publicApi: true });
+    const result = await w.verify();
+    assert.equal(result.verification.observation.status, 'included');
+    assert.equal(result.verification.termsMatch, false);
+    w.fixReader();
+    assert.equal((await w.verify()).verification.termsMatch, true);
+  });
+}
+
+for (const failure of [null, undefined, 'TEST-reader-failed']) {
+  for (const publicApi of [false, true]) {
+    test(`reader rejection ${String(failure)} remains unavailable (public=${publicApi})`, async t => {
+      const cause = Object.assign(new Error('TEST-closed'), { code: 'buyer_access_closed' });
+      const w = world(t, INCLUDED, { publicApi, buyerRefusal: cause });
+      w.chain.observeTransfer = async () => { throw failure; };
+      const result = await w.verify();
+      assert.equal(result.verification.observation.status, 'unavailable');
+      assert.equal(result.verification.observation.reason, String(failure));
+      assert.equal(result.verification.termsMatch ?? null, null);
+    });
+  }
+}
+
+test('inclusion time accepts epoch milliseconds and old malformed saved times render safely', async t => {
+  const w = world(t, { ...INCLUDED, includedAt: 0 });
+  assert.equal((await w.verify()).verification.outcome, 'verified');
+  assert.equal(w.purchases.portalEvidence(w.ops.get(w.op.accountId, w.op.id)).receipt.includedAt, '1970-01-01T00:00:00.000Z');
+  const historical = w.coordinates.get(w.op.id).observation;
+  historical.observation.includedAt = 'TEST-bad-time';
+  w.db.prepare('UPDATE write_coordinates SET observation=? WHERE operation_id=?').run(JSON.stringify(historical), w.op.id);
+  assert.equal(w.purchases.portalEvidence(w.ops.get(w.op.accountId, w.op.id)).receipt.includedAt, null);
+});
 
 test('public diagnostic reads validate malformed observations without saving them', async t => {
   const w = world(t, { ...INCLUDED, amountOs: 1n }, { publicApi: true });
@@ -197,4 +340,5 @@ test('public diagnostics re-read saved settlements and never report saved succes
   assert.equal(result.verification.outcome, 'readback_only');
   assert.deepEqual(result.verification.observation, { status: 'pending' });
   assert.deepEqual(w.coordinates.get(w.op.id), before);
+  assert.equal(w.purchases.portalEvidence(w.ops.get(w.op.accountId, w.op.id)).receipt.historical, true);
 });

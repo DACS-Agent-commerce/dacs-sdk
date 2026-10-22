@@ -236,3 +236,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - The public purchase factory reports fresh host observations without persisting payment decisions or driving protocol effects. Retained source settlement and crash recovery use the private factory. Public cancellation, wallet-result reporting and protocol recheck remain under admission.
 - Core `invalid` transfer observations retain their reason and canonical-body nonce reconciliation in the retained integration. Malformed host shapes use a distinct diagnostic status, including wallet-access-closed readback.
 - The host operations contract specifies owner-scoped reads, atomic status compare-and-swap, append-only events and seller-session state transitions. Directory summaries remain discovery hints.
+
+## D11 host diagnostic contracts
+
+- Public account reads validate the requested owner and operation id, and handoff reads preserve the requested operation id. Hosts supply authenticated account context and authenticate handoff tokens.
+- Public diagnostics honor the resolved buyer capability, read only the recorded hash, and report a non-authorizing payer/payee/amount match. The closed-access exception remains available for an already reported hash.
+- Public purchase and protocol guidance describes held actions and historical state. Expired portal reads do not persist transitions. Optional inclusion timestamps are validated before use; reader failures preserve their cause.
+- The enabled deadline watch is explicit host bookkeeping; passing an unwired automatic-watch option is refused. Retained signing-key projections and purchase admission are unchanged.
