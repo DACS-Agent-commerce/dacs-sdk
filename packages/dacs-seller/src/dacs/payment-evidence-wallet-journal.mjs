@@ -73,7 +73,7 @@ import { deriveStorageAddress } from './wallet-transactions.mjs';
 // Bounds on what signCreate answers before it is kept.
 const MAX_SIGNED_TRANSACTION = 1024 * 1024;
 const TX_HASH = /^[0-9a-f]{64}$/;
-// The SDK's Ed25519 signature encoding (demosdk sign: 0x and lower-case hex).
+// demosdk 4.0.16 (demosclass.js sign): Ed25519 is 0x and lower-case hex.
 const SIGNATURE = /^0x[0-9a-f]{128}$/;
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);

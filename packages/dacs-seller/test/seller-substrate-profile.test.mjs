@@ -87,3 +87,14 @@ test('a session admission is taken only by the native profile and only with all 
   await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture: true, sessionAdmission: complete }),
     { name: 'TypeError', message: /simulated fixture profile takes no sessionAdmission/ });
 });
+
+// Compare with the pinned authority, rather than just two SDK constants.
+test('the seller profile matches the pinned Standard JID-1 document tuple', () => {
+  const profile = JSON.parse(readFileSync(new URL('../PROFILE.json', import.meta.url), 'utf8'));
+  const standard = readFileSync(new URL('../../../vendor/DACS-Standard/spec/PROFILE.md', import.meta.url), 'utf8');
+  const candidate = standard.split('## Unreleased JID-1 corrective candidate')[1];
+  assert.ok(candidate, 'the pinned Standard declares the claimed candidate');
+  const tuple = Object.fromEntries([...candidate.matchAll(/\| \[(CORE|DACS-[1-5])[^\]]*\]\([^)]*\) \| ([0-9.]+) \|/g)].map(([, name, version]) => [name, version]));
+  assert.equal(Object.keys(tuple).length, 6);
+  assert.deepEqual(profile.documentVersions, tuple);
+});

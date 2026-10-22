@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
-import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -55,8 +55,35 @@ async function world(t, { listingChanges = () => {} } = {}) {
   listingChanges(draft);
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft)));
   const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached`); };
-  const dir = () => { const path = realpathSync(mkdtempSync(join(tmpdir(), 'seller-settlement-profile-'))); t.after(() => rmSync(path, { recursive: true, force: true })); return path; };
-  const jobId = core.generateCanonicalJobId(), buyerBundle = identityFor(buyerKey, now);
+  let challengeSnapshot = null;
+  // Each independent scenario forks the verifier's authenticated, pre-attempt
+  // ledger. This snapshot is made by a real issuer before the buyer signs;
+  // no fixture writes a caller-selected nonce into seller state.
+  const dir = ({ empty = false } = {}) => {
+    const path = realpathSync(mkdtempSync(join(tmpdir(), 'seller-settlement-profile-')));
+    t.after(() => rmSync(path, { recursive: true, force: true }));
+    if (challengeSnapshot && !empty) copyFileSync(challengeSnapshot, join(path, 'seller-state.sqlite'));
+    return path;
+  };
+  const capabilities = {
+    signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
+    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
+    agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },
+    nativeArtifactAnchor: { writer: sellerKey.claim, publish: refuse('publish'), readRetained: refuse('readRetained'), verifyReceipt: refuse('verifyReceipt') },
+    deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: refuse('verifyDeliverySchema') },
+    deliverableProducer: () => { reached.push('deliverableProducer'); throw new Error('not reached'); },
+    observeDemosTransfer: refuse('observeDemosTransfer'),
+    railAuthority: steward.railAuthority(),
+    sessionAdmission: admission.sessionAdmission,
+  };
+  const jobId = core.generateCanonicalJobId(), issuerDirectory = dir();
+  const issuer = await seller.createSellerAgent({ ...capabilities, durableDirectory: issuerDirectory,
+    now: () => Math.max(now, listing.validity.notBefore) });
+  let challenge;
+  try { challenge = issuer.issueSessionChallenge({ jobId, buyer: buyerKey.claim }); }
+  finally { issuer.close(); }
+  challengeSnapshot = join(issuerDirectory, 'seller-state.sqlite');
+  const buyerBundle = presentWith(buyerKey, now, challenge.sessionNonce);
   // The operator's Vet context: references to counterparty-verified records
   // (DACS-2 §7.7.2) the seller's session admission keeps, at the canonical
   // composite addresses.
@@ -71,17 +98,6 @@ async function world(t, { listingChanges = () => {} } = {}) {
   // and the requirement the record hashes (the Listing's buyer requirement).
   const invocationsFor = (input) => [['buyer', buyerKey.claim, sellerKey.claim], ['seller', sellerKey.claim, buyerKey.claim]].map(([role, evaluatedParty, verifier]) => ({
     vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
-  const capabilities = {
-    signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
-    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
-    agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },
-    nativeArtifactAnchor: { writer: sellerKey.claim, publish: refuse('publish'), readRetained: refuse('readRetained'), verifyReceipt: refuse('verifyReceipt') },
-    deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: refuse('verifyDeliverySchema') },
-    deliverableProducer: () => { reached.push('deliverableProducer'); throw new Error('not reached'); },
-    observeDemosTransfer: refuse('observeDemosTransfer'),
-    railAuthority: steward.railAuthority(),
-    sessionAdmission: admission.sessionAdmission,
-  };
   // The seller wallet's journal over wallet primitives that refuse: the native
   // settlement chain takes the evidence anchor and its reconciliation only from
   // one createPaymentEvidenceWalletJournal (`journal()`), in the agent as in the host.
@@ -110,13 +126,7 @@ async function world(t, { listingChanges = () => {} } = {}) {
     return { proposal, transportIdentity, buyerIdentityBundle: buyerBundle };
   };
   const payment = { jobId, txHash: 'a'.repeat(64), payerPayingKey: buyerKey.claim };
-  // A seller agent with this world's buyer challenge issued for its job, as the
-  // operator's issuer does before the buyer presents (CORE SN-1/SN-3).
-  const agent = async (options) => {
-    const opened = await seller.createSellerAgent(options);
-    admission.issue(opened, jobId, buyerBundle);
-    return opened;
-  };
+  const agent = (options) => seller.createSellerAgent(options);
   return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward, buyerKey, sellerKey, buyerBundle, admission, now, agent };
 }
 const refused = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status }; } };
@@ -189,7 +199,7 @@ const revocationOf = async (w, { signerKey = w.sellerKey, locator } = {}) => {
 };
 
 test('without the steward-signed rail authority the native profile is refused before any state is opened', async (t) => {
-  const w = await world(t), durableDirectory = w.dir();
+  const w = await world(t), durableDirectory = w.dir({ empty: true });
   for (const railAuthority of [undefined, null]) {
     await assert.rejects(w.agent(complete(w, { durableDirectory, railAuthority })), { name: 'TypeError', message: /native seller profile needs railAuthority/ });
   }
@@ -268,7 +278,7 @@ test('the standalone host refuses to start without the whole chain to delivery',
   const { nativeArtifactAnchor: artifactAnchor, ...rest } = w.capabilities;
   const { now: _now, ...required } = rest;
   for (const missing of ['nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']) {
-    const dataDirectory = w.dir();
+    const dataDirectory = w.dir({ empty: true });
     const options = { ...required, artifactAnchor, dataDirectory, nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
     delete options[missing];
     await assert.rejects(seller.startSellerHost(options), { name: 'TypeError', message: new RegExp(`requires ${missing}$`) });
@@ -724,7 +734,7 @@ test('a missing or different admission or profile is refused before any session 
   // CORE SN-4: a challenge is consumed on its first attempt, so each refused
   // attempt presents its own issued challenge.
   let presented = 0;
-  const fresh = () => { const bundle = identityFor(w.buyerKey, w.now - 1 - presented++); w.admission.issue(agent, w.jobId, bundle); return { ...request, buyerIdentityBundle: bundle }; };
+  const fresh = () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
   for (const [label, change] of Object.entries(refusals)) {
     w.admission.answerWith(change);
     const attempt = fresh();
@@ -754,17 +764,14 @@ test('a presentation nonce the seller did not issue, issued for another job or b
   const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
   const NOT_ADMITTED = { code: 'session_not_admitted', status: 409 };
   let presented = 0;
-  const bundle = () => identityFor(w.buyerKey, w.now - 1 - presented++);
+  const bundle = (jobId = w.jobId, buyer = w.buyerKey.claim) => presentWith(w.buyerKey, w.now - 1 - presented++, agent.issueSessionChallenge({ jobId, buyer }).sessionNonce);
   const attempt = (presentation) => refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: presentation }));
-  assert.deepEqual(await attempt(bundle()), NOT_ADMITTED, 'a nonce the seller never issued');
-  const otherJob = bundle();
-  agent.issueSessionChallenge({ jobId: core.generateCanonicalJobId(), buyer: w.buyerKey.claim, sessionNonce: otherJob.sessionNonce });
+  assert.deepEqual(await attempt(identityFor(w.buyerKey, w.now - 1 - presented++)), NOT_ADMITTED, 'a nonce the seller never issued');
+  const otherJob = bundle(core.generateCanonicalJobId());
   assert.deepEqual(await attempt(otherJob), NOT_ADMITTED, 'a challenge issued for another job');
-  const otherBuyer = bundle();
-  agent.issueSessionChallenge({ jobId: w.jobId, buyer: key().claim, sessionNonce: otherBuyer.sessionNonce });
+  const otherBuyer = bundle(w.jobId, key().claim);
   assert.deepEqual(await attempt(otherBuyer), NOT_ADMITTED, 'a challenge issued to another buyer');
   const late = bundle();
-  w.admission.issue(agent, w.jobId, late);
   clock += SESSION_CHALLENGE_LIFETIME_MS;
   assert.deepEqual(await attempt(late), NOT_ADMITTED, 'an expired challenge');
   clock = w.now;
@@ -772,7 +779,6 @@ test('a presentation nonce the seller did not issue, issued for another job or b
   // Consumed on the first attempt, a refused one too: the same presentation
   // and a re-signed one carrying the same nonce are refused after it.
   const first = bundle();
-  w.admission.issue(agent, w.jobId, first);
   w.admission.answerWith(() => ({ disposition: 'refused', reason: 'TEST not admitted' }));
   assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the first attempt is refused by the admission');
   w.admission.answerWith(null);
@@ -789,7 +795,6 @@ test('a presentation nonce the seller did not issue, issued for another job or b
   assert.equal(agent.stageOf(w.jobId), null, 'no session is kept');
   // The issued challenge of this presentation admits it, and its accepted
   // presentation continues after a restart.
-  w.admission.issue(agent, w.jobId, w.buyerBundle);
   const signed = await agent.receiveProposal(request);
   assert.equal(signed.disposition, 'complete');
   agent.close();
@@ -833,7 +838,7 @@ test('the seller issues a fresh 256-bit challenge bound to one job and buyer; a 
   assert.notEqual(issued.sessionNonce, again.sessionNonce, 'every challenge is fresh');
   assert.deepEqual({ ...issued, sessionNonce: null }, { jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: null, issuedAt: w.now, expiresAt: w.now + SESSION_CHALLENGE_LIFETIME_MS });
   const failed = (input) => { try { agent.issueSessionChallenge(input); return null; } catch (error) { return error.code; } };
-  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: issued.sessionNonce }), 'challenge_taken', 'a nonce is issued once');
+  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: issued.sessionNonce }), 'challenge_invalid', 'callers cannot reissue a nonce');
   assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'AB'.repeat(32) }), 'challenge_invalid');
   assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'ab'.repeat(15) }), 'challenge_invalid', 'fewer than 128 bits');
   assert.equal(failed({ jobId: 'not-a-job', buyer: w.buyerKey.claim }), 'job_invalid');
@@ -860,7 +865,7 @@ test('the seller decides revocation itself: a verified marker refuses a new sess
   t.after(() => agent.close());
   const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
   let presented = 0;
-  const fresh = () => { const bundle = identityFor(w.buyerKey, w.now - 1 - presented++); w.admission.issue(agent, w.jobId, bundle); return { ...request, buyerIdentityBundle: bundle }; };
+  const fresh = () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
   const refusal = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status, message: error.message }; } };
   const revoked = await revocationOf(w), forged = await revocationOf(w, { signerKey: w.buyerKey, locator: 'TEST-forged-marker' });
   const active = { kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: w.now };
@@ -934,7 +939,7 @@ test('createSellerAgent takes the evidence anchor and its reconciliation only fr
 
 test('over HTTP an admission refusal is definite and keeps no session: the same request runs again and is refused for its consumed challenge, and a presentation under its own challenge is signed', async (t) => {
   const w = await world(t), h = await httpSeller(t, w);
-  const fresh = (presentedAt) => { const bundle = identityFor(w.buyerKey, presentedAt); w.admission.issue(h.agent, w.jobId, bundle); return { ...h.proposal, buyerIdentityBundle: bundle }; };
+  const fresh = (presentedAt) => { const bundle = presentWith(w.buyerKey, presentedAt, h.agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce); return { ...h.proposal, buyerIdentityBundle: bundle }; };
   const revoked = fresh(w.now - 1), revocation = await revocationOf(w);
   w.admission.readRevocationWith(() => [revocation.surface]);
   await answered(() => h.client.propose(revoked));
@@ -1172,7 +1177,6 @@ test('malformed attempts consume recognized challenges before shape validation, 
   const open = () => seller.createSellerAgent(complete(w, { durableDirectory }));
   let agent = await open();
   t.after(() => agent.close());
-  w.admission.issue(agent, w.jobId, w.buyerBundle);
   const request = await w.proposalFor(w.vetted);
   const malformed = structuredClone(w.buyerBundle);
   delete malformed.presentation;
@@ -1194,7 +1198,6 @@ test('accepted presentations retain complete proof bytes across restart; an exac
   const open = () => seller.createSellerAgent(complete(w, { durableDirectory }));
   let agent = await open();
   t.after(() => agent.close());
-  w.admission.issue(agent, w.jobId, w.buyerBundle);
   const request = await w.proposalFor(w.vetted);
   const accepted = await agent.receiveProposal(request);
   assert.equal(accepted.disposition, 'complete');
@@ -1278,7 +1281,20 @@ test('an admitted unsigned proposal resumes after challenge expiry, including ac
  assert.deepEqual((await agent.receiveProposal(request)).contribution, done.contribution);
  const other = await world(t), late = await seller.createSellerAgent(complete(other, { durableDirectory: other.dir(), now: () => clock }));
  t.after(() => late.close());
- late.issueSessionChallenge({ jobId: other.jobId, buyer: other.buyerKey.claim, sessionNonce: other.buyerBundle.sessionNonce });
+ const expired = presentWith(other.buyerKey, other.now, late.issueSessionChallenge({ jobId: other.jobId, buyer: other.buyerKey.claim }).sessionNonce);
  clock += SESSION_CHALLENGE_LIFETIME_MS;
- assert.deepEqual(await refused(async () => late.receiveProposal(await other.proposalFor(other.vetted))), { code: 'session_not_admitted', status: 409 });
+ assert.deepEqual(await refused(async () => late.receiveProposal({ ...await other.proposalFor(other.vetted), buyerIdentityBundle: expired })), { code: 'session_not_admitted', status: 409 });
+});
+
+// CORE §B.8 SN-1/SN-2: a matching saved nonce is insufficient when the
+// presenter selected it before the verifier generated its challenge.
+test('the agent refuses a presenter-chosen pre-signed nonce at issuance and admission', async (t) => {
+  const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
+  t.after(() => agent.close());
+  const chosen = presentWith(w.buyerKey, w.now, '01'.repeat(16));
+  assert.throws(() => agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
+  const request = await w.proposalFor(w.vetted);
+  assert.deepEqual(await refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: chosen })), { code: 'session_not_admitted', status: 409 });
+  assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 0);
+  assert.equal(agent.stageOf(w.jobId), null);
 });

@@ -1384,3 +1384,16 @@ test('read-only commitment reconciliation cannot start provably unsent work', as
  assert.equal((await p.client().commit(p.jobId)).status, 'committed');
  assert.equal(w.effects.published.length, 1);
 });
+
+// The public host forwards issuance to the same verifier-owned generator.
+test('the host refuses caller-chosen challenges and accepts a buyer presentation of its own challenge', async (t) => {
+  const w = await world(t), jobId = core.generateCanonicalJobId();
+  const chosen = identityFor(w.buyerKey, Date.now());
+  assert.throws(() => w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
+  assert.throws(() => w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: '01'.repeat(16) }), { code: 'challenge_invalid' });
+  const issued = w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim });
+  assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
+  assert.notEqual(issued.sessionNonce, chosen.sessionNonce);
+  const purchase = await w.purchase({ commit: false });
+  assert.match(purchase.agreementHash, /^[0-9a-f]{64}$/, 'the seller accepted the presentation and signed its Agreement');
+});

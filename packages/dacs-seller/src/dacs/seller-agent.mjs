@@ -239,7 +239,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const assertSettlementChain = () => {
     if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile commits and takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
   };
-  // RAV-R1..R5 against the session's own pin (a new session's pin before it
+  // RAV-R1..R3, R5 against the session's own pin (a new session's pin before it
   // is retained). Fixture sessions carry none and use the simulated rail.
   const assertRailPin = (railPin, sessionState) => {
     if (!nativeProfile) return;
@@ -404,16 +404,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // CORE SN-1..SN-3: the seller issues the presentation challenge for a job and
   // buyer before the buyer presents; the operator hands it to the buyer (its
-  // transport is out of scope). 256 bits from the CSPRNG (SN-2), or the nonce
-  // the operator's own issuer generated for it (lowercase hex, at least 128
-  // bits), never one issued before. It admits one presentation (SN-4) until
+  // transport is out of scope). Only this verifier generates the nonce:
+  // 256 bits from the CSPRNG (SN-1/SN-2), never caller-supplied bytes.
+  // It admits one presentation (SN-4) until
   // SESSION_CHALLENGE_LIFETIME_MS after issue.
   function issueSessionChallenge({ jobId, buyer, sessionNonce } = {}) {
     if (!nativeProfile) throw new SellerAgentError('session_admission_required', 'the simulated fixture profile takes no session admission', 503);
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     if (typeof buyer !== 'string' || !/^did:demos:agent:[0-9a-f]{64}$/.test(buyer) || buyer === claim) throw new SellerAgentError('buyer_invalid', 'the challenge names no buyer claim other than the seller');
-    if (sessionNonce !== undefined && (typeof sessionNonce !== 'string' || !/^[0-9a-f]{32,128}$/.test(sessionNonce))) throw new SellerAgentError('challenge_invalid', 'a supplied session nonce is lowercase hex of 32 to 128 characters');
-    const nonce = sessionNonce ?? randomBytes(32).toString('hex'), issuedAt = now();
+    if (sessionNonce !== undefined) throw new SellerAgentError('challenge_invalid', 'the seller generates its own session nonce (CORE SN-1/SN-2)');
+    const nonce = randomBytes(32).toString('hex'), issuedAt = now();
     if (!Number.isSafeInteger(issuedAt) || issuedAt < 0) throw new SellerAgentError('seller_clock_invalid', 'the seller clock is not an integer time', 503);
     const issued = { jobId, buyer, sessionNonce: nonce, issuedAt, expiresAt: issuedAt + SESSION_CHALLENGE_LIFETIME_MS };
     try { challenges.issueChallenge(nonce, issued); }

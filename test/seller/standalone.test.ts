@@ -17,8 +17,8 @@ const files = [
   'payment-evidence-wallet-journal.test.mjs',
 ];
 // Packing and installing the core and seller tarballs needs more time, and so
-// do the two host-level suites, which run many complete purchases.
-const timeouts: Record<string, number> = {'installed-package.test.mjs': 420000, 'seller-host-native-delivery.test.mjs': 600000, 'seller-settlement-profile.test.mjs': 300000};
+// do the two host-level suites and the settlement capacity/restart vectors.
+const timeouts: Record<string, number> = {'installed-package.test.mjs': 420000, 'seller-host-native-delivery.test.mjs': 600000, 'seller-settlement-profile.test.mjs': 600000};
 const [major=0,minor=0]=process.versions.node.split('.').map(Number);
 const supported=major>22 || (major===22 && minor>=15);
 if(process.env.DACS_REQUIRE_SELLER_TESTS==='1' && !supported)

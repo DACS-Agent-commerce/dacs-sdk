@@ -1,4 +1,4 @@
-// The seller's rail authority: DACS-4 §9.4.3-§9.4.4 (RAV-R1..RAV-R5) and
+// The seller's rail authority: DACS-4 §9.4.3-§9.4.4 (RAV-R1..RAV-R3, RAV-R5) and
 // DACS-1 §6.3.4 LRR-6.
 //
 // The native profile takes the demos-native:DEM RailDefinition from the
@@ -68,7 +68,7 @@ export function railAuthorityConfig(value) {
     railRegistryVersion,
     // A fresh copy of the exact signed definition, for a new session's pin.
     pin: () => structuredClone(pin),
-    // RAV-R1..R5 over a retained pin: its trusted historical steward's signature over
+    // RAV-R1..R3, R5 over a retained pin: its trusted historical steward's signature over
     // the exact pinned bytes, the pin digest and the pinned availability. A
     // disabled, failed, gated (no operator preflight here) or production
     // mocked rail is refused; so is a non-production mocked one, which the SDK

@@ -27,10 +27,15 @@
           "    sessionNonce: sha256Hex(`dacs-chatgpt-plugin:",
           "    sessionNonce: sessionNonce ?? sha256Hex(`dacs-chatgpt-plugin:",
           "the issued session nonce (CORE SN-1..SN-3)"
+        ],
+        [
+          "//  - Signing bytes, hashing and the ordered reader come from the vendored\n//    @kynesyslabs/dacs 0.1.0-alpha.0 support build (dacs-sdk 6658691, embedded\n//    Standard pin exposed as DACS_STANDARD_PIN). This is not SDK main and not a\n//    claim of complete Standard v0.4 conformance.",
+          "//  - Signing bytes, hashing and the ordered reader come from this repository's\n//    @kynesyslabs/dacs peer at the seller package's version, with its embedded\n//    Standard pin exposed as DACS_STANDARD_PIN. This is not a claim of complete\n//    Standard v0.4 conformance.",
+          "the SDK provenance source (this package's core peer)"
         ]
       ],
       "sourceSha256": "a57eb4285cf7002229f796cfaa12512624c49aba00f0b2262eb13c10af33919d",
-      "sha256": "9852290f894aebaf8775fa38a48bd740bb3cc665ac66e52a813f8b6a30f94521"
+      "sha256": "a3a8eda3248897d7d6346ef19dbef4b30f15bf6c4aaa5730e7fa8bfc940641a7"
     },
     {
       "target": "src/dacs/delivery-evidence.mjs",
@@ -92,10 +97,15 @@
           "      if (native.owner !== owner) continue;",
           "      if (native.owner !== owner) continue;\n      if (!object(native.data) || !object(native.metadata)) reject('invalid', 'owned native record lacks DACS payload or metadata');",
           "foreign-owner filtering before DACS payload validation"
+        ],
+        [
+          "// Exact pinned pure helper: the public root does not export the signed-to-\n// executed projection, while the substrate barrel eagerly loads an optional\n// demosdk peer. Import only the pinned pure module, not that barrel.",
+          "// Import the pure signed-to-executed projection from the core public root;\n// the substrate barrel eagerly loads an optional demosdk peer.",
+          "the public root helper import comment"
         ]
       ],
       "sourceSha256": "1312e104fa21986fe20a8eb5bf774b41c5b6fd17f6730d00f0bc3dd0459f73ac",
-      "sha256": "80b00050c6d09b2c9e2071d83b7138a6bc4a96fe2f9d830b8c14c4ecd30274c4"
+      "sha256": "c8fe3db858787195eb6d610391cbb9c16f757f28f05e5473bb2f96866a06387b"
     },
     {
       "target": "src/util/http.mjs",

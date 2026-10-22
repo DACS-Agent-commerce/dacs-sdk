@@ -197,7 +197,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
   `{ hash, content, signature: { type, data } }` of the Demos signed
-  transaction: of the SDK's `sign()` result, only those three members (its
+  transaction: of demosdk 4.0.16's `demosclass.js` `sign()` result, only those three members (its
   `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
   refuses a truthy `status`, which the signature does not cover). Before it is
   kept, the journal checks it is what the node executes and the SR-2 readback
@@ -279,11 +279,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
     returns `{ jobId, buyer, sessionNonce, issuedAt, expiresAt }`. The operator
     hands it to the buyer, whose bundle carries it as `sessionNonce` (CORE
     SN-1..SN-3; delivering the challenge to the buyer is up to the operator).
-  - **Operator-generated nonces.** An operator whose own issuer generates
-    nonces may pass `sessionNonce`: lowercase hex, at least 128 bits from a
-    CSPRNG (SN-2 is the issuer's duty), and at most 128 hex characters, a
-    local limit of this seller that SN-2 does not set. A nonce is issued
-    only once.
+  - **Generation.** Only the seller generates the nonce, using its own CSPRNG.
+    Supplying `sessionNonce` to the issuer is refused. The buyer copies the
+    returned value into its bundle and signs afterward (CORE SN-1..SN-3).
   - **Consumption.** A presentation attempt for a new session consumes the
     nonce its bundle carries, durably and before the attempt is validated:
     before its signature, its buyer and job binding, the revocation check and
@@ -412,3 +410,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
 
 The workspace package is marked `private` while its required core exports are
 unreleased. Local tarball installation uses a core built from the same checkout.
+
+The rail availability checks implement DACS-4 RAV-R1 through RAV-R3 and
+RAV-R5. The seller does not emit the RAV-R4 `errorClass: substrate` field.
+The SR-2 fixture's genesis response (numeric block zero and a `confirmed`
+status) is a simulation contract, not the pinned node's genesis RPC shape.

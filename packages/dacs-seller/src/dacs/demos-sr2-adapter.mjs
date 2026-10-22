@@ -1,6 +1,6 @@
 // Run-time port of http-mcp/src/dacs/demos-sr2-adapter.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: the whole file.
-// The source lines below are unchanged except import paths and foreign-owner filtering before DACS payload validation (RUNTIME-PORTS.json).
+// The source lines below are unchanged except import paths and foreign-owner filtering before DACS payload validation and the public root helper import comment (RUNTIME-PORTS.json).
 // OFFLINE integration adapter, not a live Demos writer. Only marked literal
 // loopback reads are permitted. The adapter has no key and never broadcasts.
 // It plans immutable CREATEs, authenticates the exact wallet authorization,
@@ -25,9 +25,8 @@ import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 import { canonicalSignature } from './fixture-anchors.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
-// Exact pinned pure helper: the public root does not export the signed-to-
-// executed projection, while the substrate barrel eagerly loads an optional
-// demosdk peer. Import only the pinned pure module, not that barrel.
+// Import the pure signed-to-executed projection from the core public root;
+// the substrate barrel eagerly loads an optional demosdk peer.
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { isDevnetAgreementTransport } from './devnet-source.mjs';
 

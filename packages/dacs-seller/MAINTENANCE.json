@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "b8f0a1ac6819dcf921cad669b9cf4c8d4ad6240c88616b5eeb8ee17f2a94d6a7",
+      "sha256": "3c227c0250fccf54a30111fae17f26473adc22e6dd16e4358f348feafd5a3388",
       "reason": "Retain retries for unfinished native publication and journaled commitments; reverify admitted presentations after challenge expiry."
     },
     {
@@ -244,7 +244,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/demos-sr2-adapter.mjs",
       "originalSha256": null,
-      "sha256": "80b00050c6d09b2c9e2071d83b7138a6bc4a96fe2f9d830b8c14c4ecd30274c4",
+      "sha256": "c8fe3db858787195eb6d610391cbb9c16f757f28f05e5473bb2f96866a06387b",
       "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
     },
     {
@@ -262,7 +262,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/listing.mjs",
       "originalSha256": null,
-      "sha256": "9852290f894aebaf8775fa38a48bd740bb3cc665ac66e52a813f8b6a30f94521",
+      "sha256": "a3a8eda3248897d7d6346ef19dbef4b30f15bf6c4aaa5730e7fa8bfc940641a7",
       "reason": "Seller run time: port from the plugin seller kit; the SDK provenance source and the issued session nonce are named replacements (RUNTIME-PORTS.json)."
     },
     {
@@ -376,13 +376,13 @@
     {
       "path": "packages/dacs-seller/test/seller-substrate-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "ccb26776e7208819abca0d436d639f8c24cd34d37da27574d89896ac945e578a",
+      "sha256": "0c3dc65c301135023954cb8978cd604b3a907dcbe603a20efacc19fe909f3acc",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "479148b74a20becb9ab49869d0559d30beb34f157754a4fc9240d8cfc53f1fae",
+      "sha256": "3272666b3bc6c4820453852bb31af6ff5d19e1bcee47889985970913819004a2",
       "reason": "Pin retained unsigned proposal recovery after challenge expiry and restart, preserving first-admission expiry."
     },
     {
@@ -400,7 +400,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/rail-authority.mjs",
       "originalSha256": null,
-      "sha256": "598401d09407be023033308ebe00059236997743ee3ac1417e87ccd07cddb23b",
+      "sha256": "5e24f482cb3e3424ec302a7885a2005085d3be70033a720bbc5f2681e149d138",
       "reason": "Seller rail authority: steward-signed demos-native:DEM definition pinned per session (DACS-4 RAV-R1..R5, DACS-1 LRR-6)."
     },
     {
@@ -418,7 +418,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/session-admission-fixture.mjs",
       "originalSha256": null,
-      "sha256": "6d3b8f21d65343e6d3e703b711ab4cb2d576362d4727a178e36b195dc6d39c2a",
+      "sha256": "972eaaebe1ef66638c9b574a66f1cbc0dedfd0079f07590111d314d18199284d",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -430,13 +430,13 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "176da9149889230469924db468cf4e320ee2f9b19793184f939d9f079c4bbe46",
+      "sha256": "378d5b7ee8bd1882d0f0f5599fd0a4d398be2dd30389e7a337b86ed4ba72081c",
       "reason": "Pin publication and commitment recovery, read-only and uncertain-send fences, paid signer retry status and optional observer composition."
     },
     {
       "path": "packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs",
       "originalSha256": null,
-      "sha256": "4c8b1893c78f296e67742f49fbde92c06abe42b31c38221e1904289266b3d2cb",
+      "sha256": "a9a25ddf6ffa24303e978a8050e7623e20c0e5539f314fad08bab9834c85f57a",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {

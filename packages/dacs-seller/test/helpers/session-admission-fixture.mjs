@@ -3,8 +3,7 @@
 // with core checkListingRevocation; `readRevocationWith` scripts other
 // readings and `markers` holds anchored RevocationMarkers by locator), and it
 // admits both parties under the package's exact profile (the presentation
-// challenge is the agent's own ledger: `issue` hands the agent the nonce a
-// bundle carries, as the operator's issuer would before the presentation),
+// challenge is generated and retained by the agent before the buyer signs),
 // and keeps the counterparty-verified CompositeVerificationRecords its Vet
 // references name (DACS-2 §7.7.2: the buyer's record signed by the seller, the
 // seller's by the buyer). Each record hashes the exact BundleRequirement it
@@ -43,17 +42,9 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
   const activeSurfaces = () => [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: now() }];
   const markers = new Map();
   let overrides = null, surfaces = null, verifyOverride = null;
-  // CORE SN-1/SN-3: the seller issues the bundle's challenge for its job before
-  // the buyer presents it (`target` is the agent or the host). Issuing it again
-  // to the same seller state (after a restart) keeps the first issue.
-  const issue = (target, jobId, bundle) => {
-    try { return target.issueSessionChallenge({ jobId, buyer: bundle.presentedBy, sessionNonce: bundle.sessionNonce }); }
-    catch (error) { if (error.code !== 'challenge_taken') throw error; return null; }
-  };
   return {
     calls,
     vetRecord,
-    issue,
     // The answer for the next admissions: (admitted, query) => answer, or null.
     answerWith: (fn) => { overrides = fn; },
     // The revocation surfaces for the next readings: (active, query) => surfaces (or a throw), or null.

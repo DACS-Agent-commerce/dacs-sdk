@@ -4,10 +4,10 @@
 // Listing construction (for wallet signing) and Standard validation.
 //
 // Provenance:
-//  - Signing bytes, hashing and the ordered reader come from the vendored
-//    @kynesyslabs/dacs 0.1.0-alpha.0 support build (dacs-sdk 6658691, embedded
-//    Standard pin exposed as DACS_STANDARD_PIN). This is not SDK main and not a
-//    claim of complete Standard v0.4 conformance.
+//  - Signing bytes, hashing and the ordered reader come from this repository's
+//    @kynesyslabs/dacs peer at the seller package's version, with its embedded
+//    Standard pin exposed as DACS_STANDARD_PIN. This is not a claim of complete
+//    Standard v0.4 conformance.
 //  - validateListingArtifact dependency wiring is adapted from
 //    agent-commerce-demo v2/live/sdk-admission.mjs (ab41d3a).
 //  - Identity bundle shape is adapted from agent-commerce-demo lib/workflow.mjs identity().
