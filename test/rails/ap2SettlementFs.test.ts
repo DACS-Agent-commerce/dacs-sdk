@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { link, rename, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,7 +19,7 @@ import { writeMainFormatAp2Record } from "../fixtures/ap2LegacyRecord.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...original, readFile: vi.fn(original.readFile) };
+  return { ...original, readFile: vi.fn(original.readFile), lstat: vi.fn(original.lstat), link: vi.fn(original.link), rename: vi.fn(original.rename) };
 });
 
 const execute = promisify(execFile);
@@ -591,7 +591,7 @@ describe("AP2 filesystem record and phase regression probes", () => {
     return json + " ".repeat(bytes - Buffer.byteLength(json));
   };
 
-  test.each(["noncanonical job", "operation hash", "intent version", "idempotency key", "legacy operation", "legacy deadline"])(
+  test.each(["noncanonical job", "operation hash", "intent version", "idempotency key", "legacy operation", "legacy operationJson only", "legacy operationHash only", "legacy deadline"])(
     "M12: self-consistently rehashed %s cannot account for a current or pseudo-legacy record", async (kind) => {
       const { dir } = await seed();
       const path = recordPath(dir);
@@ -606,6 +606,8 @@ describe("AP2 filesystem record and phase regression probes", () => {
       if (kind.startsWith("legacy")) {
         record.intent.intentVersion = "1";
         delete record.replayDeadline;
+        if (kind === "legacy operationJson only") delete record.intent.operationHash;
+        if (kind === "legacy operationHash only") delete record.intent.operationJson;
         if (kind === "legacy deadline") {
           delete record.intent.operationJson;
           delete record.intent.operationHash;
@@ -731,6 +733,37 @@ describe("AP2 filesystem record and phase regression probes", () => {
     expect((await stat(path)).size).toBe(bytes);
   });
 
+  test("competing checkout first cannot steal a lost phase on an open instance", async () => {
+    const { dir, store } = await seed();
+    const retained = await readJson(recordPath(dir));
+    await rm(phasePath(dir));
+    expect(await claim(store, intent(JOB, TX2), 86400101)).toEqual(PHASE_TAKEN);
+    expect(await readdir(join(dir, "records"))).toEqual([`${sha256Hex(TX)}.json`]);
+    expect(await readJson(recordPath(dir))).toEqual(retained);
+    expect(await claim(store, intent(), 86400102)).toMatchObject({ status: "acquired", createdAt: 100, replayDeadline: 1100 });
+    expect(await readJson(phasePath(dir))).toEqual({ phaseVersion: 1, idempotencyKey: intent().idempotencyKey, transactionIds: [TX] });
+  });
+
+  test.each(["EACCES", "EIO"])("a phase lstat %s keeps its cause and never replaces state", async (code) => {
+    const { dir, store } = await seed();
+    const path = phasePath(dir);
+    const bytes = await readFile(path, "utf8");
+    const failure = Object.assign(new Error(`phase lstat ${code}`), { code });
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    vi.mocked(lstat).mockImplementation(async (...args: Parameters<typeof lstat>) => {
+      if (args[0] === path) throw failure;
+      return actual.lstat(...args);
+    });
+    const publications = () => [...vi.mocked(link).mock.calls, ...vi.mocked(rename).mock.calls]
+      .filter(([, target]) => String(target).endsWith(".json"));
+    const before = publications().length;
+    try {
+      await expect(claim(store)).rejects.toBe(failure);
+      expect(publications()).toHaveLength(before);
+      expect(await readFile(path, "utf8")).toBe(bytes);
+    } finally { vi.mocked(lstat).mockImplementation(actual.lstat); }
+  });
+
   test("M16: same open instance restores a removed phase with exactly its retained transaction", async () => {
     const { dir, store } = await seed();
     await rm(phasePath(dir));
@@ -845,6 +878,9 @@ test("F9: many durable phases close every handle in a child limited to 64 descri
   const loader = fileURLToPath(new URL("../fixtures/settlementProcessLoader.mjs", import.meta.url));
   const worker = fileURLToPath(new URL("../fixtures/ap2PhaseDescriptorWorker.ts", import.meta.url));
   const { stdout } = await execute("bash", ["-c", 'ulimit -n 64; exec "$@"', "ap2-descriptor-probe",
-    process.execPath, "--loader", loader, worker, dir], { timeout: 20000 });
+    // Missing-phase admission now reconciles authoritative records on each new
+    // phase. This 96-phase stress test performs quadratic scanning as the
+    // store grows; its descriptor-leak assertion is independent of wall time.
+    process.execPath, "--loader", loader, worker, dir], { timeout: 90000 });
   expect(JSON.parse(stdout)).toEqual({ phases: 96, allHandlesClosed: true });
-}, 25000);
+}, 100000);

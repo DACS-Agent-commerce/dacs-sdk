@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
@@ -640,6 +641,7 @@ export function settlementKey(railId: string, jobId: string, phaseIndex: number)
     );
   }
   requireCanonicalJobId(jobId, "settlement key jobId");
+  requireReleasedCorrectiveProfile();
   return `${railId}:${jobId}:${phaseIndex}`;
 }
 

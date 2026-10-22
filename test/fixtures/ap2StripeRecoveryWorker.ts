@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { advanceAp2Settlement, deriveAp2TransactionId, type Ap2ProviderAdapter } from "../../src/rails/ap2.js";
@@ -39,7 +39,7 @@ const { provider } = createStripeAp2Integration({
     }
     await writeFile(path, JSON.stringify(state));
     if (behavior === "kill") process.kill(process.pid, "SIGKILL");
-    if (behavior === "lost" || behavior === "delay") throw new Error("response lost after charge committed");
+    if (behavior === "lost" || behavior === "delay" || behavior === "phase-loss") throw new Error("response lost after charge committed");
     return new Response(JSON.stringify({ id: state.reference }), { status: 200 });
   },
   substrate: { async proxyFetch() {
@@ -51,7 +51,9 @@ const { provider } = createStripeAp2Integration({
   } },
 });
 const scope = await ap2ProfileScope();
-const store = await createFsAp2BindingStore({ dir: join(root, "binding") });
+// Keep the production dead-owner grace mechanism, with a short test-only
+// duration so publication-kill recovery does not wait 30 seconds per child.
+const store = await createFsAp2BindingStore({ dir: join(root, "binding"), lockStaleMs: 5, lockPollMs: 1 });
 // Simulate async pre-dispatch delay after the engine has checked the deadline,
 // or a process killed after the binding is reserved and before any provider request.
 const wrappedProvider = behavior === "delay" ? { ...provider, async submit(input: Parameters<typeof provider.submit>[0]) {
@@ -69,7 +71,7 @@ const restartedProvider = behavior === "omit-window" ? {
 } as Ap2ProviderAdapter : behavior === "change-window" ? {
   ...provider, noReferenceReplayWindowMs: Number(rawDelay),
 } : wrappedProvider;
-const progress = await advanceAp2Settlement({
+const settlementInput = {
   ...scope, agreementHash: "a".repeat(64), protocolVersion: "0.2",
   expected: { payee: "merchant-recovery", amount: "10", currency: "USD" },
   checkoutMandate: { checkout_jwt: JWS }, paymentMandate: { transaction_id: deriveAp2TransactionId(JWS) },
@@ -80,5 +82,19 @@ const progress = await advanceAp2Settlement({
   store, provider: restartedProvider, owner: `worker-${process.pid}`, now: () => now,
   // A delayed invocation remains leased while its provider replay window expires.
   leaseDurationMs: behavior === "delay" ? DAY * 2 : 100,
-});
+};
+let progress = await advanceAp2Settlement(settlementInput);
+if (behavior === "phase-loss") {
+  if (state.effects !== 1 || progress.status !== "indeterminate") throw new Error("phase-loss control did not charge once");
+  now += DAY + 1;
+  for (const name of await readdir(join(root, "binding", "phases"))) await rm(join(root, "binding", "phases", name));
+  const other = "e31.e30.c2ln";
+  progress = await advanceAp2Settlement({ ...settlementInput,
+    checkoutMandate: { checkout_jwt: other }, paymentMandate: { transaction_id: deriveAp2TransactionId(other) },
+    verifier: {
+      async verifyCheckoutMandate() { return { disposition: "verified" as const, mandate: { checkoutJws: other, algorithm: "ES256", signatureGeneration: "non-deterministic" as const } }; },
+      async verifyPaymentMandate() { return { disposition: "verified" as const, mandate: { transactionId: deriveAp2TransactionId(other), mandateId: "mandate-recovery", payee: "merchant-recovery", amount: "10", currency: "USD", paymentInstrumentId: "pm_recovery" } }; },
+    },
+  });
+}
 process.stdout.write(JSON.stringify({ pid: process.pid, progress, state, reads }));

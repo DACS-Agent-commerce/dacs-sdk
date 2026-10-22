@@ -1,5 +1,10 @@
 # Seller x402 paywall
 
+The SDK's pinned JID-1 corrective profile is unreleased, so the current
+production paywall and seller-spine entry points refuse action before payment or
+delivery dependencies. The flow below describes the candidate mechanics tested
+with explicit offline fixtures. See [profile availability](pay-ap2.md#authenticated-profile-and-retained-operation).
+
 Historical normative source audit: DACS Standard `next` at
 `662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.7), the historical
 revision pinned by the fixed-price coordinator.

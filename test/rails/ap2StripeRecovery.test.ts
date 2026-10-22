@@ -21,7 +21,7 @@ async function worker(root: string, time: number, behavior = "ok", delay = 0, jw
     "--loader", fileURLToPath(new URL("../fixtures/settlementProcessLoader.mjs", import.meta.url)),
     fileURLToPath(new URL("../fixtures/ap2StripeRecoveryWorker.ts", import.meta.url)),
     root, String(time), behavior, String(delay), ...(jws === undefined ? [] : [jws]),
-  ], { timeout: 20_000, env: { ...process.env, DACS_TEST_TRANSPILE_CACHE: join(root, "transpiled") } });
+  ], { timeout: 20_000, env: { ...process.env, DACS_TEST_TRANSPILE_CACHE: join(root, "transpiled"), DACS_TEST_AP2_PUBLICATION: ["before-phase", "after-phase", "before-record", "after-record"].includes(behavior) ? behavior : "" } });
   return JSON.parse(stdout) as Result;
 }
 
@@ -188,3 +188,64 @@ test.each([WINDOW, -1])("Stripe rechecks dispatch time after a clock change of %
     expect(result.progress).toEqual({ status: "indeterminate", reason: "ap2-provider-replay-window-expired" });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 25_000);
+
+// Kill the real writer at all four publication edges, then recover in
+// independent OS processes. Before phase publication no payment was reserved;
+// after it the original checkout owns the phase even if its record is absent.
+test.each(["before-phase", "after-phase", "before-record", "after-record"])(
+  "SIGKILL at %s preserves ownership and a single retained replay deadline", async (point) => {
+    const root = await mkdtemp(join(tmpdir(), "dacs-ap2-publication-"));
+    try {
+      await expect(worker(root, START, point)).rejects.toMatchObject({ signal: "SIGKILL" });
+      const marker = JSON.parse(await readFile(join(root, "publication-kill.json"), "utf8"));
+      expect(marker.point).toBe(point);
+      const records = join(root, "binding", "records");
+      const phases = join(root, "binding", "phases");
+      expect((await readdir(phases)).filter(name => name.endsWith(".json"))).toHaveLength(point === "before-phase" ? 0 : 1);
+      expect((await readdir(records)).filter(name => name.endsWith(".json"))).toHaveLength(point === "after-record" ? 1 : 0);
+      const retainedBefore = point === "after-record"
+        ? JSON.parse(await readFile(join(records, (await readdir(records)).find(name => name.endsWith(".json"))!), "utf8"))
+        : undefined;
+      // After the reservation, even an expired provider-retention period must
+      // not allow another checkout to refresh this payment's replay window.
+      if (point !== "before-phase") {
+        const other = await worker(root, START + DAY + 1, "ok", 0, "e31.e30.c2ln");
+        expect(other.pid).not.toBe(marker.pid);
+        expect(other.progress).toEqual({ status: "failed", reason: "ap2-phase-bound-to-another-transaction" });
+        expect(other.state.effects).toBe(0);
+      }
+      const resumed = await worker(root, START + 1000);
+      expect(resumed.pid).not.toBe(marker.pid);
+      expect(resumed.progress.status).toBe("settled");
+      expect(resumed.state.effects).toBe(1);
+      const paths = (await readdir(records)).filter(name => name.endsWith(".json"));
+      expect(paths).toHaveLength(1);
+      const retained = JSON.parse(await readFile(join(records, paths[0]!), "utf8"));
+      expect(retained.createdAt).toBe(retainedBefore?.createdAt ?? START + 1000);
+      expect(retained.replayDeadline).toBe(retainedBefore?.replayDeadline ?? START + 1000 + WINDOW);
+      const repeated = await worker(root, START + DAY + 1);
+      expect(repeated.state.effects).toBe(1);
+      expect(repeated.state.posts).toEqual(resumed.state.posts);
+      const other = await worker(root, START + DAY + 2, "ok", 0, "e31.e30.c2ln");
+      expect(other.progress).toEqual({ status: "failed", reason: "ap2-phase-bound-to-another-transaction" });
+      expect(other.state.effects).toBe(1);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 40_000,
+);
+
+
+test("same open store refuses a competing checkout first after phase loss and provider expiry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-ap2-open-phase-loss-"));
+  try {
+    const result = await worker(root, START, "phase-loss");
+    expect(result.progress).toEqual({ status: "failed", reason: "ap2-phase-bound-to-another-transaction" });
+    expect(result.state.effects).toBe(1);
+    expect(result.state.posts).toHaveLength(1);
+    expect(result.reads).toBe(0);
+    expect((await readdir(join(root, "binding", "records"))).filter(name => name.endsWith(".json"))).toHaveLength(1);
+    const retry = await worker(root, START + DAY + 2);
+    expect(retry.progress).toEqual({ status: "indeterminate", reason: "ap2-provider-replay-window-expired" });
+    expect(retry.state.effects).toBe(1);
+    expect(retry.state.posts).toEqual(result.state.posts);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 30_000);

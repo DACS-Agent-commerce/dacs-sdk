@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -2750,6 +2751,7 @@ export async function runSessionCore(
   inputDeps: SessionDeps,
   resumeJobId?: string,
 ): Promise<SessionResult> {
+  requireReleasedCorrectiveProfile();
   // Capture every caller-controlled callback/scalar without invoking accessors.
   // A mutable dependency bag must not be able to switch an authenticator,
   // signer, rail, or durable store while another boundary is being inspected.

@@ -822,7 +822,11 @@ export async function createFsAp2BindingStore(
   ): boolean => record.intent.bindingHash === input.bindingHash &&
     record.lease.owner === input.owner && record.lease.generation === input.generation;
 
-  const unboundRecords = await bindExistingPhases();
+  // Claims and opening-time reconciliation share a store-wide lock. This
+  // makes absence meaningful even when a phase disappears after opening:
+  // retained records must be reconciled before reserving any missing phase.
+  const claimLock = "ap2-store:claims";
+  let unboundRecords = await locked(claimLock, bindExistingPhases);
 
   return {
     async claim(input): Promise<Ap2BindingClaim> {
@@ -835,110 +839,116 @@ export async function createFsAp2BindingStore(
       if (input.intent.idempotencyKey !== phaseKey) {
         return { status: "corrupt", reason: "ap2-binding-claim-input-invalid" };
       }
-      // Lock order is always phase, then transaction; no other path takes both.
-      return locked(phaseLock(phaseKey), () => locked(input.intent.transactionId, async () => {
-        if (!Number.isSafeInteger(input.now) || input.now < 0 ||
-            !Number.isSafeInteger(input.leaseDurationMs) || input.leaseDurationMs <= 0 ||
-            input.now + input.leaseDurationMs > Number.MAX_SAFE_INTEGER ||
-            (input.noReferenceReplayWindowMs !== undefined &&
-              (!Number.isSafeInteger(input.noReferenceReplayWindowMs) || input.noReferenceReplayWindowMs <= 0 ||
-                !Number.isSafeInteger(input.now + input.noReferenceReplayWindowMs))) ||
-            !nonEmpty(input.owner)) {
-          return { status: "corrupt", reason: "ap2-binding-claim-input-invalid" };
+      // Lock order: claims, phase, transaction. Reconciliation takes phase
+      // locks before this claim takes its own, so it never nests phase locks.
+      return locked(claimLock, async () => {
+        if ((await readPhase(phaseKey)).status === "absent") {
+          unboundRecords = await bindExistingPhases();
         }
-        const phase = await readPhase(phaseKey);
-        if (phase.status === "corrupt") return phase;
-        if (phase.status === "ok") {
-          if (phase.transactionIds.length !== 1) {
-            return { status: "corrupt", reason: "ap2-phase-binding-conflict" };
+        return locked(phaseLock(phaseKey), () => locked(input.intent.transactionId, async () => {
+          if (!Number.isSafeInteger(input.now) || input.now < 0 ||
+              !Number.isSafeInteger(input.leaseDurationMs) || input.leaseDurationMs <= 0 ||
+              input.now + input.leaseDurationMs > Number.MAX_SAFE_INTEGER ||
+              (input.noReferenceReplayWindowMs !== undefined &&
+                (!Number.isSafeInteger(input.noReferenceReplayWindowMs) || input.noReferenceReplayWindowMs <= 0 ||
+                  !Number.isSafeInteger(input.now + input.noReferenceReplayWindowMs))) ||
+              !nonEmpty(input.owner)) {
+            return { status: "corrupt", reason: "ap2-binding-claim-input-invalid" };
           }
-          if (phase.transactionIds[0] !== input.intent.transactionId) {
-            return { status: "conflict", reason: AP2_PHASE_BOUND_ELSEWHERE };
+          const phase = await readPhase(phaseKey);
+          if (phase.status === "corrupt") return phase;
+          if (phase.status === "ok") {
+            if (phase.transactionIds.length !== 1) {
+              return { status: "corrupt", reason: "ap2-phase-binding-conflict" };
+            }
+            if (phase.transactionIds[0] !== input.intent.transactionId) {
+              return { status: "conflict", reason: AP2_PHASE_BOUND_ELSEWHERE };
+            }
           }
-        }
-        const found = await readRecord(input.intent.transactionId);
-        if (found.status === "corrupt") return found;
-        if (found.status === "absent") {
-          // A record no phase accounts for may hold any phase: bind nothing new.
-          if (unboundRecords > 0) return { status: "corrupt", reason: UNBOUND_RECORDS };
-          let intent: Ap2SettlementIntent;
-          try { intent = validateIntent(input.intent); } catch (error) {
-            return {
-              status: "corrupt",
-              reason: error instanceof Error ? error.message : "ap2-intent-invalid",
+          const found = await readRecord(input.intent.transactionId);
+          if (found.status === "corrupt") return found;
+          if (found.status === "absent") {
+            // A record no phase accounts for may hold any phase: bind nothing new.
+            if (unboundRecords > 0) return { status: "corrupt", reason: UNBOUND_RECORDS };
+            let intent: Ap2SettlementIntent;
+            try { intent = validateIntent(input.intent); } catch (error) {
+              return {
+                status: "corrupt",
+                reason: error instanceof Error ? error.message : "ap2-intent-invalid",
+              };
+            }
+            const record: FsAp2BindingRecord = {
+              storeVersion: STORE_VERSION,
+              intent: clone(intent),
+              lease: {
+                owner: input.owner,
+                generation: 1,
+                expiresAt: input.now + input.leaseDurationMs,
+              },
+              createdAt: input.now,
+              ...(input.noReferenceReplayWindowMs === undefined ? {} : { replayDeadline: input.now + input.noReferenceReplayWindowMs }),
+              updatedAt: input.now,
+            };
+            validateRecord(record, intent.transactionId);
+            // The phase is bound before its record exists, so a crash between
+            // the two leaves the phase reserved for this transaction_id only.
+            if (phase.status === "absent") await writePhase(phaseKey, [intent.transactionId], "create");
+            await atomicWrite(recordPath(intent.transactionId), record);
+            return { status: "acquired", intent: clone(record.intent), lease: clone(record.lease),
+              createdAt: record.createdAt,
+              ...(record.replayDeadline === undefined ? {} : { replayDeadline: record.replayDeadline }),
             };
           }
-          const record: FsAp2BindingRecord = {
-            storeVersion: STORE_VERSION,
-            intent: clone(intent),
+          const record = found.record;
+          if (record.intent.bindingHash !== input.intent.bindingHash) {
+            return { status: "conflict", reason: ap2BindingConflictReason(record.intent, input.intent) };
+          }
+          // A record whose phase binding was lost is rebound to itself.
+          if (phase.status === "absent") await writePhase(phaseKey, [record.intent.transactionId], "create");
+          if (record.settlement) {
+            return {
+              status: "settled",
+              intent: clone(record.intent),
+              settlement: clone(record.settlement),
+            };
+          }
+          if (record.failure) {
+            return { status: "failed", intent: clone(record.intent), reason: record.failure };
+          }
+          if (record.lease.expiresAt > input.now) {
+            return {
+              status: "waiting",
+              intent: clone(record.intent),
+              lease: clone(record.lease),
+              createdAt: record.createdAt,
+              ...(record.replayDeadline === undefined ? {} : { replayDeadline: record.replayDeadline }),
+              ...(record.providerRef ? { providerRef: record.providerRef } : {}),
+            };
+          }
+          if (record.lease.generation >= Number.MAX_SAFE_INTEGER) {
+            return { status: "corrupt", reason: "ap2-lease-generation-exhausted" };
+          }
+          const updated: FsAp2BindingRecord = {
+            ...record,
             lease: {
               owner: input.owner,
-              generation: 1,
+              generation: record.lease.generation + 1,
               expiresAt: input.now + input.leaseDurationMs,
             },
-            createdAt: input.now,
-            ...(input.noReferenceReplayWindowMs === undefined ? {} : { replayDeadline: input.now + input.noReferenceReplayWindowMs }),
             updatedAt: input.now,
           };
-          validateRecord(record, intent.transactionId);
-          // The phase is bound before its record exists, so a crash between
-          // the two leaves the phase reserved for this transaction_id only.
-          if (phase.status === "absent") await writePhase(phaseKey, [intent.transactionId], "create");
-          await atomicWrite(recordPath(intent.transactionId), record);
-          return { status: "acquired", intent: clone(record.intent), lease: clone(record.lease),
-            createdAt: record.createdAt,
-            ...(record.replayDeadline === undefined ? {} : { replayDeadline: record.replayDeadline }),
-          };
-        }
-        const record = found.record;
-        if (record.intent.bindingHash !== input.intent.bindingHash) {
-          return { status: "conflict", reason: ap2BindingConflictReason(record.intent, input.intent) };
-        }
-        // A record whose phase binding was lost is rebound to itself.
-        if (phase.status === "absent") await writePhase(phaseKey, [record.intent.transactionId], "create");
-        if (record.settlement) {
+          validateRecord(updated, input.intent.transactionId);
+          await atomicWrite(recordPath(input.intent.transactionId), updated);
           return {
-            status: "settled",
-            intent: clone(record.intent),
-            settlement: clone(record.settlement),
+            status: "acquired",
+            intent: clone(updated.intent),
+            lease: clone(updated.lease),
+            createdAt: updated.createdAt,
+            ...(updated.replayDeadline === undefined ? {} : { replayDeadline: updated.replayDeadline }),
+            ...(updated.providerRef ? { providerRef: updated.providerRef } : {}),
           };
-        }
-        if (record.failure) {
-          return { status: "failed", intent: clone(record.intent), reason: record.failure };
-        }
-        if (record.lease.expiresAt > input.now) {
-          return {
-            status: "waiting",
-            intent: clone(record.intent),
-            lease: clone(record.lease),
-            createdAt: record.createdAt,
-            ...(record.replayDeadline === undefined ? {} : { replayDeadline: record.replayDeadline }),
-            ...(record.providerRef ? { providerRef: record.providerRef } : {}),
-          };
-        }
-        if (record.lease.generation >= Number.MAX_SAFE_INTEGER) {
-          return { status: "corrupt", reason: "ap2-lease-generation-exhausted" };
-        }
-        const updated: FsAp2BindingRecord = {
-          ...record,
-          lease: {
-            owner: input.owner,
-            generation: record.lease.generation + 1,
-            expiresAt: input.now + input.leaseDurationMs,
-          },
-          updatedAt: input.now,
-        };
-        validateRecord(updated, input.intent.transactionId);
-        await atomicWrite(recordPath(input.intent.transactionId), updated);
-        return {
-          status: "acquired",
-          intent: clone(updated.intent),
-          lease: clone(updated.lease),
-          createdAt: updated.createdAt,
-          ...(updated.replayDeadline === undefined ? {} : { replayDeadline: updated.replayDeadline }),
-          ...(updated.providerRef ? { providerRef: updated.providerRef } : {}),
-        };
-      }));
+        }));
+      });
     },
 
     async isCurrent(input): Promise<boolean> {

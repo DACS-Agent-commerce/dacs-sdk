@@ -941,3 +941,12 @@ describe("AP2 admission and retained-operation regression probes", () => {
     expect(status).not.toHaveBeenCalled();
   });
 });
+
+
+test("an object with a call method is not an authenticated resolver", async () => {
+  const call = vi.fn(async () => [AP2_TEST_RECORD]);
+  await expect(authenticateAp2ProfileAdmission({ jobId: JOB_ID, peerIdentity: AP2_TEST_PEER,
+    expectedProfile: AP2_TEST_PROFILE, authenticateParticipants: { call } } as never))
+    .rejects.toThrow(/missing authenticated handshake resolver/);
+  expect(call).not.toHaveBeenCalled();
+});

@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { isDeepStrictEqual } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -459,6 +460,7 @@ export function x402PaywallFulfilmentKey(input: {
       "x402 paywall fulfilment key requires a canonical uppercase ULID jobId and phaseIndex",
     );
   }
+  requireReleasedCorrectiveProfile();
   const digest = sha256Hex(
     `${FULFILMENT_KEY_SEPARATOR}${input.jobId.normalize("NFC")}:${input.phaseIndex}`,
   );
@@ -480,6 +482,7 @@ export function x402PaywallSettlementKey(input: {
       "x402 paywall settlement key requires a canonical uppercase ULID jobId and phaseIndex",
     );
   }
+  requireReleasedCorrectiveProfile();
   const digest = sha256Hex(
     `${SETTLEMENT_KEY_SEPARATOR}${input.jobId.normalize("NFC")}:${input.phaseIndex}`,
   );
@@ -672,6 +675,7 @@ function snapshotCoreInputUnsafe(
   if (!isCanonicalJobId(jobId)) {
     return { reason: "invalid-jobId" };
   }
+  requireReleasedCorrectiveProfile();
   const phaseIndex = input?.phaseIndex;
   const source = input?.request;
   if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
@@ -1145,6 +1149,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   input: X402PaywallHandleInput,
   deps: X402PaywallCoreDeps<TAuthorization, T>,
 ): Promise<X402PaywallResult<T>> {
+  requireReleasedCorrectiveProfile();
   let captured: X402PaywallCoreDeps<TAuthorization, T>;
   try {
     const server = deps?.server;

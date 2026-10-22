@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { types as nodeTypes } from "node:util";
 
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
@@ -37,7 +38,9 @@ function validProfile(value: Ap2CorrectiveProfile): boolean {
     });
 }
 /**
- * Call from the enclosing handler with local policy and its authenticated
+ * The pinned candidate is unreleased: production calls refuse before invoking
+ * the resolver. Offline conformance tests substitute only the release policy.
+ * Future admission must come from the enclosing handler with local policy and its authenticated
  * handshake resolver, never with checkout/phase-provided profile authority.
  * The resolver authenticates every record's identity, session and full profile.
  */
@@ -66,6 +69,7 @@ export async function authenticateAp2ProfileAdmission(input: {
   if (modules.some((key) => expected.moduleVersions[key] !== AP2_IMPLEMENTED_MODULE_VERSIONS[key])) {
     throw new DacsError("pay-ap2: local profile names a module tuple this implementation does not implement");
   }
+  requireReleasedCorrectiveProfile();
   const records = snapshotWireJsonRead(await authenticateParticipants.call(input), "AP2 authenticated participants") as Ap2ParticipantProfile[];
   if (!Array.isArray(records)) throw new DacsError("pay-ap2: invalid participant authority");
   const identities = new Set<string>();

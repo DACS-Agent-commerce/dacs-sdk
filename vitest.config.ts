@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    setupFiles: ["test/fixtures/offlineCorrectiveProfile.ts"],
     // Several recovery suites intentionally spawn nested Vitest controllers
     // and hard-kill child processes at durable boundaries. Letting the outer
     // runner fan out across every host CPU can starve those children past

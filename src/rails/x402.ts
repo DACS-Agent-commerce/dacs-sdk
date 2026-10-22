@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
@@ -322,6 +323,7 @@ export async function x402SettleCore(
   if (jobId.found) {
     if (!Object.hasOwn(params, "jobId")) throw new CounterpartyError("x402 jobId must be own data");
     requireCanonicalJobId(jobId.value, "x402 jobId");
+    requireReleasedCorrectiveProfile();
   }
   const phaseIndex = stableX402Property(params, "phaseIndex", "x402 phaseIndex");
   if (phaseIndex.found && (!Object.hasOwn(params, "phaseIndex") || !Number.isSafeInteger(phaseIndex.value) || (phaseIndex.value as number) < 0 || Object.is(phaseIndex.value, -0))) {
@@ -645,6 +647,7 @@ export async function dacsX402AuthorizationNonce(input: {
   phaseIndex: number;
 }): Promise<`0x${string}`> {
   requireCanonicalJobId(input?.jobId, "x402 DACS binding jobId");
+  requireReleasedCorrectiveProfile();
   return legacyDacsX402AuthorizationNonce(input);
 }
 
@@ -803,7 +806,10 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 
       // CORE JID-3: any supplied job id passes JID-1 before the nonce hash or
       // any request, even when no phase makes this a bound payment.
-      if (jobId !== undefined) requireCanonicalJobId(jobId, "pay-x402 jobId");
+      if (jobId !== undefined) {
+        requireCanonicalJobId(jobId, "pay-x402 jobId");
+        requireReleasedCorrectiveProfile();
+      }
       let scheme: SchemeNetworkClient = new ExactEvmScheme(account);
       if (jobId !== undefined && phaseIndex !== undefined) {
         const nonce = await dacsX402AuthorizationNonce({
@@ -953,6 +959,7 @@ export function x402Settle(
     // CORE JID-3: refuse a non-canonical job id before the SB-3 nonce, the
     // idempotency key or the paywall request is derived from it.
     requireCanonicalJobId(jobId, "x402 settlement jobId");
+    requireReleasedCorrectiveProfile();
     // phaseIndex is a property of the SETTLEMENT REQUEST, not the static paywall
     // descriptor: the SB-3 authorization nonce MUST bind the same phase the
     // idempotency key dedupes on, or the on-chain single-use nonce and the

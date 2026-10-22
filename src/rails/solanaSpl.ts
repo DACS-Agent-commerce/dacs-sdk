@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import {
   assertPositiveAmount,
   baseUnits,
@@ -359,6 +360,7 @@ export function solanaSplSettlementKey(input: {
   }
   // CORE JID-3: the job id passes JID-1 before it is hashed.
   requireCanonicalJobId(input.jobId, "pay-solana-spl: jobId");
+  requireReleasedCorrectiveProfile();
   return sha256Hex(`dacs-solana-spl-settlement:v1:${canonicalize({
     jobId: requireString(input.jobId, "jobId").normalize("NFC"),
     phaseIndex: input.phaseIndex,
@@ -644,6 +646,7 @@ function settlementFrom(
 export async function advanceSolanaSplSettlement(
   input: Readonly<AdvanceSolanaSplSettlementInput>,
 ): Promise<SolanaSplProgress> {
+  requireReleasedCorrectiveProfile();
   let intent: Readonly<SolanaSplSettlementIntent>;
   try {
     intent = createSolanaSplSettlementIntent({ ...input.authority });

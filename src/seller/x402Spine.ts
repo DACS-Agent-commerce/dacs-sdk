@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { isDeepStrictEqual } from "node:util";
 
 import type { ListingRef } from "../artifacts/types.js";
@@ -913,6 +914,7 @@ function validRenderedResponse<T>(value: unknown): value is X402SellerRenderedRe
 export function createX402SellerSpine<T = unknown>(
   options: X402SellerSpineOptions<T>,
 ): X402SellerSpine<T> {
+  requireReleasedCorrectiveProfile();
   // Capture every executable authority before returning handlers. Later caller
   // mutation cannot swap one side of the payment/fulfilment boundary.
   const receiptStore = captureReceiptStore(options.receiptStore);

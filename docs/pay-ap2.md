@@ -1,5 +1,10 @@
 # AP2 settlement safety core
 
+Live admission is unavailable at the pinned Standard revision: its JID-1
+profile is an unreleased corrective candidate. The mechanics below are exercised
+by explicit offline fixtures. Production callers receive a release-policy
+refusal; see [profile availability](#authenticated-profile-and-retained-operation).
+
 The SDK exposes a provider-neutral `pay-ap2` settlement core. It implements the
 DACS-4 §9.5.6 boundaries that must be identical for every provider:
 
@@ -96,7 +101,12 @@ Opening a store accounts for every record before it accepts a claim:
   `records/`, and reopen the store.
 
 Stop every worker running an earlier release before opening the store with
-this one. The scan runs only when the store is opened.
+this one. Phase claims and store-opening reconciliation use the same store-wide
+lock. When a phase file is absent, the store rescans retained payment records
+before reserving it, including on an already open instance. A competing checkout
+cannot replace the original ownership or obtain a fresh replay deadline merely
+because its phase file was removed. Claiming missing phases therefore adds a
+record-scan cost as the store grows.
 
 When the binding exposes a native transaction, the resulting settlement uses
 the Standard's distinct `ap2-sr3` arm and separates two references:
@@ -120,16 +130,20 @@ and `DACS_AP2_LIVE_CONFIRM=1`.
 
 ## Authenticated profile and retained operation
 
-Before invoking either mandate admission or settlement, the enclosing handler
-must call `authenticateAp2ProfileAdmission` with its local exact release pin (a
-40-hex commit; tags are not accepted) and complete module tuple, the session and
-expected peer identity, and a trusted handshake resolver. The module tuple must
-equal `AP2_IMPLEMENTED_MODULE_VERSIONS`, the tuple this SDK implements;
-any other tuple is refused. The resolver must authenticate each returned participant's
-identity, session and profile. Checkout fields, signature verification and
-copied capability objects do not confer this authority. Pass the returned
-`profileAdmission` and `peerIdentity` to the settlement input. Reauthenticate
-after a process restart; the capability is deliberately process-local.
+The pinned Standard's JID-1 tuple is an **unreleased corrective candidate**.
+`PROFILE.md` forbids live use until it records a coordinated release.
+`authenticateAp2ProfileAdmission` therefore refuses production admission before
+calling any handshake resolver, including for an otherwise matching candidate
+pin and tuple. An invented commit pin or caller-created authority cannot enable
+payment. The newly JID-1 session, generic settlement-key and x402 entry points
+also refuse protocol action under this unavailable profile.
+
+Offline conformance and recovery fixtures explicitly substitute the release
+policy in their test runners. This substitution is not shipped in `dist` and
+cannot enable an installed SDK. Live integration tests retain the production
+refusal. A future released profile requires verifier/orchestrator-owned exact
+session and participant admission, bound to the supported immutable release and
+complete tuple, before these paths can become available.
 
 Provider adapters must declare `operation`: a stable destination, the provider's
 account/idempotency namespace, and every effect-bearing adapter parameter.

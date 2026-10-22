@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { createHash } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
@@ -103,6 +104,7 @@ export function deriveAp2IdempotencyKey(
   if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0) {
     throw new DacsError("pay-ap2: phaseIndex must be a non-negative safe integer");
   }
+  requireReleasedCorrectiveProfile();
   // A JID-1 id is ASCII, so it is already in NFC.
   return sha256Hex(`dacs-ap2-idem:v1:${jobId}:${phaseIndex}`);
 }
@@ -256,6 +258,7 @@ export function evaluateAp2TransactionBinding(input: {
     const captured = snapshotWireJsonRead(input, "AP2 binding decision");
     const { transactionId, jobId, phaseIndex, providerRequest, priorBindings } = captured;
     requireCanonicalJobId(jobId, "pay-ap2: jobId");
+    requireReleasedCorrectiveProfile();
     if (typeof transactionId !== "string" || !transactionId ||
         !Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
         !providerRequest || typeof providerRequest !== "object" || Array.isArray(providerRequest) ||

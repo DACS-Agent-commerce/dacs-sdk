@@ -1,3 +1,4 @@
+import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { randomBytes } from "node:crypto";
 
 import type {
@@ -1831,6 +1832,7 @@ export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
     throw new TypeError("jobId must be a canonical uppercase ULID");
   }
   if (!isSafeUint(phaseIndex)) throw new TypeError("phaseIndex must be a safe unsigned integer");
+  requireReleasedCorrectiveProfile();
   return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;
 }
 
@@ -2265,6 +2267,7 @@ export async function verifySellerPaymentIntake(
   input: SellerPaymentIntakeInput,
   deps: SellerPaymentIntakeDeps,
 ): Promise<SellerPaymentIntakeResult> {
+  requireReleasedCorrectiveProfile();
   // Own the complete public request before its first property read. The caller
   // may retain and mutate its object while any dependency below is awaited.
   const request = snapshotPaymentIntakeInput(input);
