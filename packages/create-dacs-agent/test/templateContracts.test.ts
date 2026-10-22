@@ -45,3 +45,21 @@ test("documents setup and purchase bounds for exactly the selected payment rails
     }
   }
 });
+
+test("rejects explicit null live project identity while accepting omitted and valid identities", () => {
+  for (const deployment of ["docker", "local"] as const) {
+    const options = { packageName: "agent", mode: "live-demos", deployment } as const;
+    expect(() => projectTemplates({ ...options, projectIdentity: null as never }))
+      .toThrow(new TypeError("projectIdentity must be 32 lower-case hex digits"));
+    for (const projectIdentity of [undefined, "a".repeat(32)]) {
+      expect(projectTemplates({ ...options, projectIdentity })["README.md"]).toContain("live bootstrap");
+    }
+  }
+});
+
+test("renders the local README pre-start doctor as a standalone command", () => {
+  const readme = projectTemplates({ packageName: "agent", mode: "live-demos", deployment: "local" })["README.md"]!;
+  const shellExamples = [...readme.matchAll(/```bash\n([\s\S]*?)```/g)];
+  expect(shellExamples[0]?.[1]?.split("\n"))
+    .toContain("npm run dacs:doctor -- --phase pre-start --for start");
+});

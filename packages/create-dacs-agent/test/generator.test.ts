@@ -1841,7 +1841,8 @@ process.exit(1);
         expect(inherited.containers?.filter((container) => container.running)).toHaveLength(2);
       }
     },
-    SPAWNING_TEST_TIMEOUT_MS,
+    // Each role runs smoke plus nineteen policy vectors through child processes.
+    SPAWNING_TEST_TIMEOUT_MS * 3,
   );
 
   test.runIf(process.platform !== "win32")(

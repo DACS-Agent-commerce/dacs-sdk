@@ -345,8 +345,12 @@ function legacyTranscript(
   }).status).toBe("created");
 }
 
-async function presentationFixture(legacyRole?: "buyer" | "seller") {
+async function presentationFixture(
+  legacyRole?: "buyer" | "seller",
+  beforePublish?: (value: Awaited<ReturnType<typeof fixture>>) => void,
+) {
   const value = await fixture();
+  beforePublish?.(value);
   const init = { bootstrapVersion: "1" as const, order: value.pair.buyer,
     application: APPLICATION, sellerChallenge: "c".repeat(64) };
   if (legacyRole === "buyer") legacyTranscript(value.buyerDatabase, "buyer", "init", value.pair.buyerLocalBindingHash, init);
@@ -413,6 +417,124 @@ describe("pre-agreement session bootstrap transport", () => {
       .resolves.toMatchObject({ disposition: "rejected" });
     expect(write).not.toHaveBeenCalled();
     expect(database.loadEffectInput("session", id)).toBeUndefined();
+  });
+
+  it.each((["buyer", "seller"] as const).flatMap((role) =>
+    (["valid-earlier", "wrong-presenter", "missing"] as const).map((winner) => ({ role, winner })),
+  ))("$role validates a $winner issuance conflict winner before publication", async ({ role, winner }) => {
+    const issuedAt = 1_900_000_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(issuedAt);
+    let captured!: Awaited<ReturnType<typeof fixture>>;
+    let winnerRecord: Record<string, unknown> | undefined;
+    let writes = 0;
+    const challenge = (role === "buyer" ? "c" : "d").repeat(64);
+    const id = createHash("sha256").update(`dacs-session-challenge-issued:v1:${role}:${challenge}`).digest("hex");
+    const pending = presentationFixture(undefined, (value) => {
+      captured = value;
+      const database = role === "buyer" ? value.buyerDatabase : value.sellerDatabase;
+      const put = database.putEffectIntent.bind(database);
+      vi.spyOn(database, "putEffectIntent").mockImplementation((input) => {
+        if (input.kind !== "session" || input.effectId !== id) return put(input);
+        writes += 1;
+        if (winner !== "missing") {
+          winnerRecord = { ...input.input as Record<string, unknown>,
+            issuedAt: issuedAt - 1_000, expiresAt: issuedAt + 299_000,
+            ...(winner === "wrong-presenter" ? { presenter: value[role] } : {}) };
+          expect(put({ ...input, input: winnerRecord }).status).toBe("created");
+        }
+        return { status: "conflict" };
+      });
+    });
+    if (winner === "valid-earlier") {
+      const value = await pending;
+      const { database, publish } = issuance(value, role);
+      await publish();
+      expect(database.loadEffectInput("session", id)).toEqual(winnerRecord);
+      expect(winnerRecord).toMatchObject({ issuedAt: issuedAt - 1_000, expiresAt: issuedAt + 299_000 });
+      const context = role === "buyer" ? value.buyerContext : value.sellerContext;
+      expect((context as unknown as { sendMessage: ReturnType<typeof vi.fn> }).sendMessage).toHaveBeenCalledTimes(2);
+    } else {
+      await expect(pending).rejects.toMatchObject({ reasonCode: "session-challenge-issuance-invalid" });
+      const database = role === "buyer" ? captured.buyerDatabase : captured.sellerDatabase;
+      const context = role === "buyer" ? captured.buyerContext : captured.sellerContext;
+      expect((context as unknown as { sendMessage: ReturnType<typeof vi.fn> }).sendMessage).not.toHaveBeenCalled();
+      // Use the public resolver as well as the stored transcript identity.
+      if (role === "buyer") expect(captured.buyerRuntime.resolveInit(captured.buyerOperation)).toBeUndefined();
+      expect(database.loadEffectInput("session", createHash("sha256")
+        .update("dacs-live-session-bootstrap-binding:v1:" + canonicalize({
+          role, kind: role === "buyer" ? "init" : "challenge", jobId: JOB_ID,
+        })).digest("hex"))).toBeUndefined();
+      expect(database.loadEffectInput("session", id)).toEqual(winnerRecord);
+    }
+    expect(writes).toBe(1);
+  });
+
+  it.each((["buyer", "seller"] as const).flatMap((role) =>
+    [false, true].map((accepted) => ({ role, accepted })),
+  ))("$role rejects another order's source binding with accepted=$accepted", async ({ role, accepted }) => {
+    const value = await presentationFixture();
+    const { database, runtime, challenge } = issuance(value, role);
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    if (accepted) await expect(runtime.handleMessage(envelope, { role } as never))
+      .resolves.toEqual({ disposition: "accepted" });
+    const id = createHash("sha256").update("dacs-live-session-bootstrap-binding:v1:" + canonicalize({
+      role, kind: role === "buyer" ? "init" : "challenge", jobId: JOB_ID,
+    })).digest("hex");
+    const load = database.loadEffectInput.bind(database);
+    const source = load("session", id) as Record<string, unknown>;
+    vi.spyOn(database, "loadEffectInput").mockImplementation((kind, effectId) =>
+      kind === "session" && effectId === id ? { ...source, localBindingHash: "0".repeat(64) } : load(kind, effectId));
+    const reserve = vi.spyOn(database, "reserveIdentity");
+    const write = vi.spyOn(database, "putEffectIntent");
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+    expect(reserve).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    if (!accepted) expect(database.loadReservation("session", `session-challenge-attempt:${challenge}`)).toBeUndefined();
+  });
+
+  const transcriptFaults = ["localBindingHash", "payload", "authenticationHash", "identityEvidenceHash",
+    "envelopeId", "sender", "audience"] as const;
+  it.each((["buyer", "seller"] as const).flatMap((role) =>
+    transcriptFaults.map((fault) => ({ role, fault })),
+  ))("$role rejects accepted replay with inconsistent retained $fault", async ({ role, fault }) => {
+    const value = await presentationFixture();
+    const { database, runtime, challenge } = issuance(value, role);
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toEqual({ disposition: "accepted" });
+    const reservation = database.loadReservation("session", `session-challenge-attempt:${challenge}`);
+    const id = createHash("sha256").update("dacs-live-session-bootstrap-binding:v1:" + canonicalize({
+      role, kind: role === "buyer" ? "challenge" : "presentation", jobId: JOB_ID,
+    })).digest("hex");
+    const load = database.loadEffectInput.bind(database);
+    const retained = structuredClone(load("session", id)) as Record<string, any>;
+    if (fault === "localBindingHash") retained.localBindingHash = "0".repeat(64);
+    else if (fault === "payload") {
+      retained.payload.buyerChallenge = "e".repeat(64);
+      retained.payloadHash = dacsHttpPayloadHashV1(retained.payload);
+    } else retained.authentication[fault] = "0".repeat(64);
+    vi.spyOn(database, "loadEffectInput").mockImplementation((kind, effectId) =>
+      kind === "session" && effectId === id ? retained : load(kind, effectId));
+    const write = vi.spyOn(database, "putEffectIntent");
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+    expect(database.loadReservation("session", `session-challenge-attempt:${challenge}`)).toEqual(reservation);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it.each(["buyer", "seller"] as const)("%s rejects a conflicting attempt despite a matching accepted transcript", async (role) => {
+    const value = await presentationFixture();
+    const { database, runtime, challenge } = issuance(value, role);
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toEqual({ disposition: "accepted" });
+    const reserve = database.reserveIdentity.bind(database);
+    const conflict = vi.spyOn(database, "reserveIdentity").mockImplementation((input) =>
+      input.kind === "session" && input.identity === `session-challenge-attempt:${challenge}`
+        ? { status: "conflict" } : reserve(input));
+    const write = vi.spyOn(database, "putEffectIntent");
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+    expect(conflict).toHaveReturnedWith({ status: "conflict" });
+    expect(write).not.toHaveBeenCalled();
+    conflict.mockRestore();
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toEqual({ disposition: "accepted" });
   });
 
   const retainedFaults = ["null", "array", "extra", "missing", "challenge", "jobId", "localBindingHash",
