@@ -313,12 +313,18 @@ callers must ensure their stores are durable.
 Every native resume, including a completed-session replay, requires a trusted
 node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
 recoveryRpc })` to use an operator-authenticated archival RPC when the primary
-record is unavailable. The archive supplies its own fork state and record; the
-SDK applies the same transfer, execution, block and fee checks. It never
+record is unavailable. The SDK compares fresh `chainId` and `forkScheduleDigest`
+values from both nodes and requires the archive's confirmed inclusion block to
+match the primary's confirmed block, with the retained hash in both transaction
+lists. Both nodes must have reached that height. Missing or contradictory chain
+history keeps recovery unresolved, including after a reset. Archive and history
+RPC reads cancel at `statusRequestTimeoutMs`, admit at most 1 MiB before JSON
+decoding, and accept at most 16,384 transaction hashes per block. The SDK also
+applies the same transfer, execution, denomination and fee checks. It never
 connects a wallet to the archive or uses it to sign or broadcast. A terminal
 primary verdict cannot be overridden by the archive. Configure the settlement
 reconciler to resolve the original retained hash against the same archive; its
-refusal or proof of absence still stops recovery before the SDK record read. A pruned record, node reset or outage
+refusal or proof of absence still stops recovery before the SDK record read. Without verifiable archival history, a pruned record, node reset or outage
 keeps replay unresolved without changing the saved payment or submitting again.
 A `SessionStore` alone cannot recover a payment
 whose rail records were discarded. Restore the original rail log and attempt

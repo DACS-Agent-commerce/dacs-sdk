@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { beforeEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { createIdempotencyStore, createInMemorySettlementLog,
   settlementBindingHash, type SettlementBinding, type SettlementEffectFence } from "../../src/rails/idempotency.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
-import { demosNode, demosWebsdkMock, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
+import { demosNode, demosRpcFetch, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
   (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
-beforeEach(() => demosNode.reset());
+beforeEach(() => { demosNode.reset(); vi.stubGlobal("fetch", demosRpcFetch); });
+afterEach(() => vi.unstubAllGlobals());
 const payer = "ab".repeat(32), payee = "cd".repeat(32);
 const binding: SettlementBinding = {
   bindingVersion: "1", railId: "pay-dem", jobId: "sweepfix", phaseIndex: 0, phase: "pay-dem",
@@ -109,15 +110,13 @@ test.each([
 });
 
 test("an unavailable archive does not stop fresh payments or healthy primary recovery", async () => {
-  const prototype = demosWebsdkMock.Demos.prototype;
-  const originalConnect = prototype.connect;
-  let archiveConnections = 0;
-  const connect = vi.spyOn(prototype, "connect").mockImplementation(async function (this: typeof prototype, rpc) {
-    if (rpc === "https://archive.test") {
-      archiveConnections++;
+  let archiveReads = 0;
+  vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+    if (args[0] === "https://archive.test") {
+      archiveReads++;
       throw new Error("archive unavailable");
     }
-    return originalConnect.call(this, rpc);
+    return demosRpcFetch(...args);
   });
   try {
     const log = createInMemorySettlementLog();
@@ -127,14 +126,14 @@ test("an unavailable archive does not stop fresh payments or healthy primary rec
       reconcile: async () => ({ ...first, payee, amountOs: "1000000000", execution: "executed" }),
     });
     assert.deepEqual(await adapter({ ...req, recoveryOnly: true }), first);
-    assert.equal(archiveConnections, 0);
+    assert.equal(archiveReads, 0);
     demosNode.reply = () => "error";
-    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive connection failed/);
-    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive connection failed/);
-    assert.equal(archiveConnections, 2); // failed connection is retryable
+    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive chain history read failed/);
+    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive chain history read failed/);
+    assert.equal(archiveReads, 2); // failed read is retryable
     assert.equal(demosNode.broadcasts, 1);
   } finally {
-    connect.mockRestore();
+    vi.stubGlobal("fetch", demosRpcFetch);
   }
 });
 
@@ -156,12 +155,15 @@ test("a lagging restored log cannot close a payment that independent reconciliat
     leaseDurationMs: 1 })).status, "held");
 });
 
-test("a stalled archive connection stays bounded and never resubmits the payment", async () => {
+test("repeated stalled archive reads are cancelled and never resubmit the payment", async () => {
   const { log, first } = await savedPayment();
-  const prototype = demosWebsdkMock.Demos.prototype;
-  const originalConnect = prototype.connect;
-  const connect = vi.spyOn(prototype, "connect").mockImplementation(function (this: typeof prototype, rpc) {
-    return rpc === "https://archive.test" ? new Promise(() => {}) : originalConnect.call(this, rpc);
+  let active = 0, peak = 0, calls = 0;
+  vi.stubGlobal("fetch", (...args: Parameters<typeof fetch>) => {
+    if (args[0] !== "https://archive.test") return demosRpcFetch(...args);
+    active++; calls++; peak = Math.max(peak, active);
+    return new Promise((_resolve, reject) => args[1]!.signal!.addEventListener("abort", () => {
+      active--; reject(args[1]!.signal!.reason);
+    }, { once: true }));
   });
   try {
     demosNode.reply = () => "error";
@@ -170,10 +172,19 @@ test("a stalled archive connection stays bounded and never resubmits the payment
     }), {}, { store: createIdempotencyStore(log), reconcile: async () => ({
       ...first, payee, amountOs: "1000000000", execution: "executed",
     }) });
-    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive connection timed out/);
+    for (let retry = 0; retry < 3; retry++) {
+      await assert.rejects(adapter({ ...req, recoveryOnly: true }), (error: Error & { cause?: Error }) => {
+        assert.match(error.message, /archive chain history read failed/);
+        assert.match(error.cause!.message, /getNetworkInfo read timed out/);
+        return true;
+      });
+      assert.equal(active, 0);
+    }
+    assert.equal(calls, 3);
+    assert.equal(peak, 1);
     assert.equal(demosNode.broadcasts, 1);
   } finally {
-    connect.mockRestore();
+    vi.stubGlobal("fetch", demosRpcFetch);
   }
 });
 
@@ -224,5 +235,119 @@ test("a terminal primary failure cannot be overridden by an archive success", as
   });
   await assert.rejects(adapter({ ...req, recoveryOnly: true }), /contradicts/);
   assert.deepEqual(demosNode.readNodes, ["https://node.test"]);
+  assert.equal(demosNode.broadcasts, 1);
+});
+
+test.each(["wrong chain", "wrong schedule", "reset fork", "missing primary inclusion"])(
+  "archive recovery refuses %s without rewriting or resending a saved success", async (fault) => {
+    const { log, first, record } = await savedPayment();
+    demosNode.reply = (_hash, rpc) => rpc === "https://archive.test" ? record : null;
+    demosNode.networkInfoReply = (rpc) => ({
+      chainId: fault === "wrong chain" && rpc === "https://archive.test" ? 2 : 1,
+      forkScheduleDigest: (fault === "wrong schedule" && rpc === "https://archive.test" ? "12" : "ef").repeat(32),
+      forks: { osDenomination: { activated: true, currentHeight: 42 } },
+    });
+    demosNode.blockReply = (number, rpc) => ({
+      number, status: "confirmed",
+      hash: (fault === "reset fork" && rpc === "https://archive.test" ? "56" : "78").repeat(32),
+      content: { ordered_transactions: fault === "missing primary inclusion" && rpc === "https://node.test"
+        ? [] : [first.txHash] },
+    });
+    const before = await log.readOutcome!(key);
+    const adapter = payDemSettle(await sdkPayDemRail(undefined, { recoveryRpc: "https://archive.test" }), {}, {
+      store: createIdempotencyStore(log), reconcile: async () => ({ ...first, payee,
+        amountOs: "1000000000", execution: "executed" }),
+    });
+    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive.*(chain|history|block|inclusion)/);
+    assert.deepEqual(await log.readOutcome!(key), before);
+    assert.equal(demosNode.transfers, 1);
+    assert.equal(demosNode.broadcasts, 1);
+  },
+);
+
+test.each([0, 42])("archive recovery accepts a primary-confirmed block %i without extra depth", async (blockNumber) => {
+  demosNode.blockNumber = blockNumber;
+  const { log, first, record } = await savedPayment();
+  demosNode.reply = (_hash, rpc) => rpc === "https://archive.test" ? record : null;
+  // Chain ID zero and uppercase hex are valid identities too.
+  demosNode.networkInfoReply = (rpc) => ({
+    chainId: 0, forkScheduleDigest: (rpc === "https://archive.test" ? "EF" : "ef").repeat(32),
+    forks: { osDenomination: { activated: true, currentHeight: blockNumber } },
+  });
+  demosNode.blockReply = (number, rpc) => ({ number, status: "confirmed",
+    hash: `${rpc === "https://archive.test" ? "0x" : ""}${"78".repeat(32)}`,
+    content: { ordered_transactions: [first.txHash.toUpperCase()] },
+  });
+  const adapter = payDemSettle(await sdkPayDemRail(undefined, { recoveryRpc: "https://archive.test" }), {}, {
+    store: createIdempotencyStore(log), reconcile: async () => ({ ...first, payee,
+      amountOs: "1000000000", execution: "executed" }),
+  });
+  assert.deepEqual(await adapter({ ...req, recoveryOnly: true }), first);
+  assert.equal(demosNode.broadcasts, 1);
+});
+
+test("archive recovery accepts a DEM-signed payment after the denomination fork", async () => {
+  demosNode.postFork = false;
+  const log = createInMemorySettlementLog();
+  const first = await payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log) })(req);
+  assert.equal(first.ok, true);
+  const record = structuredClone(demosNode.records.get(first.txHash));
+  demosNode.postFork = true;
+  demosNode.reply = (_hash, rpc) => rpc === "https://archive.test" ? record : null;
+  const adapter = payDemSettle(await sdkPayDemRail(undefined, { recoveryRpc: "https://archive.test" }), {}, {
+    store: createIdempotencyStore(log), reconcile: async () => ({ ...first, payee,
+      amountOs: "1000000000", execution: "executed" }),
+  });
+  assert.deepEqual(await adapter({ ...req, recoveryOnly: true }), first);
+  assert.equal(demosNode.broadcasts, 1);
+});
+
+test.each(["primary", "archive"])("archive recovery refuses missing or stale %s chain facts", async (node) => {
+  const { log, first, record } = await savedPayment();
+  demosNode.reply = (_hash, rpc) => rpc === "https://archive.test" ? record : null;
+  const adapter = payDemSettle(await sdkPayDemRail(undefined, { recoveryRpc: "https://archive.test" }), {}, {
+    store: createIdempotencyStore(log), reconcile: async () => ({ ...first, payee,
+      amountOs: "1000000000", execution: "executed" }),
+  });
+  for (const missing of ["chainId", "forkScheduleDigest", "forks", "height", "stale height"]) {
+    demosNode.networkInfoReply = (rpc) => {
+      const info: Record<string, unknown> = { chainId: 1, forkScheduleDigest: "ef".repeat(32),
+        forks: { osDenomination: { activated: true, currentHeight: 42 } } };
+      if (rpc === (node === "primary" ? "https://node.test" : "https://archive.test")) {
+        if (missing === "height" || missing === "stale height") info.forks = {
+          osDenomination: { activated: true, ...(missing === "height" ? {} : { currentHeight: 41 }) },
+        };
+        else delete info[missing];
+      }
+      return info;
+    };
+    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive.*(chain|block)/);
+  }
+  assert.equal(demosNode.broadcasts, 1);
+});
+
+test.each(["primary", "archive"])("archive recovery refuses malformed or unconfirmed %s inclusion", async (node) => {
+  const { log, first, record } = await savedPayment();
+  demosNode.reply = (_hash, rpc) => rpc === "https://archive.test" ? record : null;
+  const adapter = payDemSettle(await sdkPayDemRail(undefined, { recoveryRpc: "https://archive.test" }), {}, {
+    store: createIdempotencyStore(log), reconcile: async () => ({ ...first, payee,
+      amountOs: "1000000000", execution: "executed" }),
+  });
+  for (const fault of ["missing", "number", "status", "hash", "transactions", "list limit"]) {
+    demosNode.blockReply = (number, rpc) => {
+      const block = { number, status: "confirmed", hash: "78".repeat(32),
+        content: { ordered_transactions: [first.txHash] as unknown } };
+      if (rpc === (node === "primary" ? "https://node.test" : "https://archive.test")) {
+        if (fault === "missing") return null;
+        if (fault === "number") block.number++;
+        if (fault === "status") block.status = "derived";
+        if (fault === "hash") block.hash = "invalid";
+        if (fault === "transactions") block.content.ordered_transactions = [first.txHash, {}];
+        if (fault === "list limit") block.content.ordered_transactions = Array(16_385).fill("a");
+      }
+      return block;
+    };
+    await assert.rejects(adapter({ ...req, recoveryOnly: true }), /archive inclusion block/);
+  }
   assert.equal(demosNode.broadcasts, 1);
 });

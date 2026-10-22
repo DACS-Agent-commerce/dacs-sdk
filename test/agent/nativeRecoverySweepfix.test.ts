@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { beforeEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { runSessionCore, sessionAnchorName, type SessionDeps } from "../../src/agent/runSessionCore.js";
 import { createInMemorySessionStore, type SessionStore } from "../../src/agent/sessionStore.js";
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
@@ -7,11 +7,12 @@ import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/index.js";
 import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
-import { demosNode, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
+import { demosNode, demosRpcFetch, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
   (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
-beforeEach(() => demosNode.reset());
+beforeEach(() => { demosNode.reset(); vi.stubGlobal("fetch", demosRpcFetch); });
+afterEach(() => vi.unstubAllGlobals());
 const seed = new Uint8Array(32).fill(5);
 const sign = (bytes: Uint8Array) => ed25519Sign(bytes, privateKeyFromSeed(seed));
 const seller = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;

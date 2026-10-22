@@ -259,6 +259,69 @@ describe("retained audits read existing payment bindings without acquiring autho
     expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a reconciler's journal snapshot when its owner mutates it during the SDK read", async () => {
+    const log = createInMemorySettlementLog();
+    let prepared: Readonly<PayDemPreparedTransfer> | undefined;
+    await expect(payDemSettle(await sdkRail({
+      journalPreparedTransfer: async (entry) => { prepared = entry; },
+    }), {}, { store: createIdempotencyStore(log) })(request("job-snapshot")))
+      .resolves.toMatchObject({ ok: true });
+    serveNodeRecord(HASH, {
+      payer: PAYER, payee: PAYEE, amountOs: "9500000000", blockNumber: BLOCK, feeOs: "19",
+    });
+    const returned = { ...executed(), preparedTransfer: { ...prepared!, confirmedTotalDebitOs: "9500000019" } };
+    const readRecord = demosNode.getTxByHash.getMockImplementation()!;
+    demosNode.getTxByHash.mockImplementation(async (...args: unknown[]) => {
+      returned.preparedTransfer.confirmedTotalDebitOs = "9500000020";
+      return readRecord(...args);
+    });
+    const writes = watchWrites(log);
+    const audit = payDemSettle(await sdkRail(), {}, {
+      store: createIdempotencyStore(log), reconcile: async () => returned,
+    });
+    await expect(audit(resumed("job-snapshot"))).resolves.toMatchObject({ ok: true, networkFeeOs: "19" });
+    expect(returned.preparedTransfer.confirmedTotalDebitOs).toBe("9500000020");
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(1);
+    expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["19", "20"])("checks a completion saved during getTxByHash against journal fee %s", async (journalFee) => {
+    serveNodeRecord(HASH, {
+      payer: PAYER, payee: PAYEE, amountOs: "9500000000", blockNumber: BLOCK, feeOs: "19",
+    });
+    const log = createInMemorySettlementLog();
+    const putOutcome = log.putOutcome.bind(log);
+    let complete!: () => void;
+    const pending = new Promise<void>((resolve) => { complete = resolve; });
+    let reached!: () => void;
+    const atWrite = new Promise<void>((resolve) => { reached = resolve; });
+    vi.spyOn(log, "putOutcome").mockImplementationOnce(async (input) => {
+      reached(); await pending; return putOutcome(input);
+    });
+    let prepared: Readonly<PayDemPreparedTransfer> | undefined;
+    const first = payDemSettle(await sdkRail({
+      journalPreparedTransfer: async (entry) => { prepared = entry; },
+    }), {}, { store: createIdempotencyStore(log) })(request("job-sdk-race"));
+    await atWrite;
+    const readRecord = demosNode.getTxByHash.getMockImplementation()!;
+    demosNode.getTxByHash.mockImplementation(async (...args: unknown[]) => {
+      complete(); await first;
+      return readRecord(...args);
+    });
+    const writes = watchWrites(log);
+    const audit = payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log), reconcile: async () => ({
+      ...executed(), preparedTransfer: { ...prepared!, confirmedTotalDebitOs: `95000000${journalFee}` },
+    }) });
+    for (const write of writes) write.mockClear();
+    if (journalFee === "19") await expect(audit(resumed("job-sdk-race")))
+      .resolves.toMatchObject({ ok: true, networkFeeOs: "19" });
+    else await expect(audit(resumed("job-sdk-race"))).rejects.toThrow(/fee.*confirmed.*debit/);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(1);
+    expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["absent", "held", "expired"])(
     "never attributes job A's transfer to unpaid job B with an %s intent, even after restart",
     async (state) => {

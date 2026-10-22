@@ -11,6 +11,7 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { payDemRecoveryRpc } from "./payDemRecoveryRpc.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
@@ -981,11 +982,13 @@ export interface PayDemRailConfig {
   rpc: string;
   /**
    * Optional trusted archival Demos RPC for recovery after the primary prunes
-   * a record. Recovery uses its fork state and transaction record together,
-   * with the same wallet, transfer, status, block and fee checks. No wallet is
+   * a record. Recovery binds its chain ID and fork schedule to the primary,
+   * and its confirmed inclusion block to the primary's confirmed history,
+   * with the same wallet, transfer, status, block and fee checks. Read-only
+   * RPC requests have byte limits and cancellation deadlines; no wallet is
    * connected to the archive and it is never used to sign or broadcast.
    * The operator authenticates this endpoint just like the primary RPC.
-   * It connects lazily only if the primary has no bound terminal record;
+   * It reads lazily only if the primary has no bound terminal record;
    * archive downtime cannot stop fresh settlement or a definitive primary read.
    * Configure the settlement reconciler to use the archive too: its refusal
    * or proof of absence still stops recovery before this record read.
@@ -2277,50 +2280,95 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   // Neither object is reachable outside this function except `settle` itself.
   sdkRecordReadingClients.add(client);
   sdkRecordReadingSettles.add(settle);
-  // Recovery reads the record of a hash the SDK holds through this same
-  // connection, so payDemSettle's recovered verdicts are the SDK's read too.
+  // Recovery reads the retained hash through this node. Any archive verdict
+  // must be tied to this node's confirmed history before it can be final.
   const primaryReader = sdkRecoveryReader(address, nodeCall, getTxByHash, statusRequestTimeoutMs);
-  let archiveReader: Promise<SdkRecordReader> | undefined;
-  const connectArchive = async (rpc: string): Promise<SdkRecordReader> => {
-    const archive = new Demos();
-    const archiveConnect = stableMethod<(url: string) => Promise<unknown>>(
-      archive, "connect", "pay-dem archive Demos.connect",
-    );
-    const archiveCall = stableMethod<(message: string, args: Record<string, unknown>) => Promise<unknown>>(
-      archive, "nodeCall", "pay-dem archive Demos.nodeCall",
-    );
-    const archiveGet = stableMethod<(hash: string) => Promise<unknown>>(
-      archive, "getTxByHash", "pay-dem archive Demos.getTxByHash",
-    );
-    await archiveConnect(rpc);
-    return sdkRecoveryReader(address, archiveCall, archiveGet, statusRequestTimeoutMs);
-  };
+  const primaryHistoryCall = recoveryRpc === undefined ? undefined : payDemRecoveryRpc(rpc, statusRequestTimeoutMs);
+  const archiveCall = recoveryRpc === undefined ? undefined : payDemRecoveryRpc(recoveryRpc, statusRequestTimeoutMs);
   sdkRailRecordReaders.set(settle, async (expected) => {
     const primary = await primaryReader(expected);
     // A terminal primary result remains authoritative; an archive cannot
     // override a failed record or a mismatch with the retained success.
-    if (primary.state !== "indeterminate" || recoveryRpc === undefined) return primary;
+    if (primary.state !== "indeterminate" || archiveCall === undefined || primaryHistoryCall === undefined) return primary;
     // No bound terminal record was established. Read the archive under the
     // same checks, including for demosdk's not-found and transport envelopes.
-    // Connecting is lazy: archive downtime must not stop a fresh payment or
+    // Reading is lazy: archive downtime must not stop a fresh payment or
     // a recovery the primary can already resolve.
-    archiveReader ??= connectArchive(recoveryRpc);
-    const connected = await boundedPromise(archiveReader, statusRequestTimeoutMs);
-    if (connected.status !== "fulfilled") {
-      archiveReader = undefined; // allow a later recovery to reconnect
+    try {
+      // DACS-4 §9.5.9: BFT inclusion is final on the Demos substrate, not on
+      // another network or a reset history that can replay the same hash.
+      const primaryInfo = recoveryNetworkIdentity(await primaryHistoryCall("getNetworkInfo", {}));
+      const archiveInfo = recoveryNetworkIdentity(await archiveCall("getNetworkInfo", {}));
+      if (primaryInfo === null || archiveInfo === null ||
+          primaryInfo.chainId !== archiveInfo.chainId || primaryInfo.schedule !== archiveInfo.schedule) {
+        return { state: "indeterminate", reason: "archive chain identity or fork schedule is unavailable or does not match the primary" };
+      }
+      const archived = await sdkRecoveryReader(
+        address, async () => archiveInfo.raw,
+        (hash) => archiveCall("getTxByHash", { hash }), statusRequestTimeoutMs,
+      )(expected);
+      if (archived.state === "indeterminate") return archived;
+      if (primaryInfo.height < archived.blockNumber || archiveInfo.height < archived.blockNumber) {
+        return { state: "indeterminate", reason: "archive inclusion block exceeds the observed chain height" };
+      }
+      const primaryBlock = await readRecoveryInclusionBlock(primaryHistoryCall, archived.blockNumber, expected.txHash);
+      const archiveBlock = await readRecoveryInclusionBlock(archiveCall, archived.blockNumber, expected.txHash);
+      if (primaryBlock === null || archiveBlock === null || primaryBlock !== archiveBlock) {
+        return { state: "indeterminate", reason: "archive inclusion block does not match the primary's confirmed history" };
+      }
+      return archived;
+    } catch (cause) {
       return {
-        state: "indeterminate",
-        reason: connected.status === "timeout"
-          ? "archive connection timed out" : "archive connection failed",
-        ...(connected.status === "rejected" ? { cause: connected.reason } : {}),
+        state: "indeterminate", reason: "archive chain history read failed", cause,
       };
     }
-    return connected.value(expected);
   });
   return {
     address: client.address,
     settle,
   };
+}
+
+function recoveryNetworkIdentity(value: unknown): {
+  chainId: number; schedule: string; height: number; raw: unknown;
+} | null {
+  const info = value as { chainId?: unknown; forkScheduleDigest?: unknown;
+    forks?: { osDenomination?: { currentHeight?: unknown } } } | null;
+  const height = info?.forks?.osDenomination?.currentHeight;
+  if (info === null || typeof info !== "object" || Array.isArray(info) ||
+      typeof info.chainId !== "number" || !Number.isSafeInteger(info.chainId) ||
+      typeof info.forkScheduleDigest !== "string" || !/^[0-9a-f]{64}$/i.test(info.forkScheduleDigest) ||
+      typeof height !== "number" || !Number.isSafeInteger(height) || height < 0) return null;
+  return { chainId: info.chainId, schedule: info.forkScheduleDigest.toLowerCase(), height, raw: value };
+}
+
+async function readRecoveryInclusionBlock(
+  call: ReturnType<typeof payDemRecoveryRpc>, number: number, txHash: string,
+): Promise<string | null> {
+  // The pinned node requires truthy "0" for genesis and returns only its
+  // number/hash there. Resolve that canonical header to the full block.
+  const value = await call("getBlockByNumber", { blockNumber: number === 0 ? "0" : number });
+  if (number !== 0) return recoveryInclusionBlock(value, number, txHash);
+  const header = value as { number?: unknown; hash?: unknown } | null;
+  const hash = header !== null && typeof header === "object" && header.number === 0
+    ? canonicalDemosTxHash(header.hash) : null;
+  if (hash === null) return null;
+  const full = await call("getBlockByHash", { hash });
+  return recoveryInclusionBlock(full, number, txHash) === hash ? hash : null;
+}
+
+/** Both trusted nodes must name the same confirmed block containing this hash. */
+function recoveryInclusionBlock(value: unknown, number: number, txHash: string): string | null {
+  const block = value as { number?: unknown; status?: unknown; hash?: unknown;
+    content?: { ordered_transactions?: unknown } } | null;
+  if (block === null || typeof block !== "object" || Array.isArray(block) ||
+      block.number !== number || block.status !== "confirmed") return null;
+  const hash = canonicalDemosTxHash(block.hash);
+  const transactions = block.content?.ordered_transactions;
+  if (hash === null || !Array.isArray(transactions) || transactions.length > 16_384 ||
+      transactions.some((entry) => canonicalDemosTxHash(entry) === null) ||
+      !transactions.some((entry) => canonicalDemosTxHash(entry) === txHash)) return null;
+  return hash;
 }
 
 /**
