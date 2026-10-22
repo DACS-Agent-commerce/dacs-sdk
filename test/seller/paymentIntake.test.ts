@@ -31,6 +31,7 @@ import {
   type SellerSupportedRailDefinition,
   type X402TransferObservation,
 } from "../../src/seller/index.js";
+import { observedBySdk } from "../fixtures/sdkDemosObservation.js";
 
 const BUYER_DEMOS = `did:demos:agent:${"aa".repeat(32)}`;
 const SELLER_DEMOS = `did:demos:agent:${"bb".repeat(32)}`;
@@ -390,7 +391,9 @@ function makeContext(
       address: PAYEE,
       tier: 3,
     }),
-    observeDemosTransfer: async () => ctx.demosObservation,
+    // The SDK's own observer over a node serving the fixture's facts; a
+    // fixture no record can carry is returned as the host's own statement.
+    observeDemosTransfer: async () => observedBySdk(ctx.demosObservation),
     observeX402Transfer: async () => ctx.x402Observation,
     verifyX402ReceiptExtensions: async () => ({ disposition: "pass" }),
     classifyX402SettlementChain: async () => ({ disposition: "l2" }),
@@ -740,9 +743,28 @@ describe("isDemosExecutedTransferObservation", () => {
     payee: "bb".repeat(32), amountOs: "1", blockNumber: 42, includedAt: 1_000,
   };
 
-  it.each([0, 7, Number.MAX_SAFE_INTEGER])("accepts the executed attestation with nonce %d", (nonce) => {
-    expect(isDemosExecutedTransferObservation({ ...facts, execution: "executed", nonce }))
-      .toBe(true);
+  it.each([0, 7, Number.MAX_SAFE_INTEGER])("accepts the SDK observer's attestation with nonce %d", async (nonce) => {
+    const observed = await observedBySdk({ ...facts, execution: "executed", nonce });
+    expect(observed).toEqual({ ...facts, execution: "executed", nonce });
+    expect(Object.isFrozen(observed)).toBe(true);
+    expect(isDemosExecutedTransferObservation(observed)).toBe(true);
+  });
+
+  // #338: the attestation is the SDK's own record read, not a shape. The same
+  // fields built elsewhere, or copied off a genuine attestation, are refused.
+  it("refuses a well-shaped attestation the SDK observer did not return", async () => {
+    const genuine = await observedBySdk({ ...facts, execution: "executed", nonce: 7 });
+    expect(isDemosExecutedTransferObservation(genuine)).toBe(true);
+    for (const fabricated of [
+      { ...facts, execution: "executed" as const, nonce: 7 },
+      { ...genuine },
+      structuredClone(genuine),
+      JSON.parse(JSON.stringify(genuine)) as DemosTransferObservation,
+      Object.freeze({ ...genuine }),
+    ]) {
+      expect(fabricated).toEqual(genuine);
+      expect(isDemosExecutedTransferObservation(fabricated)).toBe(false);
+    }
   });
 
   it.each([
@@ -840,14 +862,40 @@ describe("SellerFulfilmentHandoff runtime guard", () => {
 describe("verifySellerPaymentIntake", () => {
   it("accepts the default observer's successful execution attestation", async () => {
     const ctx = makeContext("pay-dem");
-    if (ctx.demosObservation.status !== "included") throw new Error("fixture");
-    ctx.demosObservation.execution = "executed";
-    ctx.demosObservation.nonce = 7;
+    const observeDemosTransfer = vi.fn(ctx.deps.observeDemosTransfer);
+    ctx.deps.observeDemosTransfer = observeDemosTransfer;
 
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
       disposition: "verified",
       fulfilment: "claim",
     });
+    const observed = await observeDemosTransfer.mock.results[0]!.value;
+    expect(observed).toMatchObject({ execution: "executed", nonce: 7 });
+    expect(isDemosExecutedTransferObservation(observed)).toBe(true);
+  });
+
+  // #338: delivery needs the SDK's own record read. A provider's well-shaped
+  // `execution: "executed"`, or a copy of the SDK's attestation, is its
+  // statement: no fulfilment claim, no receipt and no payment evidence.
+  it.each([
+    ["built by the provider", async (ctx: Context) => ({ ...ctx.demosObservation })],
+    ["copied off the SDK's attestation", async (ctx: Context) =>
+      ({ ...await observedBySdk(ctx.demosObservation) })],
+  ] as const)("refuses a well-shaped executed observation %s before claiming delivery", async (
+    _label, observe,
+  ) => {
+    const ctx = makeContext("pay-dem");
+    const store = ctx.deps.receiptStore;
+    const claim = vi.fn(store.claim.bind(store));
+    ctx.deps.receiptStore = { ...store, claim };
+    expect(ctx.demosObservation).toMatchObject({ execution: "executed", nonce: 7 });
+    ctx.deps.observeDemosTransfer = () => observe(ctx);
+
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+    expect(result).toEqual({
+      disposition: "error", reason: "demos-execution-unattested", fulfilment: "none",
+    });
+    expect(claim).not.toHaveBeenCalled();
   });
 
   it.each([undefined, null, "7", -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1])(
@@ -988,9 +1036,10 @@ describe("verifySellerPaymentIntake", () => {
       },
     });
     expect(result.evidenceInput).not.toHaveProperty("phaseIndex");
+    // The observer reports the node's canonical hash.
     expect(result.evidenceInput?.paymentTxRefs[0]).toEqual({
       kind: "demos",
-      txHash: DEMOS_TX,
+      txHash: "ab".repeat(32),
       blockNumber: 88,
     });
     expect(result.payloadVerificationProducerAdmission).toMatchObject({
@@ -2272,7 +2321,7 @@ describe("verifySellerPaymentIntake", () => {
     if (substitutedRetry.demosObservation.status !== "included") {
       throw new Error("fixture");
     }
-    substitutedRetry.demosObservation.includedAt = 5_500;
+    substitutedRetry.demosObservation.includedAt = 7_000;
     substitutedRetry.demosObservation.blockNumber = 89;
     const substituted = await verifySellerPaymentIntake(
       substitutedRetry.input,
@@ -2289,7 +2338,7 @@ describe("verifySellerPaymentIntake", () => {
 
     const retry = makeContext("pay-dem", store);
     if (retry.demosObservation.status !== "included") throw new Error("fixture");
-    retry.demosObservation.includedAt = 5_500;
+    retry.demosObservation.includedAt = 7_000;
     const recovered = await verifySellerPaymentIntake(retry.input, retry.deps);
     expect(recovered).toMatchObject({
       disposition: "verified",

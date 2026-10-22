@@ -45,6 +45,7 @@ import {
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
 } from "./fulfilmentAuditSource.js";
+import { isDemosExecutedTransferObservation } from "./payDemObserver.js";
 
 export type SellerPaymentIntakeDisposition =
   | "verified"
@@ -262,8 +263,9 @@ interface DemosTransferInclusionFacts {
 
 /**
  * The only observation that permits delivery, payment evidence or payment
- * recovery accounting. Attest execution only after reading a `confirmed`
- * transaction record bound to this hash, block, payer, payee and amount.
+ * recovery accounting, and only as the object the SDK's own observer returned
+ * after reading a `confirmed` transaction record bound to this hash, block,
+ * payer, payee and amount (`isDemosExecutedTransferObservation`).
  */
 export interface DemosExecutedTransferObservation extends DemosTransferInclusionFacts {
   execution: "executed";
@@ -282,18 +284,7 @@ export interface DemosIncludedTransferObservation extends DemosTransferInclusion
   nonce?: undefined;
 }
 
-/**
- * The one rule for an execution attestation: status `included`, the literal
- * `execution: "executed"` and the record's signed `nonce` as a safe
- * non-negative integer. Every consumer that delivers, issues payment evidence
- * or accounts a payment requires this; any other `included` shape is held.
- */
-export function isDemosExecutedTransferObservation(
-  observation: Readonly<DemosTransferObservation>,
-): observation is DemosExecutedTransferObservation {
-  return isRecord(observation) && observation.status === "included" &&
-    observation.execution === "executed" && isSafeUint(observation.nonce);
-}
+export { isDemosExecutedTransferObservation };
 
 export type X402SessionBinding =
   | { kind: "eip3009"; nonce: string }
@@ -597,6 +588,13 @@ export interface SellerPaymentIntakeDeps {
     payoutAddress: string;
     rail: SellerX402RailDefinition;
   }): Promise<DestinationBindingResolution>;
+  /**
+   * Use the SDK's observer: `createPayDemSellerObserver(...).observeDemosTransfer`,
+   * or `observePayDemTransferCore` over the node's own responses. Delivery
+   * needs the execution attestation it returns (`isDemosExecutedTransferObservation`);
+   * an `execution: "executed"` observation built elsewhere is a verifier error
+   * (`demos-execution-unattested`) and never claims fulfilment.
+   */
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
   observeX402Transfer(input: {
     chainId: number;
@@ -2591,8 +2589,15 @@ export async function verifySellerPaymentIntake(
     }
     const claimedTxHash = canonicalTxHash(receipt.txHash);
     if (!claimedTxHash) return verifierError("malformed-settlement-identity");
-    const observation = await callSecurityBoundary(() =>
-      observeDemosTransfer.call(deps, receipt.txHash));
+    // The execution attestation is the object the SDK's own observer returned
+    // (#338), so check its identity before the snapshot copies it. The SDK
+    // freezes that object, so the copy carries exactly its fields.
+    let sdkAttested = false;
+    const observation = await callSecurityBoundary(async () => {
+      const raw = await observeDemosTransfer.call(deps, receipt.txHash);
+      sdkAttested = isDemosExecutedTransferObservation(raw);
+      return raw;
+    });
     if (observation.status === "threw") {
       return indeterminate("demos-observation-unavailable");
     }
@@ -2630,10 +2635,13 @@ export async function verifySellerPaymentIntake(
     }
     if (observed.includedAt > agreement.terms.deadline) return reject("payment-after-deadline");
     // Conflicts above reject even without execution evidence; a matching
-    // inclusion stays held until a confirmed record attests execution.
-    if (!isDemosExecutedTransferObservation(observed)) {
+    // inclusion stays held until a confirmed record attests execution. Only
+    // the SDK's observer attests it: a host's own `execution: "executed"`,
+    // however well shaped, is not the record read and never delivers.
+    if (observed.execution !== "executed") {
       return indeterminate("demos-execution-unconfirmed");
     }
+    if (!sdkAttested) return verifierError("demos-execution-unattested");
     const settlementId = canonicalSellerSettlementId({ kind: "demos", txHash: observed.txHash });
     if (!settlementId) return verifierError("malformed-settlement-identity");
     const evidenceInput: SellerPaymentEvidenceInput = {

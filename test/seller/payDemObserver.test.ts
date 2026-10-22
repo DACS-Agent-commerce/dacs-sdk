@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createPayDemSellerObserver,
+  isDemosExecutedTransferObservation,
   observePayDemTransferCore,
   type PayDemObservationClient,
 } from "../../src/seller/index.js";
@@ -155,6 +156,11 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
         blockNumber: BLOCK_NUMBER,
         includedAt: BLOCK_TIMESTAMP_SECONDS * 1_000,
       });
+      // Only the attestation this observer built, frozen, is execution evidence.
+      expect(isDemosExecutedTransferObservation(observation))
+        .toBe(transactionState === "confirmed");
+      expect(Object.isFrozen(observation)).toBe(transactionState === "confirmed");
+      expect(isDemosExecutedTransferObservation({ ...observation })).toBe(false);
     },
   );
 
@@ -643,7 +649,8 @@ describe("the standard observer reads recorded node2 envelopes (#338)", () => {
   }
 
   it("attests execution and the signed nonce for the confirmed native send", async () => {
-    await expect(node2Observer().observeDemosTransfer(CONFIRMED_HASH)).resolves.toEqual({
+    const observation = await node2Observer().observeDemosTransfer(CONFIRMED_HASH);
+    expect(observation).toEqual({
       status: "included",
       execution: "executed",
       nonce: 28,
@@ -654,6 +661,8 @@ describe("the standard observer reads recorded node2 envelopes (#338)", () => {
       blockNumber: 498_447,
       includedAt: 1_791_649_645_000,
     });
+    // The default live observer's result is the SDK's attestation itself.
+    expect(isDemosExecutedTransferObservation(observation)).toBe(true);
   });
 
   it("refuses the included status of the TX_NONCE_INVALID_LOW failed record", async () => {

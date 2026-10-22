@@ -560,9 +560,11 @@ and a valid signed nonce; only then does the observer return
 label (the pinned node writes only `confirmed`, `failed` and `pending`
 records) yields an inclusion-only observation (no `execution`). The seller
 intake, seller payment evidence, buyer payment recovery, wallet accounting and
-buyer audit all apply one rule, `isDemosExecutedTransferObservation`: only
-`execution: "executed"` with a safe non-negative integer `nonce` counts as
-settled, and anything else is held. A `confirmed` record without a valid nonce
+buyer audit all apply one rule, `isDemosExecutedTransferObservation`: only the
+frozen `execution: "executed"` observation the SDK's own observer returned
+(`observePayDemTransferCore`, which `createPayDemSellerObserver` uses) counts
+as settled, and anything else is held. A copy of that object, or one with the
+same fields built elsewhere, does not count. A `confirmed` record without a valid nonce
 is reported as `unavailable` and retried. A `failed` record, or a status,
 record and block that disagree on the hash, the block number or the block's
 transaction list, is `invalid`. The record label is the only execution
@@ -576,23 +578,28 @@ post-fork string amounts are OS (including an exactly matching numeric
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
 ed25519 owner address (the account whose nonce and balance are mutated), not an
 alternate active signing key in `content.from`. It trusts the configured Demos
-RPC's confirmed-block view; applications requiring an independent
-validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
-A custom provider must return the same shapes: `execution: "executed"` together
-with the record's signed `nonce` (a safe non-negative integer) only after it
-has checked that the transfer executed, or the inclusion-only shape with both
-fields omitted (a present key set to `undefined` is malformed). The seller
+RPC's confirmed-block view. An application that needs a stronger view, such as
+an independent validator-quorum proof, passes its own `PayDemObservationClient`
+to `observePayDemTransferCore`, which must return the node's authenticated
+responses: the SDK still reads and binds the record itself, so its result can
+attest execution. An `observeDemosTransfer` provider that builds its own
+observations can report `pending`, `not-found`, `unavailable`, `failed`,
+`invalid` or the inclusion-only shape (both `execution` and `nonce` omitted; a
+present key set to `undefined` is malformed), but it cannot attest execution.
+Its well-shaped `execution: "executed"` observation never permits delivery: the
+seller intake returns the verifier error `demos-execution-unattested` without
+claiming fulfilment, and seller payment evidence is not issued. The seller
 intake treats any other `included` shape as a malformed result. During the
-buyer audit, a matching observation without that attestation leaves the
+buyer audit, a matching observation without the SDK's attestation leaves the
 seller's countersignature request pending to be retried, while a conflicting
 one rejects it. The buyer's `reconcile` option for pay-DEM recovery
-(`createDacsFixedPricePayDemBuyerReconciliationV1` builds one from such a
-provider) follows the same rule: an observation whose hash, parties or amount
+(`createDacsFixedPricePayDemBuyerReconciliationV1` builds one from an
+observer) follows the same rule: an observation whose hash, parties or amount
 conflict with the prepared transfer needs an operator, whether or not it
 attests execution; a matching one without `execution: "executed"` keeps wallet
 accounting and the payment notice held; and an executed one completes only
-when its `nonce` equals the prepared signed nonce (otherwise it needs an
-operator). A custom `reconcile` callback's completed settlement carries
+when it is the SDK observer's attestation and its `nonce` equals the prepared
+signed nonce (otherwise it needs an operator). A custom `reconcile` callback's completed settlement carries
 `execution: "executed"` and that `nonce`. The payment track checks it against
 the prepared checkpoint and independently re-reads the exact native record
 through the SDK rail's connection (`readPayDemTransferRecord`), including when

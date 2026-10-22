@@ -40,6 +40,7 @@ interface ForgeryReport {
   readerFactories: string[];
   readerClient: { core: unknown; bridge: unknown; transfers: number };
   recordRead: { shipped: boolean; reads: unknown[]; vouches: string[] };
+  executionAttestation: Record<string, boolean>;
 }
 
 describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
@@ -150,6 +151,20 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     // The rail log binds the hash, so only the missing node read holds it.
     expect(report.reconciler.audit).toEqual(HELD);
     expect(report.reconciler.calls).toBe(1);
+  });
+
+  // A seller delivers, and a host accounts a native payment, only on the
+  // execution attestation the shipped observer built from the node record.
+  it("accepts only the shipped observer's own execution attestation, not a provider's or a copy", () => {
+    expect(report.executionAttestation).toEqual({
+      sameRule: true,
+      sameFields: true,
+      frozen: true,
+      genuine: true,
+      forged: false,
+      copied: false,
+      cloned: false,
+    });
   });
 
   it("ships no record reader or client rail and refuses a reader-carrying client before its transfer", () => {

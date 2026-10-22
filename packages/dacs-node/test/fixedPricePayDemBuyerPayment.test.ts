@@ -4,6 +4,7 @@ import { observePayDemTransferCore } from "@kynesyslabs/dacs";
 import {
   createDacsFixedPricePayDemBuyerReconciliationV1,
 } from "../src/fixedPricePayDemBuyerPayment.js";
+import { sdkExecutedObservation } from "./helpers/demosObservation.js";
 
 const payment = Object.freeze({
   authorityVersion: "1" as const,
@@ -64,9 +65,7 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
 
   it.each([prepared.nonce, 0])("recovers only the exact executed transfer with signed nonce %d", async (nonce) => {
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(
-      vi.fn(async () => ({
-        status: "included" as const,
-        execution: "executed" as const,
+      vi.fn(() => sdkExecutedObservation({
         nonce,
         txHash: prepared.txHash,
         payer: payment.payer,
@@ -221,6 +220,20 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
       expect(observe).toHaveBeenCalledExactlyOnceWith(prepared.txHash);
     },
   );
+
+  // #338: the same well-shaped facts as an observer's own statement.
+  it("needs an operator for an execution attestation the SDK observer did not return", async () => {
+    const genuine = await sdkExecutedObservation({
+      nonce: prepared.nonce, txHash: prepared.txHash, payer: payment.payer,
+      payee: payment.payee, amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_000,
+    });
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(
+      vi.fn(async () => ({ ...genuine })),
+    );
+    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+      status: "operator-action", reasonCode: "pay-dem-chain-observation-conflict",
+    });
+  });
 
   it("never treats a temporarily missing prepared hash as proof of absence", async () => {
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(

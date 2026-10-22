@@ -87,6 +87,18 @@ const forgedResult = Object.freeze({
   txRefKind: "demos",
   networkFeeOs: "0",
 });
+// A provider's own well-shaped execution attestation for a native transfer.
+const forgedObservation = Object.freeze({
+  status: "included",
+  execution: "executed",
+  nonce: 7,
+  txHash: TX_HASH,
+  payer: PAYER,
+  payee: SELLER,
+  amountOs: AMOUNT_OS,
+  blockNumber: 42,
+  includedAt: 1_000,
+});
 
 // Offer every brand-shaped export the forged capabilities.
 const brandExports = [];
@@ -96,6 +108,7 @@ for (const [file, namespace] of modules) {
     brandExports.push(`${file}#${name}`);
     for (const target of [
       forgedSettle, forgedRail, forgedTransfer, forgedClient, forgedResume, forgedResult,
+      forgedObservation,
     ]) {
       try {
         const out = value(target);
@@ -303,7 +316,41 @@ const recordReadVouches = readOffers.flatMap((value, index) => shippedChecks
   .filter(([, check]) => check(value) === true)
   .map(([name]) => `${name}(offer ${index})`));
 
+// Forgery 8: seller delivery, payment evidence and payment accounting accept
+// an execution attestation only as the object the shipped observer returned
+// after it read a bound `confirmed` record. The provider's well-shaped object,
+// offered to every brand-like export above, and a copy of a genuine one are
+// refused by the shipped rule from both entry points.
+const genuineObservation = await sdk.observePayDemTransferCore(TX_HASH, {
+  getTransactionStatus: async () => ({ state: "included", blockNumber: 42 }),
+  getTxByHash: async () => ({
+    hash: TX_HASH,
+    status: "confirmed",
+    blockNumber: 42,
+    content: {
+      type: "native", from: PAYER, to: SELLER, amount: AMOUNT_OS, nonce: "7",
+      data: ["native", { nativeOperation: "send", args: [SELLER, AMOUNT_OS] }],
+    },
+  }),
+  getBlockByNumber: async () => ({
+    number: 42, status: "confirmed",
+    content: { timestamp: 1, ordered_transactions: [TX_HASH] },
+  }),
+});
+const sellerEntry = modules.get("dist/seller/index.js");
+const fields = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
+const executionAttestation = {
+  sameRule: sellerEntry?.isDemosExecutedTransferObservation === sdk.isDemosExecutedTransferObservation,
+  sameFields: fields(genuineObservation) === fields(forgedObservation),
+  frozen: Object.isFrozen(genuineObservation),
+  genuine: sdk.isDemosExecutedTransferObservation(genuineObservation),
+  forged: sdk.isDemosExecutedTransferObservation(forgedObservation),
+  copied: sdk.isDemosExecutedTransferObservation({ ...genuineObservation }),
+  cloned: sdk.isDemosExecutedTransferObservation(structuredClone(genuineObservation)),
+};
+
 process.stdout.write(`${JSON.stringify({
+  executionAttestation,
   recordRead: {
     shipped: typeof readTransferRecord === "function",
     reads: recordReads,

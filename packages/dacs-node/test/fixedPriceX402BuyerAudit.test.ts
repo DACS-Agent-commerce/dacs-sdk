@@ -113,6 +113,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { sdkExecutedObservation } from "./helpers/demosObservation.js";
 
 const NOW = 1_786_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -905,6 +906,8 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       // The execution marker without the record's signed nonce is no attestation.
       ...[undefined, -1, 7.5, "7"].map((nonce) =>
         ({ stage, execution: "executed", nonce, status: "included" })),
+      // #338: nor is a well-shaped copy the SDK observer did not return.
+      { stage, execution: "executed", nonce: 7, status: "included" },
     ]),
     ...["initial", "revalidation"].map((stage) =>
       ({ stage, execution: "executed", nonce: 7, status: "pending" })),
@@ -969,9 +972,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       agreementHash: f.agreementHash,
       artifact: f.agreement,
     });
-    const observation = {
-      status: "included" as const,
-      execution: "executed" as const,
+    const observation = await sdkExecutedObservation({
       nonce: 7,
       txHash: f.event.txHash,
       blockNumber: f.event.blockNumber,
@@ -979,7 +980,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       payee: Buffer.from(SELLER_KEY).toString("hex"),
       amountOs: "1000000000",
       includedAt: NOW - 3_000,
-    };
+    });
     const observeDemosTransfer = vi.fn(async () => observation);
     const adapter = {
       resolveAnchorByName: vi.fn(async (logicalAddress: string) => {

@@ -40,6 +40,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { sdkExecutedObservation } from "./helpers/demosObservation.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"aa".repeat(32)}`;
@@ -270,9 +271,7 @@ function fixture(receiptStore: SellerReceiptStore) {
         disposition: "verified" as const,
         bundle: hash === identityBundleHash(buyerBundle) ? buyerBundle : sellerBundle,
       }),
-      observeDemosTransfer: async () => ({
-        status: "included" as const,
-        execution: "executed" as const,
+      observeDemosTransfer: () => sdkExecutedObservation({
         nonce: 7,
         txHash: TX_HASH,
         payer: PAYER,

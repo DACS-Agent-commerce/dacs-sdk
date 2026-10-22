@@ -2,7 +2,37 @@ import { types as nodeTypes } from "node:util";
 
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { normalizeDemosNativeAddress } from "../rails/payDem.js";
-import type { DemosTransferObservation } from "./paymentIntake.js";
+import type {
+  DemosExecutedTransferObservation,
+  DemosTransferObservation,
+} from "./paymentIntake.js";
+
+/**
+ * Execution attestations {@link observePayDemTransferCore} built itself, each
+ * frozen, after reading a `confirmed` transaction record bound to the hash,
+ * block, parties and amount. Private to this module: nothing exported from any
+ * shipped file adds to it, and a copy or a caller-built object with the same
+ * fields is not in it.
+ */
+const sdkExecutedObservations = new WeakSet<object>();
+
+/**
+ * The one rule for an execution attestation (#338): an observation the SDK's
+ * own observer returned, {@link observePayDemTransferCore} (which
+ * {@link createPayDemSellerObserver} uses), after it read a `confirmed`
+ * transaction record bound to this hash, block, payer, payee and amount, with
+ * the record's signed `nonce`. An observation a host builds itself is its
+ * statement, however well shaped, and so is a copy of a genuine one. Every
+ * consumer that delivers, issues payment evidence or accounts a payment
+ * requires this; any other `included` observation is held. Read-only: the
+ * answer depends only on the object's identity.
+ */
+export function isDemosExecutedTransferObservation(
+  observation: Readonly<DemosTransferObservation>,
+): observation is DemosExecutedTransferObservation {
+  // WeakSet#has answers false for any value it cannot hold.
+  return sdkExecutedObservations.has(observation as object);
+}
 
 const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
@@ -205,7 +235,9 @@ function blockTimestampToMilliseconds(value: unknown): number | null {
 
 /**
  * Read-only Demos facts required by the DACS-4 §9.5.9 seller payment gate.
- * Implementations MUST return authenticated node responses or fail closed.
+ * Implementations MUST return authenticated node responses or fail closed:
+ * the SDK reads and binds the transaction record in them itself, and an
+ * execution attestation built from them is final for delivery.
  */
 export interface PayDemObservationClient {
   getTransactionStatus(txHash: string): Promise<unknown>;
@@ -241,6 +273,8 @@ function invalid(reason: string): DemosTransferObservation {
  * the transaction's caller-selected timestamp is never used for deadlines.
  * The result attests execution, with the record nonce, only for a literal
  * `confirmed` transaction record; other inclusion labels are inclusion-only.
+ * That attestation is frozen, and only the object returned here (not a copy)
+ * passes {@link isDemosExecutedTransferObservation}.
  */
 export async function observePayDemTransferCore(
   txHash: string,
@@ -436,7 +470,13 @@ export async function observePayDemTransferCore(
       reason: "confirmed transaction record has no valid signed nonce",
     };
   }
-  return { ...included, execution: "executed", nonce };
+  const executed: DemosExecutedTransferObservation = Object.freeze({
+    ...included,
+    execution: "executed" as const,
+    nonce,
+  });
+  sdkExecutedObservations.add(executed);
+  return executed;
 }
 
 function validTimeout(value: number | undefined): number {

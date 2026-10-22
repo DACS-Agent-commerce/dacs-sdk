@@ -61,6 +61,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { sdkExecutedObservation } from "./helpers/demosObservation.js";
 import {
   createAccountingTestWalletSpendAuthorityV1,
   createPermissiveTestWalletSpendAuthorityV1,
@@ -1694,10 +1695,9 @@ describe("native DEM buyer payment track", () => {
       database: restarted.database, workerId: "buyer-after-record-recheck", rail: recoveryRail,
       resolveAuthority: () => AUTHORITY,
       reconcile: setup === "runtime wrapper"
-        ? createDacsFixedPricePayDemBuyerReconciliationV1(async () => ({
-            status: "included", execution: "executed", nonce: 7,
-            txHash: TX_HASH, payer: PAYER, payee: PAYEE, amountOs: AUTHORITY.amountOs,
-            blockNumber: 42, includedAt: 1_000,
+        ? createDacsFixedPricePayDemBuyerReconciliationV1(() => sdkExecutedObservation({
+            nonce: 7, txHash: TX_HASH, payer: PAYER, payee: PAYEE,
+            amountOs: AUTHORITY.amountOs, blockNumber: 42, includedAt: 1_000,
           }))
         : ({ prepared }) => ({ status: "completed", settlement: {
         execution: "executed", nonce: prepared!.nonce, ok: true,
@@ -2383,9 +2383,7 @@ describe("native DEM buyer payment track", () => {
     await expect(claim.permit.settle(exact)).rejects.toThrow(/authentication failed/);
     expect((await wallet.inspect()).activeEffects).toBe(1);
 
-    chain = {
-      status: "included",
-      execution: "executed",
+    const facts = {
       nonce: 7,
       txHash: TX_HASH,
       payer: PAYER,
@@ -2394,6 +2392,12 @@ describe("native DEM buyer payment track", () => {
       blockNumber: 42,
       includedAt: 1_780_000_000_000,
     };
+    // #338: the same facts as an observer's own statement account nothing.
+    chain = { status: "included", execution: "executed", ...facts };
+    await expect(claim.permit.settle(exact)).rejects.toThrow(/authentication failed/);
+    expect((await wallet.inspect()).activeEffects).toBe(1);
+
+    chain = await sdkExecutedObservation(facts);
     await expect(claim.permit.settle({
       ...exact,
       debits: [exact.debits[0]!, { ...exact.debits[1]!, amount: "0" }],
@@ -2451,10 +2455,10 @@ describe("native DEM buyer payment track", () => {
     const payment = recoveryPayment();
     const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
       database: recoveryEvidenceDatabase(payment, true),
-      observeDemosTransfer: async () => ({
-        status: "included", execution: "executed", nonce: 7, txHash: TX_HASH,
-        payer: PAYER, payee: PAYEE, amountOs: payment.amountOs, blockNumber: 42,
-        includedAt: 1_780_000_000_000, ...conflict,
+      observeDemosTransfer: () => sdkExecutedObservation({
+        nonce: 7, txHash: TX_HASH, payer: PAYER, payee: PAYEE,
+        amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_780_000_000_000,
+        ...conflict,
       }),
     });
     await expect(authenticateRecovery(recoveryReservation(payment), {
@@ -2584,9 +2588,7 @@ describe("native DEM buyer payment track", () => {
         return retained.loadEffectCheckpoint(...args);
       },
     } as unknown as DacsNodeSqliteDatabase;
-    const chain: DemosTransferObservation = {
-      status: "included",
-      execution: "executed",
+    const chain = await sdkExecutedObservation({
       nonce: 7,
       txHash: TX_HASH,
       payer: PAYER,
@@ -2594,7 +2596,7 @@ describe("native DEM buyer payment track", () => {
       amountOs: payment.amountOs,
       blockNumber: 42,
       includedAt: 1_780_000_000_000,
-    };
+    });
     const options = {
       database,
       async observeDemosTransfer() {
