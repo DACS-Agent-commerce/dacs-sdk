@@ -17,6 +17,8 @@ import { sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { produceDacsEmptyRequirementSessionVetV1 } from "../src/sessionIdentityVetRuntime.js";
+
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
@@ -375,6 +377,31 @@ describe("session bootstrap agreement tracks", () => {
       nonceByte: 2,
     }), { role: "buyer" } as never)).resolves.toEqual({ disposition: "accepted" });
 
+    const checkpointDatabase = (value.buyerContext as unknown as { database: DacsNodeSqliteDatabase }).database;
+    const checkpointPut = checkpointDatabase.putEffectIntent.bind(checkpointDatabase);
+    const checkpointLock = vi.spyOn(checkpointDatabase, "putEffectIntent").mockImplementation((input) => {
+      if ((input.input as { invocationVersion?: string }).invocationVersion === "1") {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      return checkpointPut(input);
+    });
+    await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
+      status: "indeterminate", reasonCode: "buyer-session-seller-vet-invocation-invalid-busy",
+    });
+    checkpointLock.mockRestore();
+
+    const recordLock = vi.spyOn(checkpointDatabase, "putEffectIntent").mockImplementation((input) => {
+      if ((input.input as { record?: unknown }).record !== undefined) {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      return checkpointPut(input);
+    });
+    await expect(produceDacsEmptyRequirementSessionVetV1({
+      context: value.buyerContext, operation: value.buyerOperation,
+      evaluatedIdentity: (challenge.payload as DacsHttpPayloadByType["session-challenge"]).sellerIdentity,
+      requirement: EMPTY_REQUIREMENT,
+    })).resolves.toEqual({ status: "indeterminate", reasonCode: "session-vet-record-busy" });
+    recordLock.mockRestore();
     await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
       status: "pending-retry",
       reasonCode: "buyer-session-admission-pending",
@@ -391,6 +418,19 @@ describe("session bootstrap agreement tracks", () => {
       nonceByte: 3,
     }), { role: "seller" } as never)).resolves.toEqual({ disposition: "accepted" });
 
+    const sellerCheckpointDatabase = (value.sellerContext as unknown as { database: DacsNodeSqliteDatabase }).database;
+    const sellerPut = sellerCheckpointDatabase.putEffectIntent.bind(sellerCheckpointDatabase);
+    const sellerLock = vi.spyOn(sellerCheckpointDatabase, "putEffectIntent");
+    sellerLock.mockImplementation((input) => {
+      if ((input.input as { invocationVersion?: string }).invocationVersion === "1") {
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_LOCKED" });
+      }
+      return sellerPut(input);
+    });
+    await expect(sellerTrack(sellerOperation)).resolves.toMatchObject({
+      status: "indeterminate", reasonCode: "seller-session-buyer-vet-invocation-invalid-busy",
+    });
+    sellerLock.mockRestore();
     await expect(sellerTrack(sellerOperation)).resolves.toMatchObject({
       status: "pending-retry",
       reasonCode: "seller-agreement-proposal-pending",
@@ -480,7 +520,7 @@ describe("session bootstrap agreement tracks", () => {
   });
 
   it.each(["buyer", "seller"] as const)(
-    "refuses passing custom non-empty Vet before %s agreement or payment", async (role) => {
+    "refuses custom non-empty Vet before any %s session effect", async (role) => {
       const value = await fixture();
       const nonEmpty = { requirementVersion: "1" as const,
         required: [{ scheme: "did", verificationRequired: true }] };
@@ -501,36 +541,26 @@ describe("session bootstrap agreement tracks", () => {
         ...(role === "seller" ? { vet } : {}), agreementProposalReady: () => true,
         agreement: sellerAgreement,
       });
-      await buyerTrack(value.buyerOperation);
-      const init = lastMessage(value.buyerSend);
-      await value.sellerTransport.handleMessage(await authenticated({ type: "session-init",
-        payload: init.payload as DacsHttpPayloadByType["session-init"], sender: value.buyer,
-        audience: value.seller, privateKey: value.buyerKeys.privateKey, role: "buyer", nonceByte: 61,
-      }), { role: "seller", coordinator: { startOrder: value.startOrder } } as never);
-      const loaded = await value.sellerStore.load("seller", JOB_ID);
-      if (loaded.status !== "ok") throw new Error("seller order missing");
-      const sellerOperation = operation(loaded.record);
-      await sellerTrack(sellerOperation);
-      const challenge = lastMessage(value.sellerSend);
-      await value.buyerTransport.handleMessage(await authenticated({ type: "session-challenge",
-        payload: challenge.payload as DacsHttpPayloadByType["session-challenge"], sender: value.seller,
-        audience: value.buyer, privateKey: value.sellerKeys.privateKey, role: "seller", nonceByte: 62,
-      }), { role: "buyer" } as never);
-      const buyerResult = await buyerTrack(value.buyerOperation);
       if (role === "buyer") {
-        expect(buyerResult).toEqual({ status: "operator-action",
-          reasonCode: "buyer-session-audit-requirements-unsupported" });
+        await expect(buyerTrack(value.buyerOperation)).resolves.toEqual({
+          status: "operator-action", reasonCode: "buyer-session-requirements-invalid",
+        });
       } else {
-        const presentation = lastMessage(value.buyerSend);
-        await value.sellerTransport.handleMessage(await authenticated({ type: "session-presentation",
-          payload: presentation.payload as DacsHttpPayloadByType["session-presentation"], sender: value.buyer,
-          audience: value.seller, privateKey: value.buyerKeys.privateKey, role: "buyer", nonceByte: 63,
-        }), { role: "seller" } as never);
-        await expect(sellerTrack(sellerOperation)).resolves.toEqual({ status: "operator-action",
-          reasonCode: "seller-session-audit-requirements-unsupported" });
+        // The seller refuses its unsupported requirement before even waiting
+        // for init, so no transport or Vet effect can have happened.
+        const sellerDatabase = (value.sellerContext as unknown as { database: DacsNodeSqliteDatabase }).database;
+        putDacsLiveOrderInputV1({ database: sellerDatabase, order: value.pair.seller, application: APPLICATION });
+        await value.startOrder();
+        const loaded = await value.sellerStore.load("seller", JOB_ID);
+        if (loaded.status !== "ok") throw new Error("seller order missing");
+        await expect(sellerTrack(operation(loaded.record))).resolves.toEqual({
+          status: "operator-action", reasonCode: "seller-session-requirement-invalid",
+        });
       }
-      expect(vet.produce).toHaveBeenCalled();
-      expect(vet.authenticate).toHaveBeenCalled();
+      expect(value.buyerSend).not.toHaveBeenCalled();
+      expect(value.sellerSend).not.toHaveBeenCalled();
+      expect(vet.produce).not.toHaveBeenCalled();
+      expect(vet.authenticate).not.toHaveBeenCalled();
       expect(buyerAgreement).not.toHaveBeenCalled();
       expect(sellerAgreement).not.toHaveBeenCalled();
       expect(value.sellerSend).not.toHaveBeenCalledWith(expect.objectContaining({ type: "session-admission" }));
@@ -565,9 +595,9 @@ describe("session bootstrap agreement tracks", () => {
       agreementProposalReady: () => false,
       agreement: vi.fn(),
     });
-    const nonEmptyRequirement = Object.freeze({
+    const supportedRequirement = Object.freeze({
       requirementVersion: "1" as const,
-      required: [{ scheme: "did", verificationRequired: true }],
+      required: [],
     });
     const production = Object.freeze({
       record: Object.freeze({ overallDecision: decision }),
@@ -621,7 +651,7 @@ describe("session bootstrap agreement tracks", () => {
       sessionBootstrap: value.buyerTransport,
       resolveRequirements: () => ({
         buyer: EMPTY_REQUIREMENT,
-        seller: nonEmptyRequirement,
+        seller: supportedRequirement,
       }),
       vet,
       terminalBundle: {
@@ -737,7 +767,7 @@ describe("session bootstrap agreement tracks", () => {
         buyer: EMPTY_REQUIREMENT,
         seller: Object.freeze({
           requirementVersion: "1" as const,
-          required: [{ scheme: "did", verificationRequired: true }],
+          required: [],
         }),
       }),
       vet,
@@ -831,7 +861,7 @@ describe("session bootstrap agreement tracks", () => {
         buyer: EMPTY_REQUIREMENT,
         seller: {
           requirementVersion: "1",
-          required: [{ scheme: "did", verificationRequired: true }],
+          required: [],
         },
       }),
       vet,
@@ -933,7 +963,7 @@ describe("session bootstrap agreement tracks", () => {
         buyer: EMPTY_REQUIREMENT,
         seller: Object.freeze({
           requirementVersion: "1" as const,
-          required: [{ scheme: "did", verificationRequired: true }],
+          required: [],
         }),
       }),
       vet,

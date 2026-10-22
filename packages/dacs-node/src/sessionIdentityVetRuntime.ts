@@ -25,6 +25,7 @@ import {
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import type { DacsLiveTrackOperationInputV1 } from "./orderInput.js";
 import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
+import { isDacsNodeSqliteBusyError } from "./sqlite.js";
 
 const VET_BINDING_VERSION = "1" as const;
 const VET_BINDING_DOMAIN = "dacs-live-session-vet-binding:v1:" as const;
@@ -449,7 +450,11 @@ export async function produceDacsEmptyRequirementSessionVetV1(
       identity: input.evaluatedIdentity,
       requirement: input.requirement,
     });
-  } catch {
+  } catch (error) {
+    if (isDacsNodeSqliteBusyError(error)) {
+      return Object.freeze({ status: "indeterminate",
+        reasonCode: "session-vet-record-busy" });
+    }
     return Object.freeze({ status: "operator-action",
       reasonCode: "session-vet-record-invalid" });
   }

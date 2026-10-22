@@ -286,6 +286,15 @@ describe("create-dacs-agent", () => {
     expect(compose).toContain("DACS_SESSION_PROFILE_ADMISSION_FILE: /run/dacs/session-profile/admission.json");
     expect(compose.match(/target: \/run\/dacs\/session-profile/g)).toHaveLength(2);
     expect(compose).toContain("source: ${DACS_SESSION_PROFILE_ADMISSION_DIRECTORY:-./session-profile}");
+    // Long-form bind mounts require their host directory to exist before up.
+    const bindSources = [...compose.matchAll(/- type: bind\n\s+source: ([^\n]+)/g)];
+    expect(bindSources).toHaveLength(2);
+    for (const [, source] of bindSources) {
+      const defaultSource = source!.replace(/^\$\{[^}]+:-(.+)\}$/, "$1");
+      if (defaultSource.startsWith("./")) {
+        expect((await lstat(join(target, defaultSource))).isDirectory()).toBe(true);
+      }
+    }
     expect(compose).toContain("DACS_BUYER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_BUYER_DEMOS_SECRET_FILE");

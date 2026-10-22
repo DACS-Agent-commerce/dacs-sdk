@@ -191,10 +191,6 @@ export async function resolveBundleBindingCandidates(
   if (!Array.isArray(input.candidates) || nodeTypes.isProxy(input.candidates)) {
     throw new IndeterminateSubstrateError("BundleBinding candidate list exceeds its admission limit");
   }
-  if (input.candidates.length > 1024) {
-    await authenticateSessionProfile(input.authenticateSessionProfile, { jobId: input.jobId }, input.role);
-    return { disposition: "indeterminate", reason: "bundle-binding-budget-exhausted" };
-  }
   const candidates = Array.from({ length: input.candidates.length }, (_, index) => {
     const entry = Object.getOwnPropertyDescriptor(input.candidates, String(index));
     if (entry === undefined || !("value" in entry)) return null;
@@ -211,8 +207,19 @@ export async function resolveBundleBindingCandidates(
   // Select this request's scope before authenticating a captured envelope or
   // interpreting its signed jobId. Neither unrelated signed records nor
   // unsigned catalog noise can supply a validation answer for this request.
+  const scoped = new Map<string, unknown>();
+  for (const candidate of input.candidates) {
+    if (!hasBundleBindingEnvelope(candidate) || candidate.logicalAddress !== logicalAddress ||
+        candidate.role !== input.role || !sameCanonicalClaimIdentity(candidate.signer, roleHolder)) continue;
+    scoped.set(canonicalize(candidate), candidate);
+  }
+  // Bound authentication work only after unrelated records and repeated
+  // discoveries of the same envelope have been removed.
+  if (scoped.size > 1024) {
+    return { disposition: "indeterminate", reason: "bundle-binding-budget-exhausted" };
+  }
   const unique = new Map<string, BundleBinding>();
-  for (const raw of input.candidates) {
+  for (const raw of scoped.values()) {
     let candidate: unknown;
     try {
       candidate = clone(raw);

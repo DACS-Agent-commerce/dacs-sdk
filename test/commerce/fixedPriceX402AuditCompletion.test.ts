@@ -558,6 +558,18 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     });
   });
 
+  it("requires independent admission on the direct rail-neutral completion gate", async () => {
+    const fx = await fixture();
+    const read = vi.fn(fx.deps.readBundleCopy);
+    const { authenticateSessionProfile: _unused, ...missing } = fx.deps;
+    await expect(verifyCompletedTwoSidedSession({
+      jobId: JOB_ID, buyer: BUYER.did, seller: SELLER.did,
+      sellerClosure: fx.input.sellerClosure, copies: fx.input.copies,
+    }, { ...missing, readBundleCopy: read } as never)).rejects.toThrow(/authenticateSessionProfile.*required/);
+    expect(read).not.toHaveBeenCalled();
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
   it("binds the rail-neutral result to independently supplied session parties", async () => {
     const fx = await fixture();
     await expect(verifyCompletedTwoSidedSession({
@@ -1258,13 +1270,26 @@ async function gateWithAudit(
   const input = { ...fx.input, buyer: buyerStatus, seller: sellerStatus };
   const verify = (deps: FixedPriceX402AuditCompletionDeps = fx.deps) => rail === "pay-x402"
     ? verifyFixedPriceX402AuditCompletion(input as never, deps)
-    : verifyFixedPricePayDemAuditCompletion(input as never, {
-        authenticateSessionProfile: fx.deps.authenticateSessionProfile, ...deps });
+    : verifyFixedPricePayDemAuditCompletion(input as never, deps);
   return { fx, buyerStatus, sellerStatus, verify };
 }
 
 describe("native DEM exact profile admission", () => {
   const historicalRelease = "965df755aba4ff392f1fb37a93d287242b177ba4";
+
+  it.each(["pay-x402", "pay-dem"] as const)(
+    "requires independent admission for %s completion before reading artifacts", async (rail) => {
+      const gate = await gateWithAudit(rail, (fx) => ({
+        buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+      }));
+      const read = vi.fn(gate.fx.deps.readBundleCopy);
+      await expect(gate.verify({ ...gate.fx.deps, authenticateSessionProfile: undefined,
+        readBundleCopy: read } as never)).rejects.toThrow(/authenticateSessionProfile/);
+      expect(read).not.toHaveBeenCalled();
+      expect(verifySellerClosure).not.toHaveBeenCalled();
+      // The fixture models a released profile with exact role authority.
+      await expect(gate.verify()).resolves.toMatchObject({ milestone: "audit-complete" });
+    });
 
   it.each(["pay-x402", "pay-dem"] as const)(
     "refuses %s completion while the pinned profile is unreleased, before any read", async (rail) => {

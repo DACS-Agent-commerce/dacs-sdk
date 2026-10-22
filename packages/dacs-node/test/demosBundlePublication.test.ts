@@ -491,6 +491,7 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
             anchorReceipt: sellerReceipt! as never, binding: sellerBinding },
         },
       }, {
+        authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
         sellerFinalizationProvider: { mapping: "write-input",
           bundleCopyVerifier: h.publication.bundleCopyVerifier } as never,
         readBundleCopy: (address) => h.publication.readBundleAt(address),

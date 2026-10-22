@@ -37,7 +37,11 @@ export function dacsLiveSessionProfileAvailabilityV1(
     });
   }
   try { fileAdmissionChecks.get(authenticateSessionProfile)?.(); }
-  catch { return Object.freeze({ status: "blocked", reasonCode: "session-profile-admission-unavailable" }); }
+  catch (error) {
+    return Object.freeze({ status: "blocked", reasonCode:
+      error instanceof DacsError && !(error instanceof IndeterminateSubstrateError)
+        ? "session-profile-admission-invalid" : "session-profile-admission-unavailable" });
+  }
   return Object.freeze({ status: "configured" });
 }
 
@@ -65,24 +69,13 @@ export function createDacsSessionProfileGatedCommerceGraphV1(
       role: context.role,
       reasonCode: availability.reasonCode,
     });
-    // An operator file outage is retryable even when it was absent at startup.
-    // Permanent profile/configuration refusals still require operator action.
-    const retryable = availability.reasonCode === "session-profile-admission-unavailable";
-    const retry = async (): Promise<never> => {
-      throw new IndeterminateSubstrateError("session profile admission file is unavailable");
-    };
-    const roleOperations = retryable ? Object.freeze(Object.fromEntries(
-      Object.keys(operations).map((key) => [key, retry]))) : operations;
-    const validatePayload = retryable ? () => Object.freeze({
-      status: "unavailable" as const, reasonCode: availability.reasonCode,
-    }) : unavailable.validatePayload;
-    const handleMessage = retryable ? retry : unavailable.handleMessage;
+    // This graph is built once. Restoring admission requires an operator
+    // restart; retrying these fixed stubs could never recover the live graph.
     return Object.freeze({
-      ...unavailable, validatePayload, handleMessage,
-      router: Object.freeze({ ...unavailable.router, validatePayload, handleMessage }),
-      ...(rails.includes("x402") ? { operations: roleOperations } : {}),
+      ...unavailable,
+      ...(rails.includes("x402") ? { operations } : {}),
       ...(rails.includes("pay-dem")
-        ? { payDemOperations: roleOperations as unknown as DacsLiveRoleCommerceGraphV1["payDemOperations"] }
+        ? { payDemOperations: operations as unknown as DacsLiveRoleCommerceGraphV1["payDemOperations"] }
         : {}),
     }) as Readonly<DacsLiveRoleCommerceGraphV1>;
   };

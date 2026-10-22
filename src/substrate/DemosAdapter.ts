@@ -1295,7 +1295,8 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!demosObservationUnanswered(nativeResult) && isRecord(nativeResult) &&
         nativeResult.success === true && !demosNativeMatchesBindings(bindings, nativeResult)) return false;
     if (observations.some(demosObservationUnanswered) || !isRecord(transaction) ||
-        typeof transaction.hash !== "string" || !isRecord(block) ||
+        typeof transaction.hash !== "string" || transaction.status !== "confirmed" || !isRecord(block) ||
+        block.status !== "confirmed" ||
         typeof block.hash !== "string" || block.number === undefined ||
         block.number === null || block.validation_data === undefined ||
         !isRecord(nativeResult) || nativeResult.success !== true) {

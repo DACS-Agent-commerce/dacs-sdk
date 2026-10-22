@@ -839,11 +839,10 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       resolvedRequirements = await options.resolveRequirements({ operation, retained });
       if (!requirements(resolvedRequirements) ||
-          (options.vet === undefined &&
-            (resolvedRequirements.buyer.required.length !== 0 ||
-              (resolvedRequirements.buyer.oneOf?.length ?? 0) !== 0 ||
-              resolvedRequirements.seller.required.length !== 0 ||
-              (resolvedRequirements.seller.oneOf?.length ?? 0) !== 0))) throw new Error();
+          (resolvedRequirements.buyer.required.length !== 0 ||
+            (resolvedRequirements.buyer.oneOf?.length ?? 0) !== 0 ||
+            resolvedRequirements.seller.required.length !== 0 ||
+            (resolvedRequirements.seller.oneOf?.length ?? 0) !== 0)) throw new Error();
     } catch {
       return operator("buyer-session-requirements-invalid");
     }
@@ -888,8 +887,8 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
         "seller",
         challenge.sellerIdentity.presentedBy,
       );
-    } catch {
-      return operator("buyer-session-seller-vet-invocation-invalid");
+    } catch (error) {
+      return operatorUnlessBusy(context, delay, error, "buyer-session-seller-vet-invocation-invalid");
     }
     let sent: Awaited<ReturnType<
       DacsBuyerSessionBootstrapTransportRuntimeV1["publishPresentation"]
@@ -1097,9 +1096,8 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       buyerRequirement = await options.resolveBuyerRequirement({ operation, retained });
       if (!isBundleRequirement(buyerRequirement) ||
-          (options.vet === undefined &&
-            (buyerRequirement.required.length !== 0 ||
-              (buyerRequirement.oneOf?.length ?? 0) !== 0))) {
+          (buyerRequirement.required.length !== 0 ||
+            (buyerRequirement.oneOf?.length ?? 0) !== 0)) {
         throw new Error();
       }
     } catch {
@@ -1142,8 +1140,8 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         "buyer",
         presentation.buyerIdentity.presentedBy,
       );
-    } catch {
-      return operator("seller-session-buyer-vet-invocation-invalid");
+    } catch (error) {
+      return operatorUnlessBusy(context, delay, error, "seller-session-buyer-vet-invocation-invalid");
     }
     let buyerVet: Readonly<DacsSessionVetProductionOutcomeV1>;
     try {

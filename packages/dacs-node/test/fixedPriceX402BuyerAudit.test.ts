@@ -16,6 +16,7 @@ import {
   fixedPriceAgreementLogicalAddress,
   isSettlementEvidence,
   prepareCompletedSellerBundleCounterSignatureRequest,
+  requireAuthenticatedSessionProfile,
   verifyCompletedSellerBundleCounterSignatureRequest,
   x402Eip3009Nonce,
 } from "@kynesyslabs/dacs";
@@ -1112,6 +1113,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
 
 type CompletionRole = "buyer" | "seller";
 type CompletionDeps = {
+  authenticateSessionProfile(): unknown | Promise<unknown>;
   sellerFinalizationProvider: unknown;
   readBundleCopy(nativeAddress: string, role: CompletionRole): Promise<unknown>;
   verifyBundleAnchor(copy: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -1340,6 +1342,9 @@ async function driveCopy(role: "buyer" | "seller", input: CompletionInput, deps:
 }
 
 async function driveStrictVerifier(input: CompletionInput, deps: CompletionDeps) {
+  requireAuthenticatedSessionProfile(await deps.authenticateSessionProfile(), {
+    jobId: JOB_ID, buyer: BUYER, seller: SELLER,
+  });
   for (const role of ["buyer", "seller"] as const) await driveCopy(role, input, deps);
   return { state: "audit-complete" };
 }
@@ -1374,6 +1379,14 @@ describe("buyer two-copy completion adapter", () => {
   });
   afterEach(() => {
     mocks.verifyCompleted.mockReset();
+  });
+
+  it("passes independent x402 admission to completion and refuses an unauthenticated reply", async () => {
+    const harness = await completionHarness("x402");
+    harness.authenticateSessionProfile.mockReturnValueOnce(undefined);
+    await expect(harness.authorize()).resolves.toBe(false);
+    expect(harness.authenticateSessionProfile).toHaveBeenCalledWith(JOB_ID);
+    await expect(harness.authorize()).resolves.toBe(true);
   });
 
   it("re-admits a recovered paid x402 graph before verifying both published copies", async () => {

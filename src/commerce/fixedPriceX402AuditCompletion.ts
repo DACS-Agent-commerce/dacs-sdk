@@ -142,8 +142,8 @@ export interface FixedPricePayDemAuditCompletionInput {
 }
 
 export interface CompletedTwoSidedSessionDeps {
-  /** Mandatory for native live composition; independently authenticated deployment admission. */
-  authenticateSessionProfile?: AuthenticateSessionProfile;
+  /** Independently authenticated deployment admission, required before completion. */
+  authenticateSessionProfile: AuthenticateSessionProfile;
   /**
    * Existing strict seller finalization provider. Its dependency graph is the
    * authoritative completed-session manifest: Listing, DACS-2 composites,
@@ -919,14 +919,16 @@ export async function verifyCompletedTwoSidedSession(
 ): Promise<CompletedTwoSidedSessionResult> {
   const retained = captureCompletedInput(input);
   const capturedDeps = captureDeps(deps);
+  const authenticate = method<AuthenticateSessionProfile>(
+    objectBoundary(deps, "completed two-sided session dependencies"),
+    "authenticateSessionProfile", "completed two-sided session dependencies",
+  )!;
   // One deadline, from here to the result, bounds every read below.
   const deadline = armDeadline(capturedDeps.deadline);
   try {
-    if (deps.authenticateSessionProfile !== undefined) {
-      const admission = await within(unanswered(() => deps.authenticateSessionProfile!(),
-        "trusted session profile admission"), deadline, "trusted session profile admission");
-      requireAuthenticatedSessionProfile(admission, retained);
-    }
+    const admission = await within(unanswered(() => authenticate(),
+      "trusted session profile admission"), deadline, "trusted session profile admission");
+    requireAuthenticatedSessionProfile(admission, retained);
     return await verifyCompletedTwoSidedSessionWithin(retained, capturedDeps, deadline);
   } finally {
     deadline.disarm();

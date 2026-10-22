@@ -2476,8 +2476,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       input.identity?.jobId ?? input.jobId!)])) as unknown as TerminalBundleTransport);
   return Object.freeze({
     ...Object.fromEntries(Object.entries(runtime).filter(([, action]) => typeof action === "function")
-      .map(([name, action]) => [name, guard(action, (input: any) =>
-        typeof input === "string" ? input : input.envelope?.jobId ?? input.jobId)])),
+      .map(([name, action]) => [name,
+        name === "loadPeerEquivocationEvidence" || name === "loadPlanDisagreementEvidence"
+          ? action : guard(action, (input: any) =>
+            typeof input === "string" ? input : input.envelope?.jobId ?? input.jobId)])),
     transport: guardedTransport,
     validatePayload: async (input: Parameters<typeof runtime.validatePayload>[0]) => {
       try { await admitDacsSessionProfile(context, input.jobId); }

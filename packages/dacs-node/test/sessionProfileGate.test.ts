@@ -144,7 +144,7 @@ describe("session profile admission gate", () => {
     }
   }
 
-  it("after release reports unreadable file admission as blocked and action-time reads as retryable", async () => {
+  it("after release requires an operator restart when admission was unreadable at startup", async () => {
     vi.resetModules();
     vi.doMock("@kynesyslabs/dacs/commerce", async (original) => ({
       ...await original<Record<string, unknown>>(), DACS_STANDARD_PROFILE_STATUS: "released",
@@ -164,13 +164,25 @@ describe("session profile admission gate", () => {
       config: { rail: { enabledProfiles: ["pay-dem"] } },
     } as never);
     expect(create).not.toHaveBeenCalled();
-    await expect(Promise.resolve(graph.validatePayload({ jobId: JOB_ID } as never))).resolves.toMatchObject({
-      status: "unavailable", reasonCode: "session-profile-admission-unavailable" });
-    await expect(graph.payDemOperations!.payment!({} as never)).rejects.toMatchObject({ category: "substrate" });
+    await expect(Promise.resolve(graph.validatePayload({ jobId: JOB_ID, type: "session-challenge" } as never))).resolves.toMatchObject({
+      status: "invalid", reasonCode: "session-profile-admission-unavailable" });
+    await expect(graph.payDemOperations!.payment!({} as never)).resolves.toMatchObject({
+      status: "operator-action", reasonCode: "session-profile-admission-unavailable" });
     writeFileSync(filePath, JSON.stringify({ releasePin: DACS_STANDARD_PIN,
       profileStatus: "released", moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS }));
     expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toEqual({ status: "configured" });
     expect(admit(JOB_ID)).toMatchObject({ status: "valid" });
+    await expect(graph.payDemOperations!.payment!({} as never)).resolves.toMatchObject({
+      status: "operator-action", reasonCode: "session-profile-admission-unavailable" });
+    create.mockReturnValue(graph);
+    await gate.createDacsSessionProfileGatedCommerceGraphV1(create)({
+      role: "buyer", authenticateSessionProfile: admit,
+      config: { rail: { enabledProfiles: ["pay-dem"] } },
+    } as never);
+    expect(create).toHaveBeenCalledTimes(1);
+    writeFileSync(filePath, "{");
+    expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toEqual({
+      status: "blocked", reasonCode: "session-profile-admission-invalid" });
     rmSync(filePath);
     expect(gate.dacsLiveSessionProfileAvailabilityV1(admit).status).toBe("blocked");
   });

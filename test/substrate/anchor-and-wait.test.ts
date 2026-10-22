@@ -1273,6 +1273,13 @@ describe("DemosAdapter.anchorAndWait", () => {
     // A record-shaped reply without the record's identifying fields (another
     // node build's not-found body) is no record of the receipt's subject.
     const transactionRecord = await raw.getTxByHash(receipt.transactionRef.value);
+    // A lifecycle view can lag while the block and native storage already
+    // answer. This is retryable, and confirmation on a later read recovers.
+    raw.getTxByHash.mockResolvedValueOnce({ ...transactionRecord, status: "pending" });
+    await unanswered();
+    raw.getBlockByNumber.mockResolvedValueOnce({ ...block, status: "pending" });
+    await unanswered();
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
     for (const reply of [{ error: "not found" }, { status: "confirmed" }, { ...transactionRecord, hash: undefined }]) {
       raw.getTxByHash.mockResolvedValueOnce(reply);
       await unanswered();

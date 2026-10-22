@@ -537,10 +537,32 @@ it("refuses resolution while the pinned profile is unreleased, whatever the auth
   expect(fetched).toEqual([]);
 });
 
-it("reports raw candidate overflow as budget exhaustion without native reads", async () => {
-  const { value, fetched } = input(new Array(1025).fill(null), {});
+it("ignores historical records, outsider records, and duplicate discoveries before the candidate limit", async () => {
+  const one = copy("current");
+  const address = "stor-" + "1".repeat(40);
+  const current = binding(address, one);
+  const historical = Array.from({ length: 1024 }, (_, index) => binding(address, one, {
+    logicalAddress: `dacs:bundle:history-${index}:seller`,
+  }));
+  const outsiders = Array.from({ length: 1024 }, () => binding(address, one, { signer: OUTSIDER }));
+  const { value, fetched } = input([...historical, ...outsiders, ...new Array(1025).fill(current)], { [address]: one });
+  const verify = vi.fn(value.verifyBindingSignature);
+  value.verifyBindingSignature = verify;
+  await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({ disposition: "present", copy: one });
+  expect(verify).toHaveBeenCalledTimes(1);
+  expect(fetched).toEqual([address]);
+});
+
+it("reports distinct scoped candidate overflow without authenticating or fetching copies", async () => {
+  const one = copy("current");
+  const candidates = Array.from({ length: 1025 }, (_, index) => binding(
+    "stor-" + index.toString(16).padStart(40, "0"), one));
+  const { value, fetched } = input(candidates, {});
+  const verify = vi.fn(value.verifyBindingSignature);
+  value.verifyBindingSignature = verify;
   await expect(resolveBundleBindingCandidates(value)).resolves.toEqual({
     disposition: "indeterminate", reason: "bundle-binding-budget-exhausted" });
+  expect(verify).not.toHaveBeenCalled();
   expect(fetched).toEqual([]);
 });
 

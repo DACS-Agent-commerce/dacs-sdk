@@ -53,10 +53,9 @@ and `createDacs{Buyer,Seller}PayDemLiveCommerceAssemblyV1` do not perform profil
 admission themselves; direct callers must admit the session before invoking
 their agreement or payment operations. The exported
 `verifyCompletedTwoSidedSession` and `verifyFixedPriceX402AuditCompletion` gates
-admit only when their caller supplies `authenticateSessionProfile`. A caller that
-leaves it out gets no profile admission from them, and an unreleased profile does
-not stop them returning `audit-complete`. A host that calls them directly must
-pass its own admission.
+require `authenticateSessionProfile` and refuse completion without independently
+authenticated admission. The unreleased profile at this pin therefore prevents
+these gates from returning `audit-complete` as well.
 
 The BundleBinding well-known index uses `sha256-` followed by SHA-256 of the
 RFC 8785 canonical JSON index document for `indexHash`. The pinned Standard
@@ -67,16 +66,18 @@ until the Standard specifies an interoperable index digest.
 `dacsLiveSessionProfileAvailabilityV1` reports admission is possible. Otherwise
 the role service starts with `commerce: blocked` and names the reason:
 `session-profile-unreleased`, `session-profile-admission-unconfigured`, or
-`session-profile-admission-unavailable` when the operator file cannot be read.
+`session-profile-admission-unavailable` when the operator file cannot be read,
+or `session-profile-admission-invalid` when its content is malformed.
 Generated projects use it with `createDacsFileSessionProfileAdmissionV1`, which
 re-reads the operator's statement in `DACS_SESSION_PROFILE_ADMISSION_FILE`
 (`releasePin`, `profileStatus`, `moduleVersions`) for every action and binds it
 to the configured buyer and seller authorities. Docker projects mount
 `DACS_SESSION_PROFILE_ADMISSION_DIRECTORY` read-only and read its `admission.json`
 at `/run/dacs/session-profile/admission.json`. Local projects use the file path
-directly. Missing or unreadable files remain retryable at action time. After
+directly. Once a live graph is running, missing or unreadable files remain retryable at action time. After
 the profile is released, if the file is unavailable when the gated graph starts,
-restore it and restart the service to build the live graph. The file statement attests both configured
+the blocked graph returns operator action; restore the file and restart the
+service to build the live graph. The file statement attests both configured
 participants locally; it does not independently discover a remote deployment's
 Standard pin. Cross-organisation operators must authenticate that pin through
 their own admission authority.
@@ -231,11 +232,11 @@ Vet production is authentic: the SDK checks only the shape of its result, so
 a stub that returns `{ status: "valid" }` lets any well-formed production
 through. Never configure a stub or a sender assertion in production. A result
 other than `valid`, a thrown error or a malformed result fails closed, with
-nothing retained or signed. A non-empty requirement also requires
-the matching `vet.produce` and `vet.authenticate` host policy. Custom non-pass
-productions can use the terminal path. Passing non-empty requirements are
-unsupported by the built-in completion audits and are refused before agreement
-or payment; a custom Vet alone does not enable those sessions.
+nothing retained or signed. Live bootstrap supports empty requirements only
+and refuses non-empty requirements before any session effect, including with
+custom `vet.produce` and `vet.authenticate` host policy. Custom non-pass
+productions for supported requirements can use the terminal path. A custom Vet
+alone does not add requirement support to the built-in completion audits.
 A terminal proposal carries the exact
 finalized `VetProduction` as well as the derived co-signed plan; each role
 independently authenticates the production, reconstructs the authority and

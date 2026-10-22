@@ -5042,6 +5042,7 @@ export function liveProjectTemplates(
     "test/live-bootstrap.test.ts": TEST_SOURCE,
     "data/buyer/.gitkeep": "",
     "data/seller/.gitkeep": "",
+    "session-profile/.gitkeep": "",
     "secrets/README.md": secretsReadme(options),
   });
 }

@@ -1733,8 +1733,8 @@ export function createDacsFixedPriceBuyerAuditV1(
             },
           },
         }, {
-          ...(payDem ? { authenticateSessionProfile: () =>
-            context.authenticateSessionProfile!(operation.order.jobId) } : {}),
+          authenticateSessionProfile: () =>
+            context.authenticateSessionProfile!(operation.order.jobId),
           deadline: verifierDeadline,
           sellerFinalizationProvider: material.provider,
           // The copy at its exact native address (DACS-5 BB-5 step 6); the

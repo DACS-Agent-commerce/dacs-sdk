@@ -3,6 +3,12 @@ import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../../sr
 import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
+import { DACS_STANDARD_PIN } from "../../src/version.js";
+import { COMPLETED_SESSION_MODULE_VERSIONS } from "../../src/discovery/sessionProfileAdmission.js";
+
+// Offline composition tests use an explicitly released profile fixture.
+// The real unreleased pin is covered by the admission and completion suites.
+vi.mock("../../src/discovery/standardProfileRelease.js", () => ({ DACS_STANDARD_PROFILE_STATUS: "released" }));
 
 import {
   BUNDLE_BINDING_SEPARATOR,
@@ -3450,6 +3456,10 @@ describe("completed two-sided session gate over a real seller closure", () => {
       },
     };
     const deps: CompletedTwoSidedSessionDeps = {
+      authenticateSessionProfile: () => ({ status: "valid", releasePin: DACS_STANDARD_PIN,
+        profileStatus: "released", moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS,
+        roles: [{ jobId: JOB_ID, role: "buyer", participant: BUYER },
+          { jobId: JOB_ID, role: "seller", participant: SELLER }] }),
       sellerFinalizationProvider: retained.provider,
       deadline: { timeoutMs: 5_000 },
       readBundleCopy: (nativeAddress) =>

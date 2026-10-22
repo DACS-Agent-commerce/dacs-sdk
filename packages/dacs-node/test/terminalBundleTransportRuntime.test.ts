@@ -3604,6 +3604,8 @@ describe("retained terminal evidence and admission", () => {
     (actor.context as { authenticateSessionProfile?: unknown }).authenticateSessionProfile = undefined;
     await expect(actor.runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toThrow(/session profile/);
     await expect(actor.runtime.registerLocalTerminal(terminalInput("fail"))).rejects.toThrow(/session profile/);
+    await expect(actor.runtime.loadPeerEquivocationEvidence!(JOB_ID)).resolves.toEqual({});
+    await expect(actor.runtime.loadPlanDisagreementEvidence!(JOB_ID)).resolves.toBeUndefined();
     expect(actor.effects.size).toBe(count);
     expect(actor.signComponent).not.toHaveBeenCalled();
   });
