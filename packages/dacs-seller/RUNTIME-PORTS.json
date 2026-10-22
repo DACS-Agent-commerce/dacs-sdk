@@ -242,10 +242,16 @@
           100
         ]
       ],
-      "replace": [],
+      "replace": [
+        [
+          "${owner.toLowerCase()}:",
+          "${owner}:",
+          "exact owner bytes"
+        ]
+      ],
       "omitted": "the native-send payload, amount encoding, payload hash and the application coordinate store",
       "sourceSha256": "79ddb3a62e16ce1da2a779f91a8bf1ab4e7d2f31d5a3ffa3e4d5ff3222797713",
-      "sha256": "f954be8521608bbc1e64eeccc5685606f3648723ad7a19d655179c4bb6c17226"
+      "sha256": "b2c43df22348ca62b4994625174f040801da7eeb0c80e5905a99f538b09efe38"
     },
     {
       "target": "src/dacs/dem-delivery-context-consumer.mjs",

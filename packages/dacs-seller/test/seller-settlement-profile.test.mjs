@@ -19,6 +19,7 @@ import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delive
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { SELLER_PRE_EFFECT_REFUSALS } from '../src/dacs/seller-http.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from '../src/dacs/session-admission.mjs';
+import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
@@ -490,14 +491,15 @@ test('a Vet reference is signed only through the passing record of this job, par
 // DACS-2 VPC-3: a record the counterparty signed is not thereby admitted. The
 // seller signs the Agreement only over records whose SR-2 receipt, read by the
 // operator's reader, names the reference's canonical address and exact hash at
-// `accepted` or later. Each vector keeps the record and its signature valid
+// `included` or `finalized` for Demos (DEMOS-MAPPING A.2). Each vector keeps the record and its signature valid
 // and spoils only the receipt; none reaches the Agreement signature.
-test('a Vet record is relied on only with its SR-2 receipt at accepted or later: a valid signed record without one is not signed over', async (t) => {
+test('a Demos Vet record is relied on only with an included or finalized SR-2 receipt', async (t) => {
   const w = await world(t), buyer = w.buyerKey.claim, sellerClaim = w.sellerKey.claim, sellerBundle = w.listing.seller.identity;
   const requirement = w.listing.buyerRequirement, other = core.sha256Hex('another record');
   const preserved = { preservedReceiptHash: core.sha256Hex('preserved receipt') };
   const spoiled = {
     'no receipt (the reader has none)': [null, /^VET_RECORD_UNVERIFIED: the (buyer|seller) Vet record SR-2 receipt is unavailable: no SR-2 receipt at this reference$/],
+    'an accepted Demos receipt': [{ state: 'accepted' }, /Demos.*included or finalized/],
     'a submitted receipt': [{ state: 'submitted' }, /not accepted or later/],
     'a rejected receipt': [{ state: 'rejected' }, /not accepted or later/],
     'a dropped receipt': [{ state: 'dropped' }, /not accepted or later/],
@@ -529,7 +531,7 @@ test('a Vet record is relied on only with its SR-2 receipt at accepted or later:
   assert.match(none.reason, /^VET_RECORD_UNVERIFIED: buyer: the Vet record has no SR-2 receipt$/);
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
   // The receipt states from which a record is relied on pass.
-  for (const state of ['accepted', 'included', 'finalized']) {
+  for (const state of ['included', 'finalized']) {
     const input = { ...w.vetted, buyer: { ...w.vetted.buyer, vetRecordRef: await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement, receipt: { state } }) } };
     assert.equal((await sign(input)).disposition, 'complete', state);
   }
@@ -1101,4 +1103,62 @@ test('a Listing that expires during context resolution signs no new Agreement', 
   assert.notEqual(answer.disposition, 'complete');
   assert.equal(agent.durableSessionOf(w.jobId).sellerContribution, undefined);
   assert.equal(agent.durableSessionOf(w.jobId).agreementSignatureKey, undefined);
+});
+
+
+test('rail key history authenticates only in-flight pins, including legacy pins, and never trusts a saved key or altered definition', () => {
+  const previous = railSteward(), current = railSteward(), stranger = railSteward();
+  const old = railAuthorityConfig(previous.railAuthority());
+  const pin = old.pin();
+  const config = { ...current.railAuthority(), historicalStewards: [{ stewardClaim: previous.stewardClaim, stewardPublicKey: previous.stewardPublicKey }] };
+  const rotated = railAuthorityConfig(config);
+  config.historicalStewards[0].stewardPublicKey = stranger.stewardPublicKey;
+  assert.equal(rotated.evaluate(pin, 'in-flight').decision, 'pass');
+  const legacy = structuredClone(pin); delete legacy.stewardClaim; delete legacy.stewardPublicKey;
+  assert.equal(rotated.evaluate(legacy, 'in-flight').decision, 'pass');
+  assert.equal(rotated.evaluate(pin, 'new').decision, 'fail');
+  assert.equal(rotated.evaluate(rotated.pin(), 'new').decision, 'pass');
+  assert.equal(railAuthorityConfig(current.railAuthority()).evaluate(pin, 'in-flight').decision, 'fail');
+  assert.equal(rotated.evaluate(railAuthorityConfig(stranger.railAuthority()).pin(), 'in-flight').decision, 'fail');
+  assert.equal(rotated.evaluate({ ...pin, stewardClaim: current.stewardClaim }, 'in-flight').decision, 'fail');
+  assert.equal(rotated.evaluate({ ...pin, stewardPublicKey: stranger.stewardPublicKey }, 'in-flight').decision, 'fail');
+  const sameClaim = current.railAuthority({ authority: { stewardClaim: previous.stewardClaim } });
+  sameClaim.rail.signature.signer = previous.stewardClaim;
+  const sameIdentity = railAuthorityConfig({ ...sameClaim, historicalStewards: [{ stewardClaim: previous.stewardClaim, stewardPublicKey: previous.stewardPublicKey }] });
+  assert.equal(sameIdentity.evaluate(pin, 'in-flight').decision, 'pass', 'same claim with a new key');
+  assert.equal(sameIdentity.evaluate(legacy, 'in-flight').decision, 'pass', 'legacy pin under a rotated stable identity');
+  assert.equal(sameIdentity.evaluate(pin, 'new').decision, 'fail');
+  assert.equal(sameIdentity.evaluate(sameIdentity.pin(), 'new').decision, 'pass');
+  const altered = structuredClone(pin); altered.rail.parameters = { changed: true };
+  assert.equal(rotated.evaluate(altered, 'in-flight').decision, 'fail');
+  assert.throws(() => railAuthorityConfig({ ...current.railAuthority(), historicalStewards: Array(65).fill({}) }), /at most 64/);
+});
+
+
+test('a binding with durable accepted admission may still supply an accepted Vet receipt', async (t) => {
+  const w = await world(t), party = w.buyerKey.claim;
+  const ref = await w.admission.vetRecord(w.jobId, party, w.buyerBundle, { requirement: w.listing.buyerRequirement });
+  const receipt = await w.admission.sessionAdmission.readVetAnchorReceipt({ ref });
+  assert.equal(vetAnchorReceiptProblem({ ...receipt, substrate: 'test-durable-admission', state: 'accepted' }, { ref, jobId: w.jobId, party }), null);
+});
+
+
+test('a not-yet-valid Listing refuses a fresh session after restart and admits it exactly at notBefore', async (t) => {
+  const w = await world(t, { listingChanges: (draft) => { draft.validity.notBefore += 60010; } });
+  // Persist a valid initial Listing admission, then restore it while the
+  // clock is before notBefore. Startup always validates a fresh Listing.
+  let at = w.listing.validity.notBefore;
+  const input = { ...w.vetted, generatedAt: at };
+  const options = complete(w, { durableDirectory: w.dir(), now: () => at, demDeliveryContext: w.chain.demDeliveryContext(input) });
+  let agent = await w.agent(options);
+  at--;
+  const request = await w.proposalFor(input);
+  assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
+  assert.equal(agent.stageOf(w.jobId), null);
+  agent.close();
+  agent = await w.agent(options);
+  t.after(() => agent.close());
+  assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
+  at = w.listing.validity.notBefore;
+  assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'notBefore itself is inclusive');
 });

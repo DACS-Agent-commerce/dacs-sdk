@@ -135,7 +135,8 @@ export async function listingRevocationProblem(admission, { listing, listingPin,
 
 // The CORE §5.1 receipt states from which a Vet record may be relied on
 // (DACS-2 VPC-3: `accepted` or later; dropped, replaced, expired, reorged and
-// rejected are not later states).
+// rejected are not later states). Demos specifically requires inclusion/finality
+// (DEMOS-MAPPING A.2); accepted remains available to bindings that define it.
 export const VET_RECEIPT_STATES = Object.freeze(['accepted', 'included', 'finalized']);
 
 // The reason a Vet record's SR-2 receipt does not back its reference, or null:
@@ -148,6 +149,8 @@ export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
   if (ref?.anchor?.locator !== compositeVerificationAddress(jobId, party)) return 'the Vet reference is not at the job\'s canonical composite address';
   if (receipt.logicalAddress !== ref.anchor.locator || receipt.contentHash !== ref.contentHash) return 'the Vet record SR-2 receipt is for another address or hash';
   if (receipt.observationDisposition !== 'established') return 'the Vet record SR-2 receipt is not an established observation';
+  // DEMOS-MAPPING A.2: Demos has no verifiable durable accepted state.
+  if (receipt.substrate === 'demos' && receipt.state === 'accepted') return 'the Demos Vet record SR-2 receipt must be included or finalized';
   if (!VET_RECEIPT_STATES.includes(receipt.state)) return `the Vet record SR-2 receipt is ${receipt.state}, not accepted or later`;
   return null;
 }

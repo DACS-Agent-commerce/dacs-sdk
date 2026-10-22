@@ -50,14 +50,14 @@ function wallet(t, { file = false } = {}) {
       if (fault === 'throw') throw new Error('TEST nonce read failed');
       if (fault === 'hang') return new Promise(() => {});
       if (fault === 'malformed') return '7';
-      return node.accountNonce();
+      return { nonce: node.accountNonce(), blockHeight: node.accountNonce() };
     },
     readTransactionState: async ({ txHash: hash }) => {
       calls.reads.push('state');
       const fault = faults.state.shift();
       if (fault === 'throw') throw new Error('TEST state read failed');
       if (fault === 'malformed') return 'unknown';
-      return node.transactionState(hash);
+      return { state: node.transactionState(hash), checkedThroughBlock: node.accountNonce() };
     }, ...extra });
   return { dir, path, chainFile, calls, faults, get chain() { return node.chain; }, other: () => node.other(), reload, open, input };
 }
@@ -212,7 +212,7 @@ test('a dropped CREATE overtaken by another write of the wallet is superseded: u
     const answer = await journal.reconcilePaymentEvidence(w.input());
     assert.equal(answer.status, 'unsigned', JSON.stringify(answer));
     assert.equal(answer.txHash, first, 'it names the superseded CREATE');
-    assert.match(answer.reason, /can no longer be included/);
+    assert.match(answer.reason, /can no longer be executed/);
     assert.deepEqual(w.calls.reads, ['nonce', 'state'], 'the account nonce is read before the transaction state');
     journal.close(); journal = w.open();
     // The agent still holds the earlier attempt: its checkpoint was lost.
@@ -244,7 +244,7 @@ test('a kept CREATE that can still land, is pending, or cannot be read is never 
     assert.equal(answer.txHash, kept, label);
     return answer;
   };
-  // Nonce not overtaken: it can still be included; the state is not even read.
+  // Nonce not overtaken: it can still be executed; the state is not even read.
   w.faults.broadcast.push('drop');
   await expectLive('account nonce below the kept nonce');
   assert.deepEqual(w.calls.reads, ['nonce']);
@@ -338,4 +338,39 @@ test('a process killed after signing, after the signed CREATE is kept, or after 
     assert.equal(db().filter((row) => row.superseded_at === null).length, 1, `${cut}: one live signed CREATE`);
     assert.equal(new Set(w.calls.broadcast).size, 1, `${cut}: every broadcast here is the same signed bytes`);
   }
+});
+
+
+test('nonce advancement with an unknown transaction keeps the CREATE until its indexed inclusion becomes visible', async (t) => {
+  const w = wallet(t);
+  let visible = 'absent';
+  const journal = w.open({ readAccountNonce: async () => 1, readTransactionState: async () => visible });
+  t.after(() => journal.close());
+  const first = (await journal.anchorEvidence(w.input())).txHash;
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
+  assert.equal((await journal.anchorEvidence(w.input())).txHash, first);
+  visible = 'applied';
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
+  assert.equal(w.calls.sign, 1);
+  assert.equal(new Set(w.calls.broadcast).size, 1);
+});
+
+test('only a complete absence snapshot at or beyond the nonce snapshot releases a CREATE', async (t) => {
+  const w = wallet(t);
+  let checkedThroughBlock = 7;
+  const journal = w.open({ readAccountNonce: async () => ({ nonce: w.chain.accountNonce, blockHeight: 8 }),
+    readTransactionState: async () => ({ state: 'absent', checkedThroughBlock }) });
+  t.after(() => journal.close());
+  w.faults.broadcast.push('drop');
+  await journal.anchorEvidence(w.input());
+  w.other();
+  for (const coverage of [7, undefined, -1, '8']) {
+    checkedThroughBlock = coverage;
+    w.faults.broadcast.push('drop');
+    assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast', String(coverage));
+  }
+  checkedThroughBlock = 8;
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
+  await journal.anchorEvidence(w.input());
+  assert.equal(w.calls.sign, 2);
 });

@@ -1,3 +1,4 @@
+import { deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 // The claim, address and wallet-signature contract the ported seller kit relies on.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,4 +46,10 @@ test('a wallet signature verifies over the exact UTF-8 message; anything else is
   for (const input of [{ address, message: `${message} `, signature }, { address: other, message, signature }, { address, message, signature: 'bad' }, { address: 'bad', message, signature }, { address, message: undefined, signature }, {}]) {
     assert.equal(verifyDemosSignature(input), false);
   }
+});
+
+
+test('storage addresses hash the exact owner bytes, including case, as demosdk does', () => {
+  assert.equal(deriveStorageAddress('0xABCDEF', 'probe', 1, ''), 'stor-26913fea878a28f7ca48cbccd148baa6db47a6f4');
+  assert.equal(deriveStorageAddress('0xabcdef', 'probe', 1, ''), 'stor-b52de5b1050c95ef271b53a0d40b5be43717d48c');
 });

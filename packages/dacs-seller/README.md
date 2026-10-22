@@ -10,7 +10,11 @@ plugin seller kit (`RUNTIME-PORTS.json` and `PROVENANCE.json` in the
 repository). It is a **fixture-only kit**: its native capabilities accept
 only `TEST-` authorities and a loopback fixture node, so it cannot start
 against, or read from, a real Demos node (see "What the host does and does
-not do"). It is not qualified for mainnet.
+not do"). It is not qualified for mainnet. The standalone host retains
+all jobs and refuses new jobs after its lifetime cap of 10,000; terminal
+DACS-5 bundle completion and transport-row reclamation are not wired.
+The live node2 deployment is unsupported; the pinned node profile is not a
+qualification for a current testnet deployment.
 
 Requires Node.js 22.13 or later (`node:sqlite`) and the same version of
 `@kynesyslabs/dacs` as a peer.
@@ -162,7 +166,7 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   `{ logicalAddress, artifact, writer, artifactKind, jobId, receiptContentHash,
   attempt: { outcome, answer } }`:
   - `{ status: "unsigned" }` must mean that no transaction the wallet signed for
-    this address is or can still be included; only this answer lets the agent
+    this address is or can still be executed; only this answer lets the agent
     send the same bytes again;
   - `{ status: "rebroadcast" | "pending", txHash }` means the one signed
     transaction was broadcast again unchanged (a dropped submission), or is
@@ -193,14 +197,16 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
-  `readAccountNonce()` reads the wallet account's nonce on the chain, and
-  `readTransactionState({ txHash })` answers `applied` (executed), `pending`
-  (in the mempool, not yet included) or `absent` (anything else). Node 61b8e75
-  includes a mempool transaction whose nonce another write reached as failed,
-  and then reports it `included`. So on that node both reads come from the
-  same node, account nonce first: `getTransactionStatus` `pending` is
-  `pending`; `included` with `getTxByHash` `status: "confirmed"` is `applied`;
-  `included` with `status: "failed"`, or `unknown`, is `absent`.
+  `readAccountNonce()` reads a non-negative account nonce or an authenticated
+  `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
+  `applied` (executed), `pending`, or `absent`; an ordinary unknown/not-found
+  answer never proves absence. Supersession requires an advanced nonce snapshot
+  and `{ state: 'absent', checkedThroughBlock }` from a qualified reader's
+  complete authenticated transaction index, including failed transactions,
+  covering at least that nonce snapshot's block height on the same chain.
+  A bare nonce, lagging index, missing coverage, timeout or unavailable read
+  preserves the same signed CREATE. The pinned node's ordinary `unknown`
+  answer supplies no such proof; this package ships no real-node absence reader.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
   CREATE per address. Its `readSignedProjection({ logicalAddress })` answers
@@ -210,13 +216,13 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   replaced file) about that attempt, so such a file holds the claim (`held`,
   `reconcileError.code: "wallet_journal_changed"`) instead of signing a second
   CREATE; restore the file to resolve it. The journal also refuses
-  (`wallet_journal_unknown_attempt`) an attempt whose `txHash` it never kept. While that CREATE can still be included, the journal
+  (`wallet_journal_unknown_attempt`) an attempt whose `txHash` it never kept. While that CREATE can still be executed, the journal
   broadcasts the same signed bytes again (`rebroadcast`, or `pending` when the
   broadcast fails). The node never executes a transaction whose nonce the
   account has reached: it refuses it, or includes it as failed. So once the
-  account nonce has reached the kept nonce (read first), and the CREATE is
-  then neither applied nor pending, the journal marks it superseded (and keeps
-  it). It then answers `unsigned`, and the next anchor signs the same evidence
+  account nonce has reached the kept nonce (read first), and a complete
+  authenticated index proves non-execution through that snapshot height, the
+  journal marks it superseded (and keeps it). It then answers `unsigned`, and the next anchor signs the same evidence
   anew, with a higher nonce. A read that fails, times out (`readTimeoutMs`,
   10 s by default) or answers anything else never supersedes it. An unknown
   readback sends nothing and asks nothing.
@@ -239,8 +245,15 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   it, and the session keeps the registry version it pinned. A proposal the
   seller has not signed (a rejected one, for example) has no session yet, and
   its retry selects the rail again under the current authority. A pin the
-  configured steward did not sign is refused, so a rotated steward key refuses
-  sessions pinned under the old one until that key is configured again.
+  trusted steward did not sign is refused. During key rotation, configure
+  `railAuthority.historicalStewards` as an array of up to 64 distinct
+  `{ stewardClaim, stewardPublicKey }` pairs from the operator's trusted key
+  history. The same claim may have multiple historical keys. Keep each old identity while its sessions remain in flight. Those
+  sessions reverify their exact signed pins under that identity after restart;
+  new sessions always use the current steward and definition. Saved pins
+  supply no trusted keys: a saved key selects only from that trusted history.
+  Existing pins without explicit steward identity use their signed definition
+  and the bounded trusted key history.
 - It opens a new session only for a presentation of a challenge it issued,
   on a Listing its own revocation check finds not revoked, and only under
   `sessionAdmission`, before anything of it is kept, read, signed or sent.
@@ -303,8 +316,9 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   `readVetAnchorReceipt` returns for it (DACS-2 VPC-3: a signed record is not
   thereby admitted). The receipt must be a CORE §5.1 receipt for the
   reference's own address (the job's canonical `dacs2:composite:` address)
-  and exact hash, an established observation, at `accepted`, `included` or
-  `finalized`; none, one for another address or hash, an indeterminate
+  and exact hash, an established observation, at `included` or `finalized` for
+  Demos (`accepted` is allowed only by bindings with durable admission); none,
+  one for another address or hash, an indeterminate
   observation, or a `submitted`, `rejected`, `dropped`, `replaced`,
   `expired` or `reorged` one refuses before the Agreement is signed
   (`VET_RECORD_UNVERIFIED`). The host checks what the receipt names and its

@@ -27,15 +27,29 @@ const AUTHENTICATED = new WeakSet();
 // for anything that is not this steward's signed DEM rail definition.
 export function railAuthorityConfig(value) {
   if (value === null || value === undefined) return null;
-  if (typeof value !== 'object' || Array.isArray(value) || canonicalize(Object.keys(value).sort()) !== canonicalize(AUTHORITY_KEYS)) {
-    throw new TypeError(`railAuthority must be exactly { ${AUTHORITY_KEYS.join(', ')} }`);
+  if (typeof value !== 'object' || Array.isArray(value) || canonicalize(Object.keys(value).filter((key) => key !== 'historicalStewards').sort()) !== canonicalize(AUTHORITY_KEYS)) {
+    throw new TypeError(`railAuthority must be exactly { ${AUTHORITY_KEYS.join(', ')} }, with optional historicalStewards`);
   }
   const { stewardClaim, stewardPublicKey, railRegistryVersion, production } = value;
   if (!Number.isSafeInteger(railRegistryVersion) || railRegistryVersion <= 0) throw new TypeError('railAuthority.railRegistryVersion must be a positive integer');
   if (typeof production !== 'boolean') throw new TypeError('railAuthority.production must be the local operator policy (true or false)');
+  // Trusted local key history, never keys supplied by a retained pin. Bound
+  // the list and copy it now so later config mutation cannot change authority.
+  const history = value.historicalStewards ?? [];
+  if (!Array.isArray(history) || history.length > 64) throw new TypeError('railAuthority.historicalStewards must be an array of at most 64 steward identities');
+  const trustedStewards = new Map([[stewardClaim, [stewardPublicKey]]]);
+  for (const entry of history) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+        canonicalize(Object.keys(entry).sort()) !== canonicalize(['stewardClaim', 'stewardPublicKey']) ||
+        typeof entry.stewardClaim !== 'string' || !entry.stewardClaim || typeof entry.stewardPublicKey !== 'string' || !entry.stewardPublicKey ||
+        trustedStewards.get(entry.stewardClaim)?.includes(entry.stewardPublicKey)) throw new TypeError('railAuthority.historicalStewards must contain distinct { stewardClaim, stewardPublicKey } identities');
+    const keys = trustedStewards.get(entry.stewardClaim) ?? [];
+    keys.push(entry.stewardPublicKey);
+    trustedStewards.set(entry.stewardClaim, keys);
+  }
   let rail;
   try { rail = structuredClone(value.rail); } catch { throw new TypeError('railAuthority.rail must be plain JSON'); }
-  const authority = (pinnedRailDigest, sessionState) => ({ stewardClaim, stewardPublicKey, pinnedRailDigest, sessionState,
+  const authority = (pinnedRailDigest, sessionState, claim = stewardClaim, key = stewardPublicKey) => ({ stewardClaim: claim, stewardPublicKey: key, pinnedRailDigest, sessionState,
     operatorContext: { source: 'local-operator-policy', production }, operatorPreflightOk: false });
   // Without a pin the SDK stops after the signature: a digest comes back only
   // for a definition this steward signed.
@@ -48,13 +62,13 @@ export function railAuthorityConfig(value) {
     throw new TypeError(`railAuthority.rail is not ${DEM_RAIL.railId} version ${DEM_RAIL.railVersion} on pay-dem`);
   }
   if (rail.governance?.anchoring !== 'in-code') throw new TypeError('railAuthority.rail must be a PA-1 in-code definition; a PA-2/PA-3 rail resolves only through the canonical registry index, which this seller does not read');
-  const pin = Object.freeze({ basis: RAIL_AUTHORITY_BASIS, digest, railRegistryVersion, rail });
+  const pin = Object.freeze({ basis: RAIL_AUTHORITY_BASIS, digest, railRegistryVersion, stewardClaim, stewardPublicKey, rail });
   const config = Object.freeze({
     digest,
     railRegistryVersion,
     // A fresh copy of the exact signed definition, for a new session's pin.
     pin: () => structuredClone(pin),
-    // RAV-R1..R5 over a retained pin: the configured steward's signature over
+    // RAV-R1..R5 over a retained pin: its trusted historical steward's signature over
     // the exact pinned bytes, the pin digest and the pinned availability. A
     // disabled, failed, gated (no operator preflight here) or production
     // mocked rail is refused; so is a non-production mocked one, which the SDK
@@ -65,9 +79,23 @@ export function railAuthorityConfig(value) {
       if (retained?.basis !== RAIL_AUTHORITY_BASIS || !Number.isSafeInteger(retained.railRegistryVersion) || retained.railRegistryVersion <= 0 || !/^[0-9a-f]{64}$/.test(retained.digest ?? '')) {
         return { decision: 'indeterminate', reason: 'pin-unavailable' };
       }
-      const result = evaluateRailAvailabilitySelection(retained.rail, authority(retained.digest, sessionState));
-      if (result.decision === 'pass' && retained.rail.availability !== 'live') return { decision: 'fail', reason: 'not-settleable', railDigest: result.railDigest };
-      return result;
+      // Older durable pins already retain the authenticated signer in the
+      // signed definition. New pins also name it explicitly. History is only
+      // for sessions already signed; a fresh session uses today's steward.
+      const claim = retained.stewardClaim ?? retained.rail?.signature?.signer;
+      const keys = sessionState === 'in-flight' ? trustedStewards.get(claim) ?? [] : claim === stewardClaim ? [stewardPublicKey] : [];
+      if (claim !== retained.rail?.signature?.signer) return { decision: 'fail', reason: 'signature-invalid' };
+      // A claim may keep its identity across key rotation. New pins retain the
+      // exact key identity; legacy pins try the bounded trusted history. A key
+      // in saved data is only a selector, never an additional trust root.
+      for (const key of keys) {
+        if (retained.stewardPublicKey !== undefined && retained.stewardPublicKey !== key) continue;
+        const result = evaluateRailAvailabilitySelection(retained.rail, authority(retained.digest, sessionState, claim, key));
+        if (result.decision === 'fail' && result.reason === 'signature-invalid') continue;
+        if (result.decision === 'pass' && retained.rail.availability !== 'live') return { decision: 'fail', reason: 'not-settleable', railDigest: result.railDigest };
+        return result;
+      }
+      return { decision: 'fail', reason: 'signature-invalid' };
     },
     listingDefinition: Object.freeze({ railId: rail.railId, railVersion: rail.railVersion, phaseHandler: rail.phaseHandler, governanceAnchoring: 'in-code', signatureValid: true }),
   });

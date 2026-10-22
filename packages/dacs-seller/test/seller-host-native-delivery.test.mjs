@@ -148,7 +148,7 @@ function demosNode() {
   // applied (this node keeps no mempool, so anything else is absent).
   const accountNonce = (owner) => accountNonces.get(owner) ?? 0;
   const transactionState = (hash) => (txs.has(String(hash).toLowerCase()) ? 'applied' : 'absent');
-  return { fetchImpl, pay, create, rebroadcast, reader, creates, programs, faults, searches, inclusion, accountNonce, transactionState, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
+  return { fetchImpl, pay, create, rebroadcast, reader, creates, programs, faults, searches, inclusion, accountNonce, transactionState, blockHeight: () => blocks.length - 1, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
 }
 
 // The application's Deliverable producer: a report bound to the job, its
@@ -288,9 +288,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     },
     readAccountNonce: async () => {
       if (faults.readAccountNonce.shift() === 'throw') throw new Error('TEST account nonce read failed');
-      return node.accountNonce(sellerKey.address);
+      return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
-    readTransactionState: async ({ txHash }) => node.transactionState(txHash),
+    readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.broadcast.push(signedTransaction);
       const fault = faults.broadcast.shift();
@@ -764,7 +764,7 @@ test('a lost anchor answer while the name index lags: the journal names the one 
 });
 
 // The journal supersedes a kept CREATE only once it reads from the chain that
-// it can no longer be included. Here another write of the seller wallet
+// it can no longer be executed. Here another write of the seller wallet
 // overtook its nonce, but the account nonce cannot be read: the same bytes are
 // broadcast again and nothing is signed anew; once the read answers, the
 // evidence is signed anew once and the order is delivered.
@@ -792,7 +792,7 @@ test('a journal that cannot read a kept CREATE\'s fate signs nothing anew: the c
   assert.equal(w.createsAt(address), 1);
   const work = (await w.retainedSession(p.jobId)).nativeEvidenceWork;
   assert.equal(work.reconcileAnswer.status, 'unsigned');
-  assert.match(work.reconcileAnswer.reason, /can no longer be included$/, 'only the bounded status, hash and reason of a journal answer are kept');
+  assert.match(work.reconcileAnswer.reason, /not executed through block [0-9]+.*can no longer be executed$/, 'only the bounded status, hash and reason of a journal answer are kept');
   assert.equal(work.anchorOutcome, 'sent', 'the one new signature was sent');
 });
 
@@ -1195,4 +1195,26 @@ test('a commitment readback outage on the first payment claim stays indeterminat
   const answer = await p.claim(tx);
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
   assert.equal(w.createsAt(paymentAddress(p)), 1);
+});
+
+
+test('a paid order resumes once after restart with a rotated steward and trusted historical key; new orders pin the new steward', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.signCreate.push('throw');
+  assert.notEqual((await p.claim(tx)).status, 'payment-evidenced');
+  const previous = w.rails.authority;
+  w.rails.authority = { ...w.otherRail(), historicalStewards: [{ stewardClaim: previous.stewardClaim, stewardPublicKey: previous.stewardPublicKey }] };
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 1);
+  const next = await w.purchase();
+  const session = await w.retainedSession(next.jobId);
+  assert.equal(session.railPin.rail.signature.signer, w.rails.authority.stewardClaim);
+  assert.notEqual(session.railPin.rail.signature.signer, previous.stewardClaim);
 });

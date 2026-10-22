@@ -5,11 +5,12 @@
 // before it is broadcast, and an address has at most one live signed CREATE.
 // Every later question about it is answered from that record checked against
 // the chain: the kept CREATE is broadcast again as the same bytes
-// (`rebroadcast`) while it can still be included, and it is superseded (kept,
+// (`rebroadcast`) while it can still be executed, and it is superseded (kept,
 // never sent again) only once it provably cannot: the account nonce has reached
 // its nonce (the node never executes a transaction whose nonce is not above
 // the account's: it refuses it, or includes it as failed), read first, and
-// then it is neither applied nor pending. Only an
+// then a complete transaction index proves non-execution through the same
+// block height. An ordinary unknown/not-found is not proof. Only an
 // address with no live signed CREATE is `unsigned`, and only then is it signed
 // anew. A read that fails, times out or answers anything else keeps the same
 // bytes alive.
@@ -37,16 +38,15 @@
 //    refused (wallet_sign_invalid), and nothing is kept or sent;
 //  - broadcast({ signedTransaction, txHash }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
-//  - readAccountNonce() -> the wallet account's current nonce on the chain (the
-//    nonce of its last applied transaction), a non-negative safe integer;
-//  - readTransactionState({ txHash }) -> 'applied' (the chain executed it),
-//    'pending' (in the mempool, not yet included) or 'absent' (anything else,
-//    a transaction the chain included as failed too). Node 61b8e75 includes a
-//    mempool transaction whose nonce another write reached as FAILED and its
-//    getTransactionStatus then answers `included`, so a wallet on that node
-//    reads both from the same node, account nonce first: getTransactionStatus
-//    `pending` is 'pending'; `included` with getTxByHash `status: "confirmed"`
-//    is 'applied'; `included` with `status: "failed"`, or `unknown`, is 'absent'.
+//  - readAccountNonce() -> a non-negative safe integer, or an authenticated
+//    { nonce, blockHeight } snapshot from the qualified wallet reader;
+//  - readTransactionState({ txHash }) -> 'applied', 'pending', or 'absent'.
+//    An ordinary absent/unknown answer is indeterminate and cannot supersede.
+//    To prove non-execution, a qualified reader must return
+//    { state: 'absent', checkedThroughBlock } from a complete authenticated
+//    transaction index (including failed transactions) on the same chain.
+//    Its coverage must reach the nonce snapshot's blockHeight. A bare nonce
+//    or an unfenced absence keeps the original signed CREATE alive.
 //  Each read is given readTimeoutMs (default 10 s) to answer.
 // Returns { anchorEvidence, reconcilePaymentEvidence, readSignedProjection,
 // journalId, close }: the first goes into createNativePaymentEvidenceConsumer,
@@ -124,7 +124,7 @@ function signedCreateProblem(answer, input) {
 export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
-  if (typeof readAccountNonce !== 'function' || typeof readTransactionState !== 'function') throw new TypeError('the wallet journal needs readAccountNonce and readTransactionState, to tell a kept CREATE that can no longer be included');
+  if (typeof readAccountNonce !== 'function' || typeof readTransactionState !== 'function') throw new TypeError('the wallet journal needs readAccountNonce and readTransactionState, to tell a kept CREATE that can no longer be executed');
   if (!Number.isSafeInteger(readTimeoutMs) || readTimeoutMs < 1) throw new TypeError('the wallet journal readTimeoutMs must be a positive integer');
   try { closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)); }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
@@ -163,17 +163,25 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     } catch (error) { return { cause: reason(error) }; }
     finally { clearTimeout(timer); }
   };
-  // Whether a live kept CREATE can still be included. The account nonce is read
-  // first: once it has reached the kept nonce, the kept transaction can never be
-  // included later, so if it is then neither applied nor pending it never will be.
+  // Read the nonce snapshot before the transaction index. The latter must
+  // have indexed at least that snapshot, closing the nonce-before-tx-row race.
   async function fate(signed) {
-    const account = await read(() => readAccountNonce(), (value) => nonceOf(value, 0));
+    const account = await read(() => readAccountNonce(), (value) => {
+      const nonce = nonceOf(object(value) ? value.nonce : value, 0);
+      return nonce === null ? null : { nonce, blockHeight: object(value) ? nonceOf(value.blockHeight, 0) : null };
+    });
     if (!('value' in account)) return { alive: true, reason: `the account nonce could not be read: ${account.cause}` };
-    if (account.value < signed.nonce) return { alive: true };
-    const state = await read(() => readTransactionState({ txHash: signed.txHash }), (value) => (TX_STATES.has(value) ? value : null));
+    if (account.value.nonce < signed.nonce) return { alive: true };
+    const state = await read(() => readTransactionState({ txHash: signed.txHash }), (value) => {
+      if (TX_STATES.has(value)) return { state: value, checkedThroughBlock: null };
+      return object(value) && TX_STATES.has(value.state) ? { state: value.state, checkedThroughBlock: nonceOf(value.checkedThroughBlock, 0) } : null;
+    });
     if (!('value' in state)) return { alive: true, reason: `the kept CREATE's state could not be read: ${state.cause}` };
-    if (state.value !== 'absent') return { alive: true };
-    return { alive: false, reason: `the kept signed CREATE ${signed.txHash} (nonce ${signed.nonce}) is neither applied nor pending and the account nonce is ${account.value}; it can no longer be included` };
+    if (state.value.state !== 'absent') return { alive: true };
+    if (account.value.blockHeight === null || state.value.checkedThroughBlock === null || state.value.checkedThroughBlock < account.value.blockHeight) {
+      return { alive: true, reason: 'the kept CREATE has no complete absence observation through the account nonce snapshot' };
+    }
+    return { alive: false, reason: `the kept signed CREATE ${signed.txHash} (nonce ${signed.nonce}) is not executed through block ${state.value.checkedThroughBlock} and the account nonce is ${account.value.nonce}; it can no longer be executed` };
   }
   // The live kept CREATE after its fate is read; one that can no longer be
   // included is superseded (compare-and-swap on its live row) and none is live.
