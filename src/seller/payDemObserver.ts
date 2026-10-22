@@ -1,7 +1,8 @@
 import { types as nodeTypes } from "node:util";
 
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
-import { normalizeDemosNativeAddress, recordTransactionFeeOs } from "../rails/payDem.js";
+import { recordTransactionFeeOs } from "../internal/payDemFees.js";
+import { normalizeDemosNativeAddress } from "../rails/payDem.js";
 import type {
   DemosExecutedTransferObservation,
   DemosTransferObservation,
