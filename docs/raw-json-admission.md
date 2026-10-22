@@ -12,8 +12,9 @@ const canonical = canonicalize(value);
 ```
 
 The SDK admits at most 1 MiB (1,048,576 bytes) by default. Callers may choose a
-smaller or larger finite positive integer with `{ maxBytes }`, capped at 2 MiB
-(2,097,152 bytes):
+smaller or larger finite positive integer with `{ maxBytes }`, capped at
+10,000,000 bytes. Bounded Demos RPC block reads use 4 MiB (4,194,304 bytes);
+Directory search can use its configured budget up to 10,000,000 bytes:
 
 ```ts
 const value = admitRawJson(bytes, { maxBytes: 256 * 1024 });
