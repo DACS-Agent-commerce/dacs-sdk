@@ -3929,7 +3929,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending" });
+    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
 
     const wrongPayeeStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,
@@ -3978,7 +3978,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending" });
+    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
 
     const wrongPhaseStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,
@@ -4036,7 +4036,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, sessionTerms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending" });
+    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
 
     const conflictingHistoryStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,
