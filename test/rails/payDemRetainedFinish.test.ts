@@ -104,7 +104,7 @@ describe("retained audits read existing payment bindings without acquiring autho
   });
 
   it.each([
-    { observation: "missing", reason: "transaction record was not found" },
+    { observation: "missing", reason: "transaction record was not found or lookup failed" },
     { observation: "pending", reason: "transaction record has no terminal execution status" },
   ])("refuses a $observation node record without claiming or writing", async ({ observation, reason }) => {
     const log = createInMemorySettlementLog();

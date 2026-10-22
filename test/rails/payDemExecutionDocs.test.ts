@@ -22,7 +22,7 @@ describe("pay-dem execution docs match the code (#338)", () => {
       const text = read(path).replace(/\s+/g, " ");
       expect(text).toContain("caller-supplied settlement store and reconciler");
       expect(text).toContain("recoveryOnly: true");
-      expect(text).toContain("Every native resume, including a completed-session replay, requires the node to still serve the transaction record.");
+      expect(text).toContain("Every native resume, including a completed-session replay, requires a trusted node to serve the transaction record.");
     }
   });
 

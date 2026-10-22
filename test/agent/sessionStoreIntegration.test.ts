@@ -1533,7 +1533,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       `could not establish the node record for (?:cd){32}: ${reason}; the payment stays unresolved`,
     );
     const expected: Record<string, RegExp> = {
-      absent: unread("transaction record was not found"),
+      absent: unread("transaction record was not found or lookup failed"),
       indeterminate: unread("transaction record has no terminal execution status"),
       timeout: unread("transaction record read timed out"),
       hash: /does not match the retained transaction/,
@@ -3929,7 +3929,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).rejects.toThrow(/stop after durable outcome/);
+    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
 
     const wrongPayeeStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,
@@ -3978,7 +3978,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).rejects.toThrow(/stop after phase-bound outcome/);
+    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
 
     const wrongPhaseStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,
@@ -4036,7 +4036,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, sessionTerms, interrupted.deps),
-    ).rejects.toThrow(/stop after durable outcome/);
+    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
 
     const conflictingHistoryStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,

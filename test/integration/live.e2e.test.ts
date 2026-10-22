@@ -524,6 +524,9 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
             }),
         });
         expect(session.outcome).toBe("completed");
+        if (session.outcome !== "completed") {
+          throw new Error(`expected completed session, got ${session.outcome}`);
+        }
 
         const verdict = await buyer.verifyBundle(session.bundleRef);
         expect(verdict.signatures.some((item) => item.verdict === "valid")).toBe(true);

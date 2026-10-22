@@ -553,6 +553,10 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       },
       deps,
     );
+    expect(result.outcome).toBe("completed");
+    if (result.outcome !== "completed") {
+      throw new Error(`expected completed session, got ${result.outcome}`);
+    }
     return { sub, listingRef, result };
   }
 
