@@ -1722,6 +1722,73 @@ describe("native DEM buyer payment track", () => {
     expect(demosSdk.transfer).toHaveBeenCalledOnce();
   });
 
+  it("holds recovery when the effect fence expires during a matching SDK record read", async () => {
+    const served = demosSdk.getTxByHash.getMockImplementation()!;
+    demosSdk.getTxByHash.mockRejectedValue(new Error("record not served yet"));
+    const rail = await sdkPayDemRailSigning(TX_HASH, 7);
+    const wallet = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER, chainId: "demos", asset: "DEM",
+    });
+    const checkpoints = new Map<string, unknown>();
+    const first = retainedEffectDatabase("fresh", checkpoints);
+    const firstNotice = vi.fn();
+    const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: wallet,
+      database: first.database, workerId: "buyer-before-stale-record-read", rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
+      publishNotice: firstNotice,
+    });
+    await expect(firstPayment(first.operation)).resolves.toEqual({
+      status: "indeterminate", reasonCode: "pay-dem-settlement-ambiguous", retryAt: 2_000,
+    });
+    expect(checkpoints.has("pay-dem-prepared-transfer")).toBe(true);
+    expect(firstNotice).not.toHaveBeenCalled();
+    const retainedWallet = await wallet.inspect();
+    expect(retainedWallet).toMatchObject({
+      activeEffects: 1, assets: [{ cumulativeSettledDebit: "0" }],
+    });
+
+    const restarted = retainedEffectDatabase("reconcile", checkpoints);
+    let current = true;
+    const isCurrentEffect = vi.spyOn(restarted.database, "isCurrentEffect")
+      .mockImplementation(() => current);
+    demosSdk.getTxByHash.mockImplementation(async (hash: string) => {
+      const record = await served(hash);
+      current = false;
+      return record;
+    });
+    demosSdk.getTxByHash.mockClear();
+    const walletReconcile = vi.fn(wallet.reconcile);
+    const publishNotice = vi.fn();
+    const reconcile = vi.fn<DacsPayDemBuyerPaymentTrackOptionsV1["reconcile"]>(
+      ({ prepared }) => ({ status: "completed", settlement: {
+        execution: "executed", nonce: prepared!.nonce, ok: true,
+        txHash: prepared!.txHash, chainId: "demos", payer: PAYER, payee: PAYEE,
+        finality: { model: "bft-final" }, blockNumber: 42, txRefKind: "demos",
+        amountOs: AUTHORITY.amountOs, networkFeeOs: "1000000000",
+      } }),
+    );
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: { ...wallet, reconcile: walletReconcile },
+      database: restarted.database, workerId: "buyer-after-stale-record-read", rail,
+      resolveAuthority: () => AUTHORITY, reconcile, publishNotice,
+    });
+
+    await expect(payment(restarted.operation)).resolves.toEqual({
+      status: "indeterminate", reasonCode: "pay-dem-chain-observation-unavailable", retryAt: 2_000,
+    });
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(demosSdk.getTxByHash).toHaveBeenCalledExactlyOnceWith(TX_HASH);
+    expect(isCurrentEffect.mock.results.some((result) => result.value === false)).toBe(true);
+    expect(walletReconcile).not.toHaveBeenCalled();
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(await wallet.inspect()).toEqual(retainedWallet);
+    expect(demosSdk.transfer).toHaveBeenCalledOnce();
+    expect(demosSdk.broadcast).toHaveBeenCalledOnce();
+    expect(restarted.writes).toEqual(["reconciliation:indeterminate"]);
+  });
+
   // The crash point between settling the wallet and queueing the notice: the
   // SDK verified the payment, the wallet settled, then the notice failed. The
   // restart reconciles and queues the notice without a second transfer.
@@ -1841,12 +1908,16 @@ describe("native DEM buyer payment track", () => {
   // reads the record. The wallet is debited only at the record's own fee, and
   // only when that equals the confirmed debit the reconciler proposes.
   it.each([
-    ["the confirmed fee", RECORD_FEE, undefined],
+    ["the confirmed fee", RECORD_FEE, undefined, "1000000000", false],
     ["another fee", { ...RECORD_FEE, additional_fee: 100_000_001 },
-      "pay-dem-chain-observation-conflict"],
-    ["no fee", undefined, "pay-dem-network-fee-accounting-missing"],
+      "pay-dem-chain-observation-conflict", "1000000000", false],
+    ["no fee", undefined, "pay-dem-network-fee-accounting-missing", "1000000000", false],
+    ["a fee matching only the callback", { ...RECORD_FEE, rpc_fee: 0 },
+      "pay-dem-chain-observation-conflict", "500000000", false],
+    ["the confirmed fee without a retained debit", RECORD_FEE,
+      "pay-dem-chain-observation-conflict", "1000000000", true],
   ] as const)("accounts a restarted payment whose executed record reports %s only at that fee", async (
-    _label, recordFee, reasonCode,
+    _label, recordFee, reasonCode, proposedFee, omitConfirmedDebit,
   ) => {
     const served = demosSdk.getTxByHash.getMockImplementation()!;
     demosSdk.getTxByHash.mockRejectedValue(new Error("record not served yet"));
@@ -1874,6 +1945,15 @@ describe("native DEM buyer payment track", () => {
       activeEffects: 1, assets: [{ cumulativeSettledDebit: "0" }],
     });
 
+    const prepared = checkpoints.get("pay-dem-prepared-transfer") as Record<string, unknown>;
+    expect(prepared).toMatchObject({
+      amountOs: AUTHORITY.amountOs, confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+      maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+    });
+    if (omitConfirmedDebit) {
+      const { confirmedTotalDebitOs: _debit, ...incomplete } = prepared;
+      checkpoints.set("pay-dem-prepared-transfer", incomplete);
+    }
     const record = await served(TX_HASH) as { content: Record<string, unknown> };
     const { transaction_fee: _confirmedFee, ...content } = record.content;
     demosSdk.getTxByHash.mockResolvedValue({
@@ -1892,7 +1972,7 @@ describe("native DEM buyer payment track", () => {
         execution: "executed", nonce: prepared!.nonce, ok: true,
         txHash: prepared!.txHash, chainId: "demos", payer: PAYER, payee: PAYEE,
         finality: { model: "bft-final" }, blockNumber: 42, txRefKind: "demos",
-        amountOs: AUTHORITY.amountOs, networkFeeOs: "1000000000",
+        amountOs: AUTHORITY.amountOs, networkFeeOs: proposedFee,
       } }),
       publishNotice,
     });

@@ -603,6 +603,24 @@ describe("fixed-price native DEM buyer payment-evidence verification", () => {
     expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { model: "block-depth", finalityBlocks: 1 },
+    { model: "provider-receipt" },
+  ] as const)("holds correctly signed native evidence with $model finality", async (finality) => {
+    const f = await fixture();
+    const evidence = signComponent(paymentEvidenceInput({
+      settlementFinality: { ...finality, finalityObservedAt: INCLUDED_AT },
+    }), ARTIFACT_SEPARATORS.SettlementEvidence, SELLER);
+    expect(isSettlementEvidence(evidence)).toBe(true);
+
+    await expect(f.verify({ evidence, evidenceHash: contentHash(evidence) })).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "payment evidence settlement binding invalid",
+    });
+    expect(f.observeDemosTransfer).toHaveBeenCalledWith(TX_HASH);
+    expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
+  });
+
   it("does not verify evidence whose finality time differs from the observed inclusion", async () => {
     const f = await fixture();
     const shifted = signComponent(paymentEvidenceInput({

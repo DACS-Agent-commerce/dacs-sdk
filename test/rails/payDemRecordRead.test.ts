@@ -583,6 +583,25 @@ describe("the exported record read reports a record and vouches for no verdict",
     isPayDemRecordVerifyingRail(value),
   ];
 
+  test.each([
+    ["another network", { network: "other" }],
+    ["a numeric amount", { amountOs: 1000000000 }],
+    ["a leading-zero amount", { amountOs: "01000000000" }],
+    ["an amount with trailing whitespace", { amountOs: "1000000000 " }],
+  ])("refuses %s before any node read", async (_label, invalid) => {
+    nodeSays("confirmed");
+    // Exercise untyped callers with otherwise matching executed transfer facts.
+    const input = { ...retained, ...invalid } as Parameters<typeof readPayDemTransferRecord>[1];
+    await expect(readPayDemTransferRecord(rail, input)).resolves.toEqual({
+      state: "indeterminate", reason: "retained transfer is invalid",
+    });
+    expect(demosNode.reads).toEqual([]);
+    expect(demosNode.networkInfoReads).toEqual([]);
+    expect(demosNode.transfers).toBe(0);
+    expect(demosNode.broadcasts).toBe(0);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   test("an executed read through the SDK rail passes no check and settles through no rail", async () => {
     nodeSays("confirmed");
     const read = await readPayDemTransferRecord(rail, retained);
