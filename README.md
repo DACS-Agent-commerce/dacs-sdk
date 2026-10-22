@@ -613,11 +613,13 @@ under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
 `(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
-`PayDemSettlementRecoveryContext` and must return either an exact
+`PayDemSettlementRecoveryContext`, extended with the exact recorded `txHash`
+when an attempt record is present, and must return either an exact
 `PayDemReconciledSettlement` (including the observed `amountOs`) with
 `execution: "executed"` only after reading the node's transaction record for
 the hash and finding it `confirmed` for this payer, payee and amount; a
-`PayDemReconciledFailure` for a bound `failed` record; or `null` only when
+`PayDemReconciledFailure` for a bound `failed` record. It must never return
+`null` when given a `txHash`; without one, `null` is allowed only when
 authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
@@ -627,9 +629,9 @@ own read of the node record makes a fresh payment final, through the rail
 transfer itself, so the record it reads is this call's transfer at the fee the
 node confirmed. A custom `DemosNativeClient` or `PayDemRail` is refused before
 its transfer or `settle` runs, because the SDK could not bind a transfer it did
-not sign and broadcast to the call; it can never debit the buyer and then leave
-the payment held, and a payment one already made still reconciles, because
-recovery never calls it. See
+not sign and broadcast to the call. Recovery through a custom rail requires an
+SDK attempt record binding the retained hash to this payment and never calls
+that rail. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
@@ -661,8 +663,11 @@ original prepared-transfer journal entry for that hash as `preparedTransfer`.
 The raw node record's `content` and `status` are not this SDK result shape;
 see the [normalization example](docs/pay-dem-execution.md#normalizing-a-reconciliation-result).
 Recovery preserves a known network fee when the reader omits it and refuses
-a different fee for the same finalized payment. A supplied journal's confirmed
-total debit must equal the successful result's OS amount plus reported fee.
+a different fee for the same finalized payment. When a fee is reported or
+preserved from an authenticated outcome, a supplied journal's confirmed total
+debit must equal the successful result's OS amount plus that fee. An omitted
+fee with no authenticated value to preserve does not prevent recovery or
+authenticate a fee from the supplied journal.
 
 The SDK counts the retained hash for this payment only through its own record
 that this key signed it, and refuses the audit otherwise. That record is the

@@ -2265,9 +2265,11 @@ function assertPreparedTransferBinds(
       "pay-dem failed-record proof does not match the journaled signed nonce; refusing reuse or rebroadcast",
     );
   }
+  // A later transaction record may omit the confirmation's gas-operation fee.
+  // Missing accounting is not a contradiction; a known fee must still agree.
   if (captured.ok && prepared.confirmedTotalDebitOs !== undefined &&
-      (captured.networkFeeOs === undefined ||
-        BigInt(context.amountOs) + BigInt(captured.networkFeeOs) !== BigInt(prepared.confirmedTotalDebitOs as string))) {
+      captured.networkFeeOs !== undefined &&
+      BigInt(context.amountOs) + BigInt(captured.networkFeeOs) !== BigInt(prepared.confirmedTotalDebitOs as string)) {
     throw new DacsError(
       "pay-dem reconciliation fee does not match the journal's confirmed total debit; refusing inconsistent accounting",
     );
@@ -2868,10 +2870,11 @@ export function payDemSettle(
         if (recovered === null) {
           throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
         }
-        let captured = capturePayDemReconciliation(recovered, context, retainedTxHash, [priorAuthenticated?.result, before]);
         // A different store/bridge can finish while the chain read is pending.
-        // Recheck without a lease or outcome write before returning any verdict.
+        // Gather its authenticated fee before checking the journal's debit,
+        // without a lease or outcome write.
         const after = await readOutcome();
+        let captured = capturePayDemReconciliation(recovered, context, retainedTxHash, [priorAuthenticated?.result, before, after]);
         for (const existing of [priorAuthenticated?.result, before, after]) {
           if (existing === undefined || existing === null || existing.txHash.length === 0) continue;
           if (existing.blockNumber !== undefined && existing.blockNumber !== captured.blockNumber) {

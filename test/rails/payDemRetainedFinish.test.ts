@@ -50,6 +50,94 @@ function watchWrites(log: SettlementLog) {
 }
 
 describe("retained audits read existing payment bindings without acquiring authority", () => {
+  it.each(["retained", "store-reconcile"])(
+    "recovers a landed payment when only its confirmation carried the fee (%s)",
+    async (path) => {
+      const log = createInMemorySettlementLog();
+      let clock = 1_000_000;
+      const options = () => ({ now: () => clock, leaseDurationMs: LEASE_MS });
+      demosNode.confirm.mockImplementation(async (tx) => ({ response: { data: {
+        transaction: tx,
+        gas_operation: { fees: { network_fee: "19", rpc_fee: "0", additional_fee: "0" } },
+      } } }));
+      let prepared: Readonly<PayDemPreparedTransfer> | undefined;
+      const first = payDemSettle(await heldRail({
+        journalPreparedTransfer: async (entry) => { prepared = entry; },
+      }), {}, { store: createIdempotencyStore(log, options()) });
+      await expect(first(request("job-fee"))).resolves.toMatchObject({ ok: false, txHash: HASH });
+      expect(prepared).toMatchObject({ confirmedTotalDebitOs: "9500000019" });
+      // The later record has no confirmation gas_operation or transaction fee.
+      expect((await demosNode.getTxByHash()).content.transaction_fee).toBeUndefined();
+      clock += LEASE_MS + 1;
+      const writes = watchWrites(log);
+      const reconcile = vi.fn(async () => ({ ...executed(), preparedTransfer: prepared }));
+      const recover = payDemSettle(await sdkRail(), {}, {
+        store: createIdempotencyStore(log, options()), reconcile,
+      });
+      const req = path === "retained" ? resumed("job-fee") : request("job-fee");
+      for (let retry = 0; retry < 2; retry += 1) {
+        const result = await recover(req);
+        expect(result).toMatchObject({ ok: true, txHash: HASH });
+        // A supplied journal does not authenticate an otherwise unknown fee.
+        expect(result.networkFeeOs).toBeUndefined();
+      }
+      if (path === "retained") for (const write of writes) expect(write).not.toHaveBeenCalled();
+      expect(sdkTransfers()).toBe(1);
+      expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { label: "an omitted fee", reportedFee: undefined, confirmedDebit: "9500000019", error: undefined },
+    { label: "a conflicting journal debit", reportedFee: undefined, confirmedDebit: "9500000020", error: /fee.*confirmed.*debit/ },
+    { label: "a conflicting reported fee", reportedFee: "20", confirmedDebit: "9500000020", error: /fee conflicts with the authenticated network fee/ },
+  ])("checks a concurrent completion's authenticated fee against $label", async ({ reportedFee, confirmedDebit, error }) => {
+    const log = createInMemorySettlementLog();
+    const putOutcome = log.putOutcome.bind(log);
+    const writes = watchWrites(log);
+    let complete!: () => void;
+    const pending = new Promise<void>((resolve) => { complete = resolve; });
+    let reached!: () => void;
+    const atWrite = new Promise<void>((resolve) => { reached = resolve; });
+    vi.spyOn(log, "putOutcome").mockImplementationOnce(async (input) => {
+      reached();
+      await pending;
+      return putOutcome(input);
+    });
+    demosNode.confirm.mockImplementation(async (tx) => ({ response: { data: {
+      transaction: tx,
+      gas_operation: { fees: { network_fee: "19", rpc_fee: "0", additional_fee: "0" } },
+    } } }));
+    let prepared: Readonly<PayDemPreparedTransfer> | undefined;
+    const first = payDemSettle(await sdkRail({
+      journalPreparedTransfer: async (entry) => { prepared = entry; },
+    }), {}, { store: createIdempotencyStore(log) })(request("job-fee"));
+    await atWrite;
+    const callsBeforeAudit = writes.map((write) => write.mock.calls.length);
+    const store = createIdempotencyStore(log);
+    const once = vi.spyOn(store, "once");
+    const readOutcome = vi.spyOn(store, "readOutcome");
+    const audit = payDemSettle(await sdkRail(), {}, { store, reconcile: async () => {
+      // The original worker saves success while the audit awaits its chain read.
+      complete();
+      await first;
+      return { ...executed(),
+        ...(reportedFee === undefined ? {} : { networkFeeOs: reportedFee }),
+        preparedTransfer: { ...prepared!, confirmedTotalDebitOs: confirmedDebit },
+      };
+    } });
+    if (error) await expect(audit(resumed("job-fee"))).rejects.toThrow(error);
+    else await expect(audit(resumed("job-fee")))
+      .resolves.toMatchObject({ ok: true, txHash: HASH, networkFeeOs: "19" });
+    expect(readOutcome).toHaveBeenCalledTimes(2);
+    expect(writes.map((write) => write.mock.calls.length)).toEqual(callsBeforeAudit);
+    expect(once).not.toHaveBeenCalled();
+    await expect(log.readOutcome!(settlementKey("pay-dem", "job-fee", 0)))
+      .resolves.toMatchObject({ result: { ok: true, networkFeeOs: "19" } });
+    expect(sdkTransfers()).toBe(1);
+    expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it.each((["retained", "cached", "lost-outcome", "store-reconcile"] as const)
     .flatMap((path) => [false, true].map((journal) => ({ path, journal }))))(
     "preserves a finalized fee through $path recovery and refuses a conflicting fee (journal=$journal)",
