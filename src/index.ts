@@ -310,6 +310,7 @@ export {
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
   demosWriteEvidenceBindsReceiptContent,
+  demosTransactionContentMatches,
   demosWriteEvidenceToAnchorReceipt,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,
@@ -1897,3 +1898,4 @@ export {
 
 export { authenticateSessionProfile, requireAuthenticatedSessionProfile } from "./discovery/sessionProfileAdmission.js";
 export type { AuthenticateSessionProfile } from "./discovery/sessionProfileAdmission.js";
+export { jid1AttestationAddress, jid1PaymentEvidenceAddress, jid1RatingAddress, jid1BundleAddress } from "./canonical/jid1Addressing.js";
