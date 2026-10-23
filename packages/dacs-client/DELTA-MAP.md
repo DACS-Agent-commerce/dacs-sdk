@@ -1032,6 +1032,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/purchase-review-races.test.mjs:5`, `packages/dacs-client/test/purchase-review-races.test.mjs:7`, `packages/dacs-client/test/purchase-review-races.test.mjs:9`, `packages/dacs-client/test/purchase-review-races.test.mjs:27` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91`, `packages/dacs-client/test/readback-review-decisions.test.mjs:94` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
