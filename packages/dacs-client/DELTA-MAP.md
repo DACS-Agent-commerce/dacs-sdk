@@ -496,6 +496,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 share the cancellable passive observation deadline | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:13`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:21`, `packages/dacs-client/src/util/http.mjs:24`, `packages/dacs-client/src/util/http.mjs:27`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:36`, `packages/dacs-client/src/util/http.mjs:38`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:45`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:54`, `packages/dacs-client/src/util/http.mjs:62`, `packages/dacs-client/src/util/http.mjs:67`, `packages/dacs-client/src/util/http.mjs:88`, `packages/dacs-client/src/util/http.mjs:112` | dad306f9b723c185815fbb41b63ab6d56f135a8b |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 03e4731889a75769c2f2b429d2a99fbb89f10baf |
+| D11 | fix(client): D11 remove trailing observation fixture whitespace | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | 0af1586bc61b3a59509d361eebe3644f36d40150 |
 
 ## Complete commit and file inventory
 
@@ -1161,6 +1163,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:13`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:21`, `packages/dacs-client/src/util/http.mjs:24`, `packages/dacs-client/src/util/http.mjs:27`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:36`, `packages/dacs-client/src/util/http.mjs:38`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:45`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:54`, `packages/dacs-client/src/util/http.mjs:62`, `packages/dacs-client/src/util/http.mjs:67`, `packages/dacs-client/src/util/http.mjs:88`, `packages/dacs-client/src/util/http.mjs:112` |
 | fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/test/host-observations.test.mjs:1` |
 
 ## Original moved files
 

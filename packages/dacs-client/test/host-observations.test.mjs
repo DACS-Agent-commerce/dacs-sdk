@@ -191,4 +191,3 @@ test('wallet-access-closed readback refuses non-JSON observation fields', async 
   assert.doesNotThrow(() => JSON.stringify(result));
   assert.equal(w.consumed(), 0);
 });
-
