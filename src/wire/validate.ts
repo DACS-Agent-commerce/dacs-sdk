@@ -63,9 +63,9 @@ export const isClaim = (v: unknown): v is string => typeof v === "string" && CLA
 export const sameCanonical = (a: unknown, b: unknown): boolean => canonicalize(a) === canonicalize(b);
 export const cloneJson = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 export function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+  if (value !== null && typeof value === "object") {
     for (const item of Object.values(value)) deepFreeze(item);
-    Object.freeze(value);
+    if (!Object.isFrozen(value)) Object.freeze(value);
   }
   return value;
 }
@@ -77,11 +77,11 @@ export function deepFreeze<T>(value: T): T {
  * values come back CF-1 normalized, the form every digest here covers.
  */
 export function ownedConfig(value: unknown, code: string): unknown {
-  try { return snapshotCanonicalJsonConfig(value, code); } catch { return fail(code, 500); }
+  try { return snapshotCanonicalJsonConfig(value, code); } catch (cause) { return fail(code, 500, undefined, cause); }
 }
 /** The same for a signed artifact or payload the caller hands over; `undefined` members are refused. */
 export function ownedArtifact(value: unknown, code: string, status = 401): unknown {
-  try { return snapshotCanonicalJsonRead(value, code); } catch { return fail(code, status); }
+  try { return snapshotCanonicalJsonRead(value, code); } catch (cause) { return fail(code, status, undefined, cause); }
 }
 /** The owned copy, or `undefined` when the value is not data: what a predicate tests. */
 export function ownedOrNothing(value: unknown): unknown {
@@ -95,7 +95,7 @@ export function ownedOrNothing(value: unknown): unknown {
  * copied by the entry point that reads it.
  */
 export function ownedFields<K extends string>(value: unknown, keys: readonly K[]): Record<K, unknown> {
-  if (!isRecord(value) || types.isProxy(value)) return fail("wire_input_invalid", 500);
+  if (types.isProxy(value) || !isRecord(value)) return fail("wire_input_invalid", 500);
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return fail("wire_input_invalid", 500);
   const fields = {} as Record<K, unknown>;
@@ -218,7 +218,7 @@ const sealedHas = uncurry(WeakSet.prototype.has) as (set: WeakSet<object>, value
 const sealedAdd = uncurry(WeakSet.prototype.add) as (set: WeakSet<object>, value: object) => unknown;
 
 /** Freeze an admitted value and record every container in it: what isAdmittedValue checks later. */
-export function sealAdmitted<T>(value: T): T {
+function sealAdmitted<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     for (const item of Object.values(value)) sealAdmitted(item);
     Object.freeze(value);
@@ -249,9 +249,9 @@ export function admitWireJson(bytes: Uint8Array, maxBytes: number, code: string,
   try {
     const value = admitRawJson(bytes, { maxBytes });
     assertNfc(value);
-    return value;
+    return sealAdmitted(value);
   } catch (error) {
-    if (error instanceof RawJsonAdmissionError) return fail(code, status, error.code);
+    if (error instanceof RawJsonAdmissionError) return fail(code, status, error.code, error);
     throw error;
   }
 }
