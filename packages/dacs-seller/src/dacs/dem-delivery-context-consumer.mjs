@@ -10,7 +10,7 @@
 // buyer) at the canonical DACS-2 address.  The underlying composite records and their
 // verification provenance are kept seller-side; this consumer only binds the
 // exact Agreement derivation input to the already prepared purchase scope.
-import { canonicalize, compositeVerificationAddress, identityBundleHash } from '@kynesyslabs/dacs';
+import { canonicalize, compositeVerificationAddress, identityBundleHash, requireCanonicalJobId } from '@kynesyslabs/dacs';
 import { addressForClaim } from './demos-claims.mjs';
 import { DEM_RAIL } from './listing.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
@@ -54,6 +54,7 @@ export function demDeliveryContextUsage(capability) {
 // generatedAt names the saved plan's request (its context stays for the
 // seller); without it the purchase ended. Eviction never changes a purchase.
 export function releaseDemDeliveryContext(capability, { jobId, generatedAt = null }) {
+  requireCanonicalJobId(jobId);
   try { capabilityFor(capability)?.release?.({ jobId, generatedAt }); } catch { /* eviction only */ }
 }
 
@@ -95,22 +96,23 @@ function inputProblem(input, { scope, listing, buyerBundle }) {
 }
 
 export async function resolveDemDeliverySellerContext(capability, { jobId, listing, buyerBundle, generatedAt }) {
+  requireCanonicalJobId(jobId);
   const configured = capabilityFor(capability);
   if (!configured) return held('indeterminate', 'DEM delivery context capability is absent');
-  let answer;
-  try { answer = await configured.resolveSeller(structuredClone({ jobId, listingPin: listingPin(listing), buyerIdentityBundle: buyerBundle, generatedAt })); }
-  catch (error) { return held('indeterminate', `DEM delivery seller context failed: ${error?.message ?? error}`); }
-  if (!object(answer) || answer.disposition !== 'present' || !object(answer.value) || !object(answer.value.input) || !Array.isArray(answer.value.vetRequirements)) {
-    return held(answer?.disposition ?? 'indeterminate', answer?.reason ?? 'DEM delivery seller context is malformed');
-  }
-  const input = JSON.parse(canonicalize(answer.value.input));
-  const syntheticScope = {
-    jobId, buyer: buyerBundle.presentedBy, buyerBundleHash: identityBundleHash(buyerBundle), seller: listing.seller.identity.presentedBy,
-    listingPin: listingPin(listing), rail: { railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion },
-    // DACS-4 §9.5.1 PB-2 tier 1: pay-dem has an intrinsic destination.
-    payee: addressForClaim(listing.seller.identity.presentedBy), generatedAt,
-  };
-  const problem = inputProblem(input, { scope: syntheticScope, listing, buyerBundle });
-  if (problem) return held('rejected', `DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: ${problem}`);
-  return { disposition: 'present', input, vetRequirements: JSON.parse(canonicalize(answer.value.vetRequirements)), authority: configured.authority };
+  try {
+    const answer = await configured.resolveSeller(structuredClone({ jobId, listingPin: listingPin(listing), buyerIdentityBundle: buyerBundle, generatedAt }));
+    if (!object(answer) || answer.disposition !== 'present' || !object(answer.value) || !object(answer.value.input) || !Array.isArray(answer.value.vetRequirements)) {
+      return held(answer?.disposition ?? 'indeterminate', answer?.reason ?? 'DEM delivery seller context is malformed');
+    }
+    const input = JSON.parse(canonicalize(answer.value.input));
+    const syntheticScope = {
+      jobId, buyer: buyerBundle.presentedBy, buyerBundleHash: identityBundleHash(buyerBundle), seller: listing.seller.identity.presentedBy,
+      listingPin: listingPin(listing), rail: { railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion },
+      // DACS-4 §9.5.1 PB-2 tier 1: pay-dem has an intrinsic destination.
+      payee: addressForClaim(listing.seller.identity.presentedBy), generatedAt,
+    };
+    const problem = inputProblem(input, { scope: syntheticScope, listing, buyerBundle });
+    if (problem) return held('rejected', `DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: ${problem}`);
+    return { disposition: 'present', input, vetRequirements: JSON.parse(canonicalize(answer.value.vetRequirements)), authority: configured.authority };
+  } catch (error) { return held('indeterminate', `DEM delivery seller context failed: ${error?.message ?? error}`); }
 }
