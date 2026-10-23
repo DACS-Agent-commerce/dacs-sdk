@@ -989,14 +989,14 @@ describe("runtime-image package inventory", () => {
   const inventory = (edit: (packages: Array<Record<string, unknown>>) => void) => {
     const value = JSON.parse(closureInventory(lockText)); edit(value.packages); return JSON.stringify(value);
   };
-  const add = (location: string, name: string, version: string) =>
+  const add = (location: string, name: string | undefined, version: string | undefined) =>
     inventory(packages => { packages.push({ location, name, version }); });
 
   it("as recorded, without an inventory, blocks the b7b180f run (exit 3)", () => {
-    const summary = b7b180fEvidence({ "runtime-image-inventory.json": undefined });
+    const summary = b7b180fSimulation({ "runtime-image-inventory.json": undefined });
     expect(summary.securityGate.findings.productionImageInventory.scanComplete).toBe(false);
     expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
-    expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+    expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy", checks: { productionImage: "blocked" } });
   });
 
   it.each([
@@ -1073,8 +1073,8 @@ describe("runtime-image package inventory", () => {
     ["unreadable JSON", "{"],
     ["another schema", JSON.stringify({ schema: "dacs-runtime-image-inventory/v0", packages: [] })],
     ["no package list", JSON.stringify({ schema: "dacs-runtime-image-inventory/v1" })],
-    ["an entry without a version", add("node_modules/x", "x", undefined as never)],
-    ["an entry without a name", add("node_modules/x", undefined as never, "1.0.0")],
+    ["an entry without a version", add("node_modules/x", "x", undefined)],
+    ["an entry without a name", add("node_modules/x", undefined, "1.0.0")],
     ["a repeated location", add("node_modules/semver", "semver", "7.8.5")],
     ["a scope directory as a package", add("node_modules/@sigstore", "@sigstore", "1.0.0")],
     ["a location outside node_modules", add("lib/x", "x", "1.0.0")],
