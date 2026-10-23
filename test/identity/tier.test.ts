@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, test, vi } from "vitest";
+import { describe, expect, it, test } from "vitest";
 
 import {
   deriveIdentityTier,
@@ -28,41 +28,6 @@ const verified = (ref: string): BundleClaimLike => ({
 const selfAsserted = (ref: string): BundleClaimLike => ({ ref });
 
 describe("deriveIdentityTier (§6.3.2.1, IT-1..IT-3)", () => {
-  test.each([false, true])("verifies original alias proofs before folding tier outcomes (reverse=%s)", (reverse) => {
-    const original = verified("web2:domain:Agent.Example");
-    const alias = selfAsserted("domain:agent.example");
-    const claims = reverse ? [alias, original] : [original, alias];
-    const isVerified = vi.fn((claim: BundleClaimLike) =>
-      claim === original && claim.verifiedBy === original.verifiedBy);
-    expect(deriveIdentityTier({ bundleVersion: "1", claims }, isVerified)).toBe("verified");
-    expect(isVerified.mock.calls.map(([claim]) => claim)).toEqual(claims);
-    expect(original.ref).toBe("web2:domain:Agent.Example");
-    expect(deriveIdentityTier({ bundleVersion: "1", claims: [original] }, isVerified)).toBe("verified");
-    expect(deriveIdentityTier({ bundleVersion: "1", claims }, () => false)).toBe("self-declared");
-    expect(deriveIdentityTier({ bundleVersion: "2", claims: [original] }, isVerified)).toBe("self-declared");
-  });
-
-  test.each(["web2:domain:https://agent.example", "web2:domain:", "web2:domain:a b.example"])(
-    "skips the malformed historical domain %s even when the predicate accepts everything",
-    (ref) => {
-      const isVerified = vi.fn((_claim: BundleClaimLike) => true);
-      const claim = verified(ref);
-      expect(deriveIdentityTier({ bundleVersion: "1", claims: [claim] }, isVerified)).toBe("self-declared");
-      expect(isVerified).not.toHaveBeenCalled();
-      // A well-formed claim beside it still counts, and only it reaches the predicate.
-      const good = verified("key:abcd");
-      expect(deriveIdentityTier({ bundleVersion: "1", claims: [claim, good] }, isVerified)).toBe("verified");
-      expect(isVerified.mock.calls.map(([c]) => c)).toEqual([good]);
-    },
-  );
-
-  test("ignores null and non-string claim refs without throwing or calling the predicate", () => {
-    const isVerified = vi.fn((_claim: BundleClaimLike) => true);
-    const claims = [null, undefined, { ref: 7 }, { ref: null }, {}] as never;
-    expect(deriveIdentityTier({ bundleVersion: "1", claims }, isVerified)).toBe("self-declared");
-    expect(isVerified).not.toHaveBeenCalled();
-  });
-
   test("claimScheme reads the scheme before the first colon, lower-cased", () => {
     expect(claimScheme("lei:529900T8BM49AURSDO55")).toBe("lei");
     expect(claimScheme("DOMAIN:example.com")).toBe("domain");

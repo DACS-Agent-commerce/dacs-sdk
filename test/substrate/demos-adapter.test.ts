@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 import type { Demos } from "@kynesyslabs/demosdk/websdk";
@@ -17,8 +17,6 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../../src/crypto/index.js";
-import { sha256Hex } from "../../src/canonical/index.js";
-import { createStripeAp2Integration } from "../../src/rails/ap2Stripe.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../../src/identity/index.js";
 
 const RPC = "https://node2.demos.sh";
@@ -30,38 +28,10 @@ const makeAdapter = (
   writeJournal,
 });
 
-// SDK 4.0.18 Web2Calls.web2Payload, with a real request/result commitment.
-function dahrTransaction(url = "https://example.com/data", headers = {}, body?: string) {
-  return {
-    hash: "0xdahr", status: "confirmed", blockNumber: 7,
-    content: { type: "web2Request", data: ["web2Request", { message: {
-      sessionId: "session", payload: "", authorization: "",
-      web2Request: {
-        raw: { action: "startProxy", url, method: body === undefined ? "GET" : "POST", headers },
-        result: { targetUrl: url, status: 200, headers: { "content-type": "text/plain" },
-          responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex("content-type:text/plain"),
-          ...(body === undefined ? {} : { requestHash: sha256Hex(body) }) },
-      },
-    } }] },
-  };
-}
-
-// The storage-program search posts with global fetch, bypassing `raw`, and
-// index observation keeps polling after a write's test has finished. Keep fetch
-// offline between tests too, so nothing here reaches the live RPC named above.
-// Tests that need search results stub their own fetch.
-const offlineFetch = async (): Promise<never> => {
-  throw new TypeError("fetch failed: test RPC is offline");
-};
-
 describe("DemosAdapter", () => {
-  beforeEach(() => {
-    vi.stubGlobal("fetch", offlineFetch);
-  });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    vi.stubGlobal("fetch", offlineFetch);
   });
 
   it("requires an rpc url", () => {
@@ -286,27 +256,6 @@ describe("DemosAdapter", () => {
     ).rejects.toThrow(/not connected/);
   });
 
-  it("rejects accessor-backed DAHR headers without reading them or starting a proxy", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
-    const getter = vi.fn(() => "Bearer unused");
-    const headers = Object.defineProperty({}, "Authorization", { get: getter, enumerable: true });
-    const createDahr = vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2, "createDahr");
-    await expect(adapter.proxyFetch({ url: "https://example.com/data", headers }))
-      .rejects.toThrow(/stable string data/);
-    expect(getter).not.toHaveBeenCalled();
-    expect(createDahr).not.toHaveBeenCalled();
-  });
-
-  it("rejects an unsupported GET body before starting a proxy", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
-    const createDahr = vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2, "createDahr");
-    await expect(adapter.proxyFetch({ url: "https://example.com/data", method: "GET", body: "ignored-by-node" }))
-      .rejects.toThrow(/bodies require POST/);
-    expect(createDahr).not.toHaveBeenCalled();
-  });
-
   it("keeps Bearer credentials out of DAHR anchored request headers", async () => {
     const statusCredential = ["rk", "test", "StatusCredential456"].join("_");
     const adapter = makeAdapter();
@@ -317,7 +266,9 @@ describe("DemosAdapter", () => {
       blockNumber: 7,
     } as never);
     const transaction = vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
-      ...dahrTransaction("https://api.stripe.com/v1/payment_intents/pi_test", { Accept: "json" }),
+      hash: "0xdahr",
+      status: "confirmed",
+      blockNumber: 7,
     } as never);
     const block = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
       number: 7,
@@ -328,7 +279,7 @@ describe("DemosAdapter", () => {
     const startProxy = vi.fn(async () => ({
       data: "ok",
       status: 200,
-      responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex("content-type:text/plain"), headers: { "content-type": "text/plain" },
+      responseHash: "a".repeat(64),
       txHash: "0xdahr",
       timestamp: 1,
     }));
@@ -385,351 +336,6 @@ describe("DemosAdapter", () => {
       adapter.proxyFetch({ url: "https://example.com/status" }),
     ).rejects.toThrow(/DAHR anchor transaction 0xdahr-failed failed on chain/);
     expect(stopProxy).toHaveBeenCalledOnce();
-  });
-
-  describe("DAHR canonical inclusion authentication", () => {
-    type Mutable = Record<string, any>;
-
-    /** Run proxyFetch where one canonical transaction or block field differs from the control. */
-    async function dahrFetch(change: {
-      status?: (status: Mutable) => void;
-      transaction?: (transaction: Mutable) => void;
-      block?: (block: Mutable) => Mutable | null | void;
-      response?: (response: Mutable) => void;
-      body?: string;
-      requestUrl?: string;
-      method?: "GET" | "POST";
-      providerStatus?: boolean;
-    } = {}) {
-      const adapter = makeAdapter();
-      Object.assign(adapter, { connected: true });
-      vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
-      const status: Mutable = { state: "included", blockNumber: 7 };
-      change.status?.(status);
-      const requestUrl = change.requestUrl ?? (change.providerStatus
-        ? "https://api.stripe.com/v1/payment_intents/pi_test" : "https://example.com/data");
-      const data = change.providerStatus
-        ? JSON.stringify({ id: "pi_test", status: "succeeded", currency: "usd", amount_received: 100, metadata: {} })
-        : "ok";
-      const transaction: Mutable = dahrTransaction(new URL(requestUrl.trim()).href.split("#")[0], {}, change.body);
-      transaction.content.data[1].message.web2Request.result.responseHash = sha256Hex(data);
-      change.transaction?.(transaction);
-      let block: Mutable | null = {
-        number: 7,
-        status: "confirmed",
-        content: { ordered_transactions: ["0xdahr"] },
-        validation_data: { signature: "bft" },
-      };
-      const replaced = change.block?.(block);
-      if (replaced !== undefined) block = replaced;
-      vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue(status as never);
-      vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue(transaction as never);
-      const getBlock = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue(block as never);
-      const stopProxy = vi.fn(async () => undefined);
-      const response: Mutable = {
-        data, status: 200, responseHash: sha256Hex(data),
-        responseHeadersHash: sha256Hex("content-type:text/plain"), headers: { "content-type": "text/plain" }, txHash: "0xdahr", timestamp: 3,
-        ...(change.body === undefined ? {} : { requestHash: sha256Hex(change.body) }),
-      };
-      change.response?.(response);
-      const startProxy = vi.fn(async () => response);
-      vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
-        "createDahr").mockResolvedValue({ startProxy, stopProxy });
-      const outcome = await adapter.proxyFetch({ url: requestUrl,
-        method: change.method ?? (change.body === undefined ? undefined : "POST"), body: change.body })
-        .then((result) => result, (error: unknown) => error);
-      expect(stopProxy).toHaveBeenCalledOnce();
-      return { outcome, getBlock, adapter, startProxy };
-    }
-
-    it.each(["http://example.com/data", "https://example.com/data"])(
-      "returns the authenticated anchored response for %s", async (requestUrl) => {
-        const { outcome, startProxy } = await dahrFetch({ requestUrl });
-        expect(outcome).toMatchObject({ body: "ok", anchorTxRef: "0xdahr" });
-        expect(startProxy).toHaveBeenCalledExactlyOnceWith({
-          url: requestUrl, method: "GET", options: { headers: {} },
-        });
-      },
-    );
-
-    it.each([
-      "https://user@example.com/data",
-      "https://user:pass@example.com/data",
-      "https://:pass@example.com/data",
-      "ftp://example.com/data",
-    ])("rejects URL %s before creating or starting a proxy", async (url) => {
-      const adapter = makeAdapter();
-      Object.assign(adapter, { connected: true });
-      vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
-      const startProxy = vi.fn();
-      const createDahr = vi.spyOn(
-        (adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
-        "createDahr",
-      ).mockResolvedValue({ startProxy, stopProxy: vi.fn() });
-      await expect(adapter.proxyFetch({ url }))
-        .rejects.toThrow("DAHR requires an HTTP(S) URL without embedded credentials");
-      expect(createDahr).not.toHaveBeenCalled();
-      expect(startProxy).not.toHaveBeenCalled();
-    });
-
-    it.each<[string, Parameters<typeof dahrFetch>[0]]>([
-      ["an included native transfer", { transaction: (tx) => { tx.content = { type: "native", data: [] }; } }],
-      ["missing transaction content", { transaction: (tx) => { delete tx.content; } }],
-      ["a different URL", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.url += "/other"; } }],
-      ["a different target URL", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.targetUrl += "/other"; } }],
-      ["a different method", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.method = "POST"; } }],
-      ["a different proxy action", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.action = "create"; } }],
-      ["different request headers", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.headers = { accept: "other" }; } }],
-      ["a different status", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.status = 201; } }],
-      ["a substituted body", { response: (r) => { r.data = "fabricated"; } }],
-      ["a substituted response hash", { response: (r) => { r.responseHash = "a".repeat(64); } }],
-      ["a substituted response headers hash", { response: (r) => { r.responseHeadersHash = "b".repeat(64); } }],
-      ["substituted response headers", { response: (r) => { r.headers = { "content-type": "text/html" }; } }],
-      ["substituted transaction headers", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.headers = { vary: "accept" }; } }],
-      ["an unexpected request body hash", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.requestHash = "c".repeat(64); } }],
-      ["a different request body hash", { body: "request", response: (r) => { r.requestHash = "c".repeat(64); } }],
-      ["a non-string body", { response: (r) => { r.data = { ok: true }; } }],
-    ])("rejects %s as DAHR evidence", async (_label, change) => {
-      const { outcome } = await dahrFetch(change);
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toMatch(/canonical web2Request commitment/);
-    });
-
-    it("authenticates exact UTF-8 data and the pinned stable-header hash profile", async () => {
-      const body = "\uFEFF  café ☕ 𝄞\n";
-      const responseHash = sha256Hex(body);
-      const responseHeadersHash = sha256Hex("content-type:text/plain\nx-roles:a, b");
-      const { outcome } = await dahrFetch({
-        requestUrl: "  HTTPS://EXAMPLE.COM:443/data#unanchored-fragment  ",
-        transaction: (tx) => { Object.assign(tx.content.data[1].message.web2Request.result, {
-          headers: { "Content-Type": " text/plain ", "X-Roles": ["a", "b"], date: "then" },
-          responseHash, responseHeadersHash,
-        }); },
-        response: (r) => { Object.assign(r, { data: body, responseHash, responseHeadersHash,
-          headers: { "x-roles": ["a", "b"], "content-type": "text/plain", date: "now" } }); },
-      });
-      expect(outcome).toMatchObject({ body, responseHash, responseHeadersHash, anchorTxRef: "0xdahr" });
-    });
-
-    it.each([
-      "text/plain", "TEXT/CSV; charset=utf-8", 'text/plain; CHARSET="UTF-8"',
-      "text/csv; header=present; charset=utf-8", "application/json",
-      "application/problem+json", "application/xml", "application/atom+xml",
-      "application/csv", "Application/CSV; charset=utf-8", "application/x-ndjson",
-      "application/yaml", "application/javascript; charset=UTF-8",
-    ])("accepts committed textual content type %s", async (contentType) => {
-      const headers = { "Content-Type": contentType };
-      const responseHeadersHash = sha256Hex(`content-type:${contentType}`);
-      const { outcome } = await dahrFetch({
-        transaction: (tx) => Object.assign(tx.content.data[1].message.web2Request.result,
-          { headers, responseHeadersHash }),
-        response: (r) => Object.assign(r, { headers, responseHeadersHash }),
-      });
-      expect(outcome).toMatchObject({ body: "ok", responseHeadersHash, anchorTxRef: "0xdahr" });
-    });
-
-    it.each([
-      ["Latin-1", [0xe9], "text/plain; charset=iso-8859-1"],
-      ["malformed UTF-8 declared as UTF-8", [0xc3, 0x28], "text/plain; charset=utf-8"],
-      ["truncated UTF-8 without a charset", [0xe2, 0x82], "text/plain"],
-      ["overlong UTF-8", [0xc0, 0xaf], "application/json"],
-      ["UTF-8 encoding of a surrogate", [0xed, 0xa0, 0x80], "application/xml"],
-      ["out-of-range UTF-8", [0xf4, 0x90, 0x80, 0x80], "text/plain"],
-    ] as const)("refuses %s even when the included hash matches the node-decoded text", async (_label, bytes, contentType) => {
-      const original = Buffer.from(bytes);
-      // Reproduce pinned Proxy.ts: Buffer.toString() replaces malformed bytes,
-      // then responseHash commits to the UTF-8 re-encoding of that changed text.
-      const body = original.toString("utf8");
-      expect(Buffer.from(body, "utf8").equals(original)).toBe(false);
-      const headers = { "content-type": contentType };
-      const responseHash = sha256Hex(body);
-      const responseHeadersHash = sha256Hex(`content-type:${contentType}`);
-      const { outcome } = await dahrFetch({
-        transaction: (tx) => Object.assign(tx.content.data[1].message.web2Request.result,
-          { headers, responseHash, responseHeadersHash }),
-        response: (r) => Object.assign(r, { data: body, headers, responseHash, responseHeadersHash }),
-      });
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toMatch(/not byte-preserving/);
-    });
-
-    it.each(["literal \uFFFD", "unpaired high \uD800", "unpaired low \uDC00"])(
-      "refuses ambiguous or non-round-tripping text %j", async (body) => {
-        const responseHash = sha256Hex(body);
-        const { outcome } = await dahrFetch({
-          transaction: (tx) => { tx.content.data[1].message.web2Request.result.responseHash = responseHash; },
-          response: (r) => Object.assign(r, { data: body, responseHash }),
-        });
-        expect(outcome).toBeInstanceOf(Error);
-        expect((outcome as Error).message).toMatch(/not byte-preserving/);
-      },
-    );
-
-    it.each([
-      { "content-type": "text/plain; charset=iso-8859-1" },
-      { "content-type": "application/json; charset=utf-16" },
-      { "content-type": 'text/plain; charset="windows-1252"' },
-      { "content-type": "text/plain; charset=utf-8; charset=iso-8859-1" },
-      { "content-type": "text/plain; charset=iso-8859-1; charset=utf-8" },
-      { "content-type": "text/plain; charset=utf-8; charset=utf-8" },
-      { "content-type": 'text/plain; charset="utf-8' },
-      { "content-type": "text/plain; charset" },
-      { "content-type": "application/octet-stream" },
-      { "content-type": "image/png" },
-      { "content-type": "application/pdf" },
-      { "content-type": "application/json-invalid" },
-      { "content-type": "application/csvx" },
-      { "content-type": "application/csv; charset=iso-8859-1" },
-      { "content-type": "application/yaml; charset=utf-16" },
-      { "content-type": "" },
-      {},
-      { "content-type": ["text/plain", "image/png"] },
-      { "content-type": "text/plain", "Content-Type": "image/png" },
-    ])("refuses unsupported committed content type %j even with matching hashes", async (headers) => {
-      const responseHeadersHash = sha256Hex(Object.entries(headers)
-        .map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(", ") : value])
-        .sort(([a], [b]) => a! < b! ? -1 : a! > b! ? 1 : 0)
-        .map(([key, value]) => `${key}:${value}`).join("\n"));
-      const { outcome } = await dahrFetch({
-        transaction: (tx) => Object.assign(tx.content.data[1].message.web2Request.result,
-          { headers, responseHeadersHash }),
-        response: (r) => Object.assign(r, { headers, responseHeadersHash }),
-      });
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toBe(
-        "DAHR body is not byte-preserving: unsupported response content-type");
-    });
-
-    it.each(["", "requesté ☕\n"])("forwards exact POST payload %j to the SDK", async (body) => {
-      const { outcome, startProxy } = await dahrFetch({ method: "POST", body });
-      expect(outcome).toMatchObject({ body: "ok", anchorTxRef: "0xdahr" });
-      expect(startProxy).toHaveBeenCalledExactlyOnceWith({
-        url: "https://example.com/data", method: "POST", options: { headers: {}, payload: body },
-      });
-    });
-
-    it.each([null, 0, {}, ["body"]])("rejects non-string POST body %j before proxy creation", async (body) => {
-      const adapter = makeAdapter();
-      Object.assign(adapter, { connected: true });
-      const createDahr = vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2, "createDahr");
-      await expect(adapter.proxyFetch({ url: "https://example.com/data", method: "POST", body: body as never }))
-        .rejects.toThrow(/body must be exact UTF-8 text/);
-      expect(createDahr).not.toHaveBeenCalled();
-    });
-
-    async function providerStatus(adapter: DemosAdapter) {
-      const { provider } = createStripeAp2Integration({
-        createCredential: ["rk", "test", "create"].join("_"),
-        statusCredential: ["rk", "test", "status"].join("_"),
-        payeeId: "merchant", currencyMinorUnits: 2, substrate: adapter,
-      });
-      return provider.readAttestedStatus({ providerRef: "pi_test",
-        intent: { currency: "USD" } as never, fence: { assertCurrent: async () => {} } as never });
-    }
-
-    it.each<[string, (tx: Mutable) => void]>([
-      ["included response hash", (tx) => { tx.content.data[1].message.web2Request.result.responseHash = "a".repeat(64); }],
-      ["content type", (tx) => { tx.content.type = "native"; }],
-      ["data discriminator", (tx) => { tx.content.data[0] = "native"; }],
-    ])("independently binds %s before accepting provider status", async (_label, transaction) => {
-      const control = await dahrFetch({ providerStatus: true });
-      expect(control.outcome).toMatchObject({ status: 200, anchorTxRef: "0xdahr" });
-      await expect(providerStatus(control.adapter)).resolves.toMatchObject({ disposition: "captured", amount: "1" });
-      const changed = await dahrFetch({ providerStatus: true, transaction });
-      expect(changed.outcome).toBeInstanceOf(Error);
-      expect((changed.outcome as Error).message).toMatch(/canonical web2Request commitment/);
-      await expect(providerStatus(changed.adapter)).resolves.toMatchObject({ disposition: "indeterminate" });
-    });
-
-    it.each([
-      "date", "set-cookie", "connection", "keep-alive", "transfer-encoding", "upgrade",
-      "proxy-authenticate", "proxy-authorization", "te", "trailer", "via", "warning",
-      "server", "content-length",
-    ])("omits only volatile %s while authenticating provider status", async (header) => {
-      const responseHeadersHash = sha256Hex("content-type:application/json\nx-roles:a, b");
-      const { outcome, adapter } = await dahrFetch({ providerStatus: true,
-        transaction: (tx) => Object.assign(tx.content.data[1].message.web2Request.result, {
-          responseHeadersHash, headers: { "Content-Type": " application/json ", "X-Roles": ["a", "b"], [header.toUpperCase()]: "then" },
-        }),
-        response: (r) => Object.assign(r, { responseHeadersHash,
-          headers: { "content-type": "application/json", "x-roles": ["a", "b"], [header]: "now" } }),
-      });
-      expect(outcome).toMatchObject({ status: 200, responseHeadersHash, anchorTxRef: "0xdahr" });
-      await expect(providerStatus(adapter)).resolves.toMatchObject({ disposition: "captured" });
-    });
-
-    it.each(["response", "transaction"])("rejects malformed stable %s headers separately", async (side) => {
-      const { outcome } = await dahrFetch({
-        ...(side === "response" ? { response: (r: Mutable) => { r.headers = { "x-invalid": 7 }; } }
-          : { transaction: (tx: Mutable) => { tx.content.data[1].message.web2Request.result.headers = { "x-invalid": 7 }; } }),
-      });
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toMatch(/canonical web2Request commitment/);
-    });
-
-    it("requires a transaction reference", async () => {
-      const { outcome } = await dahrFetch({ response: (r) => { delete r.txHash; } });
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toMatch(/lacks a transaction reference/);
-    });
-
-    it("retains canonical evidence and binds a supplied request body", async () => {
-      const { outcome } = await dahrFetch({ body: "request" });
-      expect(outcome).toMatchObject({ body: "ok", methodEvidence: {
-        kind: "demos-web2-request", transaction: dahrTransaction("https://example.com/data", {}, "request"),
-        block: { number: 7 },
-      } });
-    });
-
-    it("keeps provider payment status indeterminate for an included native transfer", async () => {
-      const { adapter } = await dahrFetch({
-        transaction: (tx) => { tx.content.type = "native"; },
-        response: (r) => { r.data = JSON.stringify({ id: "pi_test", status: "succeeded", currency: "usd", amount_received: 100, metadata: {} }); r.responseHash = sha256Hex(r.data); },
-      });
-      const { provider } = createStripeAp2Integration({
-        createCredential: ["rk", "test", "create"].join("_"),
-        statusCredential: ["rk", "test", "status"].join("_"),
-        payeeId: "merchant", currencyMinorUnits: 2, substrate: adapter,
-      });
-      const status = await provider.readAttestedStatus({ providerRef: "pi_test",
-        intent: { currency: "USD" } as never, fence: { assertCurrent: async () => {} } as never });
-      expect(status.disposition).toBe("indeterminate");
-    });
-
-    it.each<[string, Parameters<typeof dahrFetch>[0]]>([
-      ["a different transaction hash", { transaction: (tx) => { tx.hash = "0xother"; } }],
-      ["a negative block number", {
-        status: (s) => { s.blockNumber = -1; }, transaction: (tx) => { tx.blockNumber = -1; },
-      }],
-      ["a fractional block number", {
-        status: (s) => { s.blockNumber = 7.5; }, transaction: (tx) => { tx.blockNumber = 7.5; },
-      }],
-      ["no block number", {
-        status: (s) => { delete s.blockNumber; }, transaction: (tx) => { delete tx.blockNumber; },
-      }],
-    ])("refuses %s before reading the block", async (_label, change) => {
-      const { outcome, getBlock } = await dahrFetch(change);
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message)
-        .toBe("DAHR anchor transaction 0xdahr lacks authenticated canonical inclusion");
-      expect(getBlock).not.toHaveBeenCalled();
-    });
-
-    it.each<[string, Parameters<typeof dahrFetch>[0]]>([
-      ["a missing block", { block: () => null }],
-      ["an unconfirmed block", { block: (b) => { b.status = "pending"; } }],
-      ["a different block number", { block: (b) => { b.number = 8; } }],
-      ["a block without validation data", { block: (b) => { delete b.validation_data; } }],
-      ["a block that does not order the transaction", {
-        block: (b) => { b.content.ordered_transactions = ["0xother"]; },
-      }],
-      ["a block without ordered transactions", { block: (b) => { delete b.content; } }],
-    ])("refuses %s", async (_label, change) => {
-      const { outcome, getBlock } = await dahrFetch(change);
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toBe("Demos block 7 does not authenticate DAHR transaction 0xdahr");
-      expect(getBlock).toHaveBeenCalledWith(7);
-    });
   });
 
   it("resolves a primary Demos agent DID from its self-certifying key", async () => {

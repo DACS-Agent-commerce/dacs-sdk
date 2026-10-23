@@ -71,32 +71,14 @@ before recipe-family qualification and four-state aggregation.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
 `web2.domain` records may be converted to the current lower-case ASCII
-`domain:` producer form with `domainClaimReferenceFromNativeHostname()`.
-`serializeDomainClaimArtifact()` emits the complete unsigned canonical domain
-presentation, requires the exact DCR-6 `demosGcrDomain` metadata shape (no
-additional members at any level), and deduplicates domain claims before
-signing. A
+`domain:` producer form with `domainClaimReferenceFromNativeHostname()`. A
 signed current `domain:` reference is never repaired during reading. Historical
-`web2:domain:` aliases are read by `readAuthenticatedDomainClaims()` and the
-Vet consumers after authenticating the original presentation. They derive a
-separate, deduplicated semantic claim set for requirement and primary-claim
-decisions, while hashes and signature checks retain the original bytes. Alias compatibility
-is selected by authenticated `bundleVersion: "1"` bytes and does not depend on
-producer release metadata. For persistent GCR
+`web2:domain:` aliases are available only through
+`readAuthenticatedDomainClaims()`, which authenticates the original artifact
+before deriving a separate, deduplicated semantic claim set. For persistent GCR
 evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
 transaction/finality, writer, validation-profile, freshness and presentation-
 control inputs; it never treats copied bundle metadata as authority.
-
-Upgrade note: durable Vet pins created before domain-alias folding can fail
-closed during recovery because the aliases now count under the `domain`
-scheme in requirement paths. Re-run Vet to create a new pin before resuming.
-
-The pinned native node does not itself establish the strict
-`demos-web2-domain-v1` proof-body grammar: its parser accepts alternate tags and
-its fetch path trims whitespace. Native GCR inclusion alone therefore leaves
-this profile indeterminate. An injected resolver must independently authenticate
-the exact strict validation rule and original proof bytes; it must never
-re-fetch a historical proof body to reconstruct that evidence.
 
 CCI resolution covers all eight production Demos identity contexts. Live
 `xm`, `web2`, `pqc`, `ud`, `nomis`, `humanpassport`, `ethos`, and TLSN-backed
@@ -812,25 +794,6 @@ response bytes match `contentHash`, while `receiptTransactionRef` is the native
 hash is never mislabeled as a Storage Program locator, and the raw Stripe body
 (which can include provider secrets) is never published as public DACS content.
 
-DAHR supports textual responses (`text/*`, JSON, XML, `+json`/`+xml`,
-`application/csv`, `application/x-ndjson`, `application/yaml` and
-`application/javascript` media types) with UTF-8 bytes. Binary or missing
-content types, explicit non-UTF-8 charsets, ambiguous content-type parameters,
-and non-round-tripping text are rejected. The pinned node hashes decoded UTF-8
-text, so DAHR also rejects every U+FFFD replacement character, including a
-literal U+FFFD: its origin cannot be distinguished from a lossy decode.
-Byte-exact delivery is unavailable for these responses. At the pinned Demos
-node `61b8e75`, broadcasting a DAHR POST repeats the request without its body
-or authorization. Use only idempotent or read-only POST endpoints, and spell
-the request header `Content-Type` with that casing for the node's request
-handling.
-Like the native-transfer check, DAHR inclusion trusts the configured Demos RPC's
-confirmed-block view: the adapter checks the transaction hash and status and
-that the confirmed block at that number orders it and carries validation data,
-but it does not verify validator signatures. `methodEvidence` retains that
-transaction and block; applications requiring an independent validator-quorum
-proof must verify it themselves.
-
 The opt-in live test is
 `test/integration/ap2-stripe-dahr.live.test.ts`. It requires an isolated Demos
 wallet, durable state directory, the official AP2 Python runtime, the two Stripe
@@ -957,41 +920,11 @@ broadcasting. StorageProgram binding resolution and read-visible anchor
 completion currently report `blocked` until the resolver/completion work lands
 (tracked by dacs-sdk #58 and #57).
 
-`rpc.reachable` passes only when the endpoint also answers the read-only Demos
-`getLastBlockNumber` node call with a non-negative integer, so a web server that
-merely answers HTTP `GET` fails it. It reports a block height and is not a sync
-check: a node with an empty chain answers 0 and passes. A node that answers
-`STATE_NOT_READY` while it loads its state fails, with a "retry later"
-remediation. The default adapter needs `@kynesyslabs/demosdk` 4.0.17 or later:
-earlier builds use directory imports that Node's ESM loader rejects, which
+The default adapter needs `@kynesyslabs/demosdk` 4.0.17 or later: earlier
+builds use directory imports that Node's ESM loader rejects, which
 `substrate.adapter-load` reports as `fail`. The peer range is bounded to the
-checked releases (`>=4.0.17 <4.0.19`) and is widened only after the doctor's
-wire shapes and the pay-d402 settlement semantics are checked again.
-
-After a passing height call, `rpc.node-revision` reads the node's build from the
-read-only `getNetworkInfo` node call and compares its commit with the
-`kynesyslabs/node` revision this doctor was verified against
-(`61b8e75aa8db5e408c49e1c3a89db4d673f45578`). It passes only for that commit,
-reported under that revision's package name and version
-(`demos-node-software` `0.9.8`), and self-reported as a clean build. The build
-metadata is self-reported; the observed node2 build reports uncommitted changes
-and therefore warns. A different, unreported,
-or uncommitted build, or another package name or version, reports
-`warn`, which does not change the exit code: the RPC verdict was not verified
-against that node source. A reported name, version or commit that differs from
-the verified value and contains part of the RPC URL or wallet secret is
-reported as `null` and named in `withheld`; the verified values are public, so
-they are always shown.
-
-demosdk's `connect()` and node calls set no request timeout and cannot be
-cancelled, so the default adapter sends the same read-only requests through
-demosdk's own HTTP client (honouring the same proxy environment) with an abort
-signal. Each RPC call gets 5 seconds. A `GET` or height call that does not
-answer in time fails `rpc.reachable` (exit 3); a revision call that does not
-answer reports `warn`. Either way doctor cancels the request and returns its
-report, so a process that calls `runDoctor()` is not held open by the stalled
-socket. An injected `DoctorAdapter` receives the same `AbortSignal` and should
-cancel its request when it fires.
+checked releases (`>=4.0.17 <4.0.19`), and `create-dacs-agent --mode live-demos`
+pins 4.0.18 inside that range. The CI package smoke checks the 4.0.17 floor.
 
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
@@ -1042,14 +975,13 @@ offline mode, which makes no connections, writes, or payments.
 | --- | --- | --- |
 | `runtime.node` | pass, fail | `version`, `required` |
 | `runtime.module` | pass, fail | `type` |
-| `package.version` | pass, fail (compiled SDK version differs from `package.json`) | `version`, `packageVersion` on fail |
+| `package.version` | pass | `version` |
 | `config.secrets` | pass, fail, skip | `walletSecret` (always `[redacted]`) |
 | `config.{rpc,wallet}-file.symlink` | pass, fail | none |
 | `config.{rpc,wallet}-file.mode` | pass, fail, skip (file not opened) | `mode`: 4-digit octal string |
 | `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |
 | `substrate.adapter-load` | pass, fail | none |
-| `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail (including no `GET` or height answer within 5 s), skip | `rpc` (redacted) unless skipped; `lastBlockNumber` on pass |
-| `rpc.node-revision` | pass, warn (including no answer within 5 s), skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`name`, `commit`, `version`, `dirty`, or `null`); `withheld` (field names, only when a field was withheld) |
+| `rpc.reachable` | pass, fail, skip | `rpc` (redacted) on pass |
 | `wallet.identity` | pass, skip | `address` |
 | `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |
 | `rail.availability` | warn, fail, skip | `rail`, `known`, or `availability` |

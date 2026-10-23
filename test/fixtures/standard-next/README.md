@@ -23,10 +23,8 @@ ahead of the repository-wide conformance pin.
   and Demos L2PS is tracked upstream in DACS-Standard#349.
 - `domain-claim-gcr-v0.4.json` — DACS-1 DCR-1..DCR-8 and DACS-2
   DGCR-1..DGCR-6; commit
-  `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20` (package-pinned Standard),
-  SHA-256 `0a28643dbd4d41423f204ae23dec6c4b8cb7312cdceac72d3be495a675a4b6d7`.
-  All 63 cases execute the producer or authenticated reader as selected by
-  the corpus adapter contract.
+  `5c175d148932c8a3635e54a15f1db2f31f67a500` (Standard PR #346),
+  SHA-256 `fc1734ddbd148e09738abdcc9e017ae5a0ad961a7fd022cc75c75dfd9e108e2e`.
 - `alternative-payment-projection-v0.1.json` — DACS-4 APR-1..APR-8 and
   DACS-3/DACS-5 projection consumers; Standard PR #344, commit
   `332ba4d620930cc22b79fffa3f74440ebf0df5ca`; file SHA-256

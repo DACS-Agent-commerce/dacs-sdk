@@ -1,5 +1,4 @@
 import { types as nodeTypes } from "node:util";
-import { authenticatedIdentityBundleSemantics } from "../identity/domainClaimVerification.js";
 
 import type {
   ComponentSignature,
@@ -515,7 +514,6 @@ export function partyVetCompositeAddress(
 }
 
 function carriedClaimsByScheme(bundle: Readonly<IdentityBundle>): Map<string, string[]> {
-  bundle = authenticatedIdentityBundleSemantics(bundle);
   const claims = new Map<string, string[]>();
   for (const claim of bundle.claims) {
     const { scheme } = claimParts(claim.ref, "IdentityBundle claim");
@@ -851,7 +849,7 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
       !claimRequirement ||
       !claimRequirement.verificationRequired ||
       claimRequirement.scheme !== scheme ||
-      !authenticatedIdentityBundleSemantics(identityBundle).claims.some((claim) =>
+      !identityBundle.claims.some((claim) =>
         sameCanonicalClaimIdentity(claim.ref, attempt.claimSubject)
       )
     ) {
@@ -1103,7 +1101,7 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         "through an external verification recipe",
       );
     }
-    if (!authenticatedIdentityBundleSemantics(identityBundle).claims.some((claim) =>
+    if (!identityBundle.claims.some((claim) =>
       sameCanonicalClaimIdentity(claim.ref, attempt.claimSubject)
     )) {
       throw new DacsError(
@@ -1536,11 +1534,10 @@ function planSelectorAuthorized(
 ): boolean {
   const selector = plan.requirement.primaryClaimSelector;
   if (selector === undefined) return true;
-  const semanticBundle = authenticatedIdentityBundleSemantics(plan.identityBundle);
-  const presented = parseCanonicalClaimReference(semanticBundle.presentedBy);
+  const presented = parseCanonicalClaimReference(plan.identityBundle.presentedBy);
   if (!presented || presented.identity.scheme !== selector) return false;
-  const exactClaims = semanticBundle.claims.filter((claim) =>
-    sameCanonicalClaimIdentity(claim.ref, semanticBundle.presentedBy)
+  const exactClaims = plan.identityBundle.claims.filter((claim) =>
+    sameCanonicalClaimIdentity(claim.ref, plan.identityBundle.presentedBy)
   );
   if (exactClaims.length !== 1) return false;
   // BP-4 was authenticated before plan creation. The current closed profile
@@ -1551,7 +1548,7 @@ function planSelectorAuthorized(
     const outcome = completed.get(attempt.attemptId);
     return sameCanonicalClaimIdentity(
       attempt.claimSubject,
-      semanticBundle.presentedBy,
+      plan.identityBundle.presentedBy,
     ) && effectiveAttemptDecision(
       attempt,
       outcome,

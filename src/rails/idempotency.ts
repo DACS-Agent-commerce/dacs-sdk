@@ -85,19 +85,6 @@ export interface SettlementNotInvokedResult {
   result: Readonly<SettleResult>;
 }
 
-/**
- * Release a proven clean attempt, then reject every coalesced caller with
- * `reason`, or with this error when `reason` is undefined or null.
- */
-export class SettlementNotInvokedError extends DacsError {
-  constructor(
-    readonly result: Readonly<SettleResult>,
-    readonly reason: unknown,
-  ) {
-    super("settlement was not invoked", { cause: reason });
-  }
-}
-
 export interface SettlementOutcomeRecord {
   bindingHash: string;
   result: Readonly<SettleResult>;
@@ -202,10 +189,7 @@ export interface SettlementIdempotencyStore {
    * Run one settlement under a generation-fenced write-ahead protocol.
    *
    * `binding` is mandatory. Callers that cannot supply complete immutable terms
-   * must not use this API for funded effects. A submit callback may throw
-   * SettlementNotInvokedError with a bound no-effect result: validate it and
-   * release the clean attempt before rejecting every coalesced caller with
-   * its original reason. Other exceptions retain the intent.
+   * must not use this API for funded effects.
    */
   once(
     key: string,
@@ -976,16 +960,7 @@ export function createIdempotencyStore(
         // their irreversible request. An ordinary empty-hash failure is still
         // ambiguous; only an explicit not-invoked rail disposition releases.
         await effectFence.assertCurrent();
-        let cleanFailure: SettlementNotInvokedError | undefined;
-        let submitted: SettleResult | SettlementNotInvokedResult;
-        try {
-          submitted = await submit(effectFence);
-        } catch (err) {
-          if (!(err instanceof SettlementNotInvokedError)) throw err;
-          cleanFailure = err;
-          submitted = { disposition: "not-invoked", result: err.result };
-        }
-        const submission = captureSubmission(submitted);
+        const submission = captureSubmission(await submit(effectFence));
         const result = captureBoundResult(
           ("disposition" in submission ? submission.result : submission) as SettleResult,
           capturedBinding,
@@ -1006,8 +981,6 @@ export function createIdempotencyStore(
             throw new DacsError(`settlement ${key} clean attempt release is ${released}`);
           }
         }
-        // A rail may carry no underlying reason; never reject with undefined.
-        if (cleanFailure) throw cleanFailure.reason ?? cleanFailure;
         return captureBoundResult(
           result as SettleResult,
           capturedBinding,

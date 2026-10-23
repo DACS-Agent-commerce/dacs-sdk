@@ -199,8 +199,4 @@ if (isMainModule(import.meta.url)) {
     stderr: (chunk) => process.stderr.write(chunk),
   });
   process.exitCode = code;
-  // demosdk requests cannot be cancelled, so one the doctor stopped waiting for
-  // (a stalled non-blocking node call) would keep a finished CLI alive. Exit once
-  // everything already written to stdout and stderr has been flushed.
-  process.stdout.write("", () => process.stderr.write("", () => process.exit(code)));
 }

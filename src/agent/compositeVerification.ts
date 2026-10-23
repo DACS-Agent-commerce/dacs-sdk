@@ -1,5 +1,4 @@
 import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
-import { authenticatedIdentityBundleSemantics, authenticatedDomainClaimReference } from "../identity/domainClaimVerification.js";
 import type {
   AttestationAnchor,
   AttestationRef,
@@ -538,8 +537,6 @@ function presenceParametersMatch(
 /**
  * DACS-1 PCR-2/PCR-3 presence predicate. It deliberately never dereferences a
  * well-shaped optional `verifiedBy` and never treats `issuedAt` as authority.
- * Authenticate the original bundle presentation before calling this pure
- * predicate; historical domain aliases are folded only at that boundary.
  */
 export function classifyPresenceClaimRequirement(
   bundle: Readonly<IdentityBundle>,
@@ -547,12 +544,6 @@ export function classifyPresenceClaimRequirement(
   evaluatedAt: number,
   exactClaimRef?: string,
 ): PresenceClaimDecision {
-  try {
-    bundle = authenticatedIdentityBundleSemantics(bundle);
-    if (exactClaimRef !== undefined) exactClaimRef = authenticatedDomainClaimReference(exactClaimRef);
-  } catch {
-    return "error";
-  }
   if (
     requirement.verificationRequired !== false ||
     !isSafeUint(evaluatedAt) ||
@@ -942,11 +933,6 @@ export interface PresenceAwareAggregationInput {
 export function aggregatePresenceAwareCompositeVerification(
   input: Readonly<PresenceAwareAggregationInput>,
 ): VerificationDecision {
-  try {
-    input = { ...input, bundle: authenticatedIdentityBundleSemantics(input.bundle) };
-  } catch {
-    return "error";
-  }
   const preflightFailure = presenceRequirementPreflight(input.requirement);
   if (preflightFailure || !isSafeUint(input.evaluatedAt)) return "error";
   const presenceMembers = [
@@ -1122,8 +1108,6 @@ async function exactPresenceSelectorAuthorized<TKey>(
   evaluatedAt: number,
   deps: VerifyCompositeVerificationDeps<TKey>,
 ): Promise<boolean> {
-  const originalBundle = bundle;
-  try { bundle = authenticatedIdentityBundleSemantics(bundle); } catch { return false; }
   const selector = requirement.primaryClaimSelector;
   if (selector === undefined) return true;
   const parsedPresented = parseCanonicalClaimReference(bundle.presentedBy);
@@ -1136,9 +1120,7 @@ async function exactPresenceSelectorAuthorized<TKey>(
   let controlled = parsedPresented.identity.scheme === "key";
   if (!controlled && deps.isPresentedClaimControlled) {
     try {
-      const originalClaim = originalBundle.claims.find((claim) => claim.ref === originalBundle.presentedBy) ??
-        originalBundle.claims.find((claim) => authenticatedDomainClaimReference(claim.ref) === presented.ref)!;
-      controlled = (await deps.isPresentedClaimControlled({ bundle: originalBundle, claim: originalClaim })) === true;
+      controlled = (await deps.isPresentedClaimControlled({ bundle, claim: presented })) === true;
     } catch {
       controlled = false;
     }
@@ -1709,6 +1691,12 @@ export async function verifyCompositeVerificationRecord<TKey>(
     ) {
       return invalid("bundle-hash-mismatch");
     }
+    if (!sameCanonicalClaimIdentity(
+      presenceBundle.presentedBy,
+      record.evaluatedParty,
+    )) {
+      return invalid("identity-bundle", "bundle presenter differs from evaluated party");
+    }
     if (!capturedDeps.verifyIdentityPresentation) {
       return invalid("identity-presentation", "presentation verifier is unavailable");
     }
@@ -1724,14 +1712,6 @@ export async function verifyCompositeVerificationRecord<TKey>(
       presentationValid = false;
     }
     if (!presentationValid) return invalid("identity-presentation");
-    try {
-      const semantic = authenticatedIdentityBundleSemantics(presenceBundle);
-      if (!sameCanonicalClaimIdentity(semantic.presentedBy, authenticatedDomainClaimReference(record.evaluatedParty))) {
-        return invalid("identity-bundle", "bundle presenter differs from evaluated party");
-      }
-    } catch {
-      return invalid("identity-bundle", "domain semantic derivation failed");
-    }
   }
 
   const freshness: VerifyResult[] = [];

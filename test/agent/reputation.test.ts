@@ -38,18 +38,6 @@ const party = (claim: string) => ({
 });
 
 describe("computeReputation", () => {
-  test("keys authenticated historical domain aliases to the canonical reputation identity", () => {
-    const original = bundle({ parties: [party("web2:domain:Agent.Example")] });
-    const bytes = JSON.stringify(original);
-    expect(computeReputation("domain:agent.example", [original, original])).toMatchObject({
-      primaryClaim: "domain:agent.example", totalAgreements: 1, completed: 1,
-    });
-    expect(computeReputation("web2:domain:Agent.Example", [original])).toMatchObject({
-      primaryClaim: "domain:agent.example", totalAgreements: 1,
-    });
-    expect(JSON.stringify(original)).toBe(bytes);
-  });
-
   test("counts bundles the subject is a party to, and completed ones", () => {
     const r = computeReputation(ALICE, [
       bundle({ jobId: "j1", parties: [party(ALICE)], outcome: "completed" }),
@@ -62,24 +50,6 @@ describe("computeReputation", () => {
       completed: 1,
       avgRating: null,
       exclusions: [],
-    });
-  });
-
-  test("does not attribute a malformed domain party's completed bundle to another subject", () => {
-    const unrelated = bundle({
-      parties: [party("domain:bad/host"), { ...party(BOB), role: "buyer" }],
-      outcome: "completed",
-    });
-    expect(computeReputation(ALICE, [unrelated])).toEqual({
-      primaryClaim: ALICE,
-      totalAgreements: 0,
-      completed: 0,
-      avgRating: null,
-      exclusions: [],
-    });
-    // A malformed first party must not hide an actual match in a later slot.
-    expect(computeReputation(BOB, [unrelated])).toMatchObject({
-      primaryClaim: BOB, totalAgreements: 1, completed: 1,
     });
   });
 

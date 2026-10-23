@@ -2,12 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { createDacsPublicHttpsFetchV1 } from "../src/publicFetch.js";
-import { readDacsPublicJsonV1 } from "../src/publicJson.js";
-
-// Import at module scope: these modules load the whole SDK source graph, which
-// must not count against a test's timeout. The hoisted mock still applies.
-const httpsRequest = vi.hoisted(() => vi.fn());
+const httpsRequest = vi.fn();
 
 vi.mock("node:https", () => ({ request: httpsRequest }));
 
@@ -30,6 +25,7 @@ describe("pinned public HTTPS connection isolation", () => {
   });
 
   test("x402 public fetch disables shared-agent socket reuse", async () => {
+    const { createDacsPublicHttpsFetchV1 } = await import("../src/publicFetch.js");
     const fetchImpl = createDacsPublicHttpsFetchV1();
     await expect(fetchImpl("https://8.8.8.8/pay", { redirect: "error" }))
       .rejects.toThrow("stop");
@@ -38,6 +34,7 @@ describe("pinned public HTTPS connection isolation", () => {
   });
 
   test("public JSON reader disables shared-agent socket reuse", async () => {
+    const { readDacsPublicJsonV1 } = await import("../src/publicJson.js");
     await expect(readDacsPublicJsonV1("https://8.8.8.8/index.json"))
       .rejects.toThrow("public-json-request-unavailable");
     expect(httpsRequest).toHaveBeenCalledOnce();

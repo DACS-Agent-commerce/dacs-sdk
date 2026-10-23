@@ -1,6 +1,4 @@
 import { isDeepStrictEqual, types as nodeTypes } from "node:util";
-import type { IdentityBundle } from "../artifacts/types.js";
-import { DacsError } from "../errors.js";
 
 import { ed25519Verify, publicKeyFromRaw } from "../crypto/index.js";
 import {
@@ -28,8 +26,8 @@ export interface DomainClaimArtifactLike {
 export type DomainArtifactAuthentication =
   | {
       status: "authenticated";
-      /** Informational release classification; never authorizes or forbids alias reads. */
-      profile?: DomainArtifactProfile;
+      /** Trusted release/profile classification, not a field read from the artifact. */
+      profile: DomainArtifactProfile;
       signingPublicKey: string;
       contentHash: string;
     }
@@ -38,7 +36,7 @@ export type DomainArtifactAuthentication =
 export interface AuthenticatedDomainArtifactDeps {
   /**
    * Authenticate the exact captured artifact bytes, content hash and signature,
-   * and report its release profile for diagnostics only.
+   * and classify its producer profile from trusted provenance.
    */
   authenticateArtifact: (
     artifact: Readonly<DomainClaimArtifactLike>,
@@ -88,7 +86,7 @@ export interface AuthenticatedDomainClaimRead {
   /** Post-authentication identity used for primary-claim/reputation semantics. */
   semanticPresentedBy?: string;
   authentication?: Readonly<{
-    profile?: DomainArtifactProfile;
+    profile: DomainArtifactProfile;
     signingPublicKey: string;
     contentHash: string;
   }>;
@@ -263,7 +261,7 @@ function authenticatedCoordinates(
 ): NonNullable<AuthenticatedDomainClaimRead["authentication"]> | null {
   if (
     auth.status !== "authenticated" ||
-    (auth.profile !== undefined && auth.profile !== "canonical-domain-v0.6" &&
+    (auth.profile !== "canonical-domain-v0.6" &&
       auth.profile !== "historical-domain-alias") ||
     !HEX_32.test(auth.signingPublicKey) ||
     !HEX_32.test(auth.contentHash)
@@ -271,7 +269,7 @@ function authenticatedCoordinates(
     return null;
   }
   return {
-    ...(auth.profile === undefined ? {} : { profile: auth.profile }),
+    profile: auth.profile,
     signingPublicKey: auth.signingPublicKey,
     contentHash: auth.contentHash,
   };
@@ -283,11 +281,13 @@ type SemanticDerivation =
 
 function deriveSemanticDomainClaims(
   refs: readonly string[],
+  profile: DomainArtifactProfile,
 ): SemanticDerivation {
   const semanticClaims: string[] = [];
   let policyViolation: DomainClaimDiagnostic | undefined;
   for (const ref of refs) {
     let hostname: string | null = null;
+    let isLegacy = false;
     if (ref.startsWith("domain:")) {
       const originalHost = ref.slice("domain:".length);
       if (isCanonicalDomainHostname(originalHost)) {
@@ -309,6 +309,7 @@ function deriveSemanticDomainClaims(
         );
       }
     } else if (ref.startsWith("web2:domain:")) {
+      isLegacy = true;
       hostname = canonicalizeNativeDomainHostname(
         ref.slice("web2:domain:".length),
       );
@@ -346,47 +347,14 @@ function deriveSemanticDomainClaims(
 
     const semantic = `domain:${hostname}`;
     if (!semanticClaims.includes(semantic)) semanticClaims.push(semantic);
-
+    if (isLegacy && profile === "canonical-domain-v0.6") {
+      policyViolation ??= diagnostic(
+        "legacy-alias-forbidden",
+        "the authenticated current producer profile cannot emit web2:domain aliases",
+      );
+    }
   }
   return { ok: true, semanticClaims, ...(policyViolation ? { policyViolation } : {}) };
-}
-
-/** DCR-4/5 identity key, only for data whose original enclosing bytes were authenticated. */
-export function authenticatedDomainClaimReference(ref: string): string {
-  const derived = deriveSemanticDomainClaims([ref]);
-  if (!derived.ok || derived.policyViolation) {
-    throw new DacsError("authenticated bundle contains a malformed domain reference");
-  }
-  return derived.semanticClaims[0] ?? ref;
-}
-
-/**
- * Semantic view for consumers AFTER authenticating the original version-1
- * presentation. Never hash, verify or sign this view as the original bundle.
- * The original bundle, its presentation and all signed bytes remain untouched.
- */
-export function authenticatedIdentityBundleSemantics(bundle: Readonly<IdentityBundle>): IdentityBundle {
-  if (bundle.bundleVersion !== "1") throw new DacsError("domain aliases require bundleVersion 1");
-  const claims = new Map<string, IdentityBundle["claims"][number]>();
-  for (const claim of bundle.claims) {
-    const ref = authenticatedDomainClaimReference(claim.ref);
-    const semantic = { ...claim, ref };
-    const previous = claims.get(ref);
-    if (previous && ref.startsWith("domain:")) {
-      // Never combine evidence or metadata from aliases. Retain one source
-      // claim, preferring the actual signed presenter for primary control.
-      if (claim.ref === bundle.presentedBy) claims.set(ref, semantic);
-      continue;
-    }
-    // Preserve non-domain duplicates for consumers' existing ambiguity gates.
-    claims.set(ref.startsWith("domain:") ? ref : `${claims.size}:${ref}`, semantic);
-  }
-  const presentedBy = authenticatedDomainClaimReference(bundle.presentedBy);
-  if (![...claims.values()].some((claim) => claim.ref === presentedBy) &&
-      /^(?:domain|web2:domain):/.test(bundle.presentedBy)) {
-    throw new DacsError("semantic domain presenter is not carried by the bundle");
-  }
-  return { ...bundle, claims: [...claims.values()], presentedBy };
 }
 
 /**
@@ -488,19 +456,9 @@ export async function readAuthenticatedDomainClaims(
       originalPresentation,
     );
   }
-  if (artifact.bundleVersion !== "1") {
-    return result(
-      "error",
-      "artifact-malformed",
-      "domain claims require authenticated bundleVersion 1 bytes",
-      originalRefs,
-      [],
-      authentication,
-      originalPresentation,
-    );
-  }
   const derived = deriveSemanticDomainClaims(
     originalRefs,
+    authentication.profile,
   );
   if (!derived.ok) {
     return result(
@@ -521,6 +479,7 @@ export async function readAuthenticatedDomainClaims(
   ) {
     const presented = deriveSemanticDomainClaims(
       [originalPresentedBy],
+      authentication.profile,
     );
     if (!presented.ok) {
       return result(

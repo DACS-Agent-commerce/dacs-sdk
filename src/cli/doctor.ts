@@ -2,7 +2,6 @@ import { VERSION } from "../version.js";
 import { PAY_D402_AVAILABILITY } from "../rails/index.js";
 import { readFileSync } from "node:fs";
 import type { DoctorSecretFile } from "./secretFile.js";
-import { demosHttpClient, type DemosHttpClient } from "./demosHttp.js";
 
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip" | "blocked";
 export type DoctorMode = "offline" | "read-only";
@@ -25,24 +24,9 @@ export interface DoctorReport {
   exitCode: number;
 }
 
-/**
- * Doctor gives each RPC call `RPC_CALL_TIMEOUT_MS` and aborts its `signal` when
- * that passes; an adapter should cancel the request then, or its socket outlives
- * the report.
- */
 export interface DoctorAdapter {
-  connect(signal?: AbortSignal): Promise<void>;
+  connect(): Promise<void>;
   getAddress(): string;
-  /**
-   * Read-only Demos node call. Without it doctor cannot tell a Demos RPC from
-   * any endpoint that answers HTTP GET, so `rpc.reachable` reports `warn`.
-   */
-  getLastBlockNumber?(signal?: AbortSignal): Promise<unknown>;
-  /**
-   * Read-only Demos `getNetworkInfo` node call. Its `nodeVersion` build
-   * revision is compared with the node revision this SDK was verified against.
-   */
-  getNetworkInfo?(signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface DoctorOptions {
@@ -58,20 +42,8 @@ export interface DoctorOptions {
 
 const RUNTIME_NODE = "runtime.node";
 const RPC_REACHABLE = "rpc.reachable";
-const RPC_NODE_REVISION = "rpc.node-revision";
 const SUBSTRATE_ADAPTER_LOAD = "substrate.adapter-load";
 const SUPPORTED_NODE_RANGE_FALLBACK = "^20.19.0 || >=22.12.0";
-/**
- * kynesyslabs/node commit whose getLastBlockNumber handler the RPC check was
- * verified against; node2 reported this build in getNetworkInfo on 2026-10-15.
- * Update it only after re-verifying that handler at the new commit.
- */
-export const VERIFIED_DEMOS_NODE_REVISION = "61b8e75aa8db5e408c49e1c3a89db4d673f45578";
-/**
- * `name` and `version` of kynesyslabs/node's package.json at that revision. The
- * node reports them independently of the commit, so both must match too.
- */
-export const VERIFIED_DEMOS_NODE_PACKAGE = { name: "demos-node-software", version: "0.9.8" } as const;
 
 function check(
   id: string,
@@ -110,7 +82,6 @@ interface PackageMetadata {
     node?: unknown;
   };
   type?: unknown;
-  version?: unknown;
 }
 
 function packageMetadata(): PackageMetadata | null {
@@ -178,7 +149,7 @@ export function rpcSensitiveNeedles(rpc?: string): string[] {
       url.search.startsWith("?") ? url.search.slice(1) : url.search,
       ...searchParts,
       url.hash.startsWith("#") ? url.hash.slice(1) : url.hash,
-    ].flatMap(decoded).flatMap((part) => [part, ...part.split("/")]).filter((part) => part.length > 0);
+    ].flatMap(decoded).filter((part) => part.length > 0);
   } catch {
     return [rpc];
   }
@@ -196,168 +167,12 @@ function exitCodeFor(checks: DoctorCheck[]): number {
   return 0;
 }
 
-/**
- * Send the unauthenticated request demosdk's `nodeCall` sends and resolve with
- * the node's `response` field, as it does, but cancellable.
- */
-async function readOnlyNodeCall(
-  http: DemosHttpClient, rpc: string, message: string, signal?: AbortSignal,
-): Promise<unknown> {
-  const { data } = await http.post(rpc, {
-    method: "nodeCall",
-    params: [{ type: "nodeCall", message, sender: null, receiver: null, timestamp: null, data: {}, extra: "" }],
-  }, { headers: { "Content-Type": "application/json" }, signal });
-  // Preserve the pinned node's explicit loading failure for its dedicated
-  // diagnostic. This sentinel can only fail reachability, never pass it.
-  if (message === "getLastBlockNumber" && typeof data === "object" && data !== null &&
-      (data as { result?: unknown }).result === 503 &&
-      (data as { response?: unknown }).response === "STATE_NOT_READY") return "STATE_NOT_READY";
-  if (typeof data !== "object" || data === null ||
-      (data as { result?: unknown }).result !== 200) {
-    throw new Error("Demos RPC returned an unsuccessful result");
-  }
-  return (data as { response?: unknown }).response;
-}
-
 async function defaultAdapterFactory(config: {
   rpc: string;
   secret?: string;
 }): Promise<DoctorAdapter> {
   const { DemosAdapter } = await import("../substrate/index.js");
-  // Doctor sends nothing through the adapter, so it derives the wallet locally
-  // on the raw client and the adapter never holds the secret.
-  const raw = new DemosAdapter({ rpc: config.rpc }).raw;
-  // demosdk's connect() and nodeCall() set no timeout and take no signal, so
-  // doctor sends the same read-only requests itself; a timed-out probe is then
-  // aborted instead of holding a socket open after runDoctor() returns.
-  const http = demosHttpClient();
-  return {
-    connect: async (signal) => {
-      // demosdk sets its RPC URL only for HTTP 200, even when Axios accepts other 2xx statuses.
-      const response = await http.get(config.rpc, { signal });
-      if (response.status !== 200) throw new Error("Demos RPC connection requires HTTP 200");
-      if (config.secret !== undefined) await raw.connectWallet(config.secret);
-    },
-    getAddress: () => raw.getAddress(),
-    getLastBlockNumber: (signal) => readOnlyNodeCall(http, config.rpc, "getLastBlockNumber", signal),
-    getNetworkInfo: (signal) => readOnlyNodeCall(http, config.rpc, "getNetworkInfo", signal),
-  };
-}
-
-function isBlockHeight(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-// Demos nodes answer getLastBlockNumber with this while their state is loading.
-const STATE_NOT_READY = "STATE_NOT_READY";
-
-interface ReportedNodeBuild {
-  name: string | null;
-  commit: string | null;
-  version: string | null;
-  dirty: boolean | null;
-}
-
-/** Keep only well-formed build fields; the rest of the untrusted answer is dropped. */
-function reportedNodeBuild(info: unknown): ReportedNodeBuild | null {
-  const build = typeof info === "object" && info !== null
-    ? (info as { nodeVersion?: unknown }).nodeVersion : undefined;
-  if (typeof build !== "object" || build === null) return null;
-  const { name, commit, version, dirty } = build as Record<string, unknown>;
-  return {
-    name: typeof name === "string" && /^[0-9a-z._-]{1,64}$/.test(name) ? name : null,
-    commit: typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit) ? commit : null,
-    version: typeof version === "string" && /^[0-9A-Za-z.+-]{1,64}$/.test(version) ? version : null,
-    dirty: typeof dirty === "boolean" ? dirty : null,
-  };
-}
-
-/**
- * Stop waiting for any one RPC call after a bounded time rather than let a node
- * that is up but stalls a request hold the whole report.
- */
-export const RPC_CALL_TIMEOUT_MS = 5_000;
-const RPC_CALL_TIMED_OUT = Symbol("RPC call timed out");
-
-/** Race `call` against the deadline, then abort its signal so a stalled request is cancelled. */
-async function withDeadline<T>(call: (signal: AbortSignal) => Promise<T>): Promise<T | typeof RPC_CALL_TIMED_OUT> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      call(controller.signal),
-      new Promise<typeof RPC_CALL_TIMED_OUT>((resolve) => {
-        timer = setTimeout(resolve, RPC_CALL_TIMEOUT_MS, RPC_CALL_TIMED_OUT);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    controller.abort();
-  }
-}
-
-function timedOutDetail(call: string): string {
-  return `${call} did not answer within ${RPC_CALL_TIMEOUT_MS} ms`;
-}
-
-async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null, secrets: Array<string | undefined>): Promise<DoctorCheck> {
-  const remediation = "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.";
-  const getNetworkInfo = adapter.getNetworkInfo?.bind(adapter);
-  if (!getNetworkInfo) {
-    return check(RPC_NODE_REVISION, "skip", "The adapter cannot read the node build revision");
-  }
-  const { name, version } = VERIFIED_DEMOS_NODE_PACKAGE;
-  let reported: ReportedNodeBuild | null = null;
-  const withheld: Array<"name" | "version" | "commit"> = [];
-  let timedOut = false;
-  try {
-    const answer = await withDeadline((signal) => getNetworkInfo(signal));
-    if (answer === RPC_CALL_TIMED_OUT) timedOut = true;
-    else {
-      reported = reportedNodeBuild(answer);
-      if (reported) {
-        // The verified values are public constants of this SDK, so echoing one
-        // reveals nothing even when an RPC path segment or secret occurs in it.
-        const verified = { name, version, commit: pinned };
-        for (const field of ["name", "version", "commit"] as const) {
-          const value = reported[field];
-          if (value !== null && value !== verified[field] && sanitizeText(value, secrets) !== value) {
-            reported[field] = null;
-            withheld.push(field);
-          }
-        }
-      }
-    }
-  } catch {
-    // Untrusted transport failures are reported as an unknown build.
-  }
-  const data = { verified: pinned, reported, ...(withheld.length > 0 ? { withheld } : {}) };
-  if (timedOut) {
-    return check(RPC_NODE_REVISION, "warn", "Node did not report its build revision in time", {
-      data, detail: timedOutDetail("getNetworkInfo"), remediation,
-    });
-  }
-  if (!pinned || !reported?.commit) {
-    return check(RPC_NODE_REVISION, "warn", "Node build revision could not be compared with the verified revision", {
-      data, remediation,
-    });
-  }
-  if (reported.commit !== pinned) {
-    return check(RPC_NODE_REVISION, "warn", "Node reports a different build than the verified revision", {
-      data, remediation,
-    });
-  }
-  if (reported.name !== name || reported.version !== version) {
-    return check(RPC_NODE_REVISION, "warn", "Node reports the verified revision under another package name or version", {
-      data, detail: `the verified build is ${name} ${version}`, remediation,
-    });
-  }
-  if (reported.dirty === false) {
-    return check(RPC_NODE_REVISION, "pass", "Node reports the verified build revision", { data });
-  }
-  return check(RPC_NODE_REVISION, "warn", reported.dirty
-    ? "Node reports the verified revision with uncommitted changes"
-    : "Node reports the verified revision but not whether its build is clean", { data, remediation });
+  return new DemosAdapter(config);
 }
 
 const WINDOWS_CREDENTIAL_FILE_REMEDIATION =
@@ -405,16 +220,10 @@ export async function runDoctorForCli(
         }),
   );
 
-  const packageVersion = typeof pkg?.version === "string" ? pkg.version : null;
   checks.push(
-    packageVersion === VERSION
-      ? check("package.version", "pass", "SDK version matches the installed package", {
-          data: { version: VERSION },
-        })
-      : check("package.version", "fail", "SDK version differs from the installed package", {
-          data: { version: VERSION, packageVersion },
-          remediation: "Reinstall the package so the compiled SDK and package.json versions agree.",
-        }),
+    check("package.version", "pass", "SDK version detected", {
+      data: { version: VERSION },
+    }),
   );
 
   checks.push(
@@ -490,70 +299,21 @@ export async function runDoctorForCli(
     }
 
     if (made) {
-      const connectable = made;
-      const needles = [options.walletSecret, ...rpcSensitiveNeedles(options.rpc)];
-      const data = { rpc: redactRpcUrl(options.rpc) };
-      let connected = false;
-      let connectFailure: string | undefined;
       try {
-        connected = await withDeadline((signal) => connectable.connect(signal)) !== RPC_CALL_TIMED_OUT;
-        if (!connected) connectFailure = timedOutDetail("RPC endpoint");
+        await made.connect();
+        adapter = made;
+        checks.push(
+          check(RPC_REACHABLE, "pass", "Demos RPC is reachable", {
+            data: { rpc: redactRpcUrl(options.rpc) },
+          }),
+        );
       } catch (err) {
-        connectFailure = sanitizeError(err, needles);
-      }
-      if (connectFailure !== undefined) {
         checks.push(
           check(RPC_REACHABLE, "fail", "Demos RPC check failed", {
-            data,
-            detail: connectFailure,
+            detail: sanitizeError(err, [options.walletSecret, ...rpcSensitiveNeedles(options.rpc)]),
             remediation: "Check the RPC URL and network reachability.",
           }),
         );
-      }
-      // connect() only proves an HTTP GET succeeded; any web server passes that.
-      const getLastBlockNumber = made.getLastBlockNumber?.bind(made);
-      if (connected && !getLastBlockNumber) {
-        adapter = made;
-        checks.push(
-          check(RPC_REACHABLE, "warn", "RPC endpoint answered; the adapter cannot confirm it is a Demos node", {
-            data,
-          }),
-        );
-      } else if (connected && getLastBlockNumber) {
-        let height: unknown;
-        let failure: string | undefined;
-        try {
-          height = await withDeadline((signal) => getLastBlockNumber(signal));
-          if (height === RPC_CALL_TIMED_OUT) failure = timedOutDetail("getLastBlockNumber");
-        } catch (err) {
-          failure = sanitizeError(err, needles);
-        }
-        if (isBlockHeight(height)) {
-          adapter = made;
-          checks.push(
-            check(RPC_REACHABLE, "pass", "Demos RPC is reachable and reports a block height", {
-              data: { ...data, lastBlockNumber: height },
-            }),
-          );
-          checks.push(await nodeRevisionCheck(made, VERIFIED_DEMOS_NODE_REVISION, needles));
-        } else if (height === STATE_NOT_READY) {
-          checks.push(
-            check(RPC_REACHABLE, "fail", "Demos node is not ready", {
-              data,
-              detail: "getLastBlockNumber answered STATE_NOT_READY",
-              remediation: "Wait for the Demos node to finish loading its state, then retry.",
-            }),
-          );
-        } else {
-          // Never echo the response: it is untrusted and may carry the RPC URL.
-          checks.push(
-            check(RPC_REACHABLE, "fail", "RPC endpoint did not answer the Demos block-height call", {
-              data,
-              detail: failure ?? "getLastBlockNumber did not return a non-negative integer",
-              remediation: "Check that the RPC URL points at a reachable Demos node.",
-            }),
-          );
-        }
       }
     }
   }
@@ -564,7 +324,7 @@ export async function runDoctorForCli(
     checks.push(check("wallet.identity", "skip", "Offline mode skips wallet connection"));
   } else if (!adapter) {
     checks.push(
-      check("wallet.identity", "skip", "Wallet identity skipped because the Demos RPC check did not pass"),
+      check("wallet.identity", "skip", "Wallet identity skipped because RPC did not connect"),
     );
   } else {
     checks.push(

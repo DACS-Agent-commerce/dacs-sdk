@@ -1,5 +1,4 @@
 import type { AnyAttestationBundle } from "../artifacts/types.js";
-import { authenticatedDomainClaimReference } from "../identity/domainClaimVerification.js";
 import {
   parseCanonicalClaimReference,
   requireCanonicalClaimReference,
@@ -43,7 +42,7 @@ export function computeReputation(
   bundles: AnyAttestationBundle[],
 ): Reputation {
   const subject = requireCanonicalClaimReference(
-    authenticatedDomainClaimReference(primaryClaim),
+    primaryClaim,
     "Reputation primaryClaim",
   ).identity;
   const canonicalIdentity = `${subject.scheme}:${subject.identifier}`;
@@ -51,9 +50,7 @@ export function computeReputation(
   for (const bundle of bundles) {
     if (
       !bundle.parties.some((party) => {
-        let ref: string;
-        try { ref = authenticatedDomainClaimReference(party.primaryClaim); } catch { return false; }
-        const parsed = parseCanonicalClaimReference(ref);
+        const parsed = parseCanonicalClaimReference(party.primaryClaim);
         return parsed !== null &&
           parsed.identity.scheme === subject.scheme &&
           parsed.identity.identifier === subject.identifier;

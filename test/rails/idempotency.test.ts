@@ -7,7 +7,6 @@ import {
   createInMemorySettlementLog,
   settlementBindingHash,
   settlementKey,
-  SettlementNotInvokedError,
   type SettlementBinding,
   type SettlementEffectFence,
   type SettlementIdempotencyStoreOptions,
@@ -92,54 +91,6 @@ describe("settlement idempotency store (#43)", () => {
     const good = await store.once(KEY, binding(), submit); // retried, since the first wasn't recorded
     expect(calls).toBe(2);
     expect(good.txHash).toBe("0xgood");
-  });
-
-  test("a clean exception releases before rejecting all coalesced waiters", async () => {
-    const store = createIdempotencyStore();
-    const failure = new Error("preflight failed");
-    let reject!: () => void;
-    let calls = 0;
-    const waiting = new Promise<void>((resolve) => { reject = resolve; });
-    const submit = async () => {
-      calls += 1;
-      await waiting;
-      throw new SettlementNotInvokedError({ ok: false, txHash: "", chainId: "eip155:84532", payer: "0xpayer", payee: "0xpayee" }, failure);
-    };
-    const outcomes = Promise.allSettled([
-      store.once(KEY, binding(), submit),
-      store.once(KEY, binding(), submit),
-    ]);
-    reject();
-    expect(await outcomes).toEqual([
-      { status: "rejected", reason: failure },
-      { status: "rejected", reason: failure },
-    ]);
-    expect(calls).toBe(1);
-    await expect(store.once(KEY, binding({ amount: "2" }), async () => ok("0xother")))
-      .rejects.toThrow(/different terms/);
-    expect(await store.once(KEY, binding(), async () => ok("0xretry"))).toEqual(ok("0xretry"));
-  });
-
-  test.each([undefined, null])("a clean exception with reason %s rejects with the not-invoked error", async (reason) => {
-    const store = createIdempotencyStore();
-    let failure: SettlementNotInvokedError | undefined;
-    const outcome = store.once(KEY, binding(), async () => {
-      failure = new SettlementNotInvokedError({ ok: false, txHash: "", chainId: "eip155:84532", payer: "0xpayer", payee: "0xpayee" }, reason);
-      throw failure;
-    });
-    await expect(outcome).rejects.toBeInstanceOf(SettlementNotInvokedError);
-    await expect(outcome).rejects.toBe(failure);
-    // The attempt was still released, so a retry submits once.
-    expect(await store.once(KEY, binding(), async () => ok("0xretry"))).toEqual(ok("0xretry"));
-  });
-
-  test("an invalid clean exception cannot release a hash-bearing attempt", async () => {
-    const store = createIdempotencyStore();
-    await expect(store.once(KEY, binding(), async () => {
-      throw new SettlementNotInvokedError({ ...ok("0xbroadcast"), ok: false }, new Error("unsafe"));
-    })).rejects.toThrow(/cannot claim success or transaction identity/);
-    await expect(store.once(KEY, binding(), async () => ok("0xsecond")))
-      .rejects.toThrow(/refusing to resubmit/);
   });
 
   test("an empty-hash failure without explicit not-invoked proof remains held", async () => {

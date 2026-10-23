@@ -188,32 +188,14 @@ export interface ProxyFetchRequest {
   url: string;
   method?: "GET" | "POST";
   headers?: Record<string, string>;
-  /**
-   * Exact UTF-8 request body for POST, when present. At Demos node 61b8e75,
-   * broadcasting the DAHR transaction repeats the POST without its body or
-   * authorization. Use only idempotent or read-only POST endpoints, and use
-   * canonical `Content-Type` header casing for the node's request handling.
-   */
-  body?: string;
 }
 
 export interface ProxyFetchResult {
   /** Raw response body, returned inline to the caller. */
   body: string;
   status: number;
-  /** sha256 of the node-decoded UTF-8 text committed by the SR-3 binding. */
+  /** sha256 of the exact body bytes committed by the selected SR-3 binding. */
   responseHash: string;
-  responseHeadersHash?: string;
-  /**
-   * Canonical native evidence retained for repeatable commitment checks. The
-   * Demos adapter takes the block from its configured RPC and does not verify
-   * its validator signatures; verify them here when that RPC is not trusted.
-   */
-  methodEvidence?: {
-    kind: "demos-web2-request";
-    transaction: Record<string, unknown>;
-    block: Record<string, unknown>;
-  };
   /** Native transaction carrying the binding's request/response commitment. */
   anchorTxRef?: string;
   /** Epoch-millis the fetch was performed. */

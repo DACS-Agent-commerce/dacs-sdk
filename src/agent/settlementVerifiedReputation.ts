@@ -8,7 +8,6 @@ import {
 } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { authenticatedDomainClaimReference } from "../identity/domainClaimVerification.js";
 import type {
   AgreementArtifact,
   AnyAttestationBundle,
@@ -587,12 +586,6 @@ function emptyMetrics(): ReputationMetrics {
   };
 }
 
-// These references belong to original bundles/ratings whose authority callback
-// has already succeeded. Malformed domain coordinates remain excluded.
-function semanticAuthenticatedRef(ref: string): string | null {
-  try { return authenticatedDomainClaimReference(ref); } catch { return null; }
-}
-
 async function authenticateInputs(
   party: string,
   inputs: readonly SettlementVerifiedBundleInput[],
@@ -632,7 +625,7 @@ async function authenticateInputs(
     }
     if (!result || result.disposition !== "verified") continue;
     const claimedRole = input.bundle.parties.find((candidate) =>
-      sameCanonicalClaimIdentity(semanticAuthenticatedRef(candidate.primaryClaim), party)
+      sameCanonicalClaimIdentity(candidate.primaryClaim, party)
     )?.role;
     if (claimedRole !== result.partyRole ||
       (claimedRole !== "buyer" && claimedRole !== "seller")) continue;
@@ -886,15 +879,15 @@ async function ratingAverages(
         // Invalid or unavailable ratings are excluded, not treated as zero.
       }
       if (!record || record.jobId !== bundle.jobId ||
-        !sameCanonicalClaimIdentity(semanticAuthenticatedRef(record.target), party) ||
-        sameCanonicalClaimIdentity(semanticAuthenticatedRef(record.rater), party) ||
+        !sameCanonicalClaimIdentity(record.target, party) ||
+        sameCanonicalClaimIdentity(record.rater, party) ||
         record.targetRole !== job.authoritative.partyRole ||
         contentHash(stripSignature(record as unknown as Record<string, unknown>)) !==
           ref.contentHash) continue;
       const rater = bundle.parties.find((candidate) =>
-        sameCanonicalClaimIdentity(semanticAuthenticatedRef(candidate.primaryClaim), semanticAuthenticatedRef(record!.rater)));
+        sameCanonicalClaimIdentity(candidate.primaryClaim, record!.rater));
       if (!rater || rater.role === job.authoritative.partyRole) continue;
-      const parsedRater = parseCanonicalClaimReference(semanticAuthenticatedRef(record.rater));
+      const parsedRater = parseCanonicalClaimReference(record.rater);
       if (!parsedRater) continue;
       const canonicalRater =
         `${parsedRater.identity.scheme}:${parsedRater.identity.identifier}`;
@@ -1031,7 +1024,7 @@ async function deriveInternal(
     );
   }
   const parsedParty = requireCanonicalClaimReference(
-    authenticatedDomainClaimReference(party),
+    party,
     "SettlementVerifiedReputationDerivation partyPrimaryClaim",
   );
   const canonicalParty =

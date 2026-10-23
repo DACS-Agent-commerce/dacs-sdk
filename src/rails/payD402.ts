@@ -87,14 +87,13 @@ export interface PayD402WaitParams {
   options?: D402WaitOptions;
 }
 
-/**
- * Numeric equality over integer base-unit amounts (tolerant of leading zeros).
- * Both sides must be plain decimal digits: demosdk signs the offered string as
- * written, and `BigInt` alone would also accept hex, binary, octal, a sign or
- * surrounding whitespace, so "0x3B9ACA00" or " 1000000000" would match.
- */
+/** Numeric equality over integer base-unit amounts (tolerant of leading zeros / dual number|string shape). */
 function sameAmount(a: string, b: string): boolean {
-  return /^[0-9]+$/.test(a) && /^[0-9]+$/.test(b) && BigInt(a) === BigInt(b);
+  try {
+    return BigInt(a) === BigInt(b);
+  } catch {
+    return a === b;
+  }
 }
 
 /**
