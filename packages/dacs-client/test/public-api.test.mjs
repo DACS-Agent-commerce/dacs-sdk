@@ -3,16 +3,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+function declaresPublicContract(source, line) {
+  const preceding = source.slice(0, source.indexOf(line)).trimEnd();
+  const comment = /\/\*\*(?:(?!\*\/)[\s\S])*\*\/$/.exec(preceding)?.[0];
+  return !!comment && /\b(?:returns?|constant|Error)\b/i.test(comment);
+}
 test('every public export declares its input, result and refusal or side effects', () => {
   const source = readFileSync(new URL('../src/index.mjs', import.meta.url), 'utf8');
   const exports = source.split('\n').filter(line => line.startsWith('export '));
   assert.ok(exports.length > 0);
-  for (const line of exports) {
-    const offset = source.indexOf(line), preceding = source.slice(0, offset).trimEnd();
-    assert.match(preceding, /\/\*\*[^]*?(?:returns?|Returns?|constant|Error)[^]*?\*\/$/, line);
-    assert.ok(preceding.endsWith('*/'), line);
-  }
+  for (const line of exports) assert.ok(declaresPublicContract(source, line), line);
 });
+test('an earlier export contract cannot document a later placeholder', () => {
+  const source = '/** returns a first value */\nexport const first = 1;\n/** placeholder */\nexport const second = 2;';
+  assert.equal(declaresPublicContract(source, 'export const second = 2;'), false);
+});
+test('factory documentation names returned methods and the journal contract', () => {
+  const source = readFileSync(new URL('../src/index.mjs', import.meta.url), 'utf8');
+  assert.match(source, /observe\/sweep\/start\/stop\/setDeliveryCheck/);
+  assert.match(source, /search\/findSummary\/getListingDetail/);
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  assert.match(readme, /openDurableWalletJournal\(\{ path, mode/);
+  assert.match(readme, /DurableWalletJournalError/);
+  assert.match(readme, /journal-absent/);
+});
+
 const ROOT = {
   functions: ['createSqlitePurchaseStore', 'createPurchaseService', 'purchaseNext', 'networkIdentityLabel', 'createProtocolPurchases', 'protocolView', 'usesAgreementContext',
     'usesNativeDemDelivery', 'createDeliveryDeadlineWatch', 'createCoordinateStore', 'createDirectoryClient', 'createListingVerifier',
@@ -70,8 +85,11 @@ test('root exposes exactly the reviewed names', async () => {
   assert.deepEqual(Object.keys(await import('@kynesyslabs/dacs-client')).sort(), [...ROOT.functions, ...ROOT.classes, ...ROOT.values].sort());
 });
 
-test('durable journal subpath exports its format and version', async () => {
+test('durable journal subpath exports exactly its factory, error, format and version', async () => {
   const journal = await import('@kynesyslabs/dacs-client/wallet/durable-journal');
+  assert.deepEqual(Object.keys(journal).sort(), ['DURABLE_WALLET_JOURNAL_FORMAT', 'DURABLE_WALLET_JOURNAL_VERSION', 'DurableWalletJournalError', 'openDurableWalletJournal'].sort());
+  assert.equal(typeof journal.openDurableWalletJournal, 'function');
+  assert.equal(typeof journal.DurableWalletJournalError, 'function');
   assert.equal(journal.DURABLE_WALLET_JOURNAL_FORMAT, 'dacs-durable-wallet-journal');
   assert.equal(journal.DURABLE_WALLET_JOURNAL_VERSION, 1);
 });

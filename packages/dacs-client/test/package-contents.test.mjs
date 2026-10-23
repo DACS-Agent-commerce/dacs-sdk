@@ -85,6 +85,15 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
     import { DatabaseSync } from 'node:sqlite';
     import { PURCHASE_STATE_SCHEMA, createSqlitePurchaseStore, createCoordinateStore,
       createPurchaseService, createProtocolPurchases, createDeliveryDeadlineWatch } from '@kynesyslabs/dacs-client';
+    import { fileURLToPath } from 'node:url';
+    import { openDurableWalletJournal, DurableWalletJournalError } from '@kynesyslabs/dacs-client/wallet/durable-journal';
+    const journalPath = fileURLToPath(new URL('./TEST-journal.sqlite', import.meta.url));
+    assert.throws(() => openDurableWalletJournal({ path: journalPath, mode: 'invalid' }), error => error instanceof DurableWalletJournalError && error.code === 'journal-invalid');
+    let journal = openDurableWalletJournal({ path: journalPath, mode: 'create' });
+    const journalId = journal.journalId, record = { receipt: 'TEST-public-receipt' };
+    try { await journal.put('TEST-record', record); } finally { journal.close(); }
+    journal = openDurableWalletJournal({ path: journalPath, mode: 'open', expectedJournalId: journalId });
+    try { assert.deepEqual(await journal.get('TEST-record'), record); } finally { journal.close(); }
     const db = new DatabaseSync(':memory:');
     try {
       db.exec('PRAGMA foreign_keys=ON');
