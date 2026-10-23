@@ -12,6 +12,7 @@ import {
   type DemosTransferObservation,
   type PayDemRail,
   type PayDemRailResult,
+  type PayDemReconciledSettlement,
   type WalletSpendAuthorityV1,
   type WalletSpendReservationV1,
 } from "@kynesyslabs/dacs";
@@ -46,6 +47,8 @@ import {
   createDacsPayDemWalletSpendRecoveryAuthenticatorV1,
   type DacsPayDemBuyerPaymentAuthorityV1,
   type DacsPayDemBuyerPaymentInputV1,
+  type DacsPayDemBuyerChainReconciliationV1,
+  type DacsPayDemBuyerPaymentTrackOptionsV1,
 } from "../src/payDemPayment.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import { markDacsSdkPreparedPayDemRailV1 } from
@@ -1845,4 +1848,21 @@ describe("native DEM buyer payment track", () => {
       stage: "effect-pending",
     });
   });
+});
+
+
+it("types completed custom reconciliation with mandatory execution evidence", async () => {
+  const settlement = {
+    ok: true, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: PAYEE,
+    amountOs: "1", finality: { model: "bft-final" }, blockNumber: 43,
+  } satisfies Omit<PayDemReconciledSettlement, "execution">;
+  type Completed = Extract<DacsPayDemBuyerChainReconciliationV1, { status: "completed" }>;
+  const completed: Completed = {
+    status: "completed", settlement: { ...settlement, execution: "executed" },
+  };
+  const reconcile: DacsPayDemBuyerPaymentTrackOptionsV1["reconcile"] = () => completed;
+  // @ts-expect-error Completed native recovery must carry executed evidence.
+  const missing: Completed["settlement"] = settlement;
+  void missing;
+  expect(typeof reconcile).toBe("function");
 });

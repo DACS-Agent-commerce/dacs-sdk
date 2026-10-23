@@ -97,6 +97,9 @@ vi.mock("../src/x402SellerEvm.js", async (importOriginal) => ({
   }),
 }));
 
+import { createDacsBuyerBundleTransportRuntimeV1 } from "../src/bundleTransportRuntime.js";
+import type { DacsLiveRoleInboundOperationContextV1 } from "../src/roleRuntime.js";
+import type { DacsHttpAuthenticatedEnvelopeV1 } from "../src/transport/envelope.js";
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import {
   createDacsFixedPricePayDemBuyerAuditV1,
@@ -1010,7 +1013,8 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
       await expect(audit.bundleTransport.resolveVerification({
         authenticated, request: f.preliminaryRequest as never,
-      })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+      })).rejects.toMatchObject({ reasonCode: execution === undefined
+        ? "buyer-audit-native-execution-pending" : "buyer-audit-native-finality-invalid" });
       expect(adapter.sign).not.toHaveBeenCalled();
       expect(context.demos.signComponent).not.toHaveBeenCalled();
       expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
@@ -1027,6 +1031,31 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         signer: async (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
       },
     });
+    if (stage === "valid") {
+      // main's generic transport still loads the x402 order store. Supply the
+      // native record here to isolate execution retry from that inherited gap.
+      const nativeStore = database.createPayDemCoordinatorStore("buyer");
+      const orderLoader = vi.spyOn(database, "createLiveCoordinatorStore")
+        .mockReturnValue(nativeStore as never);
+      const runtime = createDacsBuyerBundleTransportRuntimeV1({ context, ...audit.bundleTransport });
+      const payload = { ...exactRequest, signedBytes: Buffer.from(exactRequest.signedBytes).toString("base64url") };
+      const envelope = {
+        status: "authenticated", authenticationHash: "a".repeat(64), identityEvidenceHash: "b".repeat(64),
+        envelope: { type: "bundle-signature-request", sender: SELLER, audience: BUYER,
+          jobId: JOB_ID, payload },
+      } as unknown as DacsHttpAuthenticatedEnvelopeV1;
+      const inbound = { role: "buyer" } as DacsLiveRoleInboundOperationContextV1;
+      observeDemosTransfer.mockResolvedValueOnce(includedOnly as never);
+      await expect(runtime.handleMessage(envelope, inbound)).rejects.toMatchObject({
+        reasonCode: "buyer-audit-native-execution-pending",
+      });
+      expect(adapter.sign).not.toHaveBeenCalled();
+      expect(context.demos.signComponent).not.toHaveBeenCalled();
+      expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
+      try {
+        await expect(runtime.handleMessage(envelope, inbound)).resolves.toEqual({ disposition: "accepted" });
+      } finally { orderLoader.mockRestore(); }
+    }
     const exact = await audit.bundleTransport.resolveVerification({
       authenticated,
       request: exactRequest,

@@ -1,11 +1,9 @@
-import { readFileSync } from "node:fs";
-
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createPayDemRail,
-  observeDemosExecutionByHash,
   payDemSettle,
+  type PayDemRail,
 } from "../../src/rails/payDem.js";
 
 // #338: the status index reports `included` for a transaction the node records
@@ -125,7 +123,14 @@ const NOT_OK = {
 };
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
   vi.clearAllMocks();
+  vi.stubGlobal("fetch", vi.fn(async (_url, init: RequestInit) => {
+    const request = JSON.parse(String(init.body)) as { params: [{ data: { hash: string } }] };
+    const record = await sdk.getTxByHash(request.params[0].data.hash);
+    return new Response(JSON.stringify({ result: 200, response: record }));
+  }));
   sdk.connect.mockResolvedValue(undefined);
   sdk.connectWallet.mockResolvedValue(undefined);
   sdk.getNetworkInfo.mockResolvedValue({
@@ -172,12 +177,20 @@ beforeEach(() => {
   sdk.waitForNonce.mockResolvedValue(undefined);
 });
 
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+async function settle(payDem: PayDemRail) {
+  const pending = payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS });
+  await vi.advanceTimersByTimeAsync(2_000);
+  return pending;
+}
+
 describe("pay-dem reports ok only for an executed transfer (#338)", () => {
   it("settles an executed record that matches the prepared transfer", async () => {
     const payDem = await rail();
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual({
       ok: true,
       execution: "executed",
@@ -203,7 +216,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail();
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toMatchObject({ ok: true, blockNumber: BLOCK });
   });
 
@@ -219,7 +232,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail();
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual({
       ...NOT_OK, errorClass: "permanent", blockNumber: BLOCK, txRefKind: "demos",
       failureProof: { kind: "demos-failed-record", txHash: TX_HASH, nonce: NONCE,
@@ -230,6 +243,48 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
   });
 
+  it("cancels an oversized streaming record before decoding it", async () => {
+    const cancel = vi.fn();
+    const fetchRecord = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(64 * 1024 + 1).fill(120)); },
+      cancel,
+    })));
+    vi.stubGlobal("fetch", fetchRecord);
+    const payDem = await rail();
+    await expect(settle(payDem)).resolves.toEqual(NOT_OK);
+    expect(fetchRecord).toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalled();
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.waitForNonce).not.toHaveBeenCalled();
+  });
+
+  it("aborts a stalled body at the remaining record deadline", async () => {
+    const cancel = vi.fn();
+    let signal: AbortSignal | null | undefined;
+    const fetchRecord = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result: 200, response: null })))
+      .mockImplementation(async (_url, init: RequestInit) => {
+        signal = init.signal;
+        return new Response(new ReadableStream({ cancel }));
+      });
+    vi.stubGlobal("fetch", fetchRecord);
+    const payDem = await rail({ transactionRecordTimeoutMs: 30, inclusionPollIntervalMs: 10,
+      statusRequestTimeoutMs: 1_000 });
+    let outcome: unknown;
+    const pending = payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS })
+      .then((value) => { outcome = value; });
+    await vi.advanceTimersByTimeAsync(29);
+    expect(outcome).toBeUndefined();
+    expect(fetchRecord).toHaveBeenCalledTimes(2);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(outcome).toEqual(NOT_OK);
+    expect(signal?.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("does not report a failed record that does not bind the signed nonce as ok", async () => {
     sdk.getTxByHash.mockImplementation(recordReturning((record) => {
       record.status = "failed";
@@ -238,7 +293,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail({ transactionRecordTimeoutMs: 1_000 });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
@@ -275,7 +330,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail({ transactionRecordTimeoutMs: 1_000 });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
     // A confirmed record that contradicts the prepared transfer will not
     // repair itself: no further reads and no further broadcast.
@@ -289,7 +344,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail({ transactionRecordTimeoutMs: 1_000 });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
@@ -314,14 +369,6 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
       response: "connect ECONNREFUSED",
       require_reply: false,
     })],
-    ["an accessor-bearing record", async () => {
-      const record = broadcastRecord();
-      Object.defineProperty(record, "status", {
-        enumerable: true,
-        get: () => "confirmed",
-      });
-      return record;
-    }],
     ["a rejected read", async () => {
       throw new Error("socket hang up");
     }],
@@ -330,7 +377,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail();
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
     expect(sdk.getTxByHash.mock.calls.length).toBeGreaterThan(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
@@ -358,29 +405,26 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail({ transactionRecordTimeoutMs: 1_000 });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(3);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("gives a lagging record the default 30 second budget", async () => {
-    sdk.getTxByHash
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
-      .mockImplementation(recordReturning(() => undefined));
-    const payDem = await createPayDemRail({
-      rpc: "https://node.test",
-      secret: "test-secret",
-      inclusionPollIntervalMs: 10,
-      statusRequestTimeoutMs: 50,
-    });
-
-    await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
-    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
-    expect(sdk.getTxByHash).toHaveBeenCalledTimes(4);
+  it("ends a lagging record observation at the default 30 second deadline", async () => {
+    sdk.getTxByHash.mockResolvedValue(null);
+    const payDem = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret" });
+    let outcome: unknown;
+    const pending = payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS })
+      .then((value) => { outcome = value; });
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(outcome).toBeUndefined();
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(60);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(outcome).toEqual(NOT_OK);
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(60);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("does not read the record when the status index reports failed", async () => {
@@ -390,14 +434,14 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     const payDem = await rail();
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
     expect(sdk.getTxByHash).not.toHaveBeenCalled();
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 });
 
-/** Serve `value()` after `ms`, as a real node read does. */
+/** Serve `value()` after `ms` on the controlled clock. */
 function after<T>(ms: number, value: () => T): () => Promise<T> {
   return () => new Promise((resolve) => setTimeout(() => resolve(value()), ms));
 }
@@ -424,7 +468,7 @@ describe("pay-dem node reads take time and are polled at the configured interval
     });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
     expect(statusReads()).toBe(1);
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
@@ -437,7 +481,7 @@ describe("pay-dem node reads take time and are polled at the configured interval
     });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
   });
 
@@ -450,7 +494,7 @@ describe("pay-dem node reads take time and are polled at the configured interval
     });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
     expect(statusReads()).toBe(1);
     expect(sdk.getTxByHash).not.toHaveBeenCalled();
@@ -464,7 +508,7 @@ describe("pay-dem node reads take time and are polled at the configured interval
     });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
@@ -481,12 +525,9 @@ describe("pay-dem node reads take time and are polled at the configured interval
     });
 
     await expect(
-      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+      settle(payDem),
     ).resolves.toEqual(NOT_OK);
-    // About five reads fit a 50 ms budget at 10 ms; without the wait the node
-    // would be read back to back for the whole budget.
-    expect(statusReads()).toBeGreaterThan(1);
-    expect(statusReads()).toBeLessThanOrEqual(7);
+    expect(statusReads()).toBe(5);
     expect(sdk.getTxByHash).not.toHaveBeenCalled();
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
@@ -556,7 +597,7 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     }],
   ])("retains a failed or uncertain payment without rebroadcast after %s", async (_case, arrange) => {
     arrange();
-    const settle = payDemSettle(await rail(), { network: "demos" });
+    const settleOnce = payDemSettle(await rail(), { network: "demos" });
 
     const expected = {
       ok: false,
@@ -570,11 +611,13 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
           blockNumber: BLOCK, payer: "ab".repeat(32), payee: request.expectedPayee, amountOs: AMOUNT_OS },
       } : {}),
     };
-    await expect(settle(request)).resolves.toEqual(expected);
+    const first = settleOnce(request);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(first).resolves.toEqual(expected);
     if (_case === "a failed record") {
-      await expect(settle(request)).resolves.toEqual(expected);
+      await expect(settleOnce(request)).resolves.toEqual(expected);
     } else {
-      await expect(settle(request)).rejects.toThrow(/refusing to resubmit/);
+      await expect(settleOnce(request)).rejects.toThrow(/refusing to resubmit/);
     }
     expect(sdk.transfer).toHaveBeenCalledTimes(1);
     expect(sdk.confirm).toHaveBeenCalledTimes(1);
@@ -604,7 +647,7 @@ describe("SDK record-verifying capability identity", () => {
     expect(Object.isFrozen(native)).toBe(true);
     expect(Reflect.set(native, "settle", vi.fn())).toBe(false);
     sdk.getTxByHash.mockImplementation(recordReturning((record) => { record.status = "failed"; }));
-    const result = await native.settle({ recipient: RECIPIENT, amount: AMOUNT_OS });
+    const result = await settle(native);
     expect(result.errorClass).toBe("permanent");
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.failureProof)).toBe(true);
