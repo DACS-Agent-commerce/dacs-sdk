@@ -3,7 +3,6 @@ import { isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
-import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
 import { sessionAdmissionConfig, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
