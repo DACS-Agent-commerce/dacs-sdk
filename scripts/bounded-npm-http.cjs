@@ -17,8 +17,7 @@ function responseBudget(path) {
   return /\.(?:tgz|tar\.gz)(?:\?|$)/.test(path) ? NPM_TARBALL_MAX_BYTES : NPM_METADATA_MAX_BYTES;
 }
 
-function validateJsonLists(bytes, contentType) {
-  if (!/json/i.test(contentType ?? "")) return;
+function validateJsonLists(bytes) {
   let value;
   try { value = JSON.parse(bytes.toString("utf8")); } catch { return; } // npm preserves malformed-body diagnostics.
   const pending = [[value, 0]];
@@ -39,7 +38,7 @@ function decodeBounded(bytes, decode, maximum) {
 }
 
 /** Buffers bounded encoded bytes, then bounded decompression; throws ELIMIT before downstream decoding. */
-async function readBoundedResponse(response, maximum) {
+async function readBoundedResponse(response, maximum, json = true) {
   if (Number(response.headers["content-length"]) > maximum) throw limitError();
   const chunks = [];
   let length = 0;
@@ -57,7 +56,7 @@ async function readBoundedResponse(response, maximum) {
   // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
   // Validate expansion without changing the exact archive bytes npm hashes.
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) decodeBounded(bytes, gunzipSync, maximum);
-  validateJsonLists(bytes, response.headers["content-type"]);
+  if (json) validateJsonLists(bytes);
   return bytes;
 }
 
@@ -73,7 +72,7 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
       pending.once("error", () => { failed = true; cancel(timer); });
       pending.emit = function (event, response, ...rest) {
         if (event !== "response") return emit.call(this, event, response, ...rest);
-        readBoundedResponse(response, responseBudget(pending.path)).then(bytes => {
+        readBoundedResponse(response, responseBudget(pending.path), responseBudget(pending.path) !== NPM_TARBALL_MAX_BYTES).then(bytes => {
           cancel(timer);
           if (failed) return;
           const admitted = new PassThrough();
