@@ -1,3 +1,4 @@
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -256,8 +257,12 @@ async function runToConsumerStage(complete = false) {
   writeFileSync(join(project, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\nFROM node:20\n");
   writeFileSync(join(project, ".dockerignore"), "**\n");
   writeFileSync(join(project, "package.json"), JSON.stringify(manifest)); writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages: lock }));
+  const doctor = JSON.parse(readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
+  doctor.sdkVersion = version;
+  delete doctor.reportHash;
+  doctor.reportHash = sha256Hex(canonicalize(doctor));
   const files: Record<string, string> = { "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n", "doctor.log": "blocked without credentials\n",
-    "doctor.json": readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"),
+    "doctor.json": JSON.stringify(doctor),
     "npm-audit.exit-code": "0\n", "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } }, vulnerabilities: {} }),
     "engine-strict.exit-code": "0\n", "engine-strict.log": "", "engine-versions.json": JSON.stringify({ node: "20.19.1", npm: "11.19.0" }) };
   for (const kind of ["lock", "physical"]) { files[`consumer-${kind}.cdx.json`] = "{}"; files[`consumer-${kind}-sbom.err`] = ""; files[`consumer-${kind}-sbom.exit-code`] = "0\n"; }
