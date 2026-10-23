@@ -2,7 +2,7 @@
 # Inert until sourced by the manual rehearsal; all npm descendants inherit admission.
 bounded_support=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 read -r COMMAND_TIMEOUT_SECONDS DOCKER_PULL_TIMEOUT_SECONDS COMMAND_MAX_ATTEMPTS < <(
-  node --input-type=module -e 'import(process.argv[1]).then(m => console.log(m.COMMAND_TIMEOUT_SECONDS, m.DOCKER_PULL_TIMEOUT_SECONDS, m.COMMAND_MAX_ATTEMPTS))' "$bounded_support/bounded-command.mjs"
+  node --input-type=module -e 'import(process.argv[2]).then(m => console.log(m.COMMAND_TIMEOUT_SECONDS, m.DOCKER_PULL_TIMEOUT_SECONDS, m.COMMAND_MAX_ATTEMPTS))' bounded-transport "$bounded_support/bounded-command.mjs"
 )
 export DACS_BOUNDED_NPM_HTTP=1
 export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=\"$bounded_support/bounded-npm-http.cjs\""

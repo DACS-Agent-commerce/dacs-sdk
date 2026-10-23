@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -104,4 +104,10 @@ describe("bounded generated build", () => {
       expect(readFileSync(join(root, ".dockerignore"), "utf8")).toContain("!acceptance-npm-http.cjs");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+});
+
+it("sources transport budgets without executing the command CLI and preserves failure status", () => {
+  const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", "source scripts/bounded-transport.sh; run_bounded node -e 'console.log(process.env.DACS_BOUNDED_NPM_HTTP, process.env.npm_config_fetch_retries); process.exit(17)'"],
+    { encoding: "utf8", env: { PATH: process.env.PATH } });
+  expect(result.status, result.stderr).toBe(17); expect(result.stdout).toBe("1 2\n");
 });
