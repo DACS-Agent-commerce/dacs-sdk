@@ -2,12 +2,27 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const callbacks = [];
-let installed = false, checking = false;
+let installed = false, checking = false, nativeExec, nativePrepare, nativeGet;
 function check() {
   if (checking) return;
   checking = true;
-  try { for (const predicate of callbacks) predicate(); }
+  try { for (const { predicate } of callbacks) predicate(); }
   finally { checking = false; }
+}
+function execute(fn) {
+  check();
+  if (checking || callbacks.length === 0) return fn();
+  const writable = new Map(callbacks.filter(frame => frame.writable).map(frame => [frame.db, frame]));
+  const opened = [];
+  try {
+    for (const db of writable.keys()) { nativeExec.call(db, 'PRAGMA query_only=OFF'); opened.push(db); }
+    return fn();
+  } finally {
+    for (const db of opened) {
+      try { nativeExec.call(db, 'PRAGMA query_only=ON'); }
+      catch { try { db.close(); } catch { /* A failed fence retires the handle. */ } }
+    }
+  }
 }
 function install(db) {
   if (installed) return;
@@ -17,16 +32,16 @@ function install(db) {
   const prepare = database.prepare, exec = database.exec;
   const statement = Object.getPrototypeOf(prepare.call(db, 'SELECT 1'));
   const run = statement.run;
+  nativeExec = exec; nativePrepare = prepare; nativeGet = statement.get;
   // Patch the native statement prototype too: the host may already have
   // prepared a statement before this capability was installed.
   for (const method of ['run', 'get', 'all', 'iterate']) {
     const original = statement[method];
     statement[method] = function (...args) {
-      check();
-      const result = Reflect.apply(original, this, args);
+      const result = execute(() => Reflect.apply(original, this, args));
       if (method !== 'iterate' || callbacks.length === 0 || checking) return result;
       return {
-        next(...values) { check(); return result.next(...values); },
+        next(...values) { return execute(() => result.next(...values)); },
         return(...values) { return result.return(...values); },
         [Symbol.iterator]() { return this; },
       };
@@ -43,7 +58,7 @@ function install(db) {
       if (/^(?:\s|;|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*$/.test(remaining)) break;
       const next = prepare.call(this, remaining);
       const consumed = next.sourceSQL.length;
-      run.call(next);
+      execute(() => run.call(next));
       remaining = remaining.slice(consumed);
     }
   };
@@ -57,7 +72,15 @@ function install(db) {
  */
 export function withSqliteStatementGuard(db, predicate, fn) {
   install(db);
-  callbacks.push(predicate);
+  const saved = nativeGet.call(nativePrepare.call(db, 'PRAGMA query_only')).query_only;
+  const parent = callbacks.find(frame => frame.db === db);
+  // The connection-level flag survives automatic rollback. Even native
+  // function references captured before installation cannot write around it.
+  nativeExec.call(db, 'PRAGMA query_only=ON');
+  callbacks.push({ db, predicate, writable: parent ? parent.writable : saved === 0 });
   try { check(); return fn(); }
-  finally { callbacks.pop(); }
+  finally {
+    callbacks.pop();
+    try { nativeExec.call(db, `PRAGMA query_only=${saved}`); } catch { /* A retired handle stays closed. */ }
+  }
 }

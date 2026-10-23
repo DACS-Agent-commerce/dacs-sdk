@@ -1350,6 +1350,22 @@
           "after": "e38a86a1fabd4f8767da17a18416e73529b2ee55"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 fence retained native SQL execution functions",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "b481d335f5d260dafa236b520c0b4c1b21269164",
+          "after": "f377b3dd6895e2ad1f02bedddc9eb18177f9eb57"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "e38a86a1fabd4f8767da17a18416e73529b2ee55",
+          "after": "8173b4c5b350f1a39a3b6bad62e8343f3e688258"
+        }
+      ]
     }
   ]
 }
