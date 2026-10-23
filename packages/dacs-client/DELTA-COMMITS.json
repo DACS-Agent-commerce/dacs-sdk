@@ -644,5 +644,21 @@
       "packages/dacs-client/src/wallet/payload-helpers.mjs",
       "packages/dacs-client/test/d11-seam-parameters.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 03 add the concrete SQLite transaction adapter",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/helpers/store-crash-worker.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs",
+      "packages/dacs-client/test/store-host-boundary.test.mjs"
+    ]
   }
 ]

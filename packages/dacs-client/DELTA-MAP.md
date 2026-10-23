@@ -431,6 +431,12 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:286` | ecab598d2695975c776aaddd6038e71db5432f6f |
 | | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | 32c65aec6b18cde12321600f9eb1c6ba4e439cae |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 3c96ca8c5a47dcb88862af46324df331961d153e |
+| D11 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | c202d2b701edc2a536b34d860bdb7317cfed6d77 |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | f19662c277f9bcc86145487d72230cdfbdde2d50 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 8560f9547739573a5f2c8c32c27a085fbd59370d |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 18c6e3c74c2817a1c38f58676eb2053d76398ebb |
 
 ## Complete commit and file inventory
 
@@ -976,6 +982,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:286` |
 | delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
 | delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 
 ## Original moved files
 
