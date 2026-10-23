@@ -1035,6 +1035,21 @@ checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.
 
+Registry/container acceptance writes evidence to the new directory passed to
+`--output-dir`, including partial evidence when a run fails. Use a directory
+under the ignored `registry-container-artifacts/` path, or a directory outside
+the repository; other in-repository paths will appear as untracked files.
+The acceptance audits the generated consumer's tree by advisory ID against
+`scripts/registry-container-audit-baseline.json`. On pull requests an advisory
+ID outside that baseline is a warning, unless it is high or critical on a
+direct dependency of the consumer; the scheduled drift job, manual runs and
+release paths fail on it (see the audit policy in [SECURITY.md](./SECURITY.md)).
+`Publish gated npm prerelease` publishes only after that acceptance passes with
+drift enforced. It replaces `publish-prerelease.yml`, which older refs still
+contain, so publication credentials must belong only to the new workflow and its
+`npm-prerelease-gated` environment (owner steps in the runbook below).
+Production publication remains blocked by #191.
+
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in
 [the npm prerelease release runbook](./docs/npm-prerelease-release.md).
