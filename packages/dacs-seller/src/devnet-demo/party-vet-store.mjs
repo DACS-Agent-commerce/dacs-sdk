@@ -1,4 +1,4 @@
-// The seller's party Vet store (node:sqlite): one row per job with the job's
+// The seller's party Vet store (SQLite): one row per job with the job's
 // Vet binding, its SDK operation checkpoints, the write-ahead record of each
 // signature, the context the seller's Agreement step reads, or a quarantine
 // marker. It is its own file next to the artifact journal, so its rows never
@@ -12,13 +12,17 @@
 // row changed outside the store fails closed instead of reading as valid.
 // Errors carry the durable journal's codes (journal-capacity, journal-busy,
 // journal-integrity, journal-invalid). No key or secret is ever stored.
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
 export const PARTY_VET_STORE_FORMAT = 'dacs-party-vet-store';
 export const PARTY_VET_STORE_VERSION = 1;
+const STORE_TABLES = Object.freeze({
+  meta: 'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT',
+  jobs: 'CREATE TABLE jobs (key TEXT PRIMARY KEY, value TEXT NOT NULL, bytes INTEGER NOT NULL, digest TEXT NOT NULL) STRICT',
+});
 // A row holds one job until its purchase ends (or its approval window passed).
 // A planned job's row is about 26 KB (docs/DEVNET-FIXED-PRICE-DEMO.md), so the
 // job cap binds first.
@@ -60,7 +64,7 @@ function storeOver(backend, limits) {
       const current = backend.get(key);
       let next;
       try { next = change(current === null ? null : structuredClone(current), () => structuredClone(backend.entries())); } catch (error) { refused = { error }; throw error; }
-      if (typeof next?.then === 'function') fail('journal-invalid', 'party Vet store changes are synchronous');
+      if (typeof next?.then === 'function') { Promise.resolve(next).catch(() => {}); fail('journal-invalid', 'party Vet store changes are synchronous'); }
       if (next === undefined) return current;
       if (next === null) { backend.remove(key); return null; }
       const text = encode(next), bytes = Buffer.byteLength(text);
@@ -86,7 +90,8 @@ export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || path.startsWith('file:')) fail('journal-invalid', 'an explicit absolute party Vet store path is required');
   bounded('busyTimeoutMs', busyTimeoutMs, 0, 10_000);
   const limits = limitsFor(options);
-  try { closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)); }
+  let created = false;
+  try { closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)); created = true; }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
   const file = lstatSync(path);
   if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || (process.getuid && file.uid !== process.getuid())) fail('journal-invalid', 'the party Vet store must be a private regular file owned by this process user');
@@ -114,24 +119,31 @@ export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {
     db.exec('PRAGMA synchronous = FULL');
     if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') fail('journal-integrity', 'the party Vet store failed its integrity check');
     storeId = tx('BEGIN IMMEDIATE', () => {
-      if (db.prepare('SELECT count(*) AS n FROM sqlite_schema').get().n === 0) {
-        db.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT');
-        db.exec('CREATE TABLE jobs (key TEXT PRIMARY KEY, value TEXT NOT NULL, bytes INTEGER NOT NULL, digest TEXT NOT NULL) STRICT');
+      if (created) {
+        for (const sql of Object.values(STORE_TABLES)) db.exec(sql);
         const id = randomBytes(16).toString('hex'), insert = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
         for (const [key, value] of [['format', PARTY_VET_STORE_FORMAT], ['version', String(PARTY_VET_STORE_VERSION)], ['store_id', id]]) insert.run(key, value);
-        return id;
+      }
+      for (const [name, sql] of Object.entries(STORE_TABLES)) {
+        if (db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name)?.sql !== sql) fail('journal-integrity', 'the party Vet store schema is absent or changed');
       }
       let meta;
       try { meta = Object.fromEntries(db.prepare('SELECT key, value FROM meta').all().map((row) => [row.key, row.value])); } catch (error) { fail('journal-integrity', 'the party Vet store schema is absent or changed', { cause: error }); }
-      if (meta.format !== PARTY_VET_STORE_FORMAT || meta.version !== String(PARTY_VET_STORE_VERSION) || !/^[a-f0-9]{32}$/.test(meta.store_id ?? '')) fail('journal-integrity', 'the party Vet store format, version or identity is not recognized');
+      if (Object.keys(meta).sort().join() !== 'format,store_id,version' || meta.format !== PARTY_VET_STORE_FORMAT || meta.version !== String(PARTY_VET_STORE_VERSION) || !/^[a-f0-9]{32}$/.test(meta.store_id ?? '')) fail('journal-integrity', 'the party Vet store format, version or identity is not recognized');
       return meta.store_id;
     });
   } catch (error) { try { db?.close(); } catch { /* already failed */ } closed = true; throw translate(error); }
   const digest = (key, text) => sha256(`${PARTY_VET_STORE_FORMAT}\n${storeId}\n${key}\n${text}`);
   const decode = (row) => {
     if (row.digest !== digest(row.key, row.value) || row.bytes !== Buffer.byteLength(row.value)) fail('journal-integrity', 'a party Vet store row changed outside the store; nothing may be signed or sent');
-    return JSON.parse(row.value);
+    try {
+      const value = JSON.parse(row.value);
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) fail('journal-integrity', 'a party Vet store row is not a JSON object');
+      return value;
+    } catch (cause) { fail('journal-integrity', 'a party Vet store row is malformed', { cause }); }
   };
+  try { tx('BEGIN', () => { for (const row of db.prepare('SELECT key, value, bytes, digest FROM jobs').iterate()) decode(row); }); }
+  catch (error) { db.close(); closed = true; throw translate(error); }
   const backend = {
     // Changes run in an IMMEDIATE transaction, reads in a deferred one.
     transaction: (fn) => tx('BEGIN IMMEDIATE', fn),
@@ -151,19 +163,22 @@ export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {
 // The same store in memory, for tests: nothing survives the process.
 export function createInMemoryPartyVetStore(options = {}) {
   const limits = limitsFor(options), rows = new Map();
+  let closed = false;
+  const assertOpen = () => { if (closed) fail('journal-closed', 'the party Vet store is closed'); };
   const backend = {
     transaction: (fn) => {
+      assertOpen();
       const before = new Map(rows);
       try { return fn(); } catch (error) { rows.clear(); for (const [key, value] of before) rows.set(key, value); throw error; }
     },
-    snapshot: (fn) => fn(),
+    snapshot: (fn) => { assertOpen(); return fn(); },
     get: (key) => (rows.has(key) ? JSON.parse(rows.get(key).text) : null),
     size: (key) => rows.get(key)?.bytes ?? null,
-    totals: () => ({ jobs: rows.size, bytes: [...rows.values()].reduce((sum, row) => sum + row.bytes, 0) }),
+    totals: () => { assertOpen(); return { jobs: rows.size, bytes: [...rows.values()].reduce((sum, row) => sum + row.bytes, 0) }; },
     put: (key, text, bytes) => { rows.set(key, { text, bytes }); },
     remove: (key) => { rows.delete(key); },
     entries: () => [...rows.keys()].sort().map((key) => [key, JSON.parse(rows.get(key).text)]),
-    close: () => {},
+    close: () => { closed = true; },
   };
   return Object.freeze(storeOver(backend, limits));
 }
