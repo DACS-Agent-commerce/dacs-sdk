@@ -1,0 +1,24 @@
+import { expect, it } from "vitest";
+import { TP1_APPROVED_IDENTITY_RECORD, TP1_APPROVED_IDENTITY_RECORD_DIGESTS } from "../../src/wire/index.js";
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { canonicalize } from "../../src/canonical/index.js";
+const bindTp1Fixture = fixtureBinder(fixtureWire);
+const RECORD = TP1_APPROVED_IDENTITY_RECORD;
+const DIGEST = "5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330";
+const A = { endpoint: "https://rpc-a.identity.invalid/", transportAuthority: "test-a", connectionId: "a-1" };
+const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+  it("pins the complete canonical record, including provenance and fallback documentation", () => {
+    expect(RECORD.recordId).toBe("dacs-demos-testnet-identity/2026-10-20");
+    expect(RECORD.chainIdentity).toBe("d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc");
+    expect(RECORD.pinVersion).toBe(RECORD.recordId);
+    expect(RECORD.provenance).toMatchObject({ approvedBy: "the owner", approvedAt: "2026-10-20", sourceKind: "confirmed-block-one-predecessor" });
+    expect(RECORD.provenance.documentation).toBe("Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-20`.");
+    expect(hash(canonicalize(RECORD))).toBe(DIGEST);
+    expect(TP1_APPROVED_IDENTITY_RECORD_DIGESTS).toEqual([DIGEST]);
+    expect(Object.isFrozen(RECORD) && Object.isFrozen(RECORD.provenance)).toBe(true);
+    expect(RECORD).not.toHaveProperty("endpoint");
+    expect(RECORD).not.toHaveProperty("transportAuthority");
+    expect(bindTp1Fixture({ record: RECORD, local: A }).recordDigest).toBe(DIGEST);
+  });
