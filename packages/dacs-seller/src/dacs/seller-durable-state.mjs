@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { createPublicKey, randomUUID, verify } from 'node:crypto';
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 import { isMainThread } from 'node:worker_threads';
 import { canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { verifyFixtureRecord } from './fixture-anchors.mjs';
@@ -137,12 +137,12 @@ function leaseState(dir, id) {
   let probe;
   try {
     if (!privateEntry(lstatSync(holderFile(dir, id)), 'isFile')) return 'unchecked';
-    probe = new DatabaseSync(holderFile(dir, id), { readOnly: true });
+    probe = new DatabaseSync(holderFile(dir, id), { readonly: true });
     probe.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY');
     probe.exec('BEGIN EXCLUSIVE');
     probe.exec('ROLLBACK');
     return 'free';
-  } catch (error) { return error?.errcode === 5 ? 'held' : 'unchecked'; } finally { try { probe?.close(); } catch { /* the answer stands */ } }
+  } catch (error) { return error?.errcode === 5 || error?.code === 'SQLITE_BUSY' ? 'held' : 'unchecked'; } finally { try { probe?.close(); } catch { /* the answer stands */ } }
 }
 // Why a row is, or is not, reclaimable. Only 'exited' is: its holder ran on
 // this boot of this kernel, so its lease is in this kernel's lock table, that
