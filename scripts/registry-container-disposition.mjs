@@ -404,9 +404,12 @@ export function scanLockEngines(lock, versions) {
 // `missing`. An unreadable inventory or entry leaves the scan incomplete.
 export function runtimeImageInventoryFindings(inventory, lock) {
   const packages = isPlainObject(lock?.packages) ? lock.packages : null;
-  if (packages === null) {
+  if (packages === null || !isPlainObject(packages[""])) {
     return { scanComplete: false, errors: ["the generated lock has no packages"], unexpected: [], missing: [] };
   }
+  const malformed = Object.entries(packages).filter(([, entry]) => !isPlainObject(entry));
+  if (malformed.length) return { scanComplete: false,
+    errors: malformed.map(([location]) => `malformed generated lock entry: ${location}`), unexpected: [], missing: [] };
   if (inventory?.schema !== RUNTIME_IMAGE_INVENTORY_SCHEMA || !Array.isArray(inventory.packages)) {
     return { scanComplete: false, errors: [`runtime-image-inventory.json is not ${RUNTIME_IMAGE_INVENTORY_SCHEMA}`],
       unexpected: [], missing: [] };
@@ -418,14 +421,15 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   const seen = new Set();
   for (const item of inventory.packages) {
     const location = item?.location;
-    if (typeof location !== "string" || !/^node_modules\/(?:.+\/node_modules\/)?(?:@[^/]+\/)?[^/@.][^/]*$/.test(location) ||
+    const identity = typeof location === "string" && /^node_modules\/(?:.+\/node_modules\/)?((?:@[^/]+\/)?[^/@.][^/]*)$/.exec(location);
+    if (!identity ||
         typeof item.name !== "string" || typeof item.version !== "string" || seen.has(location)) {
       errors.push("unreadable runtime-image inventory entry: " + JSON.stringify(item));
       continue;
     }
     seen.add(location);
     const entry = closure.get(location);
-    const name = entry?.name ?? location.slice(location.lastIndexOf("node_modules/") + 13);
+    const name = entry?.name ?? identity[1];
     if (entry === undefined || entry.version !== item.version || name !== item.name) {
       unexpected.push({ name: item.name, location, version: item.version,
         integrity: packages[location]?.integrity ?? null });
