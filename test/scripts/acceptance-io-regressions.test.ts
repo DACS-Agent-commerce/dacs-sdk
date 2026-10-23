@@ -48,3 +48,17 @@ describe("acceptance evidence I/O", () => {
     expect(classifyAcceptanceFailure({ stage: "registry-start", read: () => text })).toMatchObject({ failureClass: "network" });
   });
 });
+
+describe("physical diagnostic line boundaries", () => {
+  it.each([false, true])("admits exactly 100000 lines with terminating newline %s", trailing => {
+    const log = "npm error code ECONNRESET\n" + "x\n".repeat(99998) + "x" + (trailing ? "\n" : "");
+    expect(classifyAcceptanceFailure({ stage: "consumer", read: () => log }).failureClass).toBe("network");
+    expect(classifyAcceptanceFailure({ stage: "consumer", read: () => log + (trailing ? "x\n" : "\nx") }).failureClass).toBe("functional");
+  });
+  it.each(["docker-refused.txt", "docker-unreachable.txt"])("preserves Docker transport cause %s", name => {
+    const log = readFileSync(join("test/scripts/fixtures/acceptance-transport", name), "utf8");
+    for (const stage of ["registry-start", "consumer"]) {
+      expect(classifyAcceptanceFailure({ stage, read: () => log })).toMatchObject({ failureClass: "network", evidence: [expect.stringContaining("connect:")] });
+    }
+  });
+});
