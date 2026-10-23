@@ -81,3 +81,58 @@ describe("inventory metadata and lock entry validation", () => {
       .toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/malformed.*lock/)] });
   });
 });
+
+describe("inventory fail-closed metadata and diagnostics", () => {
+  it.each([
+    { optional: true }, { dev: true }, { version: "" }, { version: "  " },
+  ])("rejects a non-link lock record without a nonblank version before filtering: %j", entry => {
+    expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [] },
+      { packages: { "": {}, "node_modules/a": entry } }))
+      .toMatchObject({ scanComplete: false, errors: [expect.stringContaining("node_modules/a")] });
+  });
+  it.each([{ name: "", version: "1.0.0" }, { name: "a", version: "" }, { name: "  ", version: "1.0.0" }])(
+    "rejects a blank inventory identity %j", identity => {
+      expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [
+        { location: "node_modules/a", ...identity },
+      ] }, lock())).toMatchObject({ scanComplete: false });
+    });
+  it.each([false, true])("preserves manifest failure cause, invalid JSON=%s", invalid => {
+    const directory = root();
+    mkdirSync(join(directory, "node_modules/a"), { recursive: true });
+    if (invalid) writeFileSync(join(directory, "node_modules/a/package.json"), "{invalid");
+    const inventory = runtimeImageInventory(directory);
+    const findings = runtimeImageInventoryFindings(inventory, lock());
+    expect(findings.scanComplete).toBe(false);
+    expect(inventory.packages[0].error).toMatch(invalid ? /SyntaxError/ : /ENOENT/);
+    expect(findings.errors[0]).toContain(inventory.packages[0].error);
+  });
+});
+
+describe("inventory executable entries", () => {
+  it.each(["file", "unlisted link", "wrong target", "dangling link"])("rejects an unjustified .bin entry: %s", kind => {
+    const directory = root(); pkg(join(directory, "node_modules/a"));
+    mkdirSync(join(directory, "node_modules/.bin"));
+    writeFileSync(join(directory, "node_modules/a/cli.js"), "module.exports = 42;");
+    const command = join(directory, "node_modules/.bin/evil.js");
+    if (kind === "file") writeFileSync(command, "module.exports = 42;");
+    else symlinkSync(kind === "dangling link" ? "../a/missing.js" : "../a/cli.js", command);
+    const input = lock();
+    const locked = kind === "wrong target" ? { ...input, packages: { ...input.packages,
+      "node_modules/a": { ...input.packages["node_modules/a"], bin: { "evil.js": "other.js" } } } } : input;
+    expect(runtimeImageInventoryFindings(runtimeImageInventory(directory), locked))
+      .toMatchObject({ scanComplete: false, errors: [expect.stringContaining(".bin/evil.js")] });
+  });
+  it.each(["node_modules/a", "node_modules/@s/a", "node_modules/parent/node_modules/a"])(
+    "accepts a bin link justified by the locked declaration at %s", location => {
+      const directory = root(); pkg(join(directory, location), location.includes("@s/") ? "@s/a" : "a");
+      const modules = location.replace(/(?:@[^/]+\/)?[^/]+$/, "");
+      mkdirSync(join(directory, modules, ".bin"), { recursive: true });
+      writeFileSync(join(directory, location, "cli.js"), "module.exports = 42;");
+      symlinkSync(join(directory, location, "cli.js"), join(directory, modules, ".bin/a"));
+      if (location.includes("parent")) pkg(join(directory, "node_modules/parent"), "parent");
+      const input = { packages: { "": {}, [location]: { version: "1.0.0", bin: { a: "cli.js" } },
+        ...(location.includes("parent") ? { "node_modules/parent": { version: "1.0.0" } } : {}) } };
+      expect(runtimeImageInventoryFindings(runtimeImageInventory(directory), input))
+        .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+    });
+});
