@@ -12,11 +12,18 @@ test('package wallet helpers preserve the provider digest and confirmation contr
   assert.equal(await helpers.nativePayloadDigest(signed), digest);
   assert.equal(await helpers.nativePayloadDigest(content), digest);
   assert.notEqual(await helpers.nativePayloadDigest({ ...content, nonce: 8 }), digest);
-  for (const confirmation of [null, {}, { transaction: {} },
-    { transaction: { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 } },
-    { transaction: { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 }, custom_charges: [] }]) {
-    assert.equal(helpers.storageConfirmationShapeMatches(confirmation), wallet.storageConfirmationShapeMatches(confirmation));
-  }
+  const transaction = { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 };
+  const fees = { network_fee: 1, rpc_fee: 1, additional_fee: 0 };
+  for (const [confirmation, expected] of [
+    [null, false], [{}, false], [{ transaction: {} }, false],
+    [{ transaction }, true], [{ transaction, custom_charges: [] }, false],
+    [{ transaction: { ...transaction, extra: true } }, false],
+    [{ transaction, gas_operation: { fees } }, true],
+    [{ transaction, gas_operation: { fees: { network_fee: 1 } } }, false],
+    [{ transaction, gas_operation: { fees, extra: true } }, false],
+    [{ transaction, payload: {} }, false],
+  ]) assert.equal(helpers.storageConfirmationShapeMatches(confirmation), expected);
+
 });
 
 test('post-fork prepared digest agrees with demosdk 4.0.16 serialized signing content', async () => {
