@@ -650,6 +650,269 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // The buyer-anchored Agreement and the reference that names it: the
   // fixture-substrate write by default, or the buyer's authenticated native
   // SR-2 CREATE with the opt-in capability (its receipt kept as `native`).
+  async function readBuyerAgreement(agreementAddress, buyer, agreementHash, signedProjection) {
+    if (agreementAnchor) {
+      const read = await agreementAnchor.readAgreement({ logicalAddress: agreementAddress, writer: buyer, agreementHash, ...(signedProjection === undefined ? {} : { signedProjection }) });
+      if (read.disposition === 'present') return { agreement: read.artifact, ref: read.ref, native: read.native };
+      if (read.disposition === 'absent') throw new SellerAgentError('agreement_not_anchored', 'the buyer has not anchored the Agreement');
+      if (read.disposition === 'indeterminate') throw new SellerAgentError('substrate_unavailable', `SR-2 Agreement read is indeterminate: ${read.reason}`, 503);
+      throw new SellerAgentError('agreement_anchor_invalid', `Agreement anchor is not the buyer write: ${read.reason}`);
+    }
+    let record;
+    try {
+      record = await anchors.read(agreementAddress);
+    } catch (error) {
+      throw new SellerAgentError('substrate_unavailable', `SR-2 read failed: ${error.message}`, 503);
+    }
+    if (record.status !== 'present') throw new SellerAgentError('agreement_not_anchored', 'the buyer has not anchored the Agreement');
+    if (verifyFixtureRecord(record, { logicalAddress: agreementAddress, expectedWriter: buyer }) !== 'valid') throw new SellerAgentError('agreement_anchor_invalid', 'Agreement anchor is not the buyer write');
+    return { agreement: record.artifact, ref: fixtureRef(agreementAddress, contentHash(record.artifact)), native: null };
+  }
+  const nativeAgreementView = (native) => ({ source: native.source, evidenceMode: native.evidenceMode, nativeAddress: native.nativeAddress, txRef: native.txRef });
+
+  function retainCommitmentPhase(session, finalized) {
+    const commitmentRef = { anchor:{kind:'storage-program',locator:finalized.logicalAddress}, contentHash:contentHash(finalized.record), signer: claim };
+    const commitmentTxRef = finalized.anchorTxRef;
+    const commitmentDelta = { 'commit-payee-bound-agreement': {
+      agreementHash: finalized.agreementHash,
+      anchorTxRef: commitmentTxRef,
+      anchorReceipt: structuredClone(finalized.anchorReceipt),
+      committedAt: finalized.committedAt,
+    } };
+    return recordPhase(session, 1, nativeArtifactAnchor ? finalized.committedAt : session.commitCreatedAt, {
+      ok: true,
+      txRefs: [commitmentTxRef],
+      attestationRef: commitmentRef,
+      anchorReceipt: structuredClone(finalized.anchorReceipt),
+      contextDelta: commitmentDelta,
+    });
+  }
+
+  // ---- DACS-3: finalized commitment (orchestrator) ----
+  // `readbackOnly` is internal (never an HTTP body field): a retained
+  // commitment is authenticated again, but an absent one is never published.
+  async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement } = {}) {
+    assertSettlementChain();
+    const session = sessionFor(jobId);
+    assertBuyer(session.buyerBundle.presentedBy,jobId);
+    assertRailPin(session.railPin, 'in-flight');
+    const early = signatureAgreement !== undefined;
+    if (early && !commitOnSignature) throw new SellerAgentError('signature_commitment_disabled', 'commitment on signature is disabled');
+    if (early && signatureBuyer !== null && session.buyerBundle.presentedBy !== signatureBuyer) throw new SellerAgentError('signature_buyer_not_admitted', 'buyer is not admitted to early commitment');
+    // An early request for an already committed job only reads back.
+    const attempt = early && !session.commitment;
+    // Repeated early requests stay readback-only. The ordinary path keeps
+    // main's fence, the publisher's durable intent before any send, until the
+    // early commitment has been seen present; after that it only reads back.
+    readbackOnly ||= early ? !attempt || Boolean(session.signatureCommitmentAttempt) : Boolean(session.signatureCommitmentHeld);
+    const readbackRequired = () => { throw new SellerAgentError('commitment_readback_required', 'only the retained commitment may be read back here', 503); };
+    // Once a native commitment has been finalized, every later entry through
+    // the public commit path is reconciliation. An absent fresh observation is
+    // not authority to publish another CREATE for the same logical address.
+    const retainedNativeCommitment = Boolean(nativeArtifactAnchor && session.commitment);
+    if (!early && session.commitment && !durable) return { status: 'committed', address: session.commitment.logicalAddress, resumed: true };
+    if (!session.agreementHash) throw new SellerAgentError('not_agreed', 'no Agreement contribution was made for this job');
+    const agreementAddress = fixedPriceAgreementLogicalAddress(jobId);
+    const projection = signedProjection ?? session.agreementSignedProjection;
+    let candidate;
+    if (early) {
+      try {
+        candidate = await verifySignatureAgreement(signatureAgreement, session, contributionVerifier);
+        verifyAgreementCreateAuthorization(signedProjection, candidate, agreementAddress, session.buyerBundle.presentedBy);
+      }
+      catch (error) { throw new SellerAgentError('signature_agreement_invalid', String(error.message).slice(0, 240)); }
+    }
+    const { agreement, ref: agreementRef, native } = early
+      ? { agreement: candidate, ref: fixtureRef(agreementAddress, session.agreementHash), native: null }
+      : await readBuyerAgreement(agreementAddress, session.buyerBundle.presentedBy, session.agreementHash, projection);
+    if (contentHash(agreement) !== session.agreementHash) throw new SellerAgentError('agreement_substituted', 'anchored Agreement differs from the one the seller contributed to');
+    // Retain public proof only after ordinary native authentication, before any
+    // commitment effect. Restart can reauthenticate it without buyer authority.
+    if (native && projection !== undefined) session.agreementSignedProjection = structuredClone(projection);
+    if (early && !session.signatureCommitmentAttempt && signatureCommitmentReady) {
+      try { await signatureCommitmentReady(); }
+      catch { throw new SellerAgentError('signature_connection_unavailable', 'early commitment connection reservation is unavailable', 503); }
+    }
+    if (!nativeArtifactAnchor && durable?.hasAnchor(finalityCommitmentAddress(jobId))) await durable.reconcileAnchor(`anchor:${finalityCommitmentAddress(jobId)}`, anchors);
+    // Older retained attempts have no publication marker. Their CREATE may
+    // already have been asked for, so require the same proof as a new send.
+    if (nativeArtifactAnchor) session.commitmentPublishAsked ??= session.commitCreatedAt !== undefined;
+    session.commitCreatedAt ??= now();
+    if (attempt) {
+      if (!session.signatureCommitmentAttempt) {
+        try { durable.reserveSignatureCommitment(session.buyerBundle.presentedBy, jobId); }
+        catch (error) {
+          if (error?.code === 'seller_signature_buyer_unresolved') throw new SellerAgentError(error.code, 'this buyer already has an unresolved early commitment', 409);
+          throw error;
+        }
+      }
+      session.agreementSignedProjection = structuredClone(signedProjection);
+      session.signatureCommitmentAttempt = true;
+    }
+    // This job's authenticated readback releases its buyer slot even without a
+    // saved marker: the reservation and the session save are separate writes.
+    if (!early && (commitOnSignature || session.signatureCommitmentAttempt)) durable.releaseSignatureCommitment(session.buyerBundle.presentedBy, jobId);
+    persist(session);
+    let finalized;
+    let nativeCommitmentProjection;
+    let commitmentProvenUnsigned = false;
+    try {
+      finalized = await commitFixedPriceAgreement(
+        {
+          agreement,
+          verifiedListing: { disposition: 'verified', listing, pin },
+          session: commitmentSession(agreement),
+          createdAt: session.commitCreatedAt,
+          commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => { if (readbackOnly && (early || session.signatureCommitmentAttempt)) readbackRequired(); return sign(bytes); } },
+        },
+        nativeArtifactAnchor ? {
+          resolve: async (logicalAddress) => {
+            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord'});
+            if(read.status==='absent') {
+              commitmentProvenUnsigned = isProvenUnsignedAbsence(read);
+              if (session.commitmentPublishAsked && !commitmentProvenUnsigned) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
+              return {disposition:'absent'};
+            }
+            if(read.status!=='present') return {disposition:read.status==='rejected'?'rejected':'indeterminate',reason:read.reason};
+            nativeCommitmentProjection=read.signedProjection;
+            return {disposition:'present',anchored:{record:read.artifact,nativeAddress:read.receipt.nativeAddress,anchorTxRef:read.txRef,anchorReceipt:read.receipt}};
+          },
+          verifyAnchorReceipt: async (anchored) => nativeArtifactAnchor.verifyReceipt({logicalAddress:anchored.anchorReceipt.logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:nativeCommitmentProjection}),
+          submit: async (logicalAddress, commitmentRecord) => {
+            if(readbackOnly || retainedNativeCommitment) readbackRequired();
+            if (session.commitmentPublishAsked && !commitmentProvenUnsigned) readbackRequired();
+            heldFor(jobId)?.();
+            session.commitmentPublishAsked = true;
+            persist(session);
+            const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId)});
+            if(out.status!=='present') throw new Error(out.reason ?? 'native commitment publication is indeterminate');
+            nativeCommitmentProjection=out.signedProjection;
+            return {record:commitmentRecord,nativeAddress:out.receipt.nativeAddress,anchorTxRef:out.txRef,anchorReceipt:out.receipt};
+          },
+        } : {
+          ...commitmentReader(anchors, claim),
+          submit: async (logicalAddress, commitmentRecord) => {
+            if (readbackOnly) readbackRequired();
+            const receipt = (await anchorOnce(logicalAddress, commitmentRecord)).receipt;
+            return { record: commitmentRecord, nativeAddress: receipt.nativeAddress, anchorTxRef: fixtureTxRef(receipt), anchorReceipt: receipt };
+          },
+        },
+        commitmentVerifier,
+      );
+    } catch (error) {
+      throw new SellerAgentError('commitment_failed', String(error?.message ?? error).slice(0, 240));
+    }
+    if (early) {
+      if (attempt && !session.signatureCommitmentHeld) { session.signatureCommitmentHeld = true; persist(session); }
+      return { status: 'commitment-held', address: finalized.logicalAddress, resumed: finalized.resumed };
+    }
+    // A native fresh read creates a new observation timestamp, not a new
+    // commitment or phase result. Authenticate it above, then retain the exact
+    // original SDK commitment/phase bytes when the immutable record, tx and
+    // receipt binding are unchanged.
+    if (nativeArtifactAnchor && session.commitment) {
+      const retained=session.commitment;
+      if(contentHash(retained.record)!==contentHash(finalized.record) || retained.logicalAddress!==finalized.logicalAddress ||
+          canonicalize(retained.anchorTxRef)!==canonicalize(finalized.anchorTxRef) || !sameNativeCommitmentReceipt(retained.anchorReceipt,finalized.anchorReceipt)) {
+        throw new SellerAgentError('commitment_changed','fresh native commitment readback differs from the retained finalized commitment',503);
+      }
+      session.agreement=agreement;session.agreementRef=agreementRef;
+      if(native)session.agreementAnchor=nativeAgreementView(native);
+      session.stage='committed';persist(session);
+      return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
+    }
+    session.agreement = agreement;
+    session.agreementRef = agreementRef;
+    if (native) session.agreementAnchor = nativeAgreementView(native);
+    session.commitment = finalized;
+    session.stage = 'committed';
+    // The native receipt is the authoritative commitment time. Local wall
+    // time may be later within the same millisecond/second and cannot replace
+    // that finalized fact in the SDK SessionRecord.
+    retainCommitmentPhase(session, finalized);
+    persist(session);
+    return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}) };
+  }
+
+  // ---- DACS-4: payment claim -> SDK intake -> payment evidence ----
+  // The native rail is the job's own pinned signed definition (RAV-R5), never
+  // the current configuration; the fixture profile uses its simulated rail.
+  const pinnedRail = (jobId) => {
+    if (!nativeProfile) return { disposition: 'verified', rail: structuredClone(DEM_RAIL_DEFINITION), railRegistryVersion: RAIL_REGISTRY_VERSION };
+    const railPin = sessions.get(jobId)?.railPin;
+    const verdict = rail.evaluate(railPin, 'in-flight');
+    if (verdict.decision !== 'pass') return { disposition: verdict.decision === 'fail' ? 'rejected' : 'indeterminate', reason: `pinned rail ${verdict.decision} (${verdict.reason})` };
+    return { disposition: 'verified', rail: intakeRailDefinition(railPin), railRegistryVersion: railPin.railRegistryVersion };
+  };
+  const intakeDepsFor = (paymentJobId) => ({
+    resolveCommittedAgreement: async (jobId) => {
+      const session = sessions.get(jobId);
+      if (jobId !== paymentJobId || !session?.commitment) return { disposition: 'rejected', reason: 'no finalized commitment for this job' };
+      const railed = pinnedRail(jobId);
+      if (railed.disposition !== 'verified') return { disposition: railed.disposition, reason: railed.reason };
+      const c = session.commitment;
+      return {
+        disposition: 'verified',
+        agreement: structuredClone(session.agreement),
+        agreementHash: c.agreementHash,
+        commitment: { finality: 'finalized', ref: c.logicalAddress, contentHash: contentHash(c.record), jobId, agreementHash: c.agreementHash, listingRef: { ...session.agreement.listingRef }, committedAt: c.committedAt, signer: c.record.signature.signer },
+        railRegistryVersion: railed.railRegistryVersion,
+      };
+    },
+    resolveListingAtCommit: async (listingRef) => (canonicalize(listingRef) === canonicalize(pin) ? { rawListing: structuredClone(listing), validation: structuredClone(validation) } : { rawListing: {}, validation: { disposition: 'rejected', reason: 'unknown-listing' } }),
+    resolveRail: async ({ ref, railRegistryVersion }) => {
+      const railed = pinnedRail(paymentJobId);
+      if (railed.disposition !== 'verified') return railed;
+      return ref?.railId === railed.rail.railId && railRegistryVersion === railed.railRegistryVersion ? railed : { disposition: 'rejected', reason: 'unknown rail' };
+    },
+    resolveIdentityBundle: async (bundleHash) => {
+      if (bundleHash === identityBundleHash(sellerBundle)) return { disposition: 'verified', bundle: structuredClone(sellerBundle) };
+      for (const session of sessions.values()) {
+        const presented=session.demDeliveryContext?.input?.seller?.identityBundle;
+        if(presented && identityBundleHash(presented)===bundleHash)return {disposition:'verified',bundle:structuredClone(presented)};
+      }
+      for (const session of sessions.values()) if (session.buyerBundleHash === bundleHash) return { disposition: 'verified', bundle: structuredClone(session.buyerBundle) };
+      return { disposition: 'rejected', reason: 'unknown identity bundle' };
+    },
+    resolvePayerAddress: async () => ({ disposition: 'rejected', reason: 'x402 is not supported by this agent' }),
+    resolvePayeeDestination: async () => ({ disposition: 'error', reason: 'x402 is not supported by this agent', tier: 2 }),
+    observeDemosTransfer: (txHash) => observeDemosTransfer(txHash),
+    observeX402Transfer: async () => ({ status: 'unavailable', reason: 'x402 is not supported by this agent' }),
+    verifyX402ReceiptExtensions: () => ({ disposition: 'fail', reason: 'x402 is not supported by this agent' }),
+    classifyX402SettlementChain: () => ({ disposition: 'unsupported', reason: 'x402 is not supported by this agent' }),
+    receiptStore,
+  });
+
+  async function anchorOnce(logicalAddress, artifact) {
+    if(artifact.jobId)assertSettlementCredit(artifact.jobId);
+    const authorize = () => { if(artifact.jobId)assertSettlementCredit(artifact.jobId);return signAnchorWrite(sign, logicalAddress, contentHash(artifact)); };
+    const receipt = durable ? await durable.anchor({ jobId: artifact.jobId, logicalAddress, artifact, anchors, authorize }) : await anchors.write({ logicalAddress, artifact, writer: claim, writerSignature: authorize() });
+    return { ref: fixtureRef(logicalAddress, contentHash(artifact)), receipt };
+  }
+
+  const signEvidence = (unsigned) => signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) });
+
+  function signedFixtureRef(logicalAddress, hash) {
+    return { ...fixtureRef(logicalAddress, hash), signer: claim };
+  }
+
+  function sameNativeCommitmentReceipt(left, right) {
+    if (!left || !right || !Number.isSafeInteger(left.blockRef?.timestamp) || !Number.isSafeInteger(right.blockRef?.timestamp)) return false;
+    const stable = ['receiptVersion','substrate','finalityProfile','logicalAddress','nativeAddress','contentHash','writer','nonce','state','observationDisposition'];
+    return stable.every((key)=>canonicalize(left[key])===canonicalize(right[key])) &&
+      canonicalize(left.transactionRef)===canonicalize(right.transactionRef) &&
+      canonicalize({ id:left.blockRef.id, height:left.blockRef.height })===canonicalize({ id:right.blockRef.id, height:right.blockRef.height });
+  }
+
+  // A lost response after the native Deliverable CREATE has applied leaves the
+  // SDK's durable delivery WAL at an intent. Before re-entering that runner,
+  // authenticate the exact original public projection and retain only the
+  // fulfilment binding the runner already returned. Absence/indeterminate
+  // readback is deliberately non-authoritative here: it must never turn a
+  // caller retry into another seller approval or CREATE. The one exception is
+  // an absence the reader proved (a shutdown cut the approval before anything
+  // was signed): the runner then reconciles its WAL, reads the same absence
+  // and submits again, which asks the operator again.
   return {
     assertSettlementCredit,
     claim,
@@ -657,6 +920,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     issueSessionChallenge,
     receiveProposal: recoveryCall(receiveProposal),
     agreementState,
+    commit: recoveryCall(commit),
+    commitOnSignature: recoveryCall((input) => {
+      if (!input || canonicalize(Object.keys(input).sort()) !== canonicalize(['agreement', 'jobId', 'signedProjection']) || !input.agreement || typeof input.agreement !== 'object') throw new SellerAgentError('signature_agreement_invalid', 'expected exactly jobId, Agreement and signedProjection');
+      return commit({ jobId: input.jobId, signedProjection: input.signedProjection }, { signatureAgreement: input.agreement });
+    }),
     transportAgreementOf: (jobId) => {
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       return structuredClone(session?.agreement ?? session?.proposal?.plan?.draft ?? null);
