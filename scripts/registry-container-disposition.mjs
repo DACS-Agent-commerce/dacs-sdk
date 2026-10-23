@@ -1,14 +1,10 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync, readFileSync, existsSync, appendFileSync } from "node:fs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { pathToFileURL } from "node:url";
-import { join } from "node:path";
-import { writeFileSync } from "node:fs";
-import { readFileSync } from "node:fs";
-import { existsSync } from "node:fs";
-import { appendFileSync } from "node:fs";
+import { join, posix } from "node:path";
 import { createHash } from "node:crypto";
 // Pure classification of observed advisory IDs against the curated baseline.
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
@@ -35,7 +31,7 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
   const assessments = baseline?.assessedAdvisories;
   if (baseline?.schema !== "dacs-registry-audit-baseline/v1" ||
       typeof baseline.source?.commit !== "string" || !/^[a-f0-9]{40}$/.test(baseline.source.commit) ||
-      typeof baseline.source?.job !== "string" || !baseline.source.job.trim() ||
+      typeof baseline.source?.job !== "string" || !/^[1-9][0-9]*$/.test(baseline.source.job) ||
       baseline.source?.url !== `https://github.com/DACS-Agent-commerce/dacs-sdk/runs/${baseline.source.job}` ||
       typeof baseline.source?.evidence !== "string" || !baseline.source.evidence.trim() ||
       !validIds(baseline.advisoryIds) || !validAssessments(assessments) ||
@@ -210,6 +206,7 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
 
 // Resolve declared candidate aliases with Node's nearest node_modules lookup,
 // including hoisting. Installed identity cannot identify a substituted alias.
+const moduleFileExtensions = [".js", ".json", ".node"];
 function candidateAliasLocations(manifest, packages, inventory, candidate) {
   const available = new Set([...Object.keys(packages), ...inventory.map(item => item.location)]);
   const aliases = new Set();
@@ -222,7 +219,9 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
         for (;;) {
           if (parts.at(-1) !== "node_modules") {
             const location = [...parts, "node_modules", alias].join("/");
-            if (available.has(location)) { aliases.add(location); break; }
+            const found = [location, ...moduleFileExtensions.map(extension => location + extension)]
+              .filter(candidate => available.has(candidate));
+            if (found.length) { for (const candidate of found) aliases.add(candidate); break; }
           }
           if (parts.length === 0) break;
           parts.pop();
@@ -237,10 +236,11 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
 // reads it, in the installed package.json.
-export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory = [] }) {
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
-  const errors = installedInventory.filter(item => item.link === true)
+  const inventory = installedInventory ?? [];
+  const errors = inventory.filter(item => item.link === true && !/\/\.bin\/[^/]+$/.test(item.location))
     .map(item => "cannot inspect linked installed packages: " + item.location);
   for (const { name, integrity, version } of candidates) {
     if (typeof version !== "string" || version === "") {
@@ -250,11 +250,17 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
     const candidateLocation = location => typeof location === "string" &&
       (location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
     const locations = [...new Set([...Object.keys(packages).filter(location => candidateLocation(location) || packages[location]?.name === name),
-      ...installedInventory.filter(item => item.name === name || candidateLocation(item.location)).map(item => item.location),
-      ...candidateAliasLocations(manifest, packages, installedInventory, name)])];
+      ...inventory.filter(item => item.name === name || candidateLocation(item.location) ||
+        (typeof item.location === "string" && moduleFileExtensions.some(extension =>
+          item.location.endsWith(extension) && candidateLocation(item.location.slice(0, -extension.length)))))
+        .map(item => item.location),
+      ...candidateAliasLocations(manifest, packages, inventory, name)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
       const entry = packages[location];
+      if (installedInventory && location !== "node_modules/" + name &&
+          (entry?.optional === true || entry?.dev === true || entry?.devOptional === true) &&
+          !inventory.some(item => item.location === location)) continue;
       if (!entry) { errors.push("installed candidate has no lock entry: " + location); continue; }
       let url = null;
       try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
@@ -271,7 +277,12 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
       }
       if (installedManifest) {
         let manifest;
-        try { manifest = installedManifest(location); } catch { manifest = undefined; }
+        try { manifest = installedManifest(location); }
+        catch (error) {
+          errors.push("installed candidate package is not the release: " + location + " (cannot read manifest: " +
+            (error?.code ?? error?.name ?? "Error") + ": " + (error?.message ?? String(error)) + ")");
+          continue;
+        }
         if (manifest?.name !== name || manifest?.version !== version) {
           errors.push("installed candidate package is not the release: " + location + " (expected " + name + "@" +
             version + ", observed " + String(manifest?.name) + "@" + String(manifest?.version) + ")");
@@ -295,7 +306,7 @@ const versionId = "0|[1-9]\\d{0,15}";
 const rangeId = `${versionId}|x|X|\\*`;
 const prereleaseId = "(?:0|[1-9]\\d*|\\d*[a-zA-Z-][a-zA-Z0-9-]*)";
 const partialVersion = `v?(${rangeId})(?:\\.(${rangeId})(?:\\.(${rangeId})(?:-(${prereleaseId}(?:\\.${prereleaseId})*))?` +
-  "(?:\\+[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*)?)?)?";
+  "?)?)?(?:\\+[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*)?";
 const rangeToken = new RegExp(`^(<=|>=|<|>|=|~>|~|\\^)?${partialVersion}$`);
 const hyphenRange = new RegExp(`^${partialVersion} - ${partialVersion}$`);
 const MAX_SEMVER_LENGTH = 256;
@@ -313,7 +324,10 @@ const numericAfterX = (M, m, p) => (isX(M) && !(isX(m) && isX(p))) || (isX(m) &&
 // semver desugars carets, tildes and X-ranges. [] is any version.
 function tokenComparators(token) {
   const match = rangeToken.exec(token);
-  if (!match || !validVersionBound(match[2], match[3], match[4], match[5]) || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
+  // Concrete plain comparators retain v; expansions drop it.
+  const retained = match && !match.slice(2, 5).some(isX) && !/^[~^]/.test(match[1] ?? "");
+  if (!match || (retained && token.replace(/^[<>=]+/, "").length > MAX_SEMVER_LENGTH) ||
+      !validVersionBound(match[2], match[3], match[4], match[5]) || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
     throw new Error(`unsupported engine range token ${JSON.stringify(token)}`);
   }
   const [, operator = "", M, m, p, prerelease] = match;
@@ -367,11 +381,15 @@ export function satisfiesEngineRange(current, range) {
     throw new Error(`unsupported engine check ${JSON.stringify(current)} against ${JSON.stringify(range)}`);
   }
   // Every set is parsed before any is tested: semver rejects the whole range.
-  const sets = range.trim().replace(/\s+/g, " ").split("||").map(part => {
+  const sets = range.replace(/\+[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*/g, "")
+    .trim().replace(/\s+/g, " ").split("||").map(part => {
     const set = part.trim();
     const hyphen = hyphenRange.exec(set);
     if (hyphen) {
-      for (const bound of set.split(" - ")) tokenComparators("~" + bound);
+      const [from, to] = set.split(" - ");
+      const concreteFrom = !hyphen.slice(1, 4).some(isX);
+      tokenComparators(concreteFrom ? ">=" + from + (hyphen[4] === undefined ? "-0" : "") : "~" + from);
+      tokenComparators("~" + to);
       return hyphenComparators(hyphen);
     }
     // `>= 1.2` is `>=1.2`, as semver trims an operator's trailing space.
@@ -411,7 +429,7 @@ export function scanLockEngines(lock, versions) {
       const failed = engines ? ["node", "npm"].filter(key => engines[key] && !satisfiesEngineRange(current[key], engines[key])) : [];
       evaluatedPackages += 1;
       if (failed.length) {
-        const name = entry.name ?? (location === "" ? lock.name : location.slice(location.lastIndexOf("node_modules/") + 13));
+        const name = entry.name ?? (location === "" ? lock.name : location.split(/(?:^|\/)node_modules\//).at(-1));
         violations.push({ package: `${name}@${entry.version}`, location, integrity: entry.integrity ?? null, required: engines });
       }
     } catch (error) { errors.push(`${location}: ${error.message}`); }
@@ -427,12 +445,15 @@ export function scanLockEngines(lock, versions) {
 // outside the closure, or at another name or version than the lock records
 // there, is `unexpected`; each required closure entry the image lacks is
 // `missing`. An unreadable inventory or entry leaves the scan incomplete.
+// Executable links in .bin must target a file declared by a locked production package.
 export function runtimeImageInventoryFindings(inventory, lock) {
   const packages = isPlainObject(lock?.packages) ? lock.packages : null;
   if (packages === null || !isPlainObject(packages[""])) {
     return { scanComplete: false, errors: ["the generated lock has no packages"], unexpected: [], missing: [] };
   }
-  const malformed = Object.entries(packages).filter(([, entry]) => !isPlainObject(entry));
+  const malformed = Object.entries(packages).filter(([location, entry]) => !isPlainObject(entry) ||
+    (location.startsWith("node_modules/") && entry.link !== true &&
+      (typeof entry.version !== "string" || !entry.version.trim())));
   if (malformed.length) return { scanComplete: false,
     errors: malformed.map(([location]) => `malformed generated lock entry: ${location}`), unexpected: [], missing: [] };
   if (inventory?.schema !== RUNTIME_IMAGE_INVENTORY_SCHEMA || !Array.isArray(inventory.packages)) {
@@ -441,14 +462,33 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   }
   const closure = new Map(Object.entries(packages)
     .filter(([location, entry]) => location.startsWith("node_modules/") && entry?.dev !== true));
+  const binTargets = new Map();
+  for (const [location, entry] of closure) {
+    if (!isPlainObject(entry.bin)) continue;
+    const modules = location.replace(/(?:@[^/]+\/)?[^/]+$/, "");
+    for (const [command, target] of Object.entries(entry.bin)) {
+      if (command.includes("/") || typeof target !== "string" || !target) continue;
+      const resolved = posix.join(location, target);
+      if (!resolved.startsWith(`${location}/`)) continue;
+      const binLocation = `${modules}.bin/${command}`;
+      if (!binTargets.has(binLocation)) binTargets.set(binLocation, new Set());
+      binTargets.get(binLocation).add(resolved);
+    }
+  }
   const errors = [];
   const unexpected = [];
   const seen = new Set();
   for (const item of inventory.packages) {
     const location = item?.location;
+    if (item?.link === true && !item.error && binTargets.has(location) &&
+        binTargets.get(location).has(item.target) && !seen.has(location)) {
+      seen.add(location);
+      continue;
+    }
     const identity = typeof location === "string" && /^node_modules\/(?:.+\/node_modules\/)?((?:@[^/]+\/)?[^/@.][^/]*)$/.exec(location);
     if (!identity ||
-        typeof item.name !== "string" || typeof item.version !== "string" || seen.has(location)) {
+        typeof item.name !== "string" || !item.name.trim() ||
+        typeof item.version !== "string" || !item.version.trim() || seen.has(location)) {
       errors.push("unreadable runtime-image inventory entry: " + JSON.stringify(item));
       continue;
     }
