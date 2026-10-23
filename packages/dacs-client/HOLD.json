@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5d109c3c649a777784a17844cc43aaea57c46047"
+        "blob": "a1d04bf3cb78792315721f874569adc787f5bd8c"
       },
       "DELTA-LEDGER.json": {
-        "blob": "cbb7b3f5ddbb14e3e6bfdc093d44cbe5f2ffc039"
+        "blob": "bf346abaa643c1f190aee5f63822d494bb3a1f8d"
       },
       "DELTA-MAP.md": {
-        "blob": "bc90ac1cb533343503067de49e730ca05e3508d5"
+        "blob": "254a7e5ab368dc6eac9b3059bd8a49f36a2ebb1b"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6bd69764c3ce59498d3f8f4c95d18b2550827c43"
+        "blob": "17e2aa87f3db641e4992e2fbe484a673a5659b70"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1214,7 +1214,7 @@
         "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
       },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
-        "blob": "b7183e63a75b68cda34c2b30a4d532963794b13f"
+        "blob": "59a2fd307756d036f813edd17dec2fa8be23e68f"
       },
       "src/public/portal/seller-session-delegation.mjs": {
         "blob": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42"
@@ -1268,13 +1268,16 @@
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
       },
       "src/wallet/payload-helpers.mjs": {
-        "blob": "32c65aec6b18cde12321600f9eb1c6ba4e439cae"
+        "blob": "e9ec2d2e168a27c87ac04b1df345cf6bd8de0242"
       },
       "test/buyer-chain-indeterminate.test.mjs": {
         "blob": "5e2e079c0c7bcb73c0711d0c825f54e6dc72dd6d"
       },
       "test/commitment-contradiction-classifier.test.mjs": {
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
+      },
+      "test/d11-import-boundary.test.mjs": {
+        "blob": "e1085f274e14f20b87335189155f76284fd3b92a"
       },
       "test/d11-purchase-actions.test.mjs": {
         "blob": "717c0a6ab525d95c330ec2dafcda3074e7b47b24"
