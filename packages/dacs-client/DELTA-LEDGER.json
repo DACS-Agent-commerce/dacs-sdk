@@ -1418,6 +1418,32 @@
           "after": "36cf0c10d71208afda5d52f6aef02adc0121da62"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 06 authenticate read-only purchase diagnostics",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "fe7f09a4177ea24fb5161ba2983755df49b09901",
+          "after": "8a08a79ef38ce5593a6447714e82068f4da698ac"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "427f897f08c2e6eba7f14290c899b56cdbab7cb5",
+          "after": "e917d62fca14236bc278ec7fe91ed9dbb3c1d213"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "19be8559b54d902e57fd1056dab758c48d052dbe",
+          "after": "b865a6a32c3ee12685a901d8ab99314b96ac3806"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "05af633db6d7e5bd8d18a40f23e9afef0dae01ef",
+          "after": "19b146062f39f1a7163573b3913e962f34f671d1"
+        }
+      ]
     }
   ]
 }
