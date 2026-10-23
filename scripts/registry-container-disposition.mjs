@@ -28,7 +28,7 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
   const assessments = baseline?.assessedAdvisories;
   if (baseline?.schema !== "dacs-registry-audit-baseline/v1" ||
       typeof baseline.source?.commit !== "string" || !/^[a-f0-9]{40}$/.test(baseline.source.commit) ||
-      typeof baseline.source?.job !== "string" || !baseline.source.job.trim() ||
+      typeof baseline.source?.job !== "string" || !/^[1-9][0-9]*$/.test(baseline.source.job) ||
       baseline.source?.url !== `https://github.com/DACS-Agent-commerce/dacs-sdk/runs/${baseline.source.job}` ||
       typeof baseline.source?.evidence !== "string" || !baseline.source.evidence.trim() ||
       !validIds(baseline.advisoryIds) || !validAssessments(assessments) ||
