@@ -659,7 +659,6 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
         if (cause instanceof SellerTransportError) throw cause;
         throw new SellerTransportError('peer_body_invalid', 409, { cause });
       }
-      validateBody(request, admittedBody);
       const delegation = delegations.get(request);
       if (requireDelegation && !delegation) fail('peer_delegation_required');
       if (delegation) {
@@ -680,6 +679,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
         } else readbackOnly.add(request);
       }
       onAuthenticatedBody?.(admittedBody);
+      validateBody(request, admittedBody);
       return admittedBody;
     },
     async responseHeader(request, status, text) {
