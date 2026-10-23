@@ -28,7 +28,7 @@ import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   admitWireJson, cloneJson, deepFreeze, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,
-  sameCanonical, sealAdmitted, verifyEd25519, claimKey, type JsonRecord, type ListingPin,
+  sameCanonical, verifyEd25519, claimKey, type JsonRecord, type ListingPin,
 } from "./validate.js";
 
 /** The most bytes one commitment or Agreement document may have (the response body bound). */
@@ -43,7 +43,7 @@ export const MAX_WIRE_ARTIFACT_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBy
  */
 export function admitWireArtifact(bytes: Uint8Array): unknown {
   const owned = ownedBytes(bytes, "wire_input_invalid", 500, { maxBytes: MAX_WIRE_ARTIFACT_BYTES, code: "wire_artifact_rejected", status: 500 });
-  return sealAdmitted(admitWireJson(owned, MAX_WIRE_ARTIFACT_BYTES, "wire_artifact_rejected", 500));
+  return admitWireJson(owned, MAX_WIRE_ARTIFACT_BYTES, "wire_artifact_rejected", 500);
 }
 
 /** The admitted value of a continuation input: exact bytes, admitted now, or a value the wire admitted. Anything else is refused as `code`. */
