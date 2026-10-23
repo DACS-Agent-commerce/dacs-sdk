@@ -3,7 +3,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { Agent } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
@@ -11,26 +12,82 @@ import { gunzipSync } from "node:zlib";
 // The acceptance workflow installs exactly this npm client before publishing.
 export const PINNED_ACCEPTANCE_NPM_VERSION = "11.19.0";
 
-// Reads package/package.json from an npm pack tarball (gzip + ustar) without
-// a host `tar`, so the manifest is the one inside the exact bytes published.
+const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
+const MAX_TAR_BYTES = 64 * 1024 * 1024;
+const MAX_JSON_BYTES = 1024 * 1024;
+const REGISTRY_TIMEOUT_MS = 15_000;
+const TAR_BLOCK_BYTES = 512;
+
+// Reads the sole regular package/package.json from a bounded gzip + ustar
+// archive. Throws for malformed framing, ambiguous paths or unsupported types.
 export function readPackedManifest(tarball) {
-  const archive = gunzipSync(tarball);
-  for (let offset = 0; offset + 512 <= archive.length;) {
-    const header = archive.subarray(offset, offset + 512);
-    if (header.every(byte => byte === 0)) break;
+  if (tarball.length > MAX_ARCHIVE_BYTES) throw new Error("packed archive exceeded byte limit");
+  const archive = gunzipSync(tarball, { maxOutputLength: MAX_TAR_BYTES });
+  let manifest;
+  let terminated = false;
+  for (let offset = 0; offset + TAR_BLOCK_BYTES <= archive.length;) {
+    const header = archive.subarray(offset, offset + TAR_BLOCK_BYTES);
+    if (header.every(byte => byte === 0)) {
+      if (archive.length - offset < TAR_BLOCK_BYTES * 2 ||
+          archive.length % TAR_BLOCK_BYTES || archive.subarray(offset).some(byte => byte !== 0)) {
+        throw new Error("packed tarball has a malformed trailer");
+      }
+      terminated = true;
+      break;
+    }
     const field = (start, length) => header.subarray(start, start + length).toString("utf8").replace(/\0.*$/s, "");
+    const octal = (start, length) => {
+      const text = field(start, length).trim();
+      if (!/^[0-7]+$/.test(text)) throw new Error("packed tarball has a malformed entry size or checksum");
+      return Number.parseInt(text, 8);
+    };
+    const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
+    if (octal(148, 8) !== checksum || field(257, 6) !== "ustar") {
+      throw new Error("packed tarball has an invalid ustar header or checksum");
+    }
     const prefix = field(345, 155);
     const name = (prefix ? prefix + "/" : "") + field(0, 100);
-    const size = Number.parseInt(field(124, 12).trim() || "0", 8);
+    const size = octal(124, 12);
     const type = field(156, 1);
-    if (!Number.isSafeInteger(size) || size < 0) throw new Error("packed tarball has a malformed entry size");
-    const body = offset + 512;
-    if ((type === "0" || type === "") && name === "package/package.json") {
-      return JSON.parse(archive.subarray(body, body + size).toString("utf8"));
+    const body = offset + TAR_BLOCK_BYTES;
+    const end = body + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
+    if (!Number.isSafeInteger(size) || end > archive.length) throw new Error("packed tarball has a truncated entry");
+    // Reject links and path-override extensions instead of guessing extraction semantics.
+    if (!["0", "", "5"].includes(type) || name.includes("\\") ||
+        (type === "5" ? size !== 0 : name.endsWith("/")) ||
+        name.replace(/\/$/, "").split("/").some(part => !part || part === "." || part === "..")) {
+      throw new Error("packed tarball has an unsupported entry type or path");
     }
-    offset = body + Math.ceil(size / 512) * 512;
+    if (name.replace(/\/$/, "") === "package/package.json") {
+      if (manifest !== undefined || type === "5") throw new Error("packed tarball must have exactly one regular manifest");
+      if (size > MAX_JSON_BYTES) throw new Error("packed manifest exceeded byte limit");
+      try {
+        manifest = JSON.parse(archive.subarray(body, body + size).toString("utf8"));
+      } catch (cause) { throw new Error("packed tarball has an invalid manifest JSON", { cause }); }
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+        throw new Error("packed tarball manifest must be an object");
+      }
+    }
+    offset = end;
   }
-  throw new Error("packed tarball has no package/package.json");
+  if (!terminated) throw new Error("packed tarball has no complete trailer");
+  if (manifest === undefined) throw new Error("packed tarball has no package/package.json");
+  return manifest;
+}
+
+function readArchive(archivePath) {
+  const descriptor = openSync(archivePath, "r");
+  try {
+    if (fstatSync(descriptor).size > MAX_ARCHIVE_BYTES) throw new Error("packed archive exceeded byte limit");
+    const bytes = Buffer.alloc(MAX_ARCHIVE_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(descriptor, bytes, length, bytes.length - length, null);
+      if (!count) return bytes.subarray(0, length);
+      length += count;
+    }
+    throw new Error("packed archive exceeded byte limit");
+  } finally { closeSync(descriptor); }
 }
 
 function loopbackRegistry(registryValue) {
@@ -73,43 +130,146 @@ export function loadPinnedLibnpmpublish({
 }
 
 function packumentUrl(registry, name) {
-  return new URL(name.replace("/", "%2f"), registry.href.endsWith("/") ? registry.href : registry.href + "/");
+  const escapedName = encodeURIComponent(name).replace("%40", "@").replace("%2F", "%2f");
+  return new URL(escapedName, registry.href.endsWith("/") ? registry.href : registry.href + "/");
 }
 
-// Publishes the exact archive under the `acceptance` dist-tag, then proves the
-// registry serves only that version with the archive's integrity: an upstream
-// copy of the same package can neither shadow nor refuse the candidate.
-export async function publishExactLocalRegistry({ archivePath, registry: registryValue, token, publish, fetch: fetchImpl = fetch }) {
-  if (!archivePath || !registryValue || !token) {
-    throw new Error("usage: DACS_LOCAL_REGISTRY_TOKEN=<token> publish-exact-local-registry.mjs <archive> <registry>");
-  }
-  const registry = loopbackRegistry(registryValue);
-  const tarball = readFileSync(archivePath);
-  const manifest = readPackedManifest(tarball);
-  if (typeof manifest.name !== "string" || typeof manifest.version !== "string") {
-    throw new Error("packed manifest has no name or version");
-  }
-  await publish(manifest, tarball, {
-    registry: registry.href,
-    defaultTag: "acceptance",
-    access: "public",
-    provenance: false,
-    [`//${registry.host}/:_authToken`]: token,
+async function registryDeadline(operation) {
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`local registry request timed out after ${REGISTRY_TIMEOUT_MS} ms`);
+      reject(error);
+      controller.abort(error);
+    }, REGISTRY_TIMEOUT_MS);
   });
-  const response = await fetchImpl(packumentUrl(registry, manifest.name), { headers: { accept: "application/json" } });
-  if (!response.ok) throw new Error(`local registry did not serve ${manifest.name} after publish (HTTP ${response.status})`);
-  const packument = await response.json();
-  const versions = Object.keys(packument?.versions ?? {});
+  try { return await Promise.race([deadline, operation(controller.signal)]); }
+  finally { clearTimeout(timer); controller.abort(); }
+}
+
+async function registryBytes(url, fetchImpl, maximumBytes, accept) {
+  return registryDeadline(async signal => {
+    const response = await fetchImpl(url, { redirect: "error", signal, headers: { accept } });
+    signal.throwIfAborted();
+    const reader = response.body?.getReader();
+    const cancel = () => { if (reader) void reader.cancel().catch(() => {}); };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      if (!response.ok) throw new Error(`local registry did not serve ${url} (HTTP ${response.status})`);
+      if (Number(response.headers.get("content-length")) > maximumBytes) {
+        throw new Error(`local registry response exceeded ${maximumBytes} bytes`);
+      }
+      if (!reader) throw new Error("local registry response has no body");
+      const chunks = [];
+      let length = 0;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > maximumBytes) throw new Error(`local registry response exceeded ${maximumBytes} bytes`);
+        chunks.push(value);
+      }
+      return Buffer.concat(chunks, length);
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      cancel();
+      reader?.releaseLock();
+    }
+  });
+}
+
+// npm-registry-fetch buffers error bodies internally. Bound its HTTP transport
+// before decoding, and refuse compression/redirects that could bypass the cap.
+class LocalRegistryAgent extends Agent {
+  constructor(registry) { super(); this.registry = registry; }
+  addRequest(request, options) {
+    if (request.getHeader("host") !== this.registry.host) {
+      queueMicrotask(() => request.destroy(new Error("local registry publish redirect left the registry origin")));
+      return;
+    }
+    request.setHeader("accept-encoding", "identity");
+    request.once("response", response => {
+      const refuse = message => {
+        const error = new Error(message);
+        response.destroy(error);
+        request.destroy(error);
+      };
+      if (response.statusCode >= 300 && response.statusCode < 400) {
+        refuse("local registry publish redirect is forbidden");
+      } else if (response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity") {
+        refuse("local registry encoded publication response is forbidden");
+      } else if (Number(response.headers["content-length"]) > MAX_JSON_BYTES) {
+        refuse(`local registry response exceeded ${MAX_JSON_BYTES} bytes`);
+      }
+      let length = 0;
+      response.on("data", chunk => {
+        length += chunk.length;
+        if (length > MAX_JSON_BYTES) refuse(`local registry response exceeded ${MAX_JSON_BYTES} bytes`);
+      });
+    });
+    super.addRequest(request, options);
+  }
+}
+
+async function verifyCandidate(registry, manifest, tarball, fetchImpl) {
+  const bytes = await registryBytes(packumentUrl(registry, manifest.name), fetchImpl, MAX_JSON_BYTES, "application/json");
+  const packument = JSON.parse(bytes.toString("utf8"));
+  const publishedVersions = packument?.versions;
+  const versions = publishedVersions && typeof publishedVersions === "object" && !Array.isArray(publishedVersions)
+    ? Object.keys(publishedVersions) : [];
+  // Exactly one version is also the decoded list-size limit.
   if (versions.length !== 1 || versions[0] !== manifest.version) {
     throw new Error(`local registry serves ${manifest.name} versions ${JSON.stringify(versions)}; ` +
       `expected only the candidate ${manifest.version} (an uplink must not serve candidate packages)`);
   }
   const integrity = "sha512-" + createHash("sha512").update(tarball).digest("base64");
-  const served = packument.versions[manifest.version]?.dist?.integrity;
-  if (served !== integrity) {
-    throw new Error(`local registry integrity for ${manifest.name}@${manifest.version} is ${String(served)}, expected ${integrity}`);
+  const dist = publishedVersions[manifest.version]?.dist;
+  if (dist?.integrity !== integrity) {
+    throw new Error(`local registry integrity for ${manifest.name}@${manifest.version} is ${String(dist?.integrity)}, expected ${integrity}`);
   }
+  if (packument["dist-tags"]?.acceptance !== manifest.version) throw new Error("local registry acceptance tag does not match candidate");
+  let tarballUrl;
+  try { tarballUrl = new URL(dist.tarball); } catch { throw new Error("local registry has an invalid tarball URL"); }
+  if (typeof dist.tarball !== "string" || tarballUrl.origin !== registry.origin || tarballUrl.username || tarballUrl.password) {
+    throw new Error("local registry tarball URL must stay on the registry origin without credentials");
+  }
+  const served = await registryBytes(tarballUrl, fetchImpl, MAX_ARCHIVE_BYTES, "application/octet-stream");
+  if (!served.equals(tarball)) throw new Error("local registry tarball bytes do not match candidate archive");
   return { name: manifest.name, version: manifest.version, integrity };
+}
+
+// Publishes the unchanged archive with the acceptance tag, or verifies an
+// existing version after a publish conflict. Returns its identity and SHA-512;
+// throws unless bounded registry reads prove the sole version and served bytes.
+export async function publishExactLocalRegistry({ archivePath, registry: registryValue, token, publish, fetch: fetchImpl = fetch }) {
+  if (!archivePath || !registryValue || !token) {
+    throw new Error("usage: DACS_LOCAL_REGISTRY_TOKEN=<token> publish-exact-local-registry.mjs <archive> <registry>");
+  }
+  const registry = loopbackRegistry(registryValue);
+  const tarball = readArchive(archivePath);
+  const manifest = readPackedManifest(tarball);
+  if (typeof manifest.name !== "string" || !manifest.name || typeof manifest.version !== "string" || !manifest.version) {
+    throw new Error("packed manifest has no name or version");
+  }
+  // libnpmpublish prefers manifest.tag to defaultTag; never certify another tag.
+  if (manifest.tag !== undefined && manifest.tag !== "acceptance") throw new Error("packed manifest tag must be acceptance");
+  const agent = new LocalRegistryAgent(registry);
+  try {
+    await registryDeadline(signal => publish(manifest, tarball, {
+      registry: registry.href,
+      defaultTag: "acceptance",
+      access: "public",
+      provenance: false,
+      timeout: REGISTRY_TIMEOUT_MS,
+      fetchRetries: 0,
+      agent, signal,
+      [`//${registry.host}/:_authToken`]: token,
+    }));
+  } catch (error) {
+    if (error?.code !== "EPUBLISHCONFLICT" && error?.statusCode !== 409) throw error;
+  } finally { agent.destroy(); }
+  return verifyCandidate(registry, manifest, tarball, fetchImpl);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
