@@ -1,3 +1,4 @@
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,8 +12,24 @@ afterEach(() => { for (const path of roots.splice(0)) rmSync(path, { recursive: 
 const heredoc = (start: string) => source().split(start)[1]?.split("<<'NODE'\n")[1]?.split("\nNODE")[0] ?? "";
 const modulePath = "../../scripts/registry-container-disposition.mjs";
 const { extractPolicyFindings, registryContainerDisposition } = await import(modulePath);
-function compose(overrides: Record<string, string> = {}) {
+const doctorFixture = () => JSON.parse(readFileSync(join(root,
+  "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
+function encodeDoctor(report: Record<string, unknown>) {
+  if (Array.isArray(report.checks)) {
+    const required = report.checks.filter(check => check.required === true);
+    report.gate = { status: "blocked", required: required.length,
+      passed: required.filter(check => check.status === "pass").length,
+      failed: required.filter(check => check.status === "fail").length,
+      blocked: required.filter(check => check.status === "blocked").length };
+  }
+  const { reportHash, ...body } = report;
+  return JSON.stringify({ ...body, reportHash: sha256Hex(canonicalize(body)) });
+}
+function compose(overrides: Record<string, string> = {}, rails = "both") {
   const stage = scratch();
+  const consumer = scratch();
+  const project = join(consumer, "one-click-agent"); mkdirSync(project);
+  const release = scratch();
   const files = {
     "docker-image.json": JSON.stringify([{ Id: "fixture", Size: 1, Config: { User: "10001:10001" } }]),
     "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } } }),
@@ -26,11 +43,26 @@ function compose(overrides: Record<string, string> = {}) {
     "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n",
     "doctor.json": readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"), ...overrides,
   };
-  for (const [name, value] of Object.entries(files)) writeFileSync(join(stage, name), value);
+  const consumerFiles = ["generated-tests.exit-code", "doctor.log", "doctor.exit-code", "doctor.json", "npm-audit.json",
+    "npm-audit.exit-code", "consumer-lock.cdx.json", "consumer-lock-sbom.err", "consumer-lock-sbom.exit-code",
+    "consumer-physical.cdx.json", "consumer-physical-sbom.err", "consumer-physical-sbom.exit-code", "engine-strict.log",
+    "engine-strict.exit-code", "engine-versions.json"];
+  for (const name of consumerFiles) writeFileSync(join(consumer, name), "fixture");
+  for (const [name, value] of Object.entries(files)) {
+    const destination = name === "release-provenance.json" ? release : consumerFiles.includes(name) ? consumer : stage;
+    writeFileSync(join(destination, name), value);
+  }
+  writeFileSync(join(release, "SHA256SUMS"), "fixture");
+  for (const name of ["package.json", "package-lock.json"]) writeFileSync(join(project, name), "{}");
+  const copyBlock = source().split('cp "$release_set/release-provenance.json"')[1]?.split("stage=summary")[0];
+  expect(copyBlock).toBeDefined();
+  const transfer = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", 'cp "$release_set/release-provenance.json"' + copyBlock],
+    { encoding: "utf8", env: { PATH: process.env.PATH, release_set: release, project, consumer_root: consumer, artifact_stage: stage } });
+  expect(transfer.status, transfer.stderr).toBe(0);
   const script = heredoc('node - "$artifact_stage" "$version" "$runtime_image"');
   expect(script).not.toBe("");
-  const result = spawnSync(process.execPath, ["-", stage, "0.1.0-test", "image", "live-demos", "seller", "both"], { cwd: root, input: script, encoding: "utf8" });
-  return { ...result, summary: result.status === 0 ? JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8")) : undefined };
+  const result = spawnSync(process.execPath, ["-", stage, "0.1.0-test", "image", "live-demos", "seller", rails], { cwd: root, input: script, encoding: "utf8" });
+  return { ...result, transferredDoctor: existsSync(join(stage, "doctor.json")), summary: result.status === 0 ? JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8")) : undefined };
 }
 describe("shell evidence validation", () => {
   it.each(["engine-strict.exit-code", "npm-audit.exit-code", "consumer-lock-sbom.exit-code", "consumer-physical-sbom.exit-code", "generated-tests.exit-code", "doctor.exit-code"])("rejects malformed %s", name => {
@@ -99,7 +131,7 @@ describe("doctor credential-only admission", () => {
     const deployment = report.checks.find((item: { id: string }) => item.id === "local.deployment-runtime");
     Object.assign(deployment, { status: "blocked", reasonCode });
     report.gate.passed--; report.gate.blocked++;
-    expect(compose({ "doctor.json": JSON.stringify(report) }).summary).toMatchObject({
+    expect(compose({ "doctor.json": encodeDoctor(report) }).summary).toMatchObject({
       functionalPassed: false, doctor: { disposition: "unexpected" },
     });
   });
@@ -107,11 +139,75 @@ describe("doctor credential-only admission", () => {
     const report = JSON.parse(readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
     report.checks.push({ id: "unknown", required: true, status: "blocked" });
     report.gate.required++; report.gate.blocked++;
-    expect(compose({ "doctor.json": JSON.stringify(report) }).summary.functionalPassed).toBe(false);
+    expect(compose({ "doctor.json": encodeDoctor(report) }).summary.functionalPassed).toBe(false);
   });
   it("requires a report matching the expected phase and scope", () => {
     const report = JSON.parse(readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
     report.scope = "buy";
+    expect(compose({ "doctor.json": encodeDoctor(report) }).summary.functionalPassed).toBe(false);
+  });
+});
+
+
+describe("complete doctor evidence", () => {
+  it("transfers the complete doctor report from the consumer before summary composition", () => {
+    const result = compose();
+    expect(result.transferredDoctor).toBe(true);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.summary.functionalPassed).toBe(true);
+  });
+  it.each(["local.sqlite", "local.authority-separation", "local.transport-identities", "x402.testnet-policy"])(
+    "rejects an omitted required check with consistent counts and hash: %s", id => {
+      const report = doctorFixture();
+      report.checks = report.checks.filter((check: { id: string }) => check.id !== id);
+      expect(compose({ "doctor.json": encodeDoctor(report) }).summary.functionalPassed).toBe(false);
+    });
+  it("rejects a failed check downgraded to optional with consistent counts and hash", () => {
+    const report = doctorFixture();
+    const check = report.checks.find((check: { id: string }) => check.id === "x402.testnet-policy");
+    if (!check) throw new Error("missing testnet-policy fixture");
+    Object.assign(check, { required: false, status: "fail", reasonCode: "fixture-policy-failure" });
+    expect(compose({ "doctor.json": encodeDoctor(report) }).summary.functionalPassed).toBe(false);
+  });
+  it.each(["readOnly", "funded", "missing"])("rejects invalid safety evidence: %s", field => {
+    const report = doctorFixture();
+    if (field === "missing") delete report.safety;
+    else report.safety[field] = field === "funded";
+    expect(compose({ "doctor.json": encodeDoctor(report) }).summary.functionalPassed).toBe(false);
+  });
+  it.each(["missing", "mismatch"])("rejects a %s doctor hash", kind => {
+    const report = doctorFixture();
+    if (kind === "missing") delete report.reportHash;
+    else report.reportHash = "0".repeat(64);
     expect(compose({ "doctor.json": JSON.stringify(report) }).summary.functionalPassed).toBe(false);
   });
+});
+
+it("preserves a full report emitted by the shipped doctor producer", async () => {
+  const modulePath = "../../packages/dacs-node/dist/doctor.js";
+  const { runDacsLiveDoctorV1 } = await import(modulePath);
+  const fixture = doctorFixture();
+  const report = await runDacsLiveDoctorV1({
+    phase: "pre-start", scope: "start", sdkVersion: fixture.sdkVersion,
+    standardRevision: fixture.standardRevision, profile: fixture.profile, now: () => 0,
+    enabledRailProfiles: ["x402", "pay-dem"],
+    probes: Object.fromEntries(fixture.checks.map((check: { id: string; status: string; reasonCode?: string }) =>
+      [check.id, () => check.status === "pass" ? { status: "pass" } : { status: check.status, reasonCode: check.reasonCode }])),
+  });
+  expect(report).toEqual(fixture);
+});
+
+it.each(["x402", "pay-dem"])("requires the shipped doctor flags for generated rail %s", async rail => {
+  const modulePath = "../../packages/dacs-node/dist/doctor.js";
+  const { runDacsLiveDoctorV1 } = await import(modulePath);
+  const fixture = doctorFixture();
+  const report = await runDacsLiveDoctorV1({
+    phase: "pre-start", scope: "start", sdkVersion: fixture.sdkVersion,
+    standardRevision: fixture.standardRevision, profile: fixture.profile, now: () => 0,
+    enabledRailProfiles: [rail],
+    probes: Object.fromEntries(fixture.checks.map((check: { id: string; status: string; reasonCode?: string }) =>
+      [check.id, () => check.status === "pass" ? { status: "pass" } : { status: check.status, reasonCode: check.reasonCode }])),
+  });
+  expect(compose({ "doctor.json": JSON.stringify(report) }, rail).summary.functionalPassed).toBe(true);
+  expect(compose({}, rail).summary.functionalPassed).toBe(false);
 });
