@@ -404,6 +404,17 @@ test('over HTTP a rail refusal of a proposal has no effect: the same proposal is
 
 // Every gate the agent raises before any read, write, signature or send, and its status.
 const PRE_EFFECT_GATES = [['vet_context_required', 503], ['session_admission_required', 503], ['settlement_profile_unavailable', 503], ['rail_unavailable', 503], ['native_evidence_required', 409], ['bundle_finalization_unavailable', 503]];
+test('the HTTP journal answers every pre-effect gate refusal as definite and keeps no effect, so the same request runs again', async (t) => {
+  assert.deepEqual([...SELLER_PRE_EFFECT_REFUSALS].sort(), PRE_EFFECT_GATES.map(([code]) => code).sort());
+  for (const [code, status] of PRE_EFFECT_GATES) {
+    const w = await world(t), h = await httpSeller(t, w, { gate: { receiveProposal: code } });
+    await answered(() => h.client.propose(h.proposal));
+    assert.deepEqual([h.last.status, h.last.answer.error], [status, code], code);
+    assert.equal((await h.client.propose(h.proposal)).disposition, 'complete', `${code}: the same proposal runs once the gate opens`);
+  }
+});
+
+// ---- Session admission: profile, challenge, revocation and Vet records ----
 test('a native agent without the seller\'s session admission opens no session', async (t) => {
   const w = await world(t);
   const { sessionAdmission: _none, ...capabilities } = complete(w, { durableDirectory: w.dir() });
@@ -952,6 +963,65 @@ test('new Listing sessions use the current inclusive validity interval, before a
   agent = await w.agent(options);
   t.after(() => agent.close());
   assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'signed session remains available after expiry');
+});
+
+test('an indeterminate proposal is retried over authenticated HTTP after recovery and restart', async (t) => {
+  const w = await world(t), original = w.chain.demDeliveryContext;
+  let unavailable = true;
+  w.chain.demDeliveryContext = () => unavailable
+    ? createDemDeliveryContext({ authority: 'TEST-temporary-context', resolveBuyer: notCalled, resolveSeller: async () => ({ disposition: 'indeterminate', reason: 'TEST context offline' }) })
+    : original();
+  const h = await httpSeller(t, w);
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'indeterminate');
+  unavailable = false;
+  await h.restart(w.steward.railAuthority());
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
+});
+
+test('HTTP proposal recovery completes a contribution saved before its transport binding without signing twice', async (t) => {
+  const w = await world(t), h = await httpSeller(t, w);
+  // Fail authentication of the first session snapshot that carries the final
+  // proposal binding. The contribution and core durable checkpoints precede it.
+  let cut = true, agreementSigns = 0;
+  const sign = w.signer.sign;
+  w.signer.sign = (bytes) => {
+    const text = Buffer.from(bytes).toString();
+    if (text.startsWith('dacs-payee-bound-agreement:v1:')) agreementSigns++;
+    if (cut && text.includes('"kind":"session"') && text.includes('"transportIdentity"')) {
+      cut = false; throw new Error('TEST interrupted final session persistence');
+    }
+    return sign(bytes);
+  };
+  await answered(() => h.client.propose(h.proposal));
+  assert.equal(h.last.status, 503);
+  assert.ok(h.agent.durableSessionOf(w.jobId).sellerContribution, 'contribution was saved');
+  assert.equal(h.agent.durableSessionOf(w.jobId).transportIdentity, undefined, 'transport binding was not saved');
+  await h.restart(w.steward.railAuthority());
+  const answer = await h.client.propose(h.proposal);
+  assert.equal(answer.disposition, 'complete');
+  assert.equal(agreementSigns, 1, 'the durable signature is reused');
+});
+
+test('a completed durable signature keeps its rail pin when the next session save fails', async (t) => {
+  const w = await world(t), durableDirectory = w.dir(), request = await w.proposalFor(w.vetted);
+  let cut = true, signed = 0;
+  const signer = { ...w.signer, sign: (bytes) => {
+    const text = Buffer.from(bytes).toString();
+    if (text.startsWith('dacs-payee-bound-agreement:v1:')) signed++;
+    if (cut && text.includes('"kind":"session"') && text.includes('"railPinSigned":true')) {
+      cut = false; throw new Error('TEST lost post-signature session save');
+    }
+    return w.signer.sign(bytes);
+  } };
+  const first = await w.agent(complete(w, { durableDirectory, signer }));
+  assert.equal((await first.receiveProposal(request)).disposition, 'indeterminate');
+  assert.notEqual(first.durableSessionOf(w.jobId).railPinSigned, true);
+  assert.equal(typeof first.durableSessionOf(w.jobId).agreementSignatureKey, 'string');
+  first.close();
+  const after = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  t.after(() => after.close());
+  assert.equal((await after.receiveProposal(request)).disposition, 'complete');
+  assert.equal(signed, 1, 'the completed durable signature continues its original pin');
 });
 
 test('a Listing that expires during context resolution signs no new Agreement', async (t) => {
