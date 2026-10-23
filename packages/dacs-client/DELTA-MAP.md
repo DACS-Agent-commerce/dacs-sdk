@@ -469,6 +469,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 classify native constraints and rebuild renamed table guards | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | f80619dee3a06bfc04b11247821e8f1d5dd82bad |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 0cae28f8588f2e4d35350d4f009ddfa58e84abc4 |
+| D11 | fix(client): D11 share buyer schema with the database fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:16`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:20`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:28`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:40`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:54` | a454605da7223935b8e8417722828049bf904eaf |
+| | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | 940e94f63ffc2a65f42ea03bf262fb42fc200525 |
 
 ## Complete commit and file inventory
 
@@ -1107,6 +1110,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:16`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:20`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:28`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:40`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:54` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
 
 ## Original moved files
 
