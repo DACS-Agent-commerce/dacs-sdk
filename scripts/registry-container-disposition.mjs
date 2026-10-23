@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 // (exit 3) unless DACS_UNLISTED_ADVISORIES=warn, which only the pull_request
 // acceptance job sets: there it is a warning, so an advisory newly published
 // against an unchanged tree cannot turn every PR red. The scheduled drift job,
-// manual runs, prerelease publication and release paths fail, and an unlisted
+// manual acceptance runs and callers that enforce drift fail; an unlisted
 // ID that is high or critical on a direct dependency fails pull requests too.
 // An observed ID recorded in `assessedAdvisories` (a transitive advisory
 // assessed for reachability, as SECURITY.md's audit policy allows) does not
