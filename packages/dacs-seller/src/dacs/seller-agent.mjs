@@ -670,24 +670,23 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // The buyer-anchored Agreement and the reference that names it: the
   // fixture-substrate write by default, or the buyer's authenticated native
   // SR-2 CREATE with the opt-in capability (its receipt kept as `native`).
-  async function readBuyerAgreement(agreementAddress, buyer, agreementHash, signedProjection) {
-    if (agreementAnchor) {
-      const read = await agreementAnchor.readAgreement({ logicalAddress: agreementAddress, writer: buyer, agreementHash, ...(signedProjection === undefined ? {} : { signedProjection }) });
-      if (read.disposition === 'present') return { agreement: read.artifact, ref: read.ref, native: read.native };
-      if (read.disposition === 'absent') throw new SellerAgentError('agreement_not_anchored', 'the buyer has not anchored the Agreement');
-      if (read.disposition === 'indeterminate') throw new SellerAgentError('substrate_unavailable', `SR-2 Agreement read is indeterminate: ${read.reason}`, 503);
-      throw new SellerAgentError('agreement_anchor_invalid', `Agreement anchor is not the buyer write: ${read.reason}`);
-    }
-    let record;
-    try {
-      record = await anchors.read(agreementAddress);
-    } catch (error) {
-      throw new SellerAgentError('substrate_unavailable', `SR-2 read failed: ${error.message}`, 503);
-    }
-    if (record.status !== 'present') throw new SellerAgentError('agreement_not_anchored', 'the buyer has not anchored the Agreement');
-    if (verifyFixtureRecord(record, { logicalAddress: agreementAddress, expectedWriter: buyer }) !== 'valid') throw new SellerAgentError('agreement_anchor_invalid', 'Agreement anchor is not the buyer write');
-    return { agreement: record.artifact, ref: fixtureRef(agreementAddress, contentHash(record.artifact)), native: null };
+  async function readBuyerAgreement(agreementAddress,buyer,agreementHash,signedProjection) {
+    const reader=agreementAnchor??anchors,method=agreementAnchor?'readAgreement':'read';let read,returnedAgreementCause;
+    const input=agreementAnchor?{logicalAddress:agreementAddress,writer:buyer,agreementHash,...signedProjection===undefined?{}:{signedProjection}}:agreementAddress;
+    try {read=await readAdmissionCapability({read:async(query,limits)=>{const value=await reader[method](query,limits);returnedAgreementCause=value?.cause;return value;}},'read',input);}
+    catch(cause){throw new SellerAgentError('substrate_unavailable','SR-2 Agreement read failed',503,{cause});}
+    const status=agreementAnchor?read?.disposition:read?.status;
+    if(status==='absent')throw new SellerAgentError('agreement_not_anchored','the buyer has not anchored the Agreement');
+    if(status==='rejected'||status==='invalid')throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor does not authenticate the buyer write',422,{cause:returnedAgreementCause??read});
+    if(status!=='present')throw new SellerAgentError('substrate_unavailable','SR-2 Agreement readback is unavailable',503,{cause:returnedAgreementCause??read});
+    if(agreementAnchor)return{agreement:read.artifact,ref:read.ref,native:read.native};
+    let verdict;
+    try{verdict=verifyFixtureRecord(read,{logicalAddress:agreementAddress,expectedWriter:buyer});}
+    catch(cause){throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor is malformed',422,{cause});}
+    if(verdict!=='valid')throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor is not the buyer write');
+    return{agreement:read.artifact,ref:fixtureRef(agreementAddress,contentHash(read.artifact)),native:null};
   }
+
   const nativeAgreementView = (native) => ({ source: native.source, evidenceMode: native.evidenceMode, nativeAddress: native.nativeAddress, txRef: native.txRef });
 
   function retainCommitmentPhase(session, finalized) {
@@ -730,7 +729,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // the public commit path is reconciliation. An absent fresh observation is
     // not authority to publish another CREATE for the same logical address.
     const retainedNativeCommitment = Boolean(nativeArtifactAnchor && session.commitment);
-    if (!early && session.commitment && !durable) return { status: 'committed', address: session.commitment.logicalAddress, resumed: true };
+    readbackOnly ||= Boolean(session.commitment);
     if (!session.agreementHash) throw new SellerAgentError('not_agreed', 'no Agreement contribution was made for this job');
     const agreementAddress = fixedPriceAgreementLogicalAddress(jobId);
     const projection = signedProjection ?? session.agreementSignedProjection;
@@ -740,7 +739,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         candidate = await verifySignatureAgreement(signatureAgreement, session, contributionVerifier);
         verifyAgreementCreateAuthorization(signedProjection, candidate, agreementAddress, session.buyerBundle.presentedBy);
       }
-      catch (error) { throw new SellerAgentError('signature_agreement_invalid', String(error.message).slice(0, 240)); }
+      catch (error) { throw new SellerAgentError('signature_agreement_invalid', String(error.message).slice(0, 240),422,{cause:error}); }
     }
     const { agreement, ref: agreementRef, native } = early
       ? { agreement: candidate, ref: fixtureRef(agreementAddress, session.agreementHash), native: null }
@@ -751,7 +750,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (native && projection !== undefined) session.agreementSignedProjection = structuredClone(projection);
     if (early && !session.signatureCommitmentAttempt && signatureCommitmentReady) {
       try { await signatureCommitmentReady(); }
-      catch { throw new SellerAgentError('signature_connection_unavailable', 'early commitment connection reservation is unavailable', 503); }
+      catch(cause) { throw new SellerAgentError('signature_connection_unavailable', 'early commitment connection reservation is unavailable', 503,{cause}); }
     }
     if (!nativeArtifactAnchor && durable?.hasAnchor(finalityCommitmentAddress(jobId))) await durable.reconcileAnchor(`anchor:${finalityCommitmentAddress(jobId)}`, anchors);
     // Older retained attempts have no publication marker. Their CREATE may
@@ -783,11 +782,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           verifiedListing: { disposition: 'verified', listing, pin },
           session: commitmentSession(agreement),
           createdAt: session.commitCreatedAt,
-          commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => { if (readbackOnly && (early || session.signatureCommitmentAttempt)) readbackRequired(); return sign(bytes); } },
+          commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => { if (readbackOnly && (early || session.signatureCommitmentAttempt || session.commitment)) readbackRequired(); return sign(bytes); } },
         },
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
-            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord'});
+            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true});
             if(read.status==='absent') {
               commitmentProvenUnsigned = isProvenUnsignedAbsence(read);
               if (session.commitmentPublishAsked && !commitmentProvenUnsigned) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
@@ -797,7 +796,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             nativeCommitmentProjection=read.signedProjection;
             return {disposition:'present',anchored:{record:read.artifact,nativeAddress:read.receipt.nativeAddress,anchorTxRef:read.txRef,anchorReceipt:read.receipt}};
           },
-          verifyAnchorReceipt: async (anchored) => nativeArtifactAnchor.verifyReceipt({logicalAddress:anchored.anchorReceipt.logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:nativeCommitmentProjection}),
+          verifyAnchorReceipt: async (anchored) => readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:anchored.anchorReceipt.logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true}),
           submit: async (logicalAddress, commitmentRecord) => {
             if(readbackOnly || retainedNativeCommitment) readbackRequired();
             if (session.commitmentPublishAsked && !commitmentProvenUnsigned) readbackRequired();
@@ -820,7 +819,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         commitmentVerifier,
       );
     } catch (error) {
-      throw new SellerAgentError('commitment_failed', String(error?.message ?? error).slice(0, 240));
+      throw new SellerAgentError('commitment_failed', String(error?.message ?? error).slice(0, 240),503,{cause:error});
     }
     if (early) {
       if (attempt && !session.signatureCommitmentHeld) { session.signatureCommitmentHeld = true; persist(session); }
@@ -832,10 +831,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // receipt binding are unchanged.
     if (nativeArtifactAnchor && session.commitment) {
       const retained=session.commitment;
-      if(contentHash(retained.record)!==contentHash(finalized.record) || retained.logicalAddress!==finalized.logicalAddress ||
+      if(contentHash(retained.record)!==contentHash(finalized.record) || retained.logicalAddress!==finalized.logicalAddress || retained.committedAt!==finalized.committedAt ||
           canonicalize(retained.anchorTxRef)!==canonicalize(finalized.anchorTxRef) || !sameNativeCommitmentReceipt(retained.anchorReceipt,finalized.anchorReceipt)) {
         throw new SellerAgentError('commitment_changed','fresh native commitment readback differs from the retained finalized commitment',503);
       }
+      if(await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:retained.logicalAddress,artifact:retained.record,artifactKind:'FinalityCommitmentRecord',receipt:retained.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true})!=='valid')throw new SellerAgentError('commitment_changed','retained commitment proof no longer authenticates',503);
+      retainCommitmentPhase(session,retained);
       session.agreement=agreement;session.agreementRef=agreementRef;
       if(native)session.agreementAnchor=nativeAgreementView(native);
       session.stage='committed';persist(session);
@@ -919,7 +920,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   function sameNativeDeliveryReceipt(left, right) {
     if (!left || !right) return false;
     const stable = ['receiptVersion','substrate','finalityProfile','logicalAddress','nativeAddress','contentHash','writer','nonce','state','observationDisposition'];
-    return stable.every((key)=>canonicalize(left[key])===canonicalize(right[key])) &&
+    return stable.every((key)=>canonicalize(left[key]??null)===canonicalize(right[key]??null)) &&
       canonicalize(left.transactionRef)===canonicalize(right.transactionRef) && canonicalize(left.blockRef)===canonicalize(right.blockRef);
   }
 
@@ -931,9 +932,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   function sameNativeCommitmentReceipt(left, right) {
     if (!left || !right || !Number.isSafeInteger(left.blockRef?.timestamp) || !Number.isSafeInteger(right.blockRef?.timestamp)) return false;
     const stable = ['receiptVersion','substrate','finalityProfile','logicalAddress','nativeAddress','contentHash','writer','nonce','state','observationDisposition'];
-    return stable.every((key)=>canonicalize(left[key])===canonicalize(right[key])) &&
+    return stable.every((key)=>canonicalize(left[key]??null)===canonicalize(right[key]??null)) &&
       canonicalize(left.transactionRef)===canonicalize(right.transactionRef) &&
-      canonicalize({ id:left.blockRef.id, height:left.blockRef.height })===canonicalize({ id:right.blockRef.id, height:right.blockRef.height });
+      canonicalize(left.blockRef)===canonicalize(right.blockRef);
   }
 
   // A lost response after the native Deliverable CREATE has applied leaves the
@@ -1395,7 +1396,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       }
       const logicalAddress=finalityCommitmentAddress(request.jobId);
       const record = nativeArtifactAnchor
-        ? await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord'})
+        ? await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true})
         : await durable.readAnchor({ jobId: request.jobId, logicalAddress, anchors });
       if(nativeArtifactAnchor && record.status!=='present') refuse();
       const reader = commitmentReader(anchors, claim);
