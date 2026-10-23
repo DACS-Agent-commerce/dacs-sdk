@@ -65,7 +65,7 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
     throw new OutboundError('unavailable', error?.name === 'TimeoutError' ? 'request timed out' : 'request failed');
   }
   if (cancellation.aborted) {
-    await response.body?.cancel().catch(() => {});
+    response.body?.cancel().catch(() => {});
     cancellation.throwIfAborted();
   }
   if (response.status >= 300 && response.status < 400) {

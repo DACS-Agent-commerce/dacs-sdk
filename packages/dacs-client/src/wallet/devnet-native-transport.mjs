@@ -1034,9 +1034,11 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>makeBinder(false,options.signal).recover(issued.networkBinding)));
           const tx=await reader.getTransaction(hash,options);
           options.signal?.throwIfAborted();
-          if(issued.hash!==hash || tx?.hash!==hash || tx.blockNumber!==result.blockNumber || !['confirmed','failed'].includes(tx.status)
+          const transfer=transferOf(tx?.content);
+          if(!transfer || transfer.payer!==nativeAddress(result.payer) || transfer.to!==nativeAddress(result.payee) || transfer.amountOs!==result.amountOs
+            || issued.hash!==hash || tx?.hash!==hash || tx.blockNumber!==result.blockNumber || !['confirmed','included','finalized'].includes(tx.status)
             || !executedMatches(tx.content,issued.signedTransaction.content,hash))fail('readback_unverified','the included native transfer differs from the retained original signed transaction');
-          return {...result,sourceDisposition:tx.status==='failed'?'failed':'included'};
+          return {...result,sourceDisposition:'included'};
         }
         // Only buyer verification may inspect a failed execution's included slot;
         // it carries the source verdict so a later body read cannot outrank it.
