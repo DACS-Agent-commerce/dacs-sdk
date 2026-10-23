@@ -203,7 +203,7 @@ function contextLedgerLine(row,rows,malformed){
     if(!exact(row,['format','event','holdId','jobId','effect','writes','totalOs','recordedAt'])||typeof row.holdId!=='string'||!row.holdId||rows.some(entry=>entry.contextHold===row.holdId)
       ||!isCanonicalJobId(row.jobId)||!HASH.test(row.effect??'')||!Number.isSafeInteger(row.writes)||row.writes<1||row.writes>SELLER_POLICY_MAX_WRITES||(typeof row.totalOs!=='string'||!POSITIVE_OS.test(row.totalOs))
       ||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
-    rows.push({contextHold:row.holdId,jobId:row.jobId,writes:row.writes,totalOs:row.totalOs,recordedAt:row.recordedAt,released:false});
+    rows.push({contextHold:row.holdId,jobId:row.jobId,effect:row.effect,writes:row.writes,totalOs:row.totalOs,recordedAt:row.recordedAt,released:false});
     return;
   }
   const hold=rows.find(entry=>entry.contextHold===row.holdId);
@@ -258,25 +258,13 @@ export function provisionalPolicyHolds(evidencePath,attempts=new Map()){
   return [...(provisionalHolds.get(resolve(evidencePath))??[])].filter(hold=>!attempts.has(hold.attemptId)).map(hold=>({...hold}));
 }
 
-// The final pre-payment check, synchronous so that no cancellation can land
-// between it and the answer. A resolver that is not synchronous fails closed.
-function stillOpenBeforePayment(request,policy,held){
-  if(!BEFORE_PAYMENT.has(request.content.artifactKind))return null;
-  const purchase=policy.resolvePurchase(request.content.jobId);
-  if(typeof purchase?.then==='function'){purchase.catch?.(()=>{});return 'policy-check-failed';}
-  // A held write the operator approved exactly may still have no seller
-  // record (vet records); a record that shows the job paid or closed refuses it.
-  if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&purchase===null)return null;
-  return purchase?.jobId===request.content.jobId&&purchase.prePaymentOpen===true&&purchase.paymentObserved===false?null:'purchase-closed';
-}
-
-async function budgetRefusal({evidencePath,jobId,artifactKind=null,totalOs,at,limits,manualApproved=false,provisional=null,ledgerHeld=false}){
+async function budgetRefusal({evidencePath,jobId,artifactKind=null,totalOs,at,limits,manualApproved=false,provisional=null,ledgerHeld=false,writes=1,snapshot=null}){
   // A manual confirmation completes a write the operator already approved exactly.
   if(manualApproved)return null;
   // Seller records: a matching sign-authorized reservation already holds both
   // limits on the ledger, so its confirmation does not read the ledger again.
   if(provisional&&ledgerHeld)return null;
-  const{rows:ledger,attempts}=await readPolicyLedger(evidencePath);
+  const{rows:ledger,attempts}=snapshot??await readPolicyLedger(evidencePath);
   // A matching preparation already holds both limits. The fee rule forbids
   // confirmation from increasing its declared ceiling; convert it once.
   if(provisional)return null;
@@ -288,10 +276,10 @@ async function budgetRefusal({evidencePath,jobId,artifactKind=null,totalOs,at,li
   // bytes are one write.
   const manualLines=new Set(live.filter(row=>!row.policy&&!row.attemptId).map(row=>row.approvalHash));
   const jobRows=live.filter(row=>row.jobId===jobId&&!(row.held&&!row.attemptId&&manualLines.has(row.approvalHash)));
-  if(jobRows.filter(row=>!row.attemptId).length+new Set(jobRows.map(row=>row.attemptId).filter(Boolean)).size>=SELLER_POLICY_MAX_WRITES)return 'job-write-limit';
+  if(jobRows.filter(row=>!row.attemptId).length+new Set(jobRows.map(row=>row.attemptId).filter(Boolean)).size+writes>SELLER_POLICY_MAX_WRITES)return 'job-write-limit';
   // Old approvals lack completion proof and remain held, as do unknown outcomes.
   const recent=heldPolicyBudget(live,at);
-  if(recent.writes>=limits.maxWritesPerHour)return 'hourly-write-limit';
+  if(recent.writes+writes>limits.maxWritesPerHour)return 'hourly-write-limit';
   if(recent.totalOs+BigInt(totalOs)>BigInt(limits.maxTotalOsPerHour))return 'hourly-dem-limit';
   return null;
 }
@@ -787,21 +775,28 @@ export function releaseHeldSellerAttempt({evidencePath,attemptId,now=Date.now}){
 // shutdown cut runs again only under a new hold for the writes still to make
 // (seller-context-route.mjs resume); every write it made keeps its own policy row.
 // Refusals add no decision-log line. A hold line's
-// `effect` is informational: it names the context effect for the operator, and
-// release, conversion and ops health go by holdId and jobId only.
+// Exact retries bind holdId to job, effect, write count and fee cap.
+// Conflicting/released reuse refuses without appending; unreadable ledgers
+// throw seller_context_ledger_unreadable with the underlying cause.
 export function createSellerContextAdmission({evidencePath,sellerApproval,now=()=>Date.now()}){
-  const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy',path=resolve(evidencePath);
+  const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
   const append=(line)=>appendContextLine(evidencePath,line);
   return Object.freeze({
     reserve:({jobId,effect,writes,hold})=>!policyMode?Promise.resolve(null):serializedPolicy(evidencePath,async()=>{
-      if(!isCanonicalJobId(jobId)||!HASH.test(effect??'')||!Number.isSafeInteger(writes)||writes<1||writes>SELLER_POLICY_MAX_WRITES||typeof hold!=='string'||!hold)return 'request-shape';
-      let ledger;try{ledger=(await readPolicyLedger(evidencePath)).rows;}catch{return 'evidence-unreadable';}
-      ledger.push(...provisionalPolicyHolds(evidencePath,(await readPolicyLedger(evidencePath)).attempts));ledger=withContextHolds(ledger);
-      const at=now(),held=ledger.filter(row=>row.decision==='approved'&&row.outcome!=='released');
-      if(held.filter(row=>row.jobId===jobId).length+writes>SELLER_POLICY_MAX_WRITES)return 'job-write-limit';
-      const recent=held.filter(row=>row.policy&&(row.outcome===null||row.completedAt>at-SELLER_POLICY_WINDOW_MS));
-      if(recent.length+writes>settings.maxWritesPerHour)return 'hourly-write-limit';
-      if(recent.reduce((sum,row)=>sum+BigInt(row.totalOs),0n)+BigInt(settings.maxWriteTotalOs)*BigInt(writes)>BigInt(settings.maxTotalOsPerHour))return 'hourly-dem-limit';
+      if(!isCanonicalJobId(jobId)||typeof effect!=='string'||!HASH.test(effect)||!Number.isSafeInteger(writes)||writes<1||writes>SELLER_POLICY_MAX_WRITES||typeof hold!=='string'||!hold)return 'request-shape';
+      let snapshot;
+      try{snapshot=await readPolicyLedger(evidencePath);}
+      catch(cause){throw Object.assign(new Error('seller context approval ledger cannot be read',{cause}),{code:'seller_context_ledger_unreadable'});}
+      const retained=snapshot.rows.find(row=>row.contextHold===hold);
+      if(retained){
+        if(retained.jobId!==jobId||retained.effect!==effect||retained.writes!==writes||retained.totalOs!==settings.maxWriteTotalOs)return 'hold-conflict';
+        if(retained.released)return 'hold-released';
+        syncContextLedger(evidencePath);return null;
+      }
+      const at=now();
+      if(!Number.isSafeInteger(at)||at<0)throw new RangeError('context hold time must be a nonnegative safe integer');
+      const refusal=await budgetRefusal({evidencePath,jobId,totalOs:BigInt(settings.maxWriteTotalOs)*BigInt(writes),at,limits:settings,writes,snapshot});
+      if(refusal)return refusal;
       await append({event:'hold',holdId:hold,jobId,effect,writes,totalOs:settings.maxWriteTotalOs,recordedAt:at});
       return null;
     }),
@@ -809,9 +804,23 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
   });
 }
 
+// Sync both a retained append and its publication directory. Parent creation
+// is one leaf only; its existing parent's entry is synchronized as well.
+function syncContextLedger(evidencePath){
+  for(const path of [evidencePath,dirname(resolve(evidencePath)),dirname(dirname(resolve(evidencePath)))]){
+    const handle=openSync(path,'r');try{fsyncSync(handle);}finally{closeSync(handle);}
+  }
+}
 const appendContextLine=async(evidencePath,line)=>{
-  await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});
-  appendFileSync(evidencePath,`${JSON.stringify({format:CONTEXT_FORMAT,...line})}\n`,{encoding:'utf8',mode:0o600});
+  await mkdir(dirname(evidencePath),{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error;});
+  let text='';try{text=await readFile(evidencePath,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
+  const bytes=Buffer.from(`${text.length&&!text.endsWith('\n')?'\n':''}${JSON.stringify({format:CONTEXT_FORMAT,...line})}\n`);
+  const handle=openSync(evidencePath,'a',0o600);
+  try{
+    for(let done=0;done<bytes.length;){const written=writeSync(handle,bytes,done,bytes.length-done);if(!(written>0))throw new Error('context line was not written');done+=written;}
+    fsyncSync(handle);
+  }finally{closeSync(handle);}
+  syncContextLedger(evidencePath);
 };
 
 // Ends a job's open context holds (only holdId when given) with one release
@@ -822,7 +831,11 @@ const appendContextLine=async(evidencePath,line)=>{
 export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Date.now()}){
   return serializedPolicy(evidencePath,async()=>{
     const at=now(),released=[];
-    for(const open of (await readPolicyLedger(evidencePath)).rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId))){
+    const rows=(await readPolicyLedger(evidencePath)).rows;
+    const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId));
+    if(!Number.isSafeInteger(at)||at<0||openHolds.some(row=>at<row.recordedAt))throw new RangeError('context release cannot predate its hold');
+    if(!openHolds.length&&rows.some(row=>row.contextHold&&row.jobId===jobId))syncContextLedger(evidencePath);
+    for(const open of openHolds){
       await appendContextLine(evidencePath,{event:'release',holdId:open.contextHold,jobId,recordedAt:at});
       released.push(open.contextHold);
     }
@@ -977,3 +990,16 @@ const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/
 // Agreement reader (demos-sr2-adapter.mjs) still requires the full transport
 // binding, so today a seller record always carries the seller's own endpoint.
 const sameNetwork=(a,b)=>typeof a?.network==='string'&&typeof a.chainIdentity==='string'&&a.network===b.network&&a.chainIdentity===b.chainIdentity;
+
+// The final pre-payment check, synchronous so that no cancellation can land
+// between it and the answer. A resolver that is not synchronous fails closed.
+function stillOpenBeforePayment(request,policy,held){
+  if(!BEFORE_PAYMENT.has(request.content.artifactKind))return null;
+  const purchase=policy.resolvePurchase(request.content.jobId);
+  if(typeof purchase?.then==='function'){purchase.catch?.(()=>{});return 'policy-check-failed';}
+  // A held write the operator approved exactly may still have no seller
+  // record (vet records); a record that shows the job paid or closed refuses it.
+  if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&purchase===null)return null;
+  return purchase?.jobId===request.content.jobId&&purchase.prePaymentOpen===true&&purchase.paymentObserved===false?null:'purchase-closed';
+}
+
