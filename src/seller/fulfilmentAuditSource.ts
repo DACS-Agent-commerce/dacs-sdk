@@ -436,8 +436,7 @@ const sameJcs = (left: unknown, right: unknown): boolean => {
  * verifier, the composite address, the Listing-owned buyer requirement, the
  * coverage of every required/oneOf member, this job's deal-specific results
  * and each result's address. The fulfilment core runs it over the audit
- * source at delivery; `sellerFulfilmentVetRequirementsViolation` runs the same
- * predicate before a seller signs, so the two cannot drift.
+ * source at delivery.
  */
 export function isSellerFulfilmentVetInvocationMismatch(
   invocation: SellerFulfilmentVetRequirementInvocation,
