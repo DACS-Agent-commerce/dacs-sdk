@@ -573,7 +573,7 @@ function runEarlyFailure(extraStubCommands = "") {
   const PATH = stubBin(directory, { curl: 'printf "curl 8.5.0\\n"' , docker: "exit 0", npm: npmBody });
   const output = join(directory, "evidence");
   const result = runBash(["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
-    cwd: repoRoot, env: { RUNNER_TEMP: directory, HOME: directory, PATH },
+    cwd: repoRoot, env: { RUNNER_TEMP: directory, HOME: directory, PATH, OUTPUT_DIR: output },
   });
   return { directory, output, result };
 }
@@ -595,7 +595,7 @@ function packTarball(manifest: Record<string, string>) {
 // generated project's doctor fails (exit 1, not the expected 5). Docker, npm
 // and curl are stubs; node is this process's binary; the registry is a
 // loopback server that serves exactly the published candidates.
-async function runToConsumerStage(complete = false) {
+async function runToConsumerStage(complete = false, failStart = false) {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-")); scratch.push(directory); chmodSync(directory, 0o700);
   const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string;
   const releaseSet = join(directory, "release-set"); mkdirSync(releaseSet);
@@ -656,7 +656,7 @@ async function runToConsumerStage(complete = false) {
     npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
       `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
       `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
-    docker: [`printf '%s\\n' "$*" >> '${commands}'`, `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
+    docker: [`printf '%s\\n' "$*" >> '${commands}'`, ...(failStart ? ['if [ "$1 $2" = "run --detach" ]; then exit 17; fi'] : []), `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
       `if [ "$1" = build ]; then touch '${built}'; exit 0; fi`,
       `if [ "$1 $2" = 'image inspect' ]; then [ -f '${built}' ] || exit 98; case "$*" in *--format*) echo 10001:10001 ;; *) printf '%s' '[{"Id":"fixture","Size":1,"Config":{"User":"10001:10001"}}]' ;; esac; exit 0; fi`,
       'if [ "$1" = compose ]; then echo "services: {}"; exit 0; fi', 'if [ "$1" != run ]; then exit 0; fi', 'work=; previous=',
@@ -876,7 +876,10 @@ describe("registry/container evidence", () => {
     );
     expect(result.status).toBe(17);
     expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
-    expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
+    const retained = readdirSync(directory).filter(name => name.startsWith("dacs-registry-acceptance."));
+    expect(retained).toHaveLength(1);
+    expect(readFileSync(join(directory, retained[0] ?? "missing", "consumer/doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    expect(result.stderr).toContain("retained at ");
   });
 
   it("rejects a registry lock entry with different tarball bytes and reports both digests", () => {
@@ -2219,4 +2222,17 @@ describe("candidate executable and nested alias lookup", () => {
 it("reports the missing historical fixture location before editing", () => {
   expect(() => requiredFixtureEntry(undefined, "node_modules/semver"))
     .toThrow("missing fixture entry: node_modules/semver");
+});
+
+
+describe("run-local cleanup ownership", () => {
+  it("reserves the output before another process can create an empty directory", () => {
+    const { directory, output, result } = runEarlyFailure('if mkdir "$OUTPUT_DIR" 2>/dev/null; then touch "$RUNNER_TEMP/concurrent-created"; fi');
+    expect(result.status).toBe(17); expect(existsSync(join(directory, "concurrent-created"))).toBe(false);
+    expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
+  });
+  it("removes the unique registry name even when Docker fails during start", async () => {
+    const { result, commands } = await runToConsumerStage(false, true);
+    expect(result.status, result.stderr).toBe(17); expect(readFileSync(commands, "utf8")).toMatch(/^rm --force dacs-registry-/m);
+  }, 30000);
 });
