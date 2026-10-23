@@ -260,6 +260,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const assertSessionAdmission = () => {
     if (nativeProfile && !admission) throw new SellerAgentError('session_admission_required', 'the native seller profile opens a session only under the seller\'s session admission (profile, challenge, revocation and Vet records)', 503);
   };
+  const assertNativePaymentHandler=()=>{if(typeof submitNativePaymentEvidence!=='function')throw new SellerAgentError('settlement_profile_unavailable','native payment handling is not assembled',503);};
   const assertSettlementChain = () => {
     if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile commits and takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
   };
@@ -715,6 +716,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     assertRailPin(session.railPin, 'in-flight');
+    if(nativeProfile)assertNativePaymentHandler();
     const early = signatureAgreement !== undefined;
     if (early && !commitOnSignature) throw new SellerAgentError('signature_commitment_disabled', 'commitment on signature is disabled');
     if (early && signatureBuyer !== null && session.buyerBundle.presentedBy !== signatureBuyer) throw new SellerAgentError('signature_buyer_not_admitted', 'buyer is not admitted to early commitment');
@@ -897,7 +899,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     },
     resolvePayerAddress: async () => ({ disposition: 'rejected', reason: 'x402 is not supported by this agent' }),
     resolvePayeeDestination: async () => ({ disposition: 'error', reason: 'x402 is not supported by this agent', tier: 2 }),
-    observeDemosTransfer: (txHash) => observeDemosTransfer(txHash),
+    observeDemosTransfer: (txHash) => readAdmissionCapability({read:()=>observeDemosTransfer(txHash)},'read',{}),
     observeX402Transfer: async () => ({ status: 'unavailable', reason: 'x402 is not supported by this agent' }),
     verifyX402ReceiptExtensions: () => ({ disposition: 'fail', reason: 'x402 is not supported by this agent' }),
     classifyX402SettlementChain: () => ({ disposition: 'unsupported', reason: 'x402 is not supported by this agent' }),
@@ -937,26 +939,26 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       canonicalize(left.blockRef)===canonicalize(right.blockRef);
   }
 
-  // A lost response after the native Deliverable CREATE has applied leaves the
-  // SDK's durable delivery WAL at an intent. Before re-entering that runner,
-  // authenticate the exact original public projection and retain only the
-  // fulfilment binding the runner already returned. Absence/indeterminate
-  // readback is deliberately non-authoritative here: it must never turn a
-  // caller retry into another seller approval or CREATE. The one exception is
-  // an absence the reader proved (a shutdown cut the approval before anything
-  // was signed): the runner then reconciles its WAL, reads the same absence
-  // and submits again, which asks the operator again.
   async function submitPayment({ jobId, txHash, payerPayingKey, nativePaymentEvidence: requestedEvidence }) {
     assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     assertRailPin(session.railPin, 'in-flight');
-    if (requestedEvidence === NATIVE_PAYMENT_EVIDENCE || session.nativeEvidenceWork) return submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence });
+    if (requestedEvidence === NATIVE_PAYMENT_EVIDENCE || session.nativeEvidenceWork) {assertNativePaymentHandler();return submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence });}
     // The fixture intake below claims the transfer, then anchors through the
     // fixture substrate, which the native profile does not have.
     if (nativeProfile) throw new SellerAgentError('native_evidence_required', 'the native seller profile takes payment only as native payment evidence', 409);
     if (session.payment) {
       if (session.payment.txHash !== paymentTxHash(txHash)) throw new SellerAgentError('payment_already_recorded', 'this job already has a verified payment', 409);
+      if(session.paymentWork?.payerPayingKey!==payerPayingKey)throw new SellerAgentError('seller_payment_work_conflict','retained payer differs',409);
+      await commit({jobId});
+      const intake=await verifySellerPaymentIntake({jobId,phaseIndex:agreementTerms(session.agreement).paymentPhaseIndex,railId:agreementTerms(session.agreement).rail,payerPayingKey,receipt:{kind:'pay-dem',txHash}},intakeDepsFor(jobId));
+      if(intake.disposition!=='verified'||!['claim','already-claimed'].includes(intake.fulfilment)||intake.settlementId!==session.payment.settlementId)throw new SellerAgentError('payment_readback_required','retained fixture payment is not freshly authenticated',503);
+      const observed=intake.settlementIdentity;
+      const read=address=>readAdmissionCapability(anchors,'read',address);
+      const paymentRecord=await read(session.payment.ref.anchor.locator),deliverable=await read(session.payment.deliverableRef.anchor.locator),evidenceRecord=await read(session.payment.deliveryRef.anchor.locator);
+      const paymentCheck=await verifyPaymentEvidence({agreement:session.agreement,record:paymentRecord,observed}),deliveryCheck=await verifyDelivery({agreement:session.agreement,deliverable,evidenceRecord});
+      if(paymentCheck.status!=='verified'||deliveryCheck.status!=='verified'||contentHash(paymentRecord.artifact)!==session.payment.ref.contentHash||contentHash(deliverable.artifact)!==session.payment.deliverableRef.contentHash||contentHash(evidenceRecord.artifact)!==session.payment.deliveryRef.contentHash)throw new SellerAgentError('payment_readback_required','retained fixture artifacts changed',503);
       return publicPayment(session);
     }
     if (!session.commitment) throw new SellerAgentError('not_committed', 'the Agreement is not committed; no payment is accepted before commitment');
@@ -969,7 +971,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       return { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason };
     }
     if (!bindSettlement(intake.settlementId, jobId)) return { status: 'indeterminate', reason: 'settlement-collision' };
-    if (durable && !session.paymentWork) {
+    if (!session.paymentWork) {
       session.paymentWork = { txHash: paymentTxHash(txHash), payerPayingKey, intake: JSON.parse(JSON.stringify(intake)), deliveredAt: now() };
       persist(session);
     }
@@ -1276,51 +1278,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const refuseBundleFinalization = () => {
     throw new SellerAgentError('bundle_finalization_unavailable', 'the seller signs no completed DACS-5 bundle: the ST-11 finalizer (finalized, independently resolved Vet, commitment, settlement and bundle records) is not available', 503);
   };
-  function sessionFacts(session) {
-    return bundleSession({
-      agreement: session.agreement,
-      agreementRef: session.agreementRef,
-      commitmentRef: fixtureRef(session.commitment.logicalAddress, contentHash(session.commitment.record)),
-      payment: session.payment.ref,
-      delivery: session.payment.deliveryRef,
-      observed: { txHash: session.payment.txHash, blockNumber: session.payment.blockNumber },
-      finalisedAt: session.finalisedAt,
-    });
-  }
-
   async function bundleRequest({ jobId }) {
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     if (!session.payment) throw new SellerAgentError('not_delivered', 'nothing was delivered for this job');
     refuseBundleFinalization();
-    session.finalisedAt ??= Math.max(now(), session.payment.deliveredAt);
-    persist(session);
-    const facts = sessionFacts(session);
-    const plan = await bundleSigningPlan(facts);
-    session.bundleHash = plan.bundleHash;
-    session.sellerBundleSignature ??= Buffer.from(sign(plan.payload)).toString('base64url');
-    persist(session);
-    return { jobId, finalisedAt: session.finalisedAt, bundleHash: plan.bundleHash, sellerSignature: session.sellerBundleSignature };
   }
 
-  async function countersign({ jobId, buyerSignature }) {
+  async function countersign({ jobId }) {
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     refuseBundleFinalization();
-    if (!session.bundleHash) throw new SellerAgentError('no_bundle_request', 'request the bundle first');
-    const facts = sessionFacts(session);
-    const { copies, problems } = await assembleBundleCopies(facts, { buyer: buyerSignature, seller: session.sellerBundleSignature });
-    if (problems.length) throw new SellerAgentError('bundle_invalid', problems.join('; '));
-    if (durable) {
-      if (session.countersignatureWork && session.countersignatureWork.buyerSignature !== canonicalSignature(buyerSignature)) throw new SellerAgentError('seller_bundle_work_conflict', 'a different countersignature is retained', 503);
-      session.countersignatureWork = { buyerSignature: canonicalSignature(buyerSignature) };
-      persist(session);
-    }
-    const anchored = await anchorOnce(bundleAddress(jobId, 'seller'), copies.sellerCopy);
-    session.sellerCopy = copies.sellerCopy;
-    session.stage = 'seller-copy-anchored';
-    persist(session);
-    return { status: 'seller-copy-anchored', address: anchored.ref.anchor.locator, bundleHash: session.bundleHash };
   }
 
   async function confirmBuyerCopy({ jobId }) {
@@ -1338,21 +1306,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return check;
   }
 
-  // A reducer for an ALREADY reserved authenticated HTTP command.
-  // Ordinary commitments resume under their anchor journal and the job fence
-  // while the delegation is live; uncertain sends require readback.
-  // Commit-on-signature reconciliation uses the readback-only gate; it cannot
-  // sign or submit. An interrupted proposal resumes through the durable
-  // responder under its original authenticated request and live delegation.
-  // The other exception is a payment claim with retained native
-  // evidence work: it runs that work's own retained step (submitNativePaymentEvidence),
-  // whose durable anchor record governs every send, and answers `retry` while
-  // it is not final, or `no-effect` when it ended before the work checkpoint
-  // with a definite answer that kept nothing. `readOnly` (a request whose
-  // session delegation expired) never runs it: the claim stays uncertain.
-  // A transport cached answer is never evidence; retained seller-authenticated work must
-  // agree with the pinned receipt authority and exact fresh native readback.
-  // Local authenticated snapshots may advance after those facts are verified.
   async function reconcileTransport({ request, body, rawBody, readOnly = false }) {
     const held = (reason) => ({ disposition: 'indeterminate', reason });
     const same = (a, b) => canonicalize(a) === canonicalize(b);
