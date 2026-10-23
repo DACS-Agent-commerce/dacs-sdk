@@ -1366,6 +1366,17 @@
           "after": "8173b4c5b350f1a39a3b6bad62e8343f3e688258"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 cover retained native exec rollback on reopen",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "7fb6c88ed1400bffc509fc23453150bf78519cbe",
+          "after": "aca495eb87c54f557b02a7a2ce5d5b2882f1ce83"
+        }
+      ]
     }
   ]
 }
