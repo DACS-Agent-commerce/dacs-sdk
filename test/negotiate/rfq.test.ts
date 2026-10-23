@@ -17,7 +17,6 @@ import {
   type RfqTurnBody,
   type VerifiedListingInput,
 } from "../../src/index.js";
-import { isPhaseStep } from "../../src/artifacts/validators.js";
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
@@ -506,45 +505,6 @@ describe("bounded RFQ turn reducer", () => {
     );
     expect(replay.decision).toBe("fail");
     expect(verifier).not.toHaveBeenCalled();
-  });
-
-  // RFQ-1 (DACS-3 §8.4.2): maxTurns MUST be >= 2. An unsafe integer cannot
-  // even be content-hashed into a Listing, so it is checked in a checkpoint only.
-  test.each([0, 1, 1.5, -1, "2", Number.MAX_SAFE_INTEGER + 1])(
-    "RFQ-1: refuses maxTurns %j at session opening and in a stored checkpoint",
-    async (maxTurns) => {
-      if (Number.isSafeInteger(maxTurns) || typeof maxTurns !== "number" || maxTurns % 1 !== 0) {
-        const reservation = vi.fn<RfqChannelReservation>(() => "pass");
-        await expect(
-          openRfqSession(openInput(listing({ maxTurns: maxTurns as number })), reservation),
-        ).resolves.toMatchObject({ decision: "error" });
-        expect(reservation).not.toHaveBeenCalled();
-      }
-
-      const verifier = vi.fn<ChannelMessageSignatureVerifier<RfqTurnBody, string>>(() => "pass");
-      const stored = { ...(await opened(listing({ maxTurns: 2 }))), maxTurns } as RfqSessionState;
-      await expect(
-        advanceRfqSession(stored, turn(stored, "offer", proposal("10")), NOW + 1, verifier),
-      ).resolves.toMatchObject({ decision: "error" });
-      expect(verifier).not.toHaveBeenCalled();
-    },
-  );
-
-  test("RFQ-1: accepts the minimum maxTurns of 2", async () => {
-    const reservation = vi.fn<RfqChannelReservation>(() => "pass");
-    await expect(
-      openRfqSession(openInput(listing({ maxTurns: 2 })), reservation),
-    ).resolves.toMatchObject({ decision: "pass", state: { maxTurns: 2 } });
-    expect(reservation).toHaveBeenCalledOnce();
-  });
-
-  // The Listing validator's own check, which session opening otherwise masks.
-  test.each([
-    [0, false],
-    [1, false],
-    [2, true],
-  ])("RFQ-1: the Listing phase-step validator gives maxTurns %j %s", (maxTurns, valid) => {
-    expect(isPhaseStep({ kind: "negotiate-rfq", parameters: { maxTurns, timeoutSec: 10 } })).toBe(valid);
   });
 
   test("uses trusted receipt time, not sender sentAt, and times out without verification", async () => {

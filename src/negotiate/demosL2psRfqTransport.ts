@@ -467,8 +467,8 @@ export interface DemosL2psRfqTransport<TSignature = unknown>
    * Replay role-bound inbound packets after a process restart. Each job's
    * packets are delivered in order. A packet the consumer does not accept
    * holds back only the later-ranked packets of its own job, which are
-   * reported in `skipped`; one of the same rank (a re-signed agreement
-   * proposal) is still delivered, and so are other jobs.
+   * reported in `skipped`; one of the same rank is still delivered, and so
+   * are other jobs.
    */
   resumeInbound(remoteClaim: string): Promise<DemosL2psRfqInboundRecoveryResult>;
   /** Stop accepting inbound packets and detach when the peer supports it. */
@@ -2310,9 +2310,8 @@ function transportFrom<TSignature>(
     }
     // History is per peer pair, not per job. Sorting keeps each job's packets
     // together and in order, so a packet the consumer does not accept holds
-    // back only the packets after it in its own job. One of the same rank (a
-    // buyer's proposal re-signed after a stale key) is still offered, and
-    // once one is accepted the job goes on.
+    // back only the packets after it in its own job. One of the same rank is
+    // still offered, and once one is accepted the job goes on.
     let held: DemosL2psRfqInboundSkip | undefined;
     let heldRank = 0;
     for (const packet of [...packets.values()].sort(packetOrder)) {

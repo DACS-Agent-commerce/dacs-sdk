@@ -102,14 +102,8 @@ is added to a role-local outbox in the same compare-and-swap transition as its
 new local state, before transport publication.
 
 The injected store MUST authenticate persisted bytes and isolate role
-authority. Its compare-and-swap MUST refuse any write that
-`durableRfqLifecycleTransitionViolation()` refuses. That gate is append-only
-and monotonic, with one exception: a buyer's unfinalized agreement
-contribution may be replaced, not only appended, when the same write adds an
-`agreement-proposal` outbox entry that carries exactly the stored plan and
-the new contribution (below). The injected transport returns `acknowledged`
-only after the exact packet is durably accepted by the confidential member
-transport. If publish is
+authority. The injected transport returns `acknowledged` only after the exact
+packet is durably accepted by the confidential member transport. If publish is
 ambiguous, `resumeOutbox()` reconciles the original packet ID and bytes; it may
 redrive only an authenticated `absent` result. A permanent transport rejection
 or trusted-clock timeout is retained as a terminal lifecycle failure.
@@ -122,8 +116,7 @@ clock: the call answers `rejected` with "RFQ turn timeout elapsed (RFQ-4)" and
 stores the `timeout` failure without signing or publishing anything. Before
 the timeout has passed, the waiting member's send is refused with
 "counterparty owns the next RFQ turn" and nothing is stored. A turn received
-after the timeout records it too. Our own reject or abort reason is limited to
-4,096 characters.
+after the timeout records it too.
 
 The agreement exchange after acceptance (DACS-3 §8.4.2 steps 4–5) has the same
 timeout. Acceptance sets `awaitingSince` to its trusted receipt time on each
@@ -133,11 +126,9 @@ the step a member waits on is overdue, `sendAbort()`, any other send call, or
 `startAgreement()` answers `rejected` with "RFQ agreement timeout elapsed
 (RFQ-4)" and stores the `timeout` failure; the session stays `accepted` and
 nothing is signed or published. `startAgreement()` reads the trusted clock
-after verifying any stored contribution, and uses that one reading both for
-the deadline and as the new plan's `generatedAt`; if the clock fails it
-answers `indeterminate` and signs nothing. When a contribution is stored it
-also checks the deadline before calling the verifier, so an overdue job
-records its timeout even if the verifier never settles. After acceptance, a
+and uses that one reading both for the deadline and as the new plan's
+`generatedAt`; if the clock fails it answers `indeterminate` and signs
+nothing. After acceptance, a
 clock fault on a send call is `indeterminate` too, until the agreement is
 finalized. A send call on the member's own overdue turn records the timeout
 before the channel signer is called. A proposal the seller receives after its
@@ -155,7 +146,7 @@ but that date is the buyer's clock: `receive()` answers `rejected` with "buyer
 dated the RFQ agreement plan after the seller's deadline", calls no verifier
 and stores nothing. Only the seller's own trusted clock records the timeout,
 so a buyer clock running ahead cannot end the job early. Such a buyer cannot
-make a plan the seller will sign (a re-sign keeps the stored plan), so the
+make a plan the seller will sign, so the
 job ends in the RFQ-4 timeout at the seller's own deadline. With clocks in
 step this never happens: a plan dated after the seller's deadline also
 arrives after it. Keep both members' trusted clocks within a small fraction
@@ -191,21 +182,6 @@ stores nothing, and the same packet can be received again, when:
 A verifier should answer `fail` or `invalid` for bad counterparty input and
 throw only for its own faults: one that throws keeps that packet
 `indeterminate` on every retry.
-
-`startAgreement()` answers `duplicate` while the buyer's proposal is in flight
-or finalized. If the buyer's signer used a stale or wrong key, the seller
-rejects that proposal, and the buyer's own verifier no longer accepts the
-stored contribution. Fix the signer and call `startAgreement()` again: it
-re-signs the same plan and sends a new proposal. While the new contribution
-does not verify either, or the verifier cannot decide, it answers
-`indeterminate` and stores nothing. The store gate
-(`durableRfqLifecycleTransitionViolation`) allows this one replacement, and
-only together with the new proposal's outbox entry. A seller that already
-holds the finalized Agreement answers `duplicate` to a proposal for the same
-plan and `rejected` to any other, so no second Agreement is made. If the
-seller's verifier still accepted the old key, it finalized the first proposal.
-Both sides then hold the same plan and agreement hash, but with different
-buyer signatures.
 
 ```ts
 const buyerRfq = createDurableRfqLifecycleClient({
@@ -841,13 +817,8 @@ bytes (98,304 with its tag, exactly 131,072 Base64 characters). `publish`
 answers `rejected` before the send outbox is written for a packet whose
 canonical bytes are larger, or for a custom codec's frame over the limit; the
 lifecycle records that as a terminal transport failure instead of resending a
-frame the node can never take. The lifecycle itself refuses our own reject or
-abort reason over 4,096 characters before anything is signed or stored. Even
-fully escaped (4,096 control characters become 24,576 bytes), such a reason
-leaves room for the envelope, so a terminal turn fits as long as the host's
-channel signature (`TSignature`, which the SDK does not measure) stays small.
-A turn that does not fit is still refused before the outbox write and
-recorded as a terminal transport failure.
+frame the node can never take. These complete-packet checks also cover
+reject and abort reasons and the host's channel signature (`TSignature`).
 
 Payloads from Demos are size-checked before they are copied or canonicalized:
 a frame over that limit, a history page of more than 100 entries, or a page
@@ -908,9 +879,8 @@ packets in turn order. IDs are compared by exact code units, not by locale
 collation, so two IDs that differ only in a character collation ignores (a
 zero-width space, say) stay separate groups. When the consumer does not accept
 a packet, recovery holds back the later packets of that job only and goes on
-with the other jobs. A packet of the same rank, such as a buyer's agreement
-proposal re-signed after a stale key, is still offered, and once one is
-accepted the job goes on. The result lists each refused packet in `skipped`,
+with the other jobs. A packet of the same rank is still offered, and once one
+is accepted the job goes on. The result lists each refused packet in `skipped`,
 with how many packets that covers (it and the ones held back) and the
 consumer's reason. A rejection is the consumer's answer about
 the packet, not a transport uncertainty, so it does not make the call
