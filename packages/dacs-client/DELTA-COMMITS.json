@@ -955,5 +955,23 @@
       "packages/dacs-client/test/package-contents.test.mjs",
       "packages/dacs-client/test/store-host-boundary.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 validate capability clocks and discovery hints",
+    "files": [
+      ".github/workflows/ci.yml",
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/directory.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/test/directory-byte-budget.test.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs",
+      "packages/dacs-client/test/store-host-boundary.test.mjs"
+    ]
   }
 ]

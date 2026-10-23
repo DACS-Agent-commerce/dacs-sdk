@@ -33,7 +33,8 @@ function projectRevocationBinding(value) {
     if (typeof value[field] !== 'string' || !value[field].length || value[field].length > max) return undefined;
   }
   if (!HEX64.test(value.listingContentHash) || !HEX64.test(value.markerContentHash)
-    || !value.logicalAddress.startsWith('dacs1-revoked:')) return undefined;
+    // DACS-1 RB-1/RB-2, CORE CF-4: encode the claim's reserved delimiters.
+    || value.logicalAddress !== `dacs1-revoked:${value.sellerPrimaryClaim.replace(/[:?&=%]/g, character => '%' + character.charCodeAt(0).toString(16).toUpperCase())}:${value.listingId}:v${value.listingVersion}`) return undefined;
   if (!Number.isSafeInteger(value.listingVersion) || value.listingVersion < 1
     || !value.markerAnchor || Array.isArray(value.markerAnchor)
     || typeof value.markerAnchor.kind !== 'string' || !value.markerAnchor.kind.length || value.markerAnchor.kind.length > 64
@@ -82,13 +83,13 @@ export function projectSummary(raw) {
     tags: Array.isArray(raw.offering?.tags) ? raw.offering.tags.filter((t) => typeof t === 'string').slice(0, 16).map((t) => t.slice(0, 32)) : [],
     rails: Array.isArray(raw.offering?.rails) ? raw.offering.rails.filter((t) => typeof t === 'string' && t.length <= 256).slice(0, 8) : [],
     pricingHint: {
-      kind: str(pricing.kind, 32),
+      kind: ['fixed', 'negotiable', 'auction', 'metered'].includes(pricing.kind) ? pricing.kind : undefined,
       priceHint: str(pricing.priceHint, 64),
       currency: str(pricing.currency, 16),
       unit: str(pricing.unit, 32),
     },
     publicEndpoint: str(raw.publicEndpoint, 512),
-    artifactProfile: str(raw.artifactProfile, 64),
+    artifactProfile: ['dacs-v0.1', 'legacy-sdk-v0.1', 'fixture-listing'].includes(raw.artifactProfile) ? raw.artifactProfile : undefined,
     status: raw.status,
     revocationBinding: summaryRevocation(raw),
     catalogObservedAt: normalizeCatalogObservedAt(raw.catalogObservedAt),
@@ -134,7 +135,13 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
     if (!LISTING_ID.test(listingId) || !Number.isSafeInteger(version) || version < 1 || !CLAIM.test(seller)) {
       throw new OutboundError('invalid', 'listing coordinates are malformed');
     }
-    const body = await get(`/api/dacs/sellers/${encodeURIComponent(seller)}`);
+    let body;
+    try {
+      body = await get(`/api/dacs/sellers/${encodeURIComponent(seller)}`);
+    } catch (error) {
+      if (error instanceof OutboundError && error.kind === 'not-found') return null;
+      throw error;
+    }
     if (!body || !Array.isArray(body.listings) || body.listings.length > 200) throw new OutboundError('invalid', 'directory seller listings response is malformed or exceeds 200 records');
     const matches = body.listings.map(projectSummary).filter(l => l && l.listingId === listingId && l.version === version && l.seller.primaryClaim === seller);
     if (matches.length > 1) throw new OutboundError('invalid', 'directory listing coordinates are ambiguous');

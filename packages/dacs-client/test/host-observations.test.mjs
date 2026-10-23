@@ -1,6 +1,7 @@
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
-import { createPurchaseService as createPublicPurchaseService, createCoordinateStore, createProtocolPurchases, createSqlitePurchaseStore, createDeliveryDeadlineWatch } from '@kynesyslabs/dacs-client';
+import { createPurchaseService as createPublicPurchaseService, createCoordinateStore, createProtocolPurchases, createSqlitePurchaseStore, createDeliveryDeadlineWatch, PURCHASE_STATE_SCHEMA } from '@kynesyslabs/dacs-client';
 import { createPayDemSellerObserver } from '@kynesyslabs/dacs/seller';
 import { createPurchaseService } from '../src/purchases.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
@@ -8,7 +9,7 @@ import { createOperationStore } from './helpers/purchase-integrity-operations.mj
 
 const HASH = '1'.repeat(64), CHAIN = 'f'.repeat(64), WALLET = '0x' + 'a'.repeat(64), PAYEE = '0x' + '7'.repeat(64);
 const INCLUDED = { status: 'included', txHash: HASH, payer: WALLET, payee: PAYEE, amountOs: '2500000000', blockNumber: 10 };
-function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false, chainReadTimeoutMs = 8000 } = {}) {
+function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false, chainReadTimeoutMs = 8000, now } = {}) {
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) }), coordinates = createCoordinateStore({ db });
@@ -30,7 +31,7 @@ function world(t, observation, { native = false, observer = 'TEST-host-reader', 
   coordinates.reportHash(op.id, HASH);
   const protocol = native || buyerRefusal || buyerAccess ? createProtocolPurchases({ db, ops, coordinates, store,
     buyerAccess: buyerRefusal ? { assertWallet() { throw buyerRefusal; } } : buyerAccess }) : null;
-  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, chainReadTimeoutMs, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
+  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, chainReadTimeoutMs, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
   return { db, chain, protocol, coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
     consumed: () => db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n,
     verify: () => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id }) };
@@ -618,4 +619,70 @@ test('retained protocol readback authenticates its closed-access shortcut with t
   const result = await w.purchases.protocolRecheck({ operationId: w.op.id, token: w.ops.handoffTokenFor(w.op.id) });
   assert.equal(result.verification.outcome, 'readback_only');
   assert.equal(reads, 1);
+});
+
+// All capability read paths must refuse an unknown clock before host lookups.
+for (const method of ['portalOperation', 'portalEvidence', 'protocolRecheck']) {
+  for (const [label, clock] of [
+    ['NaN', NaN], ['undefined', undefined], ['infinity', Infinity], ['negative infinity', -Infinity],
+    ['string', '0'], ['null', null], ['object', {}], ['fraction', 1.5], ['negative', -1],
+    ['out of range', 8640000000000001], ['bigint', 0n], ['symbol', Symbol('TEST-clock')],
+  ]) test(`${method} refuses an invalid ${label} clock before private reads`, async t => {
+    const w = world(t, INCLUDED, { publicApi: method !== 'protocolRecheck', native: true, now: () => clock });
+    const token = w.ops.handoffTokenFor(w.op.id);
+    const calls = [];
+    w.ops.getByHandoff = () => { calls.push('operation'); return w.op; };
+    w.coordinates.get = () => { calls.push('coordinates'); };
+    w.protocol.readIssued = async () => { calls.push('protocol'); };
+    const run = () => method === 'protocolRecheck' ? w.purchases[method]({ operationId: w.op.id, token }) : w.purchases[method](w.op.id, token);
+    if (method === 'protocolRecheck') await assert.rejects(run, { code: 'not_found' });
+    else assert.throws(run, { code: 'not_found' });
+    assert.deepEqual(calls, []);
+  });
+  test(`${method} refuses an expired capability with a stale valid clock`, async t => {
+    const w = world(t, INCLUDED, { publicApi: method !== 'protocolRecheck', native: true, now: () => 0 });
+    const token = w.ops.handoffTokenFor(w.op.id);
+    w.db.prepare('UPDATE operations SET handoff_expires_at=? WHERE id=?').run('1970-01-01T00:00:00.001Z', w.op.id);
+    w.ops.getByHandoff = () => assert.fail('expired capability reached host lookup');
+    const run = () => method === 'protocolRecheck' ? w.purchases[method]({ operationId: w.op.id, token }) : w.purchases[method](w.op.id, token);
+    if (method === 'protocolRecheck') await assert.rejects(run, { code: 'not_found' });
+    else assert.throws(run, { code: 'not_found' });
+  });
+}
+for (const method of ['portalOperation', 'portalEvidence']) {
+  test(`${method} accepts an unexpired capability with a valid clock and rechecks it on repeat`, t => {
+    let clock = Date.now();
+    const w = world(t, INCLUDED, { publicApi: true, now: () => clock });
+    const token = w.ops.handoffTokenFor(w.op.id);
+    assert.ok(w.purchases[method](w.op.id, token));
+    clock = 0;
+    assert.ok(w.purchases[method](w.op.id, token));
+    clock = NaN;
+    assert.throws(() => w.purchases[method](w.op.id, token), { code: 'not_found' });
+    clock = Date.parse('9999-01-01T00:00:00Z');
+    assert.throws(() => w.purchases[method](w.op.id, token), { code: 'not_found' });
+  });
+}
+
+test('purchase construction reports an actionable error for the pre-capability schema', t => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  db.exec(PURCHASE_STATE_SCHEMA.replace('handoff_expires_at TEXT,', ''));
+  assert.throws(() => createPublicPurchaseService({ db, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' } }),
+    error => error.code === 'schema_migration_required' && /handoff_expires_at/.test(error.message));
+  db.exec('ALTER TABLE operations ADD COLUMN handoff_expires_at TEXT');
+  assert.ok(createPublicPurchaseService({ db, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' } }));
+});
+
+// Wire vector pinned to the original store's hashHandoffToken contract:
+// 9d820e0:test/helpers/purchase-integrity-operations.mjs:43.
+test('portal capabilities accept the pinned exact-byte hash vector', t => {
+  const w = world(t, INCLUDED, { publicApi: true });
+  w.db.prepare('UPDATE operations SET handoff_token_hash=? WHERE id=?').run(
+    'afe0c673f2027d951dfa05cecb56c758114474d50893b91004207d3733a4fb55', w.op.id);
+  w.ops.getByHandoff = () => w.op;
+  for (const method of ['portalOperation', 'portalEvidence']) {
+    assert.ok(w.purchases[method](w.op.id, 'TEST-capability-vector'));
+    assert.throws(() => w.purchases[method](w.op.id, 'TEST-capability-vector '), { code: 'not_found' });
+  }
 });

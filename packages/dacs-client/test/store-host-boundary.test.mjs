@@ -32,6 +32,7 @@ for (const warm of [false, true]) {
     let called = false;
     assert.throws(() => store.transaction(db, () => { called = true; }));
     assert.equal(called, false);
+    if (!warm) assert.deepEqual(db.prepare("SELECT name FROM temp.sqlite_master WHERE name LIKE 'dacs_purchase_%'").all(), []);
     db.exec('ROLLBACK');
     store.transaction(db, () => db.exec("INSERT INTO records VALUES ('TEST-retry')"));
     assert.deepEqual(rows(), ['TEST-retry']);

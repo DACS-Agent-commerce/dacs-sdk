@@ -182,6 +182,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     throw new OperationError('invalid_configuration', 'chainReadTimeoutMs must be an integer from 1 to 60000');
   }
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
+  if (!db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'handoff_expires_at')) {
+    throw new OperationError('schema_migration_required', 'Migrate operations to include handoff_expires_at and provision explicit portal lifetimes before constructing the purchase service.');
+  }
   const insertApproval = db.prepare(`INSERT INTO approvals (id, operation_id, challenge_id, signer_address, terms_hash, signature, approved_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   const approvalFor = db.prepare('SELECT * FROM approvals WHERE operation_id = ?');
@@ -437,8 +440,12 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     // bytes on every read; a permissive host lookup cannot grant access.
     const capability = portalCapability.get(operationId);
     const expiry = typeof capability?.handoff_expires_at === 'string' ? Date.parse(capability.handoff_expires_at) : NaN;
+    const clock = now();
+    // A host business clock may shorten a capability, but cannot extend its
+    // wall-clock lifetime. Unknown or out-of-range epoch milliseconds deny access.
     const suppliedHash = createHash('sha256').update(`dacs-handoff-hash:${token}`).digest();
-    if (!capability || capability.kind !== 'purchase' || !Number.isFinite(expiry) || expiry <= now()
+    if (!capability || capability.kind !== 'purchase' || !validIncludedAt(clock)
+      || !Number.isFinite(expiry) || !(expiry > Math.max(clock, Date.now()))
       || !/^[0-9a-f]{64}$/.test(capability.handoff_token_hash ?? '')
       || !timingSafeEqual(suppliedHash, Buffer.from(capability.handoff_token_hash, 'hex'))) {
       throw new OperationError('not_found', 'unknown or invalid approval link');

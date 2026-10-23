@@ -1953,6 +1953,37 @@
           "after": "5694739e566066e19b72622ebf7249be6c3c3a1a"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 validate capability clocks and discovery hints",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "58a689b3fd8ba4e6333b6b4660bc1bb7601bbe60",
+          "after": "f502e07bec76483406f982ae9e275740c7da545c"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "df2eb1e54ed4af2e454e574cbcf0ee1bfd1f5b08",
+          "after": "622ecb8e56e8439a0106dfd911175b581c55beb8"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "26fb08cd50c7de8fdb85fc1366a21dc4820f4011",
+          "after": "706bb842ea657118e226624eec1332b244963641"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "e26159ff36e0fb287d57e747dbfb7eff4ea46115",
+          "after": "0eb8b02891900e64f2725e907934ec098ef017c7"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": "5694739e566066e19b72622ebf7249be6c3c3a1a",
+          "after": "18c6e3c74c2817a1c38f58676eb2053d76398ebb"
+        }
+      ]
     }
   ]
 }
