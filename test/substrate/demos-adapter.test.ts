@@ -357,11 +357,11 @@ describe("DemosAdapter", () => {
   });
 
   it("retains GCR resolution for identities that are not self-certifying", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
     const raw = { result: 200, response: { web2: {} } };
-    const registryLookup = vi.spyOn(Identities.prototype, "getIdentities")
-      .mockResolvedValue(raw as never);
+    const registryLookup = vi.fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(raw)));
+    const adapter = new DemosAdapter({ rpc: RPC, identityFetch: registryLookup });
+    Object.assign(adapter, { connected: true });
 
     await expect(adapter.resolveIdentity("legacy-demos-address")).resolves.toEqual({
       ref: "legacy-demos-address",
@@ -369,16 +369,19 @@ describe("DemosAdapter", () => {
       raw,
     });
     expect(registryLookup).toHaveBeenCalledWith(
-      adapter.raw,
-      "getIdentities",
-      "legacy-demos-address",
+      RPC,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          method: "gcr_routine",
+          params: [{ method: "getIdentities", params: ["legacy-demos-address"] }],
+        }),
+      }),
     );
   });
 
   it("bounds decoded GCR responses at the Demos adapter boundary", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
-    vi.spyOn(Identities.prototype, "getIdentities").mockResolvedValue({
+    const raw = {
       response: {
         web2: {
           github: new Array(
@@ -386,7 +389,12 @@ describe("DemosAdapter", () => {
           ).fill("alice"),
         },
       },
-    } as never);
+    };
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      identityFetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(raw))),
+    });
+    Object.assign(adapter, { connected: true });
 
     await expect(adapter.resolveIdentity("subject")).rejects.toThrow(
       /maxArrayLength/,
