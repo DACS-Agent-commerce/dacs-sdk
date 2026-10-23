@@ -956,6 +956,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
