@@ -6,20 +6,17 @@ merge commit `5c27c28fd9225cff3e7653a5a013fd5f3168398c`
 (`ded30d5` into `3904d70`), fixture artifact
 [dacs-registry-container-fixtures-5c27c28fd9225cff3e7653a5a013fd5f3168398c](https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/38706155424/artifacts/11959340907).
 
-All files are copied verbatim except the lock and image inventory. Those keep
-only the lock locations used by the b7b180f fixture and the demosdk → pqcrypto
-and demosdk → MultiversX → bip39 paths. Each retained entry is unchanged;
-the inventory retains only entries at the retained lock locations. There are
-28 lock entries and 23 observed image entries. Tests re-extract findings from
-these files; only the engine scan's evaluated-package count differs from the
-full run. The acceptance summary retains the original failure (exit 3),
-including the full run's findings and counts; it is never rewritten to pass.
-`engine-strict.log.txt` is read as `engine-strict.log` by the test adapter.
+The committed snapshot preserves the original failing summary and diagnostic
+files, plus 23 selected observed image entries. Each retained entry is unchanged.
+No generated lock is included at this stage. The focused test asserts the recorded disposition
+(exit 3, with blocked image and physical-SBOM checks); it does not re-extract
+findings or establish the complete image closure from this snapshot.
+`engine-strict.log.txt` preserves the uploaded engine log under a tracked filename.
 
 The two findings outside the previous #191 baseline were a pqcrypto registry /
 manifest version mismatch and an omitted optional bip39 copy. Their individual
 dispositions and upstream dependency paths are recorded in
-`scripts/registry-container-audit-baseline.json` and its companion Markdown.
+`scripts/registry-container-audit-baseline.json`.
 
 SHA-256 of the original uploaded files (before filtering):
 
