@@ -17,7 +17,6 @@ export default defineConfig({
       { find: "@kynesyslabs/dacs/canonical", replacement: coreSource("canonical") },
       { find: "@kynesyslabs/dacs/commerce", replacement: coreSource("commerce") },
       { find: "@kynesyslabs/dacs/crypto", replacement: coreSource("crypto") },
-      { find: "@kynesyslabs/dacs/discovery", replacement: coreSource("discovery") },
       { find: "@kynesyslabs/dacs/identity", replacement: coreSource("identity") },
       { find: "@kynesyslabs/dacs/negotiate", replacement: coreSource("negotiate") },
       { find: "@kynesyslabs/dacs/rails", replacement: coreSource("rails") },

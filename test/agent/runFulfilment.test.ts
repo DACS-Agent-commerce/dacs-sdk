@@ -1,4 +1,3 @@
-import { admittedFixture } from "../helpers/admitted.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
@@ -26,7 +25,7 @@ import {
   type SellerPayloadAttestationRecord,
   type SignedSellerDeliveryEvidence,
 } from "../../src/agent/runFulfilmentCore.js";
-import { verifyLegacySettlementEvidence as verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import {
   isSellerFulfilmentHandoff,
   sellerFulfilmentCandidateHash,
@@ -996,7 +995,7 @@ describe("runFulfilmentCore", () => {
         .toBe(anchoredLocator);
       expect(result.bundleContribution.settlementEvidence.anchor.locator).toBe(anchoredLocator);
       expect(await verifySettlementEvidence(
-        admittedFixture(result.evidence),
+        result.evidence,
         {
           orchestrator: SELLER,
           agreement: { amount: "1", currency: "TEST" },

@@ -63,7 +63,6 @@ export {
 } from "./evidenceBoundBundle.js";
 export {
   lookupBundleCopies,
-  lookupLegacyBundleCopies,
   bundleConsistency,
   selectAuthoritativeBundleCopy,
   bundlesDiverge,
@@ -78,8 +77,6 @@ export {
 export {
   validateSettlementEvidenceStructure,
   verifySettlementEvidence,
-  verifyConstructedSettlementEvidence,
-  verifyLegacySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
   type EvidenceStructureDecision,
@@ -108,7 +105,6 @@ export {
 } from "./publishListingCore.js";
 export {
   deriveReputation,
-  deriveLegacyReputation,
   deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,
@@ -527,7 +523,6 @@ export {
 } from "./settlementIdentity.js";
 export {
   verifyFinalizedSessionSettlement,
-  verifyLegacyFinalizedSessionSettlement,
   type SessionSettlementDisposition,
   type SessionSettlementIdentityBinding,
   type SessionSettlementNativeSessionBinding,

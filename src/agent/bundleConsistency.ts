@@ -1,4 +1,4 @@
-import { bundleAddress, legacyJobAddressing, requireCurrentJobId } from "../canonical/addressing.js";
+import { bundleAddress } from "../canonical/addressing.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
@@ -168,23 +168,6 @@ export async function lookupBundleCopies(
   jobId: string,
   read: BundleCopyReader,
 ): Promise<BundleCopies> {
-  requireCurrentJobId(jobId);
-  return lookupBundleCopiesUsing(jobId, read, bundleAddress);
-}
-
-/** Explicit historical lookup, never selected as a current-profile fallback. */
-export async function lookupLegacyBundleCopies(
-  jobId: string,
-  read: BundleCopyReader,
-): Promise<BundleCopies> {
-  return lookupBundleCopiesUsing(jobId, read, legacyJobAddressing.bundleAddress);
-}
-
-async function lookupBundleCopiesUsing(
-  jobId: string,
-  read: BundleCopyReader,
-  addressOf: typeof bundleAddress,
-): Promise<BundleCopies> {
   if (
     typeof jobId !== "string" ||
     jobId.length === 0 ||
@@ -201,7 +184,7 @@ async function lookupBundleCopiesUsing(
   const lookup = async (role: BundleRole): Promise<BundleCopyRead> => {
     try {
       return captureBundleCopyRead(
-        await read(addressOf(jobId, role), role),
+        await read(bundleAddress(jobId, role), role),
         jobId,
         role,
       );

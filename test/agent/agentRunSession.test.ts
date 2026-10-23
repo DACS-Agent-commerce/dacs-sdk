@@ -1,5 +1,3 @@
-import "../helpers/unreleasedRailMechanics.js";
-import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -143,7 +141,7 @@ function memAdapter(options: { failBundleOnce?: boolean } = {}) {
       };
     },
     anchorAddress: async (name: string) => `stor:${name}`,
-    readAnchor: async (address: string) => admittedFixture(store.get(address) ?? null),
+    readAnchor: async (address: string) => store.get(address) ?? null,
     // #70 surface: resume resolution is BY NAME, owner-bound. The mem adapter's
     // addresses are deterministic (`stor:<name>`), so resolution is a lookup.
     getAddress: () => buyerDid,
@@ -1249,7 +1247,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       contentHash: contentHash(stripSignature(evidence)),
     };
     const directEvidenceVerdict = await verifySettlementEvidence(
-      admittedFixture(evidence),
+      evidence,
       {
         orchestrator: sellerDid,
         agreement: { amount: "1", currency: "USDC" },
@@ -1259,8 +1257,6 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           asset: "USDC",
           handler: "pay-x402",
           network: "eip155:84532",
-          assetSpec: { kind: "erc20", chainId: 84532 },
-          networkSpec: { kind: "x402-resource" },
         },
         attestationRef: evidenceRef,
         paymentAddress: {
@@ -1278,8 +1274,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(
       directEvidenceVerdict.decision,
       directEvidenceVerdict.reasons.join("; "),
-    ).toBe("error");
-    expect(directEvidenceVerdict.reasons.join(" ")).toContain("unreleased corrective candidate");
+    ).toBe("pass");
     store.set(
       evidenceRef.anchor.locator,
       evidence as unknown as Record<string, unknown>,
@@ -1433,9 +1428,13 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     const configuredVerdict = await agent.verifyBundle("stor:bundle");
     expect(evidenceContextCalls).toBe(1);
-    expect(configuredVerdict.ok).toBe(false);
+    expect(configuredVerdict.reason).toBeUndefined();
+    expect(configuredVerdict).toMatchObject({
+      ok: true,
+      fullyVerified: true,
+    });
     await expect(agent.getReputation(normativeBuyerDid, ["stor:bundle"]))
-      .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+      .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
     expect(verifierCalls).toBe(2);
     expect(evidenceContextCalls).toBe(2);
 

@@ -269,14 +269,11 @@ describe("native DEM process recovery", () => {
 
     expect(settle).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledTimes(1);
-    // This recovery uses real current-profile admission. It can authenticate
-    // the existing transfer, while the unreleased pin permits no new message.
-    // Without a retained notice the seller cannot deliver, so this stays pending.
-    expect(publishNotice).not.toHaveBeenCalled();
+    expect(publishNotice).toHaveBeenCalledTimes(1);
     expect(await coordinator.getOrderStatus(JOB_ID)).toMatchObject({
       tracks: {
         agreement: { state: "final", outcome: "success" },
-        payment: { state: "indeterminate", reasonCode: "pay-dem-payment-notice-pending" },
+        payment: { state: "final", outcome: "success" },
       },
     });
   }, 75_000);

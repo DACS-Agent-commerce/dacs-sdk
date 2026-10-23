@@ -1,4 +1,3 @@
-import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import { isDeepStrictEqual } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -125,8 +124,6 @@ export interface X402PaywallExpectedTerms {
 }
 
 export interface X402PaywallHandleInput {
-  /** Observe retained settlement without driving payment, authorizing delivery or writing state. */
-  reconcileOnly?: boolean;
   /** Exact DACS session bound into the payer-signed EIP-3009 nonce (SB-3). */
   jobId: string;
   /** Exact pay-x402 phase index recovered from the PC-2/SB-1 address. */
@@ -306,7 +303,6 @@ export type X402PaywallResult<T = unknown> =
     }
   | {
       disposition:
-        | "settlement-observed"
         | "authorization-rejected"
         | "authorization-indeterminate"
         | "fulfilment-failed"
@@ -1135,8 +1131,6 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   input: X402PaywallHandleInput,
   deps: X402PaywallCoreDeps<TAuthorization, T>,
 ): Promise<X402PaywallResult<T>> {
-  const reconcileOnly = input?.reconcileOnly === true;
-  if (!reconcileOnly) assertDacsRailEffectAdmission(() => input.jobId);
   let captured: X402PaywallCoreDeps<TAuthorization, T>;
   try {
     const server = deps?.server;
@@ -1226,11 +1220,6 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
       reason: "settlement-store-invalid-result",
       response: jsonResponse(503, "settlement-store-invalid-result"),
     };
-  }
-
-  if (reconcileOnly && loaded.status === "absent") {
-    return { disposition: "indeterminate", settled: false, reason: "x402-read-only-no-retained-settlement",
-      response: jsonResponse(503, "x402-read-only-no-retained-settlement") };
   }
 
   let processed: X402PaywallProcessResult;
@@ -1599,11 +1588,6 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   } else if (stored.status === "failed") {
     outcome = structuredClone(stored.outcome);
   } else if (stored.status === "claimed") {
-    if (reconcileOnly) {
-      return { disposition: "indeterminate", settled: "unknown", reason: "x402-read-only-settlement-disabled",
-        response: jsonResponse(503, "x402-read-only-settlement-disabled") };
-    }
-    assertDacsRailEffectAdmission(() => frozenIntent.jobId);
     try {
       const result = await captured.server.processSettlement(
         frozenIntent.paymentPayload as X402PaywallPaymentPayload,
@@ -1716,11 +1700,6 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
       // the exact retained authorization and derived nonce; never mint a new
       // payload or phase identity.
       let redriven: unknown;
-      if (reconcileOnly) {
-        return { disposition: "indeterminate", settled: "unknown", reason: "x402-read-only-settlement-disabled",
-          response: jsonResponse(503, "x402-read-only-settlement-disabled") };
-      }
-      assertDacsRailEffectAdmission(() => frozenIntent.jobId);
       try {
         redriven = await captured.server.processSettlement(
           frozenIntent.paymentPayload as X402PaywallPaymentPayload,
@@ -1809,7 +1788,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
       ...(ambiguousSettlement === undefined ? {} : { settlement: ambiguousSettlement }),
     };
   }
-  if (mustPersist && !reconcileOnly) {
+  if (mustPersist) {
     const persisted = await persistSettlementOutcome(
       captured.settlementStore,
       intent,
@@ -1854,20 +1833,6 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
     );
   }
   const { settlement, protocolHeaders, paymentClaim } = verifiedSettlement;
-
-  if (reconcileOnly) {
-    return {
-      disposition: "settlement-observed",
-      settled: true,
-      reason: "x402-read-only-settlement-observed",
-      response: postSettlementError(503, "x402-read-only-settlement-observed", protocolHeaders),
-      payer: authorization.payer,
-      paymentClaim,
-      settlement,
-    };
-  }
-  // Observing a retained payment grants no permission to authorize delivery.
-  assertDacsRailEffectAdmission(() => snapshot.jobId);
 
   const paymentClaimForCallback = ownedFrozen(paymentClaim);
   const settlementForCallback = ownedFrozen(settlement);

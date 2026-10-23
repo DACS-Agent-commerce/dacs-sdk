@@ -1,6 +1,5 @@
 import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test, vi } from "vitest";
-import { readFileSync } from "node:fs";
 import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
 import {
   createBoundArtifactRepository,
@@ -830,20 +829,6 @@ describe("createScanningArtifactRepository (#54)", () => {
       expect(fetchPage).not.toHaveBeenCalled();
     },
   );
-
-  test("documents thrown unavailable verification separately from completed false results", () => {
-    const source = readFileSync(new URL("../../src/discovery/scanningArtifactRepository.ts", import.meta.url), "utf8");
-    const tsdoc = source.split("verifyArtifact:")[0]!.replace(/\s*\*\s*/g, " ").replace(/\s+/g, " ");
-    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
-    for (const documentation of [tsdoc, readme]) {
-      expect(documentation).toMatch(/Throw `UnsupportedArtifactKindError` for an unsupported kind or version/);
-      expect(documentation).toMatch(/unverifiable` with `code: "unsupported-kind"`/);
-      expect(documentation).toMatch(/Any other throw means verification is unavailable/);
-      expect(documentation).toMatch(/`indeterminate` with `code: "verifier-unavailable"`/);
-      expect(documentation).toMatch(/error that only carries `code: "unsupported-kind"`.*the check is `instanceof`/);
-      expect(documentation).toMatch(/false`? only for a completed.*signature-invalid/);
-    }
-  });
 
   test.each([
     { mode: "completed negative", verify: () => false, outcome: { status: "signature-invalid", nativeAddress: "stor-a" } },

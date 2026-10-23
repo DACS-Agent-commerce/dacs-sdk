@@ -1,6 +1,3 @@
-import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../version.js";
-import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
-import { isCurrentJobId } from "../canonical/addressing.js";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -87,7 +84,6 @@ export interface EvidenceRailAssetSpecContext {
 /** Decision-bearing subset of the pinned DACS-4 NetworkSpec. */
 export interface EvidenceRailNetworkSpecContext {
   kind: string;
-  mechanism?: "htlc" | "liquidity-tank" | "substrate-native";
   chainId?: number;
   cluster?: string;
 }
@@ -154,10 +150,10 @@ export interface EvidenceContext {
    */
   expectedAnchorLocator?: string;
   /**
-   * Authenticated absolute HTLC expiry instants in integer Unix seconds. Required
-   * for authenticated HTLC verification; durations use the same seconds unit.
+   * Absolute HTLC expiry instants (unix ms/s), when a cross-chain-htlc route is
+   * being checked for the HTLC-7 timelock margin. Skipped when absent.
    */
-  htlcExpiry?: { source: number; dest: number; unit?: "unix-seconds" };
+  htlcExpiry?: { source: number; dest: number };
 }
 
 export interface EvidenceDeps {
@@ -223,7 +219,6 @@ const RAIL_SPEC_KINDS: Readonly<
     asset: "stablecoin-cross-chain",
     network: "cross-chain",
   }),
-  x402: Object.freeze({ asset: "erc20", network: "x402-resource" }),
   ap2: Object.freeze({ asset: "fiat-via-ap2", network: "ap2-provider" }),
   "demos-native": Object.freeze({ asset: "native-dem", network: "demos" }),
 });
@@ -391,10 +386,7 @@ async function evaluateSettlementEvidence(
   if (
     assetSpec !== undefined &&
     (!isObj(assetSpec) || !isStr(assetSpec.kind) || assetSpec.kind.length === 0 ||
-      ((["erc20", "native-evm"].includes(assetSpec.kind) || assetSpec.chainId !== undefined) &&
-        !isPositiveSafeInteger(assetSpec.chainId)) ||
-      (["spl", "native-solana"].includes(assetSpec.kind) &&
-        !["mainnet", "devnet", "testnet"].includes(assetSpec.cluster as string)) ||
+      (assetSpec.chainId !== undefined && !isPositiveSafeInteger(assetSpec.chainId)) ||
       (assetSpec.cluster !== undefined &&
         (!isStr(assetSpec.cluster) || assetSpec.cluster.length === 0)))
   ) {
@@ -404,14 +396,9 @@ async function evaluateSettlementEvidence(
   if (
     networkSpec !== undefined &&
     (!isObj(networkSpec) || !isStr(networkSpec.kind) || networkSpec.kind.length === 0 ||
-      ((networkSpec.kind === "evm" || networkSpec.chainId !== undefined) &&
-        !isPositiveSafeInteger(networkSpec.chainId)) ||
-      (networkSpec.kind === "solana" &&
-        !["mainnet", "devnet", "testnet"].includes(networkSpec.cluster as string)) ||
+      (networkSpec.chainId !== undefined && !isPositiveSafeInteger(networkSpec.chainId)) ||
       (networkSpec.cluster !== undefined &&
-        (!isStr(networkSpec.cluster) || networkSpec.cluster.length === 0)) ||
-      (networkSpec.mechanism !== undefined &&
-        !["htlc", "liquidity-tank", "substrate-native"].includes(networkSpec.mechanism)))
+        (!isStr(networkSpec.cluster) || networkSpec.cluster.length === 0)))
   ) {
     sawError = true;
     reasons.push("pinned rail networkSpec is malformed");
@@ -709,11 +696,6 @@ async function evaluateSettlementEvidence(
         `"${expectedSpecKinds.network}", got "${networkSpec.kind}" (RD-5)`,
     );
   }
-  if (networkSpec?.kind === "cross-chain" && ctx.rail?.railType &&
-      ((ctx.rail.railType === "cross-chain-htlc" && networkSpec.mechanism !== "htlc") ||
-       (ctx.rail.railType === "cross-chain-liquidity-tank" && networkSpec.mechanism !== "liquidity-tank"))) {
-    fail("cross-chain network mechanism contradicts pinned rail type (RD-5)");
-  }
   if (
     assetSpec && networkSpec && isObj(assetSpec) && isObj(networkSpec) &&
     (assetSpec.kind === "erc20" || assetSpec.kind === "native-evm") &&
@@ -842,24 +824,13 @@ async function evaluateSettlementEvidence(
 
   // ── HTLC route params (HTLC-7), only for a cross-chain-htlc phase ────────
   if (phase === "pay-cross-chain-htlc" && ctx.rail) {
-    const finality = ctx.rail.sourceFinalitySec;
-    const safety = ctx.rail.safetyWindowSec;
-    if (!isSafeUint(finality)) fail("HTLC route MUST pin non-negative integer rail.sourceFinalitySec (HTLC-7)");
-    if (!isSafeUint(safety)) fail("HTLC route MUST pin non-negative integer rail.safetyWindowSec (HTLC-7)");
-    const expiry = ctx.htlcExpiry;
-    // Units are authenticated explicitly; magnitude cannot distinguish Unix
-    // milliseconds from distant future seconds. Bound to the Date range.
-    const seconds = (value: unknown): value is number =>
-      isSafeUint(value) && value <= 8_640_000_000_000;
-    const validExpiry = isObj(expiry) && seconds(expiry.source) && seconds(expiry.dest) &&
-      (requireAuthenticatedContext ? expiry.unit === "unix-seconds" :
-        expiry.unit === undefined || expiry.unit === "unix-seconds");
-    if ((requireAuthenticatedContext || expiry !== undefined) && !validExpiry) {
-      fail("HTLC verification requires authenticated source and destination expiry in integer Unix seconds (HTLC-7)");
-    }
+    if (!isNum(ctx.rail.sourceFinalitySec)) fail("HTLC route MUST pin rail.sourceFinalitySec (HTLC-7)");
+    if (!isNum(ctx.rail.safetyWindowSec)) fail("HTLC route MUST pin rail.safetyWindowSec (HTLC-7)");
     if (
-      validExpiry && isSafeUint(finality) && isSafeUint(safety) &&
-      !(BigInt(expiry.source) > BigInt(expiry.dest) + BigInt(finality) + BigInt(safety))
+      ctx.htlcExpiry &&
+      isNum(ctx.rail.sourceFinalitySec) &&
+      isNum(ctx.rail.safetyWindowSec) &&
+      !(ctx.htlcExpiry.source > ctx.htlcExpiry.dest + ctx.rail.sourceFinalitySec + ctx.rail.safetyWindowSec)
     ) {
       fail("HTLC timelock margin insufficient: expiry_source ≤ expiry_dest + source_finality + safety (HTLC-7)");
     }
@@ -1032,11 +1003,11 @@ export async function validateSettlementEvidenceStructure(
 }
 
 /**
- * Inspect historical SettlementEvidence signatures against complete context.
- * This explicitly selected archival API never grants current-profile conformance.
- * Missing trust inputs are an SDK configuration error and cannot produce pass.
+ * Verify one SettlementEvidence against complete authenticated context and
+ * cryptographic dependencies. Missing trust inputs are an SDK configuration
+ * error and can never produce `pass`.
  */
-export async function verifyLegacySettlementEvidence(
+export async function verifySettlementEvidence(
   record: unknown,
   ctx: AuthenticatedEvidenceContext,
   deps: AuthenticatedEvidenceDeps,
@@ -1047,53 +1018,4 @@ export async function verifyLegacySettlementEvidence(
     (deps ?? {}) as EvidenceDeps,
     true,
   );
-}
-
-/**
- * Current external verification requires CF-5/JID-1 and an admitted profile.
- * The pinned unreleased corrective candidate cannot grant current authority.
- */
-export async function verifySettlementEvidence(
-  record: unknown,
-  ctx: AuthenticatedEvidenceContext,
-  deps: AuthenticatedEvidenceDeps,
-): Promise<EvidenceVerification> {
-  let admitted: Record<string, unknown>;
-  try {
-    admitted = snapshotAdmittedArtifact(record);
-  } catch (error) {
-    return { decision: "error", reasons: [(error as Error).message] };
-  }
-  return verifyConstructedSettlementEvidence(admitted, ctx, deps);
-}
-
-/**
- * SDK-owned local evidence evaluation, after construction or authenticated
- * ingress. Transport consumers must use verifySettlementEvidence instead.
- * Use only for locally authored evidence; external reads require byte admission.
- */
-export async function verifyConstructedSettlementEvidence(
-  record: unknown,
-  ctx: AuthenticatedEvidenceContext,
-  deps: AuthenticatedEvidenceDeps,
-): Promise<EvidenceVerification> {
-  const snapshot = snapshotCanonicalJsonRead(record, "constructed settlement evidence");
-  if (!isObj(snapshot) || !isCurrentJobId(snapshot.jobId)) {
-    return { decision: "error", reasons: ["jobId must be a JID-1 canonical ULID"] };
-  }
-  let context: EvidenceContext;
-  try {
-    context = snapshotCanonicalJsonConfig(ctx ?? {}, "current settlement context");
-  } catch {
-    return { decision: "error", reasons: ["current settlement context is not stable canonical JSON"] };
-  }
-  if (PAYMENT_PHASES.has(String(snapshot.phase)) &&
-      (!isObj(context.rail?.assetSpec) || !isObj(context.rail?.networkSpec))) {
-    return { decision: "error", reasons: ["current payment verification requires authenticated pinned assetSpec and networkSpec"] };
-  }
-  // The exact pinned PROFILE has no admitted coordinated release. Neither a
-  // canonical JID, valid signature nor caller-supplied profile assertions can
-  // confer current authority. Revisit only with a new immutable Standard pin
-  // and verifier-owned, session/participant-bound release admission.
-  return { decision: "error", reasons: [DACS_CURRENT_PROFILE_ADMISSION_ERROR] };
 }

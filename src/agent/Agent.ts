@@ -1,5 +1,3 @@
-import { assertDacsRailEffectAdmission } from "../rails/currentProfileAdmission.js";
-import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import { types as nodeTypes } from "node:util";
 import type {
   AgreementArtifact,
@@ -124,7 +122,7 @@ import {
   attestationBundleHash,
 } from "./twoSidedBundle.js";
 import {
-  verifyConstructedSettlementEvidence,
+  verifySettlementEvidence,
   type EvidenceContext,
 } from "./verifySettlementEvidence.js";
 import {
@@ -1091,10 +1089,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   const publicReads = Object.freeze({
     getAddress: (): string =>
       getAddressMethod?.() ?? missingAdapterCapability("getAddress"),
-    readAnchor: async (address: string) => {
-      const value = await (readAnchorMethod?.(address) ?? missingAdapterCapability("readAnchor"));
-      return value === null ? null : snapshotAdmittedArtifact(value);
-    },
+    readAnchor: (address: string) =>
+      readAnchorMethod?.(address) ?? missingAdapterCapability("readAnchor"),
     resolveAnchorByName: (name: string, owner: string) =>
       resolveAnchorByNameMethod?.(name, owner) ??
         missingAdapterCapability("resolveAnchorByName"),
@@ -1625,7 +1621,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         if (paymentAddress === null) {
           return { decision: "fail" as const, authorizedSigner: null };
         }
-        const verification = await verifyConstructedSettlementEvidence(
+        const verification = await verifySettlementEvidence(
           evidence,
           {
             ...resolvedContext,
@@ -2012,7 +2008,6 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       if (!hasWallet) {
         throw new Error("runSession requires createAgent({ wallet })");
       }
-      assertDacsRailEffectAdmission();
       if (opts === null || typeof opts !== "object" || nodeTypes.isProxy(opts)) {
         throw new DacsError("Agent.runSession options must be stable data");
       }

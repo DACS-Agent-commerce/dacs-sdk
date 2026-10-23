@@ -10,7 +10,6 @@ import {
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
-  snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import type { AnchorBinding } from "../discovery/binding.js";
 import type {
@@ -454,7 +453,7 @@ function captureCompletedResult(
 ): DurablePublishedRating | null {
   let result: DurablePublishedRating;
   try {
-    result = snapshotWireJsonRead(
+    result = snapshotCanonicalJsonRead(
       value,
       "durable RatingRecord publication result",
     ) as DurablePublishedRating;
@@ -599,7 +598,7 @@ export async function publishRatingRecordDurably(
       kind: EFFECT_KIND,
       effectId: identity.logicalAddress,
       bindingHash: identity.bindingHash,
-      input: deepFreeze(snapshotWireJsonRead(identity.effectInput, "rating effect input")),
+      input: deepFreeze(snapshotCanonicalJson(identity.effectInput, "rating effect input")),
       idempotencyKey: identity.idempotencyKey,
     });
   } catch (error) {
@@ -619,7 +618,7 @@ export async function publishRatingRecordDurably(
 
   let claim: RatingPublicationEffectClaim;
   try {
-    claim = deepFreeze(snapshotWireJsonRead(
+    claim = deepFreeze(snapshotCanonicalJsonRead(
       await capturedDeps.effectStore.claimEffect({
         kind: EFFECT_KIND,
         effectId: identity.logicalAddress,
@@ -690,7 +689,7 @@ export async function publishRatingRecordDurably(
 
   let publication: BoundArtifactWriteResult;
   try {
-    publication = deepFreeze(snapshotWireJsonRead(
+    publication = deepFreeze(snapshotCanonicalJsonRead(
       await capturedDeps.repository.write(
         identity.logicalAddress,
         deepFreeze(snapshotCanonicalJson(
@@ -765,7 +764,7 @@ export async function publishRatingRecordDurably(
       await capturedDeps.authenticateAnchor(deepFreeze({
         logicalAddress: identity.logicalAddress,
         record: snapshotCanonicalJson(captured.record, "rating anchor authentication record"),
-        publication: snapshotWireJsonRead(
+        publication: snapshotCanonicalJsonRead(
           publication,
           "rating anchor publication",
         ) as SuccessfulBoundWrite,
@@ -919,13 +918,13 @@ export async function publishRatingRecordDurably(
   };
   let completed: RatingPublicationEffectWrite;
   try {
-    completed = deepFreeze(snapshotWireJsonRead(
+    completed = deepFreeze(snapshotCanonicalJsonRead(
       await capturedDeps.effectStore.recordEffectCompleted({
         kind: EFFECT_KIND,
         effectId: identity.logicalAddress,
         bindingHash: identity.bindingHash,
         lease: claim.lease,
-        result: deepFreeze(snapshotWireJsonRead(result, "RatingRecord publication result")),
+        result: deepFreeze(snapshotCanonicalJson(result, "RatingRecord publication result")),
       }),
       "RatingRecord publication completion",
     )) as RatingPublicationEffectWrite;

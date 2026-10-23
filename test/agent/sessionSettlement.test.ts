@@ -1,4 +1,3 @@
-import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
@@ -16,7 +15,6 @@ import {
 } from "../../src/artifacts/validators.js";
 import {
   canonicalize,
-  cloneWithArtifactAdmission,
   contentHash,
   encodeAddressSegment,
   sha256Hex,
@@ -31,7 +29,7 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import {
-  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
+  verifyFinalizedSessionSettlement,
   type FinalizedSessionSettlement,
   type SessionSettlementContext,
   type SessionSettlementIdentityBinding,
@@ -47,9 +45,9 @@ const SETTLEMENT_ID = `evm:8453:${"e".repeat(64)}:0`;
 function context(finalityBlocks = 12): SessionSettlementContext {
   return {
     contextVersion: "1",
-    jobId: "5JJB9STB8SX9DXPGRFTZV5MV0R",
+    jobId: "job-settlement-1",
     agreementRef: {
-      anchor: { kind: "storage-program", locator: "agreement:5JJB9STB8SX9DXPGRFTZV5MV0R" },
+      anchor: { kind: "storage-program", locator: "agreement:job-settlement-1" },
       contentHash: "b".repeat(64),
     },
     agreementHash: "b".repeat(64),
@@ -142,7 +140,7 @@ function signedEvidence(input: {
   const outcome = input.outcome ?? "success";
   const base = {
     evidenceVersion: "1" as const,
-    jobId: input.jobId ?? "5JJB9STB8SX9DXPGRFTZV5MV0R",
+    jobId: input.jobId ?? "job-settlement-1",
     phase: "pay-x402" as const,
     outcome,
     paymentTxRefs: input.currentX402Event
@@ -171,7 +169,7 @@ function signedEvidence(input: {
             anchor: {
               kind: "storage-program" as const,
               locator:
-                `dacs4:payment:${input.jobId ?? "5JJB9STB8SX9DXPGRFTZV5MV0R"}:` +
+                `dacs4:payment:${input.jobId ?? "job-settlement-1"}:` +
                 `${encodeAddressSegment(input.railId ?? "rail-x402-base")}:` +
                 `${input.phaseIndex ?? 3}`,
             },
@@ -205,13 +203,13 @@ function signedEvidence(input: {
 }
 
 function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
-  const evidence = admittedFixture(signedEvidence(options));
+  const evidence = signedEvidence(options);
   const evidenceHash = contentHash(evidence as unknown as Record<string, unknown>);
   const evidenceRef: AttestationRef = {
     anchor: {
       kind: "storage-program",
       locator:
-        `dacs4:payment:${options.jobId ?? "5JJB9STB8SX9DXPGRFTZV5MV0R"}:` +
+        `dacs4:payment:${options.jobId ?? "job-settlement-1"}:` +
         `${encodeAddressSegment(options.railId ?? "rail-x402-base")}:` +
         `${options.phaseIndex ?? 3}${options.resolved ? ":resolved" : ""}`,
     },
@@ -222,7 +220,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     substrate: "demos",
     finalityProfile: "bft-final",
     logicalAddress: evidenceRef.anchor.locator,
-    nativeAddress: "native:evidence:5JJB9STB8SX9DXPGRFTZV5MV0R:3",
+    nativeAddress: "native:evidence:job-settlement-1:3",
     contentHash: evidenceHash,
     transactionRef: { kind: "demos", value: "anchor-tx-1" },
     writer: ORCHESTRATOR,
@@ -252,7 +250,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     nativeProofRef: {
       proofVersion: "1",
       kind: "x402-response-and-chain-observation",
-      locator: "proof:5JJB9STB8SX9DXPGRFTZV5MV0R:3",
+      locator: "proof:job-settlement-1:3",
       contentHash: sha256Hex(canonicalize(proof)),
       encoding: "jcs",
     },
@@ -271,7 +269,7 @@ function replacePaymentEvidence(input: {
 }): void {
   const unsigned = {
     evidenceVersion: "1" as const,
-    jobId: "5JJB9STB8SX9DXPGRFTZV5MV0R",
+    jobId: "job-settlement-1",
     phase: input.phase,
     outcome: "success" as const,
     paymentTxRefs: [input.txRef],
@@ -284,14 +282,14 @@ function replacePaymentEvidence(input: {
     signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, hash),
     PRIVATE_KEY,
   );
-  input.settlement.evidence = admittedFixture({
+  input.settlement.evidence = {
     ...unsigned,
     signature: {
       algorithm: "ed25519",
       signer: ORCHESTRATOR,
       value: Buffer.from(signature).toString("base64url"),
     },
-  } as SettlementEvidence);
+  } as SettlementEvidence;
   input.settlement.evidenceRef.contentHash = hash;
   input.settlement.anchorReceipt.contentHash = hash;
   input.proof.settlementId = input.settlementId;
@@ -418,19 +416,19 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("rejects evidence/proof substitutions and a forged anchor", async () => {
     const { settlement, proof } = fixture();
-    const wrongEvidence = cloneWithArtifactAdmission(settlement);
+    const wrongEvidence = structuredClone(settlement);
     wrongEvidence.evidenceRef.contentHash = "f".repeat(64);
     expect((await verifyFinalizedSessionSettlement(
       context(), wrongEvidence, provider(proof),
     )).disposition).toBe("rejected");
 
-    const wrongProof = cloneWithArtifactAdmission(settlement);
+    const wrongProof = structuredClone(settlement);
     wrongProof.nativeProofRef.contentHash = "f".repeat(64);
     expect((await verifyFinalizedSessionSettlement(
       context(), wrongProof, provider(proof),
     )).disposition).toBe("rejected");
 
-    const forgedAnchor = cloneWithArtifactAdmission(settlement);
+    const forgedAnchor = structuredClone(settlement);
     forgedAnchor.anchorReceipt.state = "reorged";
     forgedAnchor.anchorReceipt.observationDisposition = "indeterminate";
     forgedAnchor.anchorReceipt.preservedReceiptHash = "1".repeat(64);
@@ -455,9 +453,8 @@ describe("verifyFinalizedSessionSettlement", () => {
     }
     expect(revalidate).toHaveBeenCalledOnce();
 
-    const tampered = cloneWithArtifactAdmission(settlement);
+    const tampered = structuredClone(settlement);
     tampered.evidence.reason = "different failure";
-    tampered.evidence = admittedFixture(tampered.evidence);
     expect((await verifyFinalizedSessionSettlement(
       context(), tampered, provider(proof),
     )).disposition).toBe("rejected");
@@ -513,7 +510,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     const accessorContext = context() as unknown as Record<string, unknown>;
     Object.defineProperty(accessorContext, "jobId", {
       enumerable: true,
-      get: () => "5JJB9STB8SX9DXPGRFTZV5MV0R",
+      get: () => "job-settlement-1",
     });
     expect((await verifyFinalizedSessionSettlement(
       accessorContext, settlement, provider(proof),
@@ -525,7 +522,7 @@ describe("verifyFinalizedSessionSettlement", () => {
       negativeZero, settlement, provider(proof),
     )).disposition).toBe("error");
 
-    const partial = cloneWithArtifactAdmission(settlement) as unknown as Record<string, unknown>;
+    const partial = structuredClone(settlement) as unknown as Record<string, unknown>;
     delete partial.nativeProofRef;
     expect((await verifyFinalizedSessionSettlement(
       context(), partial, provider(proof),
@@ -608,8 +605,8 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("binds the evidence reference signer and receipt logical address locally", async () => {
     const { settlement, proof } = fixture();
-    const wrongAddress = cloneWithArtifactAdmission(settlement);
-    wrongAddress.anchorReceipt.logicalAddress = "evidence:5HEWNTYVX2Z47MHMKNDX8GXWHK:3";
+    const wrongAddress = structuredClone(settlement);
+    wrongAddress.anchorReceipt.logicalAddress = "evidence:other-job:3";
     const addressAnchorVerifier = vi.fn(() => ({ disposition: "pass" as const }));
     expect(await verifyFinalizedSessionSettlement(
       context(),
@@ -621,7 +618,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     });
     expect(addressAnchorVerifier).not.toHaveBeenCalled();
 
-    const wrongSigner = cloneWithArtifactAdmission(settlement);
+    const wrongSigner = structuredClone(settlement);
     wrongSigner.evidenceRef.signer = "did:demos:outsider";
     const signerAnchorVerifier = vi.fn(() => ({ disposition: "pass" as const }));
     expect(await verifyFinalizedSessionSettlement(
@@ -669,7 +666,7 @@ describe("verifyFinalizedSessionSettlement", () => {
   it("requires an exact authenticated native job, rail, and phase binding", async () => {
     const { settlement, proof } = fixture();
     const variants: Array<SessionSettlementIdentityBinding> = [
-      { ...settlementBinding(context()), jobId: "5HEWNTYVX2Z47MHMKNDX8GXWHK" },
+      { ...settlementBinding(context()), jobId: "other-job" },
       { ...settlementBinding(context()), railId: "other-rail" },
       { ...settlementBinding(context()), phaseIndex: 4 },
     ];
@@ -918,9 +915,9 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("authenticates point observations without minting SB-2 count authority", async () => {
     const first = fixture();
-    const second = fixture({ jobId: "35097X3XRNHGH8KD1XABDK9V5V", phaseIndex: 4 });
+    const second = fixture({ jobId: "job-settlement-2", phaseIndex: 4 });
     const secondContext = context();
-    secondContext.jobId = "35097X3XRNHGH8KD1XABDK9V5V";
+    secondContext.jobId = "job-settlement-2";
     secondContext.paymentPhaseIndex = 4;
 
     const firstResult = await verifyFinalizedSessionSettlement(
@@ -1048,7 +1045,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(initial.disposition).toBe("verified");
     if (initial.disposition !== "verified") return;
 
-    const refreshed = cloneWithArtifactAdmission(settlement);
+    const refreshed = structuredClone(settlement);
     refreshed.anchorReceipt.observedAt += 10_000;
     refreshed.anchorReceipt.blockRef = {
       id: "block-anchor-refreshed",

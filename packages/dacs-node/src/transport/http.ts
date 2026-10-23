@@ -1,4 +1,3 @@
-import { admitArtifactJson } from "@kynesyslabs/dacs";
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -418,7 +417,7 @@ async function readRequestJson(
     throw new HttpRequestFailure(400, "content-length-mismatch");
   }
   try {
-    return admitArtifactJson(Buffer.concat(chunks, length), undefined, { maxBytes: maximumBytes });
+    return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
   } catch {
     throw new HttpRequestFailure(400, "request-json-invalid");
   }
@@ -926,7 +925,7 @@ export function createDacsHttpMessageClientV1(
           throw new DacsHttpTransportError("acknowledgement-content-type-invalid", true);
         }
         const bytes = await responseBytes(response, maxResponseBytes);
-        body = admitArtifactJson(bytes, undefined, { maxBytes: maxResponseBytes });
+        body = JSON.parse(bytes.toString("utf8"));
       } catch {
         return markRetry(claimed.record, claimed.lease, "response-ambiguous");
       }

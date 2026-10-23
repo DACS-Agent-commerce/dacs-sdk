@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -287,8 +286,8 @@ describe("live payment-evidence runtime", () => {
             contentHash: string;
           }) => anchor(input.logicalAddress, input.contentHash).anchorReceipt,
           verifyDemosAnchorReceipt: async () => true,
-          readAnchor: async () => admittedFixture(anchoredArtifact === undefined
-            ? null : structuredClone(anchoredArtifact)),
+          readAnchor: async () => anchoredArtifact === undefined
+            ? null : structuredClone(anchoredArtifact),
         },
       },
       sendMessage: async (message: {

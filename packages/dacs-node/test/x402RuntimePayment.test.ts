@@ -1,10 +1,3 @@
-import "../../../test/helpers/unreleasedRailMechanics.js";
-// Historical state-machine fixtures run below release admission. Current
-// admission and zero-effect composition have separate unmocked coverage.
-vi.mock("../src/currentProfileAdmission.js", () => ({
-  requireDacsCurrentProfileForNewEffectsV1: () => undefined,
-}));
-
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

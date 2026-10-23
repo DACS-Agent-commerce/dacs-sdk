@@ -1,4 +1,3 @@
-import { artifactBindingHashOf } from "@kynesyslabs/dacs/discovery";
 import {
   ARTIFACT_SEPARATORS,
   FINALITY_COMMITMENT_SEPARATOR,
@@ -295,7 +294,7 @@ async function authenticateRetainedAnchor(
   receipt: Readonly<AnchorReceipt>,
   writer: string,
 ): Promise<Readonly<AuthenticatedArtifactV1>> {
-  const hash = artifactBindingHashOf(receipt.logicalAddress)(artifact);
+  const hash = contentHash(artifact);
   if (receipt.writer !== writer || receipt.contentHash !== hash) {
     throw new DacsFixedPriceX402SellerAuditError("seller-audit-retained-anchor-invalid");
   }
@@ -579,7 +578,7 @@ export function createDacsFixedPriceSellerAuditV1(
             vet.signature, entry === buyerVetAnchor ? order.seller : order.buyer);
         }
         return entry === deliverableAnchor &&
-          artifactBindingHashOf(entry.receipt.logicalAddress)(artifact) === deliveryEvidence.deliverableContentHash;
+          contentHash(artifact) === deliveryEvidence.deliverableContentHash;
       };
       if (authenticated.some((entry) => !verifyKnown(entry))) {
         throw new DacsFixedPriceX402SellerAuditError("seller-audit-signature-invalid");
@@ -678,7 +677,7 @@ export function createDacsFixedPriceSellerAuditV1(
         verifyDependencyBinding({ dependency: candidate, requirement, artifact }) {
           const known = byNative.get(candidate.anchorReceipt.nativeAddress);
           if (known === undefined || !plainObject(artifact) ||
-              requirement.contentHash !== artifactBindingHashOf(candidate.anchorReceipt.logicalAddress)(artifact) ||
+              requirement.contentHash !== contentHash(artifact) ||
               canonicalize(artifact) !== canonicalize(known.artifact)) return "invalid";
           return verifyKnown(known) ? "valid" : "invalid";
         },

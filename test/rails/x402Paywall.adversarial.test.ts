@@ -1,4 +1,3 @@
-import "../helpers/unreleasedRailMechanics.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/index.js";
@@ -27,7 +26,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAY_TO = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX_HASH = `0x${"ab".repeat(32)}`;
-const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const JOB_ID = "seller-paywall-adversarial-job";
 const PHASE_INDEX = 7;
 const AMOUNT = "250000";
 
@@ -1154,7 +1153,7 @@ describe("createX402Paywall adversarial capture", () => {
 });
 
 describe("buyer/seller SB-3 nonce agreement", () => {
-  it("rejects non-JID-1 nonce inputs and preserves canonical phase boundaries", async () => {
+  it("keeps the buyer async and seller sync derivations byte-identical for Unicode and phase boundaries", async () => {
     const vectors = [
       { jobId: "plain-job", phaseIndex: 0 },
       { jobId: "cafe\u0301-job", phaseIndex: 3 },
@@ -1163,10 +1162,8 @@ describe("buyer/seller SB-3 nonce agreement", () => {
       { jobId: "max-safe-phase", phaseIndex: Number.MAX_SAFE_INTEGER },
     ];
     for (const vector of vectors) {
-      await expect(dacsX402AuthorizationNonce(vector)).rejects.toThrow(/JID-1/);
-      const canonical = { ...vector, jobId: JOB_ID };
-      expect(await dacsX402AuthorizationNonce(canonical)).toBe(
-        x402Eip3009Nonce(canonical.jobId, canonical.phaseIndex),
+      expect(await dacsX402AuthorizationNonce(vector)).toBe(
+        x402Eip3009Nonce(vector.jobId, vector.phaseIndex),
       );
     }
     expect(x402Eip3009Nonce("cafe\u0301-job", 3)).toBe(

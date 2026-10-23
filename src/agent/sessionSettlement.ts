@@ -1,8 +1,5 @@
-import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../version.js";
 import {
   canonicalize,
-  cloneWithArtifactAdmission,
-  snapshotAdmittedArtifact,
   contentHash,
   encodeAddressSegment,
   sha256Hex,
@@ -22,7 +19,7 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import {
-  verifyLegacySettlementEvidence,
+  verifySettlementEvidence,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
 import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
@@ -348,7 +345,7 @@ function exactJsonValue(value: unknown, seen = new WeakSet<object>()): boolean {
 function ownedJson<T>(value: T): T | null {
   if (!exactJsonValue(value)) return null;
   try {
-    return deepFreeze(cloneWithArtifactAdmission(value));
+    return deepFreeze(structuredClone(value));
   } catch {
     return null;
   }
@@ -844,9 +841,9 @@ function captureProofLookup(
 }
 
 /**
- * Current finalized-settlement authority is unavailable at the unreleased
- * corrective-candidate Standard pin, in both initial and recovery modes.
- * No provider callback can admit the missing coordinated release.
+ * Authenticate one finalized settlement. Calling with `mode: "recovery"`
+ * deliberately repeats every live/native observation before returning the
+ * retained result.
  */
 export async function verifyFinalizedSessionSettlement(
   contextInput: unknown,
@@ -854,32 +851,8 @@ export async function verifyFinalizedSessionSettlement(
   providerInput: SessionSettlementVerificationProvider,
   mode: "initial" | "recovery" = "initial",
 ): Promise<SessionSettlementVerification> {
-  return rejected("error", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
-}
-
-/**
- * Explicit archival verification; never grants current-profile admission.
- * Recovery repeats all native observations and retains raw-byte admission.
- */
-export async function verifyLegacyFinalizedSessionSettlement(
-  contextInput: unknown,
-  settlementInput: unknown,
-  providerInput: SessionSettlementVerificationProvider,
-  mode: "initial" | "recovery" = "initial",
-): Promise<SessionSettlementVerification> {
   if (mode !== "initial" && mode !== "recovery") {
     return rejected("error", "settlement verification mode is invalid");
-  }
-  // Check the original nested artifact before any schema/hash/provider work.
-  // A parsed object, including one recovered from JSON storage, is not proof
-  // of the received bytes. Recovery callers must retain or re-read admission.
-  try {
-    const evidence = settlementInput !== null && typeof settlementInput === "object"
-      ? Object.getOwnPropertyDescriptor(settlementInput, "evidence")?.value
-      : undefined;
-    snapshotAdmittedArtifact(evidence);
-  } catch {
-    return rejected("error", "finalized settlement evidence requires raw-byte admission");
   }
   const context = ownedJson(contextInput);
   const settlement = ownedJson(settlementInput);
@@ -912,9 +885,9 @@ export async function verifyLegacyFinalizedSessionSettlement(
   }
   if (mismatch) return rejected("rejected", mismatch);
 
-  let evidenceVerification: Awaited<ReturnType<typeof verifyLegacySettlementEvidence>>;
+  let evidenceVerification: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
-    evidenceVerification = await verifyLegacySettlementEvidence(
+    evidenceVerification = await verifySettlementEvidence(
       settlement.evidence,
       {
         orchestrator: context.orchestrator,

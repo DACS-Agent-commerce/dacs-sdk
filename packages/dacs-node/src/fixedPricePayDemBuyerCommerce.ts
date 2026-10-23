@@ -1,4 +1,3 @@
-import { artifactBindingHashOf } from "@kynesyslabs/dacs/discovery";
 import {
   baseUnits,
   verifySettlementEvidence,
@@ -80,7 +79,7 @@ async function verifyPeerAnchor(
   if (resolved.status !== "present") return null;
   const artifact = await context.demos.adapter.readAnchor(resolved.address);
   if (artifact === null) return null;
-  const hash = artifactBindingHashOf(logicalAddress)(artifact);
+  const hash = contentHash(artifact);
   if (expectedHash !== undefined && hash !== expectedHash) return null;
   const receipt = await context.demos.adapter.resolveDemosAnchorReceipt({
     logicalAddress,
@@ -245,7 +244,7 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
             evidenceRaw.signature.signer !== context.peerAuthority ||
             evidenceRaw.deliverableAnchor.locator !== record.logicalAddress ||
             evidenceRaw.deliverableContentHash !== record.contentHash ||
-            artifactBindingHashOf(record.logicalAddress)(payload) !== evidenceRaw.deliverableContentHash) return false;
+            contentHash(payload) !== evidenceRaw.deliverableContentHash) return false;
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
           agreement: {

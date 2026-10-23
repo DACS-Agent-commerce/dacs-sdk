@@ -79,36 +79,36 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
 
   test("assembles DACS-2 attestation addresses with only the identifier encoded", () => {
     expect(
-      attestationAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "cci-xm", "evm:mainnet:0x1234", 3),
-    ).toBe("dacs2:01J8ME0SXKQ4T9V2RC5HJ6WX7D:cci-xm:evm%3Amainnet%3A0x1234:v3");
-    expect(attestationAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "lei", "984500ABCDEF12345678", 3)).toBe(
-      "dacs2:01J8ME0SXKQ4T9V2RC5HJ6WX7D:lei:984500ABCDEF12345678:v3",
+      attestationAddress("job-abc", "cci-xm", "evm:mainnet:0x1234", 3),
+    ).toBe("dacs2:job-abc:cci-xm:evm%3Amainnet%3A0x1234:v3");
+    expect(attestationAddress("job-abc", "lei", "984500ABCDEF12345678", 3)).toBe(
+      "dacs2:job-abc:lei:984500ABCDEF12345678:v3",
     );
   });
 
   test("assembles unresolved and resolved DACS-4 payment-evidence addresses", () => {
     expect(
-      paymentEvidenceAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "evm-erc20:1:USDC", 0),
-    ).toBe("dacs4:payment:01J8ME0SXKQ4T9V2RC5HJ6WX7D:evm-erc20%3A1%3AUSDC:0");
-    expect(paymentEvidenceAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "pay-x402", 4, true)).toBe(
-      "dacs4:payment:01J8ME0SXKQ4T9V2RC5HJ6WX7D:pay-x402:4:resolved",
+      paymentEvidenceAddress("DACS-VERIFY-SETTLE-0001", "evm-erc20:1:USDC", 0),
+    ).toBe("dacs4:payment:DACS-VERIFY-SETTLE-0001:evm-erc20%3A1%3AUSDC:0");
+    expect(paymentEvidenceAddress("job-abc", "pay-x402", 4, true)).toBe(
+      "dacs4:payment:job-abc:pay-x402:4:resolved",
     );
   });
 
   test("assembles DACS-5 rating addresses with the rater encoded", () => {
-    expect(ratingAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "cci-xm:evm:mainnet:0x1234")).toBe(
-      "dacs5:rating:01J8ME0SXKQ4T9V2RC5HJ6WX7D:cci-xm%3Aevm%3Amainnet%3A0x1234",
+    expect(ratingAddress("job-abc", "cci-xm:evm:mainnet:0x1234")).toBe(
+      "dacs5:rating:job-abc:cci-xm%3Aevm%3Amainnet%3A0x1234",
     );
   });
 
   test("rejects ambiguous structural segments and invalid numeric segments", () => {
     expect(() => attestationAddress("job:abc", "lei", "984500ABCDEF12345678", 3))
       .toThrow(/jobId/);
-    expect(() => attestationAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "LEI", "984500ABCDEF12345678", 3))
+    expect(() => attestationAddress("job-abc", "LEI", "984500ABCDEF12345678", 3))
       .toThrow(/lowercase/);
-    expect(() => attestationAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "lei", "984500ABCDEF12345678", 0))
+    expect(() => attestationAddress("job-abc", "lei", "984500ABCDEF12345678", 0))
       .toThrow(/recipeVersion/);
-    expect(() => paymentEvidenceAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "pay-x402", -1)).toThrow(
+    expect(() => paymentEvidenceAddress("job-abc", "pay-x402", -1)).toThrow(
       /phaseIndex/,
     );
   });

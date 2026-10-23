@@ -1,5 +1,3 @@
-import "../helpers/unreleasedRailMechanics.js";
-import { assertDacsRailEffectAdmission } from "../../src/rails/currentProfileAdmission.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
@@ -29,7 +27,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAY_TO = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX_HASH = `0x${"ab".repeat(32)}`;
-const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const JOB_ID = "seller-paywall-job";
 const PHASE_INDEX = 2;
 const AMOUNT = "250000";
 
@@ -1216,80 +1214,3 @@ describe("createX402Paywall", () => {
     expect(fulfil).toHaveBeenCalledTimes(1);
   });
 });
-
-it("read-only paywall inspection refuses a missing retained settlement before provider processing", async () => {
-  const server = mockServer({ process: { type: "no-payment-required" } });
-  const deps = coreDeps(server);
-  const claim = vi.spyOn(deps.settlementStore, "claim");
-  vi.mocked(assertDacsRailEffectAdmission).mockClear();
-  const result = await x402PaywallCore({ jobId: JOB_ID, phaseIndex: PHASE_INDEX,
-    reconcileOnly: true, request: request() }, deps);
-  expect(result).toMatchObject({ disposition: "indeterminate", settled: false,
-    reason: "x402-read-only-no-retained-settlement" });
-  expect(assertDacsRailEffectAdmission).not.toHaveBeenCalled();
-  expect(claim).not.toHaveBeenCalled();
-  expect(server.processHTTPRequest).not.toHaveBeenCalled();
-  expect(server.processSettlement).not.toHaveBeenCalled();
-});
-
-
-it.each(["settled", "held"] as const)(
-  "read-only %s recovery observes payment under the real release guard without delivery or writes",
-  async (retainedStatus) => {
-    const { payload, requirements } = await paymentFixture();
-    const settlement = successfulSettlement(requirements);
-    const store = settlementStore();
-    const server = mockServer({
-      process: { type: "payment-verified", paymentPayload: payload,
-        paymentRequirements: requirements, cancellationDispatcher: { cancel: vi.fn() } },
-      settlement: retainedStatus === "settled" ? settlement : async () => { throw new Error("lost response"); },
-    });
-    const authorizeSettlement = vi.fn(async () => ({ disposition: "authorized" as const,
-      authorization: { scopeVersion: "test-1", jobId: JOB_ID } }));
-    const authorizePayment = vi.fn(async () => ({ disposition: "authorized" as const,
-      authorization: { permitId: "permit-1" } }));
-    const fulfil = vi.fn(async () => ({ disposition: "indeterminate" as const, reason: "delivery-pending" }));
-    const reconcileSettlement = vi.fn(async () => ({ status: "pending" as const, reason: "pending" }));
-    const deps = coreDeps(server, { settlementStore: store, authorizeSettlement,
-      authorizePayment, fulfil, reconcileSettlement });
-    const input = { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) };
-    await x402PaywallCore(input, deps);
-    const retained = await store.load(x402PaywallSettlementKey(input));
-    expect(retained.status).toBe(retainedStatus);
-    const before = structuredClone([...store.retained]);
-    const claim = vi.spyOn(store, "claim");
-    const recordOutcome = vi.spyOn(store, "recordOutcome");
-    vi.clearAllMocks();
-    reconcileSettlement.mockResolvedValue({ status: "settled", settlement } as never);
-    const real = await vi.importActual<typeof import("../../src/rails/currentProfileAdmission.js")>(
-      "../../src/rails/currentProfileAdmission.js",
-    );
-    expect(() => real.assertDacsRailEffectAdmission()).toThrow();
-    vi.mocked(assertDacsRailEffectAdmission).mockImplementation(real.assertDacsRailEffectAdmission);
-    // A caller-owned getter cannot switch the mode after the initial guard.
-    let modeReads = 0;
-    try {
-      const result = await x402PaywallCore({ ...input,
-        get reconcileOnly() { modeReads++; return modeReads === 1; } }, deps);
-      expect(result).toMatchObject({ disposition: "settlement-observed", settled: true,
-        reason: "x402-read-only-settlement-observed", payer: PAYER,
-        settlement: { success: true, transaction: TX_HASH }, response: { status: 503 } });
-      expect(result.response.headers["PAYMENT-RESPONSE"]).toBe(settlement.headers!["PAYMENT-RESPONSE"]);
-      expect(modeReads).toBe(1);
-      expect(authorizeSettlement).not.toHaveBeenCalled();
-      expect(authorizePayment).not.toHaveBeenCalled();
-      expect(fulfil).not.toHaveBeenCalled();
-      expect(server.processHTTPRequest).not.toHaveBeenCalled();
-      expect(server.processSettlement).not.toHaveBeenCalled();
-      expect(claim).not.toHaveBeenCalled();
-      expect(recordOutcome).not.toHaveBeenCalled();
-      expect([...store.retained]).toEqual(before);
-      expect(reconcileSettlement).toHaveBeenCalledTimes(retainedStatus === "held" ? 1 : 0);
-      await expect(x402PaywallCore(input, deps)).rejects.toThrow();
-      expect(authorizePayment).not.toHaveBeenCalled();
-      expect(fulfil).not.toHaveBeenCalled();
-    } finally {
-      vi.mocked(assertDacsRailEffectAdmission).mockImplementation(() => undefined);
-    }
-  },
-);

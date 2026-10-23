@@ -1,4 +1,3 @@
-import { artifactBindingHashOf } from "@kynesyslabs/dacs/discovery";
 import {
   ARTIFACT_SEPARATORS,
   FINALITY_COMMITMENT_SEPARATOR,
@@ -38,12 +37,7 @@ import {
   type PayeeBoundAgreementDocument,
   type SettlementEvidence,
 } from "@kynesyslabs/dacs/artifacts";
-import {
-  canonicalize,
-  contentHash,
-  inheritArtifactAdmission,
-  sha256Hex,
-} from "@kynesyslabs/dacs/canonical";
+import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from
   "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, identityBundleHash } from
@@ -179,9 +173,7 @@ interface BuyerReviewMaterialV1 {
 }
 
 function copy<T>(value: T): T {
-  const snapshot = JSON.parse(canonicalize(value)) as T;
-  inheritArtifactAdmission(value, snapshot);
-  return snapshot;
+  return JSON.parse(canonicalize(value)) as T;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -293,7 +285,7 @@ async function resolveActorAnchor(
   if (artifact === null || receipt === null) {
     throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-anchor-unavailable");
   }
-  if (artifactBindingHashOf(logicalAddress)(artifact) !== expectedHash ||
+  if (contentHash(artifact) !== expectedHash ||
       receipt.writer !== writer || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== resolved.address || receipt.contentHash !== expectedHash ||
       receipt.state !== "finalized" || receipt.observationDisposition !== "established" ||
@@ -1194,7 +1186,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           vet, vet.signature, known === buyerVetAnchor ? order.seller : order.buyer);
       }
       return known === deliverableAnchor &&
-        artifactBindingHashOf(deliveryEvidence.deliverableAnchor.locator)(known.artifact) === deliveryEvidence.deliverableContentHash;
+        contentHash(known.artifact) === deliveryEvidence.deliverableContentHash;
     };
     const dependencies: Dependency[] = [
       dependency({ kind: "listing", listingRef: copy(agreement.listingRef) }, listingAnchor),
@@ -1238,7 +1230,7 @@ export function createDacsFixedPriceBuyerAuditV1(
         { dependency: Dependency; requirement: { contentHash: string }; artifact: unknown }) {
         const known = byNative.get(candidate.anchorReceipt.nativeAddress);
         return known !== undefined && plainObject(artifact) &&
-            requirement.contentHash === artifactBindingHashOf(known.receipt.logicalAddress)(artifact) &&
+            requirement.contentHash === contentHash(artifact) &&
             canonicalize(artifact) === canonicalize(known.artifact) && verifyKnown(known)
           ? "valid" as const : "invalid" as const;
       },

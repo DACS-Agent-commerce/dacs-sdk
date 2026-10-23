@@ -1,4 +1,3 @@
-import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import {
   baseUnits,
   type AuthenticatedRailDefinition,
@@ -58,7 +57,6 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
 export async function createDacsFixedPriceX402BuyerLiveV1(
   options: Readonly<DacsFixedPriceX402BuyerLiveOptionsV1>,
 ): Promise<Readonly<DacsBuyerLiveCommerceGraphV1>> {
-  requireDacsCurrentProfileForNewEffectsV1();
   const asset = options.rail.asset;
   if (asset.kind !== "erc20") {
     throw new TypeError("fixed-price x402 buyer requires an ERC-20 rail asset");

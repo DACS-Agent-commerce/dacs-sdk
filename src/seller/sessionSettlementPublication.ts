@@ -1,8 +1,3 @@
-import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../version.js";
-import {
-  cloneWithArtifactAdmission,
-  snapshotAdmittedArtifact,
-} from "../canonical/admittedArtifact.js";
 import type {
   AnchorReceipt,
   AttestationRef,
@@ -22,7 +17,6 @@ import {
   canonicalize,
   contentHash,
   encodeAddressSegment,
-  isCurrentJobId,
   sha256Hex,
 } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
@@ -32,7 +26,7 @@ import {
   type SessionSettlementNativeProofRef,
 } from "../agent/sessionSettlement.js";
 import {
-  verifyLegacySettlementEvidence,
+  verifySettlementEvidence,
   type EvidenceDeps,
 } from "../agent/verifySettlementEvidence.js";
 import {
@@ -314,7 +308,7 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 function ownedJson<T>(value: T): T | null {
   try {
     if (!exactJson(value)) return null;
-    return deepFreeze(cloneWithArtifactAdmission(value));
+    return deepFreeze(structuredClone(value));
   } catch {
     return null;
   }
@@ -873,19 +867,8 @@ export async function publishSellerSessionSettlement(
   requestInput: SellerSessionSettlementPublicationRequest,
   depsInput: SellerSessionSettlementPublicationDeps,
 ): Promise<SellerSessionSettlementPublicationResult> {
-  return failure("error", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
-}
-
-/** Historical job publication only; JID-1 artifacts cannot bypass release admission. */
-export async function publishLegacySellerSessionSettlement(
-  requestInput: SellerSessionSettlementPublicationRequest,
-  depsInput: SellerSessionSettlementPublicationDeps,
-): Promise<SellerSessionSettlementPublicationResult> {
   const request = parseRequest(requestInput);
   if (!request) return failure("error", "settlement publication request is not exact canonical data");
-  if (isCurrentJobId(request.authorization.jobId)) {
-    return failure("error", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
-  }
   if (!advertisesEd25519EvidenceSigner(depsInput)) {
     return failure(
       "error",
@@ -1107,9 +1090,9 @@ export async function publishLegacySellerSessionSettlement(
       contentHash: evidenceHash,
     },
   };
-  let signatureCheck: Awaited<ReturnType<typeof verifyLegacySettlementEvidence>>;
+  let signatureCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
-    signatureCheck = await verifyLegacySettlementEvidence(evidence, context, deps.evidence);
+    signatureCheck = await verifySettlementEvidence(evidence, context, deps.evidence);
   } catch {
     return failure(
       "indeterminate",
@@ -1231,20 +1214,15 @@ export async function publishLegacySellerSessionSettlement(
       !isSettlementEvidence(resolution.evidence)) {
     return failure("error", "settlement evidence readback is malformed", effectId);
   }
-  try {
-    snapshotAdmittedArtifact(ownData(rawResolution as object, "evidence"));
-  } catch {
-    return failure("error", "settlement evidence readback requires raw-byte admission", effectId);
-  }
   const readEvidence = resolution.evidence;
   if (canonicalize(readEvidence) !== canonicalize(evidence) ||
       contentHash(readEvidence as unknown as Record<string, unknown>) !== evidenceHash ||
       readEvidence.signature.signer !== deps.signer.signer) {
     return failure("rejected", "settlement evidence readback differs from the signed publication", effectId);
   }
-  let readCheck: Awaited<ReturnType<typeof verifyLegacySettlementEvidence>>;
+  let readCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
-    readCheck = await verifyLegacySettlementEvidence(
+    readCheck = await verifySettlementEvidence(
       readEvidence,
       { ...context, attestationRef: structuredClone(evidenceRef) },
       deps.evidence,
@@ -1267,7 +1245,7 @@ export async function publishLegacySellerSessionSettlement(
   const settlement = deepFreeze({
     settlementVersion: "1" as const,
     outcome: "success" as const,
-    evidence: snapshotAdmittedArtifact(readEvidence) as unknown as SettlementEvidence,
+    evidence: structuredClone(readEvidence),
     evidenceRef: structuredClone(evidenceRef),
     anchorReceipt: structuredClone(anchorReceipt),
     nativeProofRef: structuredClone(authenticatedNativeProofRef),

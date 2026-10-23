@@ -1,4 +1,4 @@
-# Raw-byte JSON admission
+# Explicit raw-byte JSON admission (local candidate)
 
 `admitRawJson(bytes)` implements the CORE §B.2 CF-5 admission boundary from
 DACS-Standard `b80919cd7b114499ffc3d9b5c2f3f91ca7fab3f6`.
@@ -39,102 +39,14 @@ failures are not failed cryptographic signatures.
 Canonicalization, schema checks, signed-scope selection, and signature and
 protocol verification remain subsequent operations.
 
-`admitArtifactJson(exactReceivedBytes)` admits an external JSON object and
-retains runtime provenance for the discovery and authenticated payment APIs.
-Its optional second argument selects an object member from a fully admitted
-transport envelope. `DemosAdapter.readAnchor` uses this at the raw storage
-transport boundary, with a 1 MiB response bound and a 30-second timeout.
-Custom adapters must retain exact bytes and use the same API before returning
-a record. CF-5-valid negative zero is projected to zero only after raw-token
-validation; object keys and string values retain their decoded text.
-`resolveAndRead`, Listing discovery and `verifySettlementEvidence`
-refuse unproven parsed objects before hashing or verifying. Owned discovery
-snapshots retain provenance; `cloneWithArtifactAdmission` and
-`inheritArtifactAdmission` preserve it through equivalent owned JSON snapshots,
-including admitted members of authenticated HTTP envelopes and payment requests.
-Neither helper grants provenance to unproven parsed data. Arbitrary clones,
-restored cache objects and objects changed since admission do not retain it.
-
-`verifyFinalizedSessionSettlement` requires admission on its nested `evidence`
-before schema, hash or provider checks, in both initial and recovery modes.
-Seller publication and durable buyer snapshots preserve existing admission.
-After a restart, retain the original received bytes or re-read exact evidence
-through an admitted transport; serializing a parsed cache entry cannot restore
-that proof.
-
-Do not use `JSON.stringify` of an already parsed external object as evidence of
-original CF-5 admission. Locally constructed structural inspection remains
-explicitly separate through `validateSettlementEvidenceStructure`.
-`verifyConstructedSettlementEvidence` is an explicit authoring path for evidence
-created by the local signer; it enforces current JID-1 and the complete
-cryptographic context, and must not be used for external transport values. Historical
-signature inspection uses `verifyLegacySettlementEvidence` and does not establish
-current-profile conformance. Other object-based APIs do not acquire provenance
-by importing a helper; their ingestion boundary remains the caller's duty.
-The SDK-wide Standard pin remains unchanged.
+This is an **explicit API**, not a current-profile switch. Existing object-based
+SDK consumers, adapters, caches and restored session records do not acquire
+raw-byte provenance by importing this helper. Do not use `JSON.stringify` of
+an already parsed object as evidence of original CF-5 admission. Integration
+must retain exact bytes or enforce authenticated byte-admission provenance at
+each actual ingress. The SDK-wide Standard pin remains unchanged.
 
 Tests vendor the byte-exact upstream `raw-json-profile-v0.1.json` corpus from
 that revision. All 59 outcomes and accepted canonical bytes are checked, along
 with API misuse, resource bounds, prototype-named members, view offsets and
 hostile-depth cases.
-
-## Current profile admission
-
-The exact `DACS_STANDARD_PIN` currently identifies an unreleased corrective
-candidate. Its `PROFILE.md` records no admissible coordinated release. Therefore
-`verifySettlementEvidence`, `verifyConstructedSettlementEvidence`,
-`verifyFinalizedSessionSettlement` (including recovery), and
-`publishSellerSessionSettlement` refuse current settlement authority. Valid
-signatures, raw-byte admission, a canonical job ID, and caller-provided profile
-objects cannot supply the missing release authority. Publication refuses before
-permit inspection, signing, or anchoring.
-
-Historical inspection must explicitly select `verifyLegacySettlementEvidence`
-or `verifyLegacyFinalizedSessionSettlement`. Historical publication, when
-explicitly intended, uses `publishLegacySellerSessionSettlement`. These retain
-the existing signature, anchor, native-proof and recovery checks; their results
-do not establish current-profile admission. Re-enabling current authority will
-require a new immutable Standard pin that records an admissible coordinated
-release and verifier-owned admission bound to the exact session, authenticated
-participant identities and complete module tuple.
-
-Current payment verification additionally requires the authenticated pinned
-`assetSpec` and `networkSpec` decision fields; omitting either cannot grant
-authority.
-
-Authenticated HTLC inspection requires `htlcExpiry` with `source` and `dest`
-as non-negative safe integer Unix seconds and `unit: "unix-seconds"`. Pinned
-`sourceFinalitySec` and `safetyWindowSec` use integer seconds. Equality at the
-required margin fails; missing, partial or ambiguous-unit observations fail.
-
-
-Direct SDK payment effects also require SDK-owned release admission. This
-includes `Agent.runSession`, `runSessionCore`, native DEM, ERC-20, x402 buyer
-signing and paid requests, x402 facilitator settlement, AP2 provider submission,
-and SPL signing/broadcast. A caller-supplied store, rail, provider or fence
-cannot admit the current release. Fresh `dacsX402AuthorizationNonce` derivation requires release admission;
-`verifyDacsX402AuthorizationNonce` remains read-only. Both accept exact JID-1
-identifiers; historical Unicode spellings are not repaired into current jobs.
-Derivation throws for any other job ID; verification returns `malformed` for it,
-even when the presented nonce is that job's pre-JID-1 derivation.
-
-The AP2, SPL, durable x402 buyer and x402 paywall coordinators expose
-`reconcileOnly: true` to inspect retained state while disabling submission,
-signing and rebroadcast. A missing retained transaction does not authorize a
-new payment. Seller paywall reconciliation also skips payment authorization,
-fulfilment and settlement-store writes. A verified retained or reconciled receipt
-returns `settlement-observed` / `settled: true` with HTTP 503 and the protocol
-receipt, preserving the distinction between payment observation and delivery.
-DEM reconciliation remains the explicit read-only
-`PayDemSettlementReconcile` seam. EVM finality and x402 authorization readers
-remain available separately. Pending seller payment notices and x402 response
-disclosure recovery may require operator action even for a completed payment.
-
-This release gate covers settlement authority and the payment entry points
-above. Generic bound/scanning repository `write`, `read` and `scanPage`, and
-`publishRatingRecordDurably`, remain artifact infrastructure: they enforce their
-existing byte, binding, signature and job-grammar checks but do not authenticate
-a coordinated release. Their outputs cannot grant current settlement authority.
-The enabled infrastructure is covered by `boundArtifactRepository.test.ts`,
-`scanningArtifactRepository.test.ts` and `durableRatingPublication.test.ts`;
-`currentProfileEffects.test.ts` pins refusal at the payment boundaries.

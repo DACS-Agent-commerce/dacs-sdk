@@ -8,7 +8,6 @@
       "@kynesyslabs/dacs/canonical": ["../../src/canonical/index.ts"],
       "@kynesyslabs/dacs/commerce": ["../../src/commerce/index.ts"],
       "@kynesyslabs/dacs/crypto": ["../../src/crypto/index.ts"],
-      "@kynesyslabs/dacs/discovery": ["../../src/discovery/index.ts"],
       "@kynesyslabs/dacs/identity": ["../../src/identity/index.ts"],
       "@kynesyslabs/dacs/negotiate": ["../../src/negotiate/index.ts"],
       "@kynesyslabs/dacs/rails": ["../../src/rails/index.ts"],

@@ -1,5 +1,3 @@
-import "../helpers/unreleasedRailMechanics.js";
-import { assertDacsRailEffectAdmission } from "../../src/rails/currentProfileAdmission.js";
 import {
   mkdir,
   mkdtemp,
@@ -1601,19 +1599,4 @@ describe("public surface", () => {
       expect(surface.x402SettleCore).toBeTypeOf("function");
     }
   }, 20_000);
-});
-
-test("read-only durable x402 cannot authorize or submit a fresh paid request", async () => {
-  const authorizationProvider = provider([]);
-  const authorize = vi.spyOn(authorizationProvider, "authorizeIntent");
-  const submit = vi.fn();
-  vi.mocked(assertDacsRailEffectAdmission).mockClear();
-  const result = await advanceX402BuyerSettlement({ reconcileOnly: true,
-    intent: makeIntent(), owner: "reader", store: createInMemoryX402BuyerSettlementStore(),
-    authorizationProvider, transport: transport(submit), now: () => 1_000,
-  });
-  expect(result).toEqual({ status: "indeterminate", reason: "x402-read-only-submission-disabled" });
-  expect(assertDacsRailEffectAdmission).not.toHaveBeenCalled();
-  expect(authorize).not.toHaveBeenCalled();
-  expect(submit).not.toHaveBeenCalled();
 });

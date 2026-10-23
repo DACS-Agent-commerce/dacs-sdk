@@ -1,20 +1,17 @@
-import "../helpers/unreleasedRailMechanics.js";
-import { admittedFixture } from "../helpers/admitted.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { verifyMessage, verifyTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 /**
  * Deterministic offline precursor to the guarded funded run in issue #114.
- * This offline fixture exercises archival lifecycle state with local transport,
- * storage, chain-reader and signing adapters. Current publication is refused;
- * retained signed evidence is seeded explicitly for the archival audit checks.
+ * Every DACS commerce operation enters through the package root; only the
+ * transport, storage, chain-reader, and signing adapters below are local.
  */
 import {
   ARTIFACT_SEPARATORS,
@@ -57,7 +54,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   publishListingCore,
-  publishLegacySellerSessionSettlement as publishSellerSessionSettlement,
+  publishSellerSessionSettlement,
   rawPublicKey,
   respondToFixedPriceAgreementProposalDurable,
   sha256Hex,
@@ -66,7 +63,7 @@ import {
   verifyBundleCopy,
   verifyCompletedSellerBundleCounterSignatureRequest,
   verifyDurableSellerTerminalResult,
-  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
+  verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
   x402PaywallCore,
   type AgreementArtifact,
@@ -2357,7 +2354,7 @@ async function publishAndVerifySellerSettlement(input: {
       ? {
           disposition: "present",
           effectId: request.effectId,
-          evidence: admittedFixture(structuredClone(retainedEvidence)),
+          evidence: structuredClone(retainedEvidence),
         }
       : { disposition: "absent" },
     anchorEvidence: async ({ logicalAddress, evidence, evidenceHash }) => {
@@ -2388,32 +2385,23 @@ async function publishAndVerifySellerSettlement(input: {
             reason: "settlement evidence anchor signature or binding mismatch",
           },
     resolveEvidence: async () => retainedEvidence
-      ? { disposition: "present", evidence: admittedFixture(structuredClone(retainedEvidence)) }
+      ? { disposition: "present", evidence: structuredClone(retainedEvidence) }
       : { disposition: "absent" },
   };
-  // JID-1 publication cannot be enabled by selecting the legacy API. The
-  // remainder inspects a retained synthetic checkpoint, not live admission.
-  const refused = await publishSellerSessionSettlement({
-    paymentPermitId: permit.paymentPermitId, authorization, nativeProofRef,
+  const published = await publishSellerSessionSettlement({
+    paymentPermitId: permit.paymentPermitId,
+    authorization,
+    nativeProofRef,
   }, deps);
-  expect(refused).toMatchObject({ disposition: "error",
-    reason: expect.stringContaining("unreleased corrective candidate") });
-  expect(anchored).toBe(0);
-  const evidenceHash = contentHash(authorization.evidenceInput as unknown as Record<string, unknown>);
-  const evidence = admittedFixture({ ...structuredClone(authorization.evidenceInput), signature: {
-    algorithm: "ed25519" as const, signer: SELLER,
-    value: Buffer.from(ed25519Sign(
-      signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, evidenceHash),
-      privateKeyFromSeed(SELLER_SEED),
-    )).toString("base64url"),
-  } }) as SettlementEvidence;
-  const logicalAddress = `dacs4:payment:${JOB_ID}:${encodeAddressSegment(RAIL.railId)}:${PAYMENT_PHASE_INDEX}`;
-  const published = { settlement: {
-    settlementVersion: "1" as const, outcome: "success" as const, evidence,
-    evidenceRef: { anchor: { kind: "storage-program" as const, locator: logicalAddress },
-      contentHash: evidenceHash, signer: SELLER },
-    anchorReceipt: finalizedReceipt(logicalAddress, evidenceHash), nativeProofRef,
-  } };
+  expect(published.disposition).toBe("published");
+  if (published.disposition !== "published") throw new Error(published.reason);
+  const replay = await publishSellerSessionSettlement({
+    paymentPermitId: permit.paymentPermitId,
+    authorization,
+    nativeProofRef,
+  }, deps);
+  expect(replay).toEqual(published);
+  expect(anchored).toBe(1);
 
   const context: SessionSettlementContext = {
     contextVersion: "1",
@@ -4181,11 +4169,4 @@ describe.skipIf(PROCESS_STAGE === undefined)("issue #114 whole-process worker", 
     else if (PROCESS_STAGE === "b") await runWholeProcessStageB(root, runId);
     else throw new Error(`unknown whole-process worker stage: ${PROCESS_STAGE}`);
   }, 20_000);
-});
-
-// This existing lifecycle fixture exercises explicit historical inspection.
-// Current release-admission refusal has separate public entry-point tests.
-vi.mock("../../src/agent/sessionSettlement.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/agent/sessionSettlement.js")>();
-  return { ...actual, verifyFinalizedSessionSettlement: actual.verifyLegacyFinalizedSessionSettlement };
 });

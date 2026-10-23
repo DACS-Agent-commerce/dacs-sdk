@@ -16,7 +16,7 @@ export {
  * IMPLEMENTATION.md.
  */
 
-export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN, assertCurrentDacsProfileAdmission } from "./version.js";
+export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
 export * from "./commerce/index.js";
 export {
   admitChannelMessage,
@@ -226,8 +226,6 @@ export {
 export {
   admitArtifactJson,
   snapshotAdmittedArtifact,
-  inheritArtifactAdmission,
-  cloneWithArtifactAdmission,
   canonicalize,
   canonicalizeDecimal,
   assertPositiveAmount,
@@ -241,8 +239,6 @@ export {
   logicalToStorageProgramName,
   storAddress,
   bundleAddress,
-  legacyJobAddressing,
-  isCurrentJobId,
   sha256Hex,
   stripSignature,
   canonicalSignedScope,
@@ -623,7 +619,6 @@ export {
   bundleConsistency,
   selectAuthoritativeBundleCopy,
   lookupBundleCopies,
-  lookupLegacyBundleCopies,
   bundlesDiverge,
   type ConsistencyVerdict,
   type BundleCopyRead,
@@ -633,8 +628,6 @@ export {
   type BundleRole,
   type AuthoritativeBundleSelection,
   verifySettlementEvidence,
-  verifyConstructedSettlementEvidence,
-  verifyLegacySettlementEvidence,
   validateSettlementEvidenceStructure,
   type EvidenceDecision,
   type EvidenceVerification,
@@ -655,7 +648,6 @@ export {
   type CopyValidity,
   computeReputation,
   deriveReputation,
-  deriveLegacyReputation,
   deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,
@@ -1022,7 +1014,6 @@ export {
   type SettlementEventIdentityDeps,
   type SettlementEventIdentityResolution,
   verifyFinalizedSessionSettlement,
-  verifyLegacyFinalizedSessionSettlement,
   type SessionSettlementDisposition,
   type SessionSettlementIdentityBinding,
   type SessionSettlementNativeSessionBinding,
@@ -1586,7 +1577,6 @@ export {
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeResult,
   publishSellerSessionSettlement,
-  publishLegacySellerSessionSettlement,
   type SellerSessionSettlementPublicationRequest,
   type SellerSessionSettlementNativeProofBinding,
   type SellerSessionSettlementAuthenticatedNativeProof,

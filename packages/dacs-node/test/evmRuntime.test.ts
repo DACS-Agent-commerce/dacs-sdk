@@ -1,6 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import * as railAdmission from "../../../src/rails/currentProfileAdmission.js";
-import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../../../src/version.js";
+import { describe, expect, it } from "vitest";
 import { verifyMessage } from "viem";
 import { signedBytes } from "@kynesyslabs/dacs/crypto";
 
@@ -53,29 +51,8 @@ function secret(value: string): Readonly<DacsLoadedSecretV1> {
   };
 }
 
-afterEach(() => vi.restoreAllMocks());
-
 describe("buyer EVM runtime", () => {
-  it("refuses challenge signing under the real current-profile admission guard", async () => {
-    const loaded = secret(`0x${"11".repeat(32)}`);
-    const runtime = await createDacsX402BuyerEvmRuntimeV1({
-      config: config(), evmPrivateKey: loaded, rpcUrl: "http://127.0.0.1:8545",
-    });
-    const fetch = vi.spyOn(globalThis, "fetch");
-    try {
-      await expect(runtime.createChallengeClient({
-        authority: { jobId: JOB_ID, network: NETWORK, payer: runtime.payerAddress },
-        expectedRequirements: { network: NETWORK },
-      } as never)).rejects.toThrow(DACS_CURRENT_PROFILE_ADMISSION_ERROR);
-      expect(fetch).not.toHaveBeenCalled();
-      expect(loaded.destroyed).toBe(true);
-    } finally {
-      runtime.destroy();
-    }
-  });
   it("derives the payer locally, destroys source bytes and scopes every signer", async () => {
-    // Only this offline mechanics case bypasses release admission.
-    vi.spyOn(railAdmission, "assertDacsRailEffectAdmission").mockImplementation(() => undefined);
     const loaded = secret(`0x${"11".repeat(32)}\n`);
     const runtime = await createDacsX402BuyerEvmRuntimeV1({
       config: config(),

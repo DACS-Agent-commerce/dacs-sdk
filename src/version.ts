@@ -7,12 +7,3 @@ export const DACS_MVP_TARGET = "0.1" as const;
 /** Exact DACS-Standard revision used by the vendored conformance oracle. */
 export const DACS_STANDARD_PIN =
   "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20" as const;
-
-/** PROFILE at DACS_STANDARD_PIN has no admissible coordinated release. */
-export const DACS_CURRENT_PROFILE_ADMISSION_ERROR =
-  "current DACS profile is an unreleased corrective candidate without an admitted coordinated release; current settlement authority is unavailable";
-
-/** Refuse new current-profile protocol effects until this exact pin is released. */
-export function assertCurrentDacsProfileAdmission(): void {
-  throw new Error(DACS_CURRENT_PROFILE_ADMISSION_ERROR);
-}

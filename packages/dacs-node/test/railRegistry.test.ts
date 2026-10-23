@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
   ed25519Sign,
@@ -118,10 +117,10 @@ async function fixture() {
         : { status: "absent" as const }),
     scanOwnAnchorsByNamePrefix: vi.fn(async () => ({ status: "ok" as const, anchors: [] })),
     readAnchor: vi.fn(async (address) => {
-      if (address === "stor:binding") return admittedFixture(structuredClone(current));
-      if (address === "stor:index") return admittedFixture(structuredClone(index));
-      if (address === "stor:definition") return admittedFixture(structuredClone(definition));
-      return admittedFixture(null);
+      if (address === "stor:binding") return structuredClone(current);
+      if (address === "stor:index") return structuredClone(index);
+      if (address === "stor:definition") return structuredClone(definition);
+      return null;
     }),
     anchorWriteOnce: vi.fn(async () => ({ address: "unused" })),
     verifyDemosAnchorReceipt,
@@ -246,7 +245,7 @@ describe("authenticated Demos rail registry provider", () => {
       scanOwnAnchorsByNamePrefix: vi.fn(async () => ({ status: "ok" as const, anchors: [] })),
       readAnchor: vi.fn(async (address) => {
         const value = documents.get(address);
-        return admittedFixture(value === undefined ? null : structuredClone(value));
+        return value === undefined ? null : structuredClone(value);
       }),
       anchorWriteOnce,
       verifyDemosAnchorReceipt: vi.fn(async () => true),

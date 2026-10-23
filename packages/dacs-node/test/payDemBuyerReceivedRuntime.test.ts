@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const dependencies = vi.hoisted(() => ({ retained: vi.fn() }));
@@ -149,7 +148,7 @@ describe("native DEM buyer received track", () => {
       resolveAnchorByName: vi.fn(async () => ({
         status: "present" as const, address: NATIVE_ADDRESS,
       })),
-      readAnchor: vi.fn(async () => admittedFixture(payload)),
+      readAnchor: vi.fn(async () => payload),
       resolveDemosAnchorReceipt: vi.fn(async () => ({
         nativeAddress: NATIVE_ADDRESS,
         logicalAddress,

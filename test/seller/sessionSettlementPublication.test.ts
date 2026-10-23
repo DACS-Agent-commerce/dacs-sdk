@@ -1,5 +1,3 @@
-import { publishSellerSessionSettlement as publishCurrentSettlement } from "../../src/seller/sessionSettlementPublication.js";
-import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
@@ -24,22 +22,22 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import {
-  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
+  verifyFinalizedSessionSettlement,
   type SessionSettlementContext,
   type SessionSettlementNativeProofRef,
   type SessionSettlementVerificationProvider,
 } from "../../src/agent/sessionSettlement.js";
 import {
-  publishLegacySellerSessionSettlement as publishSellerSessionSettlement,
+  publishSellerSessionSettlement,
   type SellerSessionSettlementPublicationDeps,
   type SellerSessionSettlementPublicationRequest,
   type SellerSessionSettlementNativeProofAuthentication,
 } from "../../src/seller/sessionSettlementPublication.js";
 import {
-  publishLegacySellerSessionSettlement as rootPublishSellerSessionSettlement,
+  publishSellerSessionSettlement as rootPublishSellerSessionSettlement,
 } from "../../src/index.js";
 import {
-  publishLegacySellerSessionSettlement as sellerPublishSellerSessionSettlement,
+  publishSellerSessionSettlement as sellerPublishSellerSessionSettlement,
 } from "../../src/seller/index.js";
 import type {
   SellerFulfilmentHandoff,
@@ -62,7 +60,7 @@ const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
 const NOW = 1_777_000_000_000;
 const TX_HASH = "e".repeat(64);
 
-function authorization(jobId = "legacy-publication-job"): SellerPaymentAuthorization {
+function authorization(jobId = "job-publication-1"): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1" as const,
     jobId,
@@ -395,13 +393,13 @@ function harness(value = authorization()): Harness {
       ? {
           disposition: "present",
           effectId: input.effectId,
-          evidence: admittedFixture(structuredClone(state.anchored)),
+          evidence: structuredClone(state.anchored),
         }
       : { disposition: "absent" },
     anchorEvidence: anchor,
     verifyAnchorReceipt: async () => ({ disposition: "pass" }),
     resolveEvidence: async () => state.anchored
-      ? { disposition: "present", evidence: admittedFixture(structuredClone(state.anchored)) }
+      ? { disposition: "present", evidence: structuredClone(state.anchored) }
       : { disposition: "absent" },
   };
   return {
@@ -482,7 +480,7 @@ describe("publishSellerSessionSettlement", () => {
   });
 
   it("keeps one effect identity as authenticated proof observations advance", async () => {
-    const value = authorization("legacy-proof-observations");
+    const value = authorization("job-publication-proof-replay");
     const first = harness(value);
     const replay = harness(value);
     replay.resolveProof.mockResolvedValue(proofAuthentication(value, {
@@ -532,7 +530,7 @@ describe("publishSellerSessionSettlement", () => {
       };
     };
     h.deps.resolveEvidence = async () => anchoredEvidence
-      ? { disposition: "present", evidence: admittedFixture(structuredClone(anchoredEvidence)) }
+      ? { disposition: "present", evidence: structuredClone(anchoredEvidence) }
       : { disposition: "absent" };
 
     const result = await publishSellerSessionSettlement(request(h), h.deps);
@@ -611,7 +609,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(available.anchor).not.toHaveBeenCalled();
 
     const substituted = harness();
-    const other = authorization("0XM48B0ZHHET4BWSV556YV5194");
+    const other = authorization("job-substituted");
     substituted.deps.receiptStore.inspectPermit = async () => ({
       status: "already-consumed",
       claim: claim(other),
@@ -845,7 +843,7 @@ describe("publishSellerSessionSettlement", () => {
       ? {
           disposition: "present",
           effectId: input.effectId,
-          evidence: admittedFixture(structuredClone(committedEvidence)),
+          evidence: structuredClone(committedEvidence),
         }
       : { disposition: "absent" };
     h.deps.anchorEvidence = async (input) => {
@@ -866,7 +864,7 @@ describe("publishSellerSessionSettlement", () => {
       return structuredClone(committedAnchor);
     };
     h.deps.resolveEvidence = async () => committedEvidence
-      ? { disposition: "present", evidence: admittedFixture(structuredClone(committedEvidence)) }
+      ? { disposition: "present", evidence: structuredClone(committedEvidence) }
       : { disposition: "absent" };
 
     const first = await publishSellerSessionSettlement(request(h), h.deps);
@@ -1116,7 +1114,7 @@ describe("publishSellerSessionSettlement", () => {
     badReadback.deps.resolveEvidence = async () => {
       const changed = structuredClone(badReadback.anchored!);
       changed.observedAt += 1;
-      return { disposition: "present", evidence: admittedFixture(changed) };
+      return { disposition: "present", evidence: changed };
     };
     expect(await publishSellerSessionSettlement(request(badReadback), badReadback.deps))
       .toMatchObject({ disposition: "rejected", reason: expect.stringContaining("readback differs") });
@@ -1162,32 +1160,4 @@ describe("publishSellerSessionSettlement", () => {
     expect(h.sign).not.toHaveBeenCalled();
     expect(h.anchor).not.toHaveBeenCalled();
   });
-});
-
-
-it("current candidate publication refuses before inspection, signing or anchoring", async () => {
-  const inspectPermit = vi.fn();
-  const sign = vi.fn();
-  const anchorEvidence = vi.fn();
-  const result = await publishCurrentSettlement({} as never, {
-    receiptStore: { inspectPermit }, signer: { sign }, anchorEvidence,
-  } as never);
-  expect(result).toMatchObject({ disposition: "error", reason: expect.stringContaining("unreleased corrective candidate") });
-  expect(inspectPermit).not.toHaveBeenCalled();
-  expect(sign).not.toHaveBeenCalled();
-  expect(anchorEvidence).not.toHaveBeenCalled();
-});
-
-it.each([
-  "7NDPS5RJ448HFDFTJVR53ZP995", "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
-])("legacy publisher refuses current JID-1 %s before any effects", async (jobId) => {
-  const h = harness(authorization(jobId));
-  const result = await publishSellerSessionSettlement(request(h), h.deps);
-  expect(result).toMatchObject({
-    disposition: "error", reason: expect.stringContaining("unreleased corrective candidate"),
-  });
-  expect(h.inspect).not.toHaveBeenCalled();
-  expect(h.resolveProof).not.toHaveBeenCalled();
-  expect(h.sign).not.toHaveBeenCalled();
-  expect(h.anchor).not.toHaveBeenCalled();
 });

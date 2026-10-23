@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import {
   ARTIFACT_SEPARATORS,
   isAgreementArtifact,
@@ -31,11 +30,11 @@ const mocks = vi.hoisted(() => ({
     typeof import("@kynesyslabs/dacs").verifySettlementEvidence,
 }));
 
-// Explicit archival SettlementEvidence inspection runs behind a call-through spy so each
+// The real SettlementEvidence verifier runs behind a call-through spy so each
 // test observes both the exact authenticated context and the real verdict.
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@kynesyslabs/dacs")>();
-  mocks.realVerifySettlementEvidence = actual.verifyLegacySettlementEvidence;
+  mocks.realVerifySettlementEvidence = actual.verifySettlementEvidence;
   return { ...actual, verifySettlementEvidence: mocks.verifySettlementEvidence };
 });
 
@@ -223,14 +222,14 @@ function deliveryEvidenceInput(deliverable: Readonly<Record<string, unknown>>) {
     phase: "deliver-storage-program" as const,
     outcome: "success" as const,
     observedAt: NOW - 2_000,
-    deliverableContentHash: sha256Hex(canonicalize(deliverable)),
+    deliverableContentHash: contentHash(deliverable),
     deliverableAnchor: { kind: "storage-program", locator: DELIVERABLE_ADDRESS },
   };
 }
 
 async function fixture() {
   const agreement = await signedPayDemAgreement();
-  const deliverable = { result: "native delivery", signature: "ordinary data", signatures: ["ordinary data"] };
+  const deliverable = { result: "native delivery" };
   const deliveryEvidence = signComponent(
     deliveryEvidenceInput(deliverable),
     ARTIFACT_SEPARATORS.SettlementEvidence,
@@ -283,7 +282,7 @@ async function fixture() {
             ? { status: "present", address: `native:${logicalAddress}` }
             : { status: "absent" },
         readAnchor: async (address: string) =>
-          admittedFixture(state.anchors.get(address.replace(/^native:/, "")) ?? null),
+          state.anchors.get(address.replace(/^native:/, "")) ?? null,
         resolveDemosAnchorReceipt: async (input: {
           logicalAddress: string;
           nativeAddress: string;
@@ -316,7 +315,7 @@ async function fixture() {
     payload: Readonly<Record<string, unknown>> = deliverable,
     record: Readonly<{ logicalAddress: string; contentHash: string }> = {
       logicalAddress: DELIVERABLE_ADDRESS,
-      contentHash: sha256Hex(canonicalize(deliverable)),
+      contentHash: contentHash(deliverable),
     },
   ) => commerce.buyerReceived.authorizeReceived({
     operation: { order: { jobId: JOB_ID } },
@@ -328,8 +327,8 @@ async function fixture() {
       jobId: JOB_ID,
       logicalAddress: PAYMENT_ADDRESS,
       evidenceHash: contentHash(paymentEvidence),
+      evidence: paymentEvidence,
       ...request,
-      evidence: admittedFixture(Object.hasOwn(request, "evidence") ? request.evidence : paymentEvidence),
     } as never);
   return {
     agreement,
@@ -367,7 +366,7 @@ describe("fixed-price native DEM buyer-received authorization", () => {
   it("authorizes the payload bound by the seller's receipt-verified delivery evidence", async () => {
     const f = await fixture();
 
-    await expect(f.authorize(), "C6 binds delivery evidence anchor").resolves.toBe(true);
+    await expect(f.authorize()).resolves.toBe(true);
     expect(mocks.verifySettlementEvidence).toHaveBeenCalledWith(f.deliveryEvidence, {
       orchestrator: SELLER,
       agreement: { amount: "1", currency: "DEM" },
@@ -484,7 +483,7 @@ describe("fixed-price native DEM buyer payment-evidence verification", () => {
   it("accepts seller evidence bound to the observed transfer and unresolved PC-2 address", async () => {
     const f = await fixture();
 
-    await expect(f.verify(), "C6 binds unresolved payment address").resolves.toEqual({ disposition: "valid" });
+    await expect(f.verify()).resolves.toEqual({ disposition: "valid" });
     expect(f.observeDemosTransfer).toHaveBeenCalledWith(TX_HASH);
     expect(mocks.verifySettlementEvidence).toHaveBeenCalledWith(f.paymentEvidence, {
       orchestrator: SELLER,

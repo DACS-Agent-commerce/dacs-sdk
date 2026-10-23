@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { encodePaymentResponseHeader } from "@x402/core/http";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   createPublicClient,
   erc20Abi,
@@ -44,7 +44,6 @@ import {
  */
 import {
   ARTIFACT_SEPARATORS,
-  assertCurrentDacsProfileAdmission,
   AnchorWaitError,
   BUNDLE_BINDING_SEPARATOR,
   EIP3009_AUTHORIZATION_USED_TOPIC,
@@ -92,7 +91,7 @@ import {
   prepareCompletedSellerBundleCounterSignatureRequest,
   prepareX402BuyerSettlement,
   projectDurableSellerAuditPending,
-  publishLegacySellerSessionSettlement as publishSellerSessionSettlement,
+  publishSellerSessionSettlement,
   resumeDeliveryFinalisation,
   publicKeyFromRaw,
   privateKeyFromSeed,
@@ -105,7 +104,7 @@ import {
   validateFixedPriceAgreementBinding,
   verifyBundleCopy,
   verifyDurableSellerTerminalResult,
-  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
+  verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
   x402PaywallSettlementKey,
   type AgreementArtifact,
@@ -6417,7 +6416,6 @@ describe("issue #114 guarded funded two-agent spine", () => {
       const fastProfile = productionLatencyProfile();
       let preflight: Preflight | undefined;
       try {
-        assertCurrentDacsProfileAdmission();
         preflight = await stage("preflight", () => runNoWritePreflight(env, true));
         requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
         const demosDebitBudget = createFundedDemosDebitBudget(
@@ -6692,11 +6690,4 @@ describe("issue #114 guarded funded two-agent spine", () => {
       }
     }, 900_000);
   }
-});
-
-// This existing lifecycle fixture exercises explicit historical inspection.
-// Current release-admission refusal has separate public entry-point tests.
-vi.mock("../../src/agent/sessionSettlement.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/agent/sessionSettlement.js")>();
-  return { ...actual, verifyFinalizedSessionSettlement: actual.verifyLegacyFinalizedSessionSettlement };
 });

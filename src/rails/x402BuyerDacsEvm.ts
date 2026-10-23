@@ -1,4 +1,3 @@
-import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import type {
@@ -277,7 +276,7 @@ function captureChallengeClientConfig(
 
 function dacsNonce(jobId: string, phaseIndex: number): `0x${string}` {
   return `0x${sha256Hex(
-    `dacs-sb3:v1:${jobId}:${phaseIndex}`,
+    `dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
   )}`;
 }
 
@@ -289,7 +288,6 @@ function dacsNonce(jobId: string, phaseIndex: number): `0x${string}` {
 export async function createDacsX402BuyerEvmChallengeClient(
   config: Readonly<DacsX402BuyerEvmChallengeClientConfig>,
 ): Promise<Readonly<DacsX402BuyerEvmChallengeClient>> {
-  assertDacsRailEffectAdmission(() => config.authority.jobId);
   const captured = captureChallengeClientConfig(config);
   const evmPrivateKey = captured.evmPrivateKey;
   const authority = captured.authority;
@@ -333,7 +331,6 @@ export async function createDacsX402BuyerEvmChallengeClient(
       version: number,
       requirements: PaymentRequirements,
     ): Promise<PaymentPayloadResult> {
-      assertDacsRailEffectAdmission(() => authority.jobId);
       if (version !== 2 || !requirementsMatch(requirements, expected)) {
         throw new CounterpartyError(
           "x402 challenge requirements do not match DACS signing authority",

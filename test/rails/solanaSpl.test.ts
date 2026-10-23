@@ -1,5 +1,3 @@
-import "../helpers/unreleasedRailMechanics.js";
-import { assertDacsRailEffectAdmission } from "../../src/rails/currentProfileAdmission.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -958,22 +956,4 @@ describe("advanceSolanaSplSettlement", () => {
     });
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
-});
-
-test("read-only SPL observes a retained valid attempt without rebroadcasting", async () => {
-  const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
-  const broadcastRetained = vi.fn(adapter().broadcastRetained);
-  const reconcile = vi.fn(async () => ({ disposition: "absent-valid" as const,
-    authenticationHash: HASH }));
-  const runtime = input({ adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }) });
-  expect((await advanceSolanaSplSettlement(runtime)).status).toBe("waiting");
-  vi.mocked(assertDacsRailEffectAdmission).mockClear();
-  expect(await advanceSolanaSplSettlement({ ...runtime, reconcileOnly: true,
-    owner: "reader", now: () => 1_200 })).toEqual({
-    status: "waiting", reason: "solana-spl-read-only-not-yet-visible",
-  });
-  expect(prepareSignedTransfer).toHaveBeenCalledOnce();
-  expect(broadcastRetained).toHaveBeenCalledOnce();
-  expect(reconcile).toHaveBeenCalledTimes(2);
-  expect(assertDacsRailEffectAdmission).not.toHaveBeenCalled();
 });

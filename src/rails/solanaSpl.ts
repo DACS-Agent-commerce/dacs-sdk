@@ -1,4 +1,3 @@
-import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import {
   assertPositiveAmount,
   baseUnits,
@@ -272,8 +271,6 @@ export type SolanaSplProgress =
   | { status: "settled"; settlement: Readonly<SolanaSplSettlementResult> };
 
 export interface AdvanceSolanaSplSettlementInput {
-  /** Observe retained attempts only; never sign or broadcast. */
-  reconcileOnly?: boolean;
   authority: Readonly<SolanaSplSettlementAuthority>;
   owner: string;
   store: SolanaSplSettlementStore;
@@ -644,7 +641,6 @@ function settlementFrom(
 export async function advanceSolanaSplSettlement(
   input: Readonly<AdvanceSolanaSplSettlementInput>,
 ): Promise<SolanaSplProgress> {
-  if (input?.reconcileOnly !== true) assertDacsRailEffectAdmission(() => input.authority.jobId);
   let intent: Readonly<SolanaSplSettlementIntent>;
   try {
     intent = createSolanaSplSettlementIntent({ ...input.authority });
@@ -867,10 +863,6 @@ export async function advanceSolanaSplSettlement(
     const terminal = await finalize(latest, state);
     if (terminal) return terminal;
     if (state.disposition === "absent-valid") {
-      if (input.reconcileOnly === true) {
-        return { status: "waiting", reason: "solana-spl-read-only-not-yet-visible" };
-      }
-      assertDacsRailEffectAdmission(() => intent.jobId);
       if (!HASH_RE.test(state.authenticationHash)) {
         return { status: "indeterminate", reason: "solana-spl-absence-proof-invalid" };
       }
@@ -901,10 +893,6 @@ export async function advanceSolanaSplSettlement(
     }
   }
 
-  if (input.reconcileOnly === true) {
-    return { status: "indeterminate", reason: "solana-spl-read-only-no-active-attempt" };
-  }
-  assertDacsRailEffectAdmission(() => intent.jobId);
   let preflight: Readonly<SolanaSplPreflight>;
   try {
     await fence.assertCurrent();

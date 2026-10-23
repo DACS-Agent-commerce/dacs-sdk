@@ -1,4 +1,3 @@
-import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import {
   createPayDemSellerObserver,
   type AuthenticatedRailDefinition,
@@ -51,7 +50,6 @@ export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
 export async function createDacsFixedPricePayDemSellerLiveV1(
   options: Readonly<DacsFixedPricePayDemSellerLiveOptionsV1>,
 ): Promise<Readonly<DacsSellerPayDemLiveCommerceGraphV1>> {
-  requireDacsCurrentProfileForNewEffectsV1();
   if (options.context.role !== "seller" ||
       options.context.commerceStores.role !== "seller") {
     throw new TypeError("fixed-price pay-dem seller live options are invalid");

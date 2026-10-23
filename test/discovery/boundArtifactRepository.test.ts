@@ -346,8 +346,6 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       expect(await reader.read(address, SELLER, () => true)).toEqual({
         status: "verified", nativeAddress: written.anchor.address, record: RECORD,
       });
-      const malformedRead = await reader.read(address.normalize("NFC"), SELLER, () => true);
-      expect(malformedRead.status).toBe(address.startsWith("dacs1:") ? "absent" : "binding-mismatch");
     }
     expect(backend.writes).toBe(addresses.length);
   });
@@ -636,48 +634,6 @@ describe("createBoundArtifactRepository write guards", () => {
     expect(setup.bindings.snapshot()).toEqual([]);
   }
 
-  test.each([
-    ["null", null],
-    ["an array", [1]],
-    ["a string", "x"],
-    ["a number", 7],
-  ])("rejects %s as anchor metadata before anchoring", async (_name, metadata) => {
-    const setup = guardedWriter();
-    const error = await rejectionOf(setup.writer.write(LOGICAL, RECORD, {
-      anchor: { metadata: metadata as unknown as Record<string, unknown> },
-    }));
-    expect(error.message).toBe("anchor metadata must be an object");
-    expectNothingWritten(setup);
-  });
-
-  test.each([
-    ["contentHash", "stale-hash", "anchor metadata contentHash conflicts with the repository artifact binding"],
-    ["envelopeHash", "stale-hash", "anchor metadata envelopeHash conflicts with the repository artifact binding"],
-    ["logicalAddress", "dacs1:other", "anchor metadata logicalAddress conflicts with the repository logical address"],
-    ["logical_address", "dacs1:other", "anchor metadata logical_address conflicts with the repository logical address"],
-  ])("rejects conflicting %s metadata before anchoring", async (key, value, message) => {
-    const setup = guardedWriter();
-    const error = await rejectionOf(setup.writer.write(LOGICAL, RECORD, {
-      anchor: { metadata: { source: "catalog", [key]: value } },
-    }));
-    expect(error.message).toBe(message);
-    expectNothingWritten(setup);
-  });
-
-  test.each(["", " "])("rejects an adapter owner %j before anchoring", async (owner) => {
-    const setup = guardedWriter({ getAddress: () => owner });
-    const error = await rejectionOf(setup.writer.write(LOGICAL, RECORD));
-    expect(error.message).toBe("adapter returned an empty owner address");
-    expectNothingWritten(setup);
-  });
-
-  test.each(["", " "])("rejects a storage name %j before anchoring", async (storageName) => {
-    const setup = guardedWriter();
-    const error = await rejectionOf(setup.writer.write(LOGICAL, RECORD, { storageName }));
-    expect(error.message).toBe("storageName must not be empty");
-    expectNothingWritten(setup);
-  });
-
   // The deliverable hash canonicalizes any JSON value, so this guard is the only
   // thing that keeps a non-object deliverable from being anchored for good.
   test.each([
@@ -694,132 +650,5 @@ describe("createBoundArtifactRepository write guards", () => {
     expectNothingWritten(setup);
   });
 
-  test.each(["", " "])("never publishes a binding to a native address %j", async (address) => {
-    let anchors = 0;
-    const setup = guardedWriter({
-      async anchorWriteOnce() {
-        anchors += 1;
-        return { address, txRef: "tx-blank" };
-      },
-    });
-    const error = await rejectionOf(setup.writer.write(LOGICAL, RECORD));
-    expect(error.message).toBe("anchorWriteOnce returned an empty native address");
-    expect(anchors).toBe(1);
-    expect(setup.publishes()).toBe(0);
-    expect(setup.bindings.snapshot()).toEqual([]);
-  });
-});
 
-describe("createBoundArtifactRepository publication confirmation", () => {
-  const anchored: AnchorBinding = {
-    logicalAddress: LOGICAL,
-    nativeAddress: "stor-1",
-    owner: SELLER,
-    contentHash: contentHash(RECORD),
-    version: 1,
-  };
-  const base = {
-    anchor: { address: "stor-1", txRef: "tx-stor-1" },
-    binding: anchored,
-    storageName: logicalToStorageProgramName(LOGICAL),
-  };
-  const ACKS = ["published", "already-published"] as const;
-  const FIELD_CHANGES: Array<[string, Partial<AnchorBinding>]> = [
-    ["logicalAddress", { logicalAddress: "dacs1:0xseller:market-data:v2" }],
-    ["nativeAddress", { nativeAddress: "stor-elsewhere" }],
-    ["owner", { owner: "0xsomeone-else" }],
-    ["contentHash", { contentHash: "stale-hash" }],
-    ["version", { version: 2 }],
-    ["revoked", { revoked: true }],
-  ];
-
-  function repository(
-    publisher: BindingPublisher["publish"],
-    index: BindingIndex,
-  ) {
-    return createBoundArtifactRepository({
-      adapter: fakeAdapter(SELLER, createBackend()),
-      index,
-      publisher: { publish: publisher },
-    });
-  }
-
-  // The configured index holds the real tuple, so only the acknowledgement check
-  // stands between a mismatched acknowledgement and a success status.
-  test.each(ACKS.flatMap((ack) => FIELD_CHANGES.map(([field, change]) => [ack, field, change] as const)))(
-    "a %s acknowledgement that differs only in %s is a conflict",
-    async (ack, _field, change) => {
-      const visible = createInMemoryBindingStore();
-      const writer = repository(async (binding) => {
-        await visible.publish(binding);
-        return { status: ack, binding: { ...binding, ...change } };
-      }, visible);
-
-      expect(await writer.write(LOGICAL, RECORD, { version: 1 })).toEqual({
-        ...base,
-        status: "conflict",
-        reason: "publisher reported success for a binding that does not match the anchored artifact",
-        existing: { ...anchored, ...change },
-      });
-    },
-  );
-
-  test.each(FIELD_CHANGES)(
-    "index readback that differs only in %s is a conflict",
-    async (_field, change) => {
-      const writer = repository(
-        async (binding) => ({ status: "published", binding: { ...binding } }),
-        { resolve: async () => ({ status: "present", binding: { ...anchored, ...change } }) },
-      );
-
-      expect(await writer.write(LOGICAL, RECORD, { version: 1 })).toEqual({
-        ...base,
-        status: "conflict",
-        reason: "configured index resolved a binding that does not match the anchored artifact",
-        existing: { ...anchored, ...change },
-      });
-    },
-  );
-
-  test.each(ACKS)("a %s acknowledgement not visible in the index is indeterminate", async (ack) => {
-    const writer = repository(
-      async (binding) => ({ status: ack, binding: { ...binding } }),
-      createInMemoryBindingStore(),
-    );
-
-    expect(await writer.write(LOGICAL, RECORD, { version: 1 })).toEqual({
-      ...base,
-      status: "indeterminate",
-      reason: "binding publication was acknowledged but is not yet visible in the configured index",
-    });
-  });
-
-  test.each(ACKS.flatMap((ack) => [
-    [ack, new Error("index offline")],
-    [ack, "index offline"],
-  ] as const))("a %s acknowledgement whose readback throws %s is indeterminate", async (ack, thrown) => {
-    const writer = repository(
-      async (binding) => ({ status: ack, binding: { ...binding } }),
-      { resolve: async () => { throw thrown; } },
-    );
-
-    expect(await writer.write(LOGICAL, RECORD, { version: 1 })).toEqual({
-      ...base,
-      status: "indeterminate",
-      reason: "binding publication was acknowledged but index readback failed: index offline",
-    });
-  });
-
-  test.each(ACKS)("a %s acknowledgement whose readback is indeterminate is indeterminate", async (ack) => {
-    const writer = repository(
-      async (binding) => ({ status: ack, binding: { ...binding } }),
-      { resolve: async () => ({ status: "indeterminate", reason: "index offline" }) },
-    );
-
-    expect(await writer.write(LOGICAL, RECORD, { version: 1 })).toEqual({
-      ...base,
-      status: "indeterminate",
-      reason: "binding publication was acknowledged but index readback was indeterminate: index offline",
-    });
-  });
 });

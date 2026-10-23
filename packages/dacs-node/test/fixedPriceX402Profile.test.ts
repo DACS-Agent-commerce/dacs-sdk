@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -351,7 +350,7 @@ async function fixture() {
           return { address };
         }),
         readAnchor: vi.fn(async (address: string) =>
-          admittedFixture(structuredClone(anchors.get(address) ?? null))),
+          structuredClone(anchors.get(address) ?? null)),
         resolveDemosAnchorReceipt: vi.fn(async (input: {
           logicalAddress: string;
           nativeAddress: string;
@@ -485,7 +484,7 @@ async function buyerFixture() {
         })),
         verifyDemosAnchorReceipt: vi.fn(async () => true),
         readAnchor: vi.fn(async (address: string) =>
-          admittedFixture(structuredClone(anchors.get(address) ?? null))),
+          structuredClone(anchors.get(address) ?? null)),
         resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
           const address = namedAnchors.get(logicalAddress);
           return address === undefined

@@ -1,7 +1,5 @@
 import {
   bundleAddress,
-  isCurrentJobId,
-  legacyJobAddressing,
   canonicalize,
   contentHash,
   stripSignature,
@@ -258,7 +256,6 @@ function deriveReputationCore(
   bundles: AnyAttestationBundle[],
   window: ReputationWindow,
   deps: DeriveReputationDeps = {},
-  addressOf = bundleAddress,
 ): ReputationCoreResult {
   const basis = window.windowingBasis ?? "finalisedAt";
   const parsedParty = requireCanonicalClaimReference(
@@ -280,32 +277,10 @@ function deriveReputationCore(
         "are not an independent session-role binding",
     );
   }
-  // Capture inert candidates before reading even jobId: caller accessors and
-  // proxies must never execute before validation. Score the same frozen copy
-  // that the validator saw, even if it mutates the caller's original object.
-  let capturedBundles = bundles;
-  if (addressOf === bundleAddress) {
-    capturedBundles = [];
-    for (const bundle of bundles) {
-      try {
-        capturedBundles.push(deepFreeze(snapshotCanonicalJsonRead(
-          bundle,
-          "untrusted reputation bundle",
-        )) as AnyAttestationBundle);
-      } catch {
-        // Non-data candidates cannot be authenticated or scored safely.
-      }
-    }
-  }
   // Validate before reading party/window fields. With `trustBundles`, the caller
   // explicitly attests that this happened upstream; otherwise the synchronous
   // predicate is enforced as an actual boolean at runtime.
-  const candidates = validatedCandidates(
-    addressOf === bundleAddress
-      ? capturedBundles.filter((bundle) => isCurrentJobId(bundle?.jobId))
-      : capturedBundles,
-    deps,
-  );
+  const candidates = validatedCandidates(bundles, deps);
 
   const scoped = candidates.filter(
     (b) =>
@@ -449,7 +424,7 @@ function deriveReputationCore(
     .map((b) => ({
       anchor: {
         kind: "storage-program" as const,
-        locator: addressOf(b.jobId, b.anchoredByRole),
+        locator: bundleAddress(b.jobId, b.anchoredByRole),
       },
       contentHash: bundleContentHash(b),
     }))
@@ -489,16 +464,6 @@ export function deriveReputation(
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
   return deriveReputationCore(party, bundles, window, deps).derivation;
-}
-
-/** Explicit archival computation over historical signed job identifiers. */
-export function deriveLegacyReputation(
-  party: string,
-  bundles: AnyAttestationBundle[],
-  window: ReputationWindow,
-  deps: DeriveReputationDeps = {},
-): ReputationDerivation {
-  return deriveReputationCore(party, bundles, window, deps, legacyJobAddressing.bundleAddress).derivation;
 }
 
 function exactObjectKeys(
@@ -732,7 +697,6 @@ export async function deriveReputationWithValidation(
   const accepted: AnyAttestationBundle[] = [];
   for (const bundle of capturedBundles) {
     try {
-      if (!isCurrentJobId(bundle.jobId)) continue;
       const decision: unknown = await validate(bundle);
       if (decision === true) {
         accepted.push(bundle);

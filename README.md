@@ -8,20 +8,6 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 > package commands in this repository build and verify release candidates; use a
 > source checkout until the first release is published.
 
-The pinned Standard revision is an unreleased corrective candidate. Current live
-commerce assembly, `Agent.runSession`, `runSessionCore`, and direct SDK payment
-rails refuse fresh effects until a coordinated release is admitted. Existing
-payment records remain available for read-only chain reconciliation. AP2, SPL
-and durable x402 coordinators accept `reconcileOnly: true`; that mode cannot
-sign, broadcast or submit a payment. The seller x402 paywall observes retained
-settlement without authorizing or fulfilling delivery or updating its store.
-A verified observation returns `disposition: "settlement-observed"` and
-`settled: true` with a 503 response and the settlement receipt; it grants no
-permission to retry payment or treat delivery as complete. Seller payment notices
-and x402 disclosure recovery can remain blocked even after payment: operators must reconcile the
-retained transaction and arrange notice through their operational process. Explicit legacy settlement APIs inspect historical data;
-the legacy publisher refuses current JID-1 jobs and cannot grant current authority.
-
 ## What this is
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
@@ -176,10 +162,8 @@ an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
 operation and requires the authenticated agreement, pinned rail, phase
 orchestrator, evidence reference, phase result, PC-2 address (for payment),
 expected deliverable locator (for delivery), plus key resolution and signature
-verification. It also requires exact-byte admission through `admitArtifactJson`
-and a current JID-1 job ID. Missing trust inputs fail as configuration errors
-rather than being silently skipped. Historical signature inspection is explicitly
-selected through `verifyLegacySettlementEvidence`.
+verification. Missing trust inputs fail as configuration errors rather than
+being silently skipped.
 
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
@@ -706,23 +690,7 @@ member with its second argument after admitting the full envelope). Parsed
 objects, clones, changed admitted objects and reserialized external data do not
 establish that provenance. Discovery refuses them before content hashing or
 signature verification. Retain the admitted record through verification; the
-repository's owned snapshots preserve its admission capability. HTTP transport
-admission and the SDK's envelope/handshake snapshots preserve nested artifact
-provenance through `cloneWithArtifactAdmission` and `inheritArtifactAdmission`.
-The separate `verifyConstructedSettlementEvidence` authoring API is restricted
-to locally created evidence and retains current JID-1 and cryptographic checks.
-
-The four job-scoped address builders and current settlement verification require
-an exact JID-1 uppercase ULID. For historical inspection, explicitly select
-`legacyJobAddressing`, `verifyLegacySettlementEvidence`,
-`lookupLegacyBundleCopies` or `deriveLegacyReputation`. These archival interfaces
-do not establish current-profile semantic conformance and are never selected as
-fallbacks. Historical evidence-bound bundle replay explicitly sets
-`jobIdProfile: "legacy"` in its verifier dependencies and accepts pre-JID-1
-bundles only. The default current profile, and a JID-1 bundle under either label,
-is refused before any key lookup and yields no execution authority.
-`verifySettlementEvidence` requires an admitted record; structure-only
-inspection remains available through `validateSettlementEvidenceStructure`.
+repository's owned snapshots preserve its admission capability.
 
 For other artifact kinds, `createScanningArtifactRepository` composes the bound
 repository with `scanAnchorPage` and `resolveAndRead`. Supply the adapter,
@@ -753,18 +721,7 @@ row-shape and not-found assumptions were checked against the `kynesyslabs/node`
 source at commit `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`,
 `@kynesyslabs/demosdk` 4.0.16, and node2 testnet responses recorded on
 2026-10-15 through 2026-10-17, including a real DACS create row
-(`test/fixtures/demos-node2-history.json`). The read-only
-`nodeCall("getNetworkInfo")` response reports `nodeVersion`: the fixture's
-2026-10-17 capture advertises version `0.9.8`, commit
-`61b8e75aa8db5e408c49e1c3a89db4d673f45578`, built at
-`2026-10-14T16:45:24Z`, with `dirty: true`. That advertised source (branch
-`stabilisation`) was also checked. Neither commit is an ancestor of the other,
-and the history query, its handler and the storage operation set are the same
-at both. A dirty build cannot be reproduced from its commit alone, so the
-deployed node dependency remains unpinned. Missing, changed or dirty version
-information requires a fresh compatibility assessment; the fetcher does not
-gate on a reported version. Provenance does not authenticate RPC data, and
-row validation remains required. A node whose ordering, status or row shape
+(`test/fixtures/demos-node2-history.json`). A node whose ordering, status or row shape
 differs from these is not supported. A cursor from an earlier release (`dacs-demos-history-v1.`)
 requires a restart from null; `enumerateListings` returns `retryCursor: null`
 for it.
@@ -971,10 +928,7 @@ payment dispositions, payload attestations, deliverables and entitlements,
 verifier returned `true`. It is not a payment or delivery verdict:
 before acting on payment or delivery, run the agreement-bound checks (DACS-4
 SB-1's complete PC-2 tuple, DPA-2's exact-byte digest, DV-1's cleartext hash),
-through the fulfilment validators or your own verifier. The current
-`verifySettlementEvidence` refuses at this pin; explicitly select
-`verifyLegacySettlementEvidence` for historical inspection, whose result does
-not grant current authority. The verifier receives the record as read, the
+through the fulfilment validators or your own verifier. The verifier receives the record as read, the
 binding and the classified anchor (`kind`, `logicalAddress`, `nativeAddress`),
 which is what it needs to check the logical slot.
 A missing or non-function `verifyArtifact` is refused when the repository is
@@ -1162,10 +1116,6 @@ after the caller wires that complete evidence-set gate; completed publication
 still remains `audit-pending` until the bundle itself is finalized and
 independently resolvable under ST-11. EBFAB extended pointers require the same
 verified authority token; URL shape validation is not a deployment SSRF policy.
-At the pinned unreleased Standard this verifier grants authority only for explicit
-archival replay (`jobIdProfile: "legacy"`, pre-JID-1 jobs), so its verdicts and
-tokens are archival. A JID-1 bundle, including every bundle with a
-`pay-alternative` projection, is refused with the release-admission error.
 
 For reputation that makes an explicit settlement-verification claim, use
 `deriveSettlementVerifiedReputation()` or its replayable counterpart. These
@@ -1342,8 +1292,7 @@ unstable `raw` escape hatch when they intentionally depend on demosdk types.
 
 `npm pack` runs a clean build before it creates the tarball, so a package made
 from a source checkout contains every declared ESM, type, and CLI export. To
-reproduce the release-candidate checks locally, install Bun 1.3.14 alongside
-Node and npm. This is the Bun version pinned by the package-artifact CI workflow:
+reproduce the release-candidate checks locally:
 
 ```sh
 npm ci

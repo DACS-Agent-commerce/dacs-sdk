@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -152,7 +151,7 @@ describe("Demos immutable publication coordinator track", () => {
         getPublicKey: async () => Uint8Array.from({ length: 32 }, () => 0x11),
         sign: async () => new Uint8Array(64),
         resolveIdentity: async (ref) => ({ ref, raw: {} }),
-        readAnchor: async () => admittedFixture(ARTIFACT),
+        readAnchor: async () => ARTIFACT,
         resolveAnchorByName: async () => ({
           status: "present" as const,
           address: "stor-test-payment-evidence",

@@ -1,8 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
-import { contentHash, legacyJobAddressing, isCurrentJobId, stripSignature } from "../canonical/index.js";
+import { contentHash, paymentEvidenceAddress, stripSignature } from "../canonical/index.js";
 import { canonicalize } from "../canonical/jcs.js";
-import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../version.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import {
   ARTIFACT_SEPARATORS,
@@ -137,11 +136,6 @@ export interface EvidenceBoundBundleAuthority {
 }
 
 export interface EvidenceBoundBundleVerifierDeps {
-  /**
-   * Omitted/current refuses every bundle at the unreleased pin. `legacy` is
-   * explicit archival replay of pre-JID-1 bundles; JID-1 bundles are refused.
-   */
-  jobIdProfile?: "current" | "legacy";
   resolvePublicKey: (claim: string) => Promise<Uint8Array | null>;
   verify: Verifier;
 }
@@ -219,13 +213,6 @@ function captureDeps(deps: EvidenceBoundBundleVerifierDeps): EvidenceBoundBundle
   ) {
     throw new DacsError("evidence-bound verifier dependencies must be a plain data object");
   }
-  const profileDescriptor = Object.getOwnPropertyDescriptor(deps, "jobIdProfile");
-  if (profileDescriptor && (!("value" in profileDescriptor) ||
-      (profileDescriptor.value !== undefined && profileDescriptor.value !== "current" &&
-        profileDescriptor.value !== "legacy"))) {
-    throw new DacsError("evidence-bound jobIdProfile must be current or legacy");
-  }
-  const jobIdProfile = profileDescriptor?.value === "legacy" ? "legacy" : "current";
   const resolveDescriptor = Object.getOwnPropertyDescriptor(deps, "resolvePublicKey");
   const verifyDescriptor = Object.getOwnPropertyDescriptor(deps, "verify");
   if (
@@ -243,7 +230,6 @@ function captureDeps(deps: EvidenceBoundBundleVerifierDeps): EvidenceBoundBundle
   const resolve = resolveDescriptor.value.bind(deps) as EvidenceBoundBundleVerifierDeps["resolvePublicKey"];
   const verify = verifyDescriptor.value.bind(deps) as Verifier;
   return Object.freeze({
-    jobIdProfile,
     resolvePublicKey: async (claim: string) => {
       const key = await resolve(claim);
       return key === null ? null : Uint8Array.from(key);
@@ -520,8 +506,7 @@ function receiptMatches(
   if (record.phase.startsWith("pay-")) {
     if (typeof execution.railId !== "string" || execution.railId.length === 0) return false;
     try {
-      // Only archival (pre-JID-1) bundles reach graph resolution at this pin.
-      expectedAddress = legacyJobAddressing.paymentEvidenceAddress(
+      expectedAddress = paymentEvidenceAddress(
         bundle.jobId,
         execution.railId,
         execution.phaseIndex,
@@ -658,8 +643,6 @@ async function knownAuthenticatedSuccessor(
  * Validate one complete DACS-5 v0.4 authority graph. The expected phase set is
  * derived only after the EBFAB and Listing signatures verify; callers cannot
  * provide it, phase labels, or ST-8 classification as trusted inputs.
- * At the unreleased Standard pin only explicit archival (pre-JID-1) replay can
- * verify; a JID-1 bundle never yields an execution authority.
  */
 export async function verifyEvidenceBoundFaultBundle(
   input: EvidenceBoundBundleAuthority,
@@ -687,15 +670,6 @@ export async function verifyEvidenceBoundFaultBundle(
     return reject("execution-authority", "authority is not inert canonical JSON");
   }
   const bundle = authority.bundle;
-  // PROFILE at the pin has no admitted coordinated release: refuse every JID-1
-  // bundle before key lookup, whatever profile label the caller passes. The
-  // explicit legacy label replays pre-JID-1 archival bundles only.
-  if (isRecord(bundle) && isCurrentJobId(bundle.jobId)) {
-    return reject("execution-authority", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
-  }
-  if (deps.jobIdProfile !== "legacy") {
-    return reject("execution-authority", "jobId must be a JID-1 canonical ULID");
-  }
   if (
     !isEvidenceBoundFaultAttestationBundle(bundle) ||
     !faultedPartyIsPermitted(bundle as unknown as Record<string, unknown>) ||
@@ -998,8 +972,7 @@ export async function verifyEvidenceBoundFaultBundle(
 /**
  * Candidate-vector projection of SEB-2..SEB-6. It accepts only an authority
  * object produced by {@link verifyEvidenceBoundFaultBundle}; a caller-created
- * object containing plausible phase keys has no standing. At the unreleased
- * pin such an object exists only for archival replay, so the verdict is archival.
+ * object containing plausible phase keys has no standing.
  */
 export function evaluateEvidenceBoundSettlementSet(
   authority: VerifiedEvidenceBoundExecutionAuthority,

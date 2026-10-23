@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -206,8 +205,8 @@ async function publishedPayDemFixture() {
     options: {
       ...value.options,
       listingRef,
-      readAnchor: vi.fn(async (locator: string) => admittedFixture(locator === listingRef
-        ? listing as unknown as Record<string, unknown> : null)),
+      readAnchor: vi.fn(async (locator: string) => locator === listingRef
+        ? listing as unknown as Record<string, unknown> : null),
       authenticateAnchor: vi.fn(async (input: { logicalAddress: string }) =>
         input.logicalAddress === logicalAddress),
       readJson: vi.fn(async (url: string) => url.endsWith("agent.json") ? card : index),
@@ -362,8 +361,8 @@ describe("existing x402 Listing doctor", () => {
       ...value.options,
       listingRef,
       now: 1_000,
-      readAnchor: vi.fn(async (locator: string) => admittedFixture(locator === listingRef
-        ? listing as unknown as Record<string, unknown> : null)),
+      readAnchor: vi.fn(async (locator: string) => locator === listingRef
+        ? listing as unknown as Record<string, unknown> : null),
       authenticateAnchor: vi.fn(async (input: { logicalAddress: string }) =>
         input.logicalAddress === logicalAddress),
       readJson: vi.fn(async (url: string) => url.endsWith("agent.json") ? card : index),

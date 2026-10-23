@@ -17,7 +17,6 @@ import {
 } from "../../src/artifacts/index.js";
 import {
   bundleAddress,
-  legacyJobAddressing,
   canonicalize,
   contentHash,
   listingAddress,
@@ -2962,7 +2961,7 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       ).resolves.toEqual(retained.result);
       const mismatched = attackerReencode(retained.result);
       if (kind === "logical") {
-        mismatched.logicalAddress = bundleAddress("5VVYZTTFQ0SPCM4K7FC7J5VZ3Z", "seller");
+        mismatched.logicalAddress = bundleAddress("another-job", "seller");
       } else {
         mismatched.nativeAddress = "stor-forged-native-address";
         mismatched.anchorReceipt.nativeAddress = mismatched.nativeAddress;
@@ -3066,7 +3065,7 @@ describe("DACS-5 §10.4.2 BundleBinding Standard vectors", () => {
       }>;
     };
     for (const vector of vectorSet.vectors) {
-      const requestedAddress = legacyJobAddressing.bundleAddress(vector.request.jobId, vector.request.role);
+      const requestedAddress = bundleAddress(vector.request.jobId, vector.request.role);
       for (const binding of vector.bindings) {
         expect(binding.logicalAddress === requestedAddress).toBe(
           vector.name !== "bb-missing-binding",
@@ -3074,7 +3073,7 @@ describe("DACS-5 §10.4.2 BundleBinding Standard vectors", () => {
         expect(binding.logicalAddress).toBe(
           vector.name === "bb-tuple-mismatch"
             ? requestedAddress
-            : legacyJobAddressing.bundleAddress(binding.jobId, binding.role),
+            : bundleAddress(binding.jobId, binding.role),
         );
         expect(isBundleBinding(binding)).toBe(vector.name !== "bb-tuple-mismatch");
       }

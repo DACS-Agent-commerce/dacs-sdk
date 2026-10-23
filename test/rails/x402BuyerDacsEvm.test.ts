@@ -1,4 +1,3 @@
-import "../helpers/unreleasedRailMechanics.js";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import {
   decodePaymentSignatureHeader,
@@ -29,7 +28,7 @@ const OTHER_PRIVATE_KEY = keccak256(
   stringToHex("dacs-sdk:test:x402-buyer:other"),
 );
 const ACCOUNT = privateKeyToAccount(PRIVATE_KEY);
-const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const JOB_ID = "job-real-x402-dacs-nonce";
 const PHASE_INDEX = 4;
 const NETWORK = "eip155:84532" as const;
 const PAYEE = "0x1111111111111111111111111111111111111111";

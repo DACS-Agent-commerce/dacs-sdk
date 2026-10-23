@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -232,7 +231,7 @@ async function fixture() {
         }),
         verifyDemosAnchorReceipt: vi.fn(async () => true),
         readAnchor: vi.fn(async (address: string) =>
-          admittedFixture(structuredClone(anchors.get(address) ?? null))),
+          structuredClone(anchors.get(address) ?? null)),
       },
     });
   }

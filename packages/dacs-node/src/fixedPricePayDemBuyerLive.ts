@@ -1,4 +1,3 @@
-import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import {
   createPayDemSellerObserver,
   type AuthenticatedRailDefinition,
@@ -47,7 +46,6 @@ export interface DacsFixedPricePayDemBuyerLiveOptionsV1 {
 export async function createDacsFixedPricePayDemBuyerLiveV1(
   options: Readonly<DacsFixedPricePayDemBuyerLiveOptionsV1>,
 ): Promise<Readonly<DacsBuyerPayDemLiveCommerceGraphV1>> {
-  requireDacsCurrentProfileForNewEffectsV1();
   const observer = options.observeDemosTransfer === undefined
     ? createPayDemSellerObserver({
         rpc: options.demosRpcUrl,

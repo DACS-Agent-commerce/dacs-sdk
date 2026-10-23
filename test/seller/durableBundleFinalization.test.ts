@@ -88,7 +88,7 @@ import {
 } from "../../src/seller/durableBundleFinalization.js";
 
 const NOW = 1_786_100_000_000;
-const JOB_ID = "571QTWQ43DR6KHTECHCJE94TVX";
+const JOB_ID = "seller-bundle-durable-v2";
 const BUYER = `demos:0x${"1".repeat(64)}`;
 const SELLER = `demos:0x${"2".repeat(64)}`;
 const AGREEMENT_HASH = "a".repeat(64);

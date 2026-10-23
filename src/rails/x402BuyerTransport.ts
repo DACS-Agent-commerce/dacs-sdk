@@ -1,4 +1,3 @@
-import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
@@ -344,7 +343,6 @@ export async function prepareX402BuyerSettlement(
   input: Readonly<PrepareX402BuyerSettlementInput>,
   deps: Readonly<PrepareX402BuyerSettlementDeps>,
 ): Promise<X402BuyerSettlementPreparation> {
-  assertDacsRailEffectAdmission(() => input.authority.jobId);
   let rawAuthority: unknown;
   let rawChallengeHeaders: unknown;
   try {
@@ -555,7 +553,6 @@ export function createX402BuyerPaidRequestTransport(
       intent: Readonly<X402BuyerSettlementIntent>,
       fence: Readonly<X402BuyerEffectFence>,
     ) {
-      assertDacsRailEffectAdmission(() => intent.jobId);
       let assertCurrent: X402BuyerEffectFence["assertCurrent"];
       let retainedIntent: Readonly<X402BuyerSettlementIntent>;
       try {

@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { x402BuyerSettlementKey } from "@kynesyslabs/dacs";
 import { ARTIFACT_SEPARATORS, type ComponentSignature } from "@kynesyslabs/dacs/artifacts";
 import { contentHash } from "@kynesyslabs/dacs/canonical";
@@ -20,7 +19,7 @@ const dependencies = vi.hoisted(() => ({
 
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@kynesyslabs/dacs")>();
-  dependencies.realVerifySettlementEvidence = actual.verifyLegacySettlementEvidence;
+  dependencies.realVerifySettlementEvidence = actual.verifySettlementEvidence;
   return { ...actual, verifySettlementEvidence: dependencies.verifySettlementEvidence };
 });
 
@@ -93,7 +92,7 @@ function receivedFixture(
           artifacts.has(logicalAddress)
             ? { status: "present", address: logicalAddress }
             : { status: "absent" },
-        readAnchor: async (address: string) => admittedFixture(artifacts.get(address) ?? null),
+        readAnchor: async (address: string) => artifacts.get(address) ?? null,
         resolveDemosAnchorReceipt: async (input: {
           logicalAddress: string;
           nativeAddress: string;
@@ -120,7 +119,7 @@ function receivedFixture(
       parameters,
     } as never,
   });
-  const authorizeBytes = (body: Uint8Array) => commerce.buyerReceived.authorizeReceived({
+  const authorize = (body: unknown) => commerce.buyerReceived.authorizeReceived({
     operation: { order: { jobId: JOB_ID } },
     intent: {
       jobId: JOB_ID,
@@ -131,10 +130,9 @@ function receivedFixture(
       signedEvent: { httpResource: "https://seller.example/delivery" },
     },
     response: { contentType: "application/json; charset=utf-8" },
-    body,
+    body: new TextEncoder().encode(JSON.stringify(body)),
   } as never);
-  const authorize = (body: unknown) => authorizeBytes(new TextEncoder().encode(JSON.stringify(body)));
-  return { payload, evidence, authorize, authorizeBytes };
+  return { payload, evidence, authorize };
 }
 
 describe("fixed-price x402 buyer commerce", () => {
@@ -160,21 +158,13 @@ describe("fixed-price x402 buyer commerce", () => {
     }, expect.anything());
   });
 
-  it("rejects duplicate raw deliverable members before evidence verification", async () => {
-    const { payload, authorizeBytes } = receivedFixture();
-    const firstKey = Object.keys(payload)[0]!;
-    const raw = `{${JSON.stringify(firstKey)}:null,${JSON.stringify(payload).slice(1)}`;
-    await expect(authorizeBytes(new TextEncoder().encode(raw))).resolves.toBe("indeterminate");
-    expect(dependencies.verifySettlementEvidence).not.toHaveBeenCalled();
-  });
-
   it("rejects a response that differs from the anchored deliverable outside its signed scope", async () => {
     const { payload, authorize } = receivedFixture();
     const unanchored = { ...payload, signature: "not-anchored" };
     expect(contentHash(unanchored)).toBe(contentHash(payload));
 
-    await expect(authorize(unanchored), "C6 compares anchored deliverable bytes").resolves.toBe(false);
-    expect(dependencies.verifySettlementEvidence).not.toHaveBeenCalled();
+    await expect(authorize(unanchored)).resolves.toBe(false);
+    expect(dependencies.verifySettlementEvidence).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -295,8 +285,8 @@ function paymentEvidenceFixture() {
       jobId: JOB_ID,
       logicalAddress: PAYMENT_ADDRESS,
       evidenceHash: contentHash(evidence),
+      evidence,
       ...request,
-      evidence: admittedFixture(Object.hasOwn(request, "evidence") ? request.evidence : evidence),
     } as never);
   return { evidence, settlementKey, settlementLoad, state, verify };
 }
@@ -366,7 +356,7 @@ describe("fixed-price x402 buyer payment-evidence verification", () => {
     await expect(f.verify({
       evidence: smaller,
       evidenceHash: contentHash(smaller),
-    }), "PC6 rejects smaller evidence finality echo").resolves.toEqual({
+    })).resolves.toEqual({
       disposition: "invalid",
       reason: "payment evidence settlement binding invalid",
     });
@@ -466,8 +456,7 @@ describe("fixed-price x402 buyer payment-evidence verification", () => {
   it("rejects a request whose evidence hash is not the signed-scope hash", async () => {
     const f = paymentEvidenceFixture();
 
-    await expect(f.verify({ evidenceHash: "e".repeat(64) }),
-      "C6 binds requested evidence hash").resolves.toEqual({
+    await expect(f.verify({ evidenceHash: "e".repeat(64) })).resolves.toEqual({
       disposition: "invalid",
       reason: "payment evidence cryptographic verification failed",
     });

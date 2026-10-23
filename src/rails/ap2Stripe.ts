@@ -1,4 +1,3 @@
-import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import { baseUnits, canonicalizeDecimal, sha256Hex } from "../canonical/index.js";
@@ -270,7 +269,6 @@ export function createStripeAp2Integration(
     }),
 
     async submit(input): Promise<Ap2ProviderSubmission> {
-      assertDacsRailEffectAdmission(() => input.intent.jobId);
       if (input.idempotencyKey !== input.intent.idempotencyKey ||
           input.fence.idempotencyKey !== input.intent.idempotencyKey) {
         throw new DacsError("Stripe AP2 submission changed the AP2-6 idempotency key");

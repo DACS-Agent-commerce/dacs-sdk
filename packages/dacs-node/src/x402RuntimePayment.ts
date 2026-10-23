@@ -1,4 +1,3 @@
-import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import {
   createX402BuyerEvmAuthorizationProvider,
   createX402BuyerPaidRequestTransport,
@@ -246,12 +245,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     client: evm.runtime.readClient,
     authorizeIntent,
     ...(confirmUnused === undefined ? {} : { confirmUnused }),
-    recoverDisclosure: async (...args) => {
-      // Disclosure recovery may replay the retained paid HTTP request. Chain
-      // observation stays available, but a new disclosure effect needs admission.
-      requireDacsCurrentProfileForNewEffectsV1();
-      return recoverDisclosure(...args);
-    },
+    recoverDisclosure,
   });
   const transport = createX402BuyerPaidRequestTransport(transportOptions);
 
@@ -264,7 +258,6 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     walletSpendAuthority: options.walletSpendAuthority,
     finalityBlocks: options.minimumConfirmations,
     async prepareIntent(operation) {
-      requireDacsCurrentProfileForNewEffectsV1();
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       let preparation: Readonly<DacsX402BuyerRuntimePreparationV1>;
       try {

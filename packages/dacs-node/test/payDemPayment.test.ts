@@ -1,15 +1,8 @@
-// Historical state-machine fixtures run below release admission. Current
-// admission and zero-effect composition have separate unmocked coverage.
-vi.mock("../src/currentProfileAdmission.js", () => ({
-  requireDacsCurrentProfileForNewEffectsV1: vi.fn(),
-}));
-
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { requireDacsCurrentProfileForNewEffectsV1 } from "../src/currentProfileAdmission.js";
 
 import {
   createInMemoryWalletSpendStateStore,
@@ -1310,26 +1303,6 @@ describe("native DEM buyer payment track", () => {
       workerId: "buyer-coordinator-after-restart",
       operations: { payment: resumedPayment },
     });
-    vi.mocked(requireDacsCurrentProfileForNewEffectsV1).mockImplementationOnce(() => {
-      throw new Error("profile admission unavailable");
-    });
-    await resumed.runPending({ limit: 1 });
-    expect(settle).not.toHaveBeenCalled();
-    expect(publishNotice).not.toHaveBeenCalled();
-    expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
-      .toMatchObject({ state: "indeterminate", reasonCode: "pay-dem-payment-notice-pending" });
-
-    // Admission resumes for this same retained operation; a failed publication
-    // also remains retryable, with no second transfer.
-    publishNotice.mockImplementationOnce(async () => {
-      throw new Error("notice queue unavailable");
-    });
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await resumed.runPending({ limit: 1 });
-    expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
-      .toMatchObject({ state: "indeterminate", reasonCode: "pay-dem-payment-notice-pending" });
-    expect(publishNotice).toHaveBeenCalledOnce();
-    await new Promise((resolve) => setTimeout(resolve, 5));
     await resumed.runPending({ limit: 1 });
 
     expect(settle).not.toHaveBeenCalled();
@@ -1357,8 +1330,6 @@ describe("native DEM buyer payment track", () => {
       .not.toHaveProperty("networkFeeOs");
     expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });
-    expect(reconcile).toHaveBeenCalledTimes(3);
-    expect(publishNotice).toHaveBeenCalledTimes(2);
   });
 
   it("holds wallet budget when an older actor checkpoint is restored after transfer", async () => {

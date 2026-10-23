@@ -1,4 +1,3 @@
-import { admittedFixture } from "./helpers/admitted.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -100,7 +99,7 @@ function fixture() {
     getPublicKey: async () => publicKey,
     sign: async (bytes: Uint8Array) => Uint8Array.from(sign(null, bytes, sellerKeys.privateKey)),
     resolveIdentity: vi.fn(),
-    readAnchor: vi.fn(async (ref: string) => admittedFixture(ref === LISTING_REF ? anchored : null)),
+    readAnchor: vi.fn(async (ref: string) => ref === LISTING_REF ? anchored : null),
     resolveAnchorByName: vi.fn(),
     scanOwnAnchorsByNamePrefix: vi.fn(async () => ({ status: "ok" as const, anchors: [] })),
     anchorWriteOnce: vi.fn(async (_name: string, value: object) => {

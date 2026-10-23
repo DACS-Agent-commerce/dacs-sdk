@@ -12,6 +12,7 @@ import {
   ARTIFACT_SEPARATORS,
   BUNDLE_BINDING_SEPARATOR,
   EVIDENCE_BOUND_FAULT_BUNDLE_POINTER_SEPARATOR,
+  bundleAddress,
   canonicalize,
   bundlesDiverge,
   evaluateEvidenceBoundSettlementSet,
@@ -22,7 +23,6 @@ import {
   contentHash,
   deriveReputation,
   isEvidenceBoundFaultAttestationBundle,
-  legacyJobAddressing,
   projectAlternativePaymentPipeline,
   validateAlternativePaymentListing,
   type EvidenceBoundBundleAuthority,
@@ -31,7 +31,6 @@ import {
   type VerifiedEvidenceBoundExecutionAuthority,
 } from "../../src/index.js";
 import { signedBytes } from "../../src/crypto/signing.js";
-import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../../src/version.js";
 import {
   ed25519Verify,
   ed25519Sign,
@@ -51,7 +50,6 @@ const read = (name: string): any =>
 
 function depsFor(publicKeys: Record<string, string>): EvidenceBoundBundleVerifierDeps {
   return {
-    jobIdProfile: "legacy", // Byte-exact historical Standard fixtures. Explicit archival replay.
     resolvePublicKey: async (claim) => {
       const value = publicKeys[claim];
       return value === undefined
@@ -93,7 +91,6 @@ async function compactAuthority(options: {
   listingSellerClaim?: string;
   listingSignerClaim?: string;
   listingSigningKey?: ReturnType<typeof privateKeyFromSeed>;
-  jobId?: string;
 } = {}) {
   const buyerClaim = options.buyerClaim ?? AUTHORITY_BUYER.claim;
   const sellerClaim = options.sellerClaim ?? AUTHORITY_SELLER.claim;
@@ -123,7 +120,7 @@ async function compactAuthority(options: {
   };
   const copies = await buildEvidenceBoundTwoSidedBundle(
     {
-      jobId: options.jobId ?? "ebfab-compact-authority-job",
+      jobId: "ebfab-compact-authority-job",
       outcome: "aborted-by-self",
       faultedParty: "buyer",
       listingRef: {
@@ -170,46 +167,6 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
   const corpus = read("bundle-settlement-evidence-bijection-v0.4.json");
   const deps = depsFor(corpus.publicKeys);
 
-  it("rejects historical jobs under the default current profile before key lookup", async () => {
-    let lookups = 0;
-    const historical = Object.values(corpus.executionAuthorities)[0] as EvidenceBoundBundleAuthority;
-    const result = await verifyEvidenceBoundFaultBundle(historical, {
-      resolvePublicKey: async () => { lookups++; return null; },
-      verify: () => true,
-    });
-    expect(result).toMatchObject({ decision: "rejected", reason: "jobId must be a JID-1 canonical ULID" });
-    expect(lookups).toBe(0);
-  });
-
-  it("never grants authority for a signed JID-1 bundle without release admission, under any label", async () => {
-    const current = await compactAuthority({ jobId: "0C1906KNZ4AX9GYVRFVAGY8F89" });
-    const archival = await compactAuthority();
-    const keys = new Map([
-      [AUTHORITY_BUYER.claim, AUTHORITY_BUYER.raw],
-      [AUTHORITY_SELLER.claim, AUTHORITY_SELLER.raw],
-    ]);
-    let lookups = 0;
-    const depsWith = (jobIdProfile?: "current" | "legacy"): EvidenceBoundBundleVerifierDeps => ({
-      ...(jobIdProfile ? { jobIdProfile } : {}),
-      resolvePublicKey: async (claim) => { lookups++; return keys.get(claim) ?? null; },
-      verify: async (bytes, signature, publicKey) =>
-        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
-    });
-    for (const label of [undefined, "current", "legacy"] as const) {
-      const result = await verifyEvidenceBoundFaultBundle(current.input, depsWith(label));
-      expect(result, String(label)).toEqual({
-        decision: "rejected",
-        reasonCode: "execution-authority",
-        reason: DACS_CURRENT_PROFILE_ADMISSION_ERROR,
-      });
-    }
-    expect(lookups).toBe(0);
-    // The same signed graph under a pre-JID-1 job id is archival replay only.
-    const replay = await verifyEvidenceBoundFaultBundle(archival.input, depsWith("legacy"));
-    expect(replay.decision, replay.reason).toBe("verified");
-    expect(lookups).toBeGreaterThan(0);
-  });
-
   it("authenticates the Standard authority graphs and rejects every invalid graph", async () => {
     for (const [name, raw] of Object.entries<any>(corpus.executionAuthorities)) {
       const result = await verifyEvidenceBoundFaultBundle(raw, deps);
@@ -237,7 +194,6 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
       [AUTHORITY_SELLER.claim, AUTHORITY_SELLER.raw],
     ]);
     const qualifiedDeps: EvidenceBoundBundleVerifierDeps = {
-      jobIdProfile: "legacy",
       resolvePublicKey: async (claim) => {
         resolved.push(claim);
         return keys.get(claim) ?? null;
@@ -275,7 +231,7 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
       bindingVersion: "1" as const,
       jobId: built.input.bundle.jobId,
       role: "buyer" as const,
-      logicalAddress: legacyJobAddressing.bundleAddress(built.input.bundle.jobId, "buyer"),
+      logicalAddress: bundleAddress(built.input.bundle.jobId, "buyer"),
       nativeAddress: "stor-ebfab-qualified-bundle",
       bundleContentHash: pointerScope.fullBundleContentHash,
       signer: bindingSigner,
@@ -340,7 +296,6 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
       [noncanonicalSeller, AUTHORITY_SELLER.raw],
     ]);
     const adversarialDeps: EvidenceBoundBundleVerifierDeps = {
-      jobIdProfile: "legacy",
       resolvePublicKey: async (claim) => keys.get(claim) ?? null,
       verify: async (bytes, signature, publicKey) =>
         ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
@@ -502,7 +457,6 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
       [AUTHORITY_SELLER.claim, AUTHORITY_SELLER.raw],
     ]);
     const baseDeps: EvidenceBoundBundleVerifierDeps = {
-      jobIdProfile: "legacy",
       resolvePublicKey: async (claim) => baseKeys.get(claim) ?? null,
       verify: async (bytes, signature, publicKey) =>
         ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
@@ -540,7 +494,7 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
     }
   });
 
-  it("refuses a current pay-alternative EBFAB before key lookup at the unreleased pin", async () => {
+  it("accepts the SDK's normative signed Listing shape, including inert extensions", async () => {
     const seed = (label: string) =>
       Uint8Array.from(createHash("sha256").update(label).digest());
     const buyerSeed = seed("ebfab-full-listing-buyer");
@@ -643,8 +597,6 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
     });
     expect(admission.verdict).toBe("pass");
     if (admission.verdict !== "pass") throw new Error(admission.reason);
-    // Alternative-payment projections exist only for JID-1 agreements, so this
-    // EBFAB is current-profile input and is refused at the unreleased pin.
     const jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
     const projection = await projectAlternativePaymentPipeline(
       admission,
@@ -718,44 +670,68 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
       { validateEvidenceSet: async () => ({ decision: "verified" }) },
     );
     const bundle = copies.buyerCopy!;
-    const keys: Record<string, Uint8Array> = {
-      [buyerClaim]: buyerRaw,
-      [sellerClaim]: sellerRaw,
-      [orchestratorClaim]: orchestratorRaw,
-    };
-    const lookups: string[] = [];
-    const recordingDeps = (jobIdProfile?: "current" | "legacy"): EvidenceBoundBundleVerifierDeps => ({
-      ...(jobIdProfile ? { jobIdProfile } : {}),
-      resolvePublicKey: async (claim) => { lookups.push(claim); return keys[claim] ?? null; },
-      verify: async (bytes, signature, publicKey) =>
-        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
-    });
-    const base = {
-      listing,
-      referenceValidationByCanonicalRef: {},
-      bundleLifecycle: { state: "included" as const },
-      sessionExecutionAuthorityByPhaseKey: {},
-      verifiedReceiptByCanonicalRef: {},
-    };
-    for (const [name, input] of [
-      ["valid", { ...base, bundle, alternativePaymentProjection: projection }],
-      ["incomplete signer set", {
-        ...base,
-        bundle: { ...bundle, signatures: bundle.signatures.filter((signature) => signature.party !== sellerClaim) },
+    const result = await verifyEvidenceBoundFaultBundle(
+      {
+        bundle,
+        listing,
+        referenceValidationByCanonicalRef: {},
+        bundleLifecycle: { state: "included" },
+        sessionExecutionAuthorityByPhaseKey: {},
+        verifiedReceiptByCanonicalRef: {},
         alternativePaymentProjection: projection,
-      }],
-      ["caller-cloned projection", { ...base, bundle, alternativePaymentProjection: structuredClone(projection) }],
-    ] as const) {
-      for (const label of [undefined, "current", "legacy"] as const) {
-        const result = await verifyEvidenceBoundFaultBundle(input as EvidenceBoundBundleAuthority, recordingDeps(label));
-        expect(result, `${name} / ${String(label)}`).toEqual({
-          decision: "rejected",
-          reasonCode: "execution-authority",
-          reason: DACS_CURRENT_PROFILE_ADMISSION_ERROR,
-        });
-      }
-    }
-    expect(lookups).toEqual([]);
+      },
+      depsFor({
+        [buyerClaim]: Buffer.from(buyerRaw).toString("base64url"),
+        [sellerClaim]: Buffer.from(sellerRaw).toString("base64url"),
+        [orchestratorClaim]: Buffer.from(orchestratorRaw).toString("base64url"),
+      }),
+    );
+    expect(result.decision, result.reason).toBe("verified");
+    const incompleteSignerSet = await verifyEvidenceBoundFaultBundle(
+      {
+        bundle: {
+          ...bundle,
+          signatures: bundle.signatures.filter(
+            (signature) => signature.party !== sellerClaim,
+          ),
+        },
+        listing,
+        referenceValidationByCanonicalRef: {},
+        bundleLifecycle: { state: "included" },
+        sessionExecutionAuthorityByPhaseKey: {},
+        verifiedReceiptByCanonicalRef: {},
+        alternativePaymentProjection: projection,
+      },
+      depsFor({
+        [buyerClaim]: Buffer.from(buyerRaw).toString("base64url"),
+        [sellerClaim]: Buffer.from(sellerRaw).toString("base64url"),
+        [orchestratorClaim]: Buffer.from(orchestratorRaw).toString("base64url"),
+      }),
+    );
+    expect(incompleteSignerSet).toMatchObject({
+      decision: "rejected",
+      reasonCode: "execution-authority",
+    });
+    const forged = await verifyEvidenceBoundFaultBundle(
+      {
+        bundle,
+        listing,
+        referenceValidationByCanonicalRef: {},
+        bundleLifecycle: { state: "included" },
+        sessionExecutionAuthorityByPhaseKey: {},
+        verifiedReceiptByCanonicalRef: {},
+        alternativePaymentProjection: structuredClone(projection),
+      },
+      depsFor({
+        [buyerClaim]: Buffer.from(buyerRaw).toString("base64url"),
+        [sellerClaim]: Buffer.from(sellerRaw).toString("base64url"),
+        [orchestratorClaim]: Buffer.from(orchestratorRaw).toString("base64url"),
+      }),
+    );
+    expect(forged).toMatchObject({
+      decision: "rejected",
+      reasonCode: "execution-authority",
+    });
   });
 
   it("replays all 30 exact-set cases with normative reason precedence", async () => {
@@ -951,11 +927,11 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
     const buyerClaim = `demos:0x${Buffer.from(buyerRaw).toString("hex")}`;
     const sellerClaim = `demos:0x${Buffer.from(sellerRaw).toString("hex")}`;
     const session = {
-      jobId: "5KMW0WNG2DQYS86BBGGQRN0E5J",
+      jobId: "ebfab-producer-job",
       outcome: "completed" as const,
       listingRef: { listingId: "listing-ebfab-producer", version: 1, contentHash: "a".repeat(64) },
       agreementRef: {
-        anchor: { kind: "storage-program" as const, locator: "dacs3:commit:5KMW0WNG2DQYS86BBGGQRN0E5J" },
+        anchor: { kind: "storage-program" as const, locator: "dacs3:commit:ebfab-producer-job" },
         contentHash: "b".repeat(64),
       },
       phaseSummary: [{ index: 0, kind: "commit-agreement" as const, outcome: "ok" as const }],

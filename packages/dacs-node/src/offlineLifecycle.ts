@@ -37,7 +37,7 @@ import {
   verifyBundleCopy,
   verifyBundleCore,
   verifyCompositeVerificationRecord,
-  verifyLegacySettlementEvidence,
+  verifySettlementEvidence,
   type AgreementArtifact,
   type ProtocolAnchorReceipt as AnchorReceipt,
   type AnchoredFinalityCommitment,
@@ -1325,8 +1325,7 @@ async function verifyEvidence(
   expectedDeliveryLocator: string,
   attestationRef: Readonly<AttestationRef>,
 ) {
-  // This explicitly non-authoritative simulation inspects historical evidence.
-  return verifyLegacySettlementEvidence(
+  return verifySettlementEvidence(
     evidence,
     evidence["phase"] === "pay-ap2"
       ? {

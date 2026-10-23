@@ -1,4 +1,3 @@
-import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -783,7 +782,6 @@ export function createDacsPayDemBuyerPaymentTrackV1(
     track: "payment",
     workerId: options.workerId,
     async buildInput(operation) {
-      requireDacsCurrentProfileForNewEffectsV1();
       const retained = loadDacsLiveOrderInputForTrackV1(operation, database);
       const authority = captureAuthority(
         await options.resolveAuthority({ operation, retained }),
@@ -804,12 +802,6 @@ export function createDacsPayDemBuyerPaymentTrackV1(
     },
     adapter: {
       async execute({ input, fence }) {
-        try {
-          requireDacsCurrentProfileForNewEffectsV1();
-        } catch {
-          return { effectControlVersion: "1", status: "operator-action",
-            reasonCode: "current-dacs-profile-unavailable" };
-        }
         const payment = capturePaymentInput(input);
         await fence.assertCurrent();
         const reservation = walletReservation(payment);
@@ -933,9 +925,6 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               reservation,
               walletSettlement(payment, captured.result.settlement),
             );
-            // Reconcile the settled wallet even while admission is unavailable,
-            // but keep the payment retryable until its seller notice is retained.
-            requireDacsCurrentProfileForNewEffectsV1();
             await options.publishNotice({
               notice: createDacsPayDemPaymentNoticeV1(
                 payment,

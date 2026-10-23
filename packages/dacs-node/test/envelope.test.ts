@@ -1,4 +1,3 @@
-import { admitArtifactJson, snapshotAdmittedArtifact } from "@kynesyslabs/dacs";
 import {
   ed25519Sign,
   privateKeyFromSeed,
@@ -656,15 +655,4 @@ describe("DACS HTTP envelope v1", () => {
     });
     expect(resolver).not.toHaveBeenCalled();
   });
-});
-
-
-it("retains nested byte admission across authenticated envelope snapshots", async () => {
-  const envelope = await createVectorEnvelope("agreement-proposal", 31);
-  const raw = admitArtifactJson(Buffer.from(JSON.stringify(envelope)));
-  const result = await authenticate(raw);
-  expect(result.status).toBe("authenticated");
-  if (result.status === "authenticated") {
-    expect(snapshotAdmittedArtifact(result.envelope.payload)).toEqual(envelope.payload);
-  }
 });

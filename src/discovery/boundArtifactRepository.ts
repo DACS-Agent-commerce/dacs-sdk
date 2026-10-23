@@ -247,20 +247,11 @@ async function writeResult(
  * requires a publisher: the SDK cannot infer authority to mutate a deployment's
  * well-known index or catalog.
  */
-function invalidCurrentJobAddress(address: string): boolean {
-  // Reserve the standard job-bearing namespaces; custom namespaces stay usable.
-  return address !== "dacs2:registry:v0.1" && /^(?:dacs2:|dacs3:commit:|dacs4:(?:payment|payment-disposition|payload-attestation|deliverable|entitlement|amendment):|dacs5:rating:)/.test(address) &&
-    classifyAnchor(address) === "unknown";
-}
-
 export function createBoundArtifactRepository(
   deps: BoundArtifactRepositoryDeps,
 ): BoundArtifactRepository {
   return {
     async write(logicalAddress, artifact, options) {
-      if (invalidCurrentJobAddress(logicalAddress)) {
-        throw new Error("invalid current-profile job address (JID-1/CF-4)");
-      }
       if (logicalAddress.trim().length === 0) {
         throw new Error("logicalAddress must not be empty");
       }
@@ -345,9 +336,6 @@ export function createBoundArtifactRepository(
     },
 
     async read(logicalAddress, expectedOwner, verifySignature) {
-      if (invalidCurrentJobAddress(logicalAddress)) {
-        return { status: "binding-mismatch", reason: "invalid current-profile job address (JID-1/CF-4)" };
-      }
       return resolveAndRead(deps.index, logicalAddress, expectedOwner, {
         read: (nativeAddress) => deps.adapter.readAnchor(nativeAddress),
         contentHashOf: artifactBindingHashOf(logicalAddress),

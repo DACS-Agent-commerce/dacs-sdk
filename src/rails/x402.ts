@@ -1,5 +1,3 @@
-import { isCurrentJobId, requireCurrentJobId } from "../canonical/addressing.js";
-import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
@@ -35,9 +33,6 @@ import {
 
 /**
  * x402 settlement rail (DACS SR-4 / the reference-backed payment rail).
- * External reference snapshots (runtime dependencies remain lockfile-pinned):
- * EIP-712: ethereum/EIPs@0b06de5e1203b35f1338d9e61d1ccc6965face91/EIPS/eip-712.md
- * ERC-3009: ethereum/ERCs@7c9338feb41279b037700259c631ff6f51b0df3d/ERCS/erc-3009.md
  *
  * x402 couples settlement with delivery: the seller's deliverable URL is
  * paywalled, so the buyer fetches it, receives an HTTP 402 advertising payment
@@ -321,7 +316,6 @@ export async function x402SettleCore(
   deps: X402SettleCoreDeps,
   effectFence?: Readonly<X402PaidEffectFence>,
 ): Promise<SettleResult> {
-  assertDacsRailEffectAdmission(() => params.jobId);
   // Snapshot caller-owned policy and transport scalars before the first
   // callback. A callback may retain the original params object; it must not be
   // able to change the amount, endpoint, token or confirmation depth after the
@@ -631,37 +625,25 @@ export interface X402Rail {
   ): Promise<SettleResult>;
 }
 
-function captureNonceBinding(input: { jobId: string; phaseIndex: number }): {
-  jobId: string; phaseIndex: number;
-} {
-  const jobId = input?.jobId;
-  const phaseIndex = input?.phaseIndex;
-  if (
-    typeof jobId !== "string" || jobId.length === 0 ||
-    !Number.isSafeInteger(phaseIndex) || phaseIndex < 0 || Object.is(phaseIndex, -0)
-  ) {
-    throw new Error("x402 DACS binding requires a jobId and a non-negative phaseIndex");
-  }
-  requireCurrentJobId(jobId);
-  return { jobId, phaseIndex };
-}
-
-/** Pure recomputation for read-only inspection of an existing authorization. */
-async function authorizationNonceForRead(input: { jobId: string; phaseIndex: number }): Promise<`0x${string}`> {
-  const { jobId, phaseIndex } = captureNonceBinding(input);
-  const preimage = `dacs-sb3:v1:${jobId}:${phaseIndex}`;
-  const { sha256, stringToHex } = await import("viem");
-  return sha256(stringToHex(preimage));
-}
-
-/** Derive a fresh phase authorization nonce only under an admitted release. */
+/** Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase. */
 export async function dacsX402AuthorizationNonce(input: {
   jobId: string;
   phaseIndex: number;
 }): Promise<`0x${string}`> {
-  const binding = captureNonceBinding(input);
-  assertDacsRailEffectAdmission(() => binding.jobId);
-  return authorizationNonceForRead(binding);
+  if (
+    typeof input.jobId !== "string" ||
+    input.jobId.length === 0 ||
+    !Number.isSafeInteger(input.phaseIndex) ||
+    input.phaseIndex < 0 ||
+    Object.is(input.phaseIndex, -0)
+  ) {
+    throw new Error(
+      "x402 DACS binding requires a jobId and a non-negative phaseIndex",
+    );
+  }
+  const { sha256, stringToHex } = await import("viem");
+  const preimage = `dacs-sb3:v1:${input.jobId.normalize("NFC")}:${input.phaseIndex}`;
+  return sha256(stringToHex(preimage));
 }
 
 export type DacsX402BindingVerdict =
@@ -673,17 +655,13 @@ export type DacsX402BindingVerdict =
  * Recompute and classify the normative textual EIP-3009 nonce form. A
  * well-formed mismatch is a hard SB-3 rejection; malformed input is an error,
  * not the absent/unverifiable fallback used when no binding can be recovered.
- * A job ID outside JID-1 is that `malformed` verdict (CORE JID-4), returned
- * before any derivation and never repaired into a match.
  */
 export async function verifyDacsX402AuthorizationNonce(
   input: { jobId: string; phaseIndex: number },
   presentedNonce: string,
 ): Promise<DacsX402BindingVerdict> {
   if (!/^0x[0-9a-f]{64}$/.test(presentedNonce)) return "malformed";
-  const jobId = input?.jobId;
-  if (!isCurrentJobId(jobId)) return "malformed";
-  return presentedNonce === await authorizationNonceForRead({ jobId, phaseIndex: input.phaseIndex })
+  return presentedNonce === await dacsX402AuthorizationNonce(input)
     ? "present-and-matches"
     : "present-and-mismatches";
 }
@@ -784,7 +762,6 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
     address: account.address,
     finalityBlocks,
     settle: async (params, effectFence) => {
-      assertDacsRailEffectAdmission(() => params.jobId);
       const paywallUrl = params.paywallUrl;
       const network = params.network;
       const recipientEvm = params.recipientEvm;
@@ -937,7 +914,6 @@ export function x402Settle(
     throw new CounterpartyError("x402 rail must expose its positive finality policy");
   }
   return (req) => {
-    assertDacsRailEffectAdmission(() => req.jobId);
     const { amount, asset: agreementAsset, expectedPayee, jobId, phase, rail: railId } = req;
     if (expectedPayee !== recipientEvm) {
       throw new CounterpartyError(
@@ -967,7 +943,7 @@ export function x402Settle(
       network,
       finality: Object.freeze({ model: "block-depth", finalityBlocks }),
       effectIdentity: `0x${sha256Hex(
-        `dacs-sb3:v1:${jobId}:${phaseIndex}`,
+        `dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
       )}`,
       resource: paywallUrl,
     }) satisfies Readonly<SettlementBinding>;

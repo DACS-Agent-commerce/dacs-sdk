@@ -1,4 +1,3 @@
-import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { CounterpartyError, DacsError } from "../errors.js";
 
@@ -62,8 +61,6 @@ export interface D402ClientLike {
 
 /** Per-session settlement inputs, derived from the negotiated agreement. */
 export interface PayD402SettleParams {
-  /** Current DACS session; required for release-admitted effects. */
-  jobId?: string;
   /** Seller's paywalled delivery URL (returns HTTP 402). */
   paywallUrl: string;
   /** Negotiated recipient Demos address (the expected payTo). */
@@ -157,7 +154,6 @@ export async function payD402SettleCore(
   params: PayD402SettleParams,
   deps: PayD402SettleCoreDeps,
 ): Promise<SettleResult> {
-  assertDacsRailEffectAdmission(() => params.jobId);
   const { client, fetchImpl, payerAddress } = deps;
 
   // 1. Initial request — expect a 402 with a payment requirement.
@@ -271,13 +267,11 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
 
   return {
     address: demos.getAddress(),
-    settle: async (params) => {
-      assertDacsRailEffectAdmission(() => params.jobId);
-      return payD402SettleCore(
+    settle: (params) =>
+      payD402SettleCore(
         { ...params, network: params.network ?? network },
         { client, fetchImpl, payerAddress: demos.getAddress() },
-      );
-    },
+      ),
   };
 }
 
@@ -294,7 +288,6 @@ export function payD402Settle(
   const recipient = paywall.recipient;
   const network = paywall.network ?? "demos";
   return (req) => {
-    assertDacsRailEffectAdmission(() => req.jobId);
     const { amount, expectedPayee } = req;
     if (expectedPayee !== recipient) {
       throw new DacsError(
@@ -302,7 +295,6 @@ export function payD402Settle(
       );
     }
     return rail.settle({
-      jobId: req.jobId,
       paywallUrl,
       recipient,
       amount,

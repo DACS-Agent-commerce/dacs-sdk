@@ -1,5 +1,3 @@
-import { artifactBindingHashOf } from "@kynesyslabs/dacs/discovery";
-import { admitArtifactJson } from "@kynesyslabs/dacs";
 import {
   baseUnits,
   verifySettlementEvidence,
@@ -123,7 +121,7 @@ async function verifyPeerAnchor(
   if (resolved.status !== "present") return null;
   const artifact = await context.demos.adapter.readAnchor(resolved.address);
   if (artifact === null) return null;
-  const hash = artifactBindingHashOf(logicalAddress)(artifact);
+  const hash = contentHash(artifact);
   if (expectedHash !== undefined && hash !== expectedHash) return null;
   const receipt = await context.demos.adapter.resolveDemosAnchorReceipt({
     logicalAddress,
@@ -261,7 +259,8 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             settlement.signedEvent.httpResource !== intent.httpResource ||
             response.contentType.split(";", 1)[0]?.trim().toLowerCase() !==
               "application/json") return false;
-        const payload = admitArtifactJson(body);
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(body);
+        const payload = JSON.parse(text) as unknown;
         if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
           return false;
         }
@@ -295,7 +294,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             evidenceRaw.outcome !== "success" ||
             evidenceRaw.signature.signer !== context.peerAuthority ||
             evidenceRaw.deliverableAnchor.locator !== deliverableLogicalAddress ||
-            artifactBindingHashOf(deliverableLogicalAddress)(payload as Record<string, unknown>) !==
+            contentHash(payload as Record<string, unknown>) !==
               evidenceRaw.deliverableContentHash) return false;
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
