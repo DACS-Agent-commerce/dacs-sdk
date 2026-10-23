@@ -472,6 +472,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 omit unimplemented diagnostic factory options | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:164`, `packages/dacs-client/src/purchases.mjs:281`, `packages/dacs-client/src/purchases.mjs:416`, `packages/dacs-client/src/purchases.mjs:461`, `packages/dacs-client/src/purchases.mjs:480`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:693`, `packages/dacs-client/src/purchases.mjs:910`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:1107`, `packages/dacs-client/src/purchases.mjs:1114`, `packages/dacs-client/src/purchases.mjs:1132`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1148`, `packages/dacs-client/src/purchases.mjs:1155` | 4aaed8cf6ea80a8871e2a08e32d7d1ff76932695 |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 4abceff4d2f43e41f00707479962c194ca06070f |
+| D11 | fix(client): D11 preserve native guarded SQL argument errors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b481d335f5d260dafa236b520c0b4c1b21269164 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e38a86a1fabd4f8767da17a18416e73529b2ee55 |
 
 ## Complete commit and file inventory
 
@@ -1097,6 +1100,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:164`, `packages/dacs-client/src/purchases.mjs:281`, `packages/dacs-client/src/purchases.mjs:416`, `packages/dacs-client/src/purchases.mjs:461`, `packages/dacs-client/src/purchases.mjs:480`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:693`, `packages/dacs-client/src/purchases.mjs:910`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:1107`, `packages/dacs-client/src/purchases.mjs:1114`, `packages/dacs-client/src/purchases.mjs:1132`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1148`, `packages/dacs-client/src/purchases.mjs:1155` |
 | fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
