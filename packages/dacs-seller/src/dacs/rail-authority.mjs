@@ -12,14 +12,16 @@
 //
 // Only the simulated fixture profile (explicit `simulatedFixture: true`) uses
 // the unsigned in-code DEM_RAIL_DEFINITION of purchase-protocol.mjs.
-import { isCanonicalBase64Url, isCanonicalClaimReference, canonicalize, evaluateRailAvailabilitySelection, validateListingArtifact } from '@kynesyslabs/dacs';
-import { DEM_RAIL, verifyComponent } from './listing.mjs';
+import { isCanonicalBase64Url, isCanonicalClaimReference, canonicalize, evaluateRailAvailabilitySelection } from '@kynesyslabs/dacs';
+import { DEM_RAIL, validateListing } from './listing.mjs';
 
 const AUTHORITY_KEYS = Object.freeze(['production', 'rail', 'railRegistryVersion', 'stewardClaim', 'stewardPublicKey']);
 const INTAKE_RAIL_KEYS = Object.freeze(['railVersion', 'railId', 'railType', 'asset', 'network', 'phaseHandler', 'parameters', 'availability']);
 // DACS-4 §9.5.9 pay-dem: native DEM in OS base units (9 decimals).
 const DEM_ASSET = Object.freeze({ kind: 'native-dem', symbol: 'DEM', decimals: 9 });
 export const RAIL_AUTHORITY_BASIS = 'pa1-in-code';
+const supportedDemRail = rail => rail?.railId === DEM_RAIL.railId && rail.railVersion === DEM_RAIL.railVersion && rail.railType === 'demos-native' && rail.phaseHandler === 'pay-dem' &&
+  canonicalize(rail.asset) === canonicalize(DEM_ASSET) && canonicalize(rail.network) === canonicalize({ kind: 'demos' });
 // Only configurations built here are trusted as authenticated.
 const AUTHENTICATED = new WeakSet();
 
@@ -57,8 +59,7 @@ export function railAuthorityConfig(value) {
   if (signed.decision !== 'indeterminate' || signed.reason !== 'pin-unavailable') throw new TypeError(`railAuthority.rail is not a RailDefinition signed by the steward (${signed.reason})`);
   const digest = signed.railDigest;
   if (evaluateRailAvailabilitySelection(rail, authority(digest, 'new')).decision === 'error') throw new TypeError('railAuthority.rail is not a RailDefinition');
-  if (rail.railId !== DEM_RAIL.railId || rail.railVersion !== DEM_RAIL.railVersion || rail.railType !== 'demos-native' || rail.phaseHandler !== 'pay-dem' ||
-      canonicalize(rail.asset) !== canonicalize(DEM_ASSET) || canonicalize(rail.network) !== canonicalize({ kind: 'demos' })) {
+  if (!supportedDemRail(rail)) {
     throw new TypeError(`railAuthority.rail is not ${DEM_RAIL.railId} version ${DEM_RAIL.railVersion} on pay-dem`);
   }
   if (rail.governance?.anchoring !== 'in-code') throw new TypeError('railAuthority.rail must be a PA-1 in-code definition; a PA-2/PA-3 rail resolves only through the canonical registry index, which this seller does not read');
@@ -79,6 +80,7 @@ export function railAuthorityConfig(value) {
       if (retained?.basis !== RAIL_AUTHORITY_BASIS || !Number.isSafeInteger(retained.railRegistryVersion) || retained.railRegistryVersion <= 0 || !/^[0-9a-f]{64}$/.test(retained.digest ?? '')) {
         return { decision: 'indeterminate', reason: 'pin-unavailable' };
       }
+      if (sessionState === 'new' && (retained.digest !== digest || retained.railRegistryVersion !== railRegistryVersion)) return { decision: 'fail', reason: 'pin-not-current' };
       // Older durable pins already retain the authenticated signer in the
       // signed definition. New pins also name it explicitly. History is only
       // for sessions already signed; a fresh session uses today's steward.
@@ -92,6 +94,7 @@ export function railAuthorityConfig(value) {
         if (retained.stewardPublicKey !== undefined && retained.stewardPublicKey !== key) continue;
         const result = evaluateRailAvailabilitySelection(retained.rail, authority(retained.digest, sessionState, claim, key));
         if (result.decision === 'fail' && result.reason === 'signature-invalid') continue;
+        if (result.decision === 'pass' && (!supportedDemRail(retained.rail) || retained.rail.governance?.anchoring !== 'in-code')) return { decision: 'fail', reason: 'unsupported-rail-profile' };
         if (result.decision === 'pass' && retained.rail.availability !== 'live') return { decision: 'fail', reason: 'not-settleable', railDigest: result.railDigest };
         return result;
       }
@@ -117,15 +120,8 @@ export async function validateSellerListing(listing, { now, revocationSurfaces, 
     ? { railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true }
     : null);
   if (!definition) throw new TypeError('Listing rail resolution needs an authenticated railAuthority, or simulatedFixture: true for the simulated fixture rail');
-  return validateListingArtifact(listing, {
-    nowMs: () => now(),
-    verifyListingSignature: verifyComponent,
-    verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) => {
-      const proof = bundle.presentation?.kind === 'per-claim' && bundle.presentation.signatures.find((entry) => entry.ref === bundle.presentedBy);
-      return Boolean(proof && verifyComponent({ signedBytes: bytes, signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature } }));
-    },
-    verifySellerControl: ({ bundle, signer }) => bundle.presentedBy === signer && bundle.claims.some((claim) => claim.ref === signer),
-    revocation: { surfaces: revocationSurfaces, readMarker, verifyMarkerSignature: verifyComponent },
+  return validateListing(listing, {
+    now, revocationSurfaces, readMarker,
     loadRailResolution: () => ({
       trustPhase: 'PA-1',
       trustPolicyAcceptsPA1: true,
