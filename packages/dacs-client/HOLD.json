@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "6d1af46dd91aaf28b3575c7f45b5ca3e4060ff44"
+        "blob": "a8ec73a8abe616ad2d61663fb1c7dbce8a79feb4"
       },
       "DELTA-LEDGER.json": {
-        "blob": "acdb4428ddae5f85fe41b122c9f192fed063cc21"
+        "blob": "dc0ce6743f9eea664c40e1f50d25618bddb3b9b2"
       },
       "DELTA-MAP.md": {
-        "blob": "c7d94013a0a53b1a79d3ba275daf9ce6179c81ce"
+        "blob": "a43876dc8d0cf2162e407040725769276bc3eaa9"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "609117d0e5a6de6f656593d51f8b44f715fef195"
+        "blob": "ebe51770be35bea2d9376cf7e7d42a0fcc892c8a"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1097,7 +1097,7 @@
         "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
-        "blob": "94c556aad197e8987a38ef8fa48ec514c776c60a"
+        "blob": "eec990d9a159949d76de6835c5a2553a507b1250"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
@@ -1241,7 +1241,7 @@
         "blob": "f68603bd3f057c2bf42c8670dd6cb6d52cf05db4"
       },
       "src/util/http.mjs": {
-        "blob": "dad306f9b723c185815fbb41b63ab6d56f135a8b"
+        "blob": "1a0af8b42041b4f02f3de51cd6b854b959d91f7e"
       },
       "src/util/ids.mjs": {
         "blob": "6cb275e260df92ea17a4dd7c2417206a7ed7cc2a"
@@ -1256,7 +1256,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "2f4304e950690763a6cf44a074d74be8c66d9b5b"
+        "blob": "d3db777e0eb9eb3de32f7480512c30049ba8f907"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
@@ -1625,7 +1625,7 @@
         "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "03e4731889a75769c2f2b429d2a99fbb89f10baf"
+        "blob": "1dec9cb232b14799e41ade73d4a637b0212cbb18"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
