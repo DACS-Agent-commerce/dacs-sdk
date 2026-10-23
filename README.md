@@ -47,7 +47,7 @@ and readers must use `ComponentSignedArtifact`,
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` · `openDemosL2psRfqTransport` · `createUnverifiedDemosL2psRfqTransport` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core, with a Demos L2PS transport adapter |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -127,16 +127,24 @@ content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
 
-The transport-neutral RFQ core performs authenticated channel admission,
+The RFQ stack performs authenticated channel admission,
 durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
 restart-safe state transitions, exact accepted-term agreement derivation,
 role-separated replay-safe transport outboxes, detached buyer/seller
 co-signatures, finalized SR-2 commitment, complete private-transcript
-reverification, and fail-closed Listing disclosure policy. It does not invent
-the still-undefined Demos signature or encrypted transcript wires and is not yet
-a complete live Demos L2PS phase handler; see the
+reverification, fail-closed Listing disclosure policy, and a low-level
+AES-GCM packet transport over Demos L2PS messaging with outbound and inbound
+history recovery. It does not invent the still-undefined DACS signature or
+encrypted-transcript publication wires. The host supplies the demosdk
+messaging peer; `openDemosL2psRfqTransport()` routes each `did:demos:agent`
+member to its own key, requires a peer locked to one exact node URL, and
+checks the node build and that the recipient is registered (online) on that
+node before each send, so an offline counterparty holds the send until it
+returns or the RFQ times out,
+while `createUnverifiedDemosL2psRfqTransport()` takes the host's verified
+claim/peer-key mapping and node instead. See the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
-and the upstream signature-format dependency.
+and the upstream dependencies.
 
 `createFsDurableRfqLifecycleStore()` provides the single-host production
 restart boundary for one RFQ role: keyed record authentication, strict local
