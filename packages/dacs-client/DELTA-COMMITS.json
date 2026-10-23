@@ -724,5 +724,17 @@
       "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
       "packages/dacs-client/test/host-observations.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 cover provenance acceptance and repair records",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/delta-map.mjs",
+      "packages/dacs-client/scripts/delta-provenance.test.mjs"
+    ]
   }
 ]
