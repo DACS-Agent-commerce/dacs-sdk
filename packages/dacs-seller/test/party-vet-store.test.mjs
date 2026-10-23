@@ -96,7 +96,9 @@ test('an existing empty or truncated checkpoint file is not a fresh store', asyn
   assert.throws(() => openPartyVetStore({ path }), code('journal-integrity'));
 });
 
-for (const sql of ['DROP TABLE jobs', 'ALTER TABLE jobs ADD COLUMN unexpected TEXT', 'DROP TABLE meta', 'ALTER TABLE meta ADD COLUMN unexpected TEXT']) test(`reopen rejects changed application schema: ${sql}`, async t => {
+for (const sql of ['DROP TABLE jobs', 'ALTER TABLE jobs ADD COLUMN unexpected TEXT', 'DROP TABLE meta', 'ALTER TABLE meta ADD COLUMN unexpected TEXT',
+  'CREATE TRIGGER discard_checkpoint BEFORE INSERT ON jobs BEGIN SELECT RAISE(IGNORE); END',
+  'CREATE INDEX extra ON jobs(key)', 'CREATE VIEW extra AS SELECT key FROM jobs', 'CREATE TABLE extra (key TEXT)']) test(`reopen rejects changed application schema: ${sql}`, async t => {
   const path = join(dirFor(t), 'schema.sqlite'), store = openPartyVetStore({ path });
   await store.update('job', () => ({ checkpoint: 'issued' })); store.close();
   const db = new DatabaseSync(path); db.exec(sql); db.close();
@@ -135,4 +137,22 @@ test('a competing process cannot enter an update callback; killing the writer ro
   assert.deepEqual(await store.update('n', row => ({ n: row.n + 1 })), { n: 1 });
   store.close(); const reopened = openPartyVetStore({ path }); t.after(() => reopened.close());
   assert.deepEqual(await reopened.entries(), [['n', { n: 1 }]]);
+});
+
+
+for (const backend of ['memory', 'sqlite']) for (const invalid of ['bigint', 'cycle']) test(`${backend}: ${invalid} row serialization is journal-invalid with its cause`, async t => {
+  const store = backend === 'memory' ? createInMemoryPartyVetStore() : openPartyVetStore({ path: join(dirFor(t), 'invalid.sqlite') });
+  t.after(() => store.close());
+  const value = invalid === 'bigint' ? { n: 1n } : {};
+  if (invalid === 'cycle') value.self = value;
+  await assert.rejects(store.update('job', () => value), error => error.code === 'journal-invalid' && error.cause instanceof TypeError);
+  assert.equal(await store.read('job'), null);
+});
+
+test('restart succeeds after the first opener is killed before schema creation', t => {
+  const path = join(dirFor(t), 'initializing.sqlite');
+  const child = spawnSync(process.execPath, [WORKER, 'init-crash', path], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.signal, 'SIGKILL', child.stderr);
+  const store = openPartyVetStore({ path }); t.after(() => store.close());
+  assert.equal(store.usage().jobs, 0);
 });
