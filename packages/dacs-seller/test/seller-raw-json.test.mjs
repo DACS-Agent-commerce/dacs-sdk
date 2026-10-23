@@ -1,4 +1,3 @@
-import './helpers/d5-isolated-dependencies.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
