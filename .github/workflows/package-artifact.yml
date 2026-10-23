@@ -11,6 +11,45 @@ permissions:
   contents: read
 
 jobs:
+  release-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20.19.0", "22.21.1"]
+    name: five-package preparation (node ${{ matrix.node-version }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Pin release npm client
+        run: npm install --global --ignore-scripts npm@11.19.0
+      - name: Install build tools
+        id: install
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test release gate regressions
+        run: npm run release:test
+      # Main/PR/merge-queue runs report unfinished packages as not ready.
+      # A manual release rehearsal additionally requires the entire set to pass.
+      - name: Require all five packages and check public imports
+        if: github.event_name == 'workflow_dispatch'
+        run: npm run release:check
+      - name: Preserve strict consumer dependency evidence
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: five-package-consumers-node-${{ matrix.node-version }}
+          path: package-artifacts/five-package/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Show release plan and offline npm publish dry-runs
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run release:dry-run
+
   package-artifact:
     runs-on: ubuntu-latest
     name: reproducible package + Bun consumer
