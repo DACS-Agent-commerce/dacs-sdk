@@ -359,6 +359,7 @@ function writeSummary(overrides: Record<string, string> = {}) {
     "consumer-physical-sbom.exit-code": "0\n",
     "generated-tests.exit-code": "0\n",
     "doctor.exit-code": "5\n",
+    "doctor.json": readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"),
     ...overrides,
   };
   for (const [name, body] of Object.entries(files)) writeFileSync(join(stage, name), body);
