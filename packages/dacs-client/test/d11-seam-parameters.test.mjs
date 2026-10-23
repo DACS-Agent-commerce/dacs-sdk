@@ -121,7 +121,7 @@ test('deadline observation uses the concrete transaction and refuses a stale rep
   let current = operation, writes = 0;
   const db = openDatabase(':memory:');
   t.after(() => db.close());
-  const watch = createDeliveryDeadlineWatch({ enabled: true, db,
+  const watch = createDeliveryDeadlineWatch({ enabled: true, db, now: () => 120003,
     coordinates: { get: () => ({ verifiedAt: 'TEST-verified' }) }, store,
     ops: { get: () => current, transition(_id, _before, _after, { state }) { writes++; current = { ...current, state }; return current; } } });
   const readback = { notPresent: true, delivery: { status: 'absent' }, checkedAt: 120002 };
@@ -199,4 +199,12 @@ test('post-fork prepared digest agrees with demosdk 4.0.16 serialized signing co
   assert.equal(signed.transaction_fee.network_fee, '1000000000');
   assert.equal(await wallet.nativePayloadDigest(signed), await wallet.nativePayloadDigest(content));
   assert.notEqual(await wallet.nativePayloadDigest({ ...content, amount: 1 }), await wallet.nativePayloadDigest(signed));
+});
+
+test('factory signature has no unused future diagnostic parameters', () => {
+  const source = createPurchaseService.toString(), signature = source.split('\n')[0];
+  for (const parameter of ['chainReadTimeoutMs', 'diagnosticOnly']) {
+    assert.ok(!signature.includes(parameter) || source.split(parameter).length > 2,
+      `${parameter} must be omitted until the factory implements it`);
+  }
 });
