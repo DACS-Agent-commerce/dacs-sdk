@@ -7,6 +7,7 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "./demosRpc.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
@@ -698,16 +699,11 @@ export interface PayDemRailConfig {
    * Overall budget for reading the node's transaction record after inclusion
    * (default 30 seconds). Each read is also bounded by `statusRequestTimeoutMs`.
    * When execution is not established within it, the settlement is
-   * indeterminate and never resubmitted. demosdk's transport retries a
-   * connection error or a 502–504 up to four times inside one read, backing
-   * off 250, 500, 1 000 and 2 000 ms (up to 8 seconds only when the node sends
-   * `Retry-After`). One transient error adds about 250 ms. Five fast failures
-   * end the read in about 3.75 seconds with an error result, which is polled
-   * again. A read outlasts a 5 second `statusRequestTimeoutMs` only when all
-   * four backoffs (3.75 seconds) plus the requests' own time pass it, when the
-   * node sends a `Retry-After` of 5 seconds or more, or when one response is
-   * slow. It then counts as stalled and the settlement is indeterminate at
-   * once (liveness only, never a resubmission).
+   * indeterminate and never resubmitted. The read-only HTTP reader caps each
+   * reply at 64 KiB before decoding and aborts at the smaller request timeout
+   * or remaining observation budget. Decoded records also have depth, node
+   * and collection limits. Unavailable or malformed records are polled at
+   * `inclusionPollIntervalMs`; a stalled read ends observation immediately.
    */
   transactionRecordTimeoutMs?: number;
 }
@@ -1155,7 +1151,7 @@ type ObservedDemosExecution =
   | Readonly<{ state: "indeterminate"; reason: string; cause?: unknown }>;
 
 const TRANSACTION_RECORD_LIMITS = Object.freeze({
-  maxBytes: 64 * 1024,
+  maxBytes: DEMOS_TRANSACTION_RECORD_MAX_BYTES,
   maxCollectionLength: 256,
   maxDepth: 16,
   maxNodes: 2048,
@@ -1457,11 +1453,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "nodeCall",
     "pay-dem Demos.nodeCall",
   );
-  const getTxByHash = stableMethod<(hash: string) => Promise<unknown>>(
-    demos,
-    "getTxByHash",
-    "pay-dem Demos.getTxByHash",
-  );
+  const fetchRecord = stableMethod<typeof fetch>(globalThis, "fetch", "pay-dem record fetch");
   const waitForNonce = stableMethod<(
     address: string,
     nonce: number,
@@ -1502,7 +1494,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       journalPreparedTransfer: invocationJournal,
       assertCurrentBeforeBroadcast,
       effectFence,
-    }) => {
+    }): Promise<DemosTransferResult> => {
       if (configuredMaxTotalDebitOs !== undefined &&
           invocationMaxTotalDebitOs !== undefined &&
           invocationMaxTotalDebitOs > configuredMaxTotalDebitOs) {
@@ -1686,9 +1678,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // `included` is not execution (#338): the node can include the signed
       // transaction and record it failed. Require the transaction record to
       // show this exact prepared transfer executed before reporting success.
+      const recordDeadline = Date.now() + transactionRecordTimeoutMs;
       const execution = await observeDemosExecutionByHash(
         txHash,
-        getTxByHash,
+        (hash) => readDemosTransactionRecord(rpc, hash,
+          Math.max(1, Math.min(statusRequestTimeoutMs, recordDeadline - Date.now())), fetchRecord),
         { blockNumber: terminal.blockNumber, transfer: transferBinding },
         {
           transactionRecordTimeoutMs,
@@ -1702,12 +1696,6 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           state: "failed",
           hash: txHash,
           blockNumber: terminal.blockNumber,
-          failureProof: {
-            kind: "demos-failed-record",
-            txHash, nonce: signedNonce, blockNumber: terminal.blockNumber,
-            payer: normalizeDemosNativeAddress(address)!,
-            payee: normalizeDemosNativeAddress(to)!, amountOs: amountOs.toString(),
-          },
           message: "pay-dem transaction was included but its record reports it failed",
         };
       }
@@ -1732,7 +1720,6 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       return {
         ok: true,
         state: "included",
-        execution: "executed",
         hash: txHash,
         blockNumber: terminal.blockNumber,
         ...(confirmedDebitOs === null
