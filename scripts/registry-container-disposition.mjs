@@ -163,11 +163,36 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
   return violations;
 }
 
+// Resolve declared candidate aliases with Node's nearest node_modules lookup,
+// including hoisting. Installed identity cannot identify a substituted alias.
+function candidateAliasLocations(manifest, packages, inventory, candidate) {
+  const available = new Set([...Object.keys(packages), ...inventory.map(item => item.location)]);
+  const aliases = new Set();
+  for (const [ownerLocation, owner] of [["", manifest], ...Object.entries(packages)]) {
+    for (const field of specFields) {
+      for (const [alias, spec] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
+        if (typeof spec !== "string" || !/^npm:/i.test(spec) || !registrySourceSpec(spec) ||
+            npmPackageArg.resolve(alias, spec).subSpec?.name !== candidate) continue;
+        const parts = ownerLocation ? ownerLocation.split("/") : [];
+        for (;;) {
+          if (parts.at(-1) !== "node_modules") {
+            const location = [...parts, "node_modules", alias].join("/");
+            if (available.has(location)) { aliases.add(location); break; }
+          }
+          if (parts.length === 0) break;
+          parts.pop();
+        }
+      }
+    }
+  }
+  return [...aliases];
+}
+
 // Every installed copy of a candidate package, top-level, nested or aliased,
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
 // reads it, in the installed package.json.
-export function candidateIntegrityErrors({ lock, registry, candidates, installedManifest, installedInventory = [] }) {
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory = [] }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
   const errors = installedInventory.filter(item => item.link === true)
@@ -180,7 +205,8 @@ export function candidateIntegrityErrors({ lock, registry, candidates, installed
     const candidateLocation = location => typeof location === "string" &&
       (location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
     const locations = [...new Set([...Object.keys(packages).filter(location => candidateLocation(location) || packages[location]?.name === name),
-      ...installedInventory.filter(item => item.name === name || candidateLocation(item.location)).map(item => item.location)])];
+      ...installedInventory.filter(item => item.name === name || candidateLocation(item.location)).map(item => item.location),
+      ...candidateAliasLocations(manifest, packages, installedInventory, name)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
       const entry = packages[location];
@@ -193,6 +219,7 @@ export function candidateIntegrityErrors({ lock, registry, candidates, installed
         errors.push("candidate package integrity does not match the packed tarball: " + location +
           " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
       }
+      if (entry.name !== undefined && entry.name !== name) errors.push("candidate package lock name does not match the release: " + location);
       if (entry?.version !== version) {
         errors.push("candidate package lock version does not match the release: " + location +
           " (expected " + version + ", observed " + String(entry?.version) + ")");
@@ -734,7 +761,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
       return { name, integrity, version };
     });
-    const errors = candidateIntegrityErrors({ lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
+    const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
     const violations = registryDependencyViolations({ manifest, lock, registry });
