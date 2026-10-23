@@ -322,6 +322,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       return before;
     },
     admitChallenge: (nonce, presentationHash, accepted) => { const prior = memoryChallenges.get(nonce); if (prior?.attempt?.presentationHash === presentationHash) prior.attempt={...prior.attempt,admitted:true,...accepted===undefined?{}:{accepted:structuredClone(accepted)}}; },
+    retireChallenge:(nonce,hash)=>{const row=memoryChallenges.get(nonce);if(row?.attempt?.presentationHash!==hash||row.attempt.admitted!==true)throw new SellerAgentError('seller_state_corrupt','challenge retirement differs',503);row.attempt.retired=true;},
   };
   const signatures = new Map(); // planHash -> seller signature
   const contributions = new Map(); // proposalHash -> contribution
@@ -466,6 +467,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertVetContext();
     assertSessionAdmission();
     const existing = sessions.get(jobId);
+    const completedProposalHash=existing?.proposal?.proposalHash??existing?.sellerContributionProposalHash;
+    if(completedProposalHash&&completedProposalHash!==proposal?.proposalHash)return{disposition:'rejected',stage:'context',reason:'another proposal has already completed for this job'};
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
     // signed definition pinned before the Agreement is signed. The pin is in
     // flight only from a successful retained seller signature: until then
@@ -537,7 +540,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     else if (railPin && !inFlight) existing.railPin = railPin;
     const session = sessions.get(jobId);
-    persist(session);
     const signUnderPin = (bytes) => {
       if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
       if (!inFlight) assertListingCurrent();
@@ -549,6 +551,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (session.railPin) { session.railPinSigned = true; persist(session); }
       return signature;
     };
+    let contextFailure=null;
+    const unavailable=(cause,reason)=>{contextFailure=cause;return{disposition:'indeterminate',reason:`VET_RECORD_UNVERIFIED: ${reason}`};};
     const progress = await respondToFixedPriceAgreementProposalDurable(
       { proposal, transportIdentity, seller: { party: claim, algorithm: 'ed25519', sign: signUnderPin } },
       {
@@ -601,29 +605,27 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               const ref = resolved.input[role].vetRecordRef;
               const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
               let record;
-              try { record = await admission.resolveVetRecord(structuredClone({ jobId, role, party, ref })); }
-              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
               const problem = await vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now });
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
               // only with its SR-2 receipt at `accepted` or later, before any signature.
               let receipt;
-              try { receipt = await admission.readVetAnchorReceipt(structuredClone({ jobId, role, party, ref })); }
-              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              try { receipt = await readAdmissionCapability(admission,'readVetAnchorReceipt',{ jobId, role, party, ref }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
               const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party });
               if (receiptProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${receiptProblem}` };
               // CORE SR2-4: the receipt's fields alone are assertions, not proof.
               // Only the operator's authentication of this record's receipt passes.
               let verdict;
-              try { verdict = await admission.verifyVetAnchorReceipt(structuredClone({ jobId, role, party, ref, record, receipt })); }
-              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt could not be verified: ${String(error?.message ?? error).slice(0, 160)}` }; }
-              if (verdict !== 'valid') return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet record SR-2 receipt is not verified (${typeof verdict === 'string' ? verdict.slice(0, 40) : 'no verdict'})` };
+              try { verdict = await readAdmissionCapability(admission,'verifyVetAnchorReceipt',{ jobId, role, party, ref, record, receipt }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
+              if (verdict !== 'valid') return verdict==='invalid'?{disposition:'rejected',reason:`VET_RECORD_UNVERIFIED: ${role}: invalid Vet receipt`}:unavailable(new Error('Vet receipt verification is indeterminate'),`the ${role} Vet receipt verification is indeterminate`);
             }
             session.demDeliveryContext = structuredClone(resolved);
-            persist(session);
             return { disposition: 'present', value: structuredClone(resolved.input) };
           }
-          persist(session);
           return { disposition: 'present', value: agreementInput({ jobId, listing, buyerBundle: session.buyerBundle, generatedAt }) };
         },
         verifyContribution: contributionVerifier,
@@ -634,7 +636,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             signatures.set(contribution.planHash, contribution.signature.value);
             session.sellerContribution = structuredClone(contribution);
             session.sellerContributionProposalHash = identity.proposalHash;
-            persist(session);
             return { disposition: 'submitted' };
           },
           reconcileSellerContributionPublication: (identity) =>
@@ -642,7 +643,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         },
       },
     );
-    if (progress.disposition !== 'complete') return { disposition: progress.disposition, stage: progress.stage, reason: progress.reason };
+    if (progress.disposition !== 'complete') {
+      if(!existing&&!session.agreementSignatureKey&&!session.sellerContribution){if(nativeProfile)challenges.retireChallenge(nonce,presentationHash);sessions.delete(jobId);}
+      const answer={disposition:progress.disposition,stage:progress.stage,reason:progress.reason};
+      if(contextFailure){answer.causeCode=contextFailure?.name==='TimeoutError'||contextFailure?.code==='ETIMEDOUT'?'timeout':contextFailure instanceof RangeError?'reply-limit':'reader';Object.defineProperty(answer,'cause',{value:contextFailure});}
+      return answer;
+    }
     session.proposal = structuredClone(proposal);
     session.transportIdentity = structuredClone(transportIdentity);
     session.agreementHash = transportIdentity.agreementHash;
