@@ -1,0 +1,27 @@
+{
+  "profile": "dacs-seller:experimental-fixed-price-dem:v1",
+  "standardRevision": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+  "documentVersions": {
+    "CORE": "0.3",
+    "DACS-1": "0.7",
+    "DACS-2": "0.6",
+    "DACS-3": "0.5",
+    "DACS-4": "0.8",
+    "DACS-5": "0.5"
+  },
+  "normativeAuthority": "DACS-Standard at standardRevision (the JID-1 corrective candidate tuple in documentVersions) for the native host profile (startSellerHost), which stops at delivery and signs no completed DACS-5 bundle. Each new session is opened only for a presentation of a challenge the host issued for its job and buyer (issueSessionChallenge, consumed on its first attempt) on a Listing the host's own DACS-1 RB-4..RB-6 revocation check (core checkListingRevocation over the operator's readers) finds not revoked, and under the operator's seller-owned sessionAdmission: both participants on this exact profile and the Vet records the Agreement references. A paid order is anchored through the wallet journal the host requires (reconcilePaymentEvidence). The simulated fixture profile (createSellerAgent with simulatedFixture: true) is test-only and not covered: it does not perform DACS-2 Vet and uses an unsigned in-code rail",
+  "qualification": "unsupported pending complete host integration and deployment qualification",
+  "sellerRequirement": {
+    "requirementVersion": "1",
+    "required": [],
+    "preferredPresentation": "any"
+  },
+  "liveDeployment": null,
+  "historicalPlanningDocuments": "Non-normative port context only; no protocol authority",
+  "qualificationBlockers": [
+    "No qualified production transport, wallet custody, live-node genesis reader or complete authenticated transaction-absence reader ships.",
+    "RAV-R4 rail-down classification requires an authenticated failure signal distinct from transient RPC failures and counterparty errors.",
+    "Terminal job reclamation and a supported archive/rotation procedure under the seller-state lock are not implemented.",
+    "Externally supplied delivery schema authority must be pinned across sessions and restarts before production qualification."
+  ]
+}
