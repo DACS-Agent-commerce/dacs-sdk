@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { pathToFileURL } from "node:url";
@@ -52,25 +54,30 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
 // GitHub/GitLab shorthands with or without a ref, tarballs on any other host
 // (codeload.github.com included), file:, link:, paths, entries without
 // `resolved` or `integrity`, and `overrides`.
-const tarballFile = /\.(?:tgz|tar|tar\.gz)$/i;
-const sri = /^(?:sha512|sha384|sha256|sha1)-[A-Za-z0-9+/]+={0,2}$/;
+const digestBytes = { sha1: 20, sha256: 32, sha384: 48, sha512: 64 };
+function validIntegrity(value) {
+  return typeof value === "string" && value.trim() !== "" && value.trim().split(/\s+/).every(token => {
+    const match = /^(sha1|sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})(?:\?[!-~]+)?$/.exec(token);
+    if (!match) return false;
+    const bytes = Buffer.from(match[2], "base64");
+    return bytes.length === digestBytes[match[1]] && bytes.toString("base64") === match[2];
+  });
+}
 const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
 
-// npm distinguishes registry versions/ranges/tags from local paths. Aliases
-// name one registry package; their suffix is a version/range/tag, never another alias.
+// Use the executing npm's parser, including loose semver and alias-name rules.
+// Acceptance pins npm; this keeps dependency grammar separate from engine ranges.
+let npmPackageArg;
 function registrySourceSpec(value) {
-  if (typeof value !== "string" || value.startsWith(".") || tarballFile.test(value)) return false;
-  if (value.startsWith("npm:")) {
-    const alias = /^npm:(?:@[a-z0-9~][\w.~-]*\/)?[a-z0-9~][\w.~-]*(?:@([\s\S]*))?$/i.exec(value);
-    if (!alias) return false;
-    value = alias[1] ?? "";
-    if (value.startsWith(".") || tarballFile.test(value)) return false;
+  if (typeof value !== "string") return false;
+  if (!npmPackageArg) {
+    const npmEntry = process.env.npm_execpath ?? join(execFileSync("npm", ["root", "--global"],
+      { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js");
+    npmPackageArg = createRequire(npmEntry)("npm-package-arg");
   }
-  try { satisfiesEngineRange("0.0.0", value); return true; } catch { /* A registry tag may not be a range. */ }
-  try { return value !== "" && encodeURIComponent(value) === value; } catch { return false; }
+  try { return npmPackageArg.resolve("dependency", value).registry === true; } catch { return false; }
 }
-
 
 // The run's own registry: HTTPS, or the loopback Verdaccio the acceptance
 // script starts (reached as host.docker.internal from a non-Linux container).
@@ -114,10 +121,11 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
     if (location === "") continue;
     let url = null;
     try { url = typeof entry.resolved === "string" ? new URL(entry.resolved) : null; } catch { /* not a URL */ }
-    if (entry.link === true || url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
-      violations.push({ location, field: entry.link === true ? "link" : "resolved", value: entry.resolved ?? null });
+    const invalidLink = entry.link !== undefined && entry.link !== false;
+    if (invalidLink || url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+      violations.push({ location, field: invalidLink ? "link" : "resolved", value: entry.resolved ?? null });
     }
-    if (typeof entry.integrity !== "string" || !sri.test(entry.integrity)) {
+    if (!validIntegrity(entry.integrity)) {
       violations.push({ location, field: "integrity", value: entry.integrity ?? null });
     }
   }
