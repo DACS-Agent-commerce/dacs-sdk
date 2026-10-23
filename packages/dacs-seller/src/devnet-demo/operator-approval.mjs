@@ -1,34 +1,19 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
-import { createInterface } from 'node:readline/promises';
-import { canonicalize, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCanonicalJobId, paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { stopRequested, stopSignal } from './stop-request.mjs';
+import { compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
+import { createInterface } from 'node:readline/promises';
+import { dirname, resolve } from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
+import { appendFileSync, closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 
 const sha=(value)=>createHash('sha256').update(value).digest('hex');
-const OS=/^(0|[1-9][0-9]*)$/,POSITIVE_OS=/^[1-9][0-9]*$/,HASH=/^[0-9a-f]{64}$/,CLAIM=/^did:demos:agent:[0-9a-f]{64}$/;
+const OS=/^(0|[1-9][0-9]*)$/,POSITIVE_OS=/^[1-9][0-9]*$/,HASH=/^[0-9a-f]{64}$/;
 const EVIDENCE_FORMAT='dacs-node2-operator-approval-evidence/v1';
 const ATTEMPT_FORMAT='dacs-node2-seller-policy-attempt/v1';
 const SIGN_FORMAT='dacs-node2-seller-policy-sign-authorization/v1';
 const CONTEXT_FORMAT='dacs-node2-seller-context-admission/v1';
-const policyTails=new Map();
-const provisionalHolds=new Map();
-// The compose CLI's stop handler reads this: a stop while this process waits
-// at a seller APPROVE prompt ends it unanswered instead of waiting for an answer.
-// The Listing's prompt is not counted: a stop declines it (stopSignal below).
-let ttyPrompts=0;
-export const ttyApprovalPending=()=>ttyPrompts>0;
-function serializedPolicy(evidencePath,work){
-  const key=resolve(evidencePath),result=(policyTails.get(key)??Promise.resolve()).then(work),tail=result.catch(()=>{});
-  policyTails.set(key,tail);
-  void tail.then(()=>{if(policyTails.get(key)===tail)policyTails.delete(key);});
-  return result;
-}
-const KINDS=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord','SettlementEvidence','Deliverable']);
-// Vet records and the commitment are written before the buyer pays; payment
-// and delivery evidence and the Deliverable only once payment is observed.
-const BEFORE_PAYMENT=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord']),AFTER_PAYMENT=new Set(['SettlementEvidence','Deliverable']);
 export const SELLER_POLICY_MAX_WRITES=6;
 export const SELLER_POLICY_WINDOW_MS=3_600_000;
 // Policy-mode limits, all configurable. maxWriteTotalOs caps one write's
@@ -38,33 +23,9 @@ export const SELLER_POLICY_WINDOW_MS=3_600_000;
 // The hourly limits are a budget across all jobs in a rolling hour: 24
 // policy-approved writes and 96 DEM, about four complete six-write purchases
 // at the 4 DEM cap. Outstanding attempts hold their full debit; completed
-// attempts count for an hour after completion. A post-payment refusal goes to
-// exact manual approval, so it cannot strand a paid purchase.
+// attempts count for an hour after completion.
 export const SELLER_POLICY_DEFAULTS=Object.freeze({maxWriteTotalOs:'4000000000',maxWritesPerHour:24,maxTotalOsPerHour:'96000000000'});
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&canonicalize(Object.keys(value).sort())===canonicalize([...keys].sort());
-const same=(a,b)=>canonicalize(a)===canonicalize(b);
-const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/.test(value)?BigInt(value.split('.')[0])*1_000_000_000n+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;
-
-// Node 61b8e75 applies storage/gas balance removals for CREATEs; its
-// additional transaction_fee distribution is native-only. Numbers are legacy
-// whole DEM, canonical strings are OS. Never round or coerce fee values.
-function confirmedWriteOs(validity,request){
-  const data=validity?.response?.data,c=data?.transaction?.content,r=request.content;
-  const postFork=c?.amount==='0';
-  const wireOs=(value)=>postFork?(typeof value==='string'&&OS.test(value)?BigInt(value):null)
-    :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*1_000_000_000n:null;
-  if(validity?.result!==200||data?.valid!==true||data.gas_operation!=null||data.custom_charges!=null
-    ||c?.type!=='storageProgram'||(c.amount!==0&&c.amount!=='0')||c.from!==r.wallet||c.nonce!==r.nonce||c.timestamp!==r.timestamp
-    ||JSON.stringify(c.data?.[1])!==r.exactCreate||!Array.isArray(c.gcr_edits))return null;
-  const fee=c.transaction_fee;
-  if(!fee||['network_fee','rpc_fee','additional_fee'].some(key=>wireOs(fee[key])===null))return null;
-  const removals=c.gcr_edits.filter(edit=>edit?.type==='balance');
-  if(removals.length!==2||removals.some(edit=>edit.operation!=='remove'||edit.account!==r.wallet))return null;
-  const amounts=removals.map(edit=>wireOs(edit.amount));
-  if(amounts.some(value=>value===null)||amounts[0]!==demOs(r.debit.storageFeeDem))return null;
-  return amounts.reduce((sum,value)=>sum+value,0n);
-}
-
 // The seller kit has one purchase source. Reject stale app configuration.
 export function sellerPurchaseSource(value){
   if(value!==undefined&&value!=='seller')throw new TypeError('sellerApproval.purchaseSource must be "seller"');
@@ -74,11 +35,6 @@ export function sellerPurchaseSource(value){
 // for exact manual approval: the seller has no record of the job before the
 // proposal reaches it, and is never told of a buyer-side cancellation.
 const HOLD_REASONS=new Set(['seller-record-missing','cancellation-unknown']);
-// Seller records compare the network and the chain identity only. The seller's
-// Agreement reader (demos-sr2-adapter.mjs) still requires the full transport
-// binding, so today a seller record always carries the seller's own endpoint.
-const sameNetwork=(a,b)=>typeof a?.network==='string'&&typeof a.chainIdentity==='string'&&a.network===b.network&&a.chainIdentity===b.chainIdentity;
-
 // Validates the optional operator config field. Manual stays exactly
 // {mode:'manual'}; policy may set its limits, each defaulting as above.
 // purchaseSource is validated on its own and is not part of the settings.
@@ -93,95 +49,6 @@ export function sellerApprovalSettings(value){
   if(!Number.isSafeInteger(limits.maxWritesPerHour)||limits.maxWritesPerHour<1||limits.maxWritesPerHour>1000)throw new TypeError('sellerApproval.maxWritesPerHour must be an integer from 1 to 1000');
   if(typeof limits.maxTotalOsPerHour!=='string'||!POSITIVE_OS.test(limits.maxTotalOsPerHour)||BigInt(limits.maxTotalOsPerHour)<BigInt(limits.maxWriteTotalOs))throw new TypeError('sellerApproval.maxTotalOsPerHour must be a positive canonical OS string of at least maxWriteTotalOs');
   return Object.freeze({mode:'policy',...limits});
-}
-
-// The logical address an artifact of this kind must use for its job.
-function expectedLogicalAddress(c,artifact,policy){
-  if(c.artifactKind==='CompositeVerificationRecord')return compositeVerificationAddress(c.jobId,artifact.evaluatedParty);
-  if(c.artifactKind==='FinalityCommitmentRecord')return finalityCommitmentAddress(c.jobId);
-  if(c.artifactKind==='Deliverable')return `dacs4:deliverable:${c.jobId}`;
-  if(artifact.phase==='pay-dem'){
-    // The host reads this index from protocolSupport(its verified Listing).
-    // Missing phase context cannot authorize an automatic payment-evidence write.
-    const index=typeof policy.paymentPhaseIndex==='function'?policy.paymentPhaseIndex():null;
-    return Number.isSafeInteger(index)&&!Object.is(index,-0)&&index>=0?paymentEvidenceAddress(c.jobId,'demos-native:DEM',index):null;
-  }
-  return artifact.phase==='deliver-storage-program'?`dacs4:evidence:${c.jobId}`:null;
-}
-
-// Returns null when the exact request is within policy, otherwise a short
-// refusal reason that is retained on the evidence line.
-async function policyRefusal(request,policy,limits,{confirmedTotal,countedTotal,manualApproved=false,held=null}={}){
-  const c=request?.content,d=c?.debit;
-  if(!exact(request,['method','address','purpose','content'])||request.method!=='sendTransaction'||typeof request.purpose!=='string'
-    ||!exact(c,['kind','action','artifactKind','jobId','owner','wallet','logicalAddress','storageAddress','programName','contentHash','contentHashProfile','envelopeHash',...(c?.artifactKind==='Deliverable'?['deliveryBinding']:[]),'storageBytes','exactStorageBytes','exactCreate','nonce','timestamp','debit','network','chainIdentity','networkBinding','evidence','sending'])
-    ||!['devnet-demo-artifact-storage-create','devnet-settlement-evidence-storage-create'].includes(c.kind)||c.contentHashProfile!=='SDK CF-1 signed scope (top-level signature/signatures omitted)'
-    ||c.action!=='immutable DACS storage anchor CREATE'||!KINDS.has(c.artifactKind)||!isCanonicalJobId(c.jobId)
-    ||request.address!==policy.address||c.wallet!==policy.address||c.owner!==policy.seller
-    ||c.network!==policy.sourceBinding.network||c.chainIdentity!==policy.sourceBinding.chainIdentity||!same(c.networkBinding,policy.sourceBinding)
-    ||!Number.isSafeInteger(c.nonce)||c.nonce<1||!Number.isSafeInteger(c.timestamp)||c.timestamp<0)return 'request-shape';
-  if(!exact(d,['storageFeeDem','sellerAmountDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem','totalDem','totalOs','note'])
-    ||d.sellerAmountDem!=='0'||typeof d.totalOs!=='string'||!OS.test(d.totalOs??''))return 'debit';
-  const fees=['storageFeeDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem'].map(key=>demOs(d[key]));
-  if(fees.some(value=>value===null)||fees[0]<=0n||fees[4]!==0n
-    ||fees.reduce((a,b)=>a+b,0n)!==BigInt(d.totalOs)||demOs(d.totalDem)!==BigInt(d.totalOs))return 'debit';
-  const declared=BigInt(d.totalOs),cap=BigInt(limits.maxWriteTotalOs);
-  const total=countedTotal===undefined?declared:countedTotal;
-  if(total===null)return 'debit';
-  // Preparation checks the configured cap. Confirmation also bounds an
-  // unexpected debit by the declaration; manual approval authorizes exactly it.
-  const allowance=manualApproved||(confirmedTotal!==undefined&&declared<cap)?declared:cap;
-  if(total>allowance)return 'write-fee-cap';
-  if(manualApproved)return null;
-  const op=JSON.parse(c.exactCreate),artifact=JSON.parse(c.exactStorageBytes),metadata=op?.metadata;
-  if(!exact(op,['operation','storageAddress','programName','salt','data','encoding','acl','storageLocation','metadata'])
-    ||op.operation!=='CREATE_STORAGE_PROGRAM'||op.salt!==''||op.encoding!=='json'||op.storageLocation!=='onchain'||!exact(op.acl,['mode'])||op.acl.mode!=='public'
-    ||op.storageAddress!==c.storageAddress||op.programName!==c.programName||c.programName!==c.logicalAddress.replace(/:/g,'%3A')
-    ||!same(op.data,artifact)||artifact.jobId!==c.jobId||contentHash(artifact)!==c.contentHash||sha(canonicalize(artifact))!==c.envelopeHash
-    ||c.storageBytes!==Buffer.byteLength(c.exactStorageBytes)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/10240)))*1_000_000_000n
-    ||metadata?.logicalAddress!==c.logicalAddress||metadata.artifactKind!==c.artifactKind||metadata.contentHash!==c.contentHash||metadata.envelopeHash!==c.envelopeHash
-    ||!same(metadata.networkBinding,policy.sourceBinding))return 'create-bytes';
-  const sellerRecords=true,purchase=await policy.resolvePurchase(c.jobId);
-  // No seller record of the job yet (vet records): every check that needs no
-  // purchase still refuses, as with the app, before the write is held.
-  if(sellerRecords&&purchase===null&&BEFORE_PAYMENT.has(c.artifactKind)){
-    if(c.artifactKind==='CompositeVerificationRecord'&&!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
-    if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
-    const pin=policy.listingPin();
-    if([artifact.listingPin,artifact.listing,artifact.listingRef].some(value=>value&&!same(value,pin)))return 'listing';
-    return 'seller-record-missing';
-  }
-  // A vet record held with no record may reach confirmation once the proposal
-  // draft has reached the seller but before it retained the buyer's signed
-  // Agreement CREATE. That record has no binding to compare yet; everything
-  // else it holds is still checked, as is the request's own binding above.
-  const unbound=sellerRecords&&held!==null&&c.artifactKind==='CompositeVerificationRecord'&&purchase?.sourceBinding===null;
-  if(!exact(purchase,['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','prePaymentOpen'])||purchase.jobId!==c.jobId||purchase.seller!==policy.seller
-    ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||typeof purchase.prePaymentOpen!=='boolean'||!POSITIVE_OS.test(purchase.amountOs??'')
-    ||!same(purchase.listingPin,policy.listingPin())||!(unbound||(sellerRecords?sameNetwork(purchase.sourceBinding,policy.sourceBinding):same(purchase.sourceBinding,policy.sourceBinding))))return 'purchase';
-  if(AFTER_PAYMENT.has(c.artifactKind)&&!purchase.paymentObserved)return 'payment-not-observed';
-  if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.paymentObserved)return 'payment-already-observed';
-  // A cancelled, expired or otherwise ended purchase gets no more seller writes before payment.
-  if(BEFORE_PAYMENT.has(c.artifactKind)&&!purchase.prePaymentOpen)return 'purchase-closed';
-  if(c.artifactKind==='SettlementEvidence'&&artifact.phase==='pay-dem'&&(!exact(artifact.paymentAmount,['amount','currency'])||artifact.paymentAmount.currency!=='DEM'
-    ||demOs(artifact.paymentAmount.amount)!==BigInt(purchase.amountOs)))return 'payment-amount';
-  if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
-  if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
-  if(artifact.listingPin&&!same(artifact.listingPin,purchase.listingPin))return 'listing';
-  if(artifact.listing&&!same(artifact.listing,purchase.listingPin))return 'listing';
-  if(artifact.listingRef&&!same(artifact.listingRef,purchase.listingPin))return 'listing';
-  if(artifact.agreementHash&&artifact.agreementHash!==purchase.agreementHash)return 'agreement';
-  if(c.artifactKind==='Deliverable'){
-    const binding=c.deliveryBinding;
-    if(!exact(binding,['version','profile','jobId','phase','phaseIndex','listing','agreementHash','fulfilmentId','purchaseAmount','payloadHash'])
-      ||binding.version!=='1'||binding.profile!=='dacs-native-delivery-publication/v1'||binding.jobId!==c.jobId||binding.phase!=='deliver-storage-program'
-      ||!Number.isSafeInteger(binding.phaseIndex)||binding.phaseIndex<0||!same(binding.listing,purchase.listingPin)||binding.agreementHash!==purchase.agreementHash
-      ||typeof binding.fulfilmentId!=='string'||!binding.fulfilmentId||binding.fulfilmentId.length>128||binding.payloadHash!==c.contentHash
-      ||!exact(binding.purchaseAmount,['amount','currency'])||binding.purchaseAmount.currency!=='DEM'||demOs(binding.purchaseAmount.amount)!==BigInt(purchase.amountOs)
-      ||!same(metadata.deliveryBinding,binding))return 'delivery-binding';
-  }
-  if(sellerRecords&&BEFORE_PAYMENT.has(c.artifactKind))return 'cancellation-unknown';
-  return null;
 }
 
 // A held write is one attempt with one durable attemptId: its hold line (a
@@ -212,7 +79,7 @@ export const sellerIssuanceJournalIds=(value)=>exact(value,SELLER_ISSUANCE_JOURN
 export const decidedFromJournals=(row)=>row.policy&&row.decision==='approved'&&row.outcome===null&&typeof row.reservationId==='string';
 
 // Seller records: a sign-authorized line is retained, and synced, before the
-// policy lets the wallet sign (createExactOperatorApproval below). It opens
+// policy lets the wallet sign. It opens
 // the reservation with the exact request bytes it authorizes; the
 // confirmation line carries the same reservationId, and only a completion
 // line ends it.
@@ -221,30 +88,25 @@ export const decidedFromJournals=(row)=>row.policy&&row.decision==='approved'&&r
 // were retained (older manual approvals) carry no requestBytes: they cannot be
 // attributed to a job and were never policy decisions, so they count towards
 // neither limit. Any other malformed line fails closed.
-async function readPolicyLedger(evidencePath){
-  let text='';
-  try{text=await readFile(evidencePath,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
-  return parsePolicyLedger(text);
-}
 // Exported read-only for the operator health report, which must count the
 // same ledger as admission.
 export function parsePolicyLedger(text){
   const malformed=()=>{throw new Error('seller approval evidence is malformed');};
   const rows=[],byReservationId=new Map(),attempts=new Map();
-  let header=null,lineNumber=0;
+  let header=null,lineNumber=0,seenEntry=false;
   // A line that fails keeps its error; ledgerLine (1-based) names that line.
   try{for(const line of text.split('\n')){
     lineNumber++;
     if(!line.trim())continue;
-    const row=JSON.parse(line);
+    const row=JSON.parse(line),first=!seenEntry;seenEntry=true;
     if(row?.format===SELLER_LEDGER_HEADER_FORMAT){
-      if(header||!exact(row,['format','journals','recordedAt'])||!sellerIssuanceJournalIds(row.journals)||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
+      if(header||!first||!exact(row,['format','journals','recordedAt'])||!sellerIssuanceJournalIds(row.journals)||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
       header=row;continue;
     }
     if(row?.format===SIGN_FORMAT){
       if(!exact(row,['format','reservationId','approvalHash','requestBytes','totalOs','recordedAt',...(Object.hasOwn(row,'attemptId')?['attemptId']:[])])
         ||!ATTEMPT_ID.test(row.reservationId??'')||byReservationId.has(row.reservationId)||typeof row.requestBytes!=='string'||sha(row.requestBytes)!==row.approvalHash
-        ||!OS.test(row.totalOs??'')||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
+        ||(typeof row.totalOs!=='string'||!OS.test(row.totalOs))||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
       const request=JSON.parse(row.requestBytes);
       if(request?.content?.debit?.totalOs!==row.totalOs)malformed();
       // A held write is sign-authorized once, while its attempt is open.
@@ -276,7 +138,7 @@ export function parsePolicyLedger(text){
     if(!Object.hasOwn(row,'requestBytes')){if(Object.hasOwn(row,'approvalMode')||Object.hasOwn(row,'attemptId'))malformed();continue;}
     if(typeof row.requestBytes!=='string'||sha(row.requestBytes)!==row.approvalHash)malformed();
     const policyRow=Object.hasOwn(row,'approvalMode');
-    if(policyRow&&(row.approvalMode!=='policy'||(row.decision==='approved'&&(!Number.isSafeInteger(row.recordedAt)||!OS.test(row.totalOs??'')))))malformed();
+    if(policyRow&&(row.approvalMode!=='policy'||(row.decision==='approved'&&(!Number.isSafeInteger(row.recordedAt)||(typeof row.totalOs!=='string'||!OS.test(row.totalOs))))))malformed();
     // A confirmation of a sign-authorized reservation carries its reservationId.
     const authorized=Object.hasOwn(row,'reservationId')?byReservationId.get(row.reservationId):undefined;
     const linked=authorized?.signAuthorized===true&&authorized.confirmed===null&&authorized.outcome===null&&policyRow&&Boolean(row.confirmation)
@@ -297,12 +159,12 @@ export function parsePolicyLedger(text){
     const request=JSON.parse(row.requestBytes),declared=request?.content?.debit?.totalOs;
     // An open attempt holds its declared debit (below).
     if(opened){
-      if(!OS.test(declared??'')||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
+      if((typeof declared!=='string'||!OS.test(declared))||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
       Object.assign(attempt,{totalOs:declared,recordedAt:row.recordedAt,request,holdReason:row.policyReason});
     }
     // A manual confirmation annotates its existing approval, not a second write.
     if(Object.hasOwn(row,'manualApproved')){if(row.manualApproved!==true||policyRow||!row.confirmation)malformed();continue;}
-    if(policyRow&&row.decision==='approved'&&!OS.test(declared??''))malformed();
+    if(policyRow&&row.decision==='approved'&&(typeof declared!=='string'||!OS.test(declared)))malformed();
     const totalOs=policyRow&&row.decision==='approved'&&BigInt(declared)>BigInt(row.totalOs)?declared:row.totalOs;
     // The confirmation decides nothing about the hold: the reservation stays
     // one row, counted until its completion line, whatever the decision.
@@ -339,13 +201,13 @@ function contextLedgerLine(row,rows,malformed){
   }
   if(row.event==='hold'){
     if(!exact(row,['format','event','holdId','jobId','effect','writes','totalOs','recordedAt'])||typeof row.holdId!=='string'||!row.holdId||rows.some(entry=>entry.contextHold===row.holdId)
-      ||!isCanonicalJobId(row.jobId)||!HASH.test(row.effect??'')||!Number.isSafeInteger(row.writes)||row.writes<1||row.writes>SELLER_POLICY_MAX_WRITES||!POSITIVE_OS.test(row.totalOs??'')
+      ||!isCanonicalJobId(row.jobId)||!HASH.test(row.effect??'')||!Number.isSafeInteger(row.writes)||row.writes<1||row.writes>SELLER_POLICY_MAX_WRITES||(typeof row.totalOs!=='string'||!POSITIVE_OS.test(row.totalOs))
       ||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
     rows.push({contextHold:row.holdId,jobId:row.jobId,writes:row.writes,totalOs:row.totalOs,recordedAt:row.recordedAt,released:false});
     return;
   }
   const hold=rows.find(entry=>entry.contextHold===row.holdId);
-  if(row.event!=='release'||!exact(row,['format','event','holdId','jobId','recordedAt'])||!hold||hold.jobId!==row.jobId||!Number.isSafeInteger(row.recordedAt))malformed();
+  if(row.event!=='release'||!exact(row,['format','event','holdId','jobId','recordedAt'])||!hold||hold.jobId!==row.jobId||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0||row.recordedAt<hold.recordedAt)malformed();
   hold.released=true;
 }
 
@@ -363,7 +225,7 @@ function contextHoldRows(ledger,converting=null){
     // One write consumes one slot across all holds, including holds retained
     // across a shutdown and a replacement reservation for the same job.
     for(const row of ledger){
-      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&(row.recordedAt===undefined||row.recordedAt>=hold.recordedAt)){
+      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&(row.recordedAt===undefined||row.recordedAt>hold.recordedAt||(row.recordedAt===hold.recordedAt&&ledger.indexOf(row)>ledger.indexOf(hold)))){
         remaining--;converted.add(row);
       }
     }
@@ -967,3 +829,151 @@ export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Dat
     return released;
   });
 }
+
+// The logical address an artifact of this kind must use for its job.
+function expectedLogicalAddress(c,artifact,policy){
+  if(c.artifactKind==='CompositeVerificationRecord')return compositeVerificationAddress(c.jobId,artifact.evaluatedParty);
+  if(c.artifactKind==='FinalityCommitmentRecord')return finalityCommitmentAddress(c.jobId);
+  if(c.artifactKind==='Deliverable')return `dacs4:deliverable:${c.jobId}`;
+  if(artifact.phase==='pay-dem'){
+    // The host reads this index from protocolSupport(its verified Listing).
+    // Missing phase context cannot authorize an automatic payment-evidence write.
+    const index=typeof policy.paymentPhaseIndex==='function'?policy.paymentPhaseIndex():null;
+    return Number.isSafeInteger(index)&&!Object.is(index,-0)&&index>=0?paymentEvidenceAddress(c.jobId,'demos-native:DEM',index):null;
+  }
+  return artifact.phase==='deliver-storage-program'?`dacs4:evidence:${c.jobId}`:null;
+}
+
+// Returns null when the exact request is within policy, otherwise a short
+// refusal reason that is retained on the evidence line.
+async function policyRefusal(request,policy,limits,{confirmedTotal,countedTotal,manualApproved=false,held=null}={}){
+  const c=request?.content,d=c?.debit;
+  if(!exact(request,['method','address','purpose','content'])||request.method!=='sendTransaction'||typeof request.purpose!=='string'
+    ||!exact(c,['kind','action','artifactKind','jobId','owner','wallet','logicalAddress','storageAddress','programName','contentHash','contentHashProfile','envelopeHash',...(c?.artifactKind==='Deliverable'?['deliveryBinding']:[]),'storageBytes','exactStorageBytes','exactCreate','nonce','timestamp','debit','network','chainIdentity','networkBinding','evidence','sending'])
+    ||!['devnet-demo-artifact-storage-create','devnet-settlement-evidence-storage-create'].includes(c.kind)||c.contentHashProfile!=='SDK CF-1 signed scope (top-level signature/signatures omitted)'
+    ||c.action!=='immutable DACS storage anchor CREATE'||!KINDS.has(c.artifactKind)||!isCanonicalJobId(c.jobId)
+    ||request.address!==policy.address||c.wallet!==policy.address||c.owner!==policy.seller
+    ||c.network!==policy.sourceBinding.network||c.chainIdentity!==policy.sourceBinding.chainIdentity||!same(c.networkBinding,policy.sourceBinding)
+    ||!Number.isSafeInteger(c.nonce)||c.nonce<1||!Number.isSafeInteger(c.timestamp)||c.timestamp<0)return 'request-shape';
+  if(!exact(d,['storageFeeDem','sellerAmountDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem','totalDem','totalOs','note'])
+    ||d.sellerAmountDem!=='0'||typeof d.totalOs!=='string'||!OS.test(d.totalOs??''))return 'debit';
+  const fees=['storageFeeDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem'].map(key=>demOs(d[key]));
+  if(fees.some(value=>value===null)||fees[0]<=0n||fees[4]!==0n
+    ||fees.reduce((a,b)=>a+b,0n)!==BigInt(d.totalOs)||demOs(d.totalDem)!==BigInt(d.totalOs))return 'debit';
+  const declared=BigInt(d.totalOs),cap=BigInt(limits.maxWriteTotalOs);
+  const total=countedTotal===undefined?declared:countedTotal;
+  if(total===null)return 'debit';
+  // Preparation checks the configured cap. Confirmation also bounds an
+  // unexpected debit by the declaration; manual approval authorizes exactly it.
+  const allowance=manualApproved||(confirmedTotal!==undefined&&declared<cap)?declared:cap;
+  if(total>allowance)return 'write-fee-cap';
+  if(manualApproved)return null;
+  const op=JSON.parse(c.exactCreate),artifact=JSON.parse(c.exactStorageBytes),metadata=op?.metadata;
+  if(!exact(op,['operation','storageAddress','programName','salt','data','encoding','acl','storageLocation','metadata'])
+    ||op.operation!=='CREATE_STORAGE_PROGRAM'||op.salt!==''||op.encoding!=='json'||op.storageLocation!=='onchain'||!exact(op.acl,['mode'])||op.acl.mode!=='public'
+    ||op.storageAddress!==c.storageAddress||op.programName!==c.programName||c.programName!==c.logicalAddress.replace(/:/g,'%3A')
+    ||!same(op.data,artifact)||artifact.jobId!==c.jobId||contentHash(artifact)!==c.contentHash||sha(canonicalize(artifact))!==c.envelopeHash
+    ||c.storageBytes!==Buffer.byteLength(c.exactStorageBytes)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/10240)))*1_000_000_000n
+    ||metadata?.logicalAddress!==c.logicalAddress||metadata.artifactKind!==c.artifactKind||metadata.contentHash!==c.contentHash||metadata.envelopeHash!==c.envelopeHash
+    ||!same(metadata.networkBinding,policy.sourceBinding))return 'create-bytes';
+  const sellerRecords=true,purchase=await policy.resolvePurchase(c.jobId);
+  // No seller record of the job yet (vet records): every check that needs no
+  // purchase still refuses, as with the app, before the write is held.
+  if(sellerRecords&&purchase===null&&BEFORE_PAYMENT.has(c.artifactKind)){
+    if(c.artifactKind==='CompositeVerificationRecord'&&!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
+    if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
+    const pin=policy.listingPin();
+    if([artifact.listingPin,artifact.listing,artifact.listingRef].some(value=>value&&!same(value,pin)))return 'listing';
+    return 'seller-record-missing';
+  }
+  // A vet record held with no record may reach confirmation once the proposal
+  // draft has reached the seller but before it retained the buyer's signed
+  // Agreement CREATE. That record has no binding to compare yet; everything
+  // else it holds is still checked, as is the request's own binding above.
+  const unbound=sellerRecords&&held!==null&&c.artifactKind==='CompositeVerificationRecord'&&purchase?.sourceBinding===null;
+  if(!exact(purchase,['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','prePaymentOpen'])||purchase.jobId!==c.jobId||purchase.seller!==policy.seller
+    ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||typeof purchase.prePaymentOpen!=='boolean'||!POSITIVE_OS.test(purchase.amountOs??'')
+    ||!same(purchase.listingPin,policy.listingPin())||!(unbound||(sellerRecords?sameNetwork(purchase.sourceBinding,policy.sourceBinding):same(purchase.sourceBinding,policy.sourceBinding))))return 'purchase';
+  if(AFTER_PAYMENT.has(c.artifactKind)&&!purchase.paymentObserved)return 'payment-not-observed';
+  if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.paymentObserved)return 'payment-already-observed';
+  // A cancelled, expired or otherwise ended purchase gets no more seller writes before payment.
+  if(BEFORE_PAYMENT.has(c.artifactKind)&&!purchase.prePaymentOpen)return 'purchase-closed';
+  if(c.artifactKind==='SettlementEvidence'&&artifact.phase==='pay-dem'&&(!exact(artifact.paymentAmount,['amount','currency'])||artifact.paymentAmount.currency!=='DEM'
+    ||demOs(artifact.paymentAmount.amount)!==BigInt(purchase.amountOs)))return 'payment-amount';
+  if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
+  if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
+  if(artifact.listingPin&&!same(artifact.listingPin,purchase.listingPin))return 'listing';
+  if(artifact.listing&&!same(artifact.listing,purchase.listingPin))return 'listing';
+  if(artifact.listingRef&&!same(artifact.listingRef,purchase.listingPin))return 'listing';
+  if(artifact.agreementHash&&artifact.agreementHash!==purchase.agreementHash)return 'agreement';
+  if(c.artifactKind==='Deliverable'){
+    const binding=c.deliveryBinding;
+    if(!exact(binding,['version','profile','jobId','phase','phaseIndex','listing','agreementHash','fulfilmentId','purchaseAmount','payloadHash'])
+      ||binding.version!=='1'||binding.profile!=='dacs-native-delivery-publication/v1'||binding.jobId!==c.jobId||binding.phase!=='deliver-storage-program'
+      ||!Number.isSafeInteger(binding.phaseIndex)||binding.phaseIndex<0||!same(binding.listing,purchase.listingPin)||binding.agreementHash!==purchase.agreementHash
+      ||typeof binding.fulfilmentId!=='string'||!binding.fulfilmentId||binding.fulfilmentId.length>128||binding.payloadHash!==c.contentHash
+      ||!exact(binding.purchaseAmount,['amount','currency'])||binding.purchaseAmount.currency!=='DEM'||demOs(binding.purchaseAmount.amount)!==BigInt(purchase.amountOs)
+      ||!same(metadata.deliveryBinding,binding))return 'delivery-binding';
+  }
+  if(sellerRecords&&BEFORE_PAYMENT.has(c.artifactKind))return 'cancellation-unknown';
+  return null;
+}
+
+
+// Node 61b8e75 applies storage/gas balance removals for CREATEs; its
+// additional transaction_fee distribution is native-only. Numbers are legacy
+// whole DEM, canonical strings are OS. Never round or coerce fee values.
+function confirmedWriteOs(validity,request){
+  const data=validity?.response?.data,c=data?.transaction?.content,r=request.content;
+  const postFork=c?.amount==='0';
+  const wireOs=(value)=>postFork?(typeof value==='string'&&OS.test(value)?BigInt(value):null)
+    :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*1_000_000_000n:null;
+  if(validity?.result!==200||data?.valid!==true||data.gas_operation!=null||data.custom_charges!=null
+    ||c?.type!=='storageProgram'||(c.amount!==0&&c.amount!=='0')||c.from!==r.wallet||c.nonce!==r.nonce||c.timestamp!==r.timestamp
+    ||JSON.stringify(c.data?.[1])!==r.exactCreate||!Array.isArray(c.gcr_edits))return null;
+  const fee=c.transaction_fee;
+  if(!fee||['network_fee','rpc_fee','additional_fee'].some(key=>wireOs(fee[key])===null))return null;
+  const removals=c.gcr_edits.filter(edit=>edit?.type==='balance');
+  if(removals.length!==2||removals.some(edit=>edit.operation!=='remove'||edit.account!==r.wallet))return null;
+  const amounts=removals.map(edit=>wireOs(edit.amount));
+  if(amounts.some(value=>value===null)||amounts[0]!==demOs(r.debit.storageFeeDem))return null;
+  return amounts.reduce((sum,value)=>sum+value,0n);
+}
+
+
+async function readPolicyLedger(evidencePath){
+  let text='';
+  try{text=await readFile(evidencePath,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
+  return parsePolicyLedger(text);
+}
+
+function serializedPolicy(evidencePath,work){
+  const key=resolve(evidencePath),result=(policyTails.get(key)??Promise.resolve()).then(work),tail=result.catch(()=>{});
+  policyTails.set(key,tail);
+  void tail.then(()=>{if(policyTails.get(key)===tail)policyTails.delete(key);});
+  return result;
+}
+
+const policyTails=new Map();
+
+const provisionalHolds=new Map();
+
+let ttyPrompts=0;
+export const ttyApprovalPending=()=>ttyPrompts>0;
+
+const KINDS=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord','SettlementEvidence','Deliverable']);
+
+const BEFORE_PAYMENT=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord']);
+
+const AFTER_PAYMENT=new Set(['SettlementEvidence','Deliverable']);
+
+const CLAIM=/^did:demos:agent:[0-9a-f]{64}$/;
+
+const same=(a,b)=>canonicalize(a)===canonicalize(b);
+
+const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/.test(value)?BigInt(value.split('.')[0])*1_000_000_000n+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;
+
+// Seller records compare the network and the chain identity only. The seller's
+// Agreement reader (demos-sr2-adapter.mjs) still requires the full transport
+// binding, so today a seller record always carries the seller's own endpoint.
+const sameNetwork=(a,b)=>typeof a?.network==='string'&&typeof a.chainIdentity==='string'&&a.network===b.network&&a.chainIdentity===b.chainIdentity;
