@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "49f4b8581143151b3f0e58db498156950afe90db"
+        "blob": "ed9e32286833313c184b764b81e89b312b880560"
       },
       "DELTA-LEDGER.json": {
-        "blob": "f15fce07dad0e92afdfba5ca4d59a3f73dbee55b"
+        "blob": "34db9129c7722487d445fb5fbcb706f2ff599632"
       },
       "DELTA-MAP.md": {
-        "blob": "ee982ab87d6b64ee450c9e7c51f94178e6a8f808"
+        "blob": "922fdaa2ba834ec5d7f1c980b69235669d29ef05"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "f87e57863fb9ce1175b75c9ef0f9f582b2ca9126"
+        "blob": "cc127046ae2c5712da1490db9f203ac99e00cf20"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1205,7 +1205,7 @@
         "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
       },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
-        "blob": "59a2fd307756d036f813edd17dec2fa8be23e68f"
+        "blob": "b7183e63a75b68cda34c2b30a4d532963794b13f"
       },
       "src/public/portal/seller-session-delegation.mjs": {
         "blob": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42"
@@ -1271,13 +1271,13 @@
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
       },
       "test/d11-import-boundary.test.mjs": {
-        "blob": "e1085f274e14f20b87335189155f76284fd3b92a"
+        "blob": "3df4a602a8fba8bcdaba2a75919aeebd53f1a46d"
       },
       "test/d11-purchase-actions.test.mjs": {
         "blob": "717c0a6ab525d95c330ec2dafcda3074e7b47b24"
       },
       "test/d11-seam-parameters.test.mjs": {
-        "blob": "4abceff4d2f43e41f00707479962c194ca06070f"
+        "blob": "8b38b0a63507a18a55f0fe55f153e03866343a30"
       },
       "test/delivery-access-model.test.mjs": {
         "blob": "478a2e3976a84f76d8d5afc0cc480e7674c8d32d"
