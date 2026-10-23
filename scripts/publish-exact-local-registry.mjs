@@ -30,6 +30,8 @@ export function readPackedManifest(tarball) {
   if (tarball.length > MAX_ARCHIVE_BYTES) throw new Error("packed archive exceeded byte limit");
   const archive = gunzipSync(tarball, { maxOutputLength: MAX_TAR_BYTES });
   let manifest;
+  const entries = new Map();
+  const directories = new Set();
   let terminated = false;
   for (let offset = 0; offset + TAR_BLOCK_BYTES <= archive.length;) {
     const header = archive.subarray(offset, offset + TAR_BLOCK_BYTES);
@@ -48,7 +50,7 @@ export function readPackedManifest(tarball) {
       return Number.parseInt(text, 8);
     };
     const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
-    if (octal(148, 8) !== checksum || field(257, 6) !== "ustar") {
+    if (octal(148, 8) !== checksum || !header.subarray(257, 265).equals(Buffer.from("ustar\0" + "00"))) {
       throw new Error("packed tarball has an invalid ustar header or checksum");
     }
     const prefix = field(345, 155);
@@ -65,6 +67,14 @@ export function readPackedManifest(tarball) {
         name.replace(/\/$/, "").split("/").some(part => !part || part === "." || part === "..")) {
       throw new Error("packed tarball has an unsupported entry type or path");
     }
+    const normalized = name.replace(/\/$/, "");
+    const parents = normalized.split("/").slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join("/"));
+    if (entries.has(normalized) || (type !== "5" && directories.has(normalized)) ||
+        parents.some(parent => entries.has(parent) && entries.get(parent) !== "5")) {
+      throw new Error("packed tarball has duplicate or conflicting paths");
+    }
+    entries.set(normalized, type);
+    for (const parent of parents) directories.add(parent);
     if (name.replace(/\/$/, "") === "package/package.json") {
       if (manifest !== undefined || type === "5") throw new Error("packed tarball must have exactly one regular manifest");
       if (size > MAX_JSON_BYTES) throw new Error("packed manifest exceeded byte limit");
@@ -266,6 +276,8 @@ async function verifyCandidate(registry, manifest, tarball, fetchImpl) {
   if (dist?.integrity !== integrity) {
     throw new Error(`local registry integrity for ${manifest.name}@${manifest.version} is ${String(dist?.integrity)}, expected ${integrity}`);
   }
+  const shasum = createHash("sha1").update(tarball).digest("hex");
+  if (dist?.shasum !== shasum) throw new Error("local registry shasum does not match packed archive");
   verifyManifestMetadata(packument, manifest);
   if (packument["dist-tags"]?.acceptance !== manifest.version) throw new Error("local registry acceptance tag does not match candidate");
   let tarballUrl;
