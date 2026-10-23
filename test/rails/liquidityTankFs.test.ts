@@ -277,7 +277,7 @@ describe("createFsLiquidityTankStore", () => {
     })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" });
   });
 
-  test.each([undefined, "production", "staging"])("with NODE_ENV=%s, a durable restarted worker reuses the retained submission", async (nodeEnv) => {
+  test.each(["development", "test"])("with NODE_ENV=%s, a durable restarted worker reuses the retained submission", async (nodeEnv) => {
     vi.stubEnv("NODE_ENV", nodeEnv);
     const dir = await freshDir();
     let now = T0;
@@ -420,10 +420,13 @@ describe("createFsLiquidityTankStore", () => {
         status: "settled", settlement: { txRef: { lockTxHash: "fs-source-lock-tx", releaseTxHash: "fs-release-tx" } },
       };
       await expect(run("settler")).resolves.toMatchObject(settled);
-      // A restarted store replays the settlement without reading the bridge.
+      // Saved success is checked against a fresh completion after restart.
       phase.observation = emptyAt(DEADLINE - 1);
       phase.now += 5_000;
-      await expect(run("replayer")).resolves.toMatchObject(settled);
+      await expect(run("replayer")).resolves.toMatchObject({ status: "indeterminate",
+        reason: "liquidity-tank-settlement-reconciliation-unavailable" });
+      phase.observation = completion;
+      await expect(run("verified-replayer")).resolves.toMatchObject(settled);
       expect(prepareSubmission).toHaveBeenCalledTimes(1);
       expect(broadcastRetained).toHaveBeenCalledTimes(1);
     }, 30_000);
@@ -1535,7 +1538,7 @@ test.each([
   await expect(store.claim({ intent, owner: "inspect", now: T0, leaseDurationMs: 1_000 })).resolves.toMatchObject({ status: "acquired", lease: { generation: 1 } });
 });
 
-test("production accepts an authorized tank pair, reopens it, and rechecks saved success against the source", async () => {
+test("test mode accepts an authorized tank pair, reopens it, and rechecks saved success against the source", async () => {
   const dir = await freshDir();
   let sourceAvailable = true;
   const lockHash = `0x${"1".repeat(64)}`;
@@ -1569,7 +1572,7 @@ test("production accepts an authorized tank pair, reopens it, and rechecks saved
     ...route, sourceChainId: String(route.sourceChainId), destChainId: String(route.destChainId),
     liquidityTankIds: ["another-authorized-tank", ...route.liquidityTankIds],
   }] } } };
-  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("NODE_ENV", "test");
   const run = async (owner: string) => advanceLiquidityTankSettlement({ authority: authority(), owner,
     store: await createFsLiquidityTankStore({ dir }), verifier, resolveAuthority: async () => allowed,
     adapter: { prepareSubmission, broadcastRetained, observe: async () => observed }, now: () => T0 + 100, leaseDurationMs: 1_000,
@@ -1625,3 +1628,135 @@ test("a corrected expiry survives a filesystem reopen without another submission
   expect(prepareSubmission).not.toHaveBeenCalled();
   expect(broadcastRetained).not.toHaveBeenCalled();
 }, 30_000);
+
+test.each(["observation", "failure", "expiry", "settlement", "reconciliation"])(
+  "sweep F2: recovered %s publication must finish its records-directory barrier", async (kind) => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({ dir });
+    const { write } = await acquire(store, "writer", DEADLINE + 5);
+    await store.recordSubmission({ ...write, submission: submission() });
+    const checkpoint = lockedPending(DEADLINE + 1);
+    await store.recordObservation({ ...write, observation: checkpoint });
+    const completed = { status: "completed" as const, bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+      history: ["empty", "pending", "completed"] as ["empty", "pending", "completed"],
+      observedAt: DEADLINE + 2, finalityObservedAt: T0 + 20, authenticationHash: "a".repeat(64),
+      lockTxHash: checkpoint.lockTxHash!, releaseTxHash: "fs-release-tx", recoveryDeadline: DEADLINE };
+    const failure = { status: "failed-after-lock" as const, checkpoint: checkpoint as never,
+      failure: { status: "failed" as const, bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+        history: ["empty", "pending", "failed"] as ["empty", "pending", "failed"],
+        observedAt: DEADLINE + 2, authenticationHash: "a".repeat(64),
+        lockTxHash: checkpoint.lockTxHash!, recoveryDeadline: DEADLINE, reason: "shard failed" } };
+    const expiryInput = { ...write, expectedObservation: checkpoint, observation: checkpoint as never };
+    if (kind === "settlement") await store.recordObservation({ ...write, observation: completed });
+    if (kind === "reconciliation") await store.recordRecoveryExpired(expiryInput);
+    const publish = (s: LiquidityTankStore) => kind === "observation" ? s.recordObservation({ ...write, observation: completed })
+      : kind === "failure" ? s.recordRecoveryFailure({ ...write, recoveryFailure: failure })
+      : kind === "expiry" ? s.recordRecoveryExpired(expiryInput)
+      : kind === "reconciliation" ? s.reconcileRecoveryExpired!({ settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash, expectedEvidence: checkpoint as never, completion: completed })
+      : s.recordSettlement({ ...write, settlement: { txRef: { kind: "liquidity-tank", bridgeId: BRIDGE_ID,
+        sourceChainId: intent.sourceChainId, destChainId: intent.destinationChainId,
+        lockTxHash: completed.lockTxHash, releaseTxHash: completed.releaseTxHash, recoveryDeadline: DEADLINE },
+        paymentAmount: { amount: intent.amount, currency: intent.currency },
+        settlementFinality: { model: "liquidity-tank", finalityObservedAt: completed.finalityObservedAt },
+        authenticationHash: completed.authenticationHash } });
+    const records = join(dir, "records");
+    const row = join(records, `${sha256Hex(intent.settlementKey)}.json`);
+    trace.root = dir;
+    // Fail only after rename, so a visible but unacknowledged row remains.
+    trace.fault = (op, path) => op === "sync" && path === records &&
+      trace.events.some((event) => event.endsWith(` -> ${row}`)) ? "EIO" : undefined;
+    await expect(publish(store)).rejects.toMatchObject({ code: "EIO" });
+    const reopened = await createFsLiquidityTankStore({ dir });
+    await expect(publish(reopened)).rejects.toMatchObject({ code: "EIO" });
+    await expect(reopened.claim({ intent, owner: "retry", now: DEADLINE + 6, leaseDurationMs: 1_000 }))
+      .rejects.toMatchObject({ code: "EIO" });
+    trace.fault = undefined;
+    trace.events.length = 0;
+    await expect(publish(reopened)).resolves.toMatchObject({ status: "existing" });
+    expect(trace.events).toContain(`sync ${records}`);
+    expect(trace.events.some((event) => event.endsWith(` -> ${row}`))).toBe(false);
+  }, 30_000,
+);
+
+test("sweep daybreak 1 / survivor 1546: production without a resolver cannot claim or prepare", async () => {
+  const store = await createFsLiquidityTankStore({ dir: await freshDir() });
+  const prepareSubmission = vi.fn();
+  const broadcastRetained = vi.fn();
+  vi.stubEnv("NODE_ENV", "production");
+  await expect(advanceLiquidityTankSettlement({ authority: authority(), owner: "production", store,
+    adapter: { prepareSubmission, broadcastRetained, observe: vi.fn() },
+    verifier: createLiquidityTankEvmFinalityVerifier({
+      verifier: { authenticateObservation: () => true, verifySignedSubmission: () => true },
+      sourceRpcUrl: "https://sepolia.example/",
+    }), now: () => T0,
+  })).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-authority-resolver-unavailable" });
+  expect(prepareSubmission).not.toHaveBeenCalled();
+  expect(broadcastRetained).not.toHaveBeenCalled();
+  await expect(store.claim({ intent, owner: "inspect", now: T0, leaseDurationMs: 1_000 }))
+    .resolves.toMatchObject({ status: "acquired", lease: { generation: 1 } });
+});
+
+test.each(["production", "staging", "unset"])(
+  "sweep F4 / daybreak 2,3: %s refuses unreviewed effectful preparation and host-asserted proofs", async (environment) => {
+    const dir = await freshDir();
+    const prepareSubmission = vi.fn(async () => {
+      // Simulate an adapter's value-moving prepare that crashes before retention.
+      throw new Error("external effect happened before WAL");
+    });
+    const broadcastRetained = vi.fn();
+    const verifier = createLiquidityTankEvmFinalityVerifier({
+      verifier: { authenticateObservation: () => true, verifySignedSubmission: () => true },
+      sourceRpcUrl: "https://sepolia.example/",
+    });
+    vi.stubEnv("NODE_ENV", environment === "unset" ? undefined : environment);
+    for (const owner of ["first", "restart"]) {
+      await expect(advanceLiquidityTankSettlement({ authority: authority(), owner,
+        store: await createFsLiquidityTankStore({ dir }), verifier, resolveAuthority: async () => resolvedAuthority(),
+        adapter: { prepareSubmission, broadcastRetained, observe: vi.fn() }, now: () => T0,
+      })).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-production-integration-unavailable" });
+    }
+    expect(prepareSubmission).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+    await expect((await createFsLiquidityTankStore({ dir })).claim({ intent, owner: "inspect", now: T0, leaseDurationMs: 1_000 }))
+      .resolves.toMatchObject({ status: "acquired", lease: { generation: 1 } });
+  }, 30_000,
+);
+
+test.each(["forged-release", "wrong-signed-amount"])(
+  "sweep F4: finalized source receipt and host true cannot authorize %s in production", async (kind) => {
+    const dir = await freshDir();
+    const lockHash = `0x${"1".repeat(64)}`;
+    const blockHash = `0x${"2".repeat(64)}`;
+    let sent = false;
+    const prepareSubmission = vi.fn(async () => {
+      const { submissionHash: _hash, ...unsigned } = submission();
+      return { ...unsigned, signedSubmissionBase64: Buffer.from(kind).toString("base64") };
+    });
+    const broadcastRetained = vi.fn(async () => { sent = true; });
+    const verifier = createLiquidityTankEvmFinalityVerifier({ sourceRpcUrl: "https://sepolia.example/",
+      verifier: { authenticateObservation: () => true, verifySignedSubmission: () => true },
+      fetch: async (_url, init) => {
+        const { id, method } = JSON.parse(init?.body as string);
+        const result = method === "eth_chainId" ? "0xaa36a7" : method === "eth_getTransactionReceipt"
+          ? { transactionHash: lockHash, blockHash, blockNumber: "0x10", status: "0x1" }
+          : { hash: blockHash, number: "0x10", transactions: [lockHash] };
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }));
+      },
+    });
+    const observe = vi.fn(async (): Promise<LiquidityTankObservation> => sent
+      ? { status: "completed", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+        history: ["empty", "pending", "completed"], observedAt: T0 + 1, finalityObservedAt: T0 + 1,
+        lockTxHash: lockHash, releaseTxHash: "fabricated-release", recoveryDeadline: DEADLINE, authenticationHash: "a".repeat(64) }
+      : { status: "empty", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+        history: ["empty"], observedAt: T0, authenticationHash: "a".repeat(64) });
+    vi.stubEnv("NODE_ENV", "production");
+    await expect(advanceLiquidityTankSettlement({ authority: authority(), owner: "production",
+      store: await createFsLiquidityTankStore({ dir }), verifier, resolveAuthority: async () => resolvedAuthority(),
+      adapter: { prepareSubmission, broadcastRetained, observe }, now: () => T0,
+    })).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-production-integration-unavailable" });
+    expect(prepareSubmission).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+  }, 30_000,
+);

@@ -1095,6 +1095,15 @@ describe("ST-8 executable Ethereum source-lock finality", () => {
     return { ...locked(PREPARED_AT + 1_000), lockTxHash: LOCK } as LiquidityTankObservation;
   }
 
+  test("sweep daybreak P2.1: uppercase Ethereum quantities preserve finality", async () => {
+    const proof = rpc({ chainId: "0xAA36A7", receipt: { ...receipt, blockNumber: "0xA" },
+      canonical: { ...canonical, number: "0xA" }, finalized: { ...finalized, number: "0xB" } });
+    const p = phase({ verifier: proof.verifier });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric" });
+    expect(proof.transport).toHaveBeenCalledTimes(4);
+  });
+
   test.each(["0xf", "0x10", "0x11"])("source inclusion at 0x10 enters ST-8 only if finalized head %s reaches it", async (height) => {
     const proof = rpc({ finalized: { number: height, hash: height === "0x10" ? BLOCK : HEAD } });
     const p = phase({ verifier: proof.verifier });
@@ -1392,7 +1401,7 @@ describe("raw identifier admission", () => {
   });
 });
 
-test("expiry correction is an atomic CAS and rejects the wrong lock and checkpoint", async () => {
+test("expiry correction is an atomic CAS and rejects the wrong operation and checkpoint", async () => {
   const p = phase();
   await lockDurably(p);
   p.at(D + 100);
@@ -1404,7 +1413,7 @@ test("expiry correction is an atomic CAS and rejects the wrong lock and checkpoi
   const input = { settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
     expectedEvidence: claim.observation, completion: completed(D - 1) as Extract<LiquidityTankObservation, { status: "completed" }> };
   const reconcile = p.store.reconcileRecoveryExpired!.bind(p.store);
-  await expect(reconcile({ ...input, completion: { ...input.completion, lockTxHash: "wrong-lock" } })).resolves.toMatchObject({ status: "conflict" });
+  await expect(reconcile({ ...input, completion: { ...input.completion, operationHash: "e".repeat(64) } })).resolves.toMatchObject({ status: "conflict" });
   await expect(reconcile({ ...input, expectedEvidence: locked(D + 2) as never })).resolves.toMatchObject({ status: "conflict" });
   await expect(reconcile(input)).resolves.toEqual({ status: "recorded" });
   await expect(reconcile(input)).resolves.toEqual({ status: "existing" });

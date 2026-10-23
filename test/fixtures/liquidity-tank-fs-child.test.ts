@@ -15,6 +15,7 @@ import { CRASH_BRIDGE_ID, CRASH_T0, crashAuthority, crashSubmission } from "./li
  */
 const child = vi.hoisted(() => ({
   armed: false,
+  rowPublished: false,
   stop: process.env.DACS_TANK_FS_STOP ?? "",
   ready: process.env.DACS_TANK_FS_READY ?? "",
   bridges: "",
@@ -53,7 +54,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       } else if (child.bridges !== "" && (path === child.bridges || path === child.records)) {
         handle.sync = async () => {
           await sync();
-          await reached(path === child.bridges ? "reservation-directory-synced" : "row-directory-synced");
+          if (path === child.bridges) await reached("reservation-directory-synced");
+          else if (child.rowPublished) await reached("row-directory-synced");
         };
       }
       return handle;
@@ -68,7 +70,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
     rename: async (...args: Parameters<typeof actual.rename>) => {
       await actual.rename(...args);
-      if (String(args[1]) === child.row) await reached("row-renamed");
+      if (child.armed && String(args[1]) === child.row) {
+        child.rowPublished = true;
+        await reached("row-renamed");
+      }
     },
   };
 });

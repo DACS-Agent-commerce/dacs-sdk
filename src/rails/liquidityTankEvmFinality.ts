@@ -23,7 +23,7 @@ export interface LiquidityTankEvmFinalityOptions {
 }
 
 const HASH = /^0x[0-9a-fA-F]{64}$/;
-const QUANTITY = /^0x(?:0|[1-9a-f][0-9a-f]*)$/;
+const QUANTITY = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/;
 const SEPOLIA = 11_155_111;
 
 function record(value: unknown): value is Record<string, unknown> {

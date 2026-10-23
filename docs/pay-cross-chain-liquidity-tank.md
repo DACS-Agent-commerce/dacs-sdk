@@ -20,6 +20,15 @@ phase handler does that around it (see [Host duties](#host-duties) and
 [Mapping progress to DACS results](#mapping-progress-to-dacs-results)); until
 one exists, the core alone does not conform to §9.5.5.
 
+**Execution is currently limited to explicit development/test mode.** Outside
+`NODE_ENV=development` or `NODE_ENV=test`, even the bundled durable store,
+source-finality wrapper and authority resolver cannot enable execution. The
+core returns `indeterminate / liquidity-tank-production-integration-unavailable`
+before claiming a phase or invoking preparation. No reviewed local-only Demos
+signer, signed-intent decoder or authenticated destination-release verifier is
+shipped. Host callbacks and a finalized source receipt alone do not establish
+those guarantees. The examples below are development/test integration contracts.
+
 The core:
 
 - validates the exact stablecoin-cross-chain / cross-chain / liquidity-tank
@@ -63,7 +72,7 @@ The core:
   host clock, needs a time strictly after `recoveryDeadline`. Expiry needs
   authenticated evidence; see below.
 
-**Production restart safety requires the bundled durable store.** Every no-double-send and completion-versus-expiry guarantee
+**Durable restart tests use the bundled filesystem store.** Every no-double-send and completion-versus-expiry guarantee
 holds only with a store that keeps every row across process restarts, commits
 each write atomically and passes `runLiquidityTankStoreConformance` (see
 [Store conformance](#store-conformance)). The core cannot tell a lost row from
@@ -82,8 +91,10 @@ the core additionally requires the exact frozen handle created by
 `createFsLiquidityTankStore`. A custom store, copied handle or self-declared
 `"conformance-tested"` string cannot grant production execution. The same modes
 require the exact `createLiquidityTankEvmFinalityVerifier` wrapper and a trusted
-`resolveAuthority` callback before any claim or preparation. Test/development
-mode permits injected stores and verifiers for contract tests.
+`resolveAuthority` callback, then refuse execution because no reviewed production
+integration is shipped. Test/development mode permits injected stores and
+verifiers for contract tests; setting that mode is not a production deployment
+procedure.
 
 **A shared tank's balance comes from the bridge, not the core.** The core
 checks one operation at a time. That the bridge never locks more than a tank's
@@ -154,7 +165,8 @@ pays twice. This is an adapter-review requirement, not a guarantee of the
 core: the core can neither enforce nor detect it, and its tests show the safe
 outcome only for an adapter that keeps it. Review every live adapter for it,
 with a test against that adapter showing `prepareSubmission` neither
-broadcasts nor keeps the bytes for later sending.
+broadcasts nor keeps the bytes for later sending. Until such an integration is
+reviewed and shipped, the production execution gate refuses every adapter.
 
 The retained submission hash and bytes are validated before any adapter effect
 or store write. Corrupted retained state returns the retry-safe indeterminate
@@ -163,6 +175,15 @@ authenticated row rather than preparing or broadcasting a replacement.
 For acquired claims, optional retained fields are distinguished by own-property
 presence: a present malformed or falsey submission/observation is corruption,
 while only a genuinely absent submission authorizes fresh preparation.
+
+An expiry replay that observes an authenticated completion for another lock or
+deadline atomically retains it as `completion` beside the original expiry. It
+preserves the original lock and failure classification and returns the release
+evidence separately. A failed or uncertain write returns `indeterminate`; a
+later restart reauthenticates both snapshots before returning the retained
+release, even if the bridge read is unavailable. EVM transaction hashes compare
+by their 32-byte identity while the authenticated snapshots retain their exact
+spelling.
 
 Recovery expiry needs authenticated evidence bound to the exact checkpoint:
 
@@ -302,9 +323,10 @@ timely; a finality in microseconds reads as late, so once the host clock
 passes the deadline a timely release is expired as `failed-substrate`. A
 retained `preparedAt` is only as well bound as its receipt: a store that
 stamps the receipt from its own clock, in its own unit, breaks the check, and
-store conformance refuses one that does. A settled row carries no
-`preparedAt`, so its `finalityObservedAt` is checked only against its
-deadline.
+store conformance refuses one that does. A bundled filesystem settled claim
+retains the submission and receipt time. Replay checks its `preparedAt`,
+verifies the signed submission, and authenticates a fresh completion before
+returning the stored settlement.
 
 ## Tank balance is the bridge's
 
@@ -820,7 +842,9 @@ can run conformance, but the core refuses a store without it. Outside explicit
 is registered for production use. Other handles return
 `liquidity-tank-store-untrusted` before any claim. Running conformance does not
 register an arbitrary host store for production; database registration requires
-a separate reviewed integration.
+a separate reviewed integration. Even the bundled handle currently returns
+`liquidity-tank-production-integration-unavailable` after the configuration
+checks: execution requires explicit development/test mode.
 
 ### Durable filesystem store
 
@@ -975,6 +999,8 @@ Host configuration is refused the same way, before any claim or effect:
 - **Missing or unavailable production authority resolution** returns
   `liquidity-tank-authority-resolver-unavailable`; a resolved mismatch returns
   `liquidity-tank-resolved-authority-mismatch`.
+- **Otherwise valid production configuration** returns
+  `liquidity-tank-production-integration-unavailable` before any phase claim.
 - **Any other refused owner, lease, clock, store or adapter**, including a
   whole store wrapped in a `Proxy`, returns its refusal message as the reason,
   for example `pay-cross-chain-liquidity-tank: store.claim must be stable

@@ -29,6 +29,7 @@ const regExpExec = RegExp.prototype.exec;
 const stringNormalize = String.prototype.normalize;
 const stringCharCodeAt = String.prototype.charCodeAt;
 const stringSlice = String.prototype.slice;
+const stringToLowerCase = String.prototype.toLowerCase;
 // One-shot: no `Hash` object whose symbol-keyed handle slot a prototype
 // accessor could intercept.
 const oneShotHash = hash;
@@ -262,8 +263,9 @@ export type LiquidityTankVerifierAnswer = boolean | "unavailable" | "pending-fin
  * so a retry re-checks those bytes instead of signing new ones. Any other
  * answer is a refusal. The core sets no timeout, so each hook must settle
  * within its own bounded deadline, well under a minute; a hook that never
- * settles hangs the call. A retained `settled` row is returned as the store
- * wrote it, without either check.
+ * settles hangs the call. Bundled filesystem settled rows recheck the retained
+ * submission and a fresh authenticated completion before returning success.
+ * Production execution is disabled until a reviewed integration is shipped.
  */
 export interface LiquidityTankVerifier {
   /**
@@ -339,7 +341,7 @@ export type LiquidityTankRecoveryCheckpoint = Readonly<
  * A failure snapshot must be authenticated strictly after the deadline too.
  * `observedAt` is the bridge's authenticated time of the status snapshot.
  */
-export type LiquidityTankRecoveryEvidence =
+export type LiquidityTankRecoveryEvidence = (
   | LiquidityTankRecoveryCheckpoint
   | Readonly<Extract<LiquidityTankObservation, { status: "completed" }>>
   | (Readonly<Extract<LiquidityTankObservation, { status: "failed" }>> & {
@@ -358,7 +360,11 @@ export type LiquidityTankRecoveryEvidence =
       status: "contradicted-after-lock";
       checkpoint: LiquidityTankRecoveryCheckpoint;
       contradiction: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
-    }>;
+    }>
+) & Readonly<{
+  /** Authenticated contradictory release; preserves the original expiry and lock. */
+  completion?: Readonly<Extract<LiquidityTankObservation, { status: "completed" }>>;
+}>;
 
 export type LiquidityTankStoreClaim =
   | {
@@ -521,10 +527,11 @@ export interface LiquidityTankStore {
     observation: LiquidityTankRecoveryEvidence;
   }): Promise<LiquidityTankStoreWrite>;
   /**
-   * Atomically reconciles this exact expiry with a completion of its same lock.
-   * A timely completion settles; a late completion retains recovery-expired
-   * with its release evidence. An existing completion cannot be replaced by
-   * conflicting payment facts. Never submits bytes.
+   * Atomically reconciles this exact expiry with an authenticated completion.
+   * For the same lock/deadline, timely completion settles and late completion
+   * retains recovery-expired. A different lock/deadline enriches the original
+   * expiry with `completion`, preserving its lock and classification. Existing
+   * completion facts cannot be replaced. Never submits bytes.
    */
   reconcileRecoveryExpired?(input: {
     settlementKey: string;
@@ -1638,7 +1645,7 @@ function failedAfterLock(
   observation: Readonly<LiquidityTankObservation>,
   checkpoint: LiquidityTankRecoveryCheckpoint,
 ): observation is Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>["failure"] {
-  return observation.status === "failed" && observation.lockTxHash === checkpoint.lockTxHash &&
+  return observation.status === "failed" && transactionHashIdentity(observation.lockTxHash ?? "") === transactionHashIdentity(checkpoint.lockTxHash) &&
     observation.recoveryDeadline === checkpoint.recoveryDeadline;
 }
 
@@ -1685,6 +1692,15 @@ function validateRecoveryEvidence(
     value,
     "liquidity-tank recovery evidence",
   ) as LiquidityTankRecoveryEvidence);
+  if (hasOwn(captured, "completion")) {
+    const { completion: rawCompletion, ...original } = captured;
+    const evidence = validateRecoveryEvidence(original as LiquidityTankRecoveryEvidence, intent, submission);
+    const completion = validateCapturedObservation(rawCompletion!, intent, submission);
+    if (completion.status !== "completed" || evidence.status === "completed") {
+      throw new DacsError("pay-cross-chain-liquidity-tank: recovery completion is invalid");
+    }
+    return Object.freeze({ ...evidence, completion });
+  }
   if (captured.status === "failed-after-lock") {
     const checkpoint = validateCapturedObservation(captured.checkpoint, intent, submission);
     const failure = validateCapturedObservation(captured.failure, intent, submission);
@@ -1783,6 +1799,10 @@ function recoveryExpiredProgress(
     }),
     finalityObservedAt: completion.finalityObservedAt,
   });
+  if (evidence.completion) {
+    const { completion, ...original } = evidence;
+    return { ...recoveryExpiredProgress(intent, original as LiquidityTankRecoveryEvidence), ...releaseEvidence(completion) };
+  }
   if (evidence.status === "completed") {
     return { ...expired, reason: "tank-released-after-recovery-deadline", ...releaseEvidence(evidence) };
   }
@@ -1823,6 +1843,12 @@ function settlementFromCompletedObservation(
   });
 }
 
+/** Compare EVM hash bytes without changing the exact authenticated snapshot. */
+function transactionHashIdentity(value: string): string {
+  return value.length === 66 && matchesPattern(/^0x[0-9a-fA-F]{64}$/, value)
+    ? reflectApply(stringToLowerCase, value, []) as string : value;
+}
+
 /** Authentication identifies a snapshot, rather than the immutable payment. */
 function sameSettlementFacts(
   left: Readonly<LiquidityTankSettlement>,
@@ -1830,7 +1856,11 @@ function sameSettlementFacts(
 ): boolean {
   const { authenticationHash: _leftProof, ...leftFacts } = left;
   const { authenticationHash: _rightProof, ...rightFacts } = right;
-  return canonicalize(leftFacts) === canonicalize(rightFacts);
+  const facts = (value: typeof leftFacts) => ({ ...value, txRef: { ...value.txRef,
+    lockTxHash: transactionHashIdentity(value.txRef.lockTxHash),
+    releaseTxHash: transactionHashIdentity(value.txRef.releaseTxHash),
+  } });
+  return canonicalize(facts(leftFacts)) === canonicalize(facts(rightFacts));
 }
 
 function preservesRecoveryCheckpoint(
@@ -1842,10 +1872,10 @@ function preservesRecoveryCheckpoint(
     return true;
   }
   if (next.status === "pending") {
-    return next.lockTxHash === prior.lockTxHash &&
+    return transactionHashIdentity(next.lockTxHash ?? "") === transactionHashIdentity(prior.lockTxHash) &&
       next.recoveryDeadline === prior.recoveryDeadline;
   }
-  return next.status === "completed" && next.lockTxHash === prior.lockTxHash &&
+  return next.status === "completed" && transactionHashIdentity(next.lockTxHash ?? "") === transactionHashIdentity(prior.lockTxHash) &&
     next.recoveryDeadline === prior.recoveryDeadline;
 }
 
@@ -2082,6 +2112,12 @@ export async function advanceLiquidityTankSettlement(
       return { status: "indeterminate", reason: "liquidity-tank-authority-resolver-unavailable" };
     }
   }
+  // No reviewed Demos adapter/decoder/bridge-release verifier is shipped.
+  // Host callbacks and a finalized source receipt cannot establish those
+  // guarantees or prevent an effect during preparation before durable storage.
+  if (!allowsVolatileStore()) {
+    return { status: "indeterminate", reason: "liquidity-tank-production-integration-unavailable" };
+  }
   // Only a literal `true` accepts. `"unavailable"` or a throw is an outage: a
   // hook that timed out or lost its key cannot be told from one whose own
   // dependency threw, and an outage acts on nothing the core could not check,
@@ -2177,7 +2213,7 @@ export async function advanceLiquidityTankSettlement(
     const settledClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "settled" }>;
     try {
       const settlement = captureSettlement(settledClaim.settlement, intent);
-      if (!allowsVolatileStore()) {
+      if (isProductionTankStore(store)) {
         const savedSubmission = validateRetainedSubmission(settledClaim.submission!, intent);
         const receiptRefusal = retainedReceiptRefusal(settledClaim.submissionRecordedAt, savedSubmission);
         if (receiptRefusal) return { status: "indeterminate", reason: receiptRefusal };
@@ -2235,13 +2271,15 @@ export async function advanceLiquidityTankSettlement(
     } catch (error) {
       return retainedStateRefusal(error);
     }
-    const evidenceObservations: readonly Readonly<
+    const { completion: releasedCompletion, ...originalEvidence } = evidence;
+    const evidenceObservations: Readonly<
       Exclude<LiquidityTankObservation, { status: "indeterminate" }>
     >[] = evidence.status === "failed-after-lock"
       ? [evidence.checkpoint, evidence.failure]
       : evidence.status === "contradicted-after-lock"
         ? [evidence.checkpoint, evidence.contradiction]
-        : [evidence];
+        : [originalEvidence as Exclude<LiquidityTankObservation, { status: "indeterminate" }>];
+    if (releasedCompletion) evidenceObservations.push(releasedCompletion);
     // A refusal of any leg outranks an outage on another.
     let expiryUnchecked = false;
     for (let index = 0; index < evidenceObservations.length; index += 1) {
@@ -2262,7 +2300,7 @@ export async function advanceLiquidityTankSettlement(
         !pastRecoveryDeadline(claimNow, recoveryEvidenceDeadline(evidence))) {
       return { status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" };
     }
-    if (evidence.status === "completed") return recoveryExpiredProgress(intent, evidence);
+    if (evidence.status === "completed" || evidence.completion) return recoveryExpiredProgress(intent, evidence);
     // Expiry never authorizes another submission. Reconcile read-only on
     // every replay so a delayed authenticated release can reconcile it.
     let latest: Readonly<LiquidityTankObservation>;
@@ -2280,14 +2318,16 @@ export async function advanceLiquidityTankSettlement(
       : { status: "indeterminate", reason: "liquidity-tank-observation-unauthenticated" };
     const expiredLock = evidence.status === "failed-after-lock" || evidence.status === "contradicted-after-lock"
       ? evidence.checkpoint : evidence;
-    if (latest.status === "completed" && latest.lockTxHash === expiredLock.lockTxHash &&
-        latest.recoveryDeadline === expiredLock.recoveryDeadline) {
+    if (latest.status === "completed") {
+      const sameLock = transactionHashIdentity(latest.lockTxHash) === transactionHashIdentity(expiredLock.lockTxHash) &&
+        latest.recoveryDeadline === expiredLock.recoveryDeadline;
       try {
         const reconcile = stableBoundMethod<NonNullable<LiquidityTankStore["reconcileRecoveryExpired"]>>(
           store, "reconcileRecoveryExpired", "store.reconcileRecoveryExpired",
         );
         if (successfulStoreWrite(await reconcile({ settlementKey: intent.settlementKey,
           bindingHash: intent.bindingHash, expectedEvidence: evidence, completion: latest }))) {
+          if (!sameLock) return recoveryExpiredProgress(intent, { ...evidence, completion: latest });
           return pastRecoveryDeadline(latest.finalityObservedAt, latest.recoveryDeadline)
             ? recoveryExpiredProgress(intent, latest)
             : { status: "settled", settlement: settlementFromCompletedObservation(intent, latest) };
@@ -2768,14 +2808,14 @@ export async function advanceLiquidityTankSettlement(
     // completion of that same lock, before it can resolve the lock.
     const durableLockFailure = lockBearingFailure(durableObservation);
     if (durableLockFailure && observation.status === "failed" &&
-        observation.lockTxHash === durableLockFailure.lockTxHash &&
+        transactionHashIdentity(observation.lockTxHash ?? "") === transactionHashIdentity(durableLockFailure.lockTxHash) &&
         observation.recoveryDeadline === durableLockFailure.recoveryDeadline &&
         observation.observedAt > durableLockFailure.observedAt && provesRecoveryExpiry(observation as LiquidityTankRecoveryEvidence)) {
       if (!await persistObservation(observation)) return { status: "indeterminate", reason: "liquidity-tank-observation-persistence-uncertain" };
       return await persistRecoveryExpired(observation as LiquidityTankRecoveryEvidence, observation);
     }
     if (durableLockFailure && !(observation.status === "completed" &&
-        observation.lockTxHash === durableLockFailure.lockTxHash &&
+        transactionHashIdentity(observation.lockTxHash ?? "") === transactionHashIdentity(durableLockFailure.lockTxHash) &&
         observation.recoveryDeadline === durableLockFailure.recoveryDeadline)) {
       return await resolveDurableProgress();
     }
@@ -3034,11 +3074,16 @@ function recordObservationTransition(
   // it does over failure evidence retained beside a checkpoint.
   const priorLockFailure = lockBearingFailure(prior);
   const completesFailedLock = priorLockFailure !== undefined && observation.status === "completed" &&
-    observation.lockTxHash === priorLockFailure.lockTxHash &&
+    transactionHashIdentity(observation.lockTxHash ?? "") === transactionHashIdentity(priorLockFailure.lockTxHash) &&
     observation.recoveryDeadline === priorLockFailure.recoveryDeadline;
   const refreshesFailedLock = priorLockFailure !== undefined && observation.status === "failed" &&
-    observation.lockTxHash === priorLockFailure.lockTxHash &&
+    transactionHashIdentity(observation.lockTxHash ?? "") === transactionHashIdentity(priorLockFailure.lockTxHash) &&
     observation.recoveryDeadline === priorLockFailure.recoveryDeadline && observation.observedAt > priorLockFailure.observedAt;
+  if (prior?.status === "completed" && observation.status === "completed" &&
+      sameSettlementFacts(settlementFromCompletedObservation(record.intent, prior),
+        settlementFromCompletedObservation(record.intent, observation))) {
+    return { result: { status: "existing" } };
+  }
   if (prior && !completesFailedLock && !refreshesFailedLock) {
     if (canonicalize(prior) === canonicalize(observation)) return { result: { status: "existing" } };
     if (!preservesRecoveryCheckpoint(prior, observation) ||
@@ -3145,7 +3190,7 @@ function recordRecoveryExpiredTransition(
     }
   } else if (evidence.status === "completed") {
     if (priorLock &&
-        (evidence.lockTxHash !== priorLock.lockTxHash ||
+        (transactionHashIdentity(evidence.lockTxHash) !== transactionHashIdentity(priorLock.lockTxHash) ||
           evidence.recoveryDeadline !== priorLock.recoveryDeadline)) {
       return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
     }
@@ -3186,8 +3231,10 @@ function reconcileRecoveryExpiredTransition(
   const settlement = settlementFromCompletedObservation(record.intent, completed);
   if (record.settlement) return { result: sameSettlementFacts(record.settlement, settlement)
     ? { status: "existing" } : { status: "conflict", reason: "liquidity-tank-settlement-conflict" } };
-  if (record.recoveryExpired?.status === "completed") {
-    return { result: sameSettlementFacts(settlementFromCompletedObservation(record.intent, record.recoveryExpired), settlement)
+  const retainedCompletion = record.recoveryExpired?.completion ??
+    (record.recoveryExpired?.status === "completed" ? record.recoveryExpired : undefined);
+  if (retainedCompletion) {
+    return { result: sameSettlementFacts(settlementFromCompletedObservation(record.intent, retainedCompletion), settlement)
       ? { status: "existing" } : { status: "conflict", reason: "liquidity-tank-recovery-expiry-conflict" } };
   }
   if (!record.recoveryExpired || canonicalize(record.recoveryExpired) !== canonicalize(input.expectedEvidence)) {
@@ -3195,8 +3242,9 @@ function reconcileRecoveryExpiredTransition(
   }
   const evidence = record.recoveryExpired;
   const lock = evidence.status === "failed-after-lock" || evidence.status === "contradicted-after-lock" ? evidence.checkpoint : evidence;
-  if (completed.lockTxHash !== lock.lockTxHash || completed.recoveryDeadline !== lock.recoveryDeadline) {
-    return { result: { status: "conflict", reason: "liquidity-tank-expiry-correction-conflict" } };
+  if (transactionHashIdentity(completed.lockTxHash) !== transactionHashIdentity(lock.lockTxHash) ||
+      completed.recoveryDeadline !== lock.recoveryDeadline) {
+    return { result: { status: "recorded" }, next: { ...record, recoveryExpired: { ...evidence, completion: completed } } };
   }
   if (pastRecoveryDeadline(completed.finalityObservedAt, completed.recoveryDeadline)) {
     // Keep the phase expired and the original checkpoint/failure, enriching

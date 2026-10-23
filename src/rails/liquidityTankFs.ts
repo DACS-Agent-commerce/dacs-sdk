@@ -682,6 +682,9 @@ export async function createFsLiquidityTankStore(
   }
 
   async function readRecord(settlementKey: string): Promise<RecordRead> {
+    // Under the phase lock, finish any interrupted rename publication before
+    // acknowledging visible state, including terminal and idempotent reads.
+    await completeExclusivePublication(recordPath(settlementKey), LABEL);
     const read = await readJson(recordPath(settlementKey));
     if (read.status === "absent") return read;
     const value = read.value;

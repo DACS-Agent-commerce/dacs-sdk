@@ -12,8 +12,8 @@ import { createLiquidityTankEvmFinalityVerifier } from "../../src/rails/liquidit
 
 const T0 = 1_785_000_000_000;
 const D = T0 + 86_400_000;
-const LOCK = `0x${"1".repeat(64)}`;
-const RELEASE = `0x${"3".repeat(64)}`;
+const LOCK = `0x${"ab".repeat(32)}`;
+const RELEASE = `0x${"cd".repeat(32)}`;
 const BLOCK = `0x${"2".repeat(64)}`;
 const roots: string[] = [];
 type Unsigned<T> = T extends unknown ? Omit<T, "authenticationHash"> : never;
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 async function phase() {
-  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("NODE_ENV", "test");
   const dir = await mkdtemp(join(tmpdir(), "dacs-tank-replay-"));
   roots.push(dir);
   const authority: LiquidityTankAuthority = {
@@ -58,8 +58,8 @@ async function phase() {
     history: ["empty", "pending", "completed"], observedAt: at, finalityObservedAt: finality,
     lockTxHash: LOCK, releaseTxHash: RELEASE, recoveryDeadline: D, ...extra,
   });
-  const failed = (at: number) => sign({ ...base, status: "failed", history: ["empty", "pending", "failed"],
-    observedAt: at, lockTxHash: LOCK, recoveryDeadline: D, reason: "shard failed",
+  const failed = (at: number, extra = {}) => sign({ ...base, status: "failed", history: ["empty", "pending", "failed"],
+    observedAt: at, lockTxHash: LOCK, recoveryDeadline: D, reason: "shard failed", ...extra,
   });
   let now = T0;
   let observed: LiquidityTankObservation = empty(T0);
@@ -90,10 +90,10 @@ async function phase() {
       },
     },
     fetch: async (_url, init) => {
-      const { id, method } = JSON.parse(init?.body as string);
+      const { id, method, params } = JSON.parse(init?.body as string);
       const result = method === "eth_chainId" ? "0xaa36a7" : method === "eth_getTransactionReceipt"
-        ? { transactionHash: LOCK, blockHash: BLOCK, blockNumber: "0x10", status: "0x1" }
-        : { hash: BLOCK, number: "0x10", transactions: [LOCK] };
+        ? { transactionHash: params[0], blockHash: BLOCK, blockNumber: "0x10", status: "0x1" }
+        : { hash: BLOCK, number: "0x10", transactions: [LOCK, `0x${"4".repeat(64)}`] };
       return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }));
     },
   });
@@ -122,7 +122,7 @@ async function phase() {
   };
 }
 
-test("production replay accepts refreshed authenticated snapshots of the same settled payment", async () => {
+test("bundled-store replay accepts refreshed authenticated snapshots of the same settled payment", async () => {
   const p = await phase();
   p.after(p.completed(T0 + 1));
   const settled = await p.run();
@@ -140,7 +140,7 @@ test.each([
   ["lock", { lockTxHash: `0x${"4".repeat(64)}` }, T0 + 1],
   ["deadline", { recoveryDeadline: D + 1 }, T0 + 1],
   ["finality", {}, T0 + 2],
-])("production replay refuses changed %s facts", async (_label, extra, finality) => {
+])("bundled-store replay refuses changed %s facts", async (_label, extra, finality) => {
   const p = await phase();
   p.after(p.completed(T0 + 1));
   expect((await p.run()).status).toBe("settled");
@@ -151,7 +151,7 @@ test.each([
   expect(p.broadcast).toHaveBeenCalledTimes(1);
 });
 
-test("production replay still refuses an unauthenticated refreshed snapshot", async () => {
+test("bundled-store replay still refuses an unauthenticated refreshed snapshot", async () => {
   const p = await phase();
   p.after(p.completed(T0 + 1));
   await p.run();
@@ -210,7 +210,7 @@ test("late-release reconciliation keeps its expiry CAS and rejects conflicting p
   const input = { settlementKey: p.intent.settlementKey, bindingHash: p.intent.bindingHash,
     expectedEvidence: expired.observation, completion };
   const reconcile = store.reconcileRecoveryExpired!.bind(store);
-  for (const extra of [{ lockTxHash: "wrong-lock" }, { recoveryDeadline: D + 1 }]) {
+  for (const extra of [{ bridgeId: "wrong-bridge" }, { operationHash: "e".repeat(64) }]) {
     await expect(reconcile({ ...input, completion: { ...completion, ...extra } })).resolves.toMatchObject({ status: "conflict" });
   }
   await expect(reconcile({ ...input, expectedEvidence: p.pending(D + 2) as never })).resolves.toMatchObject({ status: "conflict" });
@@ -224,15 +224,17 @@ test("late-release reconciliation keeps its expiry CAS and rejects conflicting p
   expect(await p.inspect()).toMatchObject({ status: "recovery-expired", observation: completion });
 }, 30_000);
 
-test.each(["refused", "unavailable", "missing", "throws"])(
-  "a %s reconciliation write never reports an unpaid expiry after seeing a late release", async (kind) => {
+test.each(["refused", "unavailable", "missing", "throws"].flatMap((kind) =>
+  ["same", "lock", "deadline"].map((change) => [kind, change])))(
+  "a %s reconciliation write never reports an unpaid expiry after seeing a release with %s facts", async (kind, change) => {
     const p = await phase();
     await p.run();
     p.at(D + 1);
     p.see(p.pending(D + 1));
     await p.run();
     p.at(D + 2);
-    p.see(p.completed(D + 2));
+    p.see(p.completed(D + 2, D + 2, change === "lock" ? { lockTxHash: `0x${"4".repeat(64)}` }
+      : change === "deadline" ? { recoveryDeadline: D + 10 } : {}));
     // Custom store wrappers are deliberately restricted to development/test.
     vi.stubEnv("NODE_ENV", "test");
     const result = await p.run((store) => ({ ...store, reconcileRecoveryExpired: kind === "missing" ? undefined : async () => {
@@ -258,4 +260,70 @@ test.each(["bridge", "adapter", "signed", "authentication"])(
     expect(p.prepare).toHaveBeenCalledTimes(1);
     expect(p.broadcast).toHaveBeenCalledTimes(1);
   },
+);
+
+// Sweep F1: a contradictory release is still payment evidence, never an unpaid expiry.
+test.each(["pending", "failed", "contradicted", "standalone-failed"].flatMap((kind) =>
+  ["lock", "deadline"].map((changed) => [kind, changed]))) (
+  "sweep F1: %s expiry retains a completion with a changed %s", async (kind, changed) => {
+    const p = await phase();
+    p.after(kind === "standalone-failed" ? p.failed(T0 + 1) : p.pending(T0 + 1));
+    await p.run();
+    p.at(D + 1);
+    p.see(kind === "pending" ? p.pending(D + 1) : kind === "contradicted" ? p.empty(D + 1) : p.failed(D + 1));
+    const expired = await p.run();
+    const retainedExpiry = await p.inspect();
+    if (retainedExpiry.status !== "recovery-expired") throw new Error("expected expiry");
+    p.at(D + 2);
+    const completion = p.completed(D + 2, D - 1, changed === "lock"
+      ? { lockTxHash: `0x${"4".repeat(64)}` } : { recoveryDeadline: D + 10 });
+    p.see(completion);
+    const result = await p.run();
+    expect(result).toMatchObject({ ...expired, txRef: { releaseTxHash: RELEASE } });
+    expect(liquidityTankPhaseOutcome(result)).toMatchObject({ release: { txRef: { releaseTxHash: RELEASE } } });
+    expect(await p.inspect()).toMatchObject({ status: "recovery-expired", observation: { ...retainedExpiry.observation, completion } });
+    p.outage("bridge");
+    expect(await p.run()).toEqual(result);
+    expect(p.prepare).toHaveBeenCalledTimes(1);
+    expect(p.broadcast).toHaveBeenCalledTimes(1);
+  }, 30_000,
+);
+
+test.each(["before-expiry", "after-expiry", "settled-replay"])(
+  "sweep F3: EVM hash case preserves payment identity on %s", async (when) => {
+    const p = await phase();
+    if (when === "settled-replay") p.after(p.completed(T0 + 1));
+    await p.run();
+    if (when === "after-expiry") {
+      p.at(D + 1);
+      p.see(p.pending(D + 1));
+      await p.run();
+    }
+    p.at(D + 2);
+    const completion = p.completed(D + 2, T0 + 1, {
+      lockTxHash: `0x${"AB".repeat(32)}`, releaseTxHash: `0x${"CD".repeat(32)}`,
+    });
+    p.see(completion);
+    expect(await p.run()).toMatchObject({ status: "settled" });
+    expect(await p.run()).toMatchObject({ status: "settled" });
+    expect(p.prepare).toHaveBeenCalledTimes(1);
+    expect(p.broadcast).toHaveBeenCalledTimes(1);
+  }, 30_000,
+);
+
+
+test.each(["checkpoint-failure", "standalone-failure"])(
+  "sweep F3: hash identity survives %s and a subsequent timely release", async (kind) => {
+    const p = await phase();
+    if (kind === "standalone-failure") p.after(p.failed(T0 + 1));
+    await p.run();
+    p.at(T0 + 20);
+    p.see(p.failed(T0 + 20, { lockTxHash: `0x${"AB".repeat(32)}` }));
+    expect(await p.run()).toMatchObject({ status: "settle-asymmetric" });
+    p.at(T0 + 40);
+    p.see(p.completed(T0 + 40, T0 + 40, { lockTxHash: `0x${"AB".repeat(32)}` }));
+    expect(await p.run()).toMatchObject({ status: "settled" });
+    expect(p.prepare).toHaveBeenCalledTimes(1);
+    expect(p.broadcast).toHaveBeenCalledTimes(1);
+  }, 30_000,
 );
