@@ -94,3 +94,52 @@ test('read-only host policy is preserved within and after nested guards', t => {
   });
   assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
 });
+
+test('exec consumes later rows and preserves their native errors', t => {
+  const db=world(t);
+  db.exec("INSERT INTO records VALUES ('{}'), ('bad')");
+  assert.throws(()=>withSqliteStatementGuard(db,()=>{},()=>db.exec("SELECT json_extract(id, '$') FROM records")), /malformed JSON/);
+});
+test('exec accepts SQLite comment tails and rejects non-SQLite whitespace', t => {
+  const db=world(t);
+  withSqliteStatementGuard(db,()=>{},()=>{
+    db.exec("INSERT INTO records VALUES ('TEST-comment'); /* unfinished");
+    db.exec('/* unfinished');
+    assert.throws(()=>db.exec('\u00a0'), /syntax/);
+  });
+  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n,1);
+});
+test('iterators created before a guard still check liveness on next', t => {
+  const db=world(t), iterator=db.prepare('SELECT 1').iterate();
+  let live=true;
+  withSqliteStatementGuard(db,()=>{if(!live)throw Error('TEST-ended');},()=>{
+    live=false;
+    assert.throws(()=>iterator.next(), /TEST-ended/);
+    iterator.return();
+  });
+});
+test('a rollback in one exec batch is checked before the second statement', t => {
+  const db=world(t); db.exec('BEGIN');
+  withSqliteStatementGuard(db,()=>{if(!db.isTransaction)throw Error('TEST-ended');},()=>{
+    assert.throws(()=>db.exec('ROLLBACK; CREATE TABLE escaped AS SELECT 1'), /TEST-ended/);
+  });
+  assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n,0);
+});
+for(const separate of [false,true])test(`SQL callbacks cannot use retained writers across rollback, separate=${separate}`, t => {
+  const db=world(t), other=separate?world(t):db;
+  other.exec("INSERT INTO records VALUES ('TEST-existing'); BEGIN");
+  const write=other.prepare("INSERT INTO records VALUES ('TEST-escaped')");
+  db.function('expire_and_write',()=>{
+    try{nativeExec.call(other,"INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')");}catch{}
+    nativeRun.call(write); return 1;
+  });
+  const run=()=>withSqliteStatementGuard(other,()=>{if(!other.isTransaction)throw Error('TEST-ended');},()=>{
+    assert.throws(()=>db.prepare('SELECT expire_and_write()').get(), /SQL callbacks/);
+  });
+  if(separate)withSqliteStatementGuard(db,()=>{},run);else run();
+  assert.equal(other.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n,0);
+});
+test('registering SQL callbacks is refused during guards', t => {
+  const db=world(t);
+  withSqliteStatementGuard(db,()=>{},()=>assert.throws(()=>db.function('TEST_callback',()=>1), /SQL callbacks/));
+});
