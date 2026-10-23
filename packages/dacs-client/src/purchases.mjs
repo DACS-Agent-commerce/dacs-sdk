@@ -48,6 +48,7 @@ import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1';
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
+const MAX_TRANSFER_OBSERVATION_BYTES = 64 * 1024;
 // Domain separator of the purchase commitment (approval-bound, not on chain).
 export const COMMITMENT_DOMAIN = 'dacs-chatgpt-plugin/fixed-price-dem-purchase-commitment/v1';
 // Recorded with every payment observation so no reader mistakes it for more.
@@ -918,6 +919,11 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // persisting it (in particular, bigint cannot be serialized as JSON).
   function checkedTransferObservation(value, hash) {
     const invalid = reason => ({ status: 'malformed', reason });
+    try {
+      const bytes = JSON.stringify(value);
+      if (typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TRANSFER_OBSERVATION_BYTES) return invalid('chain observation exceeds its byte limit');
+      value = JSON.parse(bytes);
+    } catch { return invalid('chain observation must be JSON serializable'); }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('chain observation must be an object');
     if (!['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
     if (value.reason !== undefined && typeof value.reason !== 'string') return invalid('chain observation reason must be text');
@@ -930,7 +936,6 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         if (typeof value.txHash !== 'string' || canonicalHash(value.txHash) !== hash) return invalid('included txHash differs from the requested hash');
       } catch { return invalid('included txHash must be a transaction hash'); }
     }
-    try { JSON.stringify(value); } catch { return invalid('chain observation must be JSON serializable'); }
     return value;
   }
 
