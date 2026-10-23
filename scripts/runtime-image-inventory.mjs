@@ -6,8 +6,8 @@
 // production closure. A directory whose manifest cannot be read, a file Node
 // could still resolve as a module, and a symbolic link are listed without a
 // name or version, so the comparison fails closed on each.
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const RUNTIME_IMAGE_INVENTORY_SCHEMA = "dacs-runtime-image-inventory/v1";
@@ -30,8 +30,22 @@ export function runtimeImageInventory(root) {
       const path = join(directory, name);
       const location = `${prefix}/${name}`;
       const stat = lstatSync(path);
-      if (!scope && ((name === ".bin" && stat.isDirectory()) ||
-          (name === ".package-lock.json" && stat.isFile()))) continue;
+      if (!scope && name === ".package-lock.json" && stat.isFile()) continue;
+      if (!scope && name === ".bin" && stat.isDirectory()) {
+        for (const command of readdirSync(path).sort()) {
+          const executable = join(path, command);
+          const item = { location: `${location}/${command}`, name: null, version: null };
+          try {
+            if (lstatSync(executable).isSymbolicLink()) {
+              item.link = true;
+              const target = realpathSync(executable);
+              if (lstatSync(target).isFile()) item.target = relative(root, target);
+            }
+          } catch (error) { item.error = `${error.name}: ${error.message}`; }
+          packages.push(item);
+        }
+        continue;
+      }
       if (!scope && name.startsWith("@") && stat.isDirectory()) {
         visit(path, location, true);
         continue;
@@ -45,8 +59,11 @@ export function runtimeImageInventory(root) {
         continue;
       }
       let manifest = null;
-      try { manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8")); } catch { /* listed unread */ }
-      packages.push({ location, name: manifest?.name ?? null, version: manifest?.version ?? null });
+      let error;
+      try { manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8")); }
+      catch (cause) { error = `${cause.name}: ${cause.message}`; }
+      packages.push({ location, name: manifest?.name ?? null, version: manifest?.version ?? null,
+        ...(error ? { error } : {}) });
       visit(join(path, "node_modules"), `${location}/node_modules`, false);
     }
   };
