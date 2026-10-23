@@ -24,7 +24,7 @@ function fixture(t) {
   };
   return { dir,git,node,json,save,check };
 }
-function merged(t) {
+function merged(t, selectParent = false) {
   const f = fixture(t), { dir,git,node,json,save } = f;
   const base = readFileSync(join(dir,moved),'utf8'), start = git('rev-parse','HEAD');
   const histories = [];
@@ -40,7 +40,7 @@ function merged(t) {
     histories.push({ledger:json('DELTA-LEDGER.json'),inventory:json('DELTA-COMMITS.json')});
   }
   spawnSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','merge','--no-ff','--no-commit','TEST-one'],{encoding:'utf8'});
-  writeFileSync(join(dir,moved),base+'\n// TEST merge side one\n// TEST merge side two\n');
+  writeFileSync(join(dir,moved),base+(selectParent ? '\n// TEST merge side one\n' : '\n// TEST merge side one\n// TEST merge side two\n'));
   const ledger=histories[1].ledger; ledger.mergeSnapshots=histories[0].ledger.mergeSnapshots ?? []; ledger.changes.push(histories[0].ledger.changes.at(-1)); save('DELTA-LEDGER.json',ledger);
   const inventory=histories[1].inventory; inventory.push(histories[0].inventory.at(-1)); save('DELTA-COMMITS.json',inventory);
   node(prefix+'scripts/delta-map.mjs'); git('add','--',moved,prefix+'DELTA-LEDGER.json',prefix+'DELTA-COMMITS.json',prefix+'DELTA-MAP.md');
@@ -75,4 +75,13 @@ test('removing or duplicating a merge snapshot cannot admit a combined blob',t=>
   const data=f.json('DELTA-LEDGER.json'); data.mergeSnapshots.pop(); f.save('DELTA-LEDGER.json',data); f.node(prefix+'scripts/delta-map.mjs');
   assert.equal(f.check().status,1);
   f.record(); f.record(); const result=f.check(); assert.equal(result.status,1); assert.match(result.text,/duplicate merge snapshot/);
+});
+
+test('a working substitution from the other reviewed merge parent is refused',t=>{
+  const f=merged(t,true);
+  let result=f.check();assert.equal(result.status,0,result.text);
+  const other=f.git('show',`${f.snapshot.parents[0]}:${moved}`)+'\n';
+  writeFileSync(join(f.dir,moved),other);
+  f.node(prefix+'scripts/delta-map.mjs');
+  result=f.check();assert.equal(result.status,1,result.text);assert.match(result.text,/current blob differs/);
 });
