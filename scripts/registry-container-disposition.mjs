@@ -127,6 +127,54 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
   return violations;
 }
 
+// Every installed copy of a candidate package, top-level, nested or aliased,
+// must be the packed release-set tarball that release-provenance.json records,
+// at the release's version both in the lock and, when `installedManifest`
+// reads it, in the installed package.json.
+export function candidateIntegrityErrors({ lock, registry, candidates, installedManifest }) {
+  const { origin, path } = consumerRegistry(registry);
+  const packages = isPlainObject(lock?.packages) ? lock.packages : {};
+  const errors = [];
+  for (const { name, integrity, version } of candidates) {
+    if (typeof version !== "string" || version === "") {
+      errors.push("candidate record has no release version: " + name);
+      continue;
+    }
+    const locations = Object.keys(packages).filter(location => location === "node_modules/" + name ||
+      location.endsWith("/node_modules/" + name) || packages[location]?.name === name);
+    if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
+    for (const location of locations) {
+      const entry = packages[location];
+      let url = null;
+      try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
+      if (url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+        errors.push("candidate package did not resolve through the isolated registry: " + location);
+      } else if (entry.integrity !== integrity) {
+        errors.push("candidate package integrity does not match the packed tarball: " + location +
+          " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
+      }
+      if (entry?.version !== version) {
+        errors.push("candidate package lock version does not match the release: " + location +
+          " (expected " + version + ", observed " + String(entry?.version) + ")");
+      }
+      if (installedManifest) {
+        let manifest;
+        try { manifest = installedManifest(location); } catch { manifest = undefined; }
+        if (manifest?.name !== name || manifest?.version !== version) {
+          errors.push("installed candidate package is not the release: " + location + " (expected " + name + "@" +
+            version + ", observed " + String(manifest?.name) + "@" + String(manifest?.version) + ")");
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+// Why a run failed: an unreachable registry or audit endpoint (a timeout, or
+// 5xx/408/429 after retries), a security-policy result, or the rehearsal itself.
+export const FAILURE_CLASSES = ["network", "policy", "functional"];
+// npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
+// `Response timeout while trying to fetch` for a body timeout.
 // npm's EBADENGINE check (npm-install-checks) tests each non-optional package's
 // engines.node and engines.npm with semver.satisfies(current, range,
 // { includePrerelease: true }). This is that range grammar for a release
@@ -292,3 +340,37 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   return { scanComplete: errors.length === 0, errors, unexpected, missing };
 }
 
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [mode, input, output] = process.argv.slice(2);
+  if (mode === "--dependency-policy") {
+    const [project, registry, report, releaseSet, version] = process.argv.slice(3);
+    if (!project || !registry || !report || !releaseSet || !version) {
+      throw new Error("usage: --dependency-policy <project> <registry> <report> <release-set> <version>");
+    }
+    const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(join(project, "package-lock.json"), "utf8"));
+    for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core", "@x402/evm",
+      "@x402/fetch", "better-sqlite3", "viem"]) {
+      if (typeof manifest.dependencies?.[name] !== "string") throw new Error("dual-rail consumer is missing " + name);
+    }
+    // The packed tarball and its release-provenance.json record must agree
+    // before either is compared with the consumer's lock.
+    const provenance = JSON.parse(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"));
+    if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
+    const candidates = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"].map(name => {
+      const archive = join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`);
+      const integrity = "sha512-" + createHash("sha512").update(readFileSync(archive)).digest("base64");
+      const recorded = provenance.packages?.[name]?.integrity;
+      if (recorded !== integrity) {
+        throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
+      }
+      return { name, integrity, version };
+    });
+    const errors = candidateIntegrityErrors({ lock, registry, candidates,
+      installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
+    if (errors.length) throw new Error(errors.join("\n"));
+    const violations = registryDependencyViolations({ manifest, lock, registry });
+    writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
+      violations }, null, 2) + "\n");
+  }
+}

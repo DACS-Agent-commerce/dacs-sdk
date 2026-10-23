@@ -25,7 +25,183 @@ afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+// Every child runs without rc files and with an explicit PATH whose `node` is
+// this process's own binary, never a host node.
+function stubBin(directory: string, stubs: Record<string, string> = {}) {
+  const bin = join(directory, "bin");
+  mkdirSync(bin, { recursive: true });
+  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+  for (const [name, body] of Object.entries({ node: `exec ${node} "$@"`, ...stubs })) {
+    writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(bin, name), 0o700);
+  }
+  return [bin, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter);
+}
+function runBash(args: string[], options: { cwd: string; env: Record<string, string> }) {
+  return spawnSync("bash", ["--norc", "--noprofile", ...args], { cwd: options.cwd, encoding: "utf8",
+    env: { HOME: options.cwd, ...options.env } });
+}
+
+const CANDIDATE_VERSION = "0.1.0-test";
+// A summary the producer composed for CANDIDATE_VERSION, judged as that release.
+const candidateDisposition = (summary: unknown, baseline?: unknown, options: Record<string, unknown> = {}) =>
+  registryContainerDisposition(summary, baseline, { packageVersion: CANDIDATE_VERSION, ...options });
+const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
+
+// Runs the dependency-policy command the script runs against a generated
+// consumer whose lock initially names the exact packed candidate tarballs,
+// as release-provenance.json records them.
+function dependencyPolicyHarness() {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
+  scratch.push(directory);
+  const packages: Record<string, Record<string, unknown>> = {};
+  const provenance = { version: CANDIDATE_VERSION, packages: {} as Record<string, { integrity: string }> };
+  for (const name of ["dacs", "dacs-node"]) {
+    const bytes = Buffer.from(name);
+    writeFileSync(join(directory, `kynesyslabs-${name}-${CANDIDATE_VERSION}.tgz`), bytes);
+    packages[`node_modules/@kynesyslabs/${name}`] = {
+      version: CANDIDATE_VERSION,
+      resolved: `${CANDIDATE_REGISTRY}/${name}.tgz`,
+      integrity: sri(bytes),
+    };
+    provenance.packages[`@kynesyslabs/${name}`] = { integrity: sri(bytes) };
+  }
+  const project = join(directory, "project");
+  mkdirSync(project);
+  const manifest: Record<string, unknown> = { dependencies: Object.fromEntries([
+    "@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core",
+    "@x402/evm", "@x402/fetch", "better-sqlite3", "viem",
+  ].map((name) => [name, CANDIDATE_VERSION])) };
+  const report = join(directory, "report.json");
+  // The package.json installed at each candidate lock location: by default
+  // the lock entry's own name and version; `null` installs none.
+  const installed: Record<string, Record<string, unknown> | null> = {};
+  const run = () => {
+    rmSync(join(project, "node_modules"), { recursive: true, force: true });
+    for (const [location, entry] of Object.entries(packages)) {
+      const name = typeof entry.name === "string" ? entry.name : location.replace(/^.*node_modules\//, "");
+      if (name !== "@kynesyslabs/dacs" && name !== "@kynesyslabs/dacs-node") continue;
+      const installedManifest = location in installed ? installed[location] : { name, version: entry.version };
+      if (installedManifest === null) continue;
+      mkdirSync(join(project, location), { recursive: true });
+      writeFileSync(join(project, location, "package.json"), JSON.stringify(installedManifest));
+    }
+    writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
+    writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
+    writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
+    rmSync(report, { force: true });
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
+      project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION], { cwd: repoRoot, encoding: "utf8" });
+    return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
+  };
+  return { packages, manifest, provenance, installed, run };
+}
+
+// Executes the script's own summary program over a stage holding the evidence
+// a complete run collects; `overrides` replaces individual evidence files.
+describe("registry/container evidence", () => {
+  it("rejects a registry lock entry with different tarball bytes and reports both digests", () => {
+    const { packages, run } = dependencyPolicyHarness();
+    expect(run().status).toBe(0);
+    const expected = packages["node_modules/@kynesyslabs/dacs-node"]!.integrity;
+    packages["node_modules/@kynesyslabs/dacs-node"]!.integrity = "sha512-wrong";
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("integrity does not match");
+    expect(result.stderr).toContain(`expected ${expected}, observed sha512-wrong`);
+  });
+
+  it("rejects a core lock entry with different tarball bytes", () => {
+    const { packages, run } = dependencyPolicyHarness();
+    packages["node_modules/@kynesyslabs/dacs"]!.integrity = sri(Buffer.from("other core"));
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("integrity does not match the packed tarball: node_modules/@kynesyslabs/dacs");
+  });
+
+  it.each(["dacs", "dacs-node"])("rejects a nested @kynesyslabs/%s copy that is not the candidate", (name) => {
+    const { packages, run } = dependencyPolicyHarness();
+    const topLevel = packages[`node_modules/@kynesyslabs/${name}`]!;
+    const nested = `node_modules/some-plugin/node_modules/@kynesyslabs/${name}`;
+    packages[nested] = { ...topLevel };
+    expect(run().status).toBe(0);
+    packages[nested] = { resolved: `${CANDIDATE_REGISTRY}/${name}-old.tgz`, integrity: sri(Buffer.from("old")) };
+    const substituted = run();
+    expect(substituted.status).not.toBe(0);
+    expect(substituted.stderr).toContain(`integrity does not match the packed tarball: ${nested}`);
+    packages[nested] = { resolved: `https://registry.npmjs.org/${name}.tgz`, integrity: topLevel.integrity };
+    const outside = run();
+    expect(outside.status).not.toBe(0);
+    expect(outside.stderr).toContain(`did not resolve through the isolated registry: ${nested}`);
+  });
+
+  it.each(["dacs", "dacs-node"])("rejects a substituted npm alias of %s", (name) => {
+    const { packages, run } = dependencyPolicyHarness();
+    packages["node_modules/alias"] = { ...packages[`node_modules/@kynesyslabs/${name}`]!, name: `@kynesyslabs/${name}` };
+    expect(run().status).toBe(0);
+    packages["node_modules/alias"]!.integrity = "sha512-wrong";
+    expect(run().status).not.toBe(0);
+  });
+
+  it.each(["dacs", "dacs-node"])("compares the installed @kynesyslabs/%s with release-provenance.json", (name) => {
+    const { packages, provenance, run } = dependencyPolicyHarness();
+    expect(run()).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
+    const packed = provenance.packages[`@kynesyslabs/${name}`]!.integrity;
+    provenance.packages[`@kynesyslabs/${name}`]!.integrity = sri(Buffer.from("another build"));
+    const recorded = run();
+    expect(recorded.status).not.toBe(0);
+    expect(recorded.stderr).toContain(`release-provenance.json records ${sri(Buffer.from("another build"))} ` +
+      `for @kynesyslabs/${name}, but the packed tarball is ${packed}`);
+    // A lock that matches the provenance record but not the packed bytes fails too.
+    packages[`node_modules/@kynesyslabs/${name}`]!.integrity = sri(Buffer.from("another build"));
+    expect(run().status).not.toBe(0);
+  });
+
+  // Every installed candidate copy is the release's version, in the lock and
+  // in the package.json npm installed, top-level, nested or aliased.
+  it.each(["dacs", "dacs-node"])("rejects a @kynesyslabs/%s copy that is not the release version", (name) => {
+    const { packages, installed, run } = dependencyPolicyHarness();
+    const topLevel = `node_modules/@kynesyslabs/${name}`;
+    const nested = `node_modules/some-plugin/node_modules/@kynesyslabs/${name}`;
+    packages[nested] = { ...packages[topLevel]! };
+    packages["node_modules/alias"] = { ...packages[topLevel]!, name: `@kynesyslabs/${name}` };
+    expect(run().status).toBe(0);
+    for (const location of [topLevel, nested, "node_modules/alias"]) {
+      const entry = packages[location]!;
+      for (const version of [undefined, "0.0.0-wrong", "0.1.0-alpha.0"]) {
+        packages[location] = version === undefined
+          ? Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "version"))
+          : { ...entry, version };
+        installed[location] = { name: `@kynesyslabs/${name}`, version: CANDIDATE_VERSION };
+        const lockVersion = run();
+        expect(lockVersion.status, `${location} ${String(version)}`).not.toBe(0);
+        expect(lockVersion.stderr).toContain(`lock version does not match the release: ${location} ` +
+          `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
+      }
+      packages[location] = entry;
+      for (const manifest of [null, { name: `@kynesyslabs/${name}`, version: "0.0.0-wrong" },
+        { name: "@kynesyslabs/other", version: CANDIDATE_VERSION }]) {
+        installed[location] = manifest;
+        const installedCopy = run();
+        expect(installedCopy.status, `${location} ${JSON.stringify(manifest)}`).not.toBe(0);
+        expect(installedCopy.stderr).toContain(`installed candidate package is not the release: ${location}`);
+      }
+      delete installed[location];
+      expect(run().status).toBe(0);
+    }
+  });
+
+  it("writes every registry-policy violation to the report the summary reads", () => {
+    const { packages, manifest, run } = dependencyPolicyHarness();
+    packages["node_modules/x"] = { version: "1.0.0", resolved: "https://example.com/x-1.0.0.tgz", integrity: sri(Buffer.from("x")) };
+    manifest.overrides = { viem: "npm:not-viem@1.0.0" };
+    expect(run()).toMatchObject({ status: 0, report: { schema: "dacs-registry-dependency-policy/v1", passed: false,
+      violations: [{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@1.0.0"}' },
+        { location: "node_modules/x", field: "resolved", value: "https://example.com/x-1.0.0.tgz" }] } });
+  });
+
+});
 
 
 // The consumer may install registry packages only: an allowlist over every
