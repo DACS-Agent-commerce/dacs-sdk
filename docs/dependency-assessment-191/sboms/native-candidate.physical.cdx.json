@@ -1,0 +1,4286 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:918e2168-a832-4b12-966a-a0bfa581b362",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-16T14:56:10.205Z",
+    "lifecycles": [
+      {
+        "phase": "build"
+      }
+    ],
+    "tools": [
+      {
+        "vendor": "npm",
+        "name": "cli",
+        "version": "10.9.9"
+      },
+      {
+        "vendor": "S-55 assessment",
+        "name": "physical-instance-export",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "bom-ref": "npm:root",
+      "type": "library",
+      "name": "native-candidate",
+      "version": "0.1.0",
+      "scope": "required",
+      "purl": "pkg:npm/live-buyer@0.1.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": ""
+        },
+        {
+          "name": "cdx:npm:package:private",
+          "value": "true"
+        }
+      ],
+      "externalReferences": []
+    },
+    "properties": [
+      {
+        "name": "s55:range-conflicts",
+        "value": "[]"
+      },
+      {
+        "name": "s55:scope",
+        "value": "Installed production instances; dev omitted; original range conflicts retained. This is a supplementary export, not a successful npm sbom CLI run."
+      }
+    ]
+  },
+  "components": [
+    {
+      "bom-ref": "npm:node_modules/@adraffy/ens-normalize",
+      "type": "library",
+      "name": "@adraffy/ens-normalize",
+      "version": "1.11.1",
+      "scope": "required",
+      "author": "raffy.eth",
+      "description": "Ethereum Name Service (ENS) Name Normalizer",
+      "purl": "pkg:npm/%40adraffy/ens-normalize@1.11.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@adraffy/ens-normalize"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/adraffy/ens-normalize.js.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/adraffy/ens-normalize.js#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/adraffy/ens-normalize.js/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "9e1081577aae1207acb9fedceca61fa5eaea492d784fc6d8baf27c3dc2c9a7ace7919a4573402e5b8a81b6bf1e295c8f3deffc452afbb2094258f53979ac7029"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@demosnetwork/demos-native",
+      "type": "library",
+      "name": "@demosnetwork/demos-native",
+      "version": "0.1.0-alpha.2",
+      "scope": "required",
+      "description": "Dependency-minimal Demos native, messaging, Storage Program, identity-read and DAHR client",
+      "purl": "pkg:npm/%40demosnetwork/demos-native@0.1.0-alpha.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@demosnetwork/demos-native"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "file:tarballs/demosnetwork-demos-native-0.1.0-alpha.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/kynesyslabs/sdks.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/kynesyslabs/sdks#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/kynesyslabs/sdks/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "685794c8426524bbd3d51412de3ca804ab56b4bd99cee07efcd404942e4eb3967170222ed5635cb282a30d14cdcfd7b961671198f0d68b2727b0b61c3f68a4b2"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@kynesyslabs/dacs",
+      "type": "library",
+      "name": "@kynesyslabs/dacs",
+      "version": "0.1.0-alpha.0",
+      "scope": "required",
+      "description": "TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents \u2014 the reusable runtime for the Identify \u2192 Vet \u2192 Negotiate \u2192 Settle \u2192 Verify lifecycle.",
+      "purl": "pkg:npm/%40kynesyslabs/dacs@0.1.0-alpha.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@kynesyslabs/dacs"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "file:tarballs/kynesyslabs-dacs-0.1.0-alpha.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "be6252b573eb818ba99aa96523efb9d74cd1261acd5e8b8a882f8a098dba64316cd1877a7ceab74df0b22cdd5f4e54ee68fa4d8530a98ecbd3614053019e084b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@kynesyslabs/dacs-node",
+      "type": "library",
+      "name": "@kynesyslabs/dacs-node",
+      "version": "0.1.0-alpha.0",
+      "scope": "required",
+      "description": "Production Node.js host contracts and adapters for the DACS SDK.",
+      "purl": "pkg:npm/%40kynesyslabs/dacs-node@0.1.0-alpha.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@kynesyslabs/dacs-node"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "file:tarballs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/dacs-node#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b756127d3f84877e62ba1391ec16bde1867b1e73908e060aef3d7c0ea71c351c91c5eee068810abb4f39e1d20e969387fd1e9f27c6281475d1ad3f63b6b6fe40"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@noble/ciphers",
+      "type": "library",
+      "name": "@noble/ciphers",
+      "version": "1.3.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal JS implementation of Salsa20, ChaCha and AES",
+      "purl": "pkg:npm/%40noble/ciphers@1.3.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@noble/ciphers"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/ciphers/-/ciphers-1.3.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-ciphers.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-ciphers/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d88d209c854fb5f9ccc3d79ef61d5d246eeda7cd7ef0e6f73896f732fdfbaf1e4be34fdbd22edd8e3095bc6395a9cf40108432bf2bb58baca929d170f11f2043"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@noble/curves",
+      "type": "library",
+      "name": "@noble/curves",
+      "version": "1.9.1",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal JS implementation of elliptic curve cryptography",
+      "purl": "pkg:npm/%40noble/curves@1.9.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@noble/curves"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/curves/-/curves-1.9.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-curves.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-curves/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "935d72671660fadfa05af05b22cc16d32a0996ef1c1ce0bb761ba7c0ece8587fe65c6062632478618ea10042bfdc452ce14a41f256b545f751a5e1ac147916b0"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@noble/curves/node_modules/@noble/hashes",
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
+      "purl": "pkg:npm/%40noble/hashes@1.8.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@noble/curves/node_modules/@noble/hashes"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-hashes.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-hashes/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8c2b3d95d77b370ce98170c87fa3f7f8dac787dfec0fa0907711f28d023e87feab0cda3cf32a41c71cf8e540ee647cfdaf7b4dcfb37f5489d256855db57108e0"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@noble/hashes",
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "2.4.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
+      "purl": "pkg:npm/%40noble/hashes@2.4.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@noble/hashes"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.4.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-hashes.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-hashes/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "5f95da5566480424fb1c76469b923b6505c3c0b1be6c65ee4ab310016fbb66f97cee1d6499cd5907555244972951fa14ac6429e05928c66e6467e32cf9a5be78"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@scure/base",
+      "type": "library",
+      "name": "@scure/base",
+      "version": "1.2.6",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Secure, audited & 0-dep implementation of base64, bech32, base58, base32 & base16",
+      "purl": "pkg:npm/%40scure/base@1.2.6",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@scure/base"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@scure/base/-/base-1.2.6.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/scure-base.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/#scure"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/scure-base/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "83f9e6e458146bffcc0a3d60574f734c94da33a281007a8b37dd3b61542a7fbcc2e3df8370ee01d6ca38657d3b11fd744f0afa9eea98107f461208055c0e059a"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@scure/bip32",
+      "type": "library",
+      "name": "@scure/bip32",
+      "version": "1.7.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Secure, audited & minimal implementation of BIP32 hierarchical deterministic (HD) wallets over secp256k1",
+      "purl": "pkg:npm/%40scure/bip32@1.7.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@scure/bip32"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@scure/bip32/-/bip32-1.7.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/scure-bip32.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/#scure"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/scure-bip32/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1381455ff3777f807cd00296a7974fea8c3e7e50f52d0668ff0f149cb19864eebbe234ba62761e7a9c9c38e92cbfebcb3d2a60377e7080a832fb26df4dbd9233"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@scure/bip32/node_modules/@noble/hashes",
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
+      "purl": "pkg:npm/%40noble/hashes@1.8.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@scure/bip32/node_modules/@noble/hashes"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-hashes.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-hashes/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8c2b3d95d77b370ce98170c87fa3f7f8dac787dfec0fa0907711f28d023e87feab0cda3cf32a41c71cf8e540ee647cfdaf7b4dcfb37f5489d256855db57108e0"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@scure/bip39",
+      "type": "library",
+      "name": "@scure/bip39",
+      "version": "2.4.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Secure, audited & minimal implementation of BIP39 mnemonic phrases",
+      "purl": "pkg:npm/%40scure/bip39@2.4.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@scure/bip39"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@scure/bip39/-/bip39-2.4.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/scure-bip39.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/#scure"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/scure-bip39/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f3677115b65461ba3239fd005e2c9db10ac543943887d997f8ed94904f7544e626b1cd0128c1992f00e6cbde89a5adbebebb68c689a3521cb544f2201ffaf69c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@swaggerexpert/jsonpath",
+      "type": "library",
+      "name": "@swaggerexpert/jsonpath",
+      "version": "4.0.4",
+      "scope": "required",
+      "author": "Vladim\u00edr Gorej",
+      "description": "RFC 9535 implementation of JSONPath",
+      "purl": "pkg:npm/%40swaggerexpert/jsonpath@4.0.4",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@swaggerexpert/jsonpath"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@swaggerexpert/jsonpath/-/jsonpath-4.0.4.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/swaggerexpert/jsonpath.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/swaggerexpert/jsonpath#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/swaggerexpert/jsonpath/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8cc51e69dfcfdd7152cbe5f39489319709cf5f9f4c8a4ad5f7db7e5b346bdeb9e6ac3b92e5576c4db18961d09df73b47dfb5a994310f3fed7af8ef9e5499ab93"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@x402/core",
+      "type": "library",
+      "name": "@x402/core",
+      "version": "2.15.0",
+      "scope": "required",
+      "author": "x402 Foundation",
+      "description": "x402 Payment Protocol",
+      "purl": "pkg:npm/%40x402/core@2.15.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@x402/core"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@x402/core/-/core-2.15.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/x402-foundation/x402.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/x402-foundation/x402#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/x402-foundation/x402/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1f0a29d5cbbcd2c7f71f876935d88c26dedacb7d097fb2548e0c7b7571f1426fe762a3a34dc9bbd450bf661a672297a0e9148052dec423fac54d7c7f95a7c787"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@x402/evm",
+      "type": "library",
+      "name": "@x402/evm",
+      "version": "2.15.0",
+      "scope": "required",
+      "author": "x402 Foundation",
+      "description": "x402 Payment Protocol EVM Implementation",
+      "purl": "pkg:npm/%40x402/evm@2.15.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@x402/evm"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@x402/evm/-/evm-2.15.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/x402-foundation/x402.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/x402-foundation/x402#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/x402-foundation/x402/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1df15b1862f84a901e0337ef6a2f68cfc7327cfcf25901523b984d0f049a1906283b1f194e64e86e8e58c6e5c7ee06b3722d7726bb854668e86edbe56d0bb958"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@x402/fetch",
+      "type": "library",
+      "name": "@x402/fetch",
+      "version": "2.15.0",
+      "scope": "required",
+      "author": "x402 Foundation",
+      "description": "x402 Payment Protocol Fetch Extension",
+      "purl": "pkg:npm/%40x402/fetch@2.15.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@x402/fetch"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@x402/fetch/-/fetch-2.15.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/x402-foundation/x402.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/x402-foundation/x402#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/x402-foundation/x402/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "92e81d13ccec21ae0d5789608ce45b0666f722e28577a22922a477daf21597c4f66a2c86ed85a8e82fabe462daec3ca7e84757329aad9e2f74078409fdb7f840"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@xmldom/xmldom",
+      "type": "library",
+      "name": "@xmldom/xmldom",
+      "version": "0.9.12",
+      "scope": "required",
+      "description": "A pure JavaScript W3C standard-based (XML DOM Level 2 Core) DOMParser and XMLSerializer module.",
+      "purl": "pkg:npm/%40xmldom/xmldom@0.9.12",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@xmldom/xmldom"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@xmldom/xmldom/-/xmldom-0.9.12.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/xmldom/xmldom.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/xmldom/xmldom"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/xmldom/xmldom/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e405e3adc302953af23def4b819af2829075963eecd12f44d3e5be0076952805721da9da7caf3a88f4af1b9c47552a7f8c2f951f5517bb44c0126636efdc47ec"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/abitype",
+      "type": "library",
+      "name": "abitype",
+      "version": "1.2.3",
+      "scope": "required",
+      "description": "Strict TypeScript types for Ethereum ABIs",
+      "purl": "pkg:npm/abitype@1.2.3",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/abitype"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/abitype/-/abitype-1.2.3.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/wevm/abitype.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/wevm/abitype#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/wevm/abitype/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "39f7abe50527b9475316c051c0044ca1628e1f5343e5e870621277389fc140ef92b64c108c7c345f2561e2f0edb731c1ed038584f1dafe8e35dcf27cda053f4e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/apg-lite",
+      "type": "library",
+      "name": "apg-lite",
+      "version": "1.0.5",
+      "scope": "required",
+      "author": "Lowell D. Thomas",
+      "description": "lightweight JavaScript APG parser",
+      "purl": "pkg:npm/apg-lite@1.0.5",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/apg-lite"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/apg-lite/-/apg-lite-1.0.5.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/ldthomas/apg-lite.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/ldthomas/apg-lite#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/ldthomas/apg-lite/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4a523e9cb3100f30997d2dfd8a1ce31a9dc934141f257c8c8ba720f6d90b3823d512b805b1420011d3bd21ecd1ee46cfe57774a3370f3500647fd4cee5c1e05b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/base64-js",
+      "type": "library",
+      "name": "base64-js",
+      "version": "1.5.1",
+      "scope": "required",
+      "author": "T. Jameson Little",
+      "description": "Base64 encoding/decoding in pure JS",
+      "purl": "pkg:npm/base64-js@1.5.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/base64-js"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/base64-js/-/base64-js-1.5.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/beatgammit/base64-js.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/beatgammit/base64-js"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/beatgammit/base64-js/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "00aa5a6251e7f2de1255b3870b2f9be7e28a82f478bebb03f2f6efadb890269b3b7ca0d3923903af2ea38b4ad42630b49336cd78f2f0cf1abc8b2a68e35a9e58"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/better-sqlite3",
+      "type": "library",
+      "name": "better-sqlite3",
+      "version": "12.6.2",
+      "scope": "required",
+      "author": "Joshua Wise",
+      "description": "The fastest and simplest library for SQLite in Node.js.",
+      "purl": "pkg:npm/better-sqlite3@12.6.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/better-sqlite3"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.6.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/WiseLibs/better-sqlite3.git"
+        },
+        {
+          "type": "website",
+          "url": "http://github.com/WiseLibs/better-sqlite3"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/WiseLibs/better-sqlite3/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f1560a33732309af5671a480237873c219b21d5947f2d8861707f44654ec64f589d48e4c9338e2b9d0a8e0a0b80f139a2ffe77039075b08fc86e574d1436ec28"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/bindings",
+      "type": "library",
+      "name": "bindings",
+      "version": "1.5.0",
+      "scope": "required",
+      "author": "Nathan Rajlich",
+      "description": "Helper module for loading your native module's .node file",
+      "purl": "pkg:npm/bindings@1.5.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/bindings"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/bindings/-/bindings-1.5.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/TooTallNate/node-bindings.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/TooTallNate/node-bindings"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/TooTallNate/node-bindings/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "a76abfb7f9a1bee3a3fd478b955eb9eba183fe0ba8c25af4847c42948d16f66ecc59890bd45d212e8fb401ec6cf4748f0ad4754974344c3dcc30aad765a8db89"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/bl",
+      "type": "library",
+      "name": "bl",
+      "version": "4.1.0",
+      "scope": "required",
+      "description": "Buffer List: collect buffers and access with a standard readable Buffer interface, streamable too!",
+      "purl": "pkg:npm/bl@4.1.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/bl"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/bl/-/bl-4.1.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/rvagg/bl.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rvagg/bl"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/rvagg/bl/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d56d3b70cf604ba0dc2e97ab65f1528fe6d62ed68f1923875a13e21b35e6bd525b44b746f36b07fca9fc12d5b556a595039e0029fda1e64e416e721bc05de1eb"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/boolbase",
+      "type": "library",
+      "name": "boolbase",
+      "version": "2.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "two functions: One that returns true, one that returns false",
+      "purl": "pkg:npm/boolbase@2.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/boolbase"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/boolbase/-/boolbase-2.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/boolbase.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/boolbase"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/boolbase/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "0e455a6901f2991869604628f71d68a3b43b07463a28952c8e6ddcf5e4f21436f2e0c1cb053c19e990d605e979ceb6318f55ac6600b9a0ba62cfef77325b9778"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/buffer",
+      "type": "library",
+      "name": "buffer",
+      "version": "5.7.1",
+      "scope": "required",
+      "author": "Feross Aboukhadijeh",
+      "description": "Node.js Buffer API, for the browser",
+      "purl": "pkg:npm/buffer@5.7.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/buffer"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/buffer/-/buffer-5.7.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/feross/buffer.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/feross/buffer"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/feross/buffer/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "10773220f050e0148696f8c1d7a9392a0009dbb088b0763fd8906609145ea38f32f6b43731a533597dca56505ae14eccc97d361dd563d0aec2dd6681de3bbb15"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/chownr",
+      "type": "library",
+      "name": "chownr",
+      "version": "1.1.4",
+      "scope": "required",
+      "author": "Isaac Z. Schlueter",
+      "description": "like `chown -R`",
+      "purl": "pkg:npm/chownr@1.1.4",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/chownr"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/chownr/-/chownr-1.1.4.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/isaacs/chownr.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/isaacs/chownr#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/isaacs/chownr/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8c9d1bab36b296626d567360cd37923acf033dabe96d8804aff6f460bf3fd863b7c4912122716684a3149c42508d9ba62bb297185854cbcf4faec25695a90156"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/css-select",
+      "type": "library",
+      "name": "css-select",
+      "version": "7.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "a CSS selector compiler/engine",
+      "purl": "pkg:npm/css-select@7.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/css-select"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/css-select/-/css-select-7.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/css-select.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/css-select#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/css-select/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b279a31155f2fb52e7c17771858bd3323d5df6d3a1e07c64035626a1ac9505e7b24760b5e0fba6edf7312489b84acc18b29572f3ae9e60dc251fac42dff547e6"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/css-what",
+      "type": "library",
+      "name": "css-what",
+      "version": "8.0.0",
+      "scope": "required",
+      "author": "Felix B\u00f6hm",
+      "description": "a CSS selector parser",
+      "purl": "pkg:npm/css-what@8.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/css-what"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/css-what/-/css-what-8.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/css-what.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/css-what#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/css-what/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "0c7d01aaadc3369e6d74e45eb8dc8003e12fe18d864b914c6d9a5e4cb3fa0b80838b48799cbd019943c2857c37a3fa9b1cb0d61e5e3db1b36a41563b6cc48377"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/decompress-response",
+      "type": "library",
+      "name": "decompress-response",
+      "version": "6.0.0",
+      "scope": "required",
+      "author": "Sindre Sorhus",
+      "description": "Decompress a HTTP response if needed",
+      "purl": "pkg:npm/decompress-response@6.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/decompress-response"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/decompress-response/-/decompress-response-6.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/sindresorhus/decompress-response.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/sindresorhus/decompress-response#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/sindresorhus/decompress-response/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "696df9c9933a05bff8a099599dc307d8b0a866d2574d1c444b5eef137868462a305369161da24a1644810e70d1f9c9bd27ef5085799113221fbf4a638bd7a309"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/deep-extend",
+      "type": "library",
+      "name": "deep-extend",
+      "version": "0.6.0",
+      "scope": "required",
+      "author": "Viacheslav Lotsmanov",
+      "description": "Recursive object extending",
+      "purl": "pkg:npm/deep-extend@0.6.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/deep-extend"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/deep-extend/-/deep-extend-0.6.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/unclechu/node-deep-extend.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/unclechu/node-deep-extend"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/unclechu/node-deep-extend/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "2ce1f120e68f61d1e5251b4241f0c8559b5fc3fb9f33cfab563eb8f51207cdc9bfbc6c1045716de8e3ea2055ac9b65c432b34812d591eb8b18d4b10a0f6bc038"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/detect-libc",
+      "type": "library",
+      "name": "detect-libc",
+      "version": "2.1.2",
+      "scope": "required",
+      "author": "Lovell Fuller",
+      "description": "Node.js module to detect the C standard library (libc) implementation family and version",
+      "purl": "pkg:npm/detect-libc@2.1.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/detect-libc"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/lovell/detect-libc.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/lovell/detect-libc#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/lovell/detect-libc/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "06d8f604e38ef37a375b21f9f5ef0c817b3111055c6ab9143a9118aee6c1d2eaf09cdd74c90dfae2bb22072535d67665a966199b4e62fe87fb8a8e26ce2841b5"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/dom-serializer",
+      "type": "library",
+      "name": "dom-serializer",
+      "version": "3.1.1",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "render domhandler DOM nodes to a string",
+      "purl": "pkg:npm/dom-serializer@3.1.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/dom-serializer"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/dom-serializer/-/dom-serializer-3.1.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/cheeriojs/dom-serializer.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/cheeriojs/dom-serializer#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/cheeriojs/dom-serializer/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e0c11adfcfd07b10686fa805370bbe106756be127538ab8dc1d618dd8dcdc9e58341f9c67836105037c84735aee41e60b2fd37b28d94c5ddbc602eb3aecc772f"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/domelementtype",
+      "type": "library",
+      "name": "domelementtype",
+      "version": "3.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "all the types of nodes in htmlparser2's dom",
+      "purl": "pkg:npm/domelementtype@3.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/domelementtype"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/domelementtype/-/domelementtype-3.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/domelementtype.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/domelementtype#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/domelementtype/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "ba609089dde329b0e6563c7c8c6696eee532926e031147b2576d613f134ca369d5f79e438544e1c2ac8e203b6b79ea4fdf5865f385fb1b953d65fb16bc80773e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/domhandler",
+      "type": "library",
+      "name": "domhandler",
+      "version": "6.0.1",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Handler for htmlparser2 that turns pages into a dom",
+      "purl": "pkg:npm/domhandler@6.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/domhandler"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/domhandler/-/domhandler-6.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/domhandler.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/domhandler#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/domhandler/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "818cefb4cef666dc503b44f4e3c91de875926db18234e5307277d0d3572a209e17d8860a1451d9e662afad01137055f1b1139b66e94368a9b2fff47b4cfb6c06"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/domutils",
+      "type": "library",
+      "name": "domutils",
+      "version": "4.0.2",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Utilities for working with htmlparser2's dom",
+      "purl": "pkg:npm/domutils@4.0.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/domutils"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/domutils/-/domutils-4.0.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/domutils.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/domutils#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/domutils/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "a88e092d12a74b3a85aabee10254b9c500eeb010a3292106e2de3eeda36b21030705cb02d9318486ec8004975892049ec0be7b3cd2d812289b63688f2a12a968"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/end-of-stream",
+      "type": "library",
+      "name": "end-of-stream",
+      "version": "1.4.5",
+      "scope": "required",
+      "author": "Mathias Buus",
+      "description": "Call a callback when a readable/writable/duplex stream has completed or failed.",
+      "purl": "pkg:npm/end-of-stream@1.4.5",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/end-of-stream"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/end-of-stream/-/end-of-stream-1.4.5.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/mafintosh/end-of-stream.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/mafintosh/end-of-stream"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/mafintosh/end-of-stream/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "a2810673a1cfdbac57abf37e18218e4f424a08b0c6aead9b41466b43b832ac989900d27ff180d3c53a5005718c9fe59b2105cd569c96ca69bb2985480909f23a"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/entities",
+      "type": "library",
+      "name": "entities",
+      "version": "8.1.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Encode & decode XML and HTML entities with ease & speed",
+      "purl": "pkg:npm/entities@8.1.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/entities"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/entities/-/entities-8.1.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/entities.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/entities#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/entities/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "9312fb9ac21f7d2ba1f5a68500c0fbaf1008b9344c00731e06d8075b6c94756c3bdf664d87831e86417681d8efb5d9a29246883fd6c50c324e3e5b2f9bb6afac"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/eventemitter3",
+      "type": "library",
+      "name": "eventemitter3",
+      "version": "5.0.1",
+      "scope": "required",
+      "author": "Arnout Kazemier",
+      "description": "EventEmitter3 focuses on performance while maintaining a Node.js AND browser compatible interface.",
+      "purl": "pkg:npm/eventemitter3@5.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/eventemitter3"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/eventemitter3/-/eventemitter3-5.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/primus/eventemitter3.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/primus/eventemitter3#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/primus/eventemitter3/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "196901be389264af3b10bad839211251879521cf66bcb2dffe75da94c392e5d62b819abda3939591b64054cd3a095c58b02c07f410d914f9504e53c0d63e1a84"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/expand-template",
+      "type": "library",
+      "name": "expand-template",
+      "version": "2.0.3",
+      "scope": "required",
+      "author": "LM",
+      "description": "Expand placeholders in a template string",
+      "purl": "pkg:npm/expand-template@2.0.3",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/expand-template"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/expand-template/-/expand-template-2.0.3.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/ralphtheninja/expand-template.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/ralphtheninja/expand-template"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/ralphtheninja/expand-template/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "5d87ee28cbe3e0edf97ffa4e5cb39b9dd211bf243effee8084e0e1f8e2968fd4bde3df291c79ff20cb331fe82dd1f04245630d7e4d594a9e71dc089f9a7236be"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "(MIT OR WTFPL)"
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/file-uri-to-path",
+      "type": "library",
+      "name": "file-uri-to-path",
+      "version": "1.0.0",
+      "scope": "required",
+      "author": "Nathan Rajlich",
+      "description": "Convert a file: URI to a file path",
+      "purl": "pkg:npm/file-uri-to-path@1.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/file-uri-to-path"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/file-uri-to-path/-/file-uri-to-path-1.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/TooTallNate/file-uri-to-path.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/TooTallNate/file-uri-to-path"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/TooTallNate/file-uri-to-path/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d19b7eb372fb55fd5b8b0599dbd6804625582f1ee23069c4525f71df77db07f8f78d1f35bbf3b62dba8af819b508348d0ca56d27f623c18ed351de5291e2d02f"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/fs-constants",
+      "type": "library",
+      "name": "fs-constants",
+      "version": "1.0.0",
+      "scope": "required",
+      "author": "Mathias Buus",
+      "description": "Require constants across node and the browser",
+      "purl": "pkg:npm/fs-constants@1.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/fs-constants"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/fs-constants/-/fs-constants-1.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/mafintosh/fs-constants.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/mafintosh/fs-constants"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/mafintosh/fs-constants/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "cba380c284887fb1728cc22ff78bbe6f9add85e6448f347adc64f26499b9aa1e018bed988302c2708fdf3c56642f93d28b13ade9934a9bec3e1dfa7f05c8b0a3"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/github-from-package",
+      "type": "library",
+      "name": "github-from-package",
+      "version": "0.0.0",
+      "scope": "required",
+      "author": "James Halliday",
+      "description": "return the github url from a package.json file",
+      "purl": "pkg:npm/github-from-package@0.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/github-from-package"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/github-from-package/-/github-from-package-0.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/substack/github-from-package.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/substack/github-from-package"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/substack/github-from-package/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4b21f2dd3d6fd8d5179f6f4eb1677198ae91c070febe48f7bfc7a7f00381675c0143f842010e5b0104c3d36916e16f6d529ff7421e89f2bf44be7b62c8298e3b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/htmlparser2",
+      "type": "library",
+      "name": "htmlparser2",
+      "version": "12.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Fast & forgiving HTML/XML parser",
+      "purl": "pkg:npm/htmlparser2@12.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/htmlparser2"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/htmlparser2/-/htmlparser2-12.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/htmlparser2.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/htmlparser2#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/htmlparser2/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4f3eeed62f79fe0db1da3cfcd7ec741415610616396914ef0f7b575dd15a963b8d7730cb27c506351ad3723d9c810bc0837896fe1efb173d799cb5b42f40ab67"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/ieee754",
+      "type": "library",
+      "name": "ieee754",
+      "version": "1.2.1",
+      "scope": "required",
+      "author": "Feross Aboukhadijeh",
+      "description": "Read/write IEEE754 floating point numbers from/to a Buffer or array-like object",
+      "purl": "pkg:npm/ieee754@1.2.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/ieee754"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ieee754/-/ieee754-1.2.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/feross/ieee754.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/feross/ieee754#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/feross/ieee754/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "75ccaa843bd7d42e3a95765c56a0a92be16d31141574830debf0dfe63b36ce8b94b2a1bb23ab05c62b480beeca60adbd29d5ce2c776ef732f8b059e85509ea68"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/inherits",
+      "type": "library",
+      "name": "inherits",
+      "version": "2.0.4",
+      "scope": "required",
+      "description": "Browser-friendly inheritance fully compatible with standard node.js inherits()",
+      "purl": "pkg:npm/inherits@2.0.4",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/inherits"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/inherits/-/inherits-2.0.4.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/isaacs/inherits.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/isaacs/inherits#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/isaacs/inherits/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "93fbc6697e3f6256b75b3c8c0af4d039761e207bea38ab67a8176ecd31e9ce9419cc0b2428c859d8af849c189233dcc64a820578ca572b16b8758799210a9ec1"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/ini",
+      "type": "library",
+      "name": "ini",
+      "version": "1.3.8",
+      "scope": "required",
+      "author": "Isaac Z. Schlueter",
+      "description": "An ini encoder/decoder for node",
+      "purl": "pkg:npm/ini@1.3.8",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/ini"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ini/-/ini-1.3.8.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/isaacs/ini.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/isaacs/ini#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/isaacs/ini/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "255ff2ba0576bb35b988c4528990320ed41dfa7c6d5278de2edd1a70d770f7c90a2ebbee455c81f34b6c444384ef2bc65606a5859e913570a61079142812b17b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/isows",
+      "type": "library",
+      "name": "isows",
+      "version": "1.0.7",
+      "scope": "required",
+      "description": "Isomorphic WebSocket",
+      "purl": "pkg:npm/isows@1.0.7",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/isows"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/isows/-/isows-1.0.7.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/wevm/isows.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/wevm/isows#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/wevm/isows/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "2357d27c30992f93f4bf7dec56a7930d2a5cb2d020fcdfb01791d2d37de6a20395229e01fa81c2ee8382b00ddac406c14864c9f10b9b6cd9a721137f87c53b86"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/mimic-response",
+      "type": "library",
+      "name": "mimic-response",
+      "version": "3.1.0",
+      "scope": "required",
+      "author": "Sindre Sorhus",
+      "description": "Mimic a Node.js HTTP response stream",
+      "purl": "pkg:npm/mimic-response@3.1.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/mimic-response"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/mimic-response/-/mimic-response-3.1.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/sindresorhus/mimic-response.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/sindresorhus/mimic-response#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/sindresorhus/mimic-response/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "cf4c9623ee050ebaf0792f199ade048f91dd266932d79f8bd9ee96827dfe88ae5f5b36fa4f77e1345ab6f8c79345bd3ae1ce96af837fc2fd03cd04e33731cd19"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/minimist",
+      "type": "library",
+      "name": "minimist",
+      "version": "1.2.8",
+      "scope": "required",
+      "author": "James Halliday",
+      "description": "parse argument options",
+      "purl": "pkg:npm/minimist@1.2.8",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/minimist"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/minimist/-/minimist-1.2.8.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/minimistjs/minimist.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/minimistjs/minimist"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/minimistjs/minimist/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "db2c8047ca8190ddd8ba17896a7529582e54ddb6f9a2c0f2c0d07c4730d5943c031dba1c009bdeaaa8f5bbcf92543ee39164f8cafb070a95aaa96a80c5bd3308"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/mkdirp-classic",
+      "type": "library",
+      "name": "mkdirp-classic",
+      "version": "0.5.3",
+      "scope": "required",
+      "author": "Mathias Buus",
+      "description": "Mirror of mkdirp 0.5.2",
+      "purl": "pkg:npm/mkdirp-classic@0.5.3",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/mkdirp-classic"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/mkdirp-classic/-/mkdirp-classic-0.5.3.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/mafintosh/mkdirp-classic.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/mafintosh/mkdirp-classic"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/mafintosh/mkdirp-classic/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "80a2dc444321b6e651c1101fa8fdd1156f932b826a029541b4e21fb55823b8006902da7184f19a0dc7ef6e136f0f407c883d6852bfedc57df936371a63a36cfc"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/napi-build-utils",
+      "type": "library",
+      "name": "napi-build-utils",
+      "version": "2.0.0",
+      "scope": "required",
+      "author": "Jim Schlight",
+      "description": "A set of utilities to assist developers of tools that build N-API native add-ons",
+      "purl": "pkg:npm/napi-build-utils@2.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/napi-build-utils"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/napi-build-utils/-/napi-build-utils-2.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/inspiredware/napi-build-utils.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/inspiredware/napi-build-utils#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/inspiredware/napi-build-utils/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1846eb6246df17b32835aa21da2186f383277ff5997c1d0674612c33cc33ec4c69c7f2e559fe54f2df67bc92974a9deaaf922c11b2b4e1c04686897f2b03ac58"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/node-abi",
+      "type": "library",
+      "name": "node-abi",
+      "version": "3.99.0",
+      "scope": "required",
+      "author": "Lukas Geiger",
+      "description": "Get the Node ABI for a given target and runtime, and vice versa.",
+      "purl": "pkg:npm/node-abi@3.99.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/node-abi"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/node-abi/-/node-abi-3.99.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/electron/node-abi.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/electron/node-abi#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/electron/node-abi/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "94b77091e8365d454f4c7a968cf96d4f11fcd736d035b5160be0046fd9e2e742a3c64533000c751c6b4c4f6d6c6e7b737d419f22986172496fb378a625ea835f"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/nth-check",
+      "type": "library",
+      "name": "nth-check",
+      "version": "3.0.1",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Parses and compiles CSS nth-checks to highly optimized functions.",
+      "purl": "pkg:npm/nth-check@3.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/nth-check"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/nth-check/-/nth-check-3.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/nth-check.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/nth-check"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/nth-check/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "197d20b1d6c65428274606de19ab9b7e3a415f261158e38255e621d3c6d242f0d9ab1cf99dd5ecd4e4df02dfe1dfa1b5c6f23de1822ca6c234b1516a015f7e45"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/once",
+      "type": "library",
+      "name": "once",
+      "version": "1.4.0",
+      "scope": "required",
+      "author": "Isaac Z. Schlueter",
+      "description": "Run a function exactly one time",
+      "purl": "pkg:npm/once@1.4.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/once"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/once/-/once-1.4.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/isaacs/once.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/isaacs/once#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/isaacs/once/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "94d689808fb643951140191c7042874d038f697754c67659125413658d0c15402e684a9ed44f8dcaf81dcff688c8d8ba67d3333b976fd47f27e7cfc610ba77fb"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/ox",
+      "type": "library",
+      "name": "ox",
+      "version": "0.14.34",
+      "scope": "required",
+      "description": "Ethereum Standard Library",
+      "purl": "pkg:npm/ox@0.14.34",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/ox"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ox/-/ox-0.14.34.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/wevm/ox.git"
+        },
+        {
+          "type": "website",
+          "url": "https://wevm.dev"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/wevm/ox/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d76b1e38893b76ff1e02819085c59a78a671373df4e0855c0ef6fd53963b25900455edb5366d583312e38566a1facbb9043e0e9b1e19cf4cf9c778a3f4ce0661"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/ox/node_modules/@noble/hashes",
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
+      "purl": "pkg:npm/%40noble/hashes@1.8.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/ox/node_modules/@noble/hashes"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-hashes.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-hashes/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8c2b3d95d77b370ce98170c87fa3f7f8dac787dfec0fa0907711f28d023e87feab0cda3cf32a41c71cf8e540ee647cfdaf7b4dcfb37f5489d256855db57108e0"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/ox/node_modules/@scure/bip39",
+      "type": "library",
+      "name": "@scure/bip39",
+      "version": "1.6.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Secure, audited & minimal implementation of BIP39 mnemonic phrases",
+      "purl": "pkg:npm/%40scure/bip39@1.6.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/ox/node_modules/@scure/bip39"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@scure/bip39/-/bip39-1.6.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/scure-bip39.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/scure-bip39/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "fa517405b2e224dc1595ebf878a7a5c355962da88a5f0eec4a5f13e85bc195691d5fef78686278a3c5e351d9728530a377c73e077293dc97d2f0fd1b2d1354e8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/prebuild-install",
+      "type": "library",
+      "name": "prebuild-install",
+      "version": "7.1.3",
+      "scope": "required",
+      "author": "Mathias Buus",
+      "description": "A command line tool to easily install prebuilt binaries for multiple version of node/iojs on a specific platform",
+      "purl": "pkg:npm/prebuild-install@7.1.3",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/prebuild-install"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/prebuild-install/-/prebuild-install-7.1.3.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/prebuild/prebuild-install.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/prebuild/prebuild-install"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/prebuild/prebuild-install/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f0c7f671b57bc757173d420b003188df0ba17ea5afb622c0d627254c36c54599204504b436ab0f6698676bd57e1f24c469d85eb8f9a368932c6f329014eccbba"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/pump",
+      "type": "library",
+      "name": "pump",
+      "version": "3.0.4",
+      "scope": "required",
+      "author": "Mathias Buus Madsen",
+      "description": "pipe streams together and close all of them if one of them closes",
+      "purl": "pkg:npm/pump@3.0.4",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/pump"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/pump/-/pump-3.0.4.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/mafintosh/pump.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/mafintosh/pump#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/mafintosh/pump/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "552eec8dce8a47b7b5ba4445850498e4b336b8158050f88e3dafc0de690a9a23304a64455084edd31ba3fbf95eb209c2bfe74f204625933adcc9782ab881cc70"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/rc",
+      "type": "library",
+      "name": "rc",
+      "version": "1.2.8",
+      "scope": "required",
+      "author": "Dominic Tarr",
+      "description": "hardwired configuration loader",
+      "purl": "pkg:npm/rc@1.2.8",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/rc"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/rc/-/rc-1.2.8.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/dominictarr/rc.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/dominictarr/rc#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/dominictarr/rc/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "cb76c682a2a3dd005dc4b6cb9289a5a2192fb00f207408944254812670617e7f813f18386dceb677c4dc056d79c1abc37e07b10a071c72485c66fcb0c9060f3b"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "(BSD-2-Clause OR MIT OR Apache-2.0)"
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/re2-wasm",
+      "type": "library",
+      "name": "re2-wasm",
+      "version": "1.0.2",
+      "scope": "required",
+      "description": "Google's RE2 library distributed as a WASM module",
+      "purl": "pkg:npm/re2-wasm@1.0.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/re2-wasm"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/re2-wasm/-/re2-wasm-1.0.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/google/re2-wasm.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/google/re2-wasm"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/google/re2-wasm/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "55751d812894ac4fd66579fa814215548b20d3e1e9e953d93ce68709acbe3ae14acbabbff24b6678d11ff94e6a480f23cc6185b20f23ac336ed41787a73da924"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/readable-stream",
+      "type": "library",
+      "name": "readable-stream",
+      "version": "3.6.2",
+      "scope": "required",
+      "description": "Streams3, a user-land copy of the stream library from Node.js",
+      "purl": "pkg:npm/readable-stream@3.6.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/readable-stream"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/readable-stream/-/readable-stream-3.6.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/nodejs/readable-stream.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/nodejs/readable-stream#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/nodejs/readable-stream/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f6efec9e20ab6370f959db04447cc71381b66025eaa06e454c7522082e1221bafa5dc2d9058d39c9af442a361e93d3b9c4e0308c6abed497460404bb43d49ca0"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/safe-buffer",
+      "type": "library",
+      "name": "safe-buffer",
+      "version": "5.2.1",
+      "scope": "required",
+      "author": "Feross Aboukhadijeh",
+      "description": "Safer Node.js Buffer API",
+      "purl": "pkg:npm/safe-buffer@5.2.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/safe-buffer"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/feross/safe-buffer.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/feross/safe-buffer"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/feross/safe-buffer/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "ae9dd2a34eca71d9a629b1af81a37141226bedb1954959394bd12ad45fa9a5b468ef4f9879a0f1930e4377c34f37e183e9b8e7626d95b8fb825e6a6e62f9825d"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/semver",
+      "type": "library",
+      "name": "semver",
+      "version": "7.8.5",
+      "scope": "required",
+      "author": "GitHub Inc.",
+      "description": "The semantic version parser used by npm.",
+      "purl": "pkg:npm/semver@7.8.5",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/semver"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/npm/node-semver.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/npm/node-semver#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/npm/node-semver/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "63bfca0ec6fc2e3a28669c1aa86cae94ee8342592c8029dc7211c693eb19218e1206f52870c044147e54af57c8e1d57e26f974c3a723bee71a222e34a6e462a0"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/simple-concat",
+      "type": "library",
+      "name": "simple-concat",
+      "version": "1.0.1",
+      "scope": "required",
+      "author": "Feross Aboukhadijeh",
+      "description": "Super-minimalist version of `concat-stream`. Less than 15 lines!",
+      "purl": "pkg:npm/simple-concat@1.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/simple-concat"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/simple-concat/-/simple-concat-1.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/feross/simple-concat.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/feross/simple-concat"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/feross/simple-concat/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "71216d00fb518658efebd20ad214d5650f8e7c4f6778f8bfaed266c395231de57256ba04a895cfd6c173b4a532d6a53ec6fcf7bbfb1f6092daf78edbee700dd9"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/simple-get",
+      "type": "library",
+      "name": "simple-get",
+      "version": "4.0.1",
+      "scope": "required",
+      "author": "Feross Aboukhadijeh",
+      "description": "Simplest way to make http get requests. Supports HTTPS, redirects, gzip/deflate, streams in < 100 lines.",
+      "purl": "pkg:npm/simple-get@4.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/simple-get"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/simple-get/-/simple-get-4.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/feross/simple-get.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/feross/simple-get"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/feross/simple-get/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "6ebbfba795a01f48e6409af56430df2833927965a0f8e572a46f7d03fe6f6063ea27aa7189a1cbcbc9f1b458c103ba0c6b4d5e6c0f607e1d6e30216a3ae5f1bc"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/string_decoder",
+      "type": "library",
+      "name": "string_decoder",
+      "version": "1.3.0",
+      "scope": "required",
+      "description": "The string_decoder module from Node core",
+      "purl": "pkg:npm/string_decoder@1.3.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/string_decoder"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/string_decoder/-/string_decoder-1.3.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/nodejs/string_decoder.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/nodejs/string_decoder"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/nodejs/string_decoder/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "864457f14d568c915df0bb03276c90ff0596c5aa2912c0015355df90cf00fa3d3ef392401a9a6dd7a72bd56860e8a21b6f8a2453a32a97a04e8febaea7fc0a78"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/strip-json-comments",
+      "type": "library",
+      "name": "strip-json-comments",
+      "version": "2.0.1",
+      "scope": "required",
+      "author": "Sindre Sorhus",
+      "description": "Strip comments from JSON. Lets you use comments in your JSON files!",
+      "purl": "pkg:npm/strip-json-comments@2.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/strip-json-comments"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/strip-json-comments/-/strip-json-comments-2.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/sindresorhus/strip-json-comments.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/sindresorhus/strip-json-comments#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/sindresorhus/strip-json-comments/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e2007c9dad3b7de715564388e91b387bb4fa34e4e48b91262fb4d476e4ece9bbb711d9d2c9c9ed549e2b7bc920640fb0c7d22e788d98d756df6e0c2dcee13429"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/tar-fs",
+      "type": "library",
+      "name": "tar-fs",
+      "version": "2.1.5",
+      "scope": "required",
+      "author": "Mathias Buus",
+      "description": "filesystem bindings for tar-stream",
+      "purl": "pkg:npm/tar-fs@2.1.5",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/tar-fs"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/tar-fs/-/tar-fs-2.1.5.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/mafintosh/tar-fs.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/mafintosh/tar-fs"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/mafintosh/tar-fs/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "39ba1377c9a632164334f57e52341c2bdc8a01ab57bb6689fabd70e229b53ad7783387e5da1c2f7685d4c486071531d62bfdf2dc56ab04fef4bf7bf098694ec7"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/tar-stream",
+      "type": "library",
+      "name": "tar-stream",
+      "version": "2.2.0",
+      "scope": "required",
+      "author": "Mathias Buus",
+      "description": "tar-stream is a streaming tar parser and generator and nothing else. It is streams2 and operates purely using streams which means you can easily extract/parse tarballs without ever hitting the file system.",
+      "purl": "pkg:npm/tar-stream@2.2.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/tar-stream"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/tar-stream/-/tar-stream-2.2.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/mafintosh/tar-stream.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/mafintosh/tar-stream"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/mafintosh/tar-stream/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "ba37aa6dc780060c0c6711099e4d870d8d83967519fbda0471bd4acd355f6078a8d1413a746ef59fad1df03d88e2a36f95e5abad7a668e9b7bbd9785d4b9cc65"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/tunnel-agent",
+      "type": "library",
+      "name": "tunnel-agent",
+      "version": "0.6.0",
+      "scope": "required",
+      "author": "Mikeal Rogers",
+      "description": "HTTP proxy tunneling agent. Formerly part of mikeal/request, now a standalone module.",
+      "purl": "pkg:npm/tunnel-agent@0.6.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/tunnel-agent"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/tunnel-agent/-/tunnel-agent-0.6.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/mikeal/tunnel-agent.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/mikeal/tunnel-agent#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/mikeal/tunnel-agent/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "31c9cd895d65f1161e63cb41804a6ea1d082d662d475b48df826012fb909b093489ce3fc5230c3130764e8cc3ad2f74b2ebaf934729984c00e4ab476359b90fb"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/util-deprecate",
+      "type": "library",
+      "name": "util-deprecate",
+      "version": "1.0.2",
+      "scope": "required",
+      "author": "Nathan Rajlich",
+      "description": "The Node.js `util.deprecate()` function with browser support",
+      "purl": "pkg:npm/util-deprecate@1.0.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/util-deprecate"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/util-deprecate/-/util-deprecate-1.0.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/TooTallNate/util-deprecate.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/TooTallNate/util-deprecate"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/TooTallNate/util-deprecate/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "10f0f9ab5b97c85c49a42acb9c27359c79eade039ae83641a1c008888d93692080ed5089d5424331a802cc891736c5187c3d5d68afff2d3110f318886eb1ed73"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/viem",
+      "type": "library",
+      "name": "viem",
+      "version": "2.55.19",
+      "scope": "required",
+      "description": "TypeScript Interface for Ethereum",
+      "purl": "pkg:npm/viem@2.55.19",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/viem"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/viem/-/viem-2.55.19.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/wevm/viem.git"
+        },
+        {
+          "type": "website",
+          "url": "https://viem.sh"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/wevm/viem/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e103c85f47983cbb0e064e7734ab3054c910a31b8fec694e067078c0ce9d903a244443b840434d7376e6c8f28ad4f0535625e1d133c90872e322e536d108b77e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/viem/node_modules/@noble/hashes",
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
+      "purl": "pkg:npm/%40noble/hashes@1.8.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/viem/node_modules/@noble/hashes"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-hashes.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-hashes/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8c2b3d95d77b370ce98170c87fa3f7f8dac787dfec0fa0907711f28d023e87feab0cda3cf32a41c71cf8e540ee647cfdaf7b4dcfb37f5489d256855db57108e0"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/viem/node_modules/@scure/bip39",
+      "type": "library",
+      "name": "@scure/bip39",
+      "version": "1.6.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Secure, audited & minimal implementation of BIP39 mnemonic phrases",
+      "purl": "pkg:npm/%40scure/bip39@1.6.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/viem/node_modules/@scure/bip39"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@scure/bip39/-/bip39-1.6.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/scure-bip39.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/scure-bip39/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "fa517405b2e224dc1595ebf878a7a5c355962da88a5f0eec4a5f13e85bc195691d5fef78686278a3c5e351d9728530a377c73e077293dc97d2f0fd1b2d1354e8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/viem/node_modules/ws",
+      "type": "library",
+      "name": "ws",
+      "version": "8.21.0",
+      "scope": "required",
+      "author": "Einar Otto Stangvik",
+      "description": "Simple to use, blazing fast and thoroughly tested websocket client and server for Node.js",
+      "purl": "pkg:npm/ws@8.21.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/viem/node_modules/ws"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ws/-/ws-8.21.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/websockets/ws.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/websockets/ws"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/websockets/ws/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "56ca76f1bec345c8a6150bebaaed967a4df3d626310c25aa1d807c42c9e4fd2e117da090ccf18fc8136e563255ddc77a5222ad52da7ab0d33bee05afcdc087fa"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/wrappy",
+      "type": "library",
+      "name": "wrappy",
+      "version": "1.0.2",
+      "scope": "required",
+      "author": "Isaac Z. Schlueter",
+      "description": "Callback wrapping utility",
+      "purl": "pkg:npm/wrappy@1.0.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/wrappy"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/wrappy/-/wrappy-1.0.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/npm/wrappy.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/npm/wrappy"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/npm/wrappy/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "9784a9fc346c7a8afdc0be84bd5dbe4ee427eb774c90f8d9feca7d5e48214c46d5f4a94f4b5c54b19deeeff2103b8c31b5c141e1b82940f45c477402bdeccf71"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/ws",
+      "type": "library",
+      "name": "ws",
+      "version": "8.22.0",
+      "scope": "required",
+      "author": "Einar Otto Stangvik",
+      "description": "Simple to use, blazing fast and thoroughly tested websocket client and server for Node.js",
+      "purl": "pkg:npm/ws@8.22.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/ws"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/websockets/ws.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/websockets/ws"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/websockets/ws/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "61d82073df3bf913b40275ad67fed6abd16d36f72b2f56ff44ed2e77d9968d43e00ebb00030412179d6c9b6866d57a1f6d4ff88e4a4612c2c5b1967153ed433a"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/xpath",
+      "type": "library",
+      "name": "xpath",
+      "version": "0.0.34",
+      "scope": "required",
+      "author": "Cameron McCormack",
+      "description": "DOM 3 XPath implemention and helper for node.js and the web",
+      "purl": "pkg:npm/xpath@0.0.34",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/xpath"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/xpath/-/xpath-0.0.34.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/goto100/xpath.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/goto100/xpath#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/goto100/xpath/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "17117afab92bd6b35242b854358ac0149a515cdce50e8331797379a88f38f77f72944bf7aaa3c529af393b1afab436892aac16e8a2b2a36bf6e934afde4e8b78"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/zod",
+      "type": "library",
+      "name": "zod",
+      "version": "3.25.76",
+      "scope": "required",
+      "author": "Colin McDonnell",
+      "description": "TypeScript-first schema declaration and validation library with static type inference",
+      "purl": "pkg:npm/zod@3.25.76",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/zod"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/colinhacks/zod.git"
+        },
+        {
+          "type": "website",
+          "url": "https://zod.dev"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/colinhacks/zod/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "83352dfeab7cd675ec14628815c0b76277c4031e4d92e9c27e70e5bee0524854b4d9b717bb82e679ad001485306cb5b158fc7777da7c4b94286ae8ca70d43171"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "npm:root",
+      "dependsOn": [
+        "npm:node_modules/@kynesyslabs/dacs",
+        "npm:node_modules/@kynesyslabs/dacs-node",
+        "npm:node_modules/better-sqlite3",
+        "npm:node_modules/@x402/core",
+        "npm:node_modules/@x402/evm",
+        "npm:node_modules/@x402/fetch",
+        "npm:node_modules/viem",
+        "npm:node_modules/@demosnetwork/demos-native"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@adraffy/ens-normalize",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/@demosnetwork/demos-native",
+      "dependsOn": [
+        "npm:node_modules/@scure/bip39",
+        "npm:node_modules/ws"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@kynesyslabs/dacs",
+      "dependsOn": [
+        "npm:node_modules/@x402/core",
+        "npm:node_modules/@x402/evm",
+        "npm:node_modules/@x402/fetch",
+        "npm:node_modules/viem",
+        "npm:node_modules/@swaggerexpert/jsonpath",
+        "npm:node_modules/@xmldom/xmldom",
+        "npm:node_modules/css-select",
+        "npm:node_modules/htmlparser2",
+        "npm:node_modules/re2-wasm",
+        "npm:node_modules/xpath"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@kynesyslabs/dacs-node",
+      "dependsOn": [
+        "npm:node_modules/@kynesyslabs/dacs",
+        "npm:node_modules/better-sqlite3"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@noble/ciphers",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/@noble/curves",
+      "dependsOn": [
+        "npm:node_modules/@noble/curves/node_modules/@noble/hashes"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@noble/curves/node_modules/@noble/hashes",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/@noble/hashes",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/@scure/base",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/@scure/bip32",
+      "dependsOn": [
+        "npm:node_modules/@noble/curves",
+        "npm:node_modules/@scure/bip32/node_modules/@noble/hashes",
+        "npm:node_modules/@scure/base"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@scure/bip32/node_modules/@noble/hashes",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/@scure/bip39",
+      "dependsOn": [
+        "npm:node_modules/@noble/hashes"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@swaggerexpert/jsonpath",
+      "dependsOn": [
+        "npm:node_modules/apg-lite"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@x402/core",
+      "dependsOn": [
+        "npm:node_modules/zod"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@x402/evm",
+      "dependsOn": [
+        "npm:node_modules/viem",
+        "npm:node_modules/zod",
+        "npm:node_modules/@x402/core"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@x402/fetch",
+      "dependsOn": [
+        "npm:node_modules/@x402/core"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@xmldom/xmldom",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/abitype",
+      "dependsOn": [
+        "npm:node_modules/zod"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/apg-lite",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/base64-js",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/better-sqlite3",
+      "dependsOn": [
+        "npm:node_modules/bindings",
+        "npm:node_modules/prebuild-install"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/bindings",
+      "dependsOn": [
+        "npm:node_modules/file-uri-to-path"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/bl",
+      "dependsOn": [
+        "npm:node_modules/buffer",
+        "npm:node_modules/inherits",
+        "npm:node_modules/readable-stream"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/boolbase",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/buffer",
+      "dependsOn": [
+        "npm:node_modules/base64-js",
+        "npm:node_modules/ieee754"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/chownr",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/css-select",
+      "dependsOn": [
+        "npm:node_modules/boolbase",
+        "npm:node_modules/css-what",
+        "npm:node_modules/domhandler",
+        "npm:node_modules/domutils",
+        "npm:node_modules/nth-check"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/css-what",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/decompress-response",
+      "dependsOn": [
+        "npm:node_modules/mimic-response"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/deep-extend",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/detect-libc",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/dom-serializer",
+      "dependsOn": [
+        "npm:node_modules/domelementtype",
+        "npm:node_modules/domhandler",
+        "npm:node_modules/entities"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/domelementtype",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/domhandler",
+      "dependsOn": [
+        "npm:node_modules/domelementtype"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/domutils",
+      "dependsOn": [
+        "npm:node_modules/dom-serializer",
+        "npm:node_modules/domelementtype",
+        "npm:node_modules/domhandler"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/end-of-stream",
+      "dependsOn": [
+        "npm:node_modules/once"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/entities",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/eventemitter3",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/expand-template",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/file-uri-to-path",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/fs-constants",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/github-from-package",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/htmlparser2",
+      "dependsOn": [
+        "npm:node_modules/domelementtype",
+        "npm:node_modules/domhandler",
+        "npm:node_modules/domutils",
+        "npm:node_modules/entities"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/ieee754",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/inherits",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/ini",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/isows",
+      "dependsOn": [
+        "npm:node_modules/ws"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/mimic-response",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/minimist",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/mkdirp-classic",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/napi-build-utils",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/node-abi",
+      "dependsOn": [
+        "npm:node_modules/semver"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/nth-check",
+      "dependsOn": [
+        "npm:node_modules/boolbase"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/once",
+      "dependsOn": [
+        "npm:node_modules/wrappy"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/ox",
+      "dependsOn": [
+        "npm:node_modules/@adraffy/ens-normalize",
+        "npm:node_modules/@noble/ciphers",
+        "npm:node_modules/@noble/curves",
+        "npm:node_modules/ox/node_modules/@noble/hashes",
+        "npm:node_modules/@scure/bip32",
+        "npm:node_modules/ox/node_modules/@scure/bip39",
+        "npm:node_modules/abitype",
+        "npm:node_modules/eventemitter3"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/ox/node_modules/@noble/hashes",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/ox/node_modules/@scure/bip39",
+      "dependsOn": [
+        "npm:node_modules/ox/node_modules/@noble/hashes",
+        "npm:node_modules/@scure/base"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/prebuild-install",
+      "dependsOn": [
+        "npm:node_modules/detect-libc",
+        "npm:node_modules/expand-template",
+        "npm:node_modules/github-from-package",
+        "npm:node_modules/minimist",
+        "npm:node_modules/mkdirp-classic",
+        "npm:node_modules/napi-build-utils",
+        "npm:node_modules/node-abi",
+        "npm:node_modules/pump",
+        "npm:node_modules/rc",
+        "npm:node_modules/simple-get",
+        "npm:node_modules/tar-fs",
+        "npm:node_modules/tunnel-agent"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/pump",
+      "dependsOn": [
+        "npm:node_modules/end-of-stream",
+        "npm:node_modules/once"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/rc",
+      "dependsOn": [
+        "npm:node_modules/deep-extend",
+        "npm:node_modules/ini",
+        "npm:node_modules/minimist",
+        "npm:node_modules/strip-json-comments"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/re2-wasm",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/readable-stream",
+      "dependsOn": [
+        "npm:node_modules/inherits",
+        "npm:node_modules/string_decoder",
+        "npm:node_modules/util-deprecate"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/safe-buffer",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/semver",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/simple-concat",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/simple-get",
+      "dependsOn": [
+        "npm:node_modules/decompress-response",
+        "npm:node_modules/once",
+        "npm:node_modules/simple-concat"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/string_decoder",
+      "dependsOn": [
+        "npm:node_modules/safe-buffer"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/strip-json-comments",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/tar-fs",
+      "dependsOn": [
+        "npm:node_modules/chownr",
+        "npm:node_modules/mkdirp-classic",
+        "npm:node_modules/pump",
+        "npm:node_modules/tar-stream"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/tar-stream",
+      "dependsOn": [
+        "npm:node_modules/bl",
+        "npm:node_modules/end-of-stream",
+        "npm:node_modules/fs-constants",
+        "npm:node_modules/inherits",
+        "npm:node_modules/readable-stream"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/tunnel-agent",
+      "dependsOn": [
+        "npm:node_modules/safe-buffer"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/util-deprecate",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/viem",
+      "dependsOn": [
+        "npm:node_modules/@noble/curves",
+        "npm:node_modules/viem/node_modules/@noble/hashes",
+        "npm:node_modules/@scure/bip32",
+        "npm:node_modules/viem/node_modules/@scure/bip39",
+        "npm:node_modules/abitype",
+        "npm:node_modules/isows",
+        "npm:node_modules/ox",
+        "npm:node_modules/viem/node_modules/ws"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/viem/node_modules/@noble/hashes",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/viem/node_modules/@scure/bip39",
+      "dependsOn": [
+        "npm:node_modules/viem/node_modules/@noble/hashes",
+        "npm:node_modules/@scure/base"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/viem/node_modules/ws",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/wrappy",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/ws",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/xpath",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/zod",
+      "dependsOn": []
+    }
+  ]
+}
