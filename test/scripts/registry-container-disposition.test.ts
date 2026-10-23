@@ -522,3 +522,52 @@ describe("canonical installed candidate discovery", () => {
     }
   });
 });
+
+describe("declared candidate alias authentication", () => {
+  it.each(["dacs", "dacs-node"])("rejects a same-version replacement for a declared %s alias", name => {
+    const fixture = dependencyPolicyHarness();
+    const alias = "node_modules/candidate-alias";
+    fixture.manifest.dependencies = Object.assign({}, fixture.manifest.dependencies, { "candidate-alias": `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}` });
+    fixture.packages[alias] = { name: "@example/other", version: CANDIDATE_VERSION,
+      resolved: `${CANDIDATE_REGISTRY}/other.tgz`, integrity: sri(Buffer.from("replacement")) };
+    const result = fixture.run(project => {
+      mkdirSync(join(project, alias), { recursive: true });
+      writeFileSync(join(project, alias, "package.json"), JSON.stringify({ name: "@example/other", version: CANDIDATE_VERSION }));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: " + alias);
+  });
+});
+
+
+describe("candidate alias lookup through dependency maps", () => {
+  it.each(["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"])(
+    "authenticates installed aliases declared in nested %s maps", field => {
+      for (const hoisted of [false, true]) {
+        const fixture = dependencyPolicyHarness();
+        const location = hoisted ? "node_modules/candidate-alias" : "node_modules/plugin/node_modules/candidate-alias";
+        fixture.packages["node_modules/plugin"] = { name: "plugin", version: "1.0.0",
+          resolved: `${CANDIDATE_REGISTRY}/plugin.tgz`, integrity: sri(Buffer.from("plugin")),
+          [field]: { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } };
+        fixture.packages[location] = { name: "other", version: CANDIDATE_VERSION,
+          resolved: `${CANDIDATE_REGISTRY}/other.tgz`, integrity: sri(Buffer.from("other")) };
+        if (!hoisted) fixture.packages["node_modules/candidate-alias"] = {
+          ...fixture.packages["node_modules/@kynesyslabs/dacs"], name: "@kynesyslabs/dacs",
+        };
+        const result = fixture.run(project => {
+          mkdirSync(join(project, "node_modules/plugin"), { recursive: true });
+          writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+          mkdirSync(join(project, location), { recursive: true });
+          writeFileSync(join(project, location, "package.json"), JSON.stringify({ name: "other", version: CANDIDATE_VERSION }));
+        });
+        expect(result.status, `${field} ${location}`).not.toBe(0);
+        expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: " + location);
+      }
+    });
+  it("accepts an alias that retains the exact candidate identity and bytes", () => {
+    const fixture = dependencyPolicyHarness();
+    fixture.manifest.dependencies = Object.assign({}, fixture.manifest.dependencies, { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` });
+    fixture.packages["node_modules/alias"] = { ...fixture.packages["node_modules/@kynesyslabs/dacs"], name: "@kynesyslabs/dacs" };
+    expect(fixture.run().status).toBe(0);
+  });
+});
