@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import {paymentEvidenceAddress} from '@kynesyslabs/dacs';
 import { address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
 const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,withContextHolds,heldPolicyBudget,sellerPurchaseSource,releaseSellerContextHolds }=await import('../src/devnet-demo/operator-approval.mjs');
-const { sellerRecordsPurchaseResolver,SELLER_PURCHASE_OPEN_WINDOW_MS,sellerHeldEvidenceJobs }=await import('../src/devnet-demo/seller-purchase-source.mjs');
+const { sellerRecordsPurchaseResolver,sellerHeldEvidenceJobs }=await import('../src/devnet-demo/seller-purchase-source.mjs');
+const { acquireSellerStateLock,SELLER_STATE_LOCK_REFUSALS }=await import('../src/devnet-demo/seller-state-lock.mjs');
 async function directory(t){const root=await mkdtemp(join(tmpdir(),'d5-unit-'));t.after(()=>rm(root,{recursive:true,force:true}));return root;}
 const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,prePaymentOpen:false});
 async function policy(t,{resolvePurchase=()=>null,limits={},paymentPhaseIndex=()=>2}={}){
@@ -84,11 +85,12 @@ test('L4 release names one exact hold and leaves other reservations counted',asy
  assert.deepEqual(await releaseSellerContextHolds({evidencePath:path,jobId:JOBS[0],holdId:'a',now:()=>T0}),['a']);
  assert.equal(heldPolicyBudget(withContextHolds(parsePolicyLedger(await readFile(path,'utf8')).rows),T0).writes,2);
 });
-test('S1 seller purchase window is closed at exact expiry; one millisecond before is open',()=>{
- const at=T0-SELLER_PURCHASE_OPEN_WINDOW_MS,draft={parties:[{role:'buyer',primaryClaim:buyer},{role:'seller',primaryClaim:seller}],listingRef:pin,generatedAt:at,terms:{price:{amount:'1',currency:'DEM'},deadline:T0+1}};
- const session={jobId:JOBS[0],buyerBundle:{presentedBy:buyer},proposal:{plan:{draft}},proposalAdmission:{observedAt:at}};
- for(const [now,expected] of [[T0-1,true],[T0,false],[T0+1,false]])assert.equal(sellerRecordsPurchaseResolver({sessionOf:()=>session,buyerAccess:()=>({allowsWallet:()=>true}),now:()=>now})(JOBS[0]).prePaymentOpen,expected);
- assert.equal(sellerRecordsPurchaseResolver({sessionOf:()=>session,buyerAccess:()=>({allowsWallet:()=>false}),now:()=>T0})(JOBS[0]),false);
+test('S1 seller records require manual prepayment approval and retain held-evidence visibility',async()=>{
+ const draft={parties:[{role:'buyer',primaryClaim:buyer},{role:'seller',primaryClaim:seller}],listingRef:pin,generatedAt:T0,terms:{price:{amount:'1',currency:'DEM'},deadline:T0+1000}};
+ const session={jobId:JOBS[0],buyerBundle:{presentedBy:buyer},proposal:{plan:{draft}},proposalAdmission:{observedAt:T0}};
+ const resolver=sellerRecordsPurchaseResolver({sessionOf:()=>session,buyerAccess:()=>({allowsWallet:()=>true}),now:()=>T0});
+ assert.equal((await resolver(JOBS[0])).prePaymentOpen,false);
+ assert.equal(await sellerRecordsPurchaseResolver({sessionOf:()=>session,buyerAccess:()=>({allowsWallet:()=>false}),now:()=>T0})(JOBS[0]),false);
  assert.deepEqual(sellerHeldEvidenceJobs([{...session,stage:'delivery-ready',deliveryReady:{},nativeEvidenceWork:{}}]),[{jobId:JOBS[0]}]);
 });
 test('S3 a second seller-state owner refuses before any file is changed',async t=>{
