@@ -32,6 +32,7 @@ for command in curl docker npm node; do
   command -v "$command" >/dev/null
 done
 docker compose version >/dev/null
+source "$repo_root/scripts/bounded-http.sh"
 
 # Retries a network-dependent command three times before reporting failure.
 retry() {
@@ -106,7 +107,7 @@ cleanup() {
       node "$repo_root/scripts/registry-container-disposition.mjs" --failure-summary \
         "$artifact_stage" "$stage" "$status"
     fi
-    if mv "$artifact_stage" "$output_dir"; then
+    if mv -T -- "$artifact_stage" "$output_dir"; then
       echo "partial acceptance evidence: $output_dir" >&2
     else
       echo "could not export evidence; retained at $acceptance_root" >&2
@@ -189,8 +190,13 @@ chmod 0644 "$registry_config"
 
 cd "$repo_root"
 stage=release-set
-npm run conformance:sync
-npm run release:set:verify -- --output-dir "$release_set"
+publish_npm="$acceptance_root/publish-npm"
+npm install --global --prefix "$publish_npm" --ignore-scripts --no-audit --no-fund npm@11.19.0 \
+  2>&1 | tee "$artifact_stage/release-set.log"
+export npm_config_prefix="$publish_npm"
+export PATH="$publish_npm/bin:$PATH"
+npm run conformance:sync 2>&1 | tee -a "$artifact_stage/release-set.log"
+npm run release:set:verify -- --output-dir "$release_set" 2>&1 | tee -a "$artifact_stage/release-set.log"
 
 version=$(node -p "require('./package.json').version")
 node - "$release_set/release-provenance.json" "$version" <<'NODE'
@@ -241,7 +247,7 @@ fi
 stage=registry-ready
 ready=0
 for attempt in $(seq 1 30); do
-  if curl --silent --fail "$host_registry/-/ping" >/dev/null; then
+  if curl "${http_json_curl[@]}" "$host_registry/-/ping" >/dev/null; then
     ready=1
     break
   fi
@@ -253,7 +259,7 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 stage=registry-auth
-auth_response=$(curl --silent --show-error --fail \
+auth_response=$(curl "${http_json_curl[@]}" \
   --retry 3 --retry-all-errors --retry-delay 2 \
   --request PUT "$host_registry/-/user/org.couchdb.user:dacs-ci" \
   --header 'content-type: application/json' \
@@ -261,7 +267,10 @@ auth_response=$(curl --silent --show-error --fail \
   2> >(tee -a "$registry_log" >&2))
 auth_token=$(AUTH_RESPONSE="$auth_response" node -e '
 const value = JSON.parse(process.env.AUTH_RESPONSE);
-if (typeof value.token !== "string" || value.token.length < 8) process.exit(1);
+const MAX_AUTH_FIELDS = 32, MIN_TOKEN_CHARS = 8, MAX_TOKEN_CHARS = 4096;
+if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > MAX_AUTH_FIELDS ||
+    Object.values(value).some(entry => entry !== null && typeof entry === "object") ||
+    typeof value.token !== "string" || value.token.length < MIN_TOKEN_CHARS || value.token.length > MAX_TOKEN_CHARS) process.exit(1);
 process.stdout.write(value.token);
 ')
 
