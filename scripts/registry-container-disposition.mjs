@@ -335,7 +335,7 @@ const numericAfterX = (M, m, p) => (isX(M) && !(isX(m) && isX(p))) || (isX(m) &&
 // semver desugars carets, tildes and X-ranges. [] is any version.
 function tokenComparators(token) {
   const match = rangeToken.exec(token);
-  // Concrete plain comparators retain v and build metadata; expansions drop them.
+  // Concrete plain comparators retain v; expansions drop it.
   const retained = match && !match.slice(2, 5).some(isX) && !/^[~^]/.test(match[1] ?? "");
   if (!match || (retained && token.replace(/^[<>=]+/, "").length > MAX_SEMVER_LENGTH) ||
       !validVersionBound(match[2], match[3], match[4], match[5]) || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
@@ -392,7 +392,8 @@ export function satisfiesEngineRange(current, range) {
     throw new Error(`unsupported engine check ${JSON.stringify(current)} against ${JSON.stringify(range)}`);
   }
   // Every set is parsed before any is tested: semver rejects the whole range.
-  const sets = range.trim().replace(/\s+/g, " ").split("||").map(part => {
+  const sets = range.replace(/\+[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*/g, "")
+    .trim().replace(/\s+/g, " ").split("||").map(part => {
     const set = part.trim();
     const hyphen = hyphenRange.exec(set);
     if (hyphen) {
