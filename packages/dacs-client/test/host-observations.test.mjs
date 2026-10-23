@@ -197,6 +197,7 @@ test('oversized strings are refused before serializing later observation fields'
   const result=await world(t,value).verify();
   assert.equal(result.verification.outcome,'invalid_observation');
   assert.equal(visited,0);
+  assert.match(result.verification.observation.reason,/byte limit/);
 });
 test('raw included facts cannot settle when their one JSON snapshot is pending', async t => {
   let calls=0;
