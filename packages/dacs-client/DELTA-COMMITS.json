@@ -724,5 +724,18 @@
       "packages/dacs-client/package.json",
       "packages/dacs-client/scripts/check-hold.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/purchase-state-schema.mjs",
+      "packages/dacs-client/test/purchase-state-schema.test.mjs"
+    ]
   }
 ]

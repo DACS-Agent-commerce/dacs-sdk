@@ -1334,6 +1334,22 @@
           "after": "7fb6c88ed1400bffc509fc23453150bf78519cbe"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": null,
+          "after": "557ea59e906125decb9c56d5b2322a1d30af3321"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-state-schema.test.mjs",
+          "before": null,
+          "after": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3"
+        }
+      ]
     }
   ]
 }
