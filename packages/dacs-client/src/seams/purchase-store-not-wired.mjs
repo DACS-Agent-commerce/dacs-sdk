@@ -191,7 +191,14 @@ function sqliteUniqueViolation(error) {
   return error?.code === 'ERR_SQLITE_ERROR' && UNIQUE_CONSTRAINT_CODES.has(error.errcode);
 }
 
+let statementGuardReady = false;
 export function createSqlitePurchaseStore() {
+  // Track host statements prepared after construction, before the first write.
+  if (!statementGuardReady) {
+    const { DatabaseSync } = require('node:sqlite'), probe = new DatabaseSync(':memory:');
+    try { withSqliteStatementGuard(probe, () => {}, () => {}); statementGuardReady = true; }
+    finally { probe.close(); }
+  }
   return Object.freeze({ transaction: sqliteTransaction, isUniqueViolation: sqliteUniqueViolation });
 }
 
