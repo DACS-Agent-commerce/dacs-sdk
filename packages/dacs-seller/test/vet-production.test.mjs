@@ -7,7 +7,7 @@ import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 
 test('staged Vet factory refuses before any signer, anchor or row operation',()=>{
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
- assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled/);assert.equal(effects,0);
+ assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{claim:seller.claim,signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled|Vet producer and native anchor/);assert.equal(effects,0);
 });
 for(const length of [32,64])test(`real staged bilateral engine accepts a ${length}-hex verifier nonce`,async()=>{
  const f=productionFixture();f.controls.nonce='a'.repeat(length);const result=await f.run();assert.equal(result.buyerVet.record.overallDecision,'pass');assert.equal(result.sellerVet.record.signature.signer,f.seen[0].buyer);assert.equal(f.local.writes.length,2);assert.equal(f.seen.length,1);f.base.close();
