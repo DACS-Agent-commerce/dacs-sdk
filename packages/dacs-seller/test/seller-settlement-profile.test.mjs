@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
-import * as seller from '../src/index.mjs';
+import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
@@ -1265,7 +1265,7 @@ test('capacity reclaims only proven-exited unsaved reservations; live holders an
 });
 
 test('capacity never reclaims an unproven reservation', async (t) => {
-  const { DatabaseSync } = await import('node:sqlite');
+  const { default: DatabaseSync } = await import('better-sqlite3');
   const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-unproven-reservation-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
