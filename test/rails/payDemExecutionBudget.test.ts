@@ -46,6 +46,15 @@ describe("pay-dem execution record budget boundaries", () => {
     }
   });
 
+  it.each(["confirmed", "failed"])("does not report terminal %s after processing exceeds the budget", async (status) => {
+    const clock = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(1_000).mockReturnValueOnce(1_000).mockReturnValue(1_010);
+    try {
+      await expect(observeDemosExecutionByHash(hash, async () => ({ ...record, status }), expected, options))
+        .resolves.toMatchObject({ state: "indeterminate", reason: "transaction record observation timed out" });
+    } finally { clock.mockRestore(); }
+  });
+
   it.each([2, 20])("bounds a record completing after %s ms by the remaining budget", async (delay) => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
