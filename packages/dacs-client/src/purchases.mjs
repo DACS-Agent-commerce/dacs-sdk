@@ -163,7 +163,7 @@ export function approvalBinding(operation) {
   };
 }
 
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000 }, diagnosticOnly = false) {
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }) {
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
