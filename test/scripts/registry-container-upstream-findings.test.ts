@@ -12,9 +12,12 @@ const read = (name: string) => readFileSync(join(fixture,
 const original = () => JSON.parse(read("acceptance-summary.json"));
 const evidence = (overrides: Record<string, string> = {}) => {
   const summary = original();
+  summary.complete = true; // Reconstructed evidence; the original legacy JSON is unchanged.
   summary.securityGate.findings = extractPolicyFindings((name: string) => overrides[name] ?? read(name));
   return summary;
 };
+const historicalDisposition = (summary: unknown, baseline?: unknown) =>
+  registryContainerDisposition(summary, baseline, { packageVersion: "0.1.0-alpha.0" });
 const withoutFinding = (check: "productionImage" | "physicalSbom") => {
   const value = structuredClone(baseline);
   if (check === "productionImage") {
@@ -43,7 +46,7 @@ describe("5c27c28 upstream findings retained under #191", () => {
     const previous = withoutFinding("productionImage");
     previous.policyFindings.physicalSbomProblems = withoutFinding("physicalSbom").policyFindings.physicalSbomProblems;
     const summary = evidence();
-    expect(registryContainerDisposition(summary, previous)).toMatchObject({ exitCode: 3,
+    expect(historicalDisposition(summary, previous)).toMatchObject({ exitCode: 3,
       checks: { productionImage: "blocked", physicalSbom: "blocked" } });
     expect(unlistedPolicyFindings(summary, previous, ["productionImage", "physicalSbom"]))
       .toEqual({ productionImage: [{ name: "pqcrypto", location: "node_modules/pqcrypto", version: "1.0.01",
@@ -52,14 +55,15 @@ describe("5c27c28 upstream findings retained under #191", () => {
   });
 
   it.each(["productionImage", "physicalSbom"] as const)("requires the individual disposition for %s", check => {
-    expect(registryContainerDisposition(evidence(), withoutFinding(check))).toMatchObject({ exitCode: 3,
+    expect(historicalDisposition(evidence(), withoutFinding(check))).toMatchObject({ exitCode: 3,
       checks: { [check]: "blocked" } });
   });
 
-  it("classifies both the original summary and regenerated findings as baseline-only while keeping the gate blocked", () => {
-    for (const summary of [original(), evidence()]) {
+  it("rejects a legacy summary without completion and classifies reconstructed findings as baseline-only", () => {
+    expect(historicalDisposition(original(), baseline).exitCode).toBe(1);
+    for (const summary of [evidence()]) {
       expect(summary.securityGate.passed).toBe(false);
-      expect(registryContainerDisposition(summary, baseline)).toMatchObject({ exitCode: 4, failureClass: "policy",
+      expect(historicalDisposition(summary, baseline)).toMatchObject({ exitCode: 4, failureClass: "policy",
         checks: { registryDependency: "baseline", productionImage: "baseline", engineStrict: "baseline",
           lockSbom: "baseline", physicalSbom: "baseline", audit: "baseline" } });
     }
@@ -93,7 +97,7 @@ describe("5c27c28 upstream findings retained under #191", () => {
     const summary = evidence();
     Object.assign(summary.securityGate.findings.productionImageDependencies
       .find((item: { name: string }) => item.name === "pqcrypto"), edit);
-    expect(registryContainerDisposition(summary, baseline)).toMatchObject({ exitCode: 3,
+    expect(historicalDisposition(summary, baseline)).toMatchObject({ exitCode: 3,
       checks: { productionImage: "blocked" } });
   });
 
@@ -104,7 +108,7 @@ describe("5c27c28 upstream findings retained under #191", () => {
   ])("still blocks an SBOM problem with %s", (_label, problem) => {
     const summary = evidence();
     summary.securityGate.findings.physicalSbom.problems[0] = problem;
-    expect(registryContainerDisposition(summary, baseline)).toMatchObject({ exitCode: 3,
+    expect(historicalDisposition(summary, baseline)).toMatchObject({ exitCode: 3,
       checks: { physicalSbom: "blocked" } });
   });
 
@@ -113,7 +117,7 @@ describe("5c27c28 upstream findings retained under #191", () => {
     inventory.packages = inventory.packages.filter((item: { name: string }) => item.name !== "pqcrypto");
     const summary = evidence({ "runtime-image-inventory.json": JSON.stringify(inventory) });
     expect(summary.securityGate.findings.productionImageInventory.missing).toContain("node_modules/pqcrypto");
-    expect(registryContainerDisposition(summary, baseline)).toMatchObject({ exitCode: 3,
+    expect(historicalDisposition(summary, baseline)).toMatchObject({ exitCode: 3,
       checks: { productionImage: "blocked" } });
   });
 });

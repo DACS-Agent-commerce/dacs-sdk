@@ -371,6 +371,7 @@ for name in buyer-demos seller-demos buyer-evm seller-evm wallet-token listing-x
 done
 
 env \
+  -i PATH="$PATH" HOME="$compose_inputs" \
   DACS_WALLET_AUTHORITY_URL=http://127.0.0.1:1 \
   DACS_WALLET_AUTHORITY_ID=acceptance-placeholder \
   DACS_WALLET_AUTHORITY_EPOCH=acceptance-placeholder \
@@ -403,14 +404,17 @@ stage=image-policy
 docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"
 image_user=$(docker image inspect --format '{{.Config.User}}' "$runtime_image")
 runtime_uid=$(docker run --rm --entrypoint id "$runtime_image" -u)
-typescript_present=false
-if docker run --rm --entrypoint test "$runtime_image" -d node_modules/typescript; then
-  typescript_present=true
-fi
-rubic_present=false
-if docker run --rm --entrypoint test "$runtime_image" -d node_modules/rubic-sdk; then
-  rubic_present=true
-fi
+image_package_present() {
+  local probe_status=0
+  docker run --rm --entrypoint test "$runtime_image" -d "node_modules/$1" || probe_status=$?
+  case "$probe_status" in
+    0) echo true ;;
+    1) echo false ;;
+    *) return "$probe_status" ;;
+  esac
+}
+typescript_present=$(image_package_present typescript)
+rubic_present=$(image_package_present rubic-sdk)
 # Every entry under the image's node_modules, read inside the image by a
 # dependency-free script mounted read-only. The disposition compares it with
 # the lock's production closure, so a package outside that closure blocks.
@@ -520,28 +524,53 @@ const provenance = JSON.parse(
 if (provenance?.version !== version) {
   throw new Error(`release-provenance.json is not for version ${version}`);
 }
-const engineStrictExitCode = Number(
-  fs.readFileSync(path.join(root, "engine-strict.exit-code"), "utf8").trim(),
-);
-const auditExitCode = Number(
-  fs.readFileSync(path.join(root, "npm-audit.exit-code"), "utf8").trim(),
-);
-const lockSbomExitCode = Number(
-  fs.readFileSync(path.join(root, "consumer-lock-sbom.exit-code"), "utf8").trim(),
-);
-const physicalSbomExitCode = Number(
-  fs.readFileSync(path.join(root, "consumer-physical-sbom.exit-code"), "utf8").trim(),
-);
-const generatedTestsExitCode = Number(
-  fs.readFileSync(path.join(root, "generated-tests.exit-code"), "utf8").trim(),
-);
-const doctorExitCode = Number(
-  fs.readFileSync(path.join(root, "doctor.exit-code"), "utf8").trim(),
-);
+const exitCode = name => {
+  const text = fs.readFileSync(path.join(root, name), "utf8").trim();
+  if (!/^\d{1,3}$/.test(text) || Number(text) > 255) throw new Error(`${name}: invalid shell exit status`);
+  return Number(text);
+};
+const engineStrictExitCode = exitCode("engine-strict.exit-code");
+const auditExitCode = exitCode("npm-audit.exit-code");
+const lockSbomExitCode = exitCode("consumer-lock-sbom.exit-code");
+const physicalSbomExitCode = exitCode("consumer-physical-sbom.exit-code");
+const generatedTestsExitCode = exitCode("generated-tests.exit-code");
+const doctorExitCode = exitCode("doctor.exit-code");
+// The image gate covers the complete inventory, including identity mismatches.
+const inventory = policyFindings.productionImageInventory;
+runtimeImagePolicy.productionDependencyPolicyPassed = runtimeImagePolicy.productionDependencyPolicyPassed === true &&
+  inventory?.scanComplete === true && Array.isArray(inventory.errors) && inventory.errors.length === 0 &&
+  Array.isArray(inventory.missing) && inventory.missing.length === 0 &&
+  Array.isArray(policyFindings.productionImageDependencies) && policyFindings.productionImageDependencies.length === 0;
+fs.writeFileSync(path.join(root, "runtime-image-policy.json"), JSON.stringify(runtimeImagePolicy, null, 2) + "\n");
 const generatedTestsPassed = generatedTestsExitCode === 0;
-const doctorBlockedWithoutCredentials = doctorExitCode === 5;
+const doctorReport = JSON.parse(fs.readFileSync(path.join(root, "doctor.json"), "utf8"));
+const doctorChecks = Array.isArray(doctorReport?.checks) ? doctorReport.checks : [];
+const requiredDoctorChecks = doctorChecks.filter(check => check?.required === true);
+const credentialBlocks = new Map([
+  ["local.secrets", "role-secret-file-missing"],
+  ["local.sqlite", "actor-authority-missing"],
+  ["local.authority-separation", "actor-authority-missing"],
+  ...["local.transport-identities", "demos.rpc-chain", "demos.storage-read", "demos.binding-resolution",
+    "demos.wallet-identity", "x402.rail-authority", "x402.endpoints", "x402.token-domain", "pay-dem.rail-authority"]
+    .map(id => [id, "role-demos-runtime-unavailable"]),
+]);
+const requiredDoctorPasses = ["local.node-version", "local.package-integrity", "local.version-bindings",
+  "local.configuration", "local.data-directory", "local.disk-space", "local.deployment-runtime"];
+const blockedDoctorChecks = requiredDoctorChecks.filter(check => check.status === "blocked");
+const doctorBlockedWithoutCredentials = doctorExitCode === 5 && doctorReport?.exitCode === 5 &&
+  doctorReport.schema === "dacs-live-doctor-report/v1" && doctorReport.phase === "pre-start" && doctorReport.scope === "start" &&
+  doctorReport.gate?.status === "blocked" && doctorReport.gate.required === requiredDoctorChecks.length &&
+  doctorReport.gate.failed === 0 && doctorReport.gate.blocked === blockedDoctorChecks.length &&
+  doctorReport.gate.passed === requiredDoctorChecks.length - blockedDoctorChecks.length &&
+  doctorChecks.every(check => typeof check?.required === "boolean" && typeof check.id === "string") &&
+  new Set(doctorChecks.map(check => check.id)).size === doctorChecks.length &&
+  requiredDoctorPasses.every(id => requiredDoctorChecks.some(check => check.id === id && check.status === "pass")) &&
+  blockedDoctorChecks.some(check => check.id === "local.secrets" && check.reasonCode === "role-secret-file-missing") &&
+  requiredDoctorChecks.every(check => check.status === "pass" ||
+    (check.status === "blocked" && credentialBlocks.has(check.id) && credentialBlocks.get(check.id) === check.reasonCode));
 const summary = {
   schema: "dacs-registry-container-acceptance/v1",
+  complete: true,
   packageVersion: version,
   generatedMode,
   generatedRole,
@@ -593,7 +622,12 @@ fs.writeFileSync(
 );
 NODE
 
-mv "$artifact_stage" "$output_dir"
+# Publish evidence without nesting under an earlier completed result.
+if [ -e "$output_dir" ] || [ -L "$output_dir" ]; then
+  echo "output directory already exists: $output_dir" >&2
+  exit 2
+fi
+mv -T -- "$artifact_stage" "$output_dir"
 disposition_status=0
 # --record adds the disposition and failure class to the summary.
 node scripts/registry-container-disposition.mjs --record "$output_dir/acceptance-summary.json" \
