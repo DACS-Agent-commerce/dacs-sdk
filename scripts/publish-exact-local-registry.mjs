@@ -7,6 +7,7 @@ import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } fr
 import { Agent } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { gunzipSync } from "node:zlib";
 
 // The acceptance workflow installs exactly this npm client before publishing.
@@ -17,6 +18,11 @@ const MAX_TAR_BYTES = 64 * 1024 * 1024;
 const MAX_JSON_BYTES = 1024 * 1024;
 const REGISTRY_TIMEOUT_MS = 15_000;
 const TAR_BLOCK_BYTES = 512;
+const MAX_PACKAGE_NAME_LENGTH = 214;
+const MAX_VERSION_LENGTH = 256;
+// libnpmpublish adds these fields; Verdaccio also records the publishing user.
+const NPM_ADDED_FIELDS = new Set(["_id", "_nodeVersion", "_npmVersion", "_npmUser"]);
+const NPM_ADDED_DIST_FIELDS = ["integrity", "shasum", "tarball"];
 
 // Reads the sole regular package/package.json from a bounded gzip + ustar
 // archive. Throws for malformed framing, ambiguous paths or unsupported types.
@@ -54,6 +60,7 @@ export function readPackedManifest(tarball) {
     if (!Number.isSafeInteger(size) || end > archive.length) throw new Error("packed tarball has a truncated entry");
     // Reject links and path-override extensions instead of guessing extraction semantics.
     if (!["0", "", "5"].includes(type) || name.includes("\\") ||
+        !(name.startsWith("package/") || (name === "package" && type === "5")) ||
         (type === "5" ? size !== 0 : name.endsWith("/")) ||
         name.replace(/\/$/, "").split("/").some(part => !part || part === "." || part === "..")) {
       throw new Error("packed tarball has an unsupported entry type or path");
@@ -184,16 +191,18 @@ async function registryBytes(url, fetchImpl, maximumBytes, accept) {
 class LocalRegistryAgent extends Agent {
   constructor(registry) { super(); this.registry = registry; }
   addRequest(request, options) {
-    if (request.getHeader("host") !== this.registry.host) {
-      queueMicrotask(() => request.destroy(new Error("local registry publish redirect left the registry origin")));
+    if (this.refusal || request.getHeader("host") !== this.registry.host) {
+      this.refusal ??= new Error("local registry publish redirect left the registry origin");
+      // No socket was assigned, so destroy() alone cannot emit the error.
+      queueMicrotask(() => { request.destroy(); request.emit("error", this.refusal); });
       return;
     }
     request.setHeader("accept-encoding", "identity");
     request.once("response", response => {
       const refuse = message => {
-        const error = new Error(message);
-        response.destroy(error);
-        request.destroy(error);
+        this.refusal ??= new Error(message);
+        response.destroy(this.refusal);
+        request.destroy(this.refusal);
       };
       if (response.statusCode >= 300 && response.statusCode < 400) {
         refuse("local registry publish redirect is forbidden");
@@ -209,6 +218,35 @@ class LocalRegistryAgent extends Agent {
       });
     });
     super.addRequest(request, options);
+  }
+}
+
+function requireCanonicalIdentity({ name, version }) {
+  // This publisher accepts canonical, URL-safe names and semver without build
+  // metadata: npm's semver.clean strips build metadata and v/= prefixes.
+  const match = typeof version === "string" && version.length <= MAX_VERSION_LENGTH &&
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version);
+  if (typeof name !== "string" || name.trim() !== name || name.length > MAX_PACKAGE_NAME_LENGTH ||
+      !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name) ||
+      !match || match[0] !== version || match.slice(1, 4).some(part => !Number.isSafeInteger(Number(part))) ||
+      match[4]?.split(".").some(part => /^0\d+$/.test(part))) {
+    throw new Error("packed manifest must have a canonical npm name and version");
+  }
+}
+
+function verifyManifestMetadata(packument, manifest) {
+  const served = { ...packument.versions[manifest.version] };
+  const publishedId = served._id;
+  const dist = { ...served.dist };
+  for (const field of NPM_ADDED_DIST_FIELDS) if (!Object.hasOwn(manifest.dist ?? {}, field)) delete dist[field];
+  if (Object.hasOwn(manifest, "dist") || Object.keys(dist).length) served.dist = dist;
+  else delete served.dist;
+  // Never disregard a packed field, even when npm normally adds that field.
+  for (const field of NPM_ADDED_FIELDS) if (!Object.hasOwn(manifest, field)) delete served[field];
+  if (packument.name !== manifest.name || (packument._id !== undefined && packument._id !== manifest.name) ||
+      (publishedId !== undefined && publishedId !== `${manifest.name}@${manifest.version}`) ||
+      !isDeepStrictEqual(served, manifest)) {
+    throw new Error("local registry package metadata does not match packed manifest");
   }
 }
 
@@ -228,6 +266,7 @@ async function verifyCandidate(registry, manifest, tarball, fetchImpl) {
   if (dist?.integrity !== integrity) {
     throw new Error(`local registry integrity for ${manifest.name}@${manifest.version} is ${String(dist?.integrity)}, expected ${integrity}`);
   }
+  verifyManifestMetadata(packument, manifest);
   if (packument["dist-tags"]?.acceptance !== manifest.version) throw new Error("local registry acceptance tag does not match candidate");
   let tarballUrl;
   try { tarballUrl = new URL(dist.tarball); } catch { throw new Error("local registry has an invalid tarball URL"); }
@@ -241,7 +280,7 @@ async function verifyCandidate(registry, manifest, tarball, fetchImpl) {
 
 // Publishes the unchanged archive with the acceptance tag, or verifies an
 // existing version after a publish conflict. Returns its identity and SHA-512;
-// throws unless bounded registry reads prove the sole version and served bytes.
+// throws unless bounded registry reads prove the sole version, metadata and bytes.
 export async function publishExactLocalRegistry({ archivePath, registry: registryValue, token, publish, fetch: fetchImpl = fetch }) {
   if (!archivePath || !registryValue || !token) {
     throw new Error("usage: DACS_LOCAL_REGISTRY_TOKEN=<token> publish-exact-local-registry.mjs <archive> <registry>");
@@ -249,9 +288,7 @@ export async function publishExactLocalRegistry({ archivePath, registry: registr
   const registry = loopbackRegistry(registryValue);
   const tarball = readArchive(archivePath);
   const manifest = readPackedManifest(tarball);
-  if (typeof manifest.name !== "string" || !manifest.name || typeof manifest.version !== "string" || !manifest.version) {
-    throw new Error("packed manifest has no name or version");
-  }
+  requireCanonicalIdentity(manifest);
   // libnpmpublish prefers manifest.tag to defaultTag; never certify another tag.
   if (manifest.tag !== undefined && manifest.tag !== "acceptance") throw new Error("packed manifest tag must be acceptance");
   const agent = new LocalRegistryAgent(registry);
@@ -266,7 +303,9 @@ export async function publishExactLocalRegistry({ archivePath, registry: registr
       agent, signal,
       [`//${registry.host}/:_authToken`]: token,
     }));
+    if (agent.refusal) throw agent.refusal;
   } catch (error) {
+    if (agent.refusal) throw agent.refusal;
     if (error?.code !== "EPUBLISHCONFLICT" && error?.statusCode !== 409) throw error;
   } finally { agent.destroy(); }
   return verifyCandidate(registry, manifest, tarball, fetchImpl);
