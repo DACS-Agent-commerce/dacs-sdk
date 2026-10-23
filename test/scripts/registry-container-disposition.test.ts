@@ -506,3 +506,19 @@ describe("lock engine scan", () => {
 
 });
 
+
+describe("canonical installed candidate discovery", () => {
+  it.each(["dacs", "dacs-node"])("rejects untracked %s copies with missing, different or unreadable names", name => {
+    for (const manifest of [{ version: "0.0.0-wrong" }, { name: "other", version: "0.0.0-wrong" }, null]) {
+      const fixture = dependencyPolicyHarness();
+      const location = `node_modules/plugin/node_modules/@kynesyslabs/${name}`;
+      const result = fixture.run(project => {
+        mkdirSync(join(project, location), { recursive: true });
+        if (manifest) writeFileSync(join(project, location, "package.json"), JSON.stringify(manifest));
+        writeFileSync(join(project, location, "index.js"), "module.exports = 'old';");
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("installed candidate has no lock entry: " + location);
+    }
+  });
+});
