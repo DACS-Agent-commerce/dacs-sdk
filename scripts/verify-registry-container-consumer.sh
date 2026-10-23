@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+set -euo pipefail
+acceptance_main() {
+project="$consumer_root/one-click-agent"
+stage=dependency-policy
+# Registry packages only (an allowlist over the manifest and every lock entry),
+# and every candidate copy is the packed tarball release-provenance.json records.
+node scripts/registry-container-disposition.mjs --dependency-policy "$project" "$consumer_registry" \
+  "$artifact_stage/dependency-policy.json" "$release_set" "$version"
+
+stage=audit-policy
+node scripts/registry-container-disposition.mjs --audit-policy \
+  "$consumer_root/npm-audit.json" "$artifact_stage/audit-policy.json"
+
+stage=compose
+# Inert Compose inputs: these are deliberately invalid credentials and drafts,
+# used only for config rendering. No live services or compose up are invoked.
+compose_inputs="$acceptance_root/compose-inputs"
+mkdir -p "$compose_inputs/buyer-data" "$compose_inputs/seller-data"
+for name in buyer-demos seller-demos buyer-evm seller-evm wallet-token listing-x402.json listing-pay-dem.json; do
+  # Created 0600 rather than narrowed afterwards.
+  (umask 077 && printf '%s\n' 'acceptance-placeholder' > "$compose_inputs/$name")
+  chmod 0600 "$compose_inputs/$name"
+done
+
+env \
+  DACS_WALLET_AUTHORITY_URL=http://127.0.0.1:1 \
+  DACS_WALLET_AUTHORITY_ID=acceptance-placeholder \
+  DACS_WALLET_AUTHORITY_EPOCH=acceptance-placeholder \
+  DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY=acceptance-placeholder \
+  DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE="$compose_inputs/wallet-token" \
+  DACS_RUNTIME_UID=10001 \
+  DACS_RUNTIME_GID=10001 \
+  DACS_BUYER_DATA_DIRECTORY="$compose_inputs/buyer-data" \
+  DACS_SELLER_DATA_DIRECTORY="$compose_inputs/seller-data" \
+  DACS_BUYER_DEMOS_SECRET_FILE="$compose_inputs/buyer-demos" \
+  DACS_SELLER_DEMOS_SECRET_FILE="$compose_inputs/seller-demos" \
+  DACS_BUYER_EVM_SECRET_FILE="$compose_inputs/buyer-evm" \
+  DACS_SELLER_EVM_SECRET_FILE="$compose_inputs/seller-evm" \
+  DACS_X402_LISTING_DRAFT_FILE="$compose_inputs/listing-x402.json" \
+  DACS_PAY_DEM_LISTING_DRAFT_FILE="$compose_inputs/listing-pay-dem.json" \
+  docker compose --file "$project/compose.yaml" config \
+    > "$artifact_stage/compose.rendered.yaml"
+
+stage=image-build
+# BuildKit reports progress and npm errors on stderr; keep both in the log.
+docker build \
+  "${build_network_args[@]}" \
+  --tag "$runtime_image" \
+  "$project" \
+  2>&1 | tee "$artifact_stage/docker-build.log"
+image_started=1
+
+stage=image-policy
+
+docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"
+image_user=$(docker image inspect --format '{{.Config.User}}' "$runtime_image")
+runtime_uid=$(docker run --rm --entrypoint id "$runtime_image" -u)
+typescript_present=false
+if docker run --rm --entrypoint test "$runtime_image" -d node_modules/typescript; then
+  typescript_present=true
+fi
+rubic_present=false
+if docker run --rm --entrypoint test "$runtime_image" -d node_modules/rubic-sdk; then
+  rubic_present=true
+fi
+# Every entry under the image's node_modules, read inside the image by a
+# dependency-free script mounted read-only. The disposition compares it with
+# the lock's production closure, so a package outside that closure blocks.
+docker run --rm --entrypoint node \
+  --volume "$repo_root/scripts/runtime-image-inventory.mjs:/opt/dacs-acceptance/runtime-image-inventory.mjs:ro" \
+  "$runtime_image" /opt/dacs-acceptance/runtime-image-inventory.mjs . \
+  > "$artifact_stage/runtime-image-inventory.json"
+runtime_imports_passed=false
+if docker run --rm --entrypoint sh "$runtime_image" -ceu '
+  node --import @kynesyslabs/dacs-node/demos-loader --input-type=module -e "
+    Promise.all([
+      import(\"@kynesyslabs/dacs\"),
+      import(\"@kynesyslabs/dacs-node\"),
+      import(\"@kynesyslabs/dacs-node/sqlite\")
+    ]).then(([core, host, sqlite]) => {
+      if (typeof core.createAgent !== \"function\") process.exit(1);
+      if (typeof host.runDacsLiveDoctorV1 !== \"function\") process.exit(1);
+      if (typeof sqlite.openDacsNodeSqliteDatabase !== \"function\") process.exit(1);
+    });
+  "
+'; then
+  runtime_imports_passed=true
+fi
+
+IMAGE_USER="$image_user" \
+RUNTIME_UID="$runtime_uid" \
+TYPESCRIPT_PRESENT="$typescript_present" \
+RUBIC_PRESENT="$rubic_present" \
+RUNTIME_IMPORTS_PASSED="$runtime_imports_passed" \
+  node - "$artifact_stage/runtime-image-policy.json" <<'NODE'
+const fs = require("node:fs");
+const policy = {
+  schema: "dacs-runtime-image-policy/v1",
+  expectedUser: "10001:10001",
+  observedUser: process.env.IMAGE_USER,
+  observedUid: process.env.RUNTIME_UID,
+  runtimeImportsPassed: process.env.RUNTIME_IMPORTS_PASSED === "true",
+  typescriptPresent: process.env.TYPESCRIPT_PRESENT === "true",
+  rubicSdkPresent: process.env.RUBIC_PRESENT === "true",
+};
+policy.functionalPassed = policy.observedUser === policy.expectedUser &&
+  policy.observedUid === "10001" && policy.runtimeImportsPassed;
+policy.productionDependencyPolicyPassed = !policy.typescriptPresent &&
+  !policy.rubicSdkPresent;
+fs.writeFileSync(process.argv[2], JSON.stringify(policy, null, 2) + "\n");
+NODE
+
+cp "$release_set/release-provenance.json" "$artifact_stage/"
+cp "$release_set/SHA256SUMS" "$artifact_stage/"
+cp "$project/package.json" "$artifact_stage/generated-package.json"
+cp "$project/package-lock.json" "$artifact_stage/generated-package-lock.json"
+cp "$consumer_root/generated-tests.exit-code" "$artifact_stage/"
+cp "$consumer_root/doctor.log" "$artifact_stage/"
+cp "$consumer_root/doctor.exit-code" "$artifact_stage/"
+cp "$consumer_root/npm-audit.json" "$artifact_stage/"
+cp "$consumer_root/npm-audit.exit-code" "$artifact_stage/"
+cp "$consumer_root/consumer-lock.cdx.json" "$artifact_stage/"
+cp "$consumer_root/consumer-lock-sbom.err" "$artifact_stage/"
+cp "$consumer_root/consumer-lock-sbom.exit-code" "$artifact_stage/"
+cp "$consumer_root/consumer-physical.cdx.json" "$artifact_stage/"
+cp "$consumer_root/consumer-physical-sbom.err" "$artifact_stage/"
+cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
+cp "$consumer_root/engine-strict.log" "$artifact_stage/"
+cp "$consumer_root/engine-strict.exit-code" "$artifact_stage/"
+cp "$consumer_root/engine-versions.json" "$artifact_stage/"
+
+stage=summary
+# Exact identities of the security-gate findings, compared with the #191
+# baseline by the disposition.
+node scripts/registry-container-disposition.mjs --policy-findings \
+  "$artifact_stage" "$artifact_stage/policy-findings.json"
+
+node - "$artifact_stage" "$version" "$runtime_image" \
+  "$generated_mode" "$generated_role" "$generated_rails" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const root = process.argv[2];
+const version = process.argv[3];
+const image = process.argv[4];
+const [generatedMode, generatedRole, generatedRails] = process.argv.slice(5);
+const inspect = JSON.parse(fs.readFileSync(path.join(root, "docker-image.json"), "utf8"))[0];
+const audit = JSON.parse(fs.readFileSync(path.join(root, "npm-audit.json"), "utf8"));
+const dependencyPolicy = JSON.parse(
+  fs.readFileSync(path.join(root, "dependency-policy.json"), "utf8"),
+);
+const auditPolicy = JSON.parse(
+  fs.readFileSync(path.join(root, "audit-policy.json"), "utf8"),
+);
+const runtimeImagePolicy = JSON.parse(
+  fs.readFileSync(path.join(root, "runtime-image-policy.json"), "utf8"),
+);
+const policyFindings = JSON.parse(
+  fs.readFileSync(path.join(root, "policy-findings.json"), "utf8"),
+);
+// Compose only evidence of the shape its producer writes, for this release.
+for (const [name, evidence, schema] of [
+  ["dependency-policy.json", dependencyPolicy, "dacs-registry-dependency-policy/v1"],
+  ["audit-policy.json", auditPolicy, "dacs-registry-audit-policy/v1"],
+  ["runtime-image-policy.json", runtimeImagePolicy, "dacs-runtime-image-policy/v1"],
+  ["policy-findings.json", policyFindings, "dacs-registry-policy-findings/v1"],
+]) {
+  if (evidence?.schema !== schema) throw new Error(`${name} is not ${schema}`);
+}
+const provenance = JSON.parse(
+  fs.readFileSync(path.join(root, "release-provenance.json"), "utf8"),
+);
+if (provenance?.version !== version) {
+  throw new Error(`release-provenance.json is not for version ${version}`);
+}
+const engineStrictExitCode = Number(
+  fs.readFileSync(path.join(root, "engine-strict.exit-code"), "utf8").trim(),
+);
+const auditExitCode = Number(
+  fs.readFileSync(path.join(root, "npm-audit.exit-code"), "utf8").trim(),
+);
+const lockSbomExitCode = Number(
+  fs.readFileSync(path.join(root, "consumer-lock-sbom.exit-code"), "utf8").trim(),
+);
+const physicalSbomExitCode = Number(
+  fs.readFileSync(path.join(root, "consumer-physical-sbom.exit-code"), "utf8").trim(),
+);
+const generatedTestsExitCode = Number(
+  fs.readFileSync(path.join(root, "generated-tests.exit-code"), "utf8").trim(),
+);
+const doctorExitCode = Number(
+  fs.readFileSync(path.join(root, "doctor.exit-code"), "utf8").trim(),
+);
+const generatedTestsPassed = generatedTestsExitCode === 0;
+const doctorBlockedWithoutCredentials = doctorExitCode === 5;
+const summary = {
+  schema: "dacs-registry-container-acceptance/v1",
+  packageVersion: version,
+  generatedMode,
+  generatedRole,
+  generatedRails: generatedRails === "both" ? ["x402", "pay-dem"] : [generatedRails],
+  registryDependencyOnly: dependencyPolicy.passed === true &&
+    Array.isArray(dependencyPolicy.violations) && dependencyPolicy.violations.length === 0,
+  generatedTestsPassed,
+  functionalPassed: runtimeImagePolicy.functionalPassed === true && generatedTestsPassed &&
+    doctorBlockedWithoutCredentials,
+  doctor: {
+    expectedExitCode: 5,
+    observedExitCode: doctorExitCode,
+    disposition: doctorBlockedWithoutCredentials ? "blocked-without-credentials" : "unexpected",
+  },
+  docker: {
+    image,
+    id: inspect.Id,
+    size: inspect.Size,
+    user: inspect.Config.User,
+    policy: runtimeImagePolicy,
+  },
+  audit: { ...audit.metadata.vulnerabilities,
+    observedAdvisories: auditPolicy.observedAdvisories,
+    unlistedAdvisories: auditPolicy.unlistedAdvisories,
+    assessedAdvisories: auditPolicy.assessedAdvisories,
+    directAdvisories: auditPolicy.directAdvisories,
+  },
+  securityGate: {
+    productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
+    passed: dependencyPolicy.passed &&
+      runtimeImagePolicy.productionDependencyPolicyPassed &&
+      engineStrictExitCode === 0 &&
+      auditPolicy.passed === true && (auditExitCode === 0 ||
+        (auditExitCode === 1 && auditPolicy.observedAdvisories.length > 0)) &&
+      lockSbomExitCode === 0 && physicalSbomExitCode === 0,
+    registryDependencyPolicyPassed: dependencyPolicy.passed,
+    productionImageDependencyPolicyPassed:
+      runtimeImagePolicy.productionDependencyPolicyPassed,
+    engineStrictExitCode,
+    auditExitCode,
+    lockSbomExitCode,
+    physicalSbomExitCode,
+    findings: policyFindings,
+  },
+};
+fs.writeFileSync(
+  path.join(root, "acceptance-summary.json"),
+  JSON.stringify(summary, null, 2) + "\n",
+);
+NODE
+
+mv "$artifact_stage" "$output_dir"
+disposition_status=0
+# --record adds the disposition and failure class to the summary.
+node scripts/registry-container-disposition.mjs --record "$output_dir/acceptance-summary.json" \
+  || disposition_status=$?
+echo "acceptance evidence: $output_dir"
+exit "$disposition_status"
+}
