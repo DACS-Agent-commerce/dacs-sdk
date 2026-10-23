@@ -1,11 +1,10 @@
-import './helpers/d5-isolated-dependencies.mjs';
 import test from 'node:test';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 const { createSellerTransportStore, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
 const buyer = 'did:demos:agent:' + 'a'.repeat(64), seller = 'did:demos:agent:' + 'b'.repeat(64);
 const HOUR = 3600000;
@@ -22,8 +21,8 @@ function world(t, options = {}) {
   const reopen = () => { store?.close(); store = createSellerTransportStore(config); return store; };
   reopen(); t.after(() => store.close());
   const issue = (jobId) => store.issueContextChallenge({ jobId, buyer }, { jobId, buyer }, { maxPerBuyer: 1, maxGlobal: 1, admit: () => time });
-  const count = table => { const db = new DatabaseSync(path, { readOnly: true }); try { return db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n; } finally { db.close(); } };
-  const rows = () => { const db = new DatabaseSync(path, { readOnly: true }); try { return db.prepare('SELECT * FROM peer_context_challenges').all(); } finally { db.close(); } };
+  const count = table => { const db = new DatabaseSync(path, { readonly: true }); try { return db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n; } finally { db.close(); } };
+  const rows = () => { const db = new DatabaseSync(path, { readonly: true }); try { return db.prepare('SELECT * FROM peer_context_challenges').all(); } finally { db.close(); } };
   return { path, issue, rows, reopen, count, now: () => time, get store() { return store; }, advance: ms => { time += ms; }, terminal: (job, state = 'vet-failed') => writeFileSync(states, JSON.stringify({ [job]: state })) };
 }
 
@@ -327,7 +326,7 @@ test('T15 earlier empty job bindings are reclaimed only on successful admission,
   assert.equal(w.count('peer_jobs'), 1);
   const next = w.store.reserve(request(w, 1, { buyer: other }), {});
   assert.equal(next.disposition, 'perform'); assert.equal(w.count('peer_jobs'), 1);
-  const check = new DatabaseSync(w.path, { readOnly: true });
+  const check = new DatabaseSync(w.path, { readonly: true });
   try { assert.equal(check.prepare('SELECT job FROM peer_jobs').get().job, jid('job-1')); } finally { check.close(); }
 });
 
@@ -381,7 +380,7 @@ test('T17 ten thousand retained jobs refuse with one indexed candidate query and
     assert.equal(queries.filter(sql => sql.startsWith('SELECT 1 FROM peer_effects e')).length, 1, 'global legacy check runs once');
     const candidates = queries.filter(sql => sql.startsWith('SELECT j.job FROM peer_jobs j'));
     assert.equal(candidates.length, 1);
-    const db = new DatabaseSync(w.path, { readOnly: true });
+    const db = new DatabaseSync(w.path, { readonly: true });
     try {
       const plan = db.prepare('EXPLAIN QUERY PLAN ' + candidates[0]).all(1).map(row => row.detail).join('\n');
       assert.match(plan, /SEARCH m USING COVERING INDEX peer_effect_jobs_job/);
@@ -415,7 +414,7 @@ test('T18 context capacity uses indexed nonce lookups and stops after enough ter
   });
   assert.ok(queries.length < 60, 'no per-admission SQL statements');
   const query = queries.find(sql => sql.startsWith('SELECT a.job, a.effect'));
-  const db = new DatabaseSync(w.path, { readOnly: true });
+  const db = new DatabaseSync(w.path, { readonly: true });
   try {
     const plan = db.prepare('EXPLAIN QUERY PLAN ' + query).all(w.now() - HOUR, w.now(), w.now() - 60000).map(row => row.detail).join('\n');
     assert.match(plan, /SEARCH n USING INDEX peer_nonces_effect/); assert.doesNotMatch(plan, /SCAN n\b/);
@@ -464,4 +463,102 @@ test('T20 legacy unmapped effects, slot prefixes and transaction references keep
     noMutations(() => assert.throws(() => w.store.reserve(request(w, 'new'), {}), { code: 'peer_job_capacity' }));
     assert.equal(w.count('peer_jobs'), 1);
   }
+});
+
+test('an admission owns every later route by buyer, seller and Listing, independent of the Agreement hash', t => {
+  const w = world(t, { maxRecords: 20 });
+  const admitted = context(w, 0);
+  w.store.finish(w.store.reserve(admitted, contextBody(0), { admit: () => w.now() }), 200, '{}');
+  for (const changed of [{ buyer: other }, { seller: other }, { listingPin: { ...admitted.listingPin, version: 2 } }]) {
+    for (const path of ['/dacs/v1/agreements/proposals', '/dacs/v1/agreements/state', '/dacs/v1/payments', '/dacs/v1/bundles/buyer-copy']) noMutations(() => assert.throws(() => w.store.reserve(request(w, 0, { ...changed, path, nonce: 'hostile', agreementHash: 'f'.repeat(64) }), {}), { code: 'peer_job_conflict' }));
+  }
+  assert.equal(w.store.reserve(request(w, 0, { nonce: 'proposal', agreementHash: 'f'.repeat(64) }), {}).disposition, 'perform');
+});
+
+test('reconciling an interrupted read retains exact nonce bytes and permits a fresh read', t => {
+  const w = world(t, { maxRecords: 20 }), proposal = request(w, 0);
+  w.store.finish(w.store.reserve(proposal, {}), 200, '{}');
+  const read = { ...proposal, path: '/dacs/v1/agreements/state', nonce: 'read' };
+  w.store.reserve(read, {}); w.reopen();
+  const uncertain = w.store.reserve(read, {}), text = '{ "TEST": "snapshot" }';
+  assert.equal(uncertain.disposition, 'uncertain');
+  w.store.reconcile(uncertain, read, 200, text);
+  assert.deepEqual(w.store.reserve(read, {}), { disposition: 'cached', status: 200, text });
+  assert.equal(w.count('peer_effects'), 1); assert.equal(w.count('peer_effect_jobs'), 1);
+  const fresh = w.store.reserve({ ...read, nonce: 'fresh-read' }, {});
+  assert.equal(fresh.disposition, 'perform'); assert.equal(fresh.readOnly, true);
+  w.store.finish(fresh, 200, '{"TEST":"new snapshot"}');
+  assert.deepEqual(w.store.reserve(read, {}), { disposition: 'cached', status: 200, text });
+});
+
+test('two open handles observe lazy admissions, their answers, capacity and unpaid-start counts', t => {
+  const w = world(t, { maxRecords: 20, maxContextRecords: 2 });
+  const second = createSellerTransportStore({ path: w.path, maxRecords: 20, maxContextRecords: 2, now: w.now });
+  t.after(() => second.close());
+  w.store.finish(w.store.reserve(context(w, 0), contextBody(0), { admit: () => w.now() }), 200, '{"TEST":0}');
+  assert.equal(second.contextAdmission(jid('job-0'))?.buyer, buyer);
+  assert.deepEqual(second.contextAnswer(jid('job-0')), { status: 200, text: '{"TEST":0}' });
+  let counted;
+  const reserved = second.reserve(context(w, 1), contextBody(1), { admit: ({ starts }) => {
+    counted = [starts(w.now() - 1), starts(w.now() - 1, buyer), starts(w.now() - 1, other)]; return w.now();
+  } });
+  assert.deepEqual(counted, [1, 1, 0]); second.finish(reserved, 200, '{}');
+  noMutations(() => assert.throws(() => w.store.reserve(context(w, 2), contextBody(2), { admit: () => assert.fail('full capacity reached admission') }), { code: 'peer_context_capacity' }));
+  assert.equal(w.count('peer_context_admissions'), 2);
+});
+
+for (const status of [0, 199, 600, 200.5, '200', NaN]) test(`finish refuses an unsignable status ${status} without changing the journal`, t => {
+  const w = world(t, { maxRecords: 5 }), p = request(w, 0), reservation = w.store.reserve(p, {});
+  noMutations(() => assert.throws(() => w.store.finish(reservation, status, '{}'), { code: 'peer_response_invalid' }));
+  assert.equal(w.store.reserve(p, {}).disposition, 'uncertain');
+  w.store.finish(reservation, 200, '{ "TEST": 1 }');
+  assert.deepEqual(w.store.reserve(p, {}), { disposition: 'cached', status: 200, text: '{ "TEST": 1 }' });
+});
+
+test('retry survives reopen, preserves nonce replay, replaces owners and forbids journal-only new work', t => {
+  const w = world(t, { maxRecords: 20 }), p = request(w, 0), first = w.store.reserve(p, {});
+  w.store.finish(first, 200, '{ "TEST": "pending" }', { retry: true }); w.reopen();
+  assert.deepEqual(w.store.reserve(p, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "pending" }' });
+  const fresh = { ...p, nonce: 'retry' };
+  assert.deepEqual(w.store.reserve(fresh, {}, { journaledOnly: true }), { disposition: 'cached', status: 200, text: '{ "TEST": "pending" }' });
+  const retry = w.store.reserve(fresh, {});
+  assert.equal(retry.disposition, 'perform'); assert.equal(retry.retried, true); assert.notEqual(retry.owner, first.owner);
+  assert.throws(() => w.store.finish(first, 200, '{}'), { code: 'peer_store_conflict' });
+  w.store.finish(retry, 200, '{ "TEST": "done" }');
+  assert.deepEqual(w.store.reserve(fresh, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "done" }' });
+  assert.deepEqual(w.store.reserve(p, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "pending" }' });
+  noMutations(() => assert.throws(() => w.store.reserve(request(w, 1), {}, { journaledOnly: true }), { code: 'peer_delegation_expired' }));
+});
+
+test('uncertain proposals reconcile to complete after restart and keep exact nonce answers', t => {
+  const w = world(t, { maxRecords: 20 }), p = request(w, 0), old = w.store.reserve(p, {});
+  w.store.finish(old, 503, '{"TEST":"unknown"}'); w.reopen();
+  const uncertain = w.store.reserve({ ...p, nonce: 'recover' }, {}), text = '{ "TEST": "reconciled" }';
+  assert.equal(uncertain.disposition, 'uncertain'); w.store.reconcile(uncertain, p, 200, text);
+  assert.deepEqual(w.store.reserve(p, {}), { disposition: 'cached', status: 200, text });
+  assert.deepEqual(w.store.reserve({ ...p, nonce: 'fresh' }, {}), { disposition: 'cached', status: 200, text });
+  assert.throws(() => w.store.reconcile(uncertain, p, 200, '{}'), { code: 'peer_reconciliation_conflict' });
+});
+
+test('uncertain context resumes once with a new owner, fences stale completion, and finishes after reopen', t => {
+  const w = world(t, { maxRecords: 20 }), p = context(w, 0), body = contextBody(0);
+  const old = w.store.reserve(p, body, { admit: () => w.now() });
+  w.store.finish(old, 503, '{"TEST":"interrupted"}'); w.reopen();
+  const uncertain = w.store.reserve({ ...p, nonce: 'resume' }, body), resumed = w.store.resume(uncertain, p);
+  assert.equal(resumed.disposition, 'perform'); assert.equal(resumed.resumed, true); assert.notEqual(resumed.owner, old.owner);
+  assert.throws(() => w.store.resume(uncertain, p), { code: 'peer_reconciliation_conflict' });
+  assert.throws(() => w.store.finish(old, 200, '{}'), { code: 'peer_store_conflict' });
+  assert.throws(() => w.store.reconcile(uncertain, p, 200, '{}'), { code: 'peer_reconciliation_conflict' });
+  const text = '{ "TEST": "resumed" }'; w.store.finish(resumed, 200, text); w.reopen();
+  assert.deepEqual(w.store.reserve(p, body), { disposition: 'cached', status: 200, text });
+  assert.deepEqual(w.store.contextAnswer(p.jobId), { status: 200, text });
+});
+
+
+test('reconciliation of the last interrupted read frees an otherwise empty job binding', t => {
+  const w = world(t, { maxRecords: 20 }), p = request(w, 0), proposal = w.store.reserve(p, {});
+  const read = { ...p, path: '/dacs/v1/agreements/state', nonce: 'read' };
+  w.store.reserve(read, {}); w.store.finish(proposal, 409, '{}', { noEffect: true }); w.reopen();
+  const uncertain = w.store.reserve(read, {}); w.store.reconcile(uncertain, read, 200, '{}');
+  assert.equal(w.count('peer_jobs'), 0); assert.equal(w.count('peer_effect_jobs'), 0);
 });
