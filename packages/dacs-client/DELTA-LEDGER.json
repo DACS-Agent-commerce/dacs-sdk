@@ -1527,6 +1527,27 @@
           "after": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 document public contracts and keep packed checks offline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4",
+          "after": "a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "84b222cd3ec30df147e61cd776534666fd9e75fd",
+          "after": "171253367491218f30989ba8511f92305937f75b"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "c0d259390c30873269d2a1c9b306b8867dcc63b0",
+          "after": "5f2ef3b4e30101b70f88e665ded5485f77764da9"
+        }
+      ]
     }
   ]
 }

@@ -3,6 +3,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+test('every public export declares its input, result and refusal or side effects', () => {
+  const source = readFileSync(new URL('../src/index.mjs', import.meta.url), 'utf8');
+  const exports = source.split('\n').filter(line => line.startsWith('export '));
+  assert.ok(exports.length > 0);
+  for (const line of exports) {
+    const offset = source.indexOf(line), preceding = source.slice(0, offset).trimEnd();
+    assert.match(preceding, /\/\*\*[^]*?(?:returns?|Returns?|constant|Error)[^]*?\*\/$/, line);
+    assert.ok(preceding.endsWith('*/'), line);
+  }
+});
 const ROOT = {
   functions: ['createSqlitePurchaseStore', 'createPurchaseService', 'purchaseNext', 'networkIdentityLabel', 'createProtocolPurchases', 'protocolView', 'usesAgreementContext',
     'usesNativeDemDelivery', 'createDeliveryDeadlineWatch', 'createCoordinateStore', 'createDirectoryClient', 'createListingVerifier',
