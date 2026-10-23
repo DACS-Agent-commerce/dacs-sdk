@@ -66,6 +66,7 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
 }
 
 function summaryAudit(summary, baseline) {
+  if (!validIds(summary.audit?.directAdvisories)) throw new Error("summary has no valid direct-advisory evidence");
   const policy = classifyRegistryAudit(summary.audit?.observedAdvisories, baseline, summary.audit?.directAdvisories ?? []);
   if (JSON.stringify(policy.unlistedAdvisories) !== JSON.stringify(summary.audit?.unlistedAdvisories)) {
     throw new Error("summary advisory classification does not match baseline");
@@ -74,6 +75,7 @@ function summaryAudit(summary, baseline) {
 }
 
 export function registryAuditDriftDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8"))) {
+  if (summary?.schema !== ACCEPTANCE_SUMMARY_SCHEMA) return { exitCode: 3, message: "unexpected acceptance schema" };
   // A run that stopped before its audit was classified has no advisory IDs to
   // compare: report where and why it stopped, not a malformed baseline.
   if (summary?.schema === ACCEPTANCE_SUMMARY_SCHEMA && summary.complete === false) {
@@ -224,6 +226,7 @@ export function candidateIntegrityErrors({ lock, registry, candidates, installed
 
 // npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
 // `Response timeout while trying to fetch` for a body timeout.
+export const FAILURE_CLASSES = ["network", "policy", "functional"];
 const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
 
 // A report-shaped `npm audit --json` document: a result for the audit policy.
@@ -480,12 +483,15 @@ export function runtimeImageInventoryFindings(inventory, lock) {
 // them by rule (see gitIdentity below).
 export function extractPolicyFindings(read) {
   const json = name => JSON.parse(read(name) ?? "null");
-  const exitCode = name => { const text = read(name); return text === undefined ? null : Number(text.trim()); };
+  const exitCode = name => {
+    const text = read(name)?.trim();
+    return typeof text === "string" && /^\d{1,3}$/.test(text) && Number(text) <= 255 ? Number(text) : null;
+  };
   const lock = json("generated-package-lock.json");
   const packages = lock?.packages ?? {};
   const identity = location => ({ version: packages[location]?.version ?? null, integrity: packages[location]?.integrity ?? null });
-  const gitDependencies = (json("dependency-policy.json")?.violations ?? []).map(violation =>
-    ({ location: violation.location, field: violation.field ?? null, value: violation.value, ...identity(violation.location) }));
+  const gitDependencies = json("dependency-policy.json")?.violations?.map(violation =>
+    ({ location: violation.location, field: violation.field ?? null, value: violation.value, ...identity(violation.location) })) ?? null;
   const strictLog = read("engine-strict.log") ?? "";
   let versions = null;
   try { versions = json("engine-versions.json"); } catch { /* unreadable: the scan is incomplete */ }
@@ -553,18 +559,20 @@ export function classifyPolicyChecks(summary, baseline) {
   // The image's package set must be read in full and hold the whole required
   // closure; a package outside it is a production-image finding (above).
   const inventoryRead = inventory?.scanComplete === true && Array.isArray(inventory.missing) &&
-    inventory.missing.length === 0;
-  const sbom = (exitCode, observed, knownProblems) => exitCode === 0 ? "passed" :
+    inventory.missing.length === 0 && Array.isArray(inventory.errors) && inventory.errors.length === 0;
+  const sbom = (exitCode, observed, knownProblems) => exitCode === 0
+    ? (observed?.exitCode === 0 && observed.code === null && Array.isArray(observed.problems) && observed.problems.length === 0 ? "passed" : "blocked") :
     observed?.exitCode === exitCode && observed.code === "ESBOMPROBLEMS" &&
       allListed(observed.problems, knownProblems, sbomIdentity) ? "baseline" : "blocked";
   return {
     registryDependency: gate.registryDependencyPolicyPassed === true
-      ? ((findings.gitDependencies ?? []).length === 0 ? "passed" : "blocked")
+      ? (Array.isArray(findings.gitDependencies) && findings.gitDependencies.length === 0 ? "passed" : "blocked")
       : allListed(findings.gitDependencies, known.gitDependencies, gitIdentity) ? "baseline" : "blocked",
     productionImage: !inventoryRead ? "blocked" : gate.productionImageDependencyPolicyPassed === true
-      ? ((findings.productionImageDependencies ?? []).length === 0 ? "passed" : "blocked")
+      ? (Array.isArray(findings.productionImageDependencies) && findings.productionImageDependencies.length === 0 ? "passed" : "blocked")
       : allListed(findings.productionImageDependencies, known.productionImageDependencies, imageIdentity) ? "baseline" : "blocked",
-    engineStrict: gate.engineStrictExitCode === 0 ? "passed" :
+    engineStrict: gate.engineStrictExitCode === 0
+      ? (engine?.exitCode === 0 && engine.code === null && engine.scanComplete === true && Array.isArray(engine.violations) && engine.violations.length === 0 ? "passed" : "blocked") :
       engine?.exitCode === gate.engineStrictExitCode && engine.code === "EBADENGINE" && engine.scanComplete === true &&
         Array.isArray(engine.violations) && engine.violations.some(violation => violation.package === engine.reportedPackage) &&
         allListed(engine.violations, known.engineViolations, engineIdentity) ? "baseline" : "blocked",
@@ -611,6 +619,7 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
     return { exitCode: 1, failureClass, message: `registry/container acceptance stopped at stage ` +
       `${String(summary.failedStage)} (${failureClass} failure)` };
   }
+  if (summary.complete !== true) return { exitCode: 1, failureClass: "functional", message: "acceptance is not complete" };
   if (summary.docker?.policy?.schema !== RUNTIME_IMAGE_POLICY_SCHEMA ||
       summary.securityGate?.findings?.schema !== POLICY_FINDINGS_SCHEMA) {
     return { exitCode: 1, failureClass: "functional",
@@ -627,7 +636,7 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   }
   let policy;
   try { policy = summaryAudit(summary, baseline); }
-  catch (error) { return { exitCode: 3, failureClass: "policy", message: String(error) }; }
+  catch (error) { return { exitCode: 3, failureClass: "policy", checks: { audit: "blocked" }, message: String(error) }; }
   const gate = summary.securityGate;
   const checks = classifyPolicyChecks(summary, baseline);
   const observed = policy.observedAdvisories.length;
@@ -654,7 +663,7 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   if (named("passed").length === Object.keys(states).length && gate.passed === true) {
     return { exitCode: 0, failureClass: null, message: "registry/container acceptance passed", checks: states, ...policy };
   }
-  if (named("blocked").length === 0) {
+  if (named("blocked").length === 0 && gate.passed === false && (named("baseline").length > 0 || named("unlisted").length > 0)) {
     return { exitCode: 4, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed; " +
       "production publication remains blocked" +
       (named("baseline").length ? ` by #191 baseline findings (${named("baseline").join(", ")})` : "") +
