@@ -151,7 +151,7 @@ export interface DacsPayDemPaymentNoticeV1 {
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
-      settlement: Readonly<PayDemReconciledSettlement>;
+      settlement: Readonly<PayDemReconciledSettlement & { execution: "executed" }>;
     }
   | { status: "absent"; absenceProofHash: string }
   | { status: "indeterminate"; reasonCode: string; retryAt?: number }
