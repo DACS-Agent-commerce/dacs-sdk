@@ -5,8 +5,8 @@
 import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { admitRawJson, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import DatabaseSync from 'better-sqlite3';
+import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 
@@ -44,8 +44,9 @@ function requireJobId(jobId) {
   if (!isCanonicalJobId(jobId)) fail('peer_job_invalid', 409);
 }
 
+/** Transport refusal with a stable code, HTTP status and optional original cause. */
 export class SellerTransportError extends Error {
-  constructor(code, status = 401) { super(code); this.code = code; this.status = status; }
+  constructor(code, status = 401, options) { super(code, options); this.code = code; this.status = status; }
 }
 
 function pinValid(pin) {
@@ -65,6 +66,7 @@ function payloadValid(p, kind) {
     (kind !== 'response' || (HASH.test(p.requestHash) && uint(p.status) && p.status >= 200 && p.status <= 599));
 }
 
+/** Return the exact envelope signing bytes; throw on malformed payloads. */
 export function sellerTransportSigningBytes(payload) {
   if (!payloadValid(payload, payload?.kind)) fail('peer_envelope_invalid');
   return Buffer.from(`${DOMAIN}${canonicalize(payload)}`, 'utf8');
@@ -92,7 +94,11 @@ function verifiedHeader(header, kind, principal, { requireDelegation = false, on
   const bytes = Buffer.from(header, 'base64url');
   if (bytes.toString('base64url') !== header) fail('peer_envelope_invalid');
   let envelope;
-  try { envelope = admitRawJson(bytes); } catch { fail('peer_envelope_invalid'); }
+  try { envelope = admitRawJson(bytes); } catch (cause) {
+    const error = new SellerTransportError('peer_envelope_invalid', 401, { cause });
+    if (cause instanceof RawJsonAdmissionError) { error.admissionCode = cause.code; error.admissionStage = cause.stage; }
+    throw error;
+  }
   const delegated = kind === 'request' && requireDelegation && Object.hasOwn(envelope ?? {}, 'delegation');
   if (!keys(envelope, ['payload', 'signature', ...(delegated ? ['delegation'] : [])]) || !payloadValid(envelope.payload, kind)) fail('peer_envelope_invalid');
   if (requireDelegation && !delegated) fail('peer_delegation_required');
@@ -110,6 +116,7 @@ function publicKeyFor(raw) {
   return createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(raw, 'hex')]), format: 'der', type: 'spki' });
 }
 
+/** Return delegation signing bytes; throw on invalid scope or lifetime. */
 export function sellerSessionDelegationSigningBytes(payload) {
   if (!keys(payload, ['version', 'kind', 'buyer', 'sessionPublicKey', 'seller', 'listingPin', 'jobId', 'notBefore', 'expiresAt']) ||
       payload.version !== '1' || payload.kind !== 'seller-session-delegation' || typeof payload.buyer !== 'string' || typeof payload.seller !== 'string' || !CLAIM.test(payload.buyer) || !CLAIM.test(payload.seller) ||
@@ -126,6 +133,7 @@ function delegationSignatureBytes(signature) {
   try { return decodeSignature(signature); } catch { fail('peer_delegation_signature_invalid'); }
 }
 
+/** Return canonical base64url wallet signature bytes; throw on malformed input. */
 export function normalizeSellerSessionDelegationSignature(signature) {
   return delegationSignatureBytes(signature).toString('base64url');
 }
@@ -133,6 +141,7 @@ export function normalizeSellerSessionDelegationSignature(signature) {
 // time: also require notBefore <= time < expiresAt. allowExpired keeps only
 // the notBefore check; it is for readback of already journaled effects (see
 // docs/SELLER-SESSION-DELEGATION.md), never for starting a new seller effect.
+/** Authenticate delegation scope and optional time bounds; return its payload or throw. */
 export function verifySellerSessionDelegation(delegation, { buyer, seller, listingPin, jobId, time, deadline, allowExpired = false } = {}) {
   if (!keys(delegation, ['payload', 'signature'])) fail('peer_delegation_invalid');
   const p = delegation.payload, bytes = sellerSessionDelegationSigningBytes(p);
@@ -158,6 +167,7 @@ const effectIdentity = (p) => sha256Hex(canonicalize({ ...requestIdentity(p), me
 export const sellerTransportEffect = effectIdentity;
 
 function validateBody(p, body) {
+  if (!record(body)) fail('peer_body_invalid', 409);
   if (p.path === SELLER_CONTEXT_CHALLENGE_PATH) {
     if (!keys(body, ['scope']) || !keys(body.scope, SELLER_CONTEXT_SCOPE_KEYS.filter(k => k !== 'buyerBundleHash')) ||
         body.scope.jobId !== p.jobId || body.scope.buyer !== p.buyer || body.scope.seller !== p.seller ||
@@ -190,27 +200,12 @@ function validateBody(p, body) {
   if (p.path === PAYMENT && (body.payerPayingKey !== p.buyer || typeof body.txHash !== 'string' || !/^(?:0x)?[0-9a-fA-F]{64}$/.test(body.txHash))) fail('peer_payment_mismatch', 409);
 }
 
-// A host-local durable intent journal. No private key, wallet token or signing
-// callback is persisted. Atomic intent precedes agent invocation. A pending or
-// ambiguous effect never expires into permission to run it again. Completed
-// responses can be re-signed for a fresh nonce after a process restart. This
-// journal does not reconstruct the seller agent's protocol/session stores.
-//
-// The context step (seller context route) adds one pre-Agreement
-// admission record per started job, written in the same transaction as the
-// effect it starts: job, buyer, seller, Listing pin, context scope hash, that
-// effect and the seller's admission time. Job ownership and the unpaid-start
-// limits are read from these records. The table is created by the first
-// context request the journal commits (inside that transaction), so a seller
-// without the route keeps its exact tables and classify writes nothing.
+// Durable intent precedes effects; ambiguous work stays fenced across restart.
+// Lazy context admissions own pre-Agreement jobs and their unpaid-start limits.
 const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (job TEXT PRIMARY KEY, buyer TEXT NOT NULL, seller TEXT NOT NULL,
   listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL)`;
 
-// contextSessionState({jobId}) reads trusted seller-owned durable state,
-// synchronously and by job regardless of the requesting buyer. Retain terminal
-// state after transport cleanup so another buyer cannot reopen that job.
-// Unknown, missing or non-terminal sessions retain their challenges. D12 must
-// supply this callback; challenge expiry alone never proves session termination.
+// Trusted seller state retains terminal ownership; unknown state retains challenges.
 const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
 export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now() }) {
@@ -258,12 +253,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, nonce.slice(0, nonce.lastIndexOf(':')), time, time + 60000);
     }
   });
-  let admissions = Boolean(get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'peer_context_admissions'"));
+  const admissions = () => Boolean(get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'peer_context_admissions'"));
   // Legacy slots identify mutating effects. Legacy reads have no job identity;
   // any such unmapped effect conservatively prevents job-row reclamation.
   transaction(() => {
     run("INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, substr(slot, 1, instr(slot, ':') - 1) FROM peer_slots WHERE instr(slot, ':') > 0");
-    if (admissions) run('INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, job FROM peer_context_admissions');
+    if (admissions()) run('INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, job FROM peer_context_admissions');
   });
   function reclaimableJobs(needed, jobId) {
     // One global legacy check, then indexed anti-joins rather than one set of
@@ -275,14 +270,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
-      ${admissions ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
+      ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
       LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
   }
   // Plan reclamation with reads only. Full-capacity refusals must execute no
   // mutations, even ones a transaction could roll back. Only terminal context
   // effects may leave retention; unresolved effects and live requests fence it.
   function reclaimableContexts(time) {
-    if (!admissions) return [];
+    if (!admissions()) return [];
     const needed = Math.max(0, get('SELECT COUNT(*) AS n FROM peer_context_admissions').n - maxContextRecords + 1);
     if (!needed) return [];
     const rows = [];
@@ -330,9 +325,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         }
         if (reclaimable.length < needed) fail('context_challenge_capacity', 503);
         const retired = reclaimableContexts(time);
-        if ((admissions ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
+        if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
         if (typeof admit !== 'function') fail('peer_context_unadmitted', 503);
-        admit({ starts: (since, buyer) => admissions ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0 });
+        admit({ starts: (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0 });
         for (const row of reclaimable) run('DELETE FROM peer_context_challenges WHERE nonce = ?', row.nonce);
         const sessionNonce = randomBytes(32).toString('hex'), expiresAt = time + 60000;
         run('INSERT INTO peer_context_challenges VALUES (?, ?, ?, ?, ?, ?, 0)', sessionNonce, request.jobId, request.buyer, hash, time, expiresAt);
@@ -382,8 +377,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (body.scope.jobId !== p.jobId) fail('peer_job_mismatch', 409);
       }
       // The admission table is created inside this transaction; it exists only after a commit.
-      const creates = p.path === CONTEXT && !admissions;
       const reservation = transaction(() => {
+        const creates = p.path === CONTEXT && !admissions();
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
         const previous = get('SELECT * FROM peer_nonces WHERE nonce = ?', nonce);
@@ -406,8 +401,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const parties = (value) => { const { agreementHash, ...rest } = value; return canonicalize(rest); };
         if (job && (contextStep ? parties(JSON.parse(job.context)) !== parties(requestIdentity(p)) : job.context !== context)) fail('peer_job_conflict', 409);
         // Before the Agreement the job belongs to the buyer of its admission record.
-        const admitted = contextStep && admissions ? get('SELECT buyer FROM peer_context_admissions WHERE job = ?', p.jobId) : null;
-        if (admitted && admitted.buyer !== p.buyer) fail('peer_job_conflict', 409);
+        const admitted = admissions() ? get('SELECT buyer, seller, listing_pin FROM peer_context_admissions WHERE job = ?', p.jobId) : null;
+        if (admitted && (admitted.buyer !== p.buyer || admitted.seller !== p.seller || admitted.listing_pin !== canonicalize(p.listingPin))) fail('peer_job_conflict', 409);
         const effectKey = effectIdentity(p);
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.
@@ -436,7 +431,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (contextStep) {
           if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
-          if ((admissions ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
+          if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
         }
         // Only expired completed/no-effect nonces are reclaimable. Unknown or
         // pending effects remain fenced, even after request expiry.
@@ -451,7 +446,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (emptyJobs.length < neededJobs) fail('peer_job_capacity', 503);
         let admittedAt = null;
         if (contextStep && !existing) {
-          const starts = (since, buyer) => admissions ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0;
+          const starts = (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0;
           admittedAt = typeof admit === 'function' ? admit({ starts }) : null;
           if (!uint(admittedAt)) fail('peer_context_unadmitted', 503);
         }
@@ -485,7 +480,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (!READ_ROUTES.has(p.path) && !occupied) run('INSERT INTO peer_slots VALUES (?, ?)', slot, effectKey);
         return { disposition: 'perform', effectKey, owner, readOnly: READ_ROUTES.has(p.path) };
       }, dryRun);
-      if (creates && !dryRun && reservation.disposition === 'perform') admissions = true;
       return reservation;
     },
     // Read-only: 'start' when reserve would start new work for this request,
@@ -500,14 +494,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
     contextAdmission(jobId) {
       requireJobId(jobId);
-      const row = admissions ? get('SELECT * FROM peer_context_admissions WHERE job = ?', jobId) : null;
+      const row = admissions() ? get('SELECT * FROM peer_context_admissions WHERE job = ?', jobId) : null;
       return row ? { jobId: row.job, buyer: row.buyer, seller: row.seller, listingPin: JSON.parse(row.listing_pin), scopeHash: row.scope_hash, effect: row.effect, admittedAt: row.admitted_at } : null;
     },
     // The journaled answer of a job's completed context step, or null:
     // {status, text} of its admission record's effect once that is complete.
     contextAnswer(jobId) {
       requireJobId(jobId);
-      const row = admissions ? get("SELECT e.status, e.response FROM peer_context_admissions a JOIN peer_effects e ON e.effect = a.effect WHERE a.job = ? AND e.state = 'complete'", jobId) : null;
+      const row = admissions() ? get("SELECT e.status, e.response FROM peer_context_admissions a JOIN peer_effects e ON e.effect = a.effect WHERE a.job = ? AND e.state = 'complete'", jobId) : null;
       return row ? { status: row.status, text: row.response } : null;
     },
     // noEffect: a definite answer that started nothing (its rows go). retry:
@@ -515,6 +509,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // of a claim whose work the agent retains); its effect stays bound to its
     // slot and runs again on a fresh nonce (reserve). Otherwise complete.
     finish(reservation, status, text, { noEffect = false, retry = false } = {}) {
+      if (!uint(status) || status < 200 || status > 599) fail('peer_response_invalid', 503);
       if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_response_too_large', 503);
       if (retry && (noEffect || reservation.readOnly || !uint(status))) fail('peer_store_conflict', 503);
       transaction(() => {
@@ -524,7 +519,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (noEffect || reservation.readOnly) {
           const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
           // A definite no-effect answer started nothing: its admission record goes too.
-          if (admissions) run('DELETE FROM peer_context_admissions WHERE effect = ?', reservation.effectKey);
+          if (admissions()) run('DELETE FROM peer_context_admissions WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_slots WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_transactions WHERE effect = ?', reservation.effectKey);
@@ -558,14 +553,16 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
             !current || current.owner !== reservation.owner || !['pending', 'uncertain'].includes(current.state) ||
             // The context step is bound by its admission record, the other steps by the job's Agreement row.
-            (request.path === CONTEXT ? !admissions || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
+            (request.path === CONTEXT ? !admissions() || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
               : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
         run('UPDATE peer_nonces SET status = ?, response = ? WHERE effect = ? AND (response IS NULL OR status >= 500)', status, text, reservation.effectKey);
-        if (noEffect) {
+        if (noEffect || READ_ROUTES.has(request.path)) {
+          const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_slots WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_transactions WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
+          if (identity && reclaimableJobs(1, identity.job).length) run('DELETE FROM peer_jobs WHERE job = ?', identity.job);
           return;
         }
         run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : 'complete', status, text, reservation.effectKey);
@@ -582,7 +579,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       return transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (request.path !== CONTEXT || reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
-            !current || current.owner !== reservation.owner || current.state !== 'uncertain' || !admissions ||
+            !current || current.owner !== reservation.owner || current.state !== 'uncertain' || !admissions() ||
             get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey) fail('peer_reconciliation_conflict', 503);
         const owner = randomBytes(24).toString('hex');
         run('UPDATE peer_effects SET owner = ?, state = ?, status = NULL, response = NULL WHERE effect = ?', owner, 'pending', reservation.effectKey);
@@ -594,6 +591,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   };
 }
 
+/** Create request validation and response signing over a supplied store; throw on invalid configuration. */
 export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = 60000, requireDelegation = false }) {
   checkSigner(sellerSigner);
   if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > 60000) throw new Error('seller transport configuration is invalid');
@@ -605,7 +603,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   const guardedStore = Object.freeze({
     bind: (value) => store.bind(value),
     issueContextChallenge: (request, ...args) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.issueContextChallenge(request, ...args),
-    attemptContextPresentation: (...args) => store.attemptContextPresentation(...args),
+    attemptContextPresentation: (request, ...args) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.attemptContextPresentation(request, ...args),
     reserve: (request, body, options = {}) => store.reserve(request, body, readbackOnly.has(request) ? { ...options, journaledOnly: true } : options),
     ...(typeof store.classify === 'function' ? { classify: (request, body, options = {}) => store.classify(request, body, readbackOnly.has(request) ? { ...options, journaledOnly: true } : options) } : {}),
     ...(typeof store.contextAdmission === 'function' ? { contextAdmission: (jobId) => store.contextAdmission(jobId) } : {}),
@@ -633,7 +631,6 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       requireJobId(request?.jobId);
       if (request.seller !== sellerSigner.claim) fail('peer_audience_wrong');
       if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
-      onAuthenticatedBody?.();
       const time = now();
       // An expired retry can follow a previously completed effect. It is a
       // timeout/unknown answer, never proof that the operation was refused.
@@ -659,6 +656,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
           if (request.expiresAt > delegation.payload.expiresAt) fail('peer_delegation_expired', 408);
         } else readbackOnly.add(request);
       }
+      onAuthenticatedBody?.();
     },
     async responseHeader(request, status, text) {
       requireJobId(request?.jobId);
@@ -671,6 +669,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
 // A delegated app supplies only its session signer and the wallet-signed
 // public delegation. Legacy fixtures may supply their own buyer signer.
 // resolveJob comes from the approved Agreement, never an HTTP response.
+/** Create signed requests and bound response verification; throw on invalid configuration. */
 export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, delegation, seller, resolveJob, now = () => Date.now(), lifetimeMs = 30000, nonce = () => randomBytes(24).toString('base64url') }) {
   const signing = sessionSigner ?? buyerSigner;
   checkSigner(signing);
@@ -681,6 +680,7 @@ export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, de
   if (!CLAIM.test(seller) || seller === buyer || typeof resolveJob !== 'function' || !uint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > 60000) throw new Error('buyer transport configuration is invalid');
   return {
     async request(path, body, text) {
+      if (!record(body)) fail('peer_body_invalid', 409);
       const jobId = [CONTEXT, SELLER_CONTEXT_CHALLENGE_PATH].includes(path) ? body.scope?.jobId : body.transportIdentity?.jobId ?? body.jobId;
       requireJobId(jobId);
       const context = clone(await resolveJob(jobId));
