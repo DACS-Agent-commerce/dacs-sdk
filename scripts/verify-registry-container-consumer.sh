@@ -16,7 +16,7 @@ case "$output_dir" in
   /*) ;;
   *) output_dir="$repo_root/$output_dir" ;;
 esac
-if [ -e "$output_dir" ]; then
+if [ -e "$output_dir" ] || [ -L "$output_dir" ]; then
   echo "output directory already exists: $output_dir" >&2
   exit 2
 fi
@@ -31,10 +31,14 @@ stage=preflight
 for command in curl docker npm node; do
   command -v "$command" >/dev/null
 done
-docker compose version >/dev/null
 source "$repo_root/scripts/bounded-http.sh"
 
 source "$repo_root/scripts/bounded-transport.sh"
+# Shell daemon calls, including cleanup, share the command deadline.
+docker() {
+  run_bounded docker "$@" 2> >(tee -a "${registry_log:-/dev/null}" >&2)
+}
+docker compose version >/dev/null
 
 temp_parent=/tmp
 if [ -n "${RUNNER_TEMP-}" ]; then
@@ -63,10 +67,11 @@ runtime_image="dacs-one-click-acceptance:$suffix"
 registry_started=0
 network_started=0
 image_started=0
+output_reserved=0
 
 cleanup() {
   local status=$?
-  local evidence_exported=1
+  local evidence_exported=$output_reserved
   # A failed evidence write must not skip the Docker cleanup below or replace
   # the original exit status.
   set +e
@@ -79,33 +84,34 @@ cleanup() {
       consumer-physical-sbom.err consumer-physical-sbom.exit-code engine-strict.log \
       engine-strict.exit-code engine-versions.json; do
       if [ -f "$consumer_root/$name" ]; then
-        cp "$consumer_root/$name" "$artifact_stage/"
+        cp "$consumer_root/$name" "$artifact_stage/" || evidence_exported=0
       fi
     done
     for name in package.json package-lock.json; do
       if [ -f "$consumer_root/one-click-agent/$name" ]; then
-        cp "$consumer_root/one-click-agent/$name" "$artifact_stage/generated-$name"
+        cp "$consumer_root/one-click-agent/$name" "$artifact_stage/generated-$name" || evidence_exported=0
       fi
     done
     for name in release-provenance.json SHA256SUMS; do
       if [ -f "$release_set/$name" ]; then
-        cp "$release_set/$name" "$artifact_stage/"
+        cp "$release_set/$name" "$artifact_stage/" || evidence_exported=0
       fi
     done
-    printf '%s\n' "$status" > "$artifact_stage/acceptance.exit-code"
+    printf '%s\n' "$status" > "$artifact_stage/acceptance.exit-code" || evidence_exported=0
     # A run that stopped before its summary records why: network, policy or
     # functional, with the same classification as a log annotation.
     if [ "$status" -ne 0 ] && [ ! -f "$artifact_stage/acceptance-summary.json" ]; then
       node "$repo_root/scripts/registry-container-disposition.mjs" --failure-summary \
-        "$artifact_stage" "$stage" "$status"
+        "$artifact_stage" "$stage" "$status" || evidence_exported=0
     fi
-    if mv -T -- "$artifact_stage" "$output_dir"; then
+    if [ "$output_reserved" -eq 1 ] && mv -T -- "$artifact_stage" "$output_dir"; then
+      registry_log="$output_dir/registry.log"
       echo "partial acceptance evidence: $output_dir" >&2
     else
-      echo "could not export evidence; retained at $acceptance_root" >&2
       evidence_exported=0
     fi
   fi
+  if [ "$evidence_exported" -eq 0 ]; then echo "could not completely export evidence; retained at $acceptance_root" >&2; fi
   if [ "$registry_started" -eq 1 ]; then
     docker rm --force "$registry_container" >/dev/null 2>&1 || true
   fi
@@ -122,6 +128,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# mkdir reserves the destination atomically before any run can export to it.
+mkdir -- "$output_dir"
+output_reserved=1
 
 # The runner supplies bash, curl, Docker and Compose; record their versions
 # with the evidence. A query that fails records its error and does not stop
@@ -204,8 +213,9 @@ registry_image=verdaccio/verdaccio@sha256:fcb86134563534e2f634752e6c6c3edcdb7824
 consumer_image=node:20.19.1-bookworm-slim@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d
 pull_bounded --quiet "$registry_image" 2>&1 | tee -a "$registry_log"
 pull_bounded --quiet "$consumer_image" 2>&1 | tee -a "$registry_log"
-docker network create "$registry_network" >/dev/null
 network_started=1
+docker network create "$registry_network" >/dev/null
+registry_started=1
 docker run --detach \
   --name "$registry_container" \
   --network "$registry_network" \
@@ -213,8 +223,6 @@ docker run --detach \
   --volume "$registry_config:/verdaccio/conf/config.yaml:ro" \
   "$registry_image" \
   2>&1 >/dev/null | tee -a "$registry_log" >&2
-registry_started=1
-
 host_port=$(docker inspect --format \
   '{{(index (index .NetworkSettings.Ports "4873/tcp") 0).HostPort}}' \
   "$registry_container")
@@ -324,7 +332,8 @@ run_bounded docker run --rm \
     printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
     test "$tests_status" -eq 0
     doctor_status=0
-    npm run --silent dacs:doctor -- --json > /work/doctor.json 2> /work/doctor.log || doctor_status=$?
+    DACS_DEPLOYMENT=local DACS_SELLER_PUBLIC_BASE_URL=https://seller.example/engage \
+      npm run --silent dacs:doctor -- --json > /work/doctor.json 2> /work/doctor.log || doctor_status=$?
     printf "%s\n" "$doctor_status" > /work/doctor.exit-code
     test "$doctor_status" -eq 5
     audit_status=0
@@ -387,20 +396,19 @@ env \
   DACS_SELLER_EVM_SECRET_FILE="$compose_inputs/seller-evm" \
   DACS_X402_LISTING_DRAFT_FILE="$compose_inputs/listing-x402.json" \
   DACS_PAY_DEM_LISTING_DRAFT_FILE="$compose_inputs/listing-pay-dem.json" \
-  docker compose --env-file /dev/null --file "$project/compose.yaml" config \
+  node "$bounded_support/bounded-command.mjs" "$COMMAND_TIMEOUT_SECONDS" 1 docker compose --env-file /dev/null --file "$project/compose.yaml" config \
     > "$artifact_stage/compose.rendered.yaml"
 
 stage=image-build
 # BuildKit reports progress and npm errors on stderr; keep both in the log.
 node scripts/bounded-build.mjs "$project"
+image_started=1
 run_bounded docker build \
   --file "$project/Dockerfile.acceptance" \
   "${build_network_args[@]}" \
   --tag "$runtime_image" \
   "$project" \
   2>&1 | tee "$artifact_stage/docker-build.log"
-image_started=1
-
 stage=image-policy
 
 docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"
@@ -643,12 +651,13 @@ fs.writeFileSync(
 })().catch(error => { console.error(error); process.exitCode = 1; });
 NODE
 
-# Publish evidence without nesting under an earlier completed result.
-if [ -e "$output_dir" ] || [ -L "$output_dir" ]; then
+# Publish evidence only into the directory this run reserved.
+if [ "$output_reserved" -ne 1 ] || [ ! -d "$output_dir" ] || [ -L "$output_dir" ]; then
   echo "output directory already exists: $output_dir" >&2
   exit 2
 fi
 mv -T -- "$artifact_stage" "$output_dir"
+registry_log="$output_dir/registry.log"
 disposition_status=0
 # --record adds the disposition and failure class to the summary.
 node scripts/registry-container-disposition.mjs --record "$output_dir/acceptance-summary.json" \
