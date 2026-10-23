@@ -660,5 +660,33 @@
       "packages/dacs-client/test/store-atomicity.test.mjs",
       "packages/dacs-client/test/store-host-boundary.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 04 inject buyer seams behind the action hold",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "packages/dacs-client/src/purchase-state-schema.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs",
+      "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+      "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+      "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+      "packages/dacs-client/test/purchase-executed-only.test.mjs",
+      "packages/dacs-client/test/purchase-integrity.test.mjs",
+      "packages/dacs-client/test/purchase-review-races.test.mjs",
+      "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "packages/dacs-client/test/sweep-contracts.test.mjs"
+    ]
   }
 ]

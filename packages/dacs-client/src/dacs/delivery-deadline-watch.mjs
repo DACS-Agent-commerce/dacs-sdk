@@ -1,4 +1,4 @@
-import { transaction } from '../seams/purchase-store-not-wired.mjs';
+import { purchaseStore } from '../seams/purchase-store-not-wired.mjs';
 import { usesNativeAgreementPayment } from './native-agreement-payment-consumer.mjs';
 
 export const DELIVERY_DEADLINE_SWEEP_MS = 5 * 60 * 1000;
@@ -18,9 +18,9 @@ export function deliveryDeadlineView(operation, { now = () => Date.now(), enable
   const prefix = `The delivery deadline was ${deadlineIso} (${Math.floor(pastDueMs / 1000)} seconds ago).`;
   const overdue = stored?.overdue, later = stored?.laterDelivery;
   let message;
-  if (overdue) message = `${prefix} When this plugin checked at ${new Date(overdue.checkedAt).toISOString()}, it found no Deliverable from the seller on chain. Demos can't prove a record is absent, so this is the plugin's own observation, not a recorded fault. Nothing has been refunded. Do not pay again.`;
-  else if (pastDueMs > 0) message = verifiedDelivery(p) ? `${prefix} Delivery is verified.` : `${prefix} Delivery is not confirmed yet; verify_deal checks the chain again.`;
-  const deliveryMessage = later ? (later.deliveredAt <= deadline
+  if (overdue) message = `${prefix} The host's local report at ${validDeadline(overdue.checkedAt) ? new Date(overdue.checkedAt).toISOString() : 'an unavailable historical time'} says no Deliverable from the seller was present. Demos can't prove a record is absent, so this remains a host observation, not a recorded fault. Nothing has been refunded. Do not pay again.`;
+  else if (pastDueMs > 0) message = verifiedDelivery(p) ? `${prefix} Delivery is verified.` : `${prefix} Delivery is not confirmed yet. Public verify_deal reads the payment transfer only; delivery checking remains held.`;
+  const deliveryMessage = later ? (!validDeadline(later.deliveredAt) ? 'The historical delivery time is unavailable.' : later.deliveredAt <= deadline
     ? `A Deliverable was verified later, and its ${later.deliveredAtSource} delivery time is within the deadline: the earlier check had not seen it yet.`
     : `A Deliverable was verified after the deadline (${later.deliveredAtSource} time ${new Date(later.deliveredAt).toISOString()}). The earlier observation stays recorded.`) : undefined;
   return { deadline, deadlineIso, pastDueMs, deliveryVerified: Boolean(verifiedDelivery(p)),
@@ -32,7 +32,8 @@ const defaultTimer = {
   after: (run, ms) => setTimeout(run, ms), cancelAfter: clearTimeout,
 };
 
-export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = false, now = () => Date.now(), logger, timer = defaultTimer }) {
+export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = false, now = () => Date.now(), logger, timer = defaultTimer, store }) {
+  const { transaction } = purchaseStore(store);
   let handle = null, stopped = false, running = null, cursor = '', checkDelivery;
   // Select a bounded page of plausible rows; all authority gates are repeated
   // in memory, and again inside the observation transaction.
@@ -62,12 +63,13 @@ export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = fa
     if (!enabled || stopped || !readback?.notPresent || readback.delivery?.status !== 'absent') return operation;
     return transaction(db, () => {
       const current = ops.get(operation.accountId, operation.id), p = current?.state?.protocol;
-      const deadline = deadlineOf(current ?? {}), checkedAt = readback.checkedAt;
+      const deadline = deadlineOf(current ?? {}), checkedAt = readback.checkedAt, clock = now();
       if (!eligible(current) || p.deliveryDeadline?.overdue || verifiedDelivery(p)
         || p.agreement.hash !== operation.state.protocol.agreement.hash
-        || !Number.isSafeInteger(checkedAt) || checkedAt <= deadline + DELIVERY_DEADLINE_GRACE_MS) return current ?? operation;
+        || !validDeadline(clock) || !validDeadline(checkedAt) || checkedAt > clock
+        || checkedAt <= deadline + DELIVERY_DEADLINE_GRACE_MS) return current ?? operation;
       const overdue = { deadline, checkedAt, read: 'not-present', disposition: 'indeterminate', obligatedParty: 'seller',
-        seller: p.agreement.terms.seller, authority: 'local-observation' };
+        seller: p.agreement.terms.seller, authority: 'local-observation', source: 'host-supplied' };
       return ops.transition(current.id, current.status, current.status, { state: { protocol: { ...p, deliveryDeadline: { overdue } } },
         event: 'protocol_delivery_deadline_overdue', data: overdue });
     });
