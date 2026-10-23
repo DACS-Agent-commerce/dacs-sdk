@@ -502,6 +502,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 track cached host statements before transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
+| D11 | fix(client): D11 reconcile adapter initialization merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | eb7c37692bdd5da4ac476e6791a35172f404212e |
 
 ## Complete commit and file inventory
 
@@ -1194,6 +1196,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
