@@ -7,11 +7,8 @@
 //  - a wallet signs the raw UTF-8 bytes of a message and answers the 64-byte
 //    signature as canonical base64url, or as hex behind any number of "0x"
 //    prefixes, or as base64url behind them.
-import { ed25519Verify, publicKeyFromRaw, isCanonicalBase64Url } from '@kynesyslabs/dacs';
+import { ed25519Verify, publicKeyFromRaw, isCanonicalBase64Url, parseDemosAgentClaimReference } from '@kynesyslabs/dacs';
 
-// Only the `did` scheme is read without case; `demos:agent:` is case-sensitive
-// (DACS-1 §6.3.1).
-const CLAIM_PREFIX = /^[dD][iI][dD]:demos:agent:/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const BASE64URL_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 
@@ -28,12 +25,11 @@ export function claimForAddress(address) {
   return `did:demos:agent:${normalizeDemosAddress(address).slice(2)}`;
 }
 
-// The prefix is matched without case; the key digits must already be lower-case.
+// Resolve canonical advisory parameters without including them in identity.
 export function addressForClaim(claim) {
-  const text = String(claim);
-  const key = CLAIM_PREFIX.test(text) ? text.slice('did:demos:agent:'.length) : '';
-  if (!HEX64.test(key)) throw new DemosClaimFormatError('claim must be did:demos:agent:<64 lowercase hex>');
-  return `0x${key}`;
+  const parsed = parseDemosAgentClaimReference(claim);
+  if (!parsed) throw new DemosClaimFormatError('claim must be did:demos:agent:<64 lowercase hex> with canonical parameters');
+  return `0x${Buffer.from(parsed.publicKey).toString('hex')}`;
 }
 
 // CORE §B.7 SIG-6: conforming DACS verification never normalizes legacy
@@ -51,7 +47,8 @@ export function decodeSignature(value) {
     const bytes = Buffer.from(text, 'base64url');
     if (bytes.length === 64 && bytes.toString('base64url') === text) return bytes;
   }
-  const unprefixed = text.replace(/^(?:0x)+/i, '');
+  let unprefixed = text;
+  while (unprefixed.length > 86 && /^0x/i.test(unprefixed)) unprefixed = unprefixed.slice(2);
   if (/^[0-9a-fA-F]{128}$/.test(unprefixed)) return Buffer.from(unprefixed, 'hex');
   if (BASE64URL_SIGNATURE.test(unprefixed)) {
     const bytes = Buffer.from(unprefixed, 'base64url');
@@ -62,8 +59,9 @@ export function decodeSignature(value) {
 
 // True only for a valid Ed25519 signature by `address` over the exact UTF-8
 // bytes of `message`. Malformed input is false; this never throws.
-export function verifyDemosSignature({ address, message, signature }) {
+export function verifyDemosSignature(input) {
   try {
+    const { address, message, signature } = input;
     const key = publicKeyFromRaw(Buffer.from(normalizeDemosAddress(address).slice(2), 'hex'));
     return ed25519Verify(Buffer.from(message, 'utf8'), decodeSignature(signature), key);
   } catch {
