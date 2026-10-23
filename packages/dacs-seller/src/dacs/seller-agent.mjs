@@ -319,9 +319,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   };
   const hasSettlementCredit = (id, jobId) => (!settlementJobs.has(id) || (settlementJobs.get(id).size === 1 && settlementJobs.get(id).has(jobId))) && (!durable || durable.settlementJob(id) === jobId);
   const assertSettlementCredit = (jobId) => {
-    const session = sessions.get(jobId) ?? durable?.loadSession(jobId);
-    const id = session?.payment?.settlementId ?? session?.paymentWork?.intake?.settlementId ?? session?.nativeEvidenceWork?.intake?.settlementId;
-    if (id && !hasSettlementCredit(id, jobId)) throw new SellerAgentError('settlement_collision', 'competing admissible settlement claims require binding authority', 503);
+    // A read snapshot can predate intake, and another holder can discover a
+    // collision. Neither an absent cached payment nor a cached success grants
+    // credit: check all known identities against the durable binding (SB-2).
+    const ids = new Set();
+    for (const session of [durable?.loadSession(jobId), sessions.get(jobId)]) {
+      for (const id of [session?.payment?.settlementId, session?.paymentWork?.intake?.settlementId, session?.nativeEvidenceWork?.intake?.settlementId]) {
+        if (id) ids.add(id);
+      }
+    }
+    for (const id of ids) if (!hasSettlementCredit(id, jobId)) throw new SellerAgentError('settlement_collision', 'competing admissible settlement claims require binding authority', 503);
   };
   // The SDK calls claim only after authenticating the complete payment tuple.
   // Keep that tuple before the primitive's provisional election, including a loser.
@@ -628,10 +635,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   function agreementState(identity) {
     assertSettlementCredit(identity?.jobId);
-    if (durable) restore(durable.loadSession(identity?.jobId));
-    const session = sessions.get(identity?.jobId);
+    // Read without replacing the object owned by a concurrent job operation.
+    const session = durable ? durable.loadSession(identity?.jobId) : sessions.get(identity?.jobId);
     if (!session?.proposal || session.transportIdentity?.proposalHash !== identity.proposalHash) return { proposal: null, contribution: null };
-    return { proposal: session.proposal, contribution: contributions.get(identity.proposalHash) ?? null };
+    return structuredClone({ proposal: session.proposal, contribution: session.sellerContribution ?? null });
   }
 
   // The buyer-anchored Agreement and the reference that names it: the
@@ -1002,7 +1009,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   async function recoverNativeDeliveryBinding(session, work) {
     if (!nativeDelivery || session.deliveryReady) return { status: 'not-needed' };
     const result = session.deliveryHold?.result;
-    if (result?.decision !== 'indeterminate' || result.code !== 'delivery-submission-ambiguous' ||
+    if (result?.decision !== 'indeterminate' || !['delivery-submission-ambiguous', 'delivery-resolution-pending'].includes(result.code) ||
         result.safeToRetryDelivery !== false || result.recovery?.action !== 'reconcile-delivery' ||
         typeof result.fulfilmentId !== 'string' || !result.fulfilmentId) return { status: 'not-needed' };
     const { disposition: _disposition, fulfilment: _fulfilment, reason: _reason, permitId: _permitId, ...authorization } = work.intake;
@@ -1103,7 +1110,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           heldFor(session.jobId)?.();
           // Kept before the capability is asked: from here on only a readback
           // (or the reader's proven absence) tells whether this CREATE exists.
-          session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];persist(session);
+          session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];
+          session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
+          persist(session);
           const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding});
           if(answer.status!=='accepted')return answer;
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery'};
@@ -1117,8 +1126,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       reconcileDelivery: async (input) => {
         if(nativeDelivery){
           const report=deliveryReport(session,work.intake.settlementId);
-          return reconcileNativeDemDelivery(nativeDelivery,{...input,jobId:session.jobId,logicalAddress:deliverableAddress(session.jobId),report,
-            receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:deliveryBinding(input.fulfilmentId)});
+          const binding=deliveryBinding(input.fulfilmentId);
+          const answer=await reconcileNativeDemDelivery(nativeDelivery,{...input,jobId:session.jobId,logicalAddress:deliverableAddress(session.jobId),report,
+            receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding});
+          if(answer.status==='complete'){
+            // A consumed permit can reconcile before the submission WAL is
+            // visited. Restore its binding here too; resolution and receipt
+            // verification below must still authenticate the actual CREATE.
+            session.deliveryAdapter={fulfilmentId:input.fulfilmentId,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery-recovered-readonly'};
+            persist(session);
+          }
+          return answer;
         }
         const record = await readDelivery(deliverableAddress(session.jobId),input.fulfilmentId);
         if (!record) return { status: 'absent', reason: 'canonical delivery address is empty' };
@@ -1194,6 +1212,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
           if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
           if (!reportMatches(read.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
+          // Older intents may lack the adapter checkpoint. Restore it from the
+          // authenticated read before the runner resolves delivery in this call.
+          session.deliveryAdapter = { fulfilmentId: input.fulfilmentId, deliveryBinding: deliveryBinding(input.fulfilmentId),
+            reconciliationId: read.receipt.transactionRef.value, substrate: 'source-native-delivery-recovered-readonly' };
+          persist(session);
           return { status: 'accepted', reconciliationId: read.receipt.transactionRef.value };
         }
         const record = await readDelivery(input.logicalAddress,input.fulfilmentId);

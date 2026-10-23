@@ -4,8 +4,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "bb3c806f31a973c513bddaea796db61179eef4d19537fef482a89a32aeb7af53",
-      "reason": "Require bounded inline Listing sizes before native Agreements and preserve the payment permit when actual producer size disagrees."
+      "sha256": "28a1895444a9aef3a29f8cf00b4d352defe7443f1fc362cc911d8cf01a2aa5f7",
+      "reason": "Keep read snapshots independent from execution, check durable settlement credit, and retain native delivery bindings across reconciliation."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-context-route.mjs",
@@ -16,8 +16,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-durable-state.mjs",
       "originalSha256": "9e6c0523c8bdbbd57c2df54836a6787414cc8991235cb259b35f2716bde870fe",
-      "sha256": "34d5bac8ad1a87033fe1f22c73bb5adf9a254732052b7fba38b4e80529a7409e",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+      "sha256": "ae556f29cdc9bf183a1b4b4a645809a53988650bd9aba6b8280d0ffa9eaad47b",
+      "reason": "Reclaim proven-exited unsaved job reservations atomically before counting capacity."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-http.mjs",
@@ -382,8 +382,8 @@
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "77530a7893451cfcc1d19f50b33773606f3d2a65f32552a7c5535d500b683f66",
-      "reason": "Pin retained unsigned proposal recovery after challenge expiry and restart, preserving first-admission expiry."
+      "sha256": "f38f6ba639315cd5ed9e49727651eb57fb848b6e485396a099ea3a34997f2f80",
+      "reason": "Exercise proven-exited unsaved reservation recovery while preserving live, unproven and saved-session capacity."
     },
     {
       "path": "packages/dacs-seller/test/dacs-seller-transport.test.mjs",
@@ -430,8 +430,8 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "4e0f28939c41529a5c3ed70cf67e3dd33fafd78d9caa27e02a1a9e46f5076b69",
-      "reason": "Cover delivery recovery, inline size boundaries, independent job limits and commitment publication reconciliation."
+      "sha256": "328617fe9e15d441a07fd6b61d4270293a542f2e711e07f9f8aa5c7280555b50",
+      "reason": "Exercise concurrent Agreement reads, current durable settlement credit and native delivery checkpoint recovery across repeat and restart."
     },
     {
       "path": "packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs",

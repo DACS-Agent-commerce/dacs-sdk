@@ -413,7 +413,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
     if (commit) assert.equal((await client().commit(jobId)).status, 'committed');
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
-    return { jobId, agreement, agreementHash: plan.agreementHash, payout, amountOs, client,
+    return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
       claim: async (txHash) => { try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
         catch (error) { return { error: error.code, status: error.status }; } } };
@@ -445,9 +445,19 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // startSellerHost over these capabilities with `changes` (for refusals).
   const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
   // The host stopped and its agent composed over the same state (the caller closes it).
-  const agentFor = async () => {
-    await host.close(); hosts.splice(hosts.indexOf(host), 1);
+  const agentFor = async ({ stopHost = true } = {}) => {
+    if (stopHost) { await host.close(); hosts.splice(hosts.indexOf(host), 1); }
     return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
+  };
+  // Model an authenticated checkpoint written by an older agent before its
+  // adapter recovery fix, using the store's own fenced save and signature.
+  const editRetainedSession = async (jobId, edit) => {
+    await host.close(); hosts.splice(hosts.indexOf(host), 1);
+    const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
+    const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), signer: sellerSigner, listingPin: pin });
+    try { await state.withJob(jobId, (session) => { edit(session); state.saveSession(session); }); }
+    finally { state.close(); }
+    host = await start();
   };
   // A buyer-signed payment claim as the transport authenticates it.
   const signedClaim = async (p, txHash) => {
@@ -460,7 +470,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const signedCreate = (logicalAddress) => clone(signedCreates.get(logicalAddress));
   const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
   return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
-    host: () => host, capabilities, dataDirectory, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim };
+    host: () => host, capabilities, dataDirectory, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -1553,4 +1563,79 @@ test('the host refuses caller-chosen challenges and accepts a buyer presentation
   assert.notEqual(issued.sessionNonce, chosen.sessionNonce);
   const purchase = await w.purchase({ commit: false });
   assert.match(purchase.agreementHash, /^[0-9a-f]{64}$/, 'the seller accepted the presentation and signed its Agreement');
+});
+
+
+// Agreement reads during execution must never replace the object the job holder
+// is updating. A cached transport success still needs current durable credit.
+test('concurrent Agreement state reads cannot hide settlement collisions from cached delivery answers', async (t) => {
+  for (const concurrentRead of [false, true]) {
+    const w = await world(t);
+    const a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+    let observed = false;
+    w.node.faults.beforeSearch = async () => {
+      if (!observed) {
+        observed = true;
+        if (concurrentRead) {
+          const state = await a.client().agreementState(a.transportIdentity);
+          assert.equal(state.proposal.proposalHash, a.transportIdentity.proposalHash);
+        }
+      }
+    };
+    assert.equal((await a.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.equal(observed, true);
+    w.node.faults.beforeSearch = async () => {};
+    assert.equal((await a.claim(tx)).delivery?.status, 'delivery-ready', 'uncontested cached success is allowed');
+    assert.deepEqual(await b.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
+    assert.equal((await a.claim(tx)).error, 'seller_unavailable', `concurrent read ${concurrentRead}: suspended credit cannot disclose cached success`);
+    await assert.rejects(a.client().agreementState(a.transportIdentity), { code: 'seller_unavailable' });
+    await w.restart();
+    assert.equal((await a.claim(tx)).error, 'seller_unavailable');
+    assert.equal(w.createsAt(`dacs4:deliverable:${a.jobId}`), 1);
+  }
+});
+
+test('a landed Deliverable with a lost adapter checkpoint recovers on immediately successful readback with one CREATE', async (t) => {
+  for (const checkpoint of ['current-intent', 'legacy-intent', 'legacy-resolution-pending']) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('land-lose-lock');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+    if (checkpoint === 'current-intent') await w.restart();
+    else await w.editRetainedSession(p.jobId, (session) => {
+      delete session.deliveryAdapter;
+      if (checkpoint === 'legacy-resolution-pending') {
+        const { disposition, fulfilment, reason, permitId, ...authorization } = session.nativeEvidenceWork.intake;
+        session.deliveryHold = { reason: 'indeterminate:delivery-resolution-pending:canonical delivery is absent', result: {
+          decision: 'indeterminate', code: 'delivery-resolution-pending', fulfilmentId: session.deliverySubmitted[0], safeToRetryDelivery: false,
+          recovery: { action: 'reconcile-delivery', reconciliationId: w.signedCreate(address).hash }, consumedPaymentAuthorization: authorization,
+        } };
+      }
+    });
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `${checkpoint}: ${shown(answer.delivery)}`);
+    for (let i = 0; i < 2; i++) assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    await w.restart();
+    assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.deepEqual(w.effects.deliverySubmit, [address]);
+    assert.equal(w.createsAt(address), 1);
+  }
+});
+
+
+test('settlement disclosure checks durable payment identities even when this agent only cached the unpaid proposal', async (t) => {
+  const w = await world(t);
+  const a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+  const stale = await w.agentFor({ stopHost: false });
+  t.after(() => stale.close());
+  assert.equal((await a.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.doesNotThrow(() => stale.assertSettlementCredit(a.jobId), 'one uncontested settlement remains allowed');
+  assert.equal(typeof stale.deliveryStateOf(a.jobId).fulfilmentId, 'string');
+  assert.equal(stale.stageOf(a.jobId), 'delivery-ready');
+  assert.deepEqual(await b.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
+  assert.throws(() => stale.assertSettlementCredit(a.jobId), { code: 'settlement_collision' });
+  assert.throws(() => stale.agreementState(a.transportIdentity), { code: 'settlement_collision' });
+  assert.throws(() => stale.deliveryStateOf(a.jobId), { code: 'settlement_collision' });
+  assert.equal(stale.stageOf(a.jobId), 'settlement-indeterminate');
+  assert.equal(stale.durableSessionOf(a.jobId).settlementCredit, 'indeterminate');
 });

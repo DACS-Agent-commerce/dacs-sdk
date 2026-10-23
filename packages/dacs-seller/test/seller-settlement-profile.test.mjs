@@ -1298,3 +1298,54 @@ test('the agent refuses a presenter-chosen pre-signed nonce at issuance and admi
   assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 0);
   assert.equal(agent.stageOf(w.jobId), null);
 });
+
+test('capacity reclaims only proven-exited unsaved reservations; live holders and saved sessions still count', async (t) => {
+  const { fork } = await import('node:child_process');
+  const { once } = await import('node:events');
+  const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
+  const signer = key(), listingPin = { listingId: 'reservation-recovery', version: 1, contentHash: 'a'.repeat(64) };
+  for (const saved of [false, true]) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-reservation-')));
+    const jobA = core.generateCanonicalJobId(), jobB = core.generateCanonicalJobId();
+    const initial = await createSellerDurableState({ dir, signer, listingPin, maxJobs: 1 });
+    initial.retainContext({ admittedAt: 1, validation: { disposition: 'verified' } });
+    initial.close();
+    const child = fork(new URL('./helpers/seller-durable-state-lock-holder.mjs', import.meta.url), [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    t.after(() => { child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); });
+    const message = async (input) => { const reply = once(child, 'message'); child.send(input); return (await reply)[0]; };
+    await once(child, 'message');
+    const held = await message({ type: 'hold', dir, listingPin, jobId: jobA, claim: signer.claim, pkcs8: signer.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64') });
+    assert.equal(held.code, null, JSON.stringify(held));
+    if (saved) assert.equal((await message({ type: 'call', op: 'save' })).code, null);
+    let store = await createSellerDurableState({ dir, signer, listingPin, maxJobs: 1 });
+    try {
+      assert.equal(store.inspectLocks()[0].holderExited, false);
+      await assert.rejects(store.withJob(jobB, () => assert.fail('live reservation must count')), { code: 'seller_state_capacity' });
+      const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
+      store.close(); store = await createSellerDurableState({ dir, signer, listingPin, maxJobs: 1 });
+      assert.equal(store.inspectLocks()[0].holderExited, true);
+      assert.equal(store.sessions().length, saved ? 1 : 0);
+      if (saved) await assert.rejects(store.withJob(jobB, () => assert.fail('a saved session must count')), { code: 'seller_state_capacity' });
+      else {
+        await store.withJob(jobB, () => store.saveSession({ jobId: jobB }));
+        assert.deepEqual(store.sessions().map(s => s.jobId), [jobB]);
+        assert.equal(store.inspectLocks().length, 0, 'dead unsaved reservation reclaimed without requesting its job');
+      }
+    } finally { store.close(); }
+  }
+});
+
+test('capacity never reclaims an unproven reservation', async (t) => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-unproven-reservation-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = await createSellerDurableState({ dir, signer: key(), listingPin: { listingId: 'unproven', version: 1, contentHash: 'a'.repeat(64) }, maxJobs: 1 });
+  try {
+    const db = new DatabaseSync(join(dir, 'seller-state.sqlite'));
+    try { db.prepare('INSERT INTO seller_locks VALUES (?,?,?)').run(core.generateCanonicalJobId(), '1:TEST-legacy-holder', 1); } finally { db.close(); }
+    assert.notEqual(store.inspectLocks()[0].reason, 'exited');
+    await assert.rejects(store.withJob(core.generateCanonicalJobId(), () => assert.fail('unproven reservation must count')), { code: 'seller_state_capacity' });
+    assert.equal(store.inspectLocks().length, 1);
+  } finally { store.close(); }
+});

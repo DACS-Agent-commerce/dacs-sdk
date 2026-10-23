@@ -356,9 +356,20 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           if (lock) run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, lock.owner);
           // Reserve capacity atomically with the job lock, before admission.
           // Concurrent new jobs count as reservations until their lock releases.
-          if (!load(jobId) && get(`SELECT
+          if (!load(jobId)) {
+            // A process can exit before saving a session. Its reservation must
+            // not occupy capacity forever just because this is a different job.
+            // Use the same positive exit proof as takeover, under this write
+            // transaction; live/unproven holders and saved sessions stay counted.
+            for (const reservation of db.prepare('SELECT * FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').all()) {
+              if (holderState(dir, reservation, lockHolder(reservation)) === 'exited') {
+                run('DELETE FROM seller_locks WHERE job=? AND owner=?', reservation.job, reservation.owner);
+              }
+            }
+            if (get(`SELECT
             (SELECT COUNT(*) FROM seller_jobs) +
             (SELECT COUNT(*) FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)) AS n`).n >= maxJobs) fail('seller_state_capacity');
+          }
           run('INSERT INTO seller_locks VALUES (?,?,?)', jobId, owner, process.pid);
           return { reclaimed: Boolean(lock), revision: load(jobId)?.revision ?? 0 };
         });

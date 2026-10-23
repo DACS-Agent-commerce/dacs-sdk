@@ -125,6 +125,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   be owned by root or by this user and not be group- or world-writable, so the
   host does not start where `/` belongs to another user (for example some
   rootless containers or sandboxes).
+  Job capacity counts saved sessions and active reservations. An unsaved
+  reservation is reclaimed only when its holder is proven exited; live or
+  unproven holders continue to reserve capacity.
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
@@ -134,6 +137,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   restarted host answers a completed request again and reconciles uncertain
   work through the agent's retained state. A commitment retry first reads back
   the original CREATE and publishes again only with proof that nothing was signed.
+  Agreement state reads use isolated retained snapshots; cached payment and
+  delivery answers require current durable settlement credit (DACS-4 SB-2).
   A payment answer that is not final is not cached as final:
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
@@ -166,7 +171,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   seller signature whose signer failed released nothing, so the next holder of
   the job signs the same bytes again.
 - The delivery capability owes that proof. The agent records a Deliverable
-  submission before it asks `nativeDemDelivery.submit`, so a submission that
+  submission and its fulfilment binding before it asks `nativeDemDelivery.submit`.
+  A present CREATE restores that binding during reconciliation, including for
+  earlier checkpoints without it; its payload and receipt still need fresh
+  authentication before delivery is ready. A submission that
   fails before anything is signed, or a host that dies between the record and
   the call, leaves a record with no CREATE, and only the capability can tell
   that from a CREATE it signed and lost. Its `read` returns
