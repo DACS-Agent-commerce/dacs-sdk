@@ -133,6 +133,42 @@ const refused = async (work) => { try { await work(); return null; } catch (erro
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
 const notCalled = async () => { throw new Error('TEST not called'); };
 
+test('a native agent without the Vet context and delivery chain signs, commits and takes payment for nothing', async (t) => {
+  const w = await world(t);
+  const agent = await w.agent(w.capabilities);
+  t.after(() => agent.close());
+  assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.synthetic))), { code: 'vet_context_required', status: 503 });
+  assert.equal(agent.stageOf(w.jobId), null, 'no session is opened for the refused proposal');
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.submitPayment(w.payment)), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
+  assert.deepEqual(w.reached, []);
+});
+
+test('native payment evidence and the Vet context without native delivery sign the vetted Agreement but commit and take payment for nothing', async (t) => {
+  const w = await world(t);
+  const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext() });
+  t.after(() => agent.close());
+  // A proposal over the synthetic not-performed Vet references is not the vetted Agreement.
+  const unvetted = await refused(async () => { const answer = await agent.receiveProposal(await w.proposalFor(w.synthetic)); if (answer.disposition === 'complete') throw Object.assign(new Error('signed'), { code: 'signed' }); });
+  assert.notEqual(unvetted?.code, 'signed', 'the synthetic Vet references are never signed');
+  const vetted = await agent.receiveProposal(await w.proposalFor(w.vetted));
+  assert.equal(vetted.disposition, 'complete');
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), [], 'no Agreement read, publication, transfer observation or delivery');
+});
+
+test('the complete native profile takes payment only as native payment evidence, before any transfer is observed', async (t) => {
+  const w = await world(t);
+  const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence,
+    demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
+  t.after(() => agent.close());
+  assert.equal((await agent.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
+  assert.deepEqual(await refused(() => agent.submitPayment(w.payment)), { code: 'native_evidence_required', status: 409 });
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
 test('a Vet context that names the not-performed Vet references is not signed', async (t) => {
   const w = await world(t);
   for (const input of [w.synthetic, w.signedSynthetic]) {
@@ -210,6 +246,31 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
   await assert.rejects(seller.createSellerAgent({ signer: w.signer, listing: w.listing, observeDemosTransfer: async () => null, anchors: { read: async () => null, write: async () => null }, simulatedFixture: true, railAuthority: w.steward.railAuthority() }),
     { name: 'TypeError', message: /simulated fixture profile takes no railAuthority/ });
   assert.deepEqual(w.reached, []);
+});
+
+test('an in-flight session keeps its pinned rail across a restart; a pin the steward did not sign is refused before any read', async (t) => {
+  const w = await world(t), durableDirectory = w.dir();
+  const first = await w.agent(complete(w, { durableDirectory }));
+  assert.equal((await first.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
+  const pinned = first.durableSessionOf(w.jobId).railPin;
+  assert.equal(pinned.basis, 'pa1-in-code');
+  assert.equal(pinned.rail.availability, 'live');
+  first.close();
+  // The steward's later revision disables the rail: new sessions may not select
+  // it, the pinned one continues (RAV-R2) and reaches the Agreement readback.
+  const disabled = await w.agent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  assert.notEqual((await refused(() => disabled.commit({ jobId: w.jobId })))?.code, 'rail_unavailable');
+  assert.ok(w.reached.includes('readAgreement'), 'the in-flight session got past the rail gate');
+  assert.deepEqual(disabled.durableSessionOf(w.jobId).railPin, pinned, 'the pin is not rewritten');
+  disabled.close();
+  w.reached.length = 0;
+  // Another steward key does not authenticate the retained pin.
+  const other = railSteward();
+  const foreign = await w.agent(complete(w, { durableDirectory, railAuthority: other.railAuthority() }));
+  t.after(() => foreign.close());
+  assert.deepEqual(await refused(() => foreign.commit({ jobId: w.jobId })), { code: 'rail_unavailable', status: 503 });
+  assert.deepEqual(await refused(() => foreign.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), { code: 'rail_unavailable', status: 503 });
+  assert.deepEqual(w.reached, [], 'no Agreement read, publication or transfer observation');
 });
 
 test('the standalone host refuses to start without the whole chain to delivery', async (t) => {
