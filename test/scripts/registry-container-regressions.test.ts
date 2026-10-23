@@ -34,7 +34,7 @@ describe("curated advisory validation regressions", () => {
     { advisoryIds: [listed, listed] },
     { advisoryIds: ["invalid"] },
     { schema: "unknown" },
-    { source: { commit: "bad", job: "fixture" } },
+    { source: { ...baseline.source, commit: "bad" } },
     { assessedAdvisories: [{ id: listed, assessment: "overlap" }] },
     { assessedAdvisories: [{ id: assessed, assessment: " " }] },
     { assessedAdvisories: [{ id: assessed, assessment: "ok" }, { id: assessed, assessment: "duplicate" }] },
@@ -72,5 +72,26 @@ describe("baseline input completeness", () => {
   ])("requires source evidence and a URL identifying the declared job: %j", change => {
     expect(() => policy.classifyRegistryAudit([], { ...baseline, source: { ...baseline.source, ...change } }))
       .toThrow(/malformed/);
+  });
+});
+
+
+describe("baseline evidence preservation", () => {
+  it.each(["not-a-job", "0", "-1", "1.5", " 123", "123 "])("rejects malformed matching source job and URL: %s", job => {
+    expect(() => policy.classifyRegistryAudit([], { ...baseline, source: { ...baseline.source, job,
+      url: `https://github.com/DACS-Agent-commerce/dacs-sdk/runs/${job}` } })).toThrow(/malformed/);
+  });
+  it("preserves the recorded policy finding groups and every entry", () => {
+    expect(Object.keys(baseline.policyFindings)).toEqual([
+      "source", "gitDependencies", "engineViolations", "lockSbomProblems", "physicalSbomProblems",
+      "productionImageDependencies", "additionalSources",
+    ]);
+    for (const group of ["gitDependencies", "engineViolations", "lockSbomProblems", "physicalSbomProblems",
+      "productionImageDependencies", "additionalSources"]) {
+      expect(Array.isArray(baseline.policyFindings[group]), group).toBe(true);
+      expect(baseline.policyFindings[group].length, group).toBeGreaterThan(0);
+    }
+    expect(createHash("sha256").update(JSON.stringify(baseline.policyFindings)).digest("hex"))
+      .toBe("530ed3c8c8c3d1db6c8f3cd5a736e98c70e139198c4fb162b07d3f2f8a1f308d");
   });
 });
