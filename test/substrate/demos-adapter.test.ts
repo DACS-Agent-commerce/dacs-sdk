@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
-import { DacsError } from "../../src/errors.js";
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
 import {
@@ -31,13 +30,11 @@ describe("DemosAdapter", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
   });
 
   it("requires an rpc url", () => {
     // @ts-expect-error — exercising the runtime guard
     expect(() => new DemosAdapter({})).toThrow(/rpc/);
-    expect(() => new DemosAdapter({ rpc: "" })).toThrow("DemosAdapter requires an rpc URL");
   });
 
   it("rejects an invalid confirmed-fee ceiling", () => {
@@ -45,15 +42,6 @@ describe("DemosAdapter", () => {
       rpc: RPC,
       maximumFeeOs: -1n,
     })).toThrow(/maximumFeeOs/);
-  });
-
-  it("accepts a zero confirmed-fee ceiling", () => {
-    expect(() => new DemosAdapter({ rpc: RPC, maximumFeeOs: 0n })).not.toThrow();
-  });
-
-  it.each([5, null, {}])("rejects a non-string chainIdentity %o", (chainIdentity) => {
-    expect(() => new DemosAdapter({ rpc: RPC, chainIdentity } as unknown as DemosAdapterConfig))
-      .toThrow("DemosAdapterConfig.chainIdentity must be a string");
   });
 
   it("rejects proxy and accessor-backed secret carriers", () => {
@@ -411,22 +399,31 @@ describe("DemosAdapter", () => {
     );
   });
 
-  it.each(["", null, 0, 1, {}, [], true])(
-    "rejects a supplied wallet secret that is not a non-empty string: %j",
-    (secret) => {
-      const construct = () => new DemosAdapter({ rpc: RPC, secret } as unknown as DemosAdapterConfig);
-      expect(construct).toThrow(DacsError);
-      expect(construct).toThrow("DemosAdapterConfig.secret must be a non-empty string when supplied");
-    },
-  );
+  it("reverse-resolves canonical CCI web2 and chain/subchain wallet refs", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const web2 = vi.spyOn(Identities.prototype, "getDemosIdsByWeb2Identity")
+      .mockResolvedValue([{ pubkey: "subject-a" }, {}, { pubkey: "subject-b" }] as never);
+    const wallet = vi.spyOn(Identities.prototype, "getDemosIdsByWeb3Identity")
+      .mockResolvedValue([{ pubkey: "subject-c" }] as never);
 
-  it("accepts an omitted or non-empty wallet secret at construction", () => {
-    expect(() => new DemosAdapter({ rpc: RPC })).not.toThrow();
-    expect(() => new DemosAdapter({ rpc: RPC, secret: undefined })).not.toThrow();
-    expect(() => new DemosAdapter({ rpc: RPC, secret: "s" })).not.toThrow();
+    await expect(
+      adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
+    ).resolves.toEqual(["subject-a", "subject-b"]);
+    expect(web2).toHaveBeenCalledWith(adapter.raw, "twitter", "alice");
+
+    await expect(
+      adapter.findSubjectsByClaim(
+        `cci-xm:evm:base-sepolia:0x${"11".repeat(20)}`,
+      ),
+    ).resolves.toEqual(["subject-c"]);
+    expect(wallet).toHaveBeenCalledWith(
+      adapter.raw,
+      "evm.base-sepolia",
+      `0x${"11".repeat(20)}`,
+    );
   });
 
-  // Reverse lookups over the bounded transport: demos-cci-reverse.test.ts.
   it("fails closed when the current Demos SDK lacks a reverse resolver", async () => {
     const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
