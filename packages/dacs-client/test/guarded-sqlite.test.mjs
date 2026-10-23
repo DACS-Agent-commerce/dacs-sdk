@@ -119,8 +119,9 @@ test('iterators created before a guard still check liveness on next', t => {
   });
 });
 test('a rollback in one exec batch is checked before the second statement', t => {
-  const db=world(t); db.exec('BEGIN');
-  withSqliteStatementGuard(db,()=>{if(!db.isTransaction)throw Error('TEST-ended');},()=>{
+  const db=world(t); db.exec('BEGIN; CREATE TEMP TABLE test_live(id)');
+  const live=db.prepare("SELECT 1 FROM sqlite_temp_master WHERE name='test_live'");
+  withSqliteStatementGuard(db,()=>{if(!live.get())throw Error('TEST-ended');},()=>{
     assert.throws(()=>db.exec('ROLLBACK; CREATE TABLE escaped AS SELECT 1'), /TEST-ended/);
   });
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n,0);
@@ -133,7 +134,7 @@ for(const separate of [false,true])test(`SQL callbacks cannot use retained write
     try{nativeExec.call(other,"INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')");}catch{}
     nativeRun.call(write); return 1;
   });
-  const run=()=>withSqliteStatementGuard(other,()=>{if(!other.isTransaction)throw Error('TEST-ended');},()=>{
+  const run=()=>withSqliteStatementGuard(other,()=>{if(other.isTransaction===false)throw Error('TEST-ended');},()=>{
     assert.throws(()=>db.prepare('SELECT expire_and_write()').get(), /SQL callbacks/);
   });
   if(separate)withSqliteStatementGuard(db,()=>{},run);else run();
