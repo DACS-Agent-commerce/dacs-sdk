@@ -40,25 +40,29 @@ const isPlainObject = value => typeof value === "object" && value !== null && !A
 // engines.node and engines.npm with semver.satisfies(current, range,
 // { includePrerelease: true }). This is that range grammar for a release
 // version. Anything else throws, so a range it cannot read never passes.
-const versionId = "0|[1-9]\\d{0,14}";
+const versionId = "0|[1-9]\\d{0,15}";
 const rangeId = `${versionId}|x|X|\\*`;
 const prereleaseId = "(?:0|[1-9]\\d*|\\d*[a-zA-Z-][a-zA-Z0-9-]*)";
 const partialVersion = `v?(${rangeId})(?:\\.(${rangeId})(?:\\.(${rangeId})(?:-(${prereleaseId}(?:\\.${prereleaseId})*))?` +
   "(?:\\+[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*)?)?)?";
 const rangeToken = new RegExp(`^(<=|>=|<|>|=|~>|~|\\^)?${partialVersion}$`);
 const hyphenRange = new RegExp(`^${partialVersion} - ${partialVersion}$`);
+const MAX_SEMVER_LENGTH = 256;
 const isX = id => id === undefined || id === "x" || id === "X" || id === "*";
 // semver 7.8.5, which the pinned npm 11.19.0 bundles, rejects a plain
 // comparator with a numeric part after an X (`1.x.0`, `>=1.x.0`, `*.1.2`), so
 // npm reports EBADENGINE for it; it still reads tildes, carets and hyphen
 // ranges with one (`~1.x.0`, `^x.1`, `1.x.0 - 2`).
+const validVersionBound = (M, m, p, prerelease) =>
+  [M, m, p].every(id => isX(id) || Number.isSafeInteger(Number(id))) &&
+  `${isX(M) ? 0 : M}.${isX(m) ? 0 : m}.${isX(p) ? 0 : p}${prerelease === undefined ? "" : "-" + prerelease}`.length <= MAX_SEMVER_LENGTH;
 const numericAfterX = (M, m, p) => (isX(M) && !(isX(m) && isX(p))) || (isX(m) && !isX(p));
 
 // One token's comparators, [operator, [major, minor, patch], prerelease?], as
 // semver desugars carets, tildes and X-ranges. [] is any version.
 function tokenComparators(token) {
   const match = rangeToken.exec(token);
-  if (!match || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
+  if (!match || !validVersionBound(match[2], match[3], match[4], match[5]) || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
     throw new Error(`unsupported engine range token ${JSON.stringify(token)}`);
   }
   const [, operator = "", M, m, p, prerelease] = match;
@@ -102,7 +106,7 @@ function testComparator(version, [operator, bound, prerelease = false]) {
 
 const releaseVersion = value => {
   const match = typeof value === "string" ? new RegExp(`^v?(${versionId})\\.(${versionId})\\.(${versionId})$`).exec(value) : null;
-  return match ? match.slice(1).map(Number) : null;
+  return match && match.slice(1).every(id => Number.isSafeInteger(Number(id))) ? match.slice(1).map(Number) : null;
 };
 
 // semver.satisfies for a release version; throws for a range it cannot read.
@@ -115,7 +119,10 @@ export function satisfiesEngineRange(current, range) {
   const sets = range.trim().replace(/\s+/g, " ").split("||").map(part => {
     const set = part.trim();
     const hyphen = hyphenRange.exec(set);
-    if (hyphen) return hyphenComparators(hyphen);
+    if (hyphen) {
+      for (const bound of set.split(" - ")) tokenComparators("~" + bound);
+      return hyphenComparators(hyphen);
+    }
     // `>= 1.2` is `>=1.2`, as semver trims an operator's trailing space.
     const tokens = [];
     for (const token of set === "" ? [] : set.split(" ")) {
@@ -135,7 +142,7 @@ export function scanLockEngines(lock, versions) {
   const packages = lock?.packages;
   const current = { node: versions?.node, npm: versions?.npm };
   const errors = [];
-  if (typeof packages !== "object" || packages === null || Array.isArray(packages)) errors.push("lock has no packages map");
+  if (!isPlainObject(packages) || !isPlainObject(packages[""])) errors.push("lock has no packages map");
   for (const key of ["node", "npm"]) {
     if (releaseVersion(current[key]) === null) errors.push(`no recorded ${key} release version`);
   }
