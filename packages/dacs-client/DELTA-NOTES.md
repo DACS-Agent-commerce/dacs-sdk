@@ -1,6 +1,6 @@
 # client package deltas
 
-Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
+Scope: PLAN §8 and §0.3, D10, D9, D1, D11, D15 and the recorded D16 corrections. The public API is the explicit root and durable-journal map; protocol actions remain held.
 Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes
@@ -178,3 +178,110 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - `src/dacs/listing.mjs`: DACS-1 LRR-3 / LRR-6. A present `railVersion` must be exactly 1; an absent one means the latest version, which in the client's in-code PA-1 resolution is that same version, so it is admitted.
 - `src/dacs/chain.mjs`: CORE §5.1. A storage-program 404 or a malformed success body carries no authenticated absence proof, so `readStorageProgram` reports it as `indeterminate`, never `absent`. Both callers already admitted only `found`.
 - Tests: `test/delivery-evidence-gate.test.mjs` drives the delivery-evidence gate with seller evidence signed by a runtime Ed25519 key and checked by the SDK `verifySettlementEvidence`. The control reaches `delivered`; a different `deliverableContentHash`, receipt writer, `jobId`, evidence hash, outcome, phase or signing key each keeps `delivery-ready` with the evidence rejected, and the first four are refused only by the client's own clauses. `test/price-bound.test.mjs` pins the bound at 9007199254740991 and 9007199254740992 OS on every admission path and against a node-shaped transaction body. `test/storage-read-nonobservation.test.mjs` pins the non-observation results. `test/delivery-access-model.test.mjs` now admits an absent `railVersion` and refuses a null one.
+
+
+## D11: explicit host seams and public buyer boundary
+
+- `src/purchases.mjs`, `src/dacs/protocol-purchases.mjs` and `src/dacs/delivery-deadline-watch.mjs` validate an injected PurchaseStore before using state. Store methods preserve their receiver. The purchase service also requires the host approval purpose; protocol purchases take an already-resolved optional buyer access capability.
+- `src/wallet/devnet-native-transport.mjs` imports the package pure wallet digest and confirmation helpers. The original exact-byte, broadcast-once and indeterminate-read rules stay in force.
+- `src/index.mjs` lists the reviewed root names; the only additional subpath is `wallet/durable-journal`. The package uses the workspace version and an exact matching core dependency. Runtime source, README and license ship; source evidence and control scripts do not ship.
+- `src/dacs/seller-agent-error.mjs` shares the existing error identity without pulling seller storage into buyer imports. SQLite loads only when the private seller authentication journal is constructed or the separate wallet journal is imported.
+- Factory tests refuse absent/malformed seams before dependency access and retain missing-capability/profile refusals. Public action tests prove refusal before challenge issuance/consumption or coordinate writes, including persisted approval states. Existing D15 races and executed-payment tests pass their SQLite adapter explicitly, without loader substitutions.
+- Package integrity still checks the complete file set, reciprocal pins and HEAD/index/working bytes and modes. The manifest policy now requires exactly the reviewed public export map; all unreviewed additions remain refused.
+- Historical sections above describe their respective checkpoints. This D11 change supersedes their empty-export status; the private publication guard remains. The protocol action hold, production store qualification and immutable identity prerequisites remain binding. Browser exports await the signing-domain/profile change; no old-domain public browser entry is added.
+
+
+## D11 review fixes: action admission, host contracts and package contents
+
+- Public purchase approval challenges, approvals and handoffs now call the same unconditional action-admission hold as protocol purchases. Legacy operations, including previously approved operations and handoff reissues, cannot reach native payload construction, challenge calls or coordinate writes. Readback now validates host observation shapes, preserves core invalid results and attributes observations to their injected reader. The public factory returns diagnostic readback only; the retained source settlement integration remains private.
+- The old nested buyer-access option throws a migration error. A successful synchronous buyer assertion must return exactly undefined; predicates, generators and promises cannot grant authority. Store construction requires the package-owned concrete SQLite transaction. Its synchronous callback result is validated before commit; errors and thenables roll back. Classifiers must return exact synchronous booleans.
+- Root exports include the client, seller-client, wallet-format, bridge and readback error classes so host guards retain defining identity.
+- Pure wallet payload helpers and a local `EmbeddedWalletError` class are isolated from the provider; its code and message contract is retained, while constructor identity is separate. The tarball contains exactly the two entry-point import closures, README, license and manifest; an npm dry-run test rejects surplus source and internal records. The provider retains its helper re-exports; helper algorithms are unchanged.
+- Repository metadata is supplied and core is an exact-version peer, consistent with the host package. The private client remains outside the three-package release set pending an owner decision and matching artifact/lifecycle/SBOM integration; supported installation uses paired local tarballs or the workspace.
+- Packed root imports run in CI on Node 22, with an additional Node 20.19.0 import-only probe outside client engines; both entry points are checked at the declared client engine floors, 22.13.0 and 23.4.0. Portal route constants are documented as experimental and provenance describes registry installs accurately. Both entry points support JavaScript consumers only. TypeScript, browser and full agreement-capability transport integrations are outside this candidate. A fixed digest vector covers prepared/signed payload identity at the pure-helper boundary.
+- Regression tests were added before implementation. Previous host-approval success tests are replaced by public admission-refusal checks; nested transaction rollback, readback, pointer races and executed-only settlement regressions remain.
+
+
+## D11 candidate: concrete SQLite state and explicit public scope
+
+- `createSqlitePurchaseStore` provides the package-owned `BEGIN IMMEDIATE` transaction used by all state-changing factories; arbitrary transaction wrappers are refused at construction. Real SQLite vectors cover nested rollback, thenable rollback, second-connection exclusion/retry and process death before/after commit. Existing pointer, restart and executed-only settlement cases use this same implementation.
+- Preparation and the agreement/native/completion entry points refuse before state access or current protocol resolution. The public Listing verifier follows the same CORE §11.1.2(3) admission boundary. Existing operation readback remains available.
+- The public JavaScript candidate excludes the unqualified node-reader factory, held bridge constructor and private transport-brand predicates. The private publication guard remains set. Paired local artifacts are the supported distribution path; both public entry points require Node ^22.13.0 or >=23.4.0.
+- Settlement classifier tests cover exact true/false, thenable/non-boolean results and original thrown causes. Public imports trap both SQLite import and require, and a demosdk 4.0.16 post-fork serializer vector pins the prepared amount-encoding precondition.
+
+
+## D11 domain recovery validation
+
+- File-backed SQLite tests kill a worker with SIGKILL immediately before and after the actual outer settlement and delivery-overdue COMMIT. Reopening checks the complete payment pointer/status/nonce-consumption decision and replacement supersession, or the overdue state/event pair. A retry and a second restart preserve exactly one committed decision. The worker intercepts the connection COMMIT only; domain entry points and the package transaction implementation run unchanged.
+- A compatible-looking handle from another SQLite library is refused before any transaction callback. The README states that DatabaseSync validation occurs at the first transaction. The unqualified transaction test explicitly checks zero invocations.
+- The surrounding SDK's Node 20 root-import probe is labelled outside client engines; both public entry points require Node ^22.13.0 or >=23.4.0.
+
+
+## D11 retained readback runtime and recovery validation
+
+- The retained-readback test uses `module.register` with an isolated test loader at Node 22.13.0 and 23.4.0. The minimum-runtime CI job runs those decisions together with public API, atomicity and domain crash tests using explicit TAP output.
+- Native agreement-payment crash vectors kill before and after settlement, native supersession/nonce-resolution markers and both pending-event commits. Reopen preserves each committed decision; repeated source failures preserve the original reason without duplicate events, and a later successful retry completes both markers once. Production source and admission rules are unchanged.
+
+## D11 buyer state and readback contracts
+
+- Export the required buyer-state DDL, use it in the offline state harness, and construct all buyer factories from paired packed artifacts. The consumer checks shared unverified hash pointers, unique verified hashes, and one approval per operation/challenge.
+- Nested SQLite transactions use savepoints. A caught synchronous inner error rolls back its own writes; successful nested work remains part of the outer commit. A returned promise retires the connection and rolls back the whole transaction before its continuation can run.
+- Host transfer observations have a documented JSON contract. Malformed data stays retryable without a terminal terms mismatch, and the recorded observer identifies the injected reader. Alternate signing-key projections remain supported.
+- Native source reconciliation reports unavailable when the host has no native capability. Wallet-access readback codes and the separate deadline-watch invocation are documented.
+- Wallet journal lock callbacks preserve every rejection value, including falsy values, and release their lane before propagating it. The statically served wallet provider retains its local payload helpers, with equivalence and independent-loading tests.
+
+
+## D11 diagnostic host boundary
+
+- The public purchase factory reports fresh host observations without persisting payment decisions or driving protocol effects. Retained source settlement and crash recovery use the private factory. Public cancellation, wallet-result reporting and protocol recheck remain under admission.
+- Core `invalid` transfer observations retain their reason and canonical-body nonce reconciliation in the retained integration. Malformed host shapes use a distinct diagnostic status, including wallet-access-closed readback.
+- The host operations contract specifies owner-scoped reads, atomic status compare-and-swap, append-only events and seller-session state transitions. Directory summaries remain discovery hints.
+
+## D11 host diagnostic contracts
+
+- Public account reads validate the requested owner and operation id, and handoff reads preserve the requested operation id. Hosts supply authenticated account context and authenticate handoff tokens.
+- Public diagnostics honor the resolved buyer capability, read only the recorded hash, and report a non-authorizing payer/payee/amount match. The closed-access exception remains available for an already reported hash.
+- Public purchase and protocol guidance describes held actions and historical state. Expired portal reads do not persist transitions. Optional inclusion timestamps are validated before use; reader failures preserve their cause.
+- The enabled deadline watch is explicit host bookkeeping; passing an unwired automatic-watch option is refused. Retained signing-key projections and purchase admission are unchanged.
+
+## D11 SQLite recovery and diagnostic consistency
+
+- SQLite recovery closes and retires a connection when rollback cannot complete. File-backed transaction tests cover automatic rollback, prepared statements, fresh-handle retry and persistence after reopen alongside recoverable nested failures.
+- Public portal and status reads share a read-only expiry projection. Diagnostic tuple matching accounts for the reader's source disposition, and retained reader errors use bounded text conversion.
+- Packed-consumer installation prefers cached locked tarballs and can download missing tarballs. The README describes connection recovery, diagnostic results and validation prerequisites.
+
+## D11 guarded writes and host projections
+
+- Connection-local SQLite triggers guard existing ordinary tables with a transactional marker, including statements prepared before entry. Automatic rollback prevents subsequent DML writes; marker checks precede savepoint release and outer commit. File-backed tests cover both callback depths, conflict/trigger rollback, all statement result methods, sibling/TEMP/attached tables, fresh-handle retry and recoverable constraint errors.
+- Public diagnostic reads share the expiry projection, including the recorded-hash exception for closed buyer access. Retained domain-reader failures keep bounded, null-safe causes.
+- Directory revocation discovery projects the bounded seven-field binding and copies its native anchor. Local deadline and operator-hold records identify host-supplied input. The serializer test verifies the resolved demosdk version, and the README states historical testnet availability and the synchronous DML boundary.
+
+## D11 passive diagnostics and connection lifecycle
+
+- Public diagnostics retain historical identifiers, hashes and nonces while omitting payment payloads and planned, identity and bundle signing messages and unsigned session-delegation payloads. The existing CORE §11.1.2 action hold remains in effect.
+- SQLite guards stay installed per connection, refresh for schema changes and cover ordinary host tables while excluding virtual and shadow tables. Arming and transactional marker updates distinguish package calls from host writes. All successful-call guard work precedes commit. Returned thenables retire the connection at either depth; an already completed outer automatic rollback permits the host to reuse its handle.
+- Deadline observations accept the full JavaScript Date range and render malformed historical times as unavailable. Directory summaries omit rail identifiers longer than 256 characters without changing shorter identifiers or artifact validation.
+- The README specifies hydrated operation fields, synchronous host contracts and connection recovery. Tests exercise active SELECT iterators, FTS5/R*Tree databases, prepared statements, deferred host callbacks, schema refresh, a 400-table host, timestamp boundaries and all public diagnostic projections.
+
+## D11 authenticated portal diagnostics and discovery hints
+
+- Portal operation and evidence reads each resolve an operation id and handoff token through the host's authenticated lookup. Evidence projections use the fresh stored record. Scalar lookup arguments, purchase kind and requested id are checked before private coordinate reads; original lookup and buyer-access refusals propagate.
+- Summary hints accept both the Standard's `revocation` and Community's `revocationBinding` through the same bounded projection. Equal aliases remain available; conflicting hints remain unavailable. This supplies no revocation or artifact-verification authority.
+- Host regressions cover invalid and cross-operation tokens, caller-supplied operation objects, repeated fresh authenticated reads, held actions after local overdue/operator-hold bookkeeping, and paired packed-consumer portal reads. Documentation specifies raw Directory detail data and the prohibition on host transaction control inside store calls.
+
+
+## D11 host boundary and diagnostic contracts
+
+The SQLite adapter holds a package-private write statement across callbacks, so SQLite refuses callback COMMIT/END, including pre-prepared statements. Package savepoint control temporarily finishes and recreates that statement without running host code. Pre-existing host transactions are refused before guard installation; missing markers are rebuilt, and nested entry recovers only a savepoint it actually opened. Host DML outside package calls remains available.
+
+Portal reads authenticate the stored capability hash, independent handoff expiry and owner before the host lookup or secondary reads. `operations.handoff_expires_at` is a new nullable TEXT column; hosts must migrate and provision an explicit lifetime, separate from approval expiry. A null lifetime denies portal access. Valid diagnostic links remain usable after their approval window.
+
+Public transfer diagnostics have a service-level deadline, an abort signal and a bounded primitive projection. Discovery summaries explicitly carry `verified: false`; exact lookup uses the pinned Community seller route to retain revoked records. Revocation hints obey RB-3 and match their summary tuple without imposing a substrate-specific marker anchor. Journal reads recheck the format version, and deadline guidance describes payment-only public readback. Purchase and artifact-verification actions remain held.
+
+The retained protocol readback shortcut shares the stored portal capability check before its closed-wallet-access exception. Id/kind mismatch tests supply a valid capability so they continue to exercise the returned-operation checks.
+
+D11 diagnostic integration contracts:
+
+- Public account reads require the existing operation-scoped handoff token on every call. The stored hash, owner and canonical UTC expiry are checked before account data is read.
+- Active Directory records carrying either revocation binding alias are refused under DACS-1 RB-3/RB-6. Valid active records and unverified revoked discovery remain supported.
+- Host delivery observations cannot be dated later than the watch clock. The adapter retains current or past eligible observations through its existing transaction.

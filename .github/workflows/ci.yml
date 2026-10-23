@@ -90,6 +90,15 @@ jobs:
           (cd "$smoke_root/app" && node --input-type=module -e "if (!import.meta.resolve('@kynesyslabs/demosdk/websdk')) process.exit(1)")
           "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.live.json"
 
+      - name: Package smoke (buyer root; Node 20 import is outside client engines)
+        run: |
+          client_smoke="$RUNNER_TEMP/dacs-client-smoke"
+          mkdir -p "$client_smoke/app"
+          npm pack --ignore-scripts --pack-destination "$client_smoke"
+          npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_smoke"
+          npm install --prefix "$client_smoke/app" --no-audit --ignore-scripts --omit=optional "$client_smoke"/*.tgz
+          (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function') process.exit(1)")
+
       - name: Package smoke (Node host kit boundary)
         run: |
           mkdir -p host-package-smoke/app
@@ -499,3 +508,25 @@ jobs:
             rejectConfig(["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"]);
           }
           NODE
+
+  buyer-minimum-runtime:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["22.13.0", "23.4.0"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci --no-audit
+      - run: npm run build
+      - name: Check both packed JavaScript entry points at the engine floor
+        run: |
+          client_minimum="$RUNNER_TEMP/client-minimum"
+          mkdir -p "$client_minimum/app"
+          npm pack --ignore-scripts --pack-destination "$client_minimum"
+          npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_minimum"
+          npm install --prefix "$client_minimum/app" --no-audit --ignore-scripts --omit=optional "$client_minimum"/*.tgz
+          (cd "$client_minimum/app" && node --input-type=module -e "await import('@kynesyslabs/dacs-client'); await import('@kynesyslabs/dacs-client/wallet/durable-journal')")
+      - run: node --test --test-concurrency=1 --test-reporter=tap packages/dacs-client/test/public-api.test.mjs packages/dacs-client/test/store-atomicity.test.mjs packages/dacs-client/test/store-host-boundary.test.mjs packages/dacs-client/test/readback-review-decisions.test.mjs packages/dacs-client/test/domain-store-crash.test.mjs

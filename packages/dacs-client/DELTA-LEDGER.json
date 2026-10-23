@@ -1204,6 +1204,838 @@
           "after": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 inject host seams and publish the buyer API",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "36d4ac4177132e7de0708a4f4e90c418d3858a9d",
+          "after": "9418b11c221fddcf4f596ccd4b250e8b136f3ee1"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "479bd5b726f9e0752ca1618212e174330b800af0",
+          "after": "d4d98b62c5e3ac90ed8f4a9a265e2956802ae8e5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent-error.mjs",
+          "before": null,
+          "after": "a701b193b0b8e1b01237d684ca33c4ee8ea001b6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b",
+          "after": "f4040282b697373ed8c41585699c049b8230f325"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "afac16899f4f2d95463ce7f3ab6e9aa7e03e0ef1",
+          "after": "b7e0ec6e243d6e81499a97dcbbb609566a0a4134"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "0997b8a6390c44daf9f5075711406d9f2d60dd98",
+          "after": "1e18fb0c5c16b8b2d131912f0f82ed1027b48274"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": null,
+          "after": "538928ef8a691684d87066133fea0286c05d90f4"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "30b6914f51a037b698d9a71d5e6cecc0629e4a8b",
+          "after": "541b61d7a3ffff50ee61161d33257ab135bd40b2"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "944247d4ce8b2622389c79b71de1a21d6b83e239",
+          "after": "8614e7c371643a855c65589d9ab3788c94a1702c"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs",
+          "before": "24d09b80ffce1129e878685ef01a21b798de3d20",
+          "after": "2fd8da35f4657e607784dcd339900dfe03d7fb9f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "54bead46b8880560f26cacda3d10f6024e24596d",
+          "after": "941c53a69f951f1dc2a6336c0b7df1c025606a5d"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": null,
+          "after": "01d1783b61bcb6d5328436e574322006cf6b9f34"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": null,
+          "after": "ea5b81bd70eb7336933c9a098a0ae48e5cc642f3"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": null,
+          "after": "bf5273e1ee3a55e417b891a04110f27c23cc6650"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "a90c09c6855bf640d1c1ae01251d66b783c36ee1",
+          "after": "4ec34580242522b7dd18b98233d911029ae4e143"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-integrity.test.mjs",
+          "before": "80fe7f93a5306cbe4392ac1529b1f9789b050504",
+          "after": "174d67c16132706497904b28250c6135e97d1497"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-review-races.test.mjs",
+          "before": "48b8e059fc05a3495be61151feda3793d08de7f7",
+          "after": "0f6b4617a40d7d1a888b9f065abc794d9b00b5b4"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "a3260b7e24020f9a6a3b6e8ba637d59d17ebae06",
+          "after": "cd4d6c9e6e2ca652a2d4a342b21862c83863abb2"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6",
+          "after": "2ff0ad8abdbb060c2651be671a9f3bd254e1c1b9"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 close legacy actions and tighten buyer package contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/listing.mjs",
+          "before": "1241256345f2f48584566926616d89ec43e7e831",
+          "after": "40f44cef846981dd2d87bd4654e8192b8e784ac6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "d4d98b62c5e3ac90ed8f4a9a265e2956802ae8e5",
+          "after": "3ec5ce19ae5042e26e22efe57de0f3551cfd4029"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "538928ef8a691684d87066133fea0286c05d90f4",
+          "after": "b6ee076fbf6c024a1cb488b8e59cd02ad87c55da"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "b7183e63a75b68cda34c2b30a4d532963794b13f",
+          "after": "637c92e141d460b6a6b6e35fd65ed5e94767fd18"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "541b61d7a3ffff50ee61161d33257ab135bd40b2",
+          "after": "ab7661e952a984eb711fd041497949e5f5239d0b"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "8614e7c371643a855c65589d9ab3788c94a1702c",
+          "after": "9af6dee1556c940482e4dff7100d07a6fdacb8bf"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "941c53a69f951f1dc2a6336c0b7df1c025606a5d",
+          "after": "ecab598d2695975c776aaddd6038e71db5432f6f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": null,
+          "after": "89d097c2d72b9e6a9404be2a3319cb5792f3679b"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": "01d1783b61bcb6d5328436e574322006cf6b9f34",
+          "after": "475c49173398676ca8097cba29a5f51226c8c6d3"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "ea5b81bd70eb7336933c9a098a0ae48e5cc642f3",
+          "after": "a190884d5fdc2b7b302a5b01b00e0eb7573da4d3"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": null,
+          "after": "66f72d26900a14d77ba2f82336ea0cdd7d61997d"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "bf5273e1ee3a55e417b891a04110f27c23cc6650",
+          "after": "81d21ca67b218c48f96968961363b54ebd985e35"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "2ff0ad8abdbb060c2651be671a9f3bd254e1c1b9",
+          "after": "24364d91175a246788e23c7a468f36e211ec2121"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 require concrete SQLite state and clarify the JavaScript candidate",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b6ee076fbf6c024a1cb488b8e59cd02ad87c55da",
+          "after": "2da2dd379d8373233fc27cf5a16596dbcfef5766"
+        },
+        {
+          "path": "packages/dacs-client/src/public-verification.mjs",
+          "before": null,
+          "after": "eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "ab7661e952a984eb711fd041497949e5f5239d0b",
+          "after": "4ad468a36eaa8d89fedbf93481fc4efe4bd37310"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "9af6dee1556c940482e4dff7100d07a6fdacb8bf",
+          "after": "a285fa77b2f41fff3a4e5fd4033429df9fb3d696"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": "89d097c2d72b9e6a9404be2a3319cb5792f3679b",
+          "after": "32c65aec6b18cde12321600f9eb1c6ba4e439cae"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": "475c49173398676ca8097cba29a5f51226c8c6d3",
+          "after": "9af505a6cee4fe8a7858cdf209a7b7ca7e3ff523"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "a190884d5fdc2b7b302a5b01b00e0eb7573da4d3",
+          "after": "4275b38d62ca99910a4fdbcc6e7ad605986eebaa"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "4fd59007caab514e62aaf8b58505c1ab72af7d21",
+          "after": "b152062ad8810d03bfe013de4eae86e4b157e942"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/store-crash-worker.mjs",
+          "before": null,
+          "after": "f19662c277f9bcc86145487d72230cdfbdde2d50"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "81d21ca67b218c48f96968961363b54ebd985e35",
+          "after": "32c6607d4d19ec0baf82f2371c958709e4289fc6"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "4ec34580242522b7dd18b98233d911029ae4e143",
+          "after": "498f20be5b423d6328ffb0031d71d4e3d8233c43"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": null,
+          "after": "880e4ff8689135615f7c0271066eed24afd454e5"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "24364d91175a246788e23c7a468f36e211ec2121",
+          "after": "3ba7301a4ed8d3b7808ad92e3e439a6e6a15b1fb"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 pin settlement and delivery crash recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "4275b38d62ca99910a4fdbcc6e7ad605986eebaa",
+          "after": "8d0873f8f7b1bf55b7a5738486a7725bf02d6fc5"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": null,
+          "after": "4c810a59adb79865750e3987be1cd631f8b9539d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+          "before": null,
+          "after": "f5046a9c1c0dcdfa242322419c460213b33c5a80"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+          "before": null,
+          "after": "3d2ab6dcc52dba7f2ae9cd57ebbdfee466052ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "880e4ff8689135615f7c0271066eed24afd454e5",
+          "after": "d8e3c8b6d55ec8bd22662944d38d46ea5aa9b06f"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 validate retained readback runtimes and native crash recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": "4c810a59adb79865750e3987be1cd631f8b9539d",
+          "after": "3ccf8dc128d961d553aa8c09bc3caf64d8e24f4b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+          "before": "f5046a9c1c0dcdfa242322419c460213b33c5a80",
+          "after": "c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+          "before": "3d2ab6dcc52dba7f2ae9cd57ebbdfee466052ee0",
+          "after": "a91f8018335cd08180669ba04b8312608b046d8a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+          "before": null,
+          "after": "0fd55490fb08991a2c021ccc4e48679f0a2b00b6"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "cd4d6c9e6e2ca652a2d4a342b21862c83863abb2",
+          "after": "9ae65eb7f89d25542189d0e7e9242cdf63afe8b0"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 complete buyer state and readback contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "ba97147f77c17de62b3a769c61f830a793f1a449",
+          "after": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "3ec5ce19ae5042e26e22efe57de0f3551cfd4029",
+          "after": "11fd455e258f22b31e4f60eccc44f23c24884f8f"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "1e18fb0c5c16b8b2d131912f0f82ed1027b48274",
+          "after": "68a8a8946386f010d7a157a25e184bfb52370108"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "2da2dd379d8373233fc27cf5a16596dbcfef5766",
+          "after": "cdec5513e47a6619d24945508fc3068b0947c4ec"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "637c92e141d460b6a6b6e35fd65ed5e94767fd18",
+          "after": "4322f3da825c1c9597adac402e0fdb6a79878103"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": null,
+          "after": "251b9d4c6f691d7f355c5818406cd6175f0a42d6"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4ad468a36eaa8d89fedbf93481fc4efe4bd37310",
+          "after": "dc64b40d31bc23abd0adc66bf0523dee2194947a"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "a285fa77b2f41fff3a4e5fd4033429df9fb3d696",
+          "after": "fb2572f9cc687f812d0c29b3264b913f96d7fbaf"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "8917eac7303f718f2fb1ec4dad47235c0364c4cb",
+          "after": "0dfea61273c7142ebe5517515ba1fbd7bb28454e"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "8d0873f8f7b1bf55b7a5738486a7725bf02d6fc5",
+          "after": "1dee137ce9cec397a23f7fecbd8e0f90a1b90713"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal.test.mjs",
+          "before": null,
+          "after": "104a6ae7dcfd20ca84c7cfa98b7783843935c030"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "b152062ad8810d03bfe013de4eae86e4b157e942",
+          "after": "f1e6076cb72330b0bfed0ede94455e39d360272d"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": null,
+          "after": "848cc809e8ad906075024ef9ac1509df59fc6a1b"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "66f72d26900a14d77ba2f82336ea0cdd7d61997d",
+          "after": "a37f2735b669091c6a1d69b2f25a1f5e20e862ed"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "32c6607d4d19ec0baf82f2371c958709e4289fc6",
+          "after": "cb81fa7eaac038e26f34e910d1ac99c5259eb65f"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "498f20be5b423d6328ffb0031d71d4e3d8233c43",
+          "after": "36cf0c10d71208afda5d52f6aef02adc0121da62"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "d8e3c8b6d55ec8bd22662944d38d46ea5aa9b06f",
+          "after": "ab6e15a77a2fa3863da7a45fd7c057137bc9ed37"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "3ba7301a4ed8d3b7808ad92e3e439a6e6a15b1fb",
+          "after": "53fd1aab9efc53af9becb925e0933ee7601dde1f"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 constrain public readback to diagnostics and align observer contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "11fd455e258f22b31e4f60eccc44f23c24884f8f",
+          "after": "755d14a97ab96202d6c3c642758b5511573521e6"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "cdec5513e47a6619d24945508fc3068b0947c4ec",
+          "after": "3a2f791deae7661e27d0545c7bb54a3cf694d494"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "dc64b40d31bc23abd0adc66bf0523dee2194947a",
+          "after": "6b7b8ac62e0f6381b9262b9f567f43812a578e0c"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": "9af505a6cee4fe8a7858cdf209a7b7ca7e3ff523",
+          "after": "34fa04bf901c2bd3439d85bb251fa159a97d4e8a"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "848cc809e8ad906075024ef9ac1509df59fc6a1b",
+          "after": "0ece7589c9028ac6d578fdda441cf2a49464dcc8"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "a37f2735b669091c6a1d69b2f25a1f5e20e862ed",
+          "after": "4d6a27d69f6d53dbd1f64f85c0f223826ff48e33"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "cb81fa7eaac038e26f34e910d1ac99c5259eb65f",
+          "after": "0bb22ecb3c4906984740d7507195b1436857ece7"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "53fd1aab9efc53af9becb925e0933ee7601dde1f",
+          "after": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 pin diagnostic readback recovery cases",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "0ece7589c9028ac6d578fdda441cf2a49464dcc8",
+          "after": "91b95b00fd131578299078bbe36febc22c29344c"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 align host diagnostic contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "755d14a97ab96202d6c3c642758b5511573521e6",
+          "after": "f4be20324f8b8168e1b07cfcdf673b82b0e37a95"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "3a2f791deae7661e27d0545c7bb54a3cf694d494",
+          "after": "a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "6b7b8ac62e0f6381b9262b9f567f43812a578e0c",
+          "after": "f49c239f15c4a6af56b56a179fba840424b82c2d"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "1dee137ce9cec397a23f7fecbd8e0f90a1b90713",
+          "after": "f7dfbda21d62e38e7e254569818d0fb3034bd72a"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "91b95b00fd131578299078bbe36febc22c29344c",
+          "after": "f36b23ae79db9a58b48efae0ad65acc6ce72eff9"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "4d6a27d69f6d53dbd1f64f85c0f223826ff48e33",
+          "after": "2fc3afd8f75c10c33f256e2f32abdf6b62985a6a"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "0bb22ecb3c4906984740d7507195b1436857ece7",
+          "after": "c0d259390c30873269d2a1c9b306b8867dcc63b0"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 preserve atomic rollback and consistent diagnostics",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f49c239f15c4a6af56b56a179fba840424b82c2d",
+          "after": "3f3422c49edbf1af5bc5249909032c49a6518c8e"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "fb2572f9cc687f812d0c29b3264b913f96d7fbaf",
+          "after": "3a70798e2e4bca6c1d8b9a9eb17756a9fae740d8"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "f36b23ae79db9a58b48efae0ad65acc6ce72eff9",
+          "after": "222356f64ecbf3d674e34685e4602f4f75f5653d"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "2fc3afd8f75c10c33f256e2f32abdf6b62985a6a",
+          "after": "e78ebdddeac6e94164a7e0a8e8d7109387c030f1"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "ab6e15a77a2fa3863da7a45fd7c057137bc9ed37",
+          "after": "9212823cdcedd1af814e8e6c06f164c69a84a938"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 guard SQLite writes and align diagnostic projections",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "9418b11c221fddcf4f596ccd4b250e8b136f3ee1",
+          "after": "04b6618fe3d5a5e6450e52759e98c08163a3c2ab"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "c91e7f4769c14fa8b8306ef38647c65230cce881",
+          "after": "7848ec38a093fbd36993aa3ce6782224c4c48d86"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f4be20324f8b8168e1b07cfcdf673b82b0e37a95",
+          "after": "d4c59725d479e429657f000f7638e899c0c51b94"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3f3422c49edbf1af5bc5249909032c49a6518c8e",
+          "after": "2fb90ca5361cb8894fea31ba068e195a75472f38"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "3a70798e2e4bca6c1d8b9a9eb17756a9fae740d8",
+          "after": "bf39c769581827691f7851f2f007ba5f90c80a71"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "f7dfbda21d62e38e7e254569818d0fb3034bd72a",
+          "after": "5da633d98fd8bff71935417101105d2dc081ce62"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "ad06ad3f730a4b61f626a3eef35317bd839047b1",
+          "after": "ce11cbefbf4a92ef6f4b4d0a4797dc1ca26734c6"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": "3ccf8dc128d961d553aa8c09bc3caf64d8e24f4b",
+          "after": "85a1e20d8b277d37db3c38f93b8ef191e86e147d"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "222356f64ecbf3d674e34685e4602f4f75f5653d",
+          "after": "71d3ee0f2d75534c349560f55e36c08a834c7d73"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "9ae65eb7f89d25542189d0e7e9242cdf63afe8b0",
+          "after": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "9212823cdcedd1af814e8e6c06f164c69a84a938",
+          "after": "7e50ae142d79dc0e244fe143b0d151f3d458c2be"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 make diagnostics passive and preserve transaction outcomes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "04b6618fe3d5a5e6450e52759e98c08163a3c2ab",
+          "after": "5c4b400d71dc6c89903e3533ca99b64f2f98cd6b"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "7848ec38a093fbd36993aa3ce6782224c4c48d86",
+          "after": "57735129dcc0ef6e024dde68082933b3f8fa9b11"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "d4c59725d479e429657f000f7638e899c0c51b94",
+          "after": "8a08a79ef38ce5593a6447714e82068f4da698ac"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "2fb90ca5361cb8894fea31ba068e195a75472f38",
+          "after": "6326c1528d3734f9db46a310ea02740b66de71d8"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "bf39c769581827691f7851f2f007ba5f90c80a71",
+          "after": "14e78e4e35c41e153f34bf5cbda5e12c12a65aad"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": null,
+          "after": "22eeab29c92ded184522e70d2ebd095ea4322a94"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "7e50ae142d79dc0e244fe143b0d151f3d458c2be",
+          "after": "8560f9547739573a5f2c8c32c27a085fbd59370d"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 authenticate portal diagnostics and align discovery hints",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "57735129dcc0ef6e024dde68082933b3f8fa9b11",
+          "after": "04293a54ce00029c33754e8bce1f0945d1c22c11"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "6326c1528d3734f9db46a310ea02740b66de71d8",
+          "after": "f532121b0c11fe1db2b33170cb756e82d1348b4c"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "22eeab29c92ded184522e70d2ebd095ea4322a94",
+          "after": "e8df9e160ed00b2ef9174161da9dd68bea795249"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "ce11cbefbf4a92ef6f4b4d0a4797dc1ca26734c6",
+          "after": "c7f0e0a27f870ab8a5560186b5f2a655ad2d8d65"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "71d3ee0f2d75534c349560f55e36c08a834c7d73",
+          "after": "3e81e6c396c79999e349672610070370fab51cbd"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "e78ebdddeac6e94164a7e0a8e8d7109387c030f1",
+          "after": "6bc784e3f999fcebbdc8f28c361f594ab0d6f644"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 enforce host transaction and portal capability boundaries",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "5c4b400d71dc6c89903e3533ca99b64f2f98cd6b",
+          "after": "8c7c654c791025fd50aed4e339abcf5445732037"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "04293a54ce00029c33754e8bce1f0945d1c22c11",
+          "after": "58a689b3fd8ba4e6333b6b4660bc1bb7601bbe60"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": "251b9d4c6f691d7f355c5818406cd6175f0a42d6",
+          "after": "557ea59e906125decb9c56d5b2322a1d30af3321"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f532121b0c11fe1db2b33170cb756e82d1348b4c",
+          "after": "df2eb1e54ed4af2e454e574cbcf0ee1bfd1f5b08"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "14e78e4e35c41e153f34bf5cbda5e12c12a65aad",
+          "after": "9b3c78ed8b64b9113170ca6796196f49957881c2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "0dfea61273c7142ebe5517515ba1fbd7bb28454e",
+          "after": "27b7c86877470b5de99ef0f9e8f30d218469fd16"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "e8df9e160ed00b2ef9174161da9dd68bea795249",
+          "after": "49d49fdf4c3eec90c35156b102d36c34f0e0111e"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "c7f0e0a27f870ab8a5560186b5f2a655ad2d8d65",
+          "after": "26fb08cd50c7de8fdb85fc1366a21dc4820f4011"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": "85a1e20d8b277d37db3c38f93b8ef191e86e147d",
+          "after": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal.test.mjs",
+          "before": "104a6ae7dcfd20ca84c7cfa98b7783843935c030",
+          "after": "6f1b09c2849407627707cce2969e19f2a00490c5"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": "6e9b5e8a34479e881392588612cc264be7e1e87b",
+          "after": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "3e81e6c396c79999e349672610070370fab51cbd",
+          "after": "e26159ff36e0fb287d57e747dbfb7eff4ea46115"
+        },
+        {
+          "path": "packages/dacs-client/test/ingress-admission.test.mjs",
+          "before": "bc5df5a139d39697b81a2363c3e2554c0220551e",
+          "after": "d30d15034babe88428fd7c634243cb810e98e826"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "6bc784e3f999fcebbdc8f28c361f594ab0d6f644",
+          "after": "73b84bb84b931459b40a6ca8416085aa1706fbc2"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": null,
+          "after": "5694739e566066e19b72622ebf7249be6c3c3a1a"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 validate capability clocks and discovery hints",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "58a689b3fd8ba4e6333b6b4660bc1bb7601bbe60",
+          "after": "f502e07bec76483406f982ae9e275740c7da545c"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "df2eb1e54ed4af2e454e574cbcf0ee1bfd1f5b08",
+          "after": "622ecb8e56e8439a0106dfd911175b581c55beb8"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "26fb08cd50c7de8fdb85fc1366a21dc4820f4011",
+          "after": "706bb842ea657118e226624eec1332b244963641"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "e26159ff36e0fb287d57e747dbfb7eff4ea46115",
+          "after": "0eb8b02891900e64f2725e907934ec098ef017c7"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": "5694739e566066e19b72622ebf7249be6c3c3a1a",
+          "after": "18c6e3c74c2817a1c38f58676eb2053d76398ebb"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 correct capability hash contract source coordinate",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "0eb8b02891900e64f2725e907934ec098ef017c7",
+          "after": "f9eed04971e432660ed2f0343c13debc43b14939"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 bind diagnostic read capabilities and observation times",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "8c7c654c791025fd50aed4e339abcf5445732037",
+          "after": "9bff8dcef805bb2b8d291452aa5245b43fb28eed"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "f502e07bec76483406f982ae9e275740c7da545c",
+          "after": "76efe20dd340005ef69f6d13d85952cb9b65604e"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "622ecb8e56e8439a0106dfd911175b581c55beb8",
+          "after": "e917d62fca14236bc278ec7fe91ed9dbb3c1d213"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "49d49fdf4c3eec90c35156b102d36c34f0e0111e",
+          "after": "e84c5a65caf5cf7e6f9229738cee510055bb7612"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "706bb842ea657118e226624eec1332b244963641",
+          "after": "a7cc1e9a97c03fe5c08095d10210b7500daa7aea"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "f9eed04971e432660ed2f0343c13debc43b14939",
+          "after": "ee629529936314a335be0bd9f1081b26480996e6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "73b84bb84b931459b40a6ca8416085aa1706fbc2",
+          "after": "84b222cd3ec30df147e61cd776534666fd9e75fd"
+        }
+      ]
     }
   ]
 }

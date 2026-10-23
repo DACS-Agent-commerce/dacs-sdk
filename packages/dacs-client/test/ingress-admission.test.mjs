@@ -44,7 +44,7 @@ test('duplicate signed Listing members cannot yield a verified/transactable resu
  const f=JSON.parse(readFileSync(new URL('./fixtures/live-directory-market-report.json',import.meta.url))),listing=f.storageProgram.data;
  for(const where of ['directory','storage']) {
   const fetchImpl=async input=>{
-   const u=new URL(input),v=u.pathname==='/api/dacs/listings'?{listings:[f.summary],cursor:null,total:1}:u.pathname.startsWith('/api/dacs/listings/')?listing:f.storageProgram;
+   const u=new URL(input),v=(u.pathname==='/api/dacs/listings'||u.pathname.startsWith('/api/dacs/sellers/'))?{listings:[f.summary],cursor:null,total:1}:u.pathname.startsWith('/api/dacs/listings/')?listing:f.storageProgram;
    let text=JSON.stringify(v);
    if(where==='directory'&&v===listing)text='{"listingId":"unsigned-first-member",'+text.slice(1);
    if(where==='storage'&&v===f.storageProgram)text=text.replace('"data":{','"data":{"listingId":"unsigned-first-member",');

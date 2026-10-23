@@ -130,7 +130,7 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
   // changed, moved or removed row fails closed instead of reading as absent.
   function meta() {
     const m = Object.fromEntries(db.prepare('SELECT key, value FROM meta').all().map((r) => [r.key, r.value]));
-    if (m.format !== DURABLE_WALLET_JOURNAL_FORMAT || m.journal_id !== journalId) fail('journal-integrity', 'the journal identity changed');
+    if (m.format !== DURABLE_WALLET_JOURNAL_FORMAT || m.version !== String(DURABLE_WALLET_JOURNAL_VERSION) || m.journal_id !== journalId) fail('journal-integrity', 'the journal format, version or identity changed');
     const totals = db.prepare('SELECT count(*) AS n, coalesce(sum(bytes), 0) AS bytes, coalesce(max(seq), 0) AS seq FROM records').get();
     if (String(totals.n) !== m.records || String(totals.bytes) !== m.total_bytes || totals.seq >= Number(m.next_seq)) fail('journal-integrity', 'journal record totals changed outside this journal');
     return m;
@@ -217,9 +217,9 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     // release leaves the lane held (fail closed) and is reported to the caller.
     try {
       const removed = tx('BEGIN IMMEDIATE', () => db.prepare('DELETE FROM locks WHERE key = ? AND token = ?').run(key, token).changes);
-      if (removed !== 1) fail('journal-fenced', 'the wallet lane lock was removed while held; results must be reconciled by readback', outcome.error ? { cause: outcome.error } : undefined);
+      if (removed !== 1) fail('journal-fenced', 'the wallet lane lock was removed while held; results must be reconciled by readback', Object.hasOwn(outcome, 'error') ? { cause: outcome.error } : undefined);
     } finally { active -= 1; }
-    if (outcome.error) throw outcome.error;
+    if (Object.hasOwn(outcome, 'error')) throw outcome.error;
     return outcome.value;
   }
 

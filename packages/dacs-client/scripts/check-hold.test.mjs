@@ -10,12 +10,13 @@ const PACKAGE_DIR = join(SDK_ROOT, 'packages/dacs-client');
 const GATE = join(PACKAGE_DIR, 'scripts/check-hold.mjs');
 const readJson = file => JSON.parse(readFileSync(file, 'utf8'));
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-const git = (repo, ...args) => execFileSync('git', ['-C', repo, ...args], {env: gitEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+// Synchronous Git commands can still detach maintenance that races teardown.
+const git = (repo, ...args) => execFileSync('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-C', repo, ...args], {env: gitEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
 const commit = (repo, message) => git(repo, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', message);
 function put(file, text) { mkdirSync(dirname(file), {recursive:true}); writeFileSync(file, text); }
 function scratch(t) {
   const repo = mkdtempSync(join(tmpdir(), 'client-hold-'));
-  t.after(() => rmSync(repo, {recursive:true, force:true}));
+  t.after(() => rmSync(repo, {recursive:true, force:true, maxRetries:5, retryDelay:50}));
   const dir = join(repo, 'packages/dacs-client');
   cpSync(PACKAGE_DIR, dir, {recursive:true});
   // Old snapshots need their complete outside tree to reproduce the review.
@@ -95,6 +96,6 @@ test('new exports remain refused through the package command', t => {
   assert.equal(r.status,1,r.stdout+r.stderr);assert.match(r.stderr,/package.json: changed bytes/);assert.doesNotMatch(r.stdout,/^# tests /m);
 });
 test('missing HEAD and malformed record fail closed', t => {
-  const s=scratch(t);rmSync(join(s.repo,'.git'),{recursive:true,force:true});refuses(s,/not a git repository|not the Git worktree root/);
+  const s=scratch(t);rmSync(join(s.repo,'.git'),{recursive:true,force:true,maxRetries:5,retryDelay:50});refuses(s,/not a git repository|not the Git worktree root/);
   const other=scratch(t);writeFileSync(join(other.dir,'HOLD.json'),'{');refuses(other,/not valid JSON/);
 });
