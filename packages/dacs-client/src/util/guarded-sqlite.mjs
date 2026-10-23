@@ -2,26 +2,38 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const callbacks = [];
-let installed = false, checking = false, nativeExec, nativePrepare, nativeGet;
+const owners = new WeakMap(), iterators = new WeakMap();
+let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll;
 function check() {
   if (checking) return;
   checking = true;
   try { for (const { predicate } of callbacks) predicate(); }
   finally { checking = false; }
 }
-function execute(fn) {
+function execute(fn, db, sql) {
   check();
   if (checking || callbacks.length === 0) return fn();
-  const writable = new Map(callbacks.filter(frame => frame.writable).map(frame => [frame.db, frame]));
-  const opened = [];
+  // EXPLAIN includes trigger programs. Application functions (including
+  // overrides of built-ins) cannot run while native writers are enabled.
+  if (db && sql) {
+    const functions = new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
+      .filter(row => !row.builtin).map(row => row.name.toLowerCase()));
+    const program = nativeAll.call(nativePrepare.call(db, `EXPLAIN ${sql}`));
+    if (program.some(row => /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)$/.test(row.opcode)
+      && functions.has(String(row.p4).replace(/\(.*$/, '').toLowerCase()))) {
+      throw new TypeError('SQL callbacks are unsupported by the statement guard');
+    }
+  }
+  const frame = callbacks.find(frame => frame.db === db);
+  // Statements predating installation have no known owner. They retain the
+  // read-only fence; never open a different connection on their behalf.
+  if (!frame?.writable) return fn();
   try {
-    for (const db of writable.keys()) { nativeExec.call(db, 'PRAGMA query_only=OFF'); opened.push(db); }
+    nativeExec.call(db, 'PRAGMA query_only=OFF');
     return fn();
   } finally {
-    for (const db of opened) {
-      try { nativeExec.call(db, 'PRAGMA query_only=ON'); }
-      catch { try { db.close(); } catch { /* A failed fence retires the handle. */ } }
-    }
+    try { nativeExec.call(db, 'PRAGMA query_only=ON'); }
+    catch { try { db.close(); } catch { /* A failed fence retires the handle. */ } }
   }
 }
 function install(db) {
@@ -31,23 +43,35 @@ function install(db) {
   const database = DatabaseSync.prototype;
   const prepare = database.prepare, exec = database.exec;
   const statement = Object.getPrototypeOf(prepare.call(db, 'SELECT 1'));
-  const run = statement.run;
-  nativeExec = exec; nativePrepare = prepare; nativeGet = statement.get;
+  const iterator = Object.getPrototypeOf(statement.iterate.call(prepare.call(db, 'SELECT 1')));
+  const advance = iterator.next;
+  nativeExec = exec; nativePrepare = prepare; nativeGet = statement.get; nativeAll = statement.all;
   // Patch the native statement prototype too: the host may already have
   // prepared a statement before this capability was installed.
   for (const method of ['run', 'get', 'all', 'iterate']) {
     const original = statement[method];
     statement[method] = function (...args) {
-      const result = execute(() => Reflect.apply(original, this, args));
-      if (method !== 'iterate' || callbacks.length === 0 || checking) return result;
-      return {
-        next(...values) { return execute(() => result.next(...values)); },
-        return(...values) { return result.return(...values); },
-        [Symbol.iterator]() { return this; },
-      };
+      const owner = owners.get(this);
+      const result = execute(() => Reflect.apply(original, this, args), owner, this.sourceSQL);
+      if (method === 'iterate') iterators.set(result, { db: owner, sql: this.sourceSQL });
+      return result;
     };
   }
-  database.prepare = function (...args) { check(); return Reflect.apply(prepare, this, args); };
+  iterator.next = function (...args) {
+    const owner = iterators.get(this);
+    return execute(() => Reflect.apply(advance, this, args), owner?.db, owner?.sql);
+  };
+  database.prepare = function (...args) {
+    check(); const result = Reflect.apply(prepare, this, args); owners.set(result, this); return result;
+  };
+  for (const method of ['function', 'aggregate']) {
+    if (typeof database[method] !== 'function') continue;
+    const original = database[method];
+    database[method] = function (...args) {
+      if (callbacks.length) throw new TypeError('SQL callbacks cannot be registered during a guard');
+      return Reflect.apply(original, this, args);
+    };
+  }
   database.exec = function (sql) {
     if (callbacks.length === 0 || checking || typeof sql !== 'string') return exec.call(this, sql);
     // SQLite itself finds statement boundaries, including CREATE TRIGGER
@@ -55,10 +79,11 @@ function install(db) {
     let remaining = sql;
     while (remaining.length) {
       check();
-      if (/^(?:\s|;|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*$/.test(remaining)) break;
+      remaining = remaining.replace(/^(?:[ \t\n\f\r;]|--[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$))*/, '');
+      if (!remaining) break;
       const next = prepare.call(this, remaining);
       const consumed = next.sourceSQL.length;
-      execute(() => run.call(next));
+      execute(() => exec.call(this, next.sourceSQL), this, next.sourceSQL);
       remaining = remaining.slice(consumed);
     }
   };
@@ -69,6 +94,8 @@ function install(db) {
  * The synchronous callback's result/error is preserved; guard errors stop SQL.
  * Native methods remain unrestricted outside guarded callbacks. Predicates
  * may inspect SQLite themselves; those probes bypass recursive checking.
+ * SQL callback execution/registration is unsupported during guards. Statements
+ * prepared before installation can only read while a guard is active.
  */
 export function withSqliteStatementGuard(db, predicate, fn) {
   install(db);
