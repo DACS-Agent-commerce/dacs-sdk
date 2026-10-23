@@ -744,7 +744,8 @@ export function createDacsFixedPriceBuyerAuditV1(
         const sellerReceivingKey = sellerKey === null
           ? undefined : Buffer.from(sellerKey).toString("hex");
         const expectedAmountOs = baseUnits(agreement.terms.price.amount, 9);
-        if (observation.status !== "included" || buyerPayingKey === undefined ||
+        if (observation.status !== "included" || observation.execution !== "executed" ||
+            buyerPayingKey === undefined ||
             sellerReceivingKey === undefined || observation.txHash !== event.txHash ||
             observation.blockNumber !== event.blockNumber ||
             observation.includedAt !== paymentEvidence.observedAt ||
@@ -832,7 +833,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           "revalidateSettlement"
         ] = async () => {
           const fresh = await options.observeDemosTransfer(event.txHash);
-          if (fresh.status !== "included") {
+          if (fresh.status !== "included" || fresh.execution !== "executed") {
             return fresh.status === "failed" || fresh.status === "invalid"
               ? { disposition: "fail" as const,
                   reason: "buyer-audit-native-settlement-failed" }
