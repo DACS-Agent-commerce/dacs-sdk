@@ -138,6 +138,22 @@ function boundedRevocationValue(value) {
   return admitRawJson(Buffer.from(text), { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
 }
 
+const ADMISSION_MAX_LIST_ITEMS=256;
+// Admission capabilities cap wire bytes before decoding and honor this signal.
+// Returned representations also receive independent byte/value/list bounds.
+export async function readAdmissionCapability(admission,method,input){
+  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('admission deadline expired','TimeoutError'));},options.timeoutMs);});
+  try{
+    return await Promise.race([Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
+      if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
+      const result=boundedRevocationValue(value),pending=[result];let values=0;
+      while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
+      return result;
+    }),deadline]);
+  }finally{clearTimeout(timer);controller.abort();}
+}
+
 export async function listingRevocationProblem(admission, input) {
   const controller = new AbortController();
   const options = { signal: controller.signal, maxBytes: REVOCATION_READ_LIMITS.maxBytes, timeoutMs: REVOCATION_READ_LIMITS.timeoutMs };
