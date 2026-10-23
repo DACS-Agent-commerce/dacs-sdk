@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { AttestationRef, BundleRequirement, ClaimRequirement } from "../../src/artifacts/index.js";
 import { canonicalize, encodeAddressSegment, sha256Hex } from "../../src/canonical/index.js";
@@ -14,7 +14,7 @@ import {
 // invocation predicate (isSellerFulfilmentVetInvocationMismatch), so an
 // invocation set the runner refuses after payment is refused before signing.
 describe("sellerFulfilmentVetRequirementsViolation", () => {
-  const jobId = generateCanonicalJobId();
+  const jobId = generateCanonicalJobId({ timestamp: 1_780_000_000_000, entropy: new Uint8Array(10).fill(3) });
   const buyerClaim = `did:demos:agent:${"b1".repeat(32)}`;
   const sellerClaim = `did:demos:agent:${"5e".repeat(32)}`;
   const recordRef = (party: string, verifier: string): AttestationRef => ({
@@ -65,6 +65,37 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     scheme: "test-claim", verificationRequired: true, recipeVersion: 2,
     parameters: { audience: "first" },
   };
+
+  test("uses a reproducible job ID for every fixture reference", () => {
+    expect(jobId).toBe(generateCanonicalJobId({ timestamp: 1_780_000_000_000, entropy: new Uint8Array(10).fill(3) }));
+  });
+
+  test("refuses oversized invocation lists before inspecting members", () => {
+    const inspect = vi.spyOn(Object, "getOwnPropertyDescriptor");
+    try {
+      expect(check([valid[0], valid[1], structuredClone(valid[0])])).not.toBeNull();
+      expect(inspect.mock.calls.some(([value]) => value === valid[0])).toBe(false);
+    } finally {
+      inspect.mockRestore();
+    }
+  });
+
+  test.each([120, 121])("reserves the audit-source envelope depth for %i nested parameter wrappers", (wrappers) => {
+    let parameters: Record<string, unknown> = {};
+    for (let depth = 0; depth < wrappers; depth += 1) parameters = { child: parameters };
+    const claim = { ...requiredClaim, parameters };
+    const requirement = { ...buyerRequirement, required: [claim] };
+    const entry = invocation(buyer, sellerClaim, requirement);
+    entry.freshness = [expectedResult(claim)];
+    const entries = [entry, valid[1]];
+    if (wrappers === 120) {
+      expect(() => canonicalize({ artifacts: { vetRequirements: entries } })).not.toThrow();
+      expect(check(entries, requirement)).toBeNull();
+    } else {
+      expect(() => canonicalize({ artifacts: { vetRequirements: entries } })).toThrow();
+      expect(check(entries, requirement)).not.toBeNull();
+    }
+  });
 
   test("accepts one invocation per party record that the delivery runner accepts", () => {
     expect(check(valid)).toBeNull();
