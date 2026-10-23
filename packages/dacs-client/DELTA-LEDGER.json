@@ -1589,6 +1589,7 @@
         }
       ]
     },
-    {"delta":"D11","subject":"fix(client): D11 restore standalone provider and strengthen import vectors","files":[{"path":"packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs","before":"59a2fd307756d036f813edd17dec2fa8be23e68f","after":"b7183e63a75b68cda34c2b30a4d532963794b13f"},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"e1085f274e14f20b87335189155f76284fd3b92a","after":"3df4a602a8fba8bcdaba2a75919aeebd53f1a46d"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"3c96ca8c5a47dcb88862af46324df331961d153e","after":"7cbf9eb0efa87e4b197e8d320a9080363465ef61"}]}
+    {"delta":"D11","subject":"fix(client): D11 restore standalone provider and strengthen import vectors","files":[{"path":"packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs","before":"59a2fd307756d036f813edd17dec2fa8be23e68f","after":"b7183e63a75b68cda34c2b30a4d532963794b13f"},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"e1085f274e14f20b87335189155f76284fd3b92a","after":"3df4a602a8fba8bcdaba2a75919aeebd53f1a46d"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"3c96ca8c5a47dcb88862af46324df331961d153e","after":"7cbf9eb0efa87e4b197e8d320a9080363465ef61"}]},
+    {"delta":"D11","subject":"fix(client): D11 fence SQLite callbacks and preserve exec semantics","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"f377b3dd6895e2ad1f02bedddc9eb18177f9eb57","after":"f68603bd3f057c2bf42c8670dd6cb6d52cf05db4"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"8173b4c5b350f1a39a3b6bad62e8343f3e688258","after":"e547911cd3385e9eed8337be4b655bc424c82aaf"}]}
   ]
 }
