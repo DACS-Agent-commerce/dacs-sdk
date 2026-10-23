@@ -409,6 +409,185 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           return { released: true, recordsChanged: 0 };
         });
       },
+      reserveSignatureCommitment(buyer, jobId) {
+        return transaction(() => {
+          fence(jobId);
+          const id = `signature-buyer:${buyer}`, prior = effect(id);
+          if (prior?.pending && prior.jobId !== jobId) fail('seller_signature_buyer_unresolved');
+          putEffect(id, { kind: 'signature-buyer', pending: true, jobId });
+        });
+      },
+      releaseSignatureCommitment(buyer, jobId) {
+        transaction(() => {
+          fence(jobId);
+          const id = `signature-buyer:${buyer}`, prior = effect(id);
+          if (prior?.pending && prior.jobId === jobId) putEffect(id, { ...prior, pending: false });
+        });
+      },
+      bindSettlement(settlementId, jobId, claim = null) {
+        if (typeof settlementId !== 'string' || settlementId.length < 1 || settlementId.length > 512 || !isCanonicalJobId(jobId)) fail('seller_state_binding_invalid');
+        return transaction(() => {
+          fence(jobId);
+          const row = get('SELECT * FROM seller_settlements WHERE id=?', settlementId);
+          const previous = row ? verified(row.value, 'settlement', settlementId) : null;
+          if (previous && row.job !== previous.job) fail('seller_state_corrupt');
+          const claims = previous?.claims ?? (previous ? [{ jobId: previous.job }] : []);
+          if (!claims.some(c => c.jobId === jobId)) claims.push({ jobId, ...(claim ? { claim } : {}) });
+          const value = { job: previous?.job ?? jobId, claims };
+          run('INSERT OR REPLACE INTO seller_settlements VALUES (?,?,?)', settlementId, value.job, authenticated('settlement', settlementId, value));
+          return claims.length === 1;
+        });
+      },
+      settlementJob(settlementId) {
+        const row = get('SELECT * FROM seller_settlements WHERE id=?', settlementId);
+        if (!row) return null;
+        const retained = verified(row.value, 'settlement', settlementId);
+        if (row.job !== retained.job) fail('seller_state_corrupt');
+        return (retained.claims?.length ?? 1) === 1 ? retained.job : null;
+      },
+      // CORE SN-1..SN-4: the seller's own challenge ledger. An issued nonce is
+      // kept with its job, buyer and lifetime before any presentation exists;
+      // the first attempt that carries it is kept in the same transaction
+      // that reads it, so it is consumed before the attempt is validated.
+      issueChallenge(nonce, value) {
+        transaction(() => {
+          if (effect(`session-challenge:${nonce}`)) fail('seller_challenge_taken');
+          putEffect(`session-challenge:${nonce}`, { kind: 'session-challenge', ...clone(value), attempt: null });
+        });
+      },
+      // The challenge as it was before this attempt (null when never issued);
+      // the attempt is kept only when it is the first.
+      attemptChallenge(nonce, attempt) {
+        return transaction(() => {
+          const prior = effect(`session-challenge:${nonce}`);
+          if (prior?.kind !== 'session-challenge') return null;
+          if (prior.attempt === null) putEffect(`session-challenge:${nonce}`, { ...prior, attempt: clone(attempt) });
+          return prior;
+        });
+      },
+      admitChallenge(nonce, presentationHash) {
+        transaction(() => {
+          const prior = effect(`session-challenge:${nonce}`);
+          if (prior?.kind !== 'session-challenge' || prior.attempt?.presentationHash !== presentationHash) fail('seller_state_corrupt');
+          putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true } });
+        });
+      },
+      // A signature leaves signOnce only after its completion record, written
+      // under the job fence. So a retained intent for the same bytes is a
+      // signing that released nothing (its signer threw, or its holder died or
+      // lost the job before the record): the current holder signs it again,
+      // under the same fence. Without that, one signer failure would refuse
+      // these bytes for good, a paid order's evidence included.
+      signOnce(id, bytes) {
+        const bytesHash = sha256Hex(bytes), jobId = scopedJob();
+        return transaction(() => {
+          fence(jobId);
+          const prior = effect(id);
+          if (prior) {
+            if (prior.kind !== 'signature' || prior.bytesHash !== bytesHash) fail('seller_effect_conflict');
+            if (prior.state === 'intent') return null;
+            if (prior.state !== 'complete') fail('seller_signature_reconciliation_required');
+            const signature = Buffer.from(prior.signature, 'base64url');
+            if (!verify(null, Buffer.from(bytes), key, signature)) fail('seller_state_corrupt');
+            return signature;
+          }
+          // Retain the intent in a separate durable transaction before signing.
+          return null;
+        }) ?? (() => {
+          transaction(() => {
+            fence(jobId);
+            const prior = effect(id);
+            if (prior && !(prior.kind === 'signature' && prior.bytesHash === bytesHash && prior.state === 'intent')) fail('seller_state_busy');
+            if (!prior) putEffect(id, { kind: 'signature', bytesHash, state: 'intent' });
+          });
+          const signature = Buffer.from(signer.sign(Buffer.from(bytes)));
+          if (signature.length !== 64 || !verify(null, Buffer.from(bytes), key, signature)) fail('seller_state_signer_invalid');
+          // Fenced like the intent: a holder that lost its row while the
+          // signer ran keeps neither the signature nor a completion record, and
+          // its retained intent leaves the outcome to the next holder's readback.
+          transaction(() => {
+            fence(jobId);
+            putEffect(id, { kind: 'signature', bytesHash, state: 'complete', signature: signature.toString('base64url') });
+          });
+          return signature;
+        })();
+      },
+      signature(id) {
+        const prior = effect(id);
+        if (!prior) return { disposition: 'absent', reason: 'no retained signing intent' };
+        if (prior.kind !== 'signature' || prior.state !== 'complete') return { disposition: 'indeterminate', reason: 'retained signer outcome is unknown' };
+        return { disposition: 'present', value: prior.signature };
+      },
+      async anchor({ jobId, logicalAddress, artifact, anchors, authorize }) {
+        const id = `anchor:${logicalAddress}`;
+        const value = { kind: 'anchor', jobId, logicalAddress, artifact: clone(artifact), hash: contentHash(artifact) };
+        const perform = transaction(() => {
+          fence(jobId);
+          const prior = effect(id);
+          if (prior) {
+            const { state, receipt, ...binding } = prior;
+            if (!same(binding, value)) fail('seller_effect_conflict');
+            return false;
+          }
+          putEffect(id, { ...value, state: 'intent' });
+          return true;
+        });
+        if (perform) {
+          let writerSignature, receipt;
+          try { writerSignature = authorize(); } catch { fail('seller_anchor_reconciliation_required'); }
+          // Checked again last, with nothing awaited between it and the write.
+          fence(jobId);
+          try { receipt = await anchors.write({ logicalAddress, artifact, writer: signer.claim, writerSignature }); } catch { fail('seller_anchor_reconciliation_required'); }
+          const record = { status: 'present', artifact, receipt };
+          if (verifyFixtureRecord(record, { logicalAddress, expectedWriter: signer.claim }) !== 'valid') fail('seller_anchor_reconciliation_required');
+          // Fenced: a holder that lost its row during the write records
+          // nothing, and the retained intent leaves the write to readback.
+          transaction(() => {
+            fence(jobId);
+            putEffect(id, { ...value, state: 'complete', receipt });
+          });
+          return receipt;
+        }
+        // A signed state snapshot is historical context, not anchor proof. Both
+        // completed and uncertain anchors must be read and authenticated again.
+        return api.reconcileAnchor(id, anchors);
+      },
+      async reconcileAnchor(id, anchors) {
+        const prior = effect(id);
+        if (!prior || prior.kind !== 'anchor') fail('seller_effect_missing');
+        const scoped = running.getStore()?.api === api;
+        if (scoped) transaction(() => fence(prior.jobId));
+        let record;
+        try { record = await anchors.read(prior.logicalAddress); } catch { fail('seller_anchor_reconciliation_required'); }
+        if (record.status !== 'present') fail('seller_anchor_reconciliation_required');
+        if (!same(record.artifact, prior.artifact) || verifyFixtureRecord(record, { logicalAddress: prior.logicalAddress, expectedWriter: signer.claim }) !== 'valid') fail('seller_anchor_reconciliation_invalid');
+        // Inside an acquisition the update is fenced like every job-scoped
+        // write. Unscoped (the lock-free reconcile) it only records an
+        // authenticated readback of a retained intent, as before.
+        transaction(() => {
+          if (scoped) fence(prior.jobId);
+          putEffect(id, { ...prior, state: 'complete', receipt: record.receipt });
+        });
+        return record.receipt;
+      },
+      hasAnchor: (logicalAddress) => effect(`anchor:${logicalAddress}`)?.kind === 'anchor',
+      async readAnchor({ jobId, logicalAddress, anchors }) {
+        const prior = effect(`anchor:${logicalAddress}`);
+        if (!prior || prior.kind !== 'anchor' || prior.jobId !== jobId) fail('seller_anchor_intent_missing');
+        const receipt = await api.reconcileAnchor(`anchor:${logicalAddress}`, anchors);
+        return { status: 'present', artifact: clone(prior.artifact), receipt };
+      },
+      async reconcileJob(jobId, anchors) {
+        const rows = db.prepare('SELECT id,value FROM seller_effects ORDER BY id').all();
+        const outcomes = [];
+        for (const row of rows) {
+          const retained = verified(row.value, 'effect', row.id);
+          if (retained.kind !== 'anchor' || retained.jobId !== jobId || retained.state === 'complete') continue;
+          try { await api.reconcileAnchor(row.id, anchors); outcomes.push({ address: retained.logicalAddress, status: 'present-authenticated' }); }
+          catch (error) { outcomes.push({ address: retained.logicalAddress, status: 'held', reason: error.code }); }
+        }
+        return { status: outcomes.some((v) => v.status === 'held') ? 'held' : 'reconciled', outcomes };
+      },
       close: () => { if (owned.size) fail('seller_state_busy'); db.close(); },
     };
     try { pruneLeases(); } catch { /* the database is busy: a later open prunes */ }
