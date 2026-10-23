@@ -1,5 +1,6 @@
 import {assertQualifiedDeployment} from './deployment-qualification.mjs';
-import {createPublicKey,verify as verifySignature} from 'node:crypto';
+import { verifyComponent } from '../dacs/listing.mjs';
+import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // Application-owned native publication for the real demo composition. Every
 // CREATE is produced by the packaged seller wallet and then accepted only
@@ -16,7 +17,7 @@ import { storageWriteRpcSigner } from './storage-write-recovery.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OPERATOR_CLOSING } from './operator-approval.mjs';
 import {
-  ARTIFACT_SEPARATORS, signedBytes, canonicalize,
+  ARTIFACT_SEPARATORS, FINALITY_COMMITMENT_SEPARATOR, signedBytes, canonicalize, sameCanonicalClaimIdentity,
   contentHash,
   isCompositeVerificationRecord,
   isFinalityCommitmentRecord,
@@ -50,22 +51,33 @@ const NO_INTENT_ABSENT='no seller-owned demo CREATE intent';
 const UNSIGNED_ABSENT='the wallet never signed this CREATE (no signed transaction is retained for it); publishing it asks again';
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
 
-function artifactValid(kind,value,writer,verifier=writer) {
+// The caller authenticates expectedSigner: the Vet verifier or commitment
+// orchestrator, which may differ from the native storage owner.
+function artifactValid(kind,value,writer,expectedSigner=writer) {
   if(kind!=='Listing' && !isCanonicalJobId(value?.jobId)) return false;
-  if(kind==='Listing') return isListing(value) && value.seller?.identity?.presentedBy===writer;
-  if(kind==='CompositeVerificationRecord') {
-    if(!isCompositeVerificationRecord(value) || value.signature?.signer!==verifier || value.signature.algorithm!=='ed25519'
-      || !/^did:demos:agent:[a-f0-9]{64}$/.test(verifier)
-      || (value.evaluatedParty===writer ? verifier===writer : verifier!==writer)) return false;
-    try { return verifySignature(null,signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord,contentHash(value)),
-      createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),Buffer.from(verifier.slice(16),'hex')]),format:'der',type:'spki'}),Buffer.from(value.signature.value,'base64url')); }
-    catch { return false; }
-  }
-  if(kind==='FinalityCommitmentRecord') return isFinalityCommitmentRecord(value) && value.signature?.signer===writer;
+  const signed=(separator,signer)=>sameCanonicalClaimIdentity(value?.signature?.signer,signer)
+    && verifyComponent({signedBytes:signedBytes(separator,contentHash(value)),signature:value.signature});
+  if(kind==='Listing') return isListing(value) && sameCanonicalClaimIdentity(value.seller?.identity?.presentedBy,writer) && signed(ARTIFACT_SEPARATORS.Listing,writer);
+  if(kind==='CompositeVerificationRecord') return isCompositeVerificationRecord(value)
+    && (sameCanonicalClaimIdentity(value.evaluatedParty,writer) ? !sameCanonicalClaimIdentity(expectedSigner,writer) : sameCanonicalClaimIdentity(expectedSigner,writer))
+    && signed(ARTIFACT_SEPARATORS.CompositeVerificationRecord,expectedSigner);
+  if(kind==='FinalityCommitmentRecord') return isFinalityCommitmentRecord(value) && signed(FINALITY_COMMITMENT_SEPARATOR,expectedSigner);
   if(kind==='SettlementEvidence')return isNativeDeliveryEvidence(value,writer,`dacs4:evidence:${value.jobId}`);
-  return kind==='Deliverable' && value?.reportVersion==='1' && value.kind==='dacs-chatgpt-plugin/devnet-purchased-report'
-    && value.producer===writer && value.content?.mediaType==='text/plain; charset=utf-8'
-    && typeof value.content.text==='string' && value.content.text.length>0 && value.content.text.length<=16384;
+  return kind==='Deliverable' && isDevnetPurchasedReport(value,{producer:writer});
+}
+// Journal snapshots are local authority only. Missing/uncertain observations
+// never manufacture absence; callers await both journals before this decision.
+function unsignedIntent(logicalAddress,retained,sourceRows,walletRows) {
+  if(!retained || Object.hasOwn(retained,'hash') || Object.hasOwn(retained,'signedTransaction')) return false;
+  if(retained.transaction?.content?.data?.[1]?.metadata?.logicalAddress!==logicalAddress) return false;
+  if(retained.stage==='closing'){if(retained.error!==OPERATOR_CLOSING)return false;}
+  else if(retained.stage!=='unsigned'&&retained.stage!=='intent')return false;
+  const names=value=>value?.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress===logicalAddress;
+  return Array.isArray(sourceRows)&&Array.isArray(walletRows)&&!sourceRows.some(([,value])=>names(value))
+    && !walletRows.some(([key,value])=>key.startsWith('demo/wallet/')&&names(value));
+}
+async function unsignedJournalIntent(logicalAddress,retained,sourceJournal,walletJournal) {
+  return unsignedIntent(logicalAddress,retained,await sourceJournal.entries(),await walletJournal.entries());
 }
 function deliveryBindingValid(value,artifact,logicalAddress,hash) {
   return value?.version==='1' && value.profile==='dacs-native-delivery-publication/v1' && value.jobId===artifact.jobId
@@ -120,6 +132,8 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     if(jobPrefix && !isCanonicalJobId(logicalAddress.slice(jobPrefix[0].length).split(':')[0])) fail('invalid','job address must contain a canonical uppercase ULID');
     return `demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
   };
+
+  const signedNothing=(address,retained)=>unsignedJournalIntent(address,retained,sourceCapability.journal,journal);
 
   async function liveNonceRows(rows,outcomes=rows) {
     const rejected=outcomes.map(([,row])=>row).filter(row=>broadcastRejected(row)&&row.transaction?.content?.from===owner);
@@ -361,12 +375,6 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // answered without signing), or an 'intent' one (the process died while the
   // wallet was asked: a signature it made but did not journal was never sent).
   // Any other row reads as before (plain absence for 'closing', else a readback).
-  async function signedNothing(logicalAddress,retained) {
-    if(Object.hasOwn(retained,'hash') || Object.hasOwn(retained,'signedTransaction')) return false;
-    if(retained.stage==='closing'){ if(retained.error!==OPERATOR_CLOSING) return false; }
-    else if(retained.stage!=='unsigned' && retained.stage!=='intent') return false;
-    return !(await signedCreateRetained(logicalAddress));
-  }
   // Whether the source or this seller's wallet retains a signed CREATE for the
   // address.
   async function signedCreateRetained(logicalAddress) {
