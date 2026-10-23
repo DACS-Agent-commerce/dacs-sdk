@@ -745,5 +745,16 @@
       "packages/dacs-client/test/public-api.test.mjs",
       "packages/dacs-client/test/sweep-contracts.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 08 document the buyer integration contract",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
   }
 ]

@@ -1093,6 +1093,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/public-api.test.mjs:1` |
 | delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/README.md:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
