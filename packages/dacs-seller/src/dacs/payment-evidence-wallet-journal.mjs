@@ -61,7 +61,8 @@
 // or replaced file is another journal, which the agent never asks about an
 // anchor the earlier one kept. reconcilePaymentEvidence refuses
 // (wallet_journal_unknown_attempt) an attempt whose answer names a txHash this
-// journal never kept.
+// journal never kept. A superseded named attempt with a live successor is
+// refused as wallet_journal_stale_attempt; reconcile the successor separately.
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -72,7 +73,7 @@ import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
 // Bounds on what signCreate answers before it is kept.
-const MAX_SIGNED_TRANSACTION = 1024 * 1024;
+const MAX_SIGNED_TRANSACTION_BYTES = 1024 * 1024;
 const LOCK_POLL_MS = 5;
 const TX_HASH = /^[0-9a-f]{64}$/;
 // demosdk 4.0.16 (demosclass.js sign): Ed25519 is 0x and lower-case hex.
@@ -146,13 +147,16 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     throw new TypeError('the wallet journal file has the earlier format, which kept no nonce; it is not read');
   }
   // One row per signed CREATE; superseded rows are kept, and an address has at most one live row.
-  db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000;
+  const initialized = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'evidence_creates'").get();
+  if (!initialized) {
+    db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000;
     CREATE TABLE IF NOT EXISTS evidence_creates (logical_address TEXT NOT NULL, receipt_content_hash TEXT NOT NULL,
       tx_hash TEXT NOT NULL UNIQUE, nonce INTEGER NOT NULL, signed_transaction TEXT NOT NULL, signed_at INTEGER NOT NULL,
       superseded_at INTEGER, PRIMARY KEY (logical_address, nonce));
     CREATE UNIQUE INDEX IF NOT EXISTS evidence_creates_live ON evidence_creates (logical_address) WHERE superseded_at IS NULL;
     CREATE TABLE IF NOT EXISTS journal_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
-  db.prepare("INSERT OR IGNORE INTO journal_meta VALUES ('journal-id', ?)").run(randomBytes(16).toString('hex'));
+    db.prepare("INSERT INTO journal_meta VALUES ('journal-id', ?)").run(randomBytes(16).toString('hex'));
+  } else db.exec('PRAGMA synchronous=FULL');
   const journalId = db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get().value;
   // SQLite's writer lock is the signing lease across handles and processes.
   // A crash releases it. Commit the signed bytes before any broadcast.
@@ -236,7 +240,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     let { live: signed, highestNonce } = await liveFor(input);
     if (!signed) {
       const answer = await signCreate(structuredClone(input));
-      if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || answer.signedTransaction.length > MAX_SIGNED_TRANSACTION
+      if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
       const problem = signedCreateProblem(answer, input);
       if (problem) throw Object.assign(new Error(`signCreate's signed transaction ${problem}`), { code: 'wallet_sign_invalid' });
@@ -264,6 +268,13 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     const { live: signed, superseded, reason: unread } = await locked(async () => {
       if ((sent && (typeof named !== 'string' || !TX_HASH.test(named))) || (typeof named === 'string' && !db.prepare('SELECT 1 AS found FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named))) {
         throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${String(named).slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
+      }
+      if (typeof named === 'string') {
+        const namedRow = db.prepare('SELECT superseded_at FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named);
+        const retained = keptFor(input);
+        if (namedRow.superseded_at !== null && retained.live) {
+          throw Object.assign(new Error('the named CREATE was superseded; reconcile the live successor separately'), { code: 'wallet_journal_stale_attempt' });
+        }
       }
       return liveFor(input);
     });
