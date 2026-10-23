@@ -11,7 +11,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const passing = () => ({
   schema: "dacs-registry-container-acceptance/v1", complete: true, packageVersion: RELEASE_VERSION,
   generatedTestsPassed: true, functionalPassed: true, docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
-  audit: { observedAdvisories: [] as string[], unlistedAdvisories: [] as string[], directAdvisories: [] as string[] },
+  audit: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0, observedAdvisories: [] as string[], unlistedAdvisories: [] as string[], directAdvisories: [] as string[] },
   securityGate: { passed: true, registryDependencyPolicyPassed: true, productionImageDependencyPolicyPassed: true,
     engineStrictExitCode: 0, auditExitCode: 0, lockSbomExitCode: 0, physicalSbomExitCode: 0,
     findings: { schema: "dacs-registry-policy-findings/v1", gitDependencies: [], productionImageDependencies: [],
