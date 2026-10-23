@@ -520,10 +520,12 @@ export function sellerFulfilmentVetRequirementsViolation(
     buyerRequirement: unknown;
   },
 ): string | null {
-  if (!Array.isArray(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
-    return "the Vet requirement invocations are not the strict audit-source shape";
-  }
   try {
+    if (!hasExactJcsView(vetRequirements) || !Array.isArray(vetRequirements) ||
+        !vetRequirements.every(isVetRequirementInvocation)) {
+      return "the Vet requirement invocations are not the strict audit-source shape";
+    }
+    canonicalize(vetRequirements);
     const bindings = new Map<string, { primaryClaim: string; roles: Set<string> }>();
     for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
       if (!isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
