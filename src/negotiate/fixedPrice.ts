@@ -71,10 +71,7 @@ export interface FixedPriceAgreementInput {
   selectedRail?: PaymentRailRef;
   /** Required only for `commit-payee-bound-agreement`. */
   payoutBindings?: PayoutBinding[];
-  /**
-   * Required exactly when the pinned Listing uses metered pricing. Carries
-   * exactly `quantity` and `unit`; any other member is refused.
-   */
+  /** Required exactly when the pinned Listing uses metered pricing. */
   meteredQuantity?: MeteredQuantityInput;
   /**
    * DACS-3 §8.5 `terms.additionalTerms`, carried as its canonical snapshot
@@ -623,8 +620,8 @@ function requirePayoutBindings(
  * DACS-3 §8.4.1/§8.5 pure derivation. No transport, anchor, payment, or private
  * repository dependency is involved. Caller-selected price/delivery never enter
  * this boundary: every signed term is derived from the exact pinned Listing.
- * Two terms come from the caller: a metered `meteredQuantity` (exactly
- * `quantity` and `unit`, priced from the Listing), and `additionalTerms`,
+ * Two terms come from the caller: a metered `meteredQuantity` (priced
+ * from the Listing), and `additionalTerms`,
  * copied as its canonical snapshot after the producer profile above. Neither
  * can alter a term derived from the Listing.
  */
@@ -692,18 +689,6 @@ export function deriveFixedPriceAgreement(
     if (input.meteredQuantity === undefined) {
       throw new DacsError(
         "missing-metered-quantity: metered agreement requires meteredQuantity",
-      );
-    }
-    // DACS-3 §8.5 types the term as exactly `{ quantity, unit }`. Refuse any
-    // other member so neither party co-signs data carried inside it.
-    const offeredQuantity: unknown = input.meteredQuantity;
-    if (
-      offeredQuantity !== null &&
-      typeof offeredQuantity === "object" &&
-      Object.keys(offeredQuantity).some((key) => key !== "quantity" && key !== "unit")
-    ) {
-      throw new DacsError(
-        "non-canonical-metered-quantity: meteredQuantity carries only quantity and unit",
       );
     }
     meteredQuantity = { ...input.meteredQuantity };

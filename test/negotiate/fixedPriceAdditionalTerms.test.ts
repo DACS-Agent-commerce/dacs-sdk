@@ -534,6 +534,13 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
 });
 
 describe("fixed-price Agreement readers with additionalTerms", () => {
+  test("documents the existing reader refusal of parsed negative zero", async () => {
+    const agreement = await sign(deriveFixedPriceAgreement(input()));
+    const additionalTerms: unknown = JSON.parse('{"acme:rating:v1":-0}');
+    expect(Object.is((additionalTerms as Record<string, unknown>)["acme:rating:v1"], -0)).toBe(true);
+    expect(isAgreementArtifact({ ...agreement, terms: { ...agreement.terms, additionalTerms } })).toBe(false);
+  });
+
   test.each(VARIANTS)(
     "%s with valid terms passes the artifact validator and the Listing binding",
     async (_name, build) => {

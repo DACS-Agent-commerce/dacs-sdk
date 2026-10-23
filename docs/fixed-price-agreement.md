@@ -34,9 +34,8 @@ DACS-3 §8.5 gives every Agreement artifact shape an open
 `additionalTerms?: Record<string, unknown>`. This SDK produces and reads two of
 those shapes, `AgreementDocument` and `PayeeBoundAgreementDocument`; it does not
 implement the identity-bound shapes (see
-[presence conformance adoption](presence-conformance-adoption.md)), and its
-readers refuse an artifact that carries an identity-bound discriminator
-alongside its own. `FixedPriceAgreementInput` accepts the record as
+[presence conformance adoption](presence-conformance-adoption.md)).
+`FixedPriceAgreementInput` accepts the record as
 `additionalTerms`; `deriveFixedPriceAgreement` copies its canonical snapshot
 into `terms.additionalTerms`. The snapshot NFC-normalises string values (CORE §B.2
 CF-1) and leaves member names unchanged, so an NFD value comes back NFC. The
@@ -156,14 +155,6 @@ The producer requires only the top level of `additionalTerms` to be a record,
 so check the shape of every buyer value before reading a member of it. A
 resolver that throws makes the proposal `indeterminate` (retryable), not
 `rejected`.
-
-A metered context carries `meteredQuantity` the same way. The responder admits
-it into the context and hands it to `deriveFixedPriceAgreement`, which applies
-its usual rules (required exactly for metered Listings, canonical whole-unit
-quantity, unit equal to the Listing's, and exactly the `quantity` and `unit`
-members, so no other data rides inside it). The resolver must decide the quantity
-from seller policy; any difference from the buyer's quantity rejects the
-proposal at the `context` stage before any signature.
 
 `isAgreementArtifact` and `validateFixedPriceAgreementBinding` accept exact
 JSON records in `terms.additionalTerms`, including one another conforming producer signed
