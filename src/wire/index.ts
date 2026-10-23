@@ -5,3 +5,4 @@ export * from "./commitment.js";
 export * from "./journal.js";
 export * from "./discovery.js";
 export * from "./delegation.js";
+export * from "./envelope.js";
