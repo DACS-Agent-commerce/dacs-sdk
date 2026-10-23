@@ -20,6 +20,9 @@ import {
   bundleAddress,
   bundlesDiverge,
   canonicalize,
+  canonicalDemosAgentPublicKey,
+  requireCanonicalJobId,
+  sameCanonicalClaimIdentity,
   compositeVerificationAddress,
   contentHash,
   ed25519Verify,
@@ -33,7 +36,7 @@ import {
   verifySettlementEvidence,
   ARTIFACT_SEPARATORS,
 } from '@kynesyslabs/dacs';
-import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8 } from './listing.mjs';
+import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8, purchaseSupport } from './listing.mjs';
 import { addressForClaim } from './demos-claims.mjs';
 import { canonicalSignature, fixtureRef, fixtureTxRef, verifyFixtureReceipt, verifyFixtureRecord } from './fixture-anchors.mjs';
 
@@ -70,16 +73,13 @@ export const PROTOCOL_LIMITS = Object.freeze({
 // SDK address of the deliverable and of the delivery evidence. The pinned SDK
 // derives `dacs4:deliverable:{jobId}` in its fulfilment core and
 // `dacs4:evidence:{jobId}` in its session core; neither helper is exported.
-export const deliverableAddress = (jobId) => `dacs4:deliverable:${jobId}`;
-export const deliveryEvidenceAddress = (jobId) => `dacs4:evidence:${jobId}`;
+export const deliverableAddress = (jobId) => `dacs4:deliverable:${requireCanonicalJobId(jobId)}`;
+export const deliveryEvidenceAddress = (jobId) => `dacs4:evidence:${requireCanonicalJobId(jobId)}`;
 export { finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, paymentEvidenceAddress, bundleAddress };
 
-const DID_PREFIX = 'did:demos:agent:';
-
+/** Decode a canonical Demos authorization reference to raw key bytes, or null. */
 export function claimPublicKeyRaw(claim) {
-  if (typeof claim !== 'string' || !claim.startsWith(DID_PREFIX)) return null;
-  const raw = Buffer.from(claim.slice(DID_PREFIX.length), 'hex');
-  return raw.length === 32 ? new Uint8Array(raw) : null;
+  return canonicalDemosAgentPublicKey(claim);
 }
 
 const verifyClaim = (signer, bytes, value, algorithm = 'ed25519') => verifyComponent({ signedBytes: bytes, signature: { algorithm, signer, value } });
@@ -107,13 +107,8 @@ export function listingPin(listing) {
 
 // Exactly the four-step pipeline this slice implements, on the DEM rail.
 export function protocolSupport(listing) {
-  const kinds = Array.isArray(listing?.pipeline) ? listing.pipeline.map((p) => p?.kind) : [];
-  const reasons = [];
-  if (canonicalize(kinds) !== canonicalize(SUPPORTED_PIPELINE)) reasons.push(`pipeline is not ${SUPPORTED_PIPELINE.join(' -> ')}`);
-  const pay = listing?.pipeline?.[2];
-  if (pay?.kind === 'pay-dem' && pay.parameters?.rail !== DEM_RAIL.railId) reasons.push('pay-dem phase is not on demos-native:DEM');
-  if (listing?.offering?.deliverable?.kind !== 'storage-program') reasons.push('deliverable is not a storage-program');
-  if (listing?.pricing?.kind !== 'fixed' || listing?.pricing?.price?.currency !== 'DEM') reasons.push('pricing is not fixed DEM');
+  const { reasons, price } = purchaseSupport(listing);
+  if (price && BigInt(price.amountOs) > BigInt(Number.MAX_SAFE_INTEGER)) reasons.push('DEM amount exceeds the node-verifiable safe OS ceiling');
   return { supported: reasons.length === 0, reasons, phases: { commit: 1, payment: 2, delivery: 3 } };
 }
 
@@ -128,6 +123,8 @@ export function vetNotPerformedRef(jobId, party) {
 
 // The one Agreement derivation both sides perform independently.
 export function agreementInput({ jobId, listing, buyerBundle, generatedAt }) {
+  const support = protocolSupport(listing);
+  if (!support.supported) throw new Error(`unsupported Listing: ${support.reasons.join('; ')}`);
   const sellerBundle = listing.seller.identity;
   return {
     jobId,
@@ -135,7 +132,7 @@ export function agreementInput({ jobId, listing, buyerBundle, generatedAt }) {
     buyer: { identityBundle: buyerBundle, vetRecordRef: vetNotPerformedRef(jobId, buyerBundle.presentedBy) },
     seller: { identityBundle: sellerBundle, vetRecordRef: vetNotPerformedRef(jobId, sellerBundle.presentedBy) },
     selectedRail: { railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion },
-    payoutBindings: [{ railId: DEM_RAIL.railId, phaseIndex: protocolSupport(listing).phases.payment, payeeAddress: addressForClaim(sellerBundle.presentedBy) }],
+    payoutBindings: [{ railId: DEM_RAIL.railId, phaseIndex: support.phases.payment, payeeAddress: addressForClaim(sellerBundle.presentedBy) }],
     generatedAt,
   };
 }
@@ -169,6 +166,10 @@ export function commitmentSession(agreement) {
   return { jobId: agreement.jobId, listingRef: { ...agreement.listingRef }, phaseKind: 'commit-payee-bound-agreement', orchestrator: seller.primaryClaim, buyer: party('buyer'), seller };
 }
 
+// Only an explicit fixture absence is authoritative; unknown observations hold.
+const recordReadProblem = record => record?.status === 'present' ? null : record?.status === 'absent'
+  ? { status: 'absent' } : { status: 'indeterminate', reason: record?.reason ?? 'SR-2 observation is indeterminate' };
+
 // SR-2 lookups in the SDK commitment-gate envelope.
 export function commitmentReader(anchors, orchestrator) {
   return {
@@ -179,7 +180,8 @@ export function commitmentReader(anchors, orchestrator) {
       } catch (error) {
         return { disposition: 'indeterminate', reason: `SR-2 read failed: ${error.message}` };
       }
-      if (record.status === 'absent') return { disposition: 'absent' };
+      const problem = recordReadProblem(record);
+      if (problem) return { disposition: problem.status, ...(problem.reason ? { reason: problem.reason } : {}) };
       return { disposition: 'present', anchored: { record: record.artifact, nativeAddress: record.receipt.nativeAddress, anchorTxRef: fixtureTxRef(record.receipt), anchorReceipt: record.receipt } };
     },
     verifyAnchorReceipt: (anchored) => verifyFixtureReceipt({ receipt: anchored.anchorReceipt, logicalAddress: anchored.anchorReceipt.logicalAddress, hash: contentHash(anchored.record), expectedWriter: orchestrator }),
@@ -209,7 +211,8 @@ export async function verifyPaymentEvidence({ agreement, record, observed }) {
   const terms = agreementTerms(agreement);
   const address = paymentEvidenceAddress(agreement.jobId, terms.rail, terms.paymentPhaseIndex);
   const reasons = [];
-  if (!record || record.status !== 'present') return { status: 'absent', address };
+  const readProblem = recordReadProblem(record);
+  if (readProblem) return { ...readProblem, address };
   if (verifyFixtureRecord(record, { logicalAddress: address, expectedWriter: terms.seller }) !== 'valid') reasons.push('evidence anchor receipt does not verify for the seller at the SB-1 address');
   const evidence = record.artifact;
   if (!isSettlementEvidence(evidence) || evidence.phase !== 'pay-dem' || evidence.outcome !== 'success') reasons.push('record is not pay-dem success SettlementEvidence');
@@ -221,7 +224,7 @@ export async function verifyPaymentEvidence({ agreement, record, observed }) {
     if (tx?.blockNumber !== observed.blockNumber) reasons.push('evidence block differs from the buyer-observed block');
     if (evidence.paymentAmount?.amount !== terms.price.amount || evidence.paymentAmount?.currency !== 'DEM') reasons.push('evidence amount differs from the Agreement price');
     if (evidence.settlementFinality?.model !== 'bft-final') reasons.push('evidence finality model is not the pay-dem bft-final rail model');
-    if (evidence.signature?.signer !== terms.seller) reasons.push('evidence is not signed by the seller (phase orchestrator)');
+    if (!sameCanonicalClaimIdentity(evidence.signature?.signer, terms.seller)) reasons.push('evidence is not signed by the seller (phase orchestrator)');
     const sdk = await verifySettlementEvidence(evidence, {
       orchestrator: terms.seller,
       agreement: { amount: terms.price.amount, currency: terms.price.currency },
@@ -243,7 +246,9 @@ export async function verifyDelivery({ agreement, deliverable, evidenceRecord })
   const reasons = [];
   const dAddress = deliverableAddress(agreement.jobId);
   const eAddress = deliveryEvidenceAddress(agreement.jobId);
-  if (!deliverable || deliverable.status !== 'present' || !evidenceRecord || evidenceRecord.status !== 'present') return { status: 'absent' };
+  const problems = [deliverable, evidenceRecord].map(recordReadProblem);
+  const readProblem = problems.find(problem => problem?.status === 'indeterminate') ?? problems.find(Boolean);
+  if (readProblem) return readProblem;
   if (verifyFixtureRecord(deliverable, { logicalAddress: dAddress, expectedWriter: terms.seller }) !== 'valid') reasons.push('deliverable anchor receipt does not verify for the seller');
   if (verifyFixtureRecord(evidenceRecord, { logicalAddress: eAddress, expectedWriter: terms.seller }) !== 'valid') reasons.push('delivery evidence anchor receipt does not verify for the seller');
   const evidence = evidenceRecord.artifact;
@@ -339,15 +344,17 @@ export async function assembleBundleCopies(session, signatures) {
 export async function verifyAnchoredCopy({ record, role, jobId, writer, expectedHash, ownCopy }) {
   const address = bundleAddress(jobId, role);
   const reasons = [];
-  if (!record || record.status !== 'present') return { status: 'absent', address };
-  if (verifyFixtureRecord(record, { logicalAddress: address, expectedWriter: writer }) !== 'valid') reasons.push(`${role} copy anchor receipt does not verify for the ${role}`);
+  const readProblem = recordReadProblem(record);
+  if (readProblem) return { ...readProblem, address };
   const copy = record.artifact;
   const check = await verifyBundleCopy(copy, role, ed25519Deps);
-  if (!check.valid || !check.fullySigned) reasons.push(`${role} copy is not a fully signed valid copy: ${check.valid ? 'missing signature' : check.reason}`);
-  if (attestationBundleHash(copy) !== expectedHash) reasons.push(`${role} copy signs a different bundle`);
+  if (!check.valid || !check.fullySigned) return { status: 'rejected', address, reasons: [`${role} copy is not a fully signed valid copy: ${check.valid ? 'missing signature' : check.reason}`] };
+  const hash = attestationBundleHash(copy);
+  if (verifyFixtureReceipt({ receipt: record.receipt, logicalAddress: address, hash, expectedWriter: writer }) !== 'valid') reasons.push(`${role} copy anchor receipt does not verify for the ${role}`);
+  if (hash !== expectedHash) reasons.push(`${role} copy signs a different bundle`);
   if (ownCopy && bundlesDiverge(ownCopy, copy)) reasons.push('copies diverge');
   if (reasons.length) return { status: 'rejected', address, reasons };
-  return { status: 'verified', address, ref: fixtureRef(address, contentHash(copy)), bundleHash: expectedHash };
+  return { status: 'verified', address, ref: fixtureRef(address, hash), bundleHash: expectedHash };
 }
 
 
