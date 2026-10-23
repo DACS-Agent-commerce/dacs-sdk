@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -181,7 +180,7 @@ function runEarlyFailure(extraStubCommands = "") {
   // curl, docker and npm are stubs and node is this process's binary; the
   // script's temporary root is this private directory.
   chmodSync(directory, 0o700);
-  const PATH = stubBin(directory, { curl: "exit 0", docker: "exit 0", npm: npmBody });
+  const PATH = stubBin(directory, { curl: 'printf "curl 8.5.0\\n"' , docker: "exit 0", npm: npmBody });
   const output = join(directory, "evidence");
   const result = runBash(["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
     cwd: repoRoot, env: { RUNNER_TEMP: directory, HOME: directory, PATH },
@@ -206,63 +205,77 @@ function packTarball(manifest: Record<string, string>) {
 // generated project's doctor fails (exit 1, not the expected 5). Docker, npm
 // and curl are stubs; node is this process's binary; the registry is a
 // loopback server that serves exactly the published candidates.
-async function runToConsumerStage() {
-  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-"));
-  scratch.push(directory);
-  chmodSync(directory, 0o700);
+async function runToConsumerStage(complete = false) {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-")); scratch.push(directory); chmodSync(directory, 0o700);
   const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string;
-  const releaseSet = join(directory, "release-set");
-  mkdirSync(releaseSet);
-  const served: Record<string, string> = {};
+  const releaseSet = join(directory, "release-set"); mkdirSync(releaseSet);
+  const served: Record<string, { integrity: string; tarball: string }> = {};
+  const archives: Record<string, Buffer> = {};
   const packages: Record<string, { integrity: string }> = {};
-  for (const [name, file] of [["@kynesyslabs/dacs", "kynesyslabs-dacs"], ["@kynesyslabs/dacs-node", "kynesyslabs-dacs-node"],
-    ["create-dacs-agent", "create-dacs-agent"]] as const) {
-    const bytes = packTarball({ name, version });
-    writeFileSync(join(releaseSet, `${file}-${version}.tgz`), bytes);
-    served["/" + name.replace("/", "%2f")] = sri(bytes);
-    packages[name] = { integrity: sri(bytes) };
+  for (const [name, file] of [["@kynesyslabs/dacs", "kynesyslabs-dacs"], ["@kynesyslabs/dacs-node", "kynesyslabs-dacs-node"], ["create-dacs-agent", "create-dacs-agent"]] as const) {
+    const bytes = packTarball({ name, version }); const tarball = "/" + file + ".tgz";
+    writeFileSync(join(releaseSet, `${file}-${version}.tgz`), bytes); archives[tarball] = bytes;
+    served["/" + name.replace("/", "%2f")] = { integrity: sri(bytes), tarball }; packages[name] = { integrity: sri(bytes) };
   }
   writeFileSync(join(releaseSet, "release-provenance.json"), JSON.stringify({ version, source: { clean: true }, packages }));
   writeFileSync(join(releaseSet, "SHA256SUMS"), "fixture\n");
-  const npmRoot = join(directory, "npm-root");
-  mkdirSync(join(npmRoot, "npm/node_modules/libnpmpublish"), { recursive: true });
+  const npmRoot = join(directory, "npm-root"); mkdirSync(join(npmRoot, "npm/node_modules/libnpmpublish"), { recursive: true });
   writeFileSync(join(npmRoot, "npm/package.json"), JSON.stringify({ version: "11.19.0" }));
   writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/package.json"), JSON.stringify({ main: "index.js" }));
   writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/index.js"), "exports.publish = async () => {};\n");
   const server = createServer((request, response) => {
-    const integrity = served[request.url ?? ""];
-    response.writeHead(integrity ? 200 : 404, { "content-type": "application/json" });
-    response.end(JSON.stringify(integrity ? { versions: { [version]: { dist: { integrity } } } } : {}));
+    const archive = archives[request.url ?? ""]; const record = served[request.url ?? ""];
+    response.writeHead(archive || record ? 200 : 404, { "content-type": archive ? "application/octet-stream" : "application/json" });
+    response.end(archive ?? JSON.stringify(record ? { "dist-tags": { acceptance: version }, versions: { [version]: {
+      dist: { integrity: record.integrity, tarball: `http://${request.headers.host}${record.tarball}` } } } } : {}));
   });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  const port = (server.address() as { port: number }).port;
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const address = server.address(); if (!address || typeof address === "string") throw new Error("fixture server has no port");
+  const port = address.port; const registry = `http://127.0.0.1:${port}`;
+  const fixture = join(directory, "consumer-fixture"); const project = join(fixture, "one-click-agent"); mkdirSync(project, { recursive: true });
+  const dependencies = Object.fromEntries(["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core", "@x402/evm", "@x402/fetch", "better-sqlite3", "viem"].map(name => [name, version]));
+  const manifest = { name: "one-click-agent", version, dependencies };
+  const lock: Record<string, unknown> = { "": manifest };
+  const inventory: Array<{ location: string; name: string; version: string }> = [];
+  for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"]) {
+    const location = "node_modules/" + name; const record = packages[name]; if (!record) throw new Error("missing fixture archive");
+    lock[location] = { version, resolved: `${registry}/${name}.tgz`, integrity: record.integrity };
+    mkdirSync(join(project, location), { recursive: true }); writeFileSync(join(project, location, "package.json"), JSON.stringify({ name, version }));
+    inventory.push({ location, name, version });
+  }
+  writeFileSync(join(project, "package.json"), JSON.stringify(manifest)); writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages: lock }));
+  const files: Record<string, string> = { "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n", "doctor.log": "blocked without credentials\n",
+    "npm-audit.exit-code": "0\n", "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: { total: 0, critical: 0 } }, vulnerabilities: {} }),
+    "engine-strict.exit-code": "0\n", "engine-strict.log": "", "engine-versions.json": JSON.stringify({ node: "20.19.1", npm: "11.19.0" }) };
+  for (const kind of ["lock", "physical"]) { files[`consumer-${kind}.cdx.json`] = "{}"; files[`consumer-${kind}-sbom.err`] = ""; files[`consumer-${kind}-sbom.exit-code`] = "0\n"; }
+  for (const [name, value] of Object.entries(files)) writeFileSync(join(fixture, name), value);
+  const pinned = join(directory, "npm-pinned"); const built = join(directory, "image-built"); const commands = join(directory, "docker-commands");
   const PATH = stubBin(directory, {
-    curl: ['case "$*" in', "  *org.couchdb.user*) printf '{\"token\":\"local-acceptance-token\"}' ;;", "esac", "exit 0"].join("\n"),
-    npm: ['case "$1" in', "  --version) echo 11.19.0 ;;", `  root) echo '${npmRoot}' ;;`, `  view) echo '${version}' ;;`,
-      `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, "esac", "exit 0"].join("\n"),
-    // `docker run` with a /work volume is the consumer container: it leaves
-    // what the generated project wrote before its doctor failed, then exits 1.
-    docker: ['if [ "$1" = inspect ]; then echo ' + port + "; exit 0; fi",
-      'if [ "$1" != run ]; then exit 0; fi', "work=; previous=",
-      'for argument in "$@"; do', '  if [ "$previous" = --volume ]; then case "$argument" in *:/work) work=${argument%:/work} ;; esac; fi',
-      '  previous=$argument', "done", '[ -n "$work" ] || exit 0', 'mkdir -p "$work/one-click-agent"',
-      `printf '{"name":"one-click-agent"}\\n' > "$work/one-click-agent/package.json"`,
-      `printf '{"lockfileVersion":3,"packages":{}}\\n' > "$work/one-click-agent/package-lock.json"`,
-      `printf '0\\n' > "$work/generated-tests.exit-code"`,
-      `printf 'doctor: release metadata is unreadable\\n' > "$work/doctor.log"`, `printf '1\\n' > "$work/doctor.exit-code"`,
-      "echo 'npm run dacs:doctor exited 1'", "exit 1"].join("\n"),
+    curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
+    npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
+      `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, `  view) echo '${version}' ;;`,
+      `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
+    docker: [`printf '%s\\n' "$*" >> '${commands}'`, `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
+      `if [ "$1" = build ]; then touch '${built}'; exit 0; fi`,
+      `if [ "$1 $2" = 'image inspect' ]; then [ -f '${built}' ] || exit 98; case "$*" in *--format*) echo 10001:10001 ;; *) printf '%s' '[{"Id":"fixture","Size":1,"Config":{"User":"10001:10001"}}]' ;; esac; exit 0; fi`,
+      'if [ "$1" = compose ]; then echo "services: {}"; exit 0; fi', 'if [ "$1" != run ]; then exit 0; fi', 'work=; previous=',
+      'for argument in "$@"; do', '  if [ "$previous" = --volume ]; then case "$argument" in *:/work) work=${argument%:/work} ;; esac; fi', '  previous=$argument', 'done',
+      'if [ -n "$work" ]; then', ...(complete ? [`  cp -r '${fixture}/.' "$work/"`, '  exit 0'] : [
+        '  mkdir -p "$work/one-click-agent"', `  printf '{"name":"one-click-agent"}\\n' > "$work/one-click-agent/package.json"`,
+        `  printf '{"lockfileVersion":3,"packages":{}}\\n' > "$work/one-click-agent/package-lock.json"`, `  printf '0\\n' > "$work/generated-tests.exit-code"`,
+        `  printf 'doctor: release metadata is unreadable\\n' > "$work/doctor.log"`, `  printf '1\\n' > "$work/doctor.exit-code"`, "  echo 'npm run dacs:doctor exited 1'", '  exit 1']),
+      'fi', 'case "$*" in', `  *--entrypoint*) [ -f '${built}' ] || exit 98 ;;`, 'esac', 'case "$*" in', '  *"--entrypoint id"*) echo 10001 ;;',
+      '  *"--entrypoint test"*) exit 1 ;;', `  *"--entrypoint node"*) printf '%s' '${JSON.stringify({ schema: "dacs-runtime-image-inventory/v1", packages: inventory })}' ;;`, 'esac', 'exit 0'].join("\n"),
   });
   const output = join(directory, "evidence");
-  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
-    const child = spawn("bash", ["--norc", "--noprofile", "scripts/verify-registry-container-consumer.sh", "--output-dir", output],
-      { cwd: repoRoot, env: { HOME: directory, RUNNER_TEMP: directory, PATH } });
-    let stdout = ""; let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("close", (status) => done({ status, stdout, stderr }));
-  });
-  server.close();
-  return { directory, output, result };
+  try {
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>(done => {
+      const child = spawn("bash", ["--norc", "--noprofile", "scripts/verify-registry-container-consumer.sh", "--output-dir", output], { cwd: repoRoot, env: { RUNNER_TEMP: directory, PATH } });
+      let stdout = ""; let stderr = ""; child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+      child.on("close", status => done({ status, stdout, stderr }));
+    });
+    return { directory, output, result, commands };
+  } finally { server.close(); }
 }
 
 const CANDIDATE_VERSION = "0.1.0-test";
@@ -360,6 +373,20 @@ function writeSummary(overrides: Record<string, string> = {}) {
 }
 
 describe("registry/container evidence", () => {
+  it("traverses image build, evidence assembly and disposition using the pinned host npm", async () => {
+    const { directory, output, result, commands } = await runToConsumerStage(true);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(existsSync(join(directory, "npm-pinned"))).toBe(true);
+    expect(readFileSync(commands, "utf8")).toMatch(/^build .*--tag /m);
+    for (const name of ["compose.rendered.yaml", "docker-image.json", "runtime-image-inventory.json", "runtime-image-policy.json", "policy-findings.json", "release-set.log"]) expect(existsSync(join(output, name)), name).toBe(true);
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: true, functionalPassed: true, disposition: { exitCode: 0 } });
+  }, 30_000);
+  it("retains release-set network errors and classifies them as network failures", () => {
+    const { output } = runEarlyFailure('printf "npm error code ECONNRESET\\n"');
+    expect(readFileSync(join(output, "release-set.log"), "utf8")).toContain("ECONNRESET");
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({ failedStage: "release-set", failureClass: "network", failureEvidence: [expect.stringContaining("ECONNRESET")] });
+  });
+
   it("exports partial evidence and preserves the early failure status", () => {
     const { output, result } = runEarlyFailure();
     expect(result.status).toBe(17);
