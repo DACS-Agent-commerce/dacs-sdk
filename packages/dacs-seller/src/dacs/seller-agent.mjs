@@ -1,3 +1,4 @@
+import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 // Seller agent for one verified fixed-price DEM Listing, acting as phase
@@ -33,6 +34,9 @@ import {
   finalityCommitmentAddress,
   identityBundleHash,
   isCanonicalJobId,
+  isVerifiedListingAdmission,
+  sameCanonicalClaimIdentity,
+  canonicalDemosAgentPublicKey,
   isIdentityBundle,
   paymentEvidenceAddress,
   respondToFixedPriceAgreementProposalDurable,
@@ -161,6 +165,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
+const MAX_CHALLENGES_PER_JOB=16;
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
@@ -170,7 +175,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (commitOnSignature && !durableDirectory) throw new TypeError('commitment on signature requires durable seller state');
   if (!signer?.claim || typeof signer.sign !== 'function') throw new Error('a seller signer (claim + sign) is required');
   if (agreementAnchor !== null && (typeof agreementAnchor?.readAgreement !== 'function' || typeof agreementAnchor.source !== 'string')) throw new Error('agreementAnchor must expose source and readAgreement');
-  if (listing?.seller?.identity?.presentedBy !== signer.claim) throw new Error('the seller signer does not control this Listing');
+  if (!sameCanonicalClaimIdentity(listing?.seller?.identity?.presentedBy,signer.claim)) throw new Error('the seller signer does not control this Listing');
   if ((listing?.offering?.deliverable?.accessModel ?? 'public') !== 'public') throw new Error('unsupported Listing: seller delivery requires public access');
   // DACS-4 §9.6.1: larger payloads require an extended pointer. This
   // profile prepares inline storage only, so refuse before any Agreement.
@@ -274,9 +279,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const pin = listingPin(listing);
   if (durableDirectory && suppliedReceiptStore) throw new Error('durable seller recovery owns the pinned filesystem receipt store');
   const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs }) : null;
+  let closed=false;
+  const requireOpen=()=>{if(closed)throw new SellerAgentError('seller_closed','the seller agent is closed',503);};
+  try {
   const sign = (bytes) => new Uint8Array(durable ? durable.signOnce(`signature:${sha256Hex(bytes)}`, Buffer.from(bytes)) : signer.sign(Buffer.from(bytes)));
   const rawReceiptStore = durable?.receiptStore ?? suppliedReceiptStore ?? createInMemorySellerReceiptStore();
   const retainedAdmission = durable?.context();
+  if(retainedAdmission&&!isVerifiedListingAdmission(listing,retainedAdmission.validation))throw new Error('retained Listing admission differs from the current signed Listing');
   // Historical admission captured once, atomically with the Listing bytes it
   // validated; payment intake replays exactly this result (never live state).
   // It checks the Listing's own bytes, signature and rail only: the catalog row
@@ -300,7 +309,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // one job and buyer (kept with the durable seller state, else in memory).
   const memoryChallenges = new Map();
   const challenges = durable ? durable : {
-    issueChallenge: (nonce, value) => {
+    issueChallenge: (nonce, value, limits) => {
+      admitSessionChallenge(memoryChallenges,value,limits,id=>memoryChallenges.delete(id));
       if (memoryChallenges.has(nonce)) throw new SellerAgentError('seller_challenge_taken', 'this nonce was issued before', 409);
       memoryChallenges.set(nonce, { kind: 'session-challenge', ...structuredClone(value), attempt: null });
     },
@@ -425,7 +435,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature },
     });
     if (!ok) throw new SellerAgentError('buyer_bundle_unauthenticated', 'buyer IdentityBundle presentation does not verify');
-    if (bundle.presentedBy === claim) throw new SellerAgentError('self_dealing', 'the buyer is the seller');
+    if (sameCanonicalClaimIdentity(bundle.presentedBy,claim)) throw new SellerAgentError('self_dealing', 'the buyer is the seller');
   }
 
   // CORE SN-1..SN-3: the seller issues the presentation challenge for a job and
@@ -435,15 +445,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // It admits one presentation (SN-4) until
   // SESSION_CHALLENGE_LIFETIME_MS after issue.
   function issueSessionChallenge({ jobId, buyer, sessionNonce } = {}) {
+    requireOpen();
     if (!nativeProfile) throw new SellerAgentError('session_admission_required', 'the simulated fixture profile takes no session admission', 503);
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
-    if (typeof buyer !== 'string' || !/^did:demos:agent:[0-9a-f]{64}$/.test(buyer) || buyer === claim) throw new SellerAgentError('buyer_invalid', 'the challenge names no buyer claim other than the seller');
+    if (!canonicalDemosAgentPublicKey(buyer) || sameCanonicalClaimIdentity(buyer,claim)) throw new SellerAgentError('buyer_invalid', 'the challenge names no buyer claim other than the seller');
     if (sessionNonce !== undefined) throw new SellerAgentError('challenge_invalid', 'the seller generates its own session nonce (CORE SN-1/SN-2)');
     const nonce = randomBytes(32).toString('hex'), issuedAt = now();
     if (!Number.isSafeInteger(issuedAt) || issuedAt < 0) throw new SellerAgentError('seller_clock_invalid', 'the seller clock is not an integer time', 503);
+    if(!Number.isSafeInteger(issuedAt+SESSION_CHALLENGE_LIFETIME_MS))throw new SellerAgentError('seller_clock_invalid','the challenge expiry exceeds the safe clock range',503);
     const issued = { jobId, buyer, sessionNonce: nonce, issuedAt, expiresAt: issuedAt + SESSION_CHALLENGE_LIFETIME_MS };
-    try { challenges.issueChallenge(nonce, issued); }
-    catch (error) { if (error.code === 'seller_challenge_taken') throw new SellerAgentError('challenge_taken', 'this session nonce was issued before', 409); throw error; }
+    try { challenges.issueChallenge(nonce, issued,{maxOutstanding:maxJobs,maxPerJob:MAX_CHALLENGES_PER_JOB}); }
+    catch (error) { if(error.code==='seller_challenge_capacity')throw new SellerAgentError(error.code,error.message,503); if (error.code === 'seller_challenge_taken') throw new SellerAgentError('challenge_taken', 'this session nonce was issued before', 409); throw error; }
     return issued;
   }
 
@@ -1991,7 +2003,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return { status: 'retained', stage: session.stage };
   }
 
-  return {
+  const api = {
     assertSettlementCredit,
     claim,
     listingPin: pin,
@@ -2052,10 +2064,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       sessions.delete(input.request.jobId); restore(session);
       return reconcileTransport(input);
     });} : undefined,
-    close: () => durable?.close(),
+    close: () => {if(!closed){durable?.close();closed=true;}},
     // Test/ops visibility only: never a signing capability.
     finalityCommitmentAddress,
   };
+  for(const [name,operation]of Object.entries(api))if(typeof operation==='function'&&name!=='close')api[name]=(...args)=>{requireOpen();return operation.apply(api,args);};
+  return api;
+  } catch(error) {
+    try{durable?.close();}catch(cause){throw new AggregateError([error,cause],'seller initialization cleanup failed',{cause:error});}
+    throw error;
+  }
 }
 
 export { canonicalSignature };
