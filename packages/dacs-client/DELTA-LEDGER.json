@@ -1629,5 +1629,41 @@
         }
       ]
     }
+  ],
+  "mergeSnapshots": [
+    {
+      "commit": "2b4976dc787df9aee664651b2fc0b0f10382e1e2",
+      "parents": [
+        "3546ddc8c44f96cf4cfb9d64ef2ceccbc942f949",
+        "91fd90f8892b9a77cc896d706e279d945cf3ce6f"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "parentBlobs": [
+            "9b3c78ed8b64b9113170ca6796196f49957881c2",
+            "dea888ee7f7906fc011ccb8e69319cf00f036c85"
+          ],
+          "after": "fb6babcd859364770760f6231f2ca59791d1854b"
+        }
+      ]
+    },
+    {
+      "commit": "77612915a67967b357df4a0001229cebc13ca4b7",
+      "parents": [
+        "5cad3072940618a796f9762276a539036f82aca1",
+        "f68c71873ffe077611df94cec6adee19150bbbf9"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "parentBlobs": [
+            "c013a280922e2fd638a29651dd8be053dc7acd9d",
+            "e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"
+          ],
+          "after": "ef6723b2e7509c38a37fee121912cfc7c197895a"
+        }
+      ]
+    }
   ]
 }
