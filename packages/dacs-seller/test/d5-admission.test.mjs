@@ -1,4 +1,3 @@
-import './helpers/d5-isolated-dependencies.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
@@ -9,8 +8,6 @@ import {paymentEvidenceAddress} from '@kynesyslabs/dacs';
 import { address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
 const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,withContextHolds,heldPolicyBudget,sellerPurchaseSource,releaseSellerContextHolds }=await import('../src/devnet-demo/operator-approval.mjs');
 const { sellerRecordsPurchaseResolver,SELLER_PURCHASE_OPEN_WINDOW_MS,sellerHeldEvidenceJobs }=await import('../src/devnet-demo/seller-purchase-source.mjs');
-const { sellerJournalIssuance }=await import('../src/devnet-demo/seller-issuance.mjs');
-const { acquireSellerStateLock,SELLER_STATE_LOCK_REFUSALS }=await import('../src/devnet-demo/seller-state-lock.mjs');
 async function directory(t){const root=await mkdtemp(join(tmpdir(),'d5-unit-'));t.after(()=>rm(root,{recursive:true,force:true}));return root;}
 const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,prePaymentOpen:false});
 async function policy(t,{resolvePurchase=()=>null,limits={},paymentPhaseIndex=()=>2}={}){
