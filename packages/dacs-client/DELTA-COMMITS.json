@@ -713,5 +713,16 @@
       "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
       "packages/dacs-client/test/store-atomicity.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 retain guarded SQLite in the package closure",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
   }
 ]
