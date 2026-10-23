@@ -12,7 +12,10 @@ import {
   type PayDemSettlementAuditContext,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
-import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import {
+  demosNode, forbidTransfers, heldRail, resetDemosNode, sdkAuditRail, sdkRail, sdkTransfers,
+  serveNodeRecord, setNodeRecordStatus,
+} from "../fixtures/demosNodeMock.js";
 import { sdkFences } from "../fixtures/sdkFences.js";
 import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
 
@@ -25,6 +28,11 @@ const payer = "ab".repeat(32);
 const payee = "cd".repeat(32);
 const payeeClaim = `did:demos:agent:${payee}`;
 beforeEach(() => resetDemosNode({ payer, txHash }));
+// A reconciler's claim is only final when the SDK's own read of the node's
+// record for the hash agrees (#338), so each claim below scripts that record.
+const nodeSays = (status: "confirmed" | "failed" | "pending") => {
+  serveNodeRecord(txHash, { payer, payee, nonce: 9, status, feeOs: "0" });
+};
 const prior = (ok = true): SettlementRecoveryAttempt => ({ txHash, chainId: "demos", ok });
 const request = (priorAttempts: readonly SettlementRecoveryAttempt[] = [prior()]): SettleRequest => ({
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "retained-native",
@@ -36,12 +44,20 @@ const journal = (network = "demos") => ({
   recovery: { railId: "pay-dem", jobId: "retained-native", phaseIndex: 0,
     settlementKey: "pay-dem:retained-native:0", network, payer, payee, amountOs: "1000000000" },
 });
-const executed = () => ({
+const executed = () => {
+  nodeSays("confirmed");
+  return executedClaim();
+};
+const executedClaim = () => ({
   ok: true as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
   networkFeeOs: "0", execution: "executed" as const, preparedTransfer: journal(),
 });
-const failed = () => ({
+const failed = () => {
+  nodeSays("failed");
+  return failedClaim();
+};
+const failedClaim = () => ({
   ok: false as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const,
   failureProof: { kind: "demos-failed-record" as const, txHash, payer, payee,
@@ -54,9 +70,8 @@ async function fixture(
   store: SettlementIdempotencyStore = createIdempotencyStore(),
 ) {
   const once = vi.spyOn(store, "once");
-  // The SDK's own rail: a retained transfer must never reach its node.
-  const submit = demosNode.transfer;
-  const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+  const { rail, submit } = await sdkAuditRail();
+  const settle = payDemSettle(rail, {}, { store, reconcile });
   return { settle, once, submit };
 }
 
@@ -82,12 +97,15 @@ async function settledLog(outcome: ReturnType<typeof executed> | ReturnType<type
 async function signedOnly(reconcile: PayDemSettlementReconcile) {
   const store = createIdempotencyStore();
   const once = vi.spyOn(store, "once");
-  const settle = payDemSettle(await heldRail(), {}, { store, reconcile });
+  // The node's record is still pending when the rail returns, so it returns only the hash.
+  resetDemosNode({ payer, txHash, recordStatus: "pending" });
+  const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
   const { priorAttempts: _history, ...fresh } = request();
   await expect(settle(fresh)).resolves.toMatchObject({ ok: false, txHash });
   once.mockClear();
-  resetDemosNode({ payer, txHash });
-  return { settle, once, submit: demosNode.transfer };
+  setNodeRecordStatus("confirmed");
+  const submit = forbidTransfers();
+  return { settle, once, submit };
 }
 
 describe("pay-dem retained transaction recovery is read-only even with an empty rail log", () => {
@@ -145,7 +163,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
       expect(context).toMatchObject({ txHash, network });
       return { ...executed(), chainId: network, preparedTransfer: journal(network) };
     });
-    const settle = payDemSettle(await sdkRail(), { network }, { store, reconcile });
+    const settle = payDemSettle((await sdkAuditRail({ network })).rail, { network }, { store, reconcile });
     const history = Array.from({ length: 256 }, () => ({
       ...prior(), chainId: network, txHash: `0x${txHash.toUpperCase()}`,
     }));
@@ -313,7 +331,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     phase: "pay-dem", amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM",
     payer, payee, network: "demos", finality: { model: "bft-final" },
   };
-  const { amountOs: _amount, execution: _execution, preparedTransfer: _journal, ...storedSuccess } = executed();
+  const { amountOs: _amount, execution: _execution, preparedTransfer: _journal, ...storedSuccess } = executedClaim();
   const demoted = /contradicted an authenticated successful outcome/;
 
   test("refuses a failed reconciliation of a session-recorded success, even after history is omitted", async () => {
@@ -350,9 +368,9 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     const claimIntent = vi.spyOn(log, "claimIntent");
     const putOutcome = vi.spyOn(log, "putOutcome");
     const store = createIdempotencyStore(log);
-    const submit = demosNode.transfer;
+    const { rail, submit } = await sdkAuditRail();
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
-    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+    const settle = payDemSettle(rail, {}, { store, reconcile });
     const { priorAttempts: _history, ...withoutHistory } = request();
     // Without history the restart path compares the durable outcome itself.
     await expect(settle(withHistory ? request([prior(false)]) : withoutHistory))
@@ -421,7 +439,8 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
       await gate;
       return { state: "included", blockNumber: 42 };
     });
-    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
+    // The node's record stays as the rail signed it until the audit at the end.
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failedClaim());
     const settle = payDemSettle(await sdkRail(), { network: "demos" },
       { store: createIdempotencyStore(log, { ...options, owner: "a" }), reconcile });
     const { priorAttempts: _history, ...fresh } = request();
@@ -430,7 +449,8 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     // The lease expires and another process reconciles a failure. A reconciled
     // failure is never recorded as the definitive outcome, so nothing is cached.
     now += 2_000;
-    const other = payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
+    const other = payDemSettle({ address: payer, settle: vi.fn() },
+      {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
     await expect(other(fresh)).rejects.toThrow(/reconciliation was not definitive/);
     finish();
     // The rail recorded its hash under its own generation before it broadcast;
@@ -439,6 +459,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     // The other writer's lease has expired too: the reconciled failure is
     // refused against the success this bridge authenticated.
     now += 2_000;
+    reconcile.mockImplementation(async () => failed());
     await expect(settle(fresh)).rejects.toThrow(demoted);
     expect(sdkTransfers()).toBe(1);
   });

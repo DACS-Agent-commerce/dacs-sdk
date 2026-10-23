@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
 import { createIdempotencyStore, createInMemorySettlementLog, type SettlementBinding } from "../../src/rails/idempotency.js";
 import { type PayDemSettlementReconcile, payDemSettle } from "../../src/rails/payDem.js";
-import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import {
+  demosNode, heldRail, resetDemosNode, sdkAuditRail, sdkRail, sdkTransfers, serveNodeRecord,
+  setNodeRecordStatus,
+} from "../fixtures/demosNodeMock.js";
 import { sdkFences } from "../fixtures/sdkFences.js";
 import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
 
@@ -157,9 +160,15 @@ describe("pay-dem retained identity conflict quarantine", () => {
       // A journal that agrees with the reply: the conflict is with the stored proof.
       ...(change === "nonce" ? { preparedTransfer: journal(hashA, 10) } : {}),
     };
-    const submit = demosNode.transfer;
+    // The SDK reads the node's record for the hash, so the node serves what the reply says.
+    const { rail, submit } = await sdkAuditRail();
+    serveNodeRecord(hashA, { payer, payee, ...(change === "success"
+      ? { status: "confirmed" as const, nonce: 9 }
+      : change === "nonce"
+        ? { status: "failed" as const, nonce: 10 }
+        : { status: "failed" as const, nonce: 9, blockNumber: 43 }) });
     const reconcile = vi.fn(async () => reply);
-    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+    const settle = payDemSettle(rail, {}, { store, reconcile });
     await expect(settle(history(hashA, false))).rejects.toThrow(message);
     expect(putOutcome).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
@@ -176,11 +185,12 @@ describe("pay-dem retained identity conflict quarantine", () => {
       }));
     const store = createIdempotencyStore(log);
     const putOutcome = vi.spyOn(log, "putOutcome");
-    const submit = demosNode.transfer;
+    const { rail, submit } = await sdkAuditRail();
+    serveNodeRecord(hashA, { payer, payee, nonce: 9, status: "failed" });
     // Same transaction, block and proof; a failure carries no fee fields.
     let reply: ReturnType<typeof failed> & { networkFeeOs?: string } = { ...failed(hashA), networkFeeOs: "5" };
     const reconcile = vi.fn(async () => reply);
-    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+    const settle = payDemSettle(rail, {}, { store, reconcile });
     const call = () => settle(withHistory ? history(hashA, false) : request);
     await expect(call()).rejects.toThrow(/invalid terminal-failure proof/);
     reply = failed(hashA);
@@ -196,9 +206,10 @@ describe("pay-dem retained identity conflict quarantine", () => {
     const log = createInMemorySettlementLog();
     const store = createIdempotencyStore(log);
     await store.once("pay-dem:conflicting-native:0", binding, async () => stored(executed()));
-    const submit = demosNode.transfer;
+    const { rail, submit } = await sdkAuditRail();
+    serveNodeRecord(hashA, { payer, payee, nonce: 9, blockNumber: 43 });
     const reconcile = vi.fn(async () => ({ ...executed(), blockNumber: 43 }));
-    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+    const settle = payDemSettle(rail, {}, { store, reconcile });
     await expect(settle(history(hashA))).rejects.toThrow(/block conflicts/);
     expect(submit).not.toHaveBeenCalled();
     await expect(store.readOutcome!("pay-dem:conflicting-native:0", binding))
@@ -217,12 +228,15 @@ describe("pay-dem retained identity conflict quarantine", () => {
   });
 
   test("an in-process indeterminate result for the retained hash does not block its audit", async () => {
+    // The node's record is still pending when the rail returns, so its result is held.
+    resetDemosNode({ payer, txHash: hashA, recordStatus: "pending" });
     const store = createIdempotencyStore();
     const once = vi.spyOn(store, "once");
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed());
-    const settle = payDemSettle(await heldRail(), {}, { store, reconcile });
+    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
     await expect(settle(request)).resolves.toMatchObject({ ok: false, txHash: hashA });
     // The held result has no block or failure class; finality is read later.
+    setNodeRecordStatus("confirmed");
     await expect(settle(history(hashA, false)))
       .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
     expect(once).toHaveBeenCalledTimes(1);
@@ -260,13 +274,14 @@ describe("pay-dem retained identity conflict quarantine", () => {
     const log = createInMemorySettlementLog();
     const store = createIdempotencyStore(log);
     const once = vi.spyOn(store, "once");
-    const submit = demosNode.transfer;
+    const { rail, submit } = await sdkAuditRail();
+    serveNodeRecord(hashA, { payer, payee, nonce: 9, status: "failed" });
     const reconcile = vi.fn(async () => {
       // Another process records A executed while this audit's chain read says failed.
       await createIdempotencyStore(log).once("pay-dem:conflicting-native:0", binding, async () => stored(executed()));
       return failed(hashA);
     });
-    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+    const settle = payDemSettle(rail, {}, { store, reconcile });
     await expect(settle(history(hashA, false))).rejects.toThrow(/contradicted an authenticated successful outcome/);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(once).not.toHaveBeenCalled();
@@ -280,6 +295,8 @@ describe("pay-dem retained identity conflict quarantine", () => {
     const store = createIdempotencyStore(log);
     const once = vi.spyOn(store, "once");
     const submit = demosNode.transfer;
+    // The SDK reads the node's record for the hash, so the node serves what the reply says.
+    serveNodeRecord(hashB, { payer, payee, nonce: 9, status: "failed" });
     const reconcile = vi.fn(async () => {
       // Independent process/store completes A while B's chain read is pending.
       await createIdempotencyStore(log).once("pay-dem:conflicting-native:0", binding, async () => stored(executed()));

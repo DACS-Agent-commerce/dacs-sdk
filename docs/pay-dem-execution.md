@@ -24,7 +24,7 @@ transfer, broadcasts it once, and then:
 | --- | --- |
 | `confirmed`, bound | `ok: true`, `execution: "executed"`, `bft-final` finality and a `demos` txRef at the inclusion block |
 | `failed`, bound | `ok: false`, `errorClass: "permanent"` and a `demos-failed-record` failure proof |
-| `confirmed` or `failed`, but nonce, block or body does not bind | indeterminate at once |
+| `confirmed` or `failed`, but nonce, block or body does not bind, or a present fee is malformed | indeterminate at once |
 | missing, `pending`, any other status (`included`, `finalized`, `Confirmed`, ...), malformed, another hash, a rejected read | read again until the budget ends, then indeterminate |
 | a read still pending at its bound, `statusRequestTimeoutMs` or the end of `transactionRecordTimeoutMs`, whichever comes first | indeterminate at once (`transaction record read timed out`); reads never stack |
 
@@ -69,8 +69,8 @@ broadcast shows only that a transfer with these terms executed: not that this
 call made it, that it came after the journal and the fence, or what fee it
 paid. So a custom `DemosNativeClient` or `PayDemRail` is the integrator's own
 chain access, and its result could never be final. Recovery is different:
-after a restart a held intent is settled by the integrator's reconciler, and
-the SDK checks only that statement's shape and bindings (see the last item
+after a restart a held intent is named by the integrator's reconciler, and
+the rail's own read of the node's record decides it (see the reconciler item
 below).
 
 - The SDK decides before the effect. `payDemSettleCore` refuses any client
@@ -86,12 +86,25 @@ below).
   `createPayDemRail` settle yields success or a permanent failure.
 - A `PayDemSettlementReconcile` returns a `PayDemReconciledSettlement` with
   `execution: "executed"` only after reading and binding a `confirmed`
-  record, or a `PayDemReconciledFailure` for a bound `failed` record. The
-  reconciler is still the integrator's statement: it recovers a held intent
-  after a restart, and the SDK checks its shape and bindings only. After a
-  restart, a durable outcome and a reconciliation that disagree on the
-  transaction, the block, success or any failure-proof field, the nonce
-  included, are refused.
+  record, or a `PayDemReconciledFailure` for a bound `failed` record. That
+  answer is the integrator's statement: it names a hash and claims an
+  outcome. Every recovered verdict (a retained-hash audit, the store's lookup
+  by key, the restart re-check of a cached outcome) is then decided by the
+  rail's own read of the node's record for that hash, through the connection
+  `createPayDemRail` opened: one bounded `getTxByHash`
+  that must carry the hash, a terminal `confirmed` or `failed` status, an
+  inclusion block, and a native body whose payer (the rail's wallet), payee,
+  amount and nonce bind the payment. Only a rail with such a read may make a
+  fresh payment, so every payment the adapter made can be read again on a
+  resume or a repeat. The block, nonce and fee come from that record; a claim it
+  contradicts is refused, including a `networkFeeOs` the record does not
+  carry (a reconciler may omit the fee), and a missing, pending, timed-out or
+  malformed record leaves the payment unresolved with that reason. Over any other rail
+  there is no such read, so a recovered result is held as `ok: false` with
+  the hash. A failure found by a lookup by key is never final: the hash may be
+  another job's transfer of the same parties and amount. After a restart, a
+  durable outcome and a reconciliation that disagree on the transaction, the
+  block, success or any failure-proof field, the nonce included, are refused.
 - A settlement request carrying `priorAttempts` (which `runSession` sends for
   a session holding a transaction-bearing outcome) is an audit of that
   retained transaction that never submits. It reads only and never claims a
@@ -100,7 +113,9 @@ below).
   when the rail log lost its record, and requires both
   `settlementStore.readOutcome` and `reconcile` (a bridge without `reconcile`
   returns only the definitive result it bound to the key itself, when the
-  attempt record and the saved outcome agree). A log that keeps attempt
+  attempt record and the saved outcome agree). It still re-reads the node
+  record before returning a cached success or permanent failure, including
+  when the same adapter originally submitted the payment. A log that keeps attempt
   records must implement `readOutcome`, which reads without a lease. The
   `createIdempotencyStore` lookup never claims, leases or binds a key; over
   an older log without `readOutcome` it refuses.
@@ -117,6 +132,18 @@ below).
   original job/phase binding required by DACS-4 §9.5.1 PC-7. Every audit reads
   the attempt record, and a record naming another hash refuses it, whatever
   the bridge holds in memory.
+  Nothing else binds the hash. SettlementEvidence the buyer signed and anchored
+  names a hash, but DACS-4 §9.5.9 declares no settlement-side job binding
+  for pay-dem and SB-2 gives an outer evidence signature or an anchor no
+  collision authority, so it cannot bind the hash to this job: another job
+  could cite the same transfer. When the rail log has lost the key's attempt
+  record, the audit is held as indeterminate (never repaid, never counted)
+  until the attempt record is restored or the payment is resolved by hand
+  against the node's record (the SDK has no operator path for it).
+- Checkpoint and evidence members the SDK now writes (`errorClass`,
+  `failureProofJson`, `networkFeeOs`, the evidence `payer`) carry no schema
+  version. An older SDK reads such a record as invalid, so there is no
+  downgrade after a native session has run on this version.
 - The attempt record is written through the settlement fence's
   `recordAttempt`, which a `createIdempotencyStore` store provides when its
   `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
@@ -154,19 +181,49 @@ below).
   payee, OS amount and network, a `recovery` tuple equal to this rail, job and
   phase, and (when present) a known denomination and debit bounds no lower
   than the amount; a permanent failure's proof must also carry the journaled
-  nonce. When a network fee is reported or preserved from an authenticated
-  outcome, the successful result's OS amount plus that fee must equal
-  `confirmedTotalDebitOs` whenever that field is present. A missing fee with
+  nonce. A supplied confirmation debit must be at least the OS amount and
+  no greater than the declared debit ceiling. The confirmation debit and
+  the record's fee are independent quantities and may differ. A missing fee with
   no authenticated value to preserve does not prevent recovery or authenticate
   a fee from the supplied journal. Recovery preserves a
   previously authenticated network fee if the reader omits it, and refuses a
-  conflicting fee without changing the recorded success. The entry is the reconciler's object, not the one the rail wrote
+  conflicting fee without changing the recorded success. The SDK's own node-record
+  read must still match the saved fee. The entry is the reconciler's object, not the one the rail wrote
   before broadcast, so it can refuse an audit but never counts the hash on its
   own. Nor does an injected store's records, or a rail-log outcome on a log
   that keeps attempts, which a key-only restart reconciliation can have
   written. The reconciler throws
   when a loaded entry conflicts with the record and never returns `null` for
   the retained hash.
+
+  A recovered success carries the fee of the record the SDK read (the sum of
+  its `transaction_fee` components in OS) as `networkFeeOs`, and so does a
+  fresh success `payDemSettle` returns. A rail's own `networkFeeOs` is its
+  debit accounting: the confirmation's fee (`gas_operation.fees` when the node
+  reports one). That debit bounds `maxTotalDebitOs` and stays on the rail's result, but the signed record need
+  not carry it, so the adapter reports the fee of the record it read; a saved
+  success then re-reads the same fee on every restart. After the
+  denomination fork the transaction query serves each component as an OS
+  number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it, as
+  it serves `content.amount`; node2's recorded envelopes carry
+  `network_fee: 1000000000`. Both forms are read. A record without
+  `transaction_fee` binds no fee; one with a fee in any other form (`null`,
+  `{}`, an array, a fraction, a negative) leaves the read indeterminate.
+  The node keeps each transaction as it was signed: its denomination fork
+  migrates balances, not transaction rows. So the SDK reads a record in the
+  denomination its signed payload carries, not the node's current one: a
+  numeric `args[1]` (how demosdk signs before the fork) is DEM, and its amount
+  and fee components are converted at 1 DEM = 1,000,000,000 OS. A decimal
+  string is OS. A payment saved before the fork therefore still completes
+  after it activates. An OS-signed record on a node that reports the fork
+  inactive is indeterminate. The SDK reads that fork state from the node for
+  each recovery (`nodeCall("getNetworkInfo")`), not from demosdk's
+  `getNetworkInfo`, which in 4.0.16 and 4.0.18 caches fork information, so a rail
+  that saw the fork inactive still reads a payment signed after it activated.
+  A reconciler may omit the fee, and one that
+  reports another fee is refused. `runSession` re-asserts a saved fee, so a
+  record with another fee, or none, leaves the saved success unresolved (not
+  completed, never reported unpaid).
 - Any failure after the record and before the broadcast, including a crash or
   fence refusal, leaves a recorded hash
   that nothing sent. The SDK never signs or sends again for the key: when the
@@ -193,11 +250,38 @@ below).
   the whole rail-log record under the same operator procedure.
 - A restart without history reconciles in the store. With an attempt record
   the reconciler receives its hash as `txHash`, and any other transaction is
-  refused. Without one, a success is refused unless this same bridge already
-  submitted and bound the hash to the key. The same check runs before saving a
+  refused. The store records no reconciled failure as the definitive
+  outcome, so a failure the SDK read there leaves the intent held
+  (`reconciliation was not definitive`) and nothing is resubmitted. A failure
+  is final only on the retained-hash audit or the restart re-check of the
+  rail's own durable failure. Without an attempt record, the SDK's read of
+  the reconciler's answer for the key cannot tell this payment from another
+  job's transfer of the same payer, payee and amount, so a success is refused
+  unless this same bridge already submitted and bound the hash to the key,
+  and a failure found that way is held. The same check runs before saving a
   reconciled success and before returning a cached success: another job's
   same-party, same-amount payment cannot complete this job through a key-only
   reconciliation or saved outcome.
+- A native DEM session (`runSession` with a `pay-dem` price in DEM) calls
+  only this `payDemSettle` adapter (directly, from `settleFromRail`, or
+  through `Agent.runSession`), as `settle` and as `resumeSettlement`,
+  recognised by identity; a wrapper or a `.bind()` copy is a different
+  function. When `resumeSettlement` is omitted, the registered native DEM
+  `settle` adapter serves as the recovery implementation.
+  Native recovery requests carry `recoveryOnly: true`, even when a crash left
+  only the session intent. Without an attempt record, it refuses recovery.
+  Before claiming or paying, a fresh native session requires a
+  caller-supplied settlement store and reconciler on its recovery adapter,
+  plus a caller-supplied store on its paying adapter. A supplied
+  `resumeSettlement` must itself be the SDK adapter; a callback, wrapper or
+  bound copy is refused before the initial payment.
+  Any other implementation is refused before it is called, so it
+  makes no payment and reports no outcome: nothing could re-read a native
+  success it reported after a restart. The adapter over a rail
+  `createPayDemRail` did not build reports only a hash for any outcome it did
+  not read: the session binds the hash and saves it as an unresolved attempt,
+  so a later audit through the adapter over the SDK rail reads that hash
+  instead of paying again.
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
@@ -216,14 +300,41 @@ below).
   apply to payments made with the current SDK and a log implementing all
   three methods.
 
-Which capabilities the SDK built, and which successes its own client
-returned, is kept private to the rails module, keyed by object identity. No
-file in the package exports a way to add to it. The exports are three
-read-only checks: one the settlement store uses; `isPayDemRecordVerifyingRail`;
-and `payDemRecordVerifiedTransfer`, which gives the exact transfer terms
-(payer, payee, `amountOs`, network and recovery settlement key) of a frozen
-success `payDemSettleCore` returned from the SDK's own record read, and
-`undefined` for anything else, including a copy of that success.
+For native DEM sessions, retain a durable rail `SettlementLog` with its immutable
+attempt records alongside the `SessionStore`, and reopen it with a reconciler
+after a process restart. The default in-memory rail log supports retries only
+while its process survives in direct rail calls; a native session refuses that
+default configuration before payment. A fresh native session also requires a retained `SessionStore`: its existing
+intent prevents a lost rail log from authorizing another payment. The SDK
+checks that both stores were supplied and support the required operations;
+callers must ensure their stores are durable.
+Every native resume, including a completed-session replay, requires a trusted
+node to serve the transaction record. A pruned record, node reset or outage
+keeps replay unresolved without changing the saved payment or submitting again.
+Missing records (including the older node's `"error"` not-found reply), failed
+reads and timeouts throw `PayDemRecordUnavailableError`, exported from the package
+root and rails entry point. Its `category` is `"transient"`; `txHash` and `reason`
+identify the read to retry. Restore the trusted node's original transaction
+history or wait for the outage to clear, then retry the same job with the same
+session and rail stores. Permanently pruned history must be restored before
+catch-up can complete. A record that contradicts the payment is a reconciliation
+error rather than this retry signal; neither permits another payment.
+A `SessionStore` alone cannot recover a payment
+whose rail records were discarded. Restore the original rail log and attempt
+records from a trusted backup before retrying such a session; clearing a paid
+key or forcing a completed outcome cannot reconstruct those records safely.
+
+Which capabilities the SDK built (its client, its rail's `settle` and
+recovery read, `payDemSettle`'s submissions and the adapters it returned), and
+which successes its own client returned, is kept private to the rails module,
+keyed by object identity. No file in the package exports a way to add to it.
+The module exports six read-only capability helpers: `isRecordVerifiedSource`,
+`isPayDemSessionRecoverable`, `isPayDemSettleAdapter`,
+`preflightPayDemSettlement`, `isPayDemRecordVerifyingRail`, and
+`payDemRecordVerifiedTransfer`, which gives the exact transfer terms (payer,
+payee, `amountOs`, network and recovery settlement key) of a frozen success
+`payDemSettleCore` returned from the SDK's own record read, and `undefined`
+for anything else, including a copy of that success.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail
@@ -237,9 +348,18 @@ custom reconciler can name it as `PayDemReconciledFailure["failureProof"]`.
 
 `runSession` accepts the permanent failure only for a `pay-dem` request in
 DEM, with a bound proof whose `amountOs` is the request's amount in OS, on
-fresh settlement and on recovery. It treats it as a transaction-bearing
-non-success: the hash is bound for anti-replay,
-the outcome is recorded, and the session stops as indeterminate.
+fresh settlement and on recovery, from the `payDemSettle` adapter, and on
+recovery only for a hash the session already held. It binds the hash for
+anti-replay and records the proof as the terminal failed outcome; a later
+resume reuses it only after the adapter re-reads the identical proof. Without a `SessionStore` no
+proof survives the run, so a resume holds the anchored failure as
+indeterminate instead of reporting it again. A failure read for a saved
+success, a bound permanent one included, is refused instead: the session
+stops and the saved success stays in place (PC-7).
+If a crash left only the session intent, the first resume binds and saves a
+newly recovered failed hash as indeterminate. Resume the same job once more to
+re-read that held hash and finish with the bound permanent failure; neither
+resume submits another transfer.
 
 The dacs-node buyer track runs a fresh payment only on a rail whose success
 the SDK can make final: the default runtime rail, a rail
@@ -301,6 +421,10 @@ retained hash must never return `null` as permission to pay again. See the
 exported result types for the full shapes. The SDK checks the callback's
 normalized statement and bindings; the integrator is responsible for its
 chain reads.
+
+## Standard revision
+
+Native recovery follows [DACS-4 v0.8 at `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`](https://github.com/DACS-Agent-commerce/DACS-Standard/blob/d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20/spec/DACS-4-SETTLE.md), the revision in `package.json` and the conformance sync. PC-7, SB-2 and §9.5.9 references in this document use that revision.
 
 ## Finality
 

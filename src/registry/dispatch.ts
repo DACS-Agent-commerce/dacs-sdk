@@ -57,11 +57,13 @@ export interface RailDispatchOptions {
   /**
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
    * restart recovery should supply all three of `settlementStore`,
-   * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
-   * low-level process-local behavior (a resumed call can return the
-   * bridge's own bound definitive result) but is not restart-safe.
-   * Omitting `settlementStore` uses the SDK's in-memory store, which can start
-   * payments. A supplied store for new transfers or restart audits must be a
+   * `reconcile`, and `journalPreparedTransfer`. Native runSession preflight
+   * requires a caller-supplied store and reconciler before payment. Direct
+   * rail calls may still use the default in-memory store to start payments;
+   * omitting these dependencies preserves low-level process-local behavior
+   * (a resumed call can return the bridge's own bound definitive result) but
+   * is not restart-safe.
+   * A supplied store for new transfers or restart audits must be a
    * `createIdempotencyStore` store over a
    * `SettlementLog` with `readOutcome` and the `putAttempt`/`readAttempt` pair
    * (or an object carrying that store's own `once`, `readOutcome` and
@@ -118,7 +120,7 @@ function bindDescriptorRequest(
   executor: (req: SettleRequest) => Promise<SettleResult>,
 ): (req: SettleRequest) => Promise<SettleResult> {
   const expectedPhase = descriptor.phaseHandler;
-  return async (req) => {
+  return async (req: SettleRequest): Promise<SettleResult> => {
     // Capture the two authority-bearing request fields once, then overwrite any
     // accessor/proxy values copied by the compatibility spread below. The rail
     // executor must receive the same descriptor id and phase that this gate
@@ -839,7 +841,11 @@ export async function settleFromRail(
           ? {}
           : { transactionRecordTimeoutMs }),
       });
-      return bindDescriptorRequest(descriptorIdentity, payDemSettle(rail, {
+      // Returned as itself, not behind the descriptor gate, so runSession can
+      // recognise the SDK adapter. It enforces the gate's checks: the request
+      // rail must be this descriptor's id (`railId` below) and the phase must
+      // be `pay-dem`, each read once.
+      return payDemSettle(rail, {
         ...(demRecipient === undefined
           ? {}
           : { recipient: demRecipient }),
@@ -855,7 +861,7 @@ export async function settleFromRail(
         ...(reconcile === undefined
           ? {}
           : { reconcile }),
-      }));
+      });
     }
     default:
       throw new DacsError(

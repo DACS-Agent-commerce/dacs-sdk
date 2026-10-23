@@ -647,7 +647,9 @@ never claims a submit generation or writes an intent, attempt record or outcome.
 and `reconcile` and
 fails closed without either, except that a bridge without `reconcile` still
 returns the definitive result it bound to the key itself when the key's
-attempt record names that hash and the store saved that same result. A
+attempt record names that hash and the store saved that same result. It still
+re-reads the node record before returning a cached success or permanent failure,
+including when the same adapter originally submitted the payment. A
 `SettlementLog` that keeps attempt records must implement `readOutcome`, which
 reads without a lease. The `createIdempotencyStore` lookup never claims,
 leases or binds a key; over an older log without `readOutcome` it refuses. For an
@@ -663,11 +665,13 @@ original prepared-transfer journal entry for that hash as `preparedTransfer`.
 The raw node record's `content` and `status` are not this SDK result shape;
 see the [normalization example](docs/pay-dem-execution.md#normalizing-a-reconciliation-result).
 Recovery preserves a known network fee when the reader omits it and refuses
-a different fee for the same finalized payment. When a fee is reported or
-preserved from an authenticated outcome, a supplied journal's confirmed total
-debit must equal the successful result's OS amount plus that fee. An omitted
-fee with no authenticated value to preserve does not prevent recovery or
-authenticate a fee from the supplied journal.
+a different fee for the same finalized payment. The SDK's own node-record read
+must still match the saved fee. A supplied journal's confirmation debit must
+be at least the OS amount and no greater than its declared debit ceiling.
+The confirmation debit and the record's fee are independent quantities and
+may differ. An omitted fee with no
+authenticated value to preserve does not prevent recovery or authenticate a
+fee from the supplied journal.
 
 The SDK counts the retained hash for this payment only through its own record
 that this key signed it, and refuses the audit otherwise. That record is the
@@ -777,9 +781,11 @@ A restart without history (the lease expired and the session holds no hash)
 reconciles in the store. When the key has an attempt record, the reconciler
 receives its hash as `txHash` and any other transaction is refused. Without
 one, a success is refused unless this same bridge already submitted and bound
-that hash to the key. A key-only reconciliation or saved outcome cannot bind
-another job's same-party, same-amount transaction to this payment. The check runs
-before saving a reconciled success and before returning a cached success. A
+that hash to the key, and a reconciled failure stays held. A key-only
+reconciliation or saved outcome cannot bind another job's same-party,
+same-amount transaction to this payment, even when the SDK's own read of the
+node record confirms that transaction. The check runs before saving a
+reconciled success and before returning a cached success. A
 supplied entry is checked on this path too and never persisted. A payment that the bridge, its rail log or the
 session already recorded as successful is never reported unpaid: a reconciliation that
 contradicts it is refused rather than returned as a permanent failure (DACS-4
@@ -816,6 +822,111 @@ pinned. No-repayment across a whole-process crash additionally requires a durabl
 `sessionStore` and a rail-idempotent `resumeSettlement` implementation—a job id
 alone cannot prove whether a lost rail response moved value. The legacy native-ref
 input remains available for callers with a separate trusted pin.
+
+Native recovery follows [DACS-4 v0.8 at the SDK Standard pin `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`](https://github.com/DACS-Agent-commerce/DACS-Standard/blob/d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20/spec/DACS-4-SETTLE.md), especially §9.5.1 PC-7, §9.5.8 SB-2 and §9.5.9.
+
+A saved native DEM outcome is not reused on trust. A resume that holds one,
+including a re-run of a completed session, calls `resumeSettlement` once as a
+read-only audit of the retained transaction hash, except in the cases below
+that are held without a rail call. When `resumeSettlement` is omitted, the
+registered native DEM `settle` adapter serves as the recovery implementation.
+Native recovery requests carry `recoveryOnly: true`, including intent-only
+checkpoints with no saved transaction. The adapter reads the original attempt
+from the rail log. If that record is missing, recovery remains unresolved.
+Only the SDK's `payDemSettle` adapter
+(directly, from `settleFromRail`, or passed through `Agent.runSession`) is
+called for it, as for every native settlement (see below). With the
+session's rail checkpoint in the
+`SessionStore`, a success is kept only when the rail re-reads a `confirmed`
+record with the same block, kind, parties, finality and any saved fee, and a
+permanent failure only when it returns the identical failure proof. From the
+signed evidence alone (no `SessionStore`, or one without that checkpoint), a
+success is kept only when the re-read matches the evidence's block, kind and
+finality, the request-bound payee, and the payer and any fee the session
+signed into the evidence (`dacsSdkSettlementPayer`, `dacsSdkNetworkFeeOs`).
+These two are SDK extension members inside the signed scope (a verifier that
+does not know them keeps them, as SIG-5 requires). `dacsSdkNetworkFeeOs` is the
+fee the node's record declares in `transaction_fee`, which can differ from the
+debit the chain took; it is not the Standard's `paymentFee`. When the rail log
+has lost the key's attempt record, the signed evidence does not bind the
+retained hash to the job (pay-dem declares no settlement-side job binding, and
+an evidence signature or anchor is not collision authority under DACS-4 SB-2),
+so the audit holds as indeterminate.
+
+For native DEM sessions, retain a durable rail `SettlementLog` with its immutable
+attempt records alongside the `SessionStore`, and reopen it with a reconciler
+after a process restart. The default in-memory rail log supports retries only
+while its process survives. A `SessionStore` alone cannot recover a payment
+whose rail records were discarded. Restore the original rail log and attempt
+records from a trusted backup before retrying such a session; clearing a paid
+key or forcing a completed outcome cannot reconstruct those records safely.
+
+Evidence signed before those fields existed is audited the same way, and its
+payer is the one the `payDemSettle` rail log recorded for the job's settlement
+key (that log's binding names the paying wallet; the audit fails closed when
+the record did not survive). A `SessionStore` then records the payer and fee
+of that first re-read beside the evidence, and later resumes must repeat them;
+an evidence checkpoint written before payers were bound is left as it is, and
+every resume re-reads through the rail log. Held as indeterminate without a
+rail call: an evidence checkpoint without the payer and fee the evidence
+signed, and, on every rail, anchored failure evidence that carries a
+transaction without a `SessionStore` (no proof survives the run to re-read).
+Absence, an indeterminate read, another hash
+or any mismatch fails closed without paying again. A failure read for a saved
+success, a bound failed record included, is refused the same way: the session
+neither completes nor records the payment as failed, and the saved success
+stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
+
+A recovered native success, and any native permanent failure, is final only
+when the SDK read the node's record for that hash itself: over the rail
+`createPayDemRail` built, the adapter reads the record through that rail's own
+connection, for that rail's wallet only. It takes the
+record's status, block, nonce, parties, amount and fee from it. This is the
+only rail the adapter lets make a fresh payment. A fresh native session requires a retained `SessionStore` as well as a
+caller-supplied settlement store and reconciler on its recovery adapter, plus
+a caller-supplied store on its paying adapter, before claiming or paying, so a
+session paid through it can be resumed or repeated
+with those dependencies restored. Use a durable rail log implementing
+`readOutcome`, `putAttempt` and `readAttempt`; the SDK cannot determine whether
+a caller-supplied log persists across process restarts. The adapter's default
+in-memory log remains available for direct, process-local rail calls.
+Every native resume, including a completed-session replay, requires a trusted
+node to serve the transaction record. A pruned or unavailable
+record leaves replay unresolved without changing the saved payment or submitting again.
+Missing records and failed or timed-out recovery reads throw
+`PayDemRecordUnavailableError` (`category: "transient"`, with `txHash` and
+`reason`). Restore access to the trusted node's original transaction record,
+then retry the same job with the retained session and rail stores. A permanently
+pruned record requires restoring the node's history; this error does not authorize
+another transfer or completion without a record. Contradicting records remain
+ordinary reconciliation errors. A fresh success reports that same record
+fee as `networkFeeOs`, which the session saves and signs: the rail's own
+`networkFeeOs` (the confirmation's fee) bounds
+`maxTotalDebitOs` and stays on the rail's result, but the record need not carry
+it, so a saved success never contradicts its own record on a restart. It reads the amount and fee in the
+denomination the record's signed payload carries (DEM numbers before the
+denomination fork, OS strings after it), so a payment saved before the fork
+still completes after it activates. The
+reconciler's answer only names the hash and can refuse, and one the
+record contradicts is refused. The fork state that bounds this read (no
+OS-signed record before the fork) is read from the node afresh for each
+recovery, not from demosdk's `getNetworkInfo`, which in 4.0.16 and 4.0.18 caches fork
+information. Over any other rail the adapter returns no recovered verdict at
+all, only the hash: the session binds it and saves it as an unresolved
+attempt, so a later resume through the adapter over that rail
+audits that hash instead of paying again, and never ends the session as failed
+on it.
+
+A native DEM session calls only that adapter, as `settle` and as
+`resumeSettlement`. Any other implementation, a wrapper around the adapter
+included, is refused before it is called, so it makes no payment: nothing
+could re-read its success after a restart, so a session that completed on it
+once could never be resumed or repeated. A recovered failure is
+final only for a hash the session already held. Requiring a `confirmed` record is
+stricter than the pinned DACS-4 §9.5.9 text, which counts a terminal `included`
+status as success: the node can
+report `included` for a transaction whose stored record `failed`, so such a
+saved success is held unresolved rather than completed or reported unpaid.
 
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write

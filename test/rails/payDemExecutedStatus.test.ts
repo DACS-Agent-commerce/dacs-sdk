@@ -48,12 +48,16 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
     readonly connectWallet = sdk.connectWallet;
     readonly getNetworkInfo = sdk.getNetworkInfo;
     readonly getTxByHash = sdk.getTxByHash;
-    readonly nodeCall = sdk.nodeCall;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
 
     getAddress(): string {
       return WALLET;
+    }
+
+    // The node serves its fork state to `nodeCall("getNetworkInfo")` too.
+    nodeCall(message: string, args: Record<string, unknown>): Promise<unknown> {
+      return message === "getNetworkInfo" ? sdk.getNetworkInfo() : sdk.nodeCall(message, args);
     }
   },
 }));
@@ -357,6 +361,26 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
+  });
+
+  // A recovery read of a record with a fee it cannot parse is indeterminate
+  // (payDemRecordRead.test.ts): a fresh payment may not complete from it either,
+  // or a restart could never re-read the success it saved.
+  it.each([
+    ["a null fee", null],
+    ["a fractional fee component", { network_fee: 1.5, rpc_fee: 0, additional_fee: 0 }],
+    ["a fee that is an array", []],
+  ])("is not ok for a confirmed record with %s, and sends once", async (_case, fee) => {
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+      (record.content as Record<string, unknown>).transaction_fee = fee;
+    }));
+    const payDem = await rail();
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual(NOT_OK);
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -737,6 +761,25 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
       async () => {
         const record = { ...executedRecord(), status: "failed" };
         (record.content as Record<string, unknown>).custom_charges = { rpc_fee: "1" };
+        return record;
+      }],
+    // A recovery read of a record with a fee it cannot parse is indeterminate
+    // (payDemRecordRead.test.ts), so a fresh success may not be saved from it.
+    ["a confirmed record with a null fee", "transaction record fee is malformed",
+      async () => {
+        const record = executedRecord();
+        (record.content as Record<string, unknown>).transaction_fee = null;
+        return record;
+      }],
+    ["a confirmed record with a fractional fee component",
+      "transaction record fee is malformed",
+      async () => {
+        const record = executedRecord();
+        (record.content as Record<string, unknown>).transaction_fee = {
+          network_fee: 1.5,
+          rpc_fee: 0,
+          additional_fee: 0,
+        };
         return record;
       }],
   ])("is indeterminate at once for %s", async (_case, reason, read) => {

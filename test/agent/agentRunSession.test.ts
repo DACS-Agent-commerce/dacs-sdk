@@ -1,9 +1,16 @@
-import { describe, expect, test, vi } from "vitest";
+import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   buildAgent,
   type AuthenticatedListing,
 } from "../../src/agent/Agent.js";
+import type { SettleRequest } from "../../src/agent/runSessionCore.js";
+import { demosNode, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
+
+vi.mock("@kynesyslabs/demosdk/websdk", async () =>
+  (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
+beforeEach(() => demosNode.reset());
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
   signComponentArtifact,
@@ -40,36 +47,12 @@ import {
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 import {
-  createPayDemRail,
   payDemSettle,
   type PayDemPreparedTransfer,
+  type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
-
-// The node createPayDemRail talks to: it signs the buyer's transfer at nonce 1
-// and accepts its broadcast, but its status index never reports it included.
-const demosTransfer = vi.hoisted(() => vi.fn());
-vi.mock("@kynesyslabs/demosdk/websdk", () => ({
-  Demos: class MockDemos {
-    readonly tx = {
-      confirm: async (signed: { hash: string; content: object }) => ({
-        response: { data: { transaction: { hash: signed.hash, content: { ...signed.content } } } },
-      }),
-    };
-    readonly broadcast = async () => ({ result: 200, response: { hash: "11".repeat(32) } });
-    readonly connect = async () => true;
-    readonly connectWallet = async () => undefined;
-    readonly getNetworkInfo = async () => ({ forks: { osDenomination: { activated: true } } });
-    readonly getTxByHash = async () => null;
-    readonly nodeCall = async () => ({ state: "unknown" });
-    readonly transfer = demosTransfer;
-    readonly waitForNonce = async () => undefined;
-
-    getAddress(): string {
-      return `0x${buyerHex}`;
-    }
-  },
-}));
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
 // listing verifier. Previously createAgent() supplied neither verifyListing nor
@@ -347,6 +330,33 @@ function listingValidationDeps(
 }
 
 describe("Agent.runSession wires the #41 listing verifier (public surface)", () => {
+  test("public non-native settlement callbacks receive an empty frozen receiver", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem", wallet: "x",
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      listingValidationDeps: listingValidationDeps(),
+    });
+    const receivers: unknown[] = [];
+    const result = await agent.runSession(ref, {
+      terms: TERMS,
+      settle: async function (this: unknown, req) {
+        receivers.push(this);
+        expect(Object.isFrozen(this)).toBe(true);
+        expect(Object.getPrototypeOf(this)).toBeNull();
+        expect(Reflect.ownKeys(this as object)).toEqual([]);
+        for (const capability of ["sign", "signBytes", "anchor", "sessionStore", "settle"]) {
+          expect(Reflect.get(this as object, capability)).toBeUndefined();
+        }
+        return { ok: true, txHash: "0xreceiver", chainId: "eip155:84532",
+          payer: buyerDid, payee: req.expectedPayee };
+      },
+    });
+    expect(result.outcome).toBe("completed");
+    expect(receivers).toHaveLength(1);
+  });
+
   test("rejects a configured bundle for a different agent at construction", () => {
     const { adapter } = memAdapter();
     expect(() => buildAgent(adapter as never, {
@@ -562,25 +572,15 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     // The SDK rail signs, journals and broadcasts the transfer, but its read
     // of the node never finds it included, so the session stays indeterminate.
-    demosTransfer.mockReset();
-    demosTransfer.mockImplementation(async (to: string, amountOs: bigint) => ({
-      hash: "11".repeat(32),
-      content: {
-        type: "native",
-        from: `0x${buyerHex}`,
-        to,
-        amount: amountOs.toString(),
-        nonce: 1,
-        data: ["native", { nativeOperation: "send", args: [to, amountOs.toString()] }],
-      },
-    }));
+    Object.assign(demosNode, {
+      address: buyerHex,
+      nextHash: "11".repeat(32),
+      nonce: 1,
+      recordsBroadcasts: false,
+    });
     const journaled: PayDemPreparedTransfer[] = [];
-    const rail = await createPayDemRail({
-      rpc: "mem",
-      secret: "x",
-      network: "demos:testnet",
+    const rail = await sdkPayDemRail("demos:testnet", {
       inclusionTimeoutMs: 20,
-      inclusionPollIntervalMs: 1,
       statusRequestTimeoutMs: 10,
       transactionRecordTimeoutMs: 10,
       journalPreparedTransfer: async (prepared) => {
@@ -600,11 +600,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           deliveryPhase: "deliver-attested-payload",
           deliveryFormat: "application/json",
         },
-        settle: payDemSettle(rail, { network: "demos:testnet" }),
+        settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(), reconcile: async () => null }),
+        sessionStore: createInMemorySessionStore(),
       }),
     ).rejects.toThrow(/remains indeterminate; refusing terminal failure evidence/);
-    expect(demosTransfer).toHaveBeenCalledOnce();
-    expect(demosTransfer).toHaveBeenCalledWith(sellerHex, 1_000_000_000n);
+    expect(demosNode.transfers).toBe(1);
     expect(journaled).toHaveLength(1);
     const submitted = journaled[0]!;
     expect(submitted).toMatchObject({
@@ -620,6 +620,96 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(submitted.recovery?.settlementKey).toBe(
       `demos:native:${submitted.recovery?.jobId}:0`,
     );
+  });
+
+  test("re-runs a completed pay-dem session only through the SDK adapter", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store, sellerPriv, sellerDid, { notBefore: 1_700_000_000_000 },
+      "native DEM listing", { phase: "pay-dem", railId: "demos:native", currency: "DEM", price: "1" });
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      listingValidationDeps: {
+        ...listingValidationDeps(),
+        loadRailResolution: () => ({
+          trustPhase: "PA-1" as const,
+          trustPolicyAcceptsPA1: true,
+          registry: { state: "not-used" as const, entries: [], definitions: [] },
+          inCodeDefinitions: [{
+            railId: "demos:native",
+            railVersion: 1,
+            phaseHandler: "pay-dem",
+            governanceAnchoring: "in-code" as const,
+            signatureValid: true,
+          }],
+        }),
+      },
+    });
+    const txHash = "11".repeat(32);
+    // The SDK rail over a scripted node: the buyer's wallet signs `11…`, and
+    // the node records it executed at block 42.
+    Object.assign(demosNode, { address: buyerHex, nextHash: txHash, blockNumber: 42 });
+    const rail = await sdkPayDemRail("demos:testnet");
+    const terms = {
+      price: { amount: "1", asset: "DEM", decimals: 9, rail: "demos:native" },
+      deliveryPhase: "deliver-attested-payload",
+      deliveryFormat: "application/json",
+    };
+    // The buyer's durable rail log: the restarted process reopens the same log.
+    const railLog = createInMemorySettlementLog();
+    const settle = payDemSettle(rail, { network: "demos:testnet" }, {
+      store: createIdempotencyStore(railLog),
+      reconcile: async () => ({ ok: true, execution: "executed", txHash, chainId: "demos:testnet",
+        payer: buyerHex, payee: sellerHex, amountOs: "1000000000", blockNumber: 42,
+        txRefKind: "demos", finality: { model: "bft-final" } }),
+    });
+    const first = await agent.runSession(ref, {
+      terms,
+      sessionStore: createInMemorySessionStore(),
+      settle,
+    });
+    expect(first.outcome).toBe("completed");
+    // The original adapter can audit its own payment without a separate
+    // recovery callback, including through the public Agent API.
+    demosNode.reads = [];
+    await expect(agent.runSession(ref, { jobId: first.jobId, terms, settle })).resolves.toEqual(first);
+    expect(demosNode.reads).toEqual([txHash]);
+    const rerun = (resumeSettlement: NonNullable<Parameters<typeof agent.runSession>[1]["resumeSettlement"]>) =>
+      agent.runSession(ref, {
+        jobId: first.jobId,
+        terms,
+        settle: async () => { throw new Error("must not pay again"); },
+        resumeSettlement,
+      });
+    // A constant callback echoing the anchored success is not a node read, so
+    // it is never asked.
+    const constant = vi.fn(async (req: SettleRequest) => ({
+      ok: true, txHash, chainId: "demos:testnet", payer: buyerHex, payee: req.expectedPayee,
+      finality: { model: "bft-final" as const }, blockNumber: 42, txRefKind: "demos",
+    }));
+    await expect(rerun(constant))
+      .rejects.toThrow(/resumeSettlement is not the payDemSettle adapter, so it is not called/);
+    expect(constant).not.toHaveBeenCalled();
+    // The adapter's reconciler reads the executed record and its journal entry.
+    const reconcile = vi.fn(async (context: Parameters<PayDemSettlementReconcile>[0]) => {
+      const tuple = { network: context.network, payer: context.payer, payee: context.payee,
+        amountOs: context.amountOs };
+      const retained = "txHash" in context ? context.txHash : "";
+      return { ok: true as const, execution: "executed" as const, txHash: retained,
+        chainId: context.network, payer: context.payer, payee: context.payee,
+        amountOs: context.amountOs, blockNumber: 42, txRefKind: "demos",
+        finality: { model: "bft-final" as const },
+        preparedTransfer: { ...tuple, txHash: retained, nonce: 9, recovery: { ...tuple,
+          railId: context.railId, jobId: context.jobId, phaseIndex: context.phaseIndex,
+          settlementKey: context.settlementKey } } };
+    });
+    await expect(rerun(payDemSettle(rail, { network: "demos:testnet" }, {
+      store: createIdempotencyStore(railLog), reconcile,
+    }))).resolves.toEqual(first);
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.reads.filter((hash) => hash === txHash).length).toBeGreaterThan(1);
   });
 
   test("a genuinely signed listing settles through the public runSession", async () => {

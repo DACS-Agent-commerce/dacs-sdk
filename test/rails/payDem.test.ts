@@ -51,12 +51,16 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
     readonly connectWallet = sdk.connectWallet;
     readonly getNetworkInfo = sdk.getNetworkInfo;
     readonly getTxByHash = sdk.getTxByHash;
-    readonly nodeCall = sdk.nodeCall;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
 
     getAddress(): string {
       return `0x${PAYER}`;
+    }
+
+    // The node serves its fork state to `nodeCall("getNetworkInfo")` too.
+    nodeCall(message: string, args: Record<string, unknown>): Promise<unknown> {
+      return message === "getNetworkInfo" ? sdk.getNetworkInfo() : sdk.nodeCall(message, args);
     }
   },
 }));
@@ -647,17 +651,24 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(settle).not.toHaveBeenCalled();
   });
 
-  // Recovery never calls a custom rail. It still needs this job's recorded
-  // transaction identity before a reconciled success can complete the job.
+  // Recovery never calls a custom rail. Its verdict is the SDK rail's own read
+  // of the node record, so over the custom rail the reconciler's claim stays
+  // held, and a bridge over the SDK rail completes it. It still needs this
+  // job's recorded transaction identity before a reconciled success can
+  // complete the job.
   test.each([false, true])("a custom rail restart requires a recorded attempt (recorded=%s)", async (recorded) => {
-    const log = createInMemorySettlementLog();
     const request = req({ jobId: "job-retained-custom" });
-    const claim = await seedExpiredIntent(log, request);
-    if (claim.status !== "acquired") throw new Error("expected a fresh test intent");
     const key = settlementKey("pay-dem", "job-retained-custom", 0);
-    if (recorded) {
-      await log.putAttempt!({ key, bindingHash: claim.bindingHash, lease: claim.lease, txHash: TX_HASH, now: 0 });
-    }
+    const seeded = async () => {
+      const seededLog = createInMemorySettlementLog();
+      const claim = await seedExpiredIntent(seededLog, request);
+      if (claim.status !== "acquired") throw new Error("expected a fresh test intent");
+      if (recorded) {
+        await seededLog.putAttempt!({ key, bindingHash: claim.bindingHash, lease: claim.lease, txHash: TX_HASH, now: 0 });
+      }
+      return seededLog;
+    };
+    const log = await seeded();
     const settle = vi.fn<PayDemRail["settle"]>();
     const rail: PayDemRail = { address: PAYER, settle };
     const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
@@ -672,23 +683,38 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       amountOs: context.amountOs,
       execution: "executed" as const,
     }));
-    const bridge = () => payDemSettle(rail, { network: "demos" }, {
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store: createIdempotencyStore(await seeded()),
+      reconcile,
+    })(request)).rejects.toThrow(/reconciliation was not definitive/);
+
+    // The node's record of the reconciled hash, as the SDK rail reads it.
+    sdk.getTxByHash.mockImplementation(async () => ({
+      hash: TX_HASH,
+      content: { type: "native", from: `0x${PAYER}`, to: SELLER_HEX, amount: "5000000000", nonce: "9",
+        data: ["native", { nativeOperation: "send", args: [SELLER_HEX, "5000000000"] }] },
+      status: "confirmed",
+      blockNumber: 4242,
+    }));
+    const bridge = async () => payDemSettle(await sdkRail(), { network: "demos" }, {
       store: createIdempotencyStore(log),
       reconcile,
     });
-
     if (recorded) {
-      await expect(bridge()(request)).resolves.toMatchObject({
+      await expect((await bridge())(request)).resolves.toMatchObject({
         ok: true, txHash: TX_HASH, blockNumber: 4242, payee: SELLER_HEX,
       });
-      // After another restart the recorded outcome is re-authenticated.
-      await expect(bridge()(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
-      expect(reconcile).toHaveBeenCalledTimes(2);
+      // After another restart the recorded outcome is re-authenticated, again
+      // without calling either rail.
+      await expect((await bridge())(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      // Once for the held custom-rail restart, then once per SDK-rail restart.
+      expect(reconcile).toHaveBeenCalledTimes(3);
       await expect(log.readOutcome!(key)).resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
     } else {
-      await expect(bridge()(request)).rejects.toThrow(/no SDK record binds.*this payment/);
+      // The node confirms the transaction, but nothing binds it to this job.
+      await expect((await bridge())(request)).rejects.toThrow(/no SDK record binds.*this payment/);
       await expect(log.readOutcome!(key)).resolves.toBeNull();
-      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(reconcile).toHaveBeenCalledTimes(2);
     }
     expect(settle).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
@@ -979,7 +1005,16 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       store: firstStore,
     })(request)).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
 
+    // The restarted process wires the SDK rail: its own read of the node's
+    // record for the reconciled hash decides the verdict.
     const { rail: restartedRail, transfer: restartedTransfer } = await unusedRail();
+    sdk.getTxByHash.mockImplementation(async () => ({
+      hash: TX_HASH,
+      content: { type: "native", from: `0x${PAYER}`, to: SELLER_HEX, amount: "1250000000", nonce: "9",
+        data: ["native", { nativeOperation: "send", args: [SELLER_HEX, "1250000000"] }] },
+      status: "confirmed",
+      blockNumber: 95563,
+    }));
     const reconcile = vi.fn(async (context) => ({
       ok: true,
       txHash: TX_HASH,
@@ -1013,6 +1048,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(recovered).not.toHaveProperty("execution");
     expect(restartedTransfer).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledWith({
       railId: "demos-native:DEM",
@@ -1309,11 +1345,21 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         amountOs: context.amountOs,
       }));
       const putOutcome = vi.spyOn(log, "putOutcome");
+      // The SDK's own read agrees the record failed; a lookup by key still
+      // never ties that hash to this key.
+      sdk.getTxByHash.mockImplementation(async () => ({
+        hash: TX_HASH,
+        content: { type: "native", from: `0x${PAYER}`, to: SELLER_HEX, amount: AMOUNT_OS, nonce: "9",
+          data: ["native", { nativeOperation: "send", args: [SELLER_HEX, AMOUNT_OS] }] },
+        status: "failed",
+        blockNumber: 4242,
+      }));
       const settle = payDemSettle(rail, { network: "demos" }, {
         store: createIdempotencyStore(log),
         reconcile: reconcile as unknown as PayDemSettlementReconcile,
       });
       await expect(settle(request)).rejects.toThrow(/reconciliation was not definitive/);
+      expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
       expect(reconcile).toHaveBeenCalledTimes(1);
       expect(putOutcome).not.toHaveBeenCalled();
       expect(sdkTransfers()).toBe(0);

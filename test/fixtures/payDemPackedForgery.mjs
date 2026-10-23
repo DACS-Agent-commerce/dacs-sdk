@@ -17,7 +17,7 @@ const PAYER = "c3".repeat(32);
 const SELLER = "a1".repeat(32);
 const TX_HASH = "12".repeat(32);
 const AMOUNT_OS = "5000000000";
-const BRAND_NAME = /vouch|brand|mark|regist|trust|verif|attest|record/i;
+const BRAND_NAME = /vouch|brand|mark|regist|trust|verif|attest|record|adapter|forward/i;
 
 async function shippedFiles(directory) {
   const files = [];
@@ -72,6 +72,9 @@ const forgedTransfer = async () => ({
   blockNumber: 42,
 });
 const forgedClient = { address: PAYER, transfer: forgedTransfer };
+// A consumer's own recovery function, which must never pass as the SDK's
+// payDemSettle adapter: runSession completes a native verdict only from that.
+const forgedResume = async () => failedRecord();
 const forgedResult = Object.freeze({
   ok: true,
   execution: "executed",
@@ -92,7 +95,7 @@ for (const [file, namespace] of modules) {
     if (typeof value !== "function" || !BRAND_NAME.test(name)) continue;
     brandExports.push(`${file}#${name}`);
     for (const target of [
-      forgedSettle, forgedRail, forgedTransfer, forgedClient, forgedResult,
+      forgedSettle, forgedRail, forgedTransfer, forgedClient, forgedResume, forgedResult,
     ]) {
       try {
         const out = value(target);
@@ -181,7 +184,61 @@ try {
 const verifiedForgeries = [forgedResult, { ...forgedResult }, coreResult]
   .map((value) => sdk.payDemRecordVerifiedTransfer(value) ?? null);
 
-// Forgery 4: a custom client that signs and broadcasts itself, carrying what
+// Forgery 4: no shipped export marks a consumer's function as the SDK
+// adapter, and neither a wrapper around a genuine adapter nor a bound copy of
+// one passes as it.
+const isAdapter = modules.get("dist/rails/payDem.js")?.isPayDemSettleAdapter;
+const genuine = sdk.payDemSettle(forgedRail, { network: "demos" });
+const adapterMark = {
+  checkShipped: typeof isAdapter === "function",
+  genuine: isAdapter?.(genuine) === true,
+  forged: isAdapter?.(forgedResume) === true,
+  wrapper: isAdapter?.(async (req) => genuine(req)) === true,
+  bound: isAdapter?.(genuine.bind(null)) === true,
+};
+
+// Forgery 5: a reconciler's `execution: "executed"` through the genuine
+// adapter, over a rail the SDK did not build, must not mint a recovered
+// success: the SDK has no node read of its own behind it. That rail is refused
+// on a fresh attempt, so its earlier attempt is the one the rail log records.
+let reconcilerCalls = 0;
+const forgedReconcile = async () => {
+  reconcilerCalls += 1;
+  return {
+    ok: true,
+    execution: "executed",
+    txHash: TX_HASH,
+    chainId: "demos",
+    payer: PAYER,
+    payee: SELLER,
+    finality: { model: "bft-final" },
+    blockNumber: 42,
+    txRefKind: "demos",
+    amountOs: AMOUNT_OS,
+  };
+};
+const auditRequest = { ...request, jobId: "forged-audit" };
+const railLog = sdk.createInMemorySettlementLog();
+await sdk.createIdempotencyStore(railLog).once("pay-dem:forged-audit:0", {
+  bindingVersion: "1", railId: "pay-dem", jobId: "forged-audit", phaseIndex: 0, phase: "pay-dem",
+  amount: AMOUNT_OS, agreementAsset: "DEM", settlementAsset: "DEM", payer: PAYER, payee: SELLER,
+  network: "demos", finality: { model: "bft-final" },
+}, async (fence) => {
+  await fence.recordAttempt(TX_HASH);
+  return { ok: false, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: SELLER };
+});
+const audited = sdk.payDemSettle(
+  { address: PAYER, settle: async () => ({ ok: false, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: SELLER }) },
+  { network: "demos" },
+  { store: sdk.createIdempotencyStore(railLog), reconcile: forgedReconcile },
+);
+const reconcilerFresh = await outcome(() => audited({ ...auditRequest, jobId: "forged-fresh" }));
+const reconcilerAudit = await outcome(() => audited({
+  ...auditRequest,
+  priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }],
+}));
+
+// Forgery 6: a custom client that signs and broadcasts itself, carrying what
 // looks like a record reader, must be refused before its transfer runs: a
 // record the SDK reads afterwards cannot show the transfer was this call's,
 // came after its journal and fence, or paid the fee it claims. No shipped file
@@ -232,4 +289,6 @@ process.stdout.write(`${JSON.stringify({
   bridgeSuccess,
   railSuccess,
   verifiedForgeries,
+  adapterMark,
+  reconciler: { fresh: reconcilerFresh, audit: reconcilerAudit, calls: reconcilerCalls },
 })}\n`);

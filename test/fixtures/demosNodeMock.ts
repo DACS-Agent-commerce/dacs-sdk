@@ -33,13 +33,19 @@ export interface DemosNodeScript {
   laterTxHashes: readonly string[];
   nonce: number;
   blockNumber: number;
-  recordStatus: "confirmed" | "failed";
+  recordStatus: "confirmed" | "failed" | "pending";
+}
+
+/** Change the status the node's record of a signed transfer carries from now on. */
+export function setNodeRecordStatus(recordStatus: DemosNodeScript["recordStatus"]): void {
+  script = { ...script, recordStatus };
 }
 
 let script: DemosNodeScript = {
   payer: "", txHash: "", laterTxHashes: [], nonce: 0, blockNumber: 0, recordStatus: "confirmed",
 };
 let signed: string[] = [];
+let served = new Map<string, unknown>();
 
 export function demosSdkModule() {
   return {
@@ -50,12 +56,17 @@ export function demosSdkModule() {
       readonly connectWallet = demosNode.connectWallet;
       readonly getNetworkInfo = demosNode.getNetworkInfo;
       readonly getTxByHash = demosNode.getTxByHash;
-      readonly nodeCall = demosNode.nodeCall;
       readonly transfer = demosNode.transfer;
       readonly waitForNonce = demosNode.waitForNonce;
 
       getAddress(): string {
         return `0x${script.payer}`;
+      }
+
+      // The node serves its fork state to `nodeCall("getNetworkInfo")` too
+      // (uncached in demosdk); every other node call is `demosNode.nodeCall`.
+      nodeCall(message: string, args: Record<string, unknown>): Promise<unknown> {
+        return message === "getNetworkInfo" ? demosNode.getNetworkInfo() : demosNode.nodeCall(message, args);
       }
     },
   };
@@ -65,6 +76,7 @@ export function demosSdkModule() {
 export function resetDemosNode(over: Pick<DemosNodeScript, "payer" | "txHash"> & Partial<DemosNodeScript>): void {
   script = { laterTxHashes: [], nonce: 9, blockNumber: 42, recordStatus: "confirmed", ...over };
   signed = [];
+  served = new Map();
   for (const method of Object.values(demosNode)) method.mockReset();
   demosNode.connect.mockResolvedValue(undefined);
   demosNode.connectWallet.mockResolvedValue(undefined);
@@ -95,8 +107,12 @@ export function resetDemosNode(over: Pick<DemosNodeScript, "payer" | "txHash"> &
   // The payer had used the nonce before the one `txHash` is signed at.
   demosNode.nodeCall.mockImplementation(async (message: string) =>
     message === "getAddressNonce" ? script.nonce - 1 : { state: "included", blockNumber: script.blockNumber });
-  demosNode.getTxByHash.mockImplementation(async () => {
-    const transaction = (demosNode.broadcast.mock.calls.at(-1)?.[0] as {
+  demosNode.getTxByHash.mockImplementation(async (hash: string) => {
+    if (served.has(hash)) return served.get(hash);
+    const call = [...demosNode.broadcast.mock.calls].reverse().find((args) =>
+      (args[0] as { response: { data: { transaction: { hash: string } } } }).response.data.transaction.hash === hash);
+    if (call === undefined) return null;
+    const transaction = (call[0] as {
       response: { data: { transaction: { content: { nonce: number } } } };
     }).response.data.transaction;
     return {
@@ -119,8 +135,61 @@ export const sdkRail = (over: Partial<PayDemRailConfig> = {}) => createPayDemRai
   ...over,
 });
 
+/**
+ * The SDK's own rail for a process that may only audit or reconcile. Only the
+ * SDK rail reads the node's record, so only its bridge finishes a recovered
+ * verdict (#338); a transfer it signs calls `submit`, which fails the test.
+ */
+export async function sdkAuditRail(over: Partial<PayDemRailConfig> = {}) {
+  return { rail: await sdkRail(over), submit: forbidTransfers() };
+}
+
+/** From now on, a transfer signed over the mocked node calls the returned spy, which fails the test. */
+export function forbidTransfers() {
+  const submit = vi.fn((): never => { throw new Error("must never submit a retained transfer"); });
+  const sign = demosNode.transfer.getMockImplementation()!;
+  demosNode.transfer.mockImplementation((...args: unknown[]) => {
+    submit();
+    return sign(...args);
+  });
+  return submit;
+}
+
 /** Native transfers the SDK rail signed over the mocked node. */
 export const sdkTransfers = () => demosNode.transfer.mock.calls.length;
+
+/**
+ * Serve the node's record for `txHash` as a native transfer from `payer` to
+ * `payee`: for a hash no transfer over this mock signed, such as a retained
+ * hash a restarted process audits.
+ */
+export function serveNodeRecord(txHash: string, over: {
+  payer: string;
+  payee: string;
+  amountOs?: string;
+  nonce?: number;
+  blockNumber?: number;
+  status?: "confirmed" | "failed" | "pending";
+  feeOs?: string;
+}): void {
+  const amountOs = over.amountOs ?? "1000000000";
+  served.set(txHash, {
+    hash: txHash,
+    content: {
+      type: "native",
+      from: `0x${over.payer}`,
+      to: over.payee,
+      amount: amountOs,
+      nonce: String(over.nonce ?? script.nonce),
+      data: ["native", { nativeOperation: "send", args: [over.payee, amountOs] }],
+      ...(over.feeOs === undefined
+        ? {}
+        : { transaction_fee: { network_fee: over.feeOs, rpc_fee: "0", additional_fee: "0" } }),
+    },
+    status: over.status ?? script.recordStatus,
+    blockNumber: over.blockNumber ?? script.blockNumber,
+  });
+}
 
 /**
  * The SDK rail over a node that accepts the broadcast but never includes the

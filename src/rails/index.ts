@@ -382,6 +382,7 @@ export {
   createPayDemRail,
   isPayDemRecordVerifyingRail,
   PayDemIncludedNonceVisibilityError,
+  PayDemRecordUnavailableError,
   payDemSettle,
   payDemSettleCore,
   payDemRecordVerifiedTransfer,

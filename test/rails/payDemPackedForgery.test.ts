@@ -17,6 +17,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // before its transfer, and no shipped file offers it a reader or client rail.
 
 const repo = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const HELD = {
+  ok: false,
+  errorClass: null,
+  failureProof: false,
+  finality: null,
+  txHash: "12".repeat(32),
+};
 
 interface ForgeryReport {
   shippedFiles: number;
@@ -28,6 +35,8 @@ interface ForgeryReport {
   coreSuccess: unknown;
   bridgeSuccess: unknown;
   railSuccess: unknown;
+  adapterMark: Record<string, boolean>;
+  reconciler: { fresh: unknown; audit: unknown; calls: number };
   readerFactories: string[];
   readerClient: { core: unknown; bridge: unknown; transfers: number };
 }
@@ -75,10 +84,12 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     expect(report.importErrors.map(({ file }) => file)
       .filter((file) => /^dist\/(?:index|agent\/|rails\/)/.test(file))).toEqual([]);
     expect(report.vouchExports).toEqual([]);
-    // Exactly the three read-only checks, whatever the export syntax.
+    // The export-name filter selects four capability queries and the recovery error class.
     expect(report.brandExports.filter((entry) => entry.startsWith("dist/rails/payDem.js#")).sort())
       .toEqual([
+        "dist/rails/payDem.js#PayDemRecordUnavailableError",
         "dist/rails/payDem.js#isPayDemRecordVerifyingRail",
+        "dist/rails/payDem.js#isPayDemSettleAdapter",
         "dist/rails/payDem.js#isRecordVerifiedSource",
         "dist/rails/payDem.js#payDemRecordVerifiedTransfer",
       ]);
@@ -105,6 +116,25 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
 
   it("reports no forged, copied or custom-client success as SDK record-verified", () => {
     expect(report.verifiedForgeries).toEqual([null, null, null]);
+  });
+
+  // runSession completes a native verdict only from the SDK adapter, so a
+  // consumer's function must never carry the adapter's identity.
+  it("lets no consumer function pass as the payDemSettle adapter", () => {
+    expect(report.brandExports).toContain("dist/rails/payDem.js#isPayDemSettleAdapter");
+    expect(report.brandExports.filter((entry) => /#(?:mark|forward)/i.test(entry))).toEqual([]);
+    expect(report.adapterMark).toEqual({
+      checkShipped: true, genuine: true, forged: false, wrapper: false, bound: false,
+    });
+  });
+
+  it("mints no recovered payment from a reconciler's executed claim without the SDK's own node read", () => {
+    expect(report.reconciler.fresh).toEqual({
+      threw: expect.stringMatching(/createPayDemRail returned.*refusing/),
+    });
+    // The rail log binds the hash, so only the missing node read holds it.
+    expect(report.reconciler.audit).toEqual(HELD);
+    expect(report.reconciler.calls).toBe(1);
   });
 
   it("ships no record reader or client rail and refuses a reader-carrying client before its transfer", () => {

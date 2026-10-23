@@ -5,7 +5,7 @@ import {
   type SettlementIdempotencyStore,
 } from "../../src/rails/idempotency.js";
 import { payDemSettle, type PayDemSettlementRecoveryContext } from "../../src/rails/payDem.js";
-import { demosNode, resetDemosNode, sdkRail } from "../fixtures/demosNodeMock.js";
+import { demosNode, resetDemosNode, sdkRail, serveNodeRecord } from "../fixtures/demosNodeMock.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
   (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
@@ -35,7 +35,12 @@ const failed = (nonce = 7) => ({
   failureProof: { kind: "demos-failed-record" as const, txHash: hash, payer, payee,
     nonce, blockNumber: 42, amountOs: "1000000000" },
 });
-beforeEach(() => resetDemosNode({ payer, txHash: hash }));
+beforeEach(() => {
+  resetDemosNode({ payer, txHash: hash });
+  // The SDK reads the retained hash's node record itself; the reconciler's
+  // claim agrees with it, so only the store and its reads decide.
+  serveNodeRecord(hash, { payer, payee, nonce: 7, status: "confirmed" });
+});
 
 async function expired() {
   const log = createInMemorySettlementLog();
@@ -76,18 +81,24 @@ test.each(["plain fence", "foreign store fence", "wrong callback key"] as const)
   },
 );
 
-test("an unbound audit never promotes a stable reconciler match to an attempt record", async () => {
-  const fixture = await expired();
-  const reconcile = vi.fn(async () => executed());
-  await expect(payDemSettle(await sdkRail(), {}, { store: fixture.inner, reconcile })(request()))
-    .rejects.toThrow(/no SDK record binds/);
-  expect(fixture.putAttempt).not.toHaveBeenCalled();
-  expect(fixture.putOutcome).not.toHaveBeenCalled();
-  await expect(fixture.log.readAttempt!(key)).resolves.toBeNull();
-  await expect(fixture.log.readOutcome!(key)).resolves.toBeNull();
-  expect(reconcile).toHaveBeenCalledTimes(1);
-  expect(demosNode.broadcast).not.toHaveBeenCalled();
-});
+test.each(["success", "failure proof"] as const)(
+  "an unbound audit never promotes a stable reconciler match to an attempt record: %s", async (mode) => {
+    const fixture = await expired();
+    // The SDK's node read agrees with the claim, so only the binding decides.
+    if (mode === "failure proof") serveNodeRecord(hash, { payer, payee, nonce: 7, status: "failed" });
+    const reconcile = vi.fn(async (_context: Readonly<PayDemSettlementRecoveryContext>) =>
+      mode === "failure proof" ? failed() : executed());
+    await expect(payDemSettle(await sdkRail(), {}, { store: fixture.inner, reconcile })(request()))
+      .rejects.toThrow(/no SDK record binds/);
+    expect(fixture.putAttempt).not.toHaveBeenCalled();
+    expect(fixture.putOutcome).not.toHaveBeenCalled();
+    await expect(fixture.log.readAttempt!(key)).resolves.toBeNull();
+    await expect(fixture.log.readOutcome!(key)).resolves.toBeNull();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(demosNode.getTxByHash).toHaveBeenCalledWith(hash);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+  },
+);
 
 test.each(["hash", "block", "terminal outcome"] as const)(
   "an unbound audit never reaches a wrapper replacing the saved %s", async (mode) => {

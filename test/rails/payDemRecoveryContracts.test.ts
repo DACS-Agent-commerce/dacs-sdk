@@ -145,7 +145,10 @@ test("explicitly undefined priorAttempts behaves like omitted history", async ()
   expect(demosNode.transfer).toHaveBeenCalledTimes(1);
 });
 
-test("a saved current-SDK permanent failure remains readable without the attempt lookup", async () => {
+// The success binding never refuses a failure. A failure is final only when
+// this key's attempt record binds its hash; through a store that hides the
+// attempt lookup the saved failure stays held and nothing is resubmitted.
+test.each([true, false])("a saved current-SDK permanent failure is final only through the attempt lookup (lookup=%s)", async (lookup) => {
   resetDemosNode({ payer, txHash: hash, nonce: 7, recordStatus: "failed" });
   const log = createInMemorySettlementLog();
   await payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log) })(request());
@@ -157,9 +160,11 @@ test("a saved current-SDK permanent failure remains readable without the attempt
       nonce: 7, blockNumber: 42, amountOs: "1000000000" },
   }));
   const settle = payDemSettle(await sdkRail(), {}, {
-    store: { once: inner.once, readOutcome: inner.readOutcome }, reconcile,
+    store: lookup ? inner : { once: inner.once, readOutcome: inner.readOutcome }, reconcile,
   });
-  await expect(settle(request())).resolves.toMatchObject({ ok: false, errorClass: "permanent", txHash: hash });
+  await (lookup
+    ? expect(settle(request())).resolves.toMatchObject({ ok: false, errorClass: "permanent", txHash: hash })
+    : expect(settle(request())).rejects.toThrow(/not confirmed by the SDK's own node record read.*never resubmitted/));
   expect(reconcile).toHaveBeenCalledTimes(1);
   expect(demosNode.transfer).toHaveBeenCalledTimes(1);
   expect(demosNode.broadcast).toHaveBeenCalledTimes(1);

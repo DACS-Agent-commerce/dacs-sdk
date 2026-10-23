@@ -62,6 +62,7 @@ import {
   type ClassifyCciTlsnDeps,
 } from "../identity/index.js";
 import { generateCanonicalJobId } from "../negotiate/jobId.js";
+import { isPayDemSettleAdapter } from "../rails/payDem.js";
 import type {
   DemosWriteEvidence,
   SubstrateAdapter,
@@ -203,6 +204,9 @@ function stableAgentMethod<T>(
   if (typeof candidate !== "function" || nodeTypes.isProxy(candidate)) {
     throw new DacsError(`${label} must be a stable function`);
   }
+  // The SDK's own pay-DEM adapter ignores its receiver, so it is passed on as
+  // itself: runSession recognises it only by identity.
+  if (isPayDemSettleAdapter(candidate)) return candidate as T;
   return isolateAgentCallback<T>(candidate as (...args: never[]) => unknown);
 }
 
@@ -396,7 +400,11 @@ const ed25519RawVerify: Verifier = (bytes, signature, publicKey) =>
 export interface RunSessionOptions {
   /** The agreed fixed-price terms (rail must be offered by the listing). */
   terms: SessionTerms;
-  /** Executes payment on the chosen rail (e.g. an x402 rail). */
+  /**
+   * Executes payment on the chosen rail (e.g. an x402 rail). For a native DEM
+   * price only the SDK's `payDemSettle` adapter is called (see
+   * `resumeSettlement`).
+   */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
    * Runtime destination the buyer instructs the selected rail to pay and records
@@ -428,18 +436,34 @@ export interface RunSessionOptions {
   >;
   /**
    * Resume an interrupted session by passing the prior run's jobId. Anchored
-   * artifacts are reused. Crash-safe no-repayment across processes additionally
-   * requires both `sessionStore` and a durable/idempotent `resumeSettlement`
-   * implementation; a job id alone cannot prove what happened after a lost rail
-   * response. Omit for a new session.
+   * artifacts are reused, except that a saved native DEM payment outcome
+   * (success or permanent failure, checkpoint or anchored evidence) is re-read
+   * through `resumeSettlement` (or the registered native DEM `settle` adapter
+   * when that option is omitted) before it is reported again, also when re-running
+   * a completed session. Anchored failure evidence that names a transaction,
+   * on any rail, without the `sessionStore` that holds its proof is never
+   * reported again: the resume fails as indeterminate. Crash-safe no-repayment
+   * across processes additionally requires both `sessionStore` and a
+   * durable/idempotent `resumeSettlement` implementation; a job id alone cannot
+   * prove what happened after a lost rail response. Omit for a new session.
    */
   jobId?: string;
-  /** Optional durable buyer-session lifecycle store used for restart recovery. */
+  /** Durable buyer-session lifecycle store for restart recovery; required for native DEM sessions. */
   sessionStore?: import("./sessionStore.js").SessionStore;
   /**
    * Reconcile a previously claimed payment whose durable session record still
-   * has only an intent or ambiguous outcome. Must use the same rail idempotency
-   * key and reconcile every ordered `req.priorAttempts` entry before returning.
+   * has only an intent or ambiguous outcome, and re-read every saved native DEM
+   * outcome read-only (see `SessionDeps.resumeSettlement`). Must use the same
+   * rail idempotency key and reconcile every ordered `req.priorAttempts` entry
+   * before returning; a native transfer is never replaced by another hash.
+   * A native DEM success or permanent failure is final only from the SDK's
+   * `payDemSettle` adapter (directly or from `settleFromRail`, not wrapped)
+   * and the registered `settle` adapter is used when this option is omitted.
+   * After a restart, retain the durable rail log and supply its reconciler.
+   * The adapter must run over the rail `createPayDemRail` built, which reads
+   * the node's record for the hash itself. A native DEM session calls only
+   * that adapter, as the settlement and as this recovery; any other
+   * implementation is not called, so it makes no payment.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
