@@ -150,56 +150,22 @@ reported by that run rather than creating a similarly named placeholder.
     the ruleset: it never runs on pull requests, so the check would never
     report.
 
-  The audit's “List findings” step writes to the summary and log: one line
-  per distinct Gitleaks fingerprint (`commit:file:rule:line`), with an ID and
-  the number of findings. A file name can itself hold a secret, so this output
-  never shows a fingerprint's file segment: besides the ID and the count, it
-  shows only the commit SHA, rule ID
-  and line number, as Gitleaks wrote them in the fingerprint. A field that
-  fails its check shows as `(invalid)`, and the commit of a finding that
-  Gitleaks reported without one (see below) as `no-commit`. Gitleaks writes the report in the same
-  job, from the checked-out history and with `--redact=100`. A report replaced
-  by someone who controls the job is outside what this step can protect: they
-  could print anything anyway.
-
-  The ID is the first 16 hex digits of the fingerprint's SHA-256, a short
-  digest that hides the file name from casual reading. It is not a secret:
-  given the commit, rule and line beside it, anyone can confirm a guessed file
-  name against the ID. That confirms only what the commit already shows, since
-  GitHub serves a commit, file names included, by its SHA. Rotating any
-  credential found is the control that protects it (see the operating rules
-  below).
-
   The scan wrapper also hides Gitleaks' invalid-ignore-entry diagnostics,
   which otherwise print entire fingerprints for colon-containing filenames
-  even with `--redact=100`. Other scanner and Git diagnostics may name paths;
-  the filename-hiding guarantee above applies to the “List findings” output.
+  even with `--redact=100`. Other scanner and Git diagnostics may name paths.
 
-  Fingerprints already in `.gitleaksignore` are not reported. The list stops at
-  900 KiB, but the run still gives the number of findings, of IDs and of IDs
-  omitted from the list. A report that can't be read, including one over
-  64 MiB, gives no counts and fails the run; review it with the local
-  reproduction.
+  To investigate a failed audit, first check the scan step's log: if it says
+  `Nothing was scanned` or `The scan is partial`, `scripts/secret-scan.sh`
+  failed the step because git failed, or the history has an octopus merge or
+  an unsupported path (newline, backslash or invalid UTF-8), and findings may
+  be missing.
 
-  To spot a new finding while the audit is red, first check the scan step's
-  log: if it says `Nothing was scanned` or `The scan is partial`,
-  `scripts/secret-scan.sh` failed the step because git failed, or the history
-  has an octopus merge or an unsupported path (newline, backslash or invalid
-  UTF-8), and findings may be
-  missing. Compare the run with the last
-  run whose findings were all reviewed, not just with the previous run. An ID
-  that wasn't among that run's findings, or a higher count for an ID, is new.
-  Findings at the same commit, file, rule and line share one ID, so only its
-  count tells them apart. If the run omitted any IDs, review them with a local
-  reproduction.
-
-  The local reproduction also gives the exact fingerprint for
-  `.gitleaksignore`. Run it in a fresh clone, which checks out `main` and has
-  every branch and tag, after fetching the pull request heads, as the audit
-  does. It needs Gitleaks 8.30.1, `iconv` and git 2.36 or later; an older git can't
-  show merges, and the self-test fails on it. Ignore your own git
-  configuration: settings such as `log.abbrevCommit` or `color.ui` change what
-  Gitleaks reads.
+  The local reproduction gives the exact fingerprints for `.gitleaksignore`.
+  Run it in a fresh clone, which checks out `main` and has every branch and
+  tag, after fetching the pull request heads, as the audit does. It needs
+  Gitleaks 8.30.1, `iconv` and git 2.36 or later; an older git can't show
+  merges, and the self-test fails on it. Ignore your own git configuration:
+  settings such as `log.abbrevCommit` or `color.ui` change what Gitleaks reads.
 
   ```sh
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -211,22 +177,14 @@ reported by that run rather than creating a similarly named placeholder.
   bash scripts/secret-scan-self-test.sh "$(command -v gitleaks)"
   bash scripts/secret-scan.sh "$(command -v gitleaks)" --redact=100 --no-banner \
     --report-format=json --report-path=../gitleaks-report.json
-  node scripts/gitleaks-fingerprint-summary.mjs \
-    --report ../gitleaks-report.json --local
   ```
 
   Stop if any command before the scan fails. The scan exits 1 for findings
   too, but if it printed `Nothing was scanned` or `The scan is partial`, its
-  report is missing or incomplete. The last command prints each fingerprint
-  after its ID, and refuses to run in GitHub Actions. Unlike the run, it reads
-  a report over 64 MiB, up to about 512 MiB, Node's limit on a string; a
-  larger report fails closed. A fingerprint can contain a secret, so keep the
-  output and the report private, and delete them afterwards. An ID from the
-  run that the reproduction doesn't list belongs to a branch that has changed
-  since, or to a finding that has since been pinned in `main`'s
-  `.gitleaksignore` or dropped by a change to its `.gitleaks.toml`, unless
-  your local scan failed; look up its commit on GitHub, and dispatch a new
-  run to compare.
+  report is missing or incomplete. Inspect the local JSON report privately
+  for each finding's `Fingerprint`, and compare it with the last scan whose
+  findings were all reviewed. Fingerprints can contain secrets, so keep the
+  output and the report private, and delete them afterwards.
 
   In a merge's patch, git prints a `remerge CONFLICT` line for each
   conflicted file. Gitleaks 8.30.1 reads the file's path after such a line as
@@ -245,8 +203,8 @@ reported by that run rather than creating a similarly named placeholder.
   UTF-8 paths, are refused. Pin every finding as
   `commit:file:rule:line`; the
   `.gitleaksignore` test rejects any other entry. An entry without a commit
-  would hide that file, rule and line in every commit, so don't pin a finding
-  shown as `no-commit`: it means git printed a header line the scan doesn't
+  would hide that file, rule and line in every commit, so never pin one.
+  If a finding lacks a commit, git printed a header line the scan doesn't
   know. Find the merge that adds the finding's line with
   `git log -p --remerge-diff --all -- <file>` in the local reproduction,
   review it as any other finding, and report the git version and the header
@@ -261,10 +219,6 @@ reported by that run rather than creating a similarly named placeholder.
 - [ ] Inspect the repository while logged out and confirm only intended content
       is exposed.
 - [ ] Run CI, package-artifact verification, and the secret scan on `main`.
-- [x] #346, which pins the reviewed fingerprints of the known #336 and #268
-      findings in `.gitleaksignore`, merged before #345, which adds the
-      all-branch audit. Without those four entries the audit would be red for
-      them from its first run.
 - [ ] Before #345 merges, get the entries that open pull requests pin in
       their own `.gitleaksignore` reviewed onto `main`, as #346 did, or merge
       those pull requests first. The audit scans every pull request head with
@@ -321,9 +275,8 @@ reported by that run rather than creating a similarly named placeholder.
   tag or pull request. A run dispatched from another branch uses that branch's workflow,
   script, `.gitleaksignore` and Gitleaks config, so it doesn't count. If there
   is none, dispatch the workflow on `main` and wait for it. A red run blocks the
-  release until every finding has been reviewed, including any IDs its summary
-  omitted: reproduce the scan locally (see the audit above), rotate any real
-  credential, and pin only reviewed fingerprints, exactly, in
-  `.gitleaksignore`.
+  release until every finding has been reviewed: reproduce the scan locally
+  (see the audit above), rotate any real credential, and pin only reviewed
+  fingerprints, exactly, in `.gitleaksignore`.
 - Publish npm packages only from a reviewed, immutable commit using a separate
   release procedure with provenance and least-privilege credentials.

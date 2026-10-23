@@ -113,9 +113,7 @@ describe("secret scan workflows", () => {
       // The default shell, `bash -e`, stops a step at its first failing command.
       expect(workflow).not.toMatch(/continue-on-error|shell:|defaults:|permissions:.*write|: write/);
       for (const step of stepsOf(workflow)) {
-        expect(step.split("\n").filter((line) => /^ {6}(?:- | {2})if: /.test(line))).toEqual(
-          valueOf(step, "name") === "List findings" ? ["        if: ${{ !cancelled() && steps.scan.outcome != 'skipped' }}"] : [],
-        );
+        expect(step.split("\n").filter((line) => /^ {6}(?:- | {2})if: /.test(line))).toEqual([]);
       }
     }
   });
@@ -142,7 +140,6 @@ describe("secret scan workflows", () => {
           'tar -xzf "$download" -C "$RUNNER_TEMP" gitleaks',
           '"$RUNNER_TEMP/gitleaks" version',
           "git --version",
-          ...(workflow === auditWorkflow ? ["node --version"] : []),
         ].join("\n"),
       );
     }
@@ -154,10 +151,9 @@ describe("secret scan workflows", () => {
       expect(workflow.match(/^ +runs-on: .*$/gm)).toEqual(["    runs-on: ubuntu-24.04"]);
       for (const step of stepsOf(workflow)) {
         const uses = valueOf(step, "uses");
-        if (uses !== undefined) expect(uses).toMatch(/^actions\/(?:checkout|setup-node)@[0-9a-f]{40} # v4$/);
+        if (uses !== undefined) expect(uses).toMatch(/^actions\/checkout@[0-9a-f]{40} # v4$/);
       }
       expect(workflow).not.toContain("upload-artifact");
-      expect(workflow).not.toContain("--report-path=-");
     }
   });
 
@@ -177,33 +173,21 @@ describe("secret scan workflows", () => {
     expect(valueOf(scan, "run")).toBe(scanScript("--redact=100 --no-banner"));
   });
 
-  it("audit every branch, tag and pull request head, and list its findings after a red scan", () => {
+  it("audit every branch, tag and pull request head", () => {
     expect(stepNames(auditWorkflow)).toEqual([
       "actions/checkout",
       "Fetch pull request heads",
-      "actions/setup-node",
       "Install pinned Gitleaks",
       "Scan all branch history",
-      "List findings",
     ]);
     expect(valueOf(stepUsing(auditWorkflow, "actions/checkout"), "fetch-depth")).toBe("0");
-    expect(valueOf(stepUsing(auditWorkflow, "actions/setup-node"), "node-version")).toMatch(/^"\d+\.\d+\.\d+"$/);
     expect(valueOf(stepNamed(auditWorkflow, "Fetch pull request heads"), "run")).toBe(
       "git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'",
     );
     const scan = stepNamed(auditWorkflow, "Scan all branch history");
-    expect(valueOf(scan, "id")).toBe("scan");
+    expect(valueOf(scan, "id")).toBeUndefined();
     expect(valueOf(scan, "LOG_OPTS")).toBe(`"${AUDIT_LOG_OPTS}"`);
-    const report = '"$RUNNER_TEMP/gitleaks-report.json"';
-    expect(valueOf(scan, "run")).toBe(
-      scanScript(`--redact=100 --no-banner \\\n  --report-format=json --report-path=${report}`),
-    );
-    const list = stepNamed(auditWorkflow, "List findings");
-    expect(valueOf(list, "if")).toBe("${{ !cancelled() && steps.scan.outcome != 'skipped' }}");
-    expect(valueOf(list, "SCAN_OUTCOME")).toBe("${{ steps.scan.outcome }}");
-    expect(valueOf(list, "run")).toBe(
-      `node scripts/gitleaks-fingerprint-summary.mjs --report ${report} --scan-outcome "$SCAN_OUTCOME"`,
-    );
+    expect(valueOf(scan, "run")).toBe(scanScript("--redact=100 --no-banner"));
   });
 
   it("documents a local reproduction that checks and scans what the audit does", async () => {
