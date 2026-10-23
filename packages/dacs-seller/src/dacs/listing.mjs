@@ -17,6 +17,8 @@ import {
   signedBytes,
   ed25519Verify,
   publicKeyFromRaw,
+  canonicalDemosAgentPublicKey,
+  sameCanonicalClaimIdentity,
   identityBundleHash,
   isIdentityBundle,
   isListingDraft,
@@ -27,7 +29,7 @@ import {
   DACS_STANDARD_PIN,
   VERSION as DACS_SDK_VERSION,
 } from '@kynesyslabs/dacs';
-import { addressForClaim, claimForAddress, decodeSignature } from './demos-claims.mjs';
+import { addressForClaim, claimForAddress, decodeSignature, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { OS_INTEGER } from './chain.mjs';
 
 export const DEM_RAIL = Object.freeze({ railId: 'demos-native:DEM', railVersion: 1 });
@@ -39,7 +41,6 @@ export const SDK_PROVENANCE = Object.freeze({
   standardPin: DACS_STANDARD_PIN,
 });
 
-const DID_PREFIX = 'did:demos:agent:';
 const LISTING_SEPARATOR = 'dacs-listing:v1:';
 const PRESENTATION_SEPARATOR = 'dacs-bundle-presentation:v1:';
 
@@ -53,11 +54,12 @@ export function listingSigningMessage(draft) {
   return utf8(signedBytes(LISTING_SEPARATOR, contentHash(draft)));
 }
 
-export function verifyComponent({ signedBytes: bytes, signature }) {
-  if (signature?.algorithm !== 'ed25519' || typeof signature.value !== 'string' || !signature.signer?.startsWith(DID_PREFIX)) return false;
+export function verifyComponent(input) {
   try {
-    const raw = Buffer.from(signature.signer.slice(DID_PREFIX.length), 'hex');
-    if (raw.length !== 32) return false;
+    const { signedBytes: bytes, signature } = input;
+    if (signature?.algorithm !== 'ed25519' || !isCanonicalEd25519Signature(signature.value)) return false;
+    const raw = canonicalDemosAgentPublicKey(signature.signer);
+    if (!raw) return false;
     return ed25519Verify(bytes, Buffer.from(signature.value, 'base64url'), publicKeyFromRaw(raw));
   } catch {
     return false;
@@ -95,7 +97,8 @@ export function attachIdentityPresentation({ bundle, bundleHash }, walletSignatu
 }
 
 export function normalizeDemAmount(value) {
-  const amount = canonicalizeDecimal(String(value));
+  if (typeof value !== 'string') throw new TypeError('DEM price must be decimal text');
+  const amount = canonicalizeDecimal(value);
   const os = baseUnits(amount, DEM_DECIMALS);
   // No balance has more OS digits (chain.mjs), so a longer price could never be
   // paid; rejecting it here keeps it out of every listing, purchase and result.
@@ -166,24 +169,22 @@ export function logicalListingAddress(listing) {
 
 // Ordered DACS-1 reader via the SDK. Revocation surfaces come from the caller;
 // a missing or stale catalog observation yields `indeterminate`, never `absent`.
-export async function validateListing(listing, { now, revocationSurfaces, readMarker }) {
+// Rail authority must be authenticated by the caller; missing authority is indeterminate.
+export async function validateListing(listing, { now, revocationSurfaces, readMarker, loadRailResolution }) {
   return validateListingArtifact(listing, {
     nowMs: () => now(),
     verifyListingSignature: verifyComponent,
     verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) => {
-      const proof = bundle.presentation?.kind === 'per-claim' && bundle.presentation.signatures.find((entry) => entry.ref === bundle.presentedBy);
+      const proof = bundle.presentation?.kind === 'per-claim' && bundle.presentation.signatures.find((entry) => sameCanonicalClaimIdentity(entry.ref, bundle.presentedBy));
       return Boolean(proof && verifyComponent({ signedBytes: bytes, signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature } }));
     },
-    verifySellerControl: ({ bundle, signer }) => bundle.presentedBy === signer && bundle.claims.some((claim) => claim.ref === signer),
+    verifySellerControl: ({ bundle, signer }) => sameCanonicalClaimIdentity(bundle.presentedBy, signer) && bundle.claims.some((claim) => sameCanonicalClaimIdentity(claim.ref, signer)),
     revocation: { surfaces: revocationSurfaces, readMarker, verifyMarkerSignature: verifyComponent },
-    loadRailResolution: () => ({
-      trustPhase: 'PA-1',
-      trustPolicyAcceptsPA1: true,
-      registry: { state: 'not-used', entries: [], definitions: [] },
-      inCodeDefinitions: [{ railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true }],
-    }),
+    loadRailResolution,
   });
 }
+
+const SUPPORTED_PHASES = Object.freeze(['negotiate-fixed-price', 'commit-payee-bound-agreement', 'pay-dem', 'deliver-storage-program']);
 
 // v0.1 transacts only fixed-price native DEM listings. Anything else stays
 // discoverable but is reported as unsupported for purchase.
@@ -198,10 +199,11 @@ export function purchaseSupport(listing) {
     reasons.push('price amount is not a positive DEM decimal');
   }
   const rails = Array.isArray(listing?.acceptedRails) ? listing.acceptedRails : [];
-  if (!rails.some((rail) => rail?.railId === DEM_RAIL.railId)) reasons.push('listing does not accept demos-native:DEM');
+  if (!rails.some((rail) => rail?.railId === DEM_RAIL.railId && rail.railVersion === DEM_RAIL.railVersion)) reasons.push('listing does not accept demos-native:DEM');
   const pipeline = Array.isArray(listing?.pipeline) ? listing.pipeline : [];
   if (!pipeline.some((phase) => phase?.kind === 'pay-dem' && phase?.parameters?.rail === DEM_RAIL.railId)) reasons.push('pipeline has no pay-dem phase on demos-native:DEM');
-  if (pipeline.some((phase) => /^negotiate-/.test(phase?.kind ?? '') && phase.kind !== 'negotiate-fixed-price')) reasons.push('negotiation is not fixed-price');
+  if (pipeline.length !== SUPPORTED_PHASES.length || !SUPPORTED_PHASES.every((kind, index) => pipeline[index]?.kind === kind)) reasons.push('pipeline is outside the fixed-price DEM storage profile');
+  if (listing?.offering?.deliverable?.kind !== 'storage-program' || listing.offering.deliverable.accessModel !== 'public') reasons.push('delivery is not public storage-program');
   let payee = null;
   try {
     payee = addressForClaim(listing?.seller?.identity?.presentedBy);
