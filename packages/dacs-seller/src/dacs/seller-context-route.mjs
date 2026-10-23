@@ -69,11 +69,11 @@ function bundleAuthentic(bundle) {
 // writable(jobId, buyerClaim): the purchase check the provider runs again
 // right before each Vet signature and anchor intent (agreement-context.mjs,
 // as main's in-process path does); synchronous, true or why no new write may
-// start. null: none.
-export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAccess, knownJob = null, writable = null, admitWrites = async () => null, releaseWrites = async () => {},
-  recover = async () => null, resumable = null, limits = SELLER_CONTEXT_LIMITS, now = () => Date.now() }) {
+// start. All write-policy, purchase and recovery capabilities are mandatory.
+export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAccess, knownJob = null, writable, admitWrites, releaseWrites,
+  recover, resumable = null, limits = SELLER_CONTEXT_LIMITS, now = () => Date.now() }) {
   const support = purchaseSupport(listing);
-  if (!support.supported || typeof resolveBuyer !== 'function' || typeof assertBuyerAccess !== 'function' || (knownJob !== null && typeof knownJob !== 'function') || (writable !== null && typeof writable !== 'function')
+  if (!support.supported || typeof resolveBuyer !== 'function' || typeof assertBuyerAccess !== 'function' || (knownJob !== null && typeof knownJob !== 'function') || typeof writable !== 'function'
       || (resumable !== null && typeof resumable !== 'function')
       || ![admitWrites, releaseWrites, recover].every((value) => typeof value === 'function')
       || !['maxStartsPerBuyerPerHour', 'maxStartsPerHour'].every((key) => Number.isSafeInteger(limits?.[key]) && limits[key] > 0)) {
@@ -83,6 +83,12 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
   // All jobs' journal reads, admission and starts run one at a time: a request
   // for bytes another request is starting waits, then gets the journal's answer.
   const starting = new Map();
+  const admissions=new Map();
+  const admitOneAtATime=async(request,store,work)=>{
+    const pending=admissions.get(store)??new Map(),key=sellerTransportEffect(request);
+    admissions.set(store,pending);pending.set(key,(pending.get(key)??0)+1);
+    return oneAtATime(store,work).finally(()=>{const left=pending.get(key)-1;if(left)pending.set(key,left);else pending.delete(key);if(!pending.size)admissions.delete(store);});
+  };
   async function oneAtATime(jobId, work) {
     const run = (starting.get(jobId) ?? Promise.resolve()).then(work), tail = run.catch(() => {});
     starting.set(jobId, tail);
@@ -120,6 +126,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     // Called once exact bytes authenticate, before protocol/admission checks.
     attemptPresentation: (request,body,store) => {
       requireContextJob(request, body);
+      if(admissions.get(store)?.has(sellerTransportEffect(request)))return;
       try { if(store.classify(request,body)!=='start')return; } catch { /* admission cannot preserve an issued nonce */ }
       consume(request,body,store);
     },
@@ -137,7 +144,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     // Runs after transport authentication (seller-http.mjs) and returns the
     // journal's reservation. Every refusal before a 'perform' reservation is
     // definite; only required anti-replay consumption may have been written.
-    reserve: (request, body, store) => oneAtATime(store, async () => {
+    reserve: (request, body, store) => admitOneAtATime(request,store, async () => {
       requireContextJob(request, body);
       let kind;
       try { kind = store.classify(request, body); }
@@ -166,7 +173,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     }),
     perform: (body) => {
       requireJobId(body?.scope?.jobId);
-      return resolveBuyer(structuredClone(body), ...(writable ? [{ writable: () => writable(body.scope.jobId, body.scope.buyer) }] : []));
+      return resolveBuyer(structuredClone(body), { writable: () => writable(body.scope.jobId, body.scope.buyer) });
     },
     // Whenever the step has ended (a definite or an uncertain answer, or a
     // reconciliation): the reservation's unused part is released. The writes

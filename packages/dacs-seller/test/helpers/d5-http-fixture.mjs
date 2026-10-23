@@ -1,3 +1,7 @@
+import { fixtureListing } from '../fixtures/listings.mjs';
+import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
+import { purchaseSupport } from '../../src/dacs/listing.mjs';
+import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consumer.mjs';
 import DatabaseSync from 'better-sqlite3';
 import { testWallet } from './protocol-fixture.mjs';
 let nextTestWallet = 30;
@@ -19,20 +23,20 @@ function exchange(handler,{text='{}',header,url=SELLER_CONTEXT_PATH,headers={},m
  const res={destroyed:false,writableEnded:false,headersSent:false,writeHead(status,h){this.status=status;this.headers=h;this.headersSent=true},end(text){this.text=text;this.writableEnded=true;}};
  const pending=handler(req,res);queueMicrotask(()=>{for(const chunk of chunks??[text])req.write(chunk);req.end()});return Promise.resolve(pending).then(()=>res);
 }
-async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},maxNoncesPerBuyerPerWindow=120,releaseFails=false,recover=async()=>null,resumable=null,perform=async body=>({disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}}),...http}={}){
+async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},maxNoncesPerBuyerPerWindow=120,releaseFails=false,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=async body=>({disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}}),...http}={}){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
- const seller=key(),buyer=key(),other=key(),pin={listingId:'D5',version:1,contentHash:'b'.repeat(64)},listing={seller:{identity:{presentedBy:seller.claim}},pin,payee:'0x'+seller.claim.slice(16),price:{amount:'1',currency:'DEM'}};
+ const seller=key(),buyer=key(),other=key(),listing=fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
  const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,maxNoncesPerBuyerPerWindow,now:()=>time});t.after(()=>store.close());
  const auth=createSellerTransportServerAuth({sellerSigner:seller,listingPin:pin,store,now:()=>time});let holds=0,writes=0,logs=0,releases=0;
- const route=createSellerContextRoute({listing,resolveBuyer:async body=>{writes++;return perform(body)},assertBuyerAccess,now:()=>time,limits,recover,resumable,
-  admitWrites:async()=>{holds++;return null},releaseWrites:async()=>{releases++;if(releaseFails)throw new Error('release fixture failure')}});
+ const route=createSellerContextRoute({listing,resolveBuyer:async (body,options)=>{writes++;return perform(body,options)},assertBuyerAccess,now:()=>time,limits,recover,resumable,writable,
+  admitWrites:async input=>{holds++;return admitWrites?admitWrites(input):null},releaseWrites:async()=>{releases++;if(releaseFails)throw new Error('release fixture failure')}});
  const agent={claim:seller.claim,listingPin:pin,agreementState:()=>({proposal:null,contribution:null})};
  const handler=createSellerHttpHandler(agent,{authentication:auth,context:route,...http});
  const bundles=new Map();
  const wire=async({actor=buyer,jobId=JOBS[0],alter=()=>{},fresh=false}={})=>{
   const cacheKey=actor.claim+jobId+time;
   if(fresh)bundles.delete(cacheKey);
-  const bundle=structuredClone(bundles.get(cacheKey)??bundleFor(actor)),scope={source:'d5-test-context/v1',wallet:'0x'+actor.claim.slice(16),jobId,buyer:actor.claim,buyerBundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin,rail:{railId:'demos-native:DEM',railVersion:1},payee:listing.payee,price:listing.price,generatedAt:time};
+  const bundle=structuredClone(bundles.get(cacheKey)??bundleFor(actor)),scope={source:AGREEMENT_CONTEXT_SOURCE,wallet:'0x'+actor.claim.slice(16),jobId,buyer:actor.claim,buyerBundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin,rail:{railId:'demos-native:DEM',railVersion:1},payee:support.payee,price:support.price,generatedAt:time};
   const body={scope,buyerIdentityBundle:bundle};alter(body);
   // Challenge issuance is fixture setup. HTTP issuance and its own limits
   // are exercised separately below, without this setup shortcut.
@@ -49,7 +53,7 @@ async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},m
  };
  const counts=()=>{const db=new DatabaseSync(path,{readonly:true});try{return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'peer_%' AND name NOT IN ('peer_meta','peer_context_challenges') ORDER BY name").all().map(({name})=>[name,db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]))}finally{db.close()}};
  const effects=()=>({holds,writes,logs,releases,counts:counts()});
- return {handler,wire,store,auth,route,buyer,other,seller,pin,path,effects,now:()=>time,advance:ms=>{time+=ms}};
+ return {handler,wire,store,auth,route,buyer,other,seller,listing,pin,path,effects,now:()=>time,advance:ms=>{time+=ms}};
 }
 
 
