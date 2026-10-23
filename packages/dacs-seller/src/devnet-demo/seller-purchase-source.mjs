@@ -1,14 +1,9 @@
-// Seller-owned purchase state only. Nothing here writes, signs or reads the chain.
+// Seller-owned purchase projections. Only a trusted fresh observer can establish payment; nothing here writes or signs.
+import { contentHash } from '@kynesyslabs/dacs';
 import { addressForClaim } from '../dacs/demos-claims.mjs';
 
 const CLAIM=/^did:demos:agent:[0-9a-f]{64}$/;
 const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/.test(value)?BigInt(value.split('.')[0])*1_000_000_000n+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;
-
-// The app's purchase approval window (purchases.mjs approvalTtlMs). The seller
-// cannot see when the buyer prepared the purchase, so it counts the window from
-// the earliest time it holds for the job: the Agreement draft's generatedAt or
-// its own admission of the proposal.
-export const SELLER_PURCHASE_OPEN_WINDOW_MS=30*60*1000;
 
 // The buyer's signed Agreement CREATE, which the seller authenticated on its
 // own chain readback before committing and retained. Its binding names the
@@ -19,8 +14,26 @@ function agreementBinding(projection){
   return structuredClone(binding);
 }
 
-// The seller's own payment intake verified a payment for this job.
-const intakeVerified=(work,jobId)=>work?.intake?.disposition==='verified'&&['claim','already-claimed'].includes(work.intake.fulfilment)&&work.intake.jobId===jobId;
+const PAYMENT_OBSERVATION_LIMITS = Object.freeze({ timeoutMs: 10_000, maxBytes: 1024 });
+// The observer must read current chain authority, cap wire bytes before decode,
+// and honor signal. Only a fresh reading of this exact job/Agreement is usable.
+async function freshPaymentObserved(observePayment, projection, agreement, now) {
+  if (typeof observePayment !== 'function' || !agreement || contentHash(agreement) !== projection.agreementHash) return null;
+  const observedAt = now();
+  if (!Number.isSafeInteger(observedAt) || observedAt < 0) return null;
+  const controller = new AbortController(); let timer;
+  const query = { jobId: projection.jobId, agreementHash: projection.agreementHash, agreement: structuredClone(agreement), observedAt, fresh: true };
+  try {
+    const reading = await Promise.race([Promise.resolve().then(() => controller.signal.aborted ? null : observePayment(query, { ...PAYMENT_OBSERVATION_LIMITS, signal: controller.signal })),
+      new Promise(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, PAYMENT_OBSERVATION_LIMITS.timeoutMs); })]);
+    const checkedAt = now();
+    if (!Number.isSafeInteger(checkedAt) || checkedAt < observedAt) return null;
+    if (contentHash(query.agreement) !== projection.agreementHash || reading?.jobId !== projection.jobId || reading.agreementHash !== projection.agreementHash ||
+        !Number.isSafeInteger(reading.observedAt) || reading.observedAt < observedAt || reading.observedAt > checkedAt) return null;
+    return reading.disposition === 'verified' ? true : reading.disposition === 'absent' ? false : null;
+  } catch { return null; }
+  finally { clearTimeout(timer); controller.abort(); }
+}
 
 // Seller source: the same purchase shape as the app source, from the seller's
 // own durable session. null: the seller has no record of this job (the vet
@@ -28,10 +41,12 @@ const intakeVerified=(work,jobId)=>work?.intake?.disposition==='verified'&&['cla
 // that holds neither a proposal draft nor an Agreement yet. false: the record
 // names a buyer outside closed access, which the app source refuses too.
 // The seller is never told of a buyer-side cancellation; operator-approval.mjs
-// holds pre-payment writes for that reason, so prePaymentOpen here only says
-// the job is not known to be closed.
-export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now}){
-  return(jobId)=>{
+// holds pre-payment writes for that reason. Seller records alone always keep
+// prePaymentOpen false; missing current payment authority is null.
+/** Resolve snapshots asynchronously; observePayment must return a fresh {disposition,jobId,agreementHash,observedAt}.
+ * paymentObserved is true for verified, false for authoritative absence, and null for indeterminate authority. */
+export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now,observePayment}){
+  return async(jobId)=>{
     const session=sessionOf(jobId);
     const agreement=session?.agreement??session?.proposal?.plan?.draft??null;
     if(!agreement)return null;
@@ -39,15 +54,11 @@ export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now}){
     const presented=session.buyerBundle?.presentedBy,buyer=CLAIM.test(presented??'')&&party('buyer')===presented?presented:null;
     if(buyer&&!buyerAccess().allowsWallet(addressForClaim(buyer)))return false;
     const ref=agreement?.listingRef,price=agreement?.terms?.price,amount=price?.currency==='DEM'?demOs(price.amount):null;
-    const paymentObserved=session.settlementCredit!=='indeterminate'&&(intakeVerified(session.nativeEvidenceWork,session.jobId)||intakeVerified(session.paymentWork,session.jobId)||typeof session.payment?.settlementId==='string');
-    const admitted=session.proposalAdmission?.observedAt,generatedAt=session.proposal?.plan?.draft?.generatedAt,deadline=agreement?.terms?.deadline,at=now();
-    const since=Number.isSafeInteger(admitted)&&Number.isSafeInteger(generatedAt)?Math.min(admitted,generatedAt):null;
-    // Closed before payment: expired, past the Agreement deadline, or already
-    // committed (the buyer may be paying, and no pre-payment write follows).
-    const prePaymentOpen=!paymentObserved&&!session.commitment&&since!==null&&since+SELLER_PURCHASE_OPEN_WINDOW_MS>at&&Number.isSafeInteger(deadline)&&deadline>at;
-    return{jobId:session.jobId,seller:party('seller'),buyer,listingPin:ref?{listingId:ref.listingId,version:ref.version,contentHash:ref.contentHash}:null,
+    const projection={jobId:session.jobId,seller:party('seller'),buyer,listingPin:ref?{listingId:ref.listingId,version:ref.version,contentHash:ref.contentHash}:null,
       sourceBinding:agreementBinding(session.agreementSignedProjection),agreementHash:session.agreementHash??null,amountOs:amount===null?null:amount.toString(),
-      paymentObserved,prePaymentOpen};
+      paymentObserved:null,prePaymentOpen:false};
+    projection.paymentObserved=await freshPaymentObserved(observePayment,projection,session.agreement,now);
+    return projection;
   };
 }
 
