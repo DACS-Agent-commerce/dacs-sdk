@@ -99,3 +99,28 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
     throw cause;
   }
 }
+
+/** Run a passive observation with one deadline and an optional caller signal.
+ * Returns the reader result; preserves reader errors and throws OutboundError
+ * on deadline. The supplied reader signal is aborted when the call finishes.
+ */
+export async function observeWithDeadline(read, { timeoutMs, signal } = {}) {
+  const controller = new AbortController();
+  const cancellation = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+  let timer, abort;
+  try {
+    return await Promise.race([
+      new Promise((_, reject) => {
+        abort = () => reject(cancellation.reason);
+        cancellation.addEventListener('abort', abort, { once: true });
+        timer = setTimeout(() => controller.abort(new OutboundError('timeout', 'host chain read timed out')), timeoutMs);
+        if (cancellation.aborted) abort();
+      }),
+      Promise.resolve().then(() => { cancellation.throwIfAborted(); return read({ signal: cancellation }); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    cancellation.removeEventListener('abort', abort);
+    controller.abort();
+  }
+}
