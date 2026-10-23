@@ -373,6 +373,45 @@ function writeSummary(overrides: Record<string, string> = {}) {
 }
 
 describe("registry/container evidence", () => {
+  it.each(["dacs", "dacs-node"])("rejects an untracked installed nested or aliased %s", name => {
+    for (const location of [`node_modules/plugin/node_modules/@kynesyslabs/${name}`, "node_modules/untracked-alias"]) {
+      const fixture = dependencyPolicyHarness();
+      const result = fixture.run(project => {
+        mkdirSync(join(project, location), { recursive: true });
+        writeFileSync(join(project, location, "package.json"), JSON.stringify({ name: `@kynesyslabs/${name}`, version: "0.0.0-wrong" }));
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("installed candidate has no lock entry: " + location);
+    }
+  });
+  it.each(["dacs", "dacs-node"])("requires the top-level %s even with valid nested and aliased copies", name => {
+    const { packages, run } = dependencyPolicyHarness();
+    const top = `node_modules/@kynesyslabs/${name}`;
+    const entry = packages[top];
+    expect(entry).toBeDefined();
+    packages[`node_modules/plugin/node_modules/@kynesyslabs/${name}`] = { ...entry };
+    packages["node_modules/alias"] = { ...entry, name: `@kynesyslabs/${name}` };
+    delete packages[top];
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("candidate package is not installed at the top level: @kynesyslabs/" + name);
+  });
+  it("invalidates a previous success report before a rejected repeat", () => {
+    const fixture = dependencyPolicyHarness();
+    expect(fixture.run().status).toBe(0);
+    expect(JSON.parse(readFileSync(fixture.report, "utf8")).passed).toBe(true);
+    const entry = fixture.packages["node_modules/@kynesyslabs/dacs"];
+    if (!entry) throw new Error("missing fixture candidate");
+    entry.integrity = "sha512-wrong";
+    expect(fixture.run().status).not.toBe(0);
+    expect(existsSync(fixture.report)).toBe(false);
+  });
+  it("rejects an unknown policy mode", () => {
+    expect(spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-polciy"],
+      { cwd: repoRoot }).status).not.toBe(0);
+  });
+
+
   it("traverses image build, evidence assembly and disposition using the pinned host npm", async () => {
     const { directory, output, result, commands } = await runToConsumerStage(true);
     expect(result.status, result.stdout + result.stderr).toBe(0);
