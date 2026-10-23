@@ -1534,6 +1534,37 @@
           "after": "4abceff4d2f43e41f00707479962c194ca06070f"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 add passive native observation and reader cancellation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e",
+          "after": "94c556aad197e8987a38ef8fa48ec514c776c60a"
+        },
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "306f583fa3a05fe470893f8d604131681ada172f",
+          "after": "557fedfd8a745c4ad4d83972d9739708db6f8948"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "ecab598d2695975c776aaddd6038e71db5432f6f",
+          "after": "2f4304e950690763a6cf44a074d74be8c66d9b5b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
+          "before": null,
+          "after": "bcedb48f8aadebb64ebe42f910a6c9d90128e07e"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": null,
+          "after": "eee757ac92a1d6b163a362c7edb9b0894f0654ad"
+        }
+      ]
     }
   ]
 }
