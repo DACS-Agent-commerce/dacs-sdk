@@ -230,7 +230,7 @@ test('automatic rollback guards TEMP and attached tables, including quoted host 
     assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')"), /UNIQUE constraint/);
     assert.throws(() => tempInsert.run('TEST-after'), /transaction ended/);
     assert.throws(() => attachedInsert.run('TEST-after'), /transaction ended/);
-    assert.equal(db.prepare('SELECT count(*) n FROM "TEST-temp"').get().n, 0);
+    assert.throws(() => db.prepare('SELECT count(*) n FROM "TEST-temp"'), /transaction ended/);
   }), { code: 'client_not_wired' });
   const reopened = new DatabaseSync(`${path}.attached`);
   try { assert.equal(reopened.prepare('SELECT count(*) n FROM "TEST-table"').get().n, 0); }
@@ -260,5 +260,35 @@ for (const stage of ['before-commit', 'after-commit']) {
 for (const classifier of [async () => false, function* () {}, async function* () {}]) {
   test(`non-synchronous classifier refuses construction: ${classifier.constructor.name}`, () => {
     assert.throws(() => purchaseStore({ ...createSqlitePurchaseStore(), isUniqueViolation: classifier }), { code: 'client_not_wired' });
+  });
+}
+test('unique classifier distinguishes UNIQUE from NOT NULL, CHECK, foreign-key and syntax failures', t => {
+  const { db } = database(t), store = purchaseStore(createSqlitePurchaseStore());
+  db.exec("PRAGMA foreign_keys=ON; CREATE TABLE constraints_test(id TEXT UNIQUE, required TEXT NOT NULL, checked INTEGER CHECK(checked>0), parent TEXT REFERENCES records(id)); INSERT INTO constraints_test VALUES ('TEST', 'TEST', 1, NULL)");
+  for (const [sql, unique] of [
+    ["INSERT INTO constraints_test VALUES ('TEST','TEST',1,NULL)", true],
+    ["INSERT INTO constraints_test VALUES ('TEST-null',NULL,1,NULL)", false],
+    ["INSERT INTO constraints_test VALUES ('TEST-check','TEST',0,NULL)", false],
+    ["INSERT INTO constraints_test VALUES ('TEST-fk','TEST',1,'TEST-missing')", false],
+    ['TEST invalid SQL', false],
+  ]) {
+    let cause;
+    try { db.exec(sql); } catch (error) { cause = error; }
+    assert.ok(cause);
+    assert.equal(store.isUniqueViolation(cause), unique);
+  }
+  assert.equal(store.isUniqueViolation(new Error('UNIQUE constraint failed')), false);
+});
+for (const value of [true, false, undefined, 1, 'true']) {
+  test(`classifier requires a synchronous boolean result (${typeof value}, ${String(value)})`, () => {
+    const store = purchaseStore({ ...createSqlitePurchaseStore(), isUniqueViolation: () => value });
+    if (typeof value === 'boolean') assert.equal(store.isUniqueViolation(new Error('TEST')), value);
+    else assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'client_not_wired' });
+  });
+}
+for (const reject of [false, true]) {
+  test(`classifier refuses thenables and consumes rejected promises (reject=${reject})`, () => {
+    const store = purchaseStore({ ...createSqlitePurchaseStore(), isUniqueViolation: () => reject ? Promise.reject(new Error('TEST')) : Promise.resolve(true) });
+    assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'client_not_wired' });
   });
 }

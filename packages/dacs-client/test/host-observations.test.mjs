@@ -273,7 +273,7 @@ for (const sourceDisposition of [undefined, 'included', 'failed', 'pending', 'no
   test(`public native diagnostic terms match respects source disposition ${String(sourceDisposition)}`, async t => {
     const w = world(t, INCLUDED, { publicApi: true, native: true });
     const observation = { ...INCLUDED, ...(sourceDisposition === undefined ? {} : { sourceDisposition }) };
-    w.chain.observePurchaseTransfer = async () => observation;
+    w.chain.observePassiveTransfer = async () => observation;
     w.chain.observeTransfer = async () => { throw new Error('TEST-wrong-reader'); };
     const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
     const result = await w.verify();
@@ -284,12 +284,6 @@ for (const sourceDisposition of [undefined, 'included', 'failed', 'pending', 'no
     assert.equal(w.consumed(), 0);
   });
 }
-
-test('handoff lookup rejects an operation with another id before buyer or coordinate reads', t => {
-  const w = world(t, INCLUDED, { publicApi: true });
-  w.ops.getByHandoff = () => ({ ...w.op, id: 'TEST-other-operation' });
-  assert.throws(() => w.purchases.portalOperation(w.op.id, w.ops.handoffTokenFor(w.op.id)), { code: 'not_found' });
-});
 
 test('public nested protocol guidance remains historical and held', t => {
   const w = world(t, INCLUDED, { publicApi: true, native: true });

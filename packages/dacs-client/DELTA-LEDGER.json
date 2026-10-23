@@ -1548,6 +1548,179 @@
           "after": "5f2ef3b4e30101b70f88e665ded5485f77764da9"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 add inert guarded SQLite statement execution",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": null,
+          "after": "b69c3e30476cb097d782da1c27d0b936ebf2641e"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": null,
+          "after": "147a5481e0d8783c9d7c929b76b32417839185a8"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 guard every SQLite callback statement after rollback",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba",
+          "after": "dea888ee7f7906fc011ccb8e69319cf00f036c85"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "c202d2b701edc2a536b34d860bdb7317cfed6d77",
+          "after": "00357c230e040c7a2658f717f72e172eedcc8b44"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "8560f9547739573a5f2c8c32c27a085fbd59370d",
+          "after": "7fb6c88ed1400bffc509fc23453150bf78519cbe"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": null,
+          "after": "557ea59e906125decb9c56d5b2322a1d30af3321"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-state-schema.test.mjs",
+          "before": null,
+          "after": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 omit unimplemented diagnostic factory options",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9",
+          "after": "4aaed8cf6ea80a8871e2a08e32d7d1ff76932695"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "a2cd8b437ac464174f10834f7870b960966d0393",
+          "after": "4abceff4d2f43e41f00707479962c194ca06070f"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 add passive native observation and reader cancellation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e",
+          "after": "94c556aad197e8987a38ef8fa48ec514c776c60a"
+        },
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "306f583fa3a05fe470893f8d604131681ada172f",
+          "after": "557fedfd8a745c4ad4d83972d9739708db6f8948"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "ecab598d2695975c776aaddd6038e71db5432f6f",
+          "after": "2f4304e950690763a6cf44a074d74be8c66d9b5b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
+          "before": null,
+          "after": "bcedb48f8aadebb64ebe42f910a6c9d90128e07e"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": null,
+          "after": "eee757ac92a1d6b163a362c7edb9b0894f0654ad"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share the cancellable passive observation deadline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "557fedfd8a745c4ad4d83972d9739708db6f8948",
+          "after": "dad306f9b723c185815fbb41b63ab6d56f135a8b"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "eee757ac92a1d6b163a362c7edb9b0894f0654ad",
+          "after": "03e4731889a75769c2f2b429d2a99fbb89f10baf"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep diagnostic readers passive and preserve error codes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "101829cfc9443886330fb9cfd9c60798e9e5533f",
+          "after": "29247a830041995bed6ab28c39de18ff986d021c"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-reader.test.mjs",
+          "before": null,
+          "after": "4d6125730c234a34f8ae969c9d7299e55621e3a3"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "2a76678b52961a67d4ebdd8b276ebbee6354e465",
+          "after": "2ed8e9cf194d953890836e04ed79a5a219fccd2b"
+        }
+      ]
+    }
+  ],
+  "mergeSnapshots": [
+    {
+      "commit": "2b4976dc787df9aee664651b2fc0b0f10382e1e2",
+      "parents": [
+        "3546ddc8c44f96cf4cfb9d64ef2ceccbc942f949",
+        "91fd90f8892b9a77cc896d706e279d945cf3ce6f"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "parentBlobs": [
+            "9b3c78ed8b64b9113170ca6796196f49957881c2",
+            "dea888ee7f7906fc011ccb8e69319cf00f036c85"
+          ],
+          "after": "fb6babcd859364770760f6231f2ca59791d1854b"
+        }
+      ]
+    },
+    {
+      "commit": "77612915a67967b357df4a0001229cebc13ca4b7",
+      "parents": [
+        "5cad3072940618a796f9762276a539036f82aca1",
+        "f68c71873ffe077611df94cec6adee19150bbbf9"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "parentBlobs": [
+            "c013a280922e2fd638a29651dd8be053dc7acd9d",
+            "e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"
+          ],
+          "after": "ef6723b2e7509c38a37fee121912cfc7c197895a"
+        }
+      ]
     }
   ]
 }
