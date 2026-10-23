@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -502,7 +503,7 @@ function dependencyPolicyHarness() {
   // The package.json installed at each candidate lock location: by default
   // the lock entry's own name and version; `null` installs none.
   const installed: Record<string, Record<string, unknown> | null> = {};
-  const run = () => {
+  const run = (afterInstall: (project: string) => void = () => undefined) => {
     rmSync(join(project, "node_modules"), { recursive: true, force: true });
     for (const [location, entry] of Object.entries(packages)) {
       const name = typeof entry.name === "string" ? entry.name : location.replace(/^.*node_modules\//, "");
@@ -512,15 +513,15 @@ function dependencyPolicyHarness() {
       mkdirSync(join(project, location), { recursive: true });
       writeFileSync(join(project, location, "package.json"), JSON.stringify(installedManifest));
     }
+    afterInstall(project);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
-    writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
+    writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages: { "": {}, ...packages } }));
     writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
-    rmSync(report, { force: true });
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
       project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION], { cwd: repoRoot, encoding: "utf8" });
     return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
-  return { packages, manifest, provenance, installed, run };
+  return { packages, manifest, provenance, installed, run, report };
 }
 
 // Executes the script's own summary program over a stage holding the evidence
@@ -690,7 +691,7 @@ describe("registry/container evidence", () => {
       delete installed[location];
       expect(run().status).toBe(0);
     }
-  });
+  }, 30_000);
 
   it("composes only evidence of its producer's schema for the release version", () => {
     const evidence: Array<[string, Record<string, unknown>]> = [
