@@ -244,7 +244,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
         .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported" }));
     }
     expect(reads).toBe(6);
-  });
+  }, 60_000); // Each isolated journal qualifies publication in fresh processes.
 
   it("a wire-accepted TP-1 purchase passes seller payment intake's Agreement-type check", async () => {
     const x = world();
