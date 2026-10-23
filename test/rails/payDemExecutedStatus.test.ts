@@ -180,6 +180,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
       payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
     ).resolves.toEqual({
       ok: true,
+      execution: "executed",
       txHash: TX_HASH,
       chainId: "demos",
       payer: WALLET,
@@ -204,6 +205,29 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     await expect(
       payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
     ).resolves.toMatchObject({ ok: true, blockNumber: BLOCK });
+  });
+
+  it("classifies a bound failed record as permanent without settlement finality", async () => {
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+      record.status = "failed";
+      record.attrs = {
+        code: "TX_NONCE_INVALID_LOW",
+        message: "Invalid nonce edit. Expected 10, got 9",
+        reference_block: BLOCK - 2,
+      };
+    }));
+    const payDem = await rail();
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual({
+      ...NOT_OK, errorClass: "permanent", blockNumber: BLOCK, txRefKind: "demos",
+      failureProof: { kind: "demos-failed-record", txHash: TX_HASH, nonce: NONCE,
+        blockNumber: BLOCK, payer: "ab".repeat(32), payee: "cd".repeat(32), amountOs: AMOUNT_OS },
+    });
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.waitForNonce).not.toHaveBeenCalled();
   });
 
   it("does not report a failed record that does not bind the signed nonce as ok", async () => {
@@ -491,5 +515,98 @@ describe("pay-dem node reads take time and are polled at the configured interval
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("no failed or indeterminate execution causes another broadcast (#338)", () => {
+  const request = {
+    rail: "pay-dem",
+    phase: "pay-dem",
+    amount: "9.5",
+    asset: "DEM",
+    payee: `did:demos:agent:${PAYEE_HEX}`,
+    expectedPayee: PAYEE_HEX,
+    jobId: "job-338",
+    phaseIndex: 0,
+  } as const;
+
+  it.each([
+    ["a failed record", () => {
+      sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+        record.status = "failed";
+      }));
+    }],
+    ["a failed record that does not bind the signed nonce", () => {
+      sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+        record.status = "failed";
+        delete (record.content as Record<string, unknown>).nonce;
+      }));
+    }],
+    ["a mismatched record", () => {
+      sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+        record.content.amount = 1;
+        record.content.data[1].args[1] = "1";
+      }));
+    }],
+    ["a stalled record read", () => {
+      sdk.getTxByHash.mockImplementation(() => new Promise<never>(() => undefined));
+    }],
+    ["a malformed record", () => {
+      sdk.getTxByHash.mockResolvedValue("Transaction not found");
+    }],
+  ])("retains a failed or uncertain payment without rebroadcast after %s", async (_case, arrange) => {
+    arrange();
+    const settle = payDemSettle(await rail(), { network: "demos" });
+
+    const expected = {
+      ok: false,
+      txHash: TX_HASH,
+      chainId: "demos",
+      payer: "ab".repeat(32),
+      payee: request.expectedPayee,
+      ...(_case === "a failed record" ? {
+        errorClass: "permanent", blockNumber: BLOCK, txRefKind: "demos",
+        failureProof: { kind: "demos-failed-record", txHash: TX_HASH, nonce: NONCE,
+          blockNumber: BLOCK, payer: "ab".repeat(32), payee: request.expectedPayee, amountOs: AMOUNT_OS },
+      } : {}),
+    };
+    await expect(settle(request)).resolves.toEqual(expected);
+    if (_case === "a failed record") {
+      await expect(settle(request)).resolves.toEqual(expected);
+    } else {
+      await expect(settle(request)).rejects.toThrow(/refusing to resubmit/);
+    }
+    expect(sdk.transfer).toHaveBeenCalledTimes(1);
+    expect(sdk.confirm).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The factory authority is intentionally real in this suite.
+describe("SDK record-verifying capability identity", () => {
+  it.each(["copy", "prototype", "proxy"])("refuses a %s of a factory rail before claiming", async (kind) => {
+    const original = await rail();
+    const copied = kind === "copy" ? { ...original }
+      : kind === "prototype" ? Object.create(original) : new Proxy(original, {});
+    const once = vi.fn(async () => { throw new Error("must not claim"); });
+    await expect(async () => payDemSettle(copied, {}, { store: { once } })({
+      rail: "pay-dem", phase: "pay-dem", amount: "9.5", asset: "DEM",
+      payee: `did:demos:agent:${PAYEE_HEX}`, expectedPayee: PAYEE_HEX,
+      jobId: "copied-rail", phaseIndex: 0,
+    })).rejects.toThrow(/SDK.*record-verifying|must be stable data/);
+    expect(once).not.toHaveBeenCalled();
+    expect(sdk.transfer).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("freezes the factory capability and verified failed-record projection", async () => {
+    const native = await rail();
+    expect(Object.isFrozen(native)).toBe(true);
+    expect(Reflect.set(native, "settle", vi.fn())).toBe(false);
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => { record.status = "failed"; }));
+    const result = await native.settle({ recipient: RECIPIENT, amount: AMOUNT_OS });
+    expect(result.errorClass).toBe("permanent");
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.failureProof)).toBe(true);
   });
 });
