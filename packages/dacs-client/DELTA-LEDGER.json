@@ -1393,6 +1393,7 @@
           "after": "aca495eb87c54f557b02a7a2ce5d5b2882f1ce83"
         }
       ]
-    }
+    },
+    {"delta":"D11","subject":"fix(client): D11 restore standalone provider and strengthen import vectors","files":[{"path":"packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs","before":"59a2fd307756d036f813edd17dec2fa8be23e68f","after":"b7183e63a75b68cda34c2b30a4d532963794b13f"},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"e1085f274e14f20b87335189155f76284fd3b92a","after":"3df4a602a8fba8bcdaba2a75919aeebd53f1a46d"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"3c96ca8c5a47dcb88862af46324df331961d153e","after":"7cbf9eb0efa87e4b197e8d320a9080363465ef61"}]}
   ]
 }
