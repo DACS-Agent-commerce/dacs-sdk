@@ -226,7 +226,7 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
       const recordProblems = (manifest, problems) => {
         const snapshot = manifestSnapshot(manifest) === definition.preparationManifestSha256;
         for (const message of new Set(problems)) {
-          const reason = `${definition.name}: ${message}`;
+          const reason = message.startsWith(`${definition.name}: `) ? message : `${definition.name}: ${message}`;
           if (!notReady.includes(reason)) notReady.push(reason);
           if (!definition.preparationBlockers?.includes(message) &&
               !(snapshot && definition.preparationSnapshotBlockers?.includes(message)) && !errors.includes(reason)) errors.push(reason);

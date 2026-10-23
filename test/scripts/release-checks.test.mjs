@@ -549,10 +549,13 @@ test("the held private snapshot's preparation inventory cannot admit a new packe
   const baseline = await prepare(root, join(root, "baseline"), () => {});
   assert.deepEqual(baseline.errors, []);
   assert.equal(baseline.artifacts.length, 5);
+  const identityReason = `${packages[2].name}: release identity or publish policy is invalid`;
+  assert.ok(baseline.notReady.includes(identityReason), "held snapshot diagnostics name the package exactly once");
   const heldManifest = await readFile(join(dir, "package.json"));
   await changeManifest(root, packages[2], { license: "UNLICENSED" });
   const damaged = await prepare(root, join(root, "damaged-manifest"), () => {});
   assert.ok(damaged.errors.some(e => e.includes("identity or publish policy")), "only the exact held manifest gets baseline exceptions");
+  assert.ok(damaged.errors.includes(identityReason), "unexpected source and packed identity defects keep one package prefix");
   await writeFile(join(dir, "package.json"), heldManifest);
   await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
   const changed = await prepare(root, join(root, "changed"), () => {});
@@ -627,6 +630,7 @@ test("strict artifact inventory admits exactly the five public identities", () =
   assert.doesNotThrow(() => validateArtifactSet(artifacts, true));
   for (const damaged of [
     artifacts.slice(1),
+    [...artifacts, { ...artifacts[0], manifest: { ...artifacts[0].manifest, name: "other" } }],
     [...artifacts.slice(0, -1), artifacts[0]],
     [...artifacts.slice(0, -1), { ...artifacts[4], manifest: { ...artifacts[4].manifest, name: "other" } }],
     artifacts.map((a, i) => i === 2 ? { ...a, releasable: false } : a),
