@@ -503,6 +503,67 @@ export function isSellerFulfilmentVetInvocationMismatch(
     });
 }
 
+/**
+ * Why the Vet requirement invocations a seller would carry into its delivery
+ * audit source are not ones the fulfilment core accepts, or null: the strict
+ * invocation shape, exactly one invocation per distinct party Vet record, and
+ * `isSellerFulfilmentVetInvocationMismatch` for each. A seller runs this
+ * before it signs the Agreement, so a context the delivery runner would refuse
+ * after payment is refused before it.
+ */
+export function sellerFulfilmentVetRequirementsViolation(
+  vetRequirements: unknown,
+  input: {
+    jobId: string;
+    buyer: { primaryClaim: string; vetRecordRef: AttestationRef };
+    seller: { primaryClaim: string; vetRecordRef: AttestationRef };
+    buyerRequirement: unknown;
+  },
+): string | null {
+  if (!Array.isArray(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
+    return "the Vet requirement invocations are not the strict audit-source shape";
+  }
+  try {
+    const bindings = new Map<string, { primaryClaim: string; roles: Set<string> }>();
+    for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
+      if (!isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
+        return `the ${role} Vet reference or claim is malformed`;
+      }
+      const key = canonicalize(party.vetRecordRef);
+      const existing = bindings.get(key);
+      if (existing && existing.primaryClaim !== party.primaryClaim) {
+        return "one Vet record cannot represent different authenticated party identities";
+      }
+      if (existing) existing.roles.add(role);
+      else bindings.set(key, { primaryClaim: party.primaryClaim, roles: new Set([role]) });
+    }
+    const partyRefs = [...new Map([input.buyer, input.seller].map((party) =>
+      [canonicalize(party.vetRecordRef), party.vetRecordRef])).values()];
+    if (!hasNoDuplicateContentHashes(partyRefs)) {
+      return "distinct party Vet references share one content hash";
+    }
+    const invocationRefs = vetRequirements.map((entry) => entry.vetRecordRef);
+    if (vetRequirements.length !== bindings.size || !hasNoDuplicateRefs(invocationRefs) ||
+        !invocationRefs.every((ref) => bindings.has(canonicalize(ref)))) {
+      return "the Vet requirement invocations are not exactly one per party Vet record";
+    }
+    const context = {
+      jobId: input.jobId,
+      buyerClaim: input.buyer.primaryClaim,
+      sellerClaim: input.seller.primaryClaim,
+      buyerRequirement: input.buyerRequirement,
+      bindings,
+    };
+    if (vetRequirements.some((entry) => isSellerFulfilmentVetInvocationMismatch(entry, context))) {
+      return "a Vet requirement invocation differs from its party, counterparty verifier, " +
+        "address, requirement or covered results";
+    }
+    return null;
+  } catch {
+    return "the Vet requirement invocations are not canonicalizable";
+  }
+}
+
 /** Hash of every canonical audit-source byte retained in a V2 handoff. */
 export function sellerFulfilmentAuditSourceHash(
   source: Readonly<SellerFulfilmentAuditSourceV1>,

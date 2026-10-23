@@ -133,6 +133,7 @@ export {
   isSellerFulfilmentSessionRecord,
   isSellerFulfilmentVetInvocationMismatch,
   sellerFulfilmentAuditSourceHash,
+  sellerFulfilmentVetRequirementsViolation,
   type SellerFulfilmentAuditArtifactsV1,
   type SellerFulfilmentVetBinding,
   type SellerFulfilmentAuditSourceV1,

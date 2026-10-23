@@ -1504,6 +1504,7 @@ export {
   isSellerFulfilmentVetInvocationMismatch,
   isValidSellerReceiptClaim,
   sellerFulfilmentAuditSourceHash,
+  sellerFulfilmentVetRequirementsViolation,
   x402Eip3009Nonce,
   createX402SellerSpine,
   type X402ReceiptCommitment,
