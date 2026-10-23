@@ -647,12 +647,17 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(settle).not.toHaveBeenCalled();
   });
 
-  // A payment a custom rail made before the upgrade must still reconcile:
-  // the bridge is built for any rail, and recovery never calls its settle.
-  test("reconciles a custom rail's retained attempt without calling the rail", async () => {
+  // Recovery never calls a custom rail. It still needs this job's recorded
+  // transaction identity before a reconciled success can complete the job.
+  test.each([false, true])("a custom rail restart requires a recorded attempt (recorded=%s)", async (recorded) => {
     const log = createInMemorySettlementLog();
     const request = req({ jobId: "job-retained-custom" });
-    await seedExpiredIntent(log, request);
+    const claim = await seedExpiredIntent(log, request);
+    if (claim.status !== "acquired") throw new Error("expected a fresh test intent");
+    const key = settlementKey("pay-dem", "job-retained-custom", 0);
+    if (recorded) {
+      await log.putAttempt!({ key, bindingHash: claim.bindingHash, lease: claim.lease, txHash: TX_HASH, now: 0 });
+    }
     const settle = vi.fn<PayDemRail["settle"]>();
     const rail: PayDemRail = { address: PAYER, settle };
     const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
@@ -672,20 +677,21 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       reconcile,
     });
 
-    await expect(bridge()(request)).resolves.toMatchObject({
-      ok: true,
-      txHash: TX_HASH,
-      blockNumber: 4242,
-      payee: SELLER_HEX,
-    });
-    // After another restart the recorded outcome is re-authenticated, again
-    // without calling the rail.
-    await expect(bridge()(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
-    expect(reconcile).toHaveBeenCalledTimes(2);
+    if (recorded) {
+      await expect(bridge()(request)).resolves.toMatchObject({
+        ok: true, txHash: TX_HASH, blockNumber: 4242, payee: SELLER_HEX,
+      });
+      // After another restart the recorded outcome is re-authenticated.
+      await expect(bridge()(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      await expect(log.readOutcome!(key)).resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
+    } else {
+      await expect(bridge()(request)).rejects.toThrow(/no SDK record binds.*this payment/);
+      await expect(log.readOutcome!(key)).resolves.toBeNull();
+      expect(reconcile).toHaveBeenCalledTimes(1);
+    }
     expect(settle).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
-    await expect(log.readOutcome!(settlementKey("pay-dem", "job-retained-custom", 0)))
-      .resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
   });
 
   test("calls only the SDK's own rail and a caller's object carrying its settle", async () => {
@@ -715,15 +721,18 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       ? await sdkRail()
       : { address: PAYER, settle: vi.fn<PayDemRail["settle"]>() };
     let submitted: unknown;
-    const store = {
-      async once(_key: string, _binding: unknown, submit: () => Promise<SettleResult>) {
+    const inner = createIdempotencyStore();
+    const store: SettlementIdempotencyStore = {
+      once(key, binding, submit, reconcile) {
         submitted = submit;
-        return submit();
+        return inner.once(key, binding, submit, reconcile);
       },
-    } as unknown as SettlementIdempotencyStore;
+      readOutcome: inner.readOutcome,
+      readAttempt: inner.readAttempt,
+    };
     const settled = payDemSettle(rail, { recipient: PAYEE_CLAIM, network: "demos" }, { store })(req());
-    // This store does not release a submission that never ran, so the bridge
-    // refuses its result; either way the custom rail's settle never ran.
+    // The custom rail's settle never runs: the store releases the refused
+    // submission and the bridge refuses the result.
     await (expected
       ? expect(settled).resolves.toMatchObject({ ok: true })
       : expect(settled).rejects.toThrow());
@@ -842,8 +851,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       /cannot be authenticated after restart without reconciliation/],
     ["when reconciliation proves absence", async () => null,
       /contradicts reconciliation proof of absence/],
+    // The submit recorded its hash, so the reconciliation is checked against it first.
     ["when reconciliation returns another transaction", { txHash: OTHER_TX_HASH },
-      /does not match the authoritative reconciled transaction/],
+      /does not match the retained transaction/],
     ["when reconciliation returns another block", { blockNumber: 4243 },
       /does not match the authoritative reconciled transaction/],
     ["when reconciliation does not attest execution (#338)",
@@ -911,6 +921,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const backing = createInMemorySettlementLog();
     const lifecycle: string[] = [];
     const log: SettlementLog = {
+      // A log that keeps attempts reads its outcomes without a claim.
+      readOutcome(key) {
+        return backing.readOutcome!(key);
+      },
       async claimIntent(input) {
         lifecycle.push(`intent:${input.key}`);
         return backing.claimIntent(input);
@@ -929,6 +943,14 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       async releaseIntent(input) {
         lifecycle.push(`release:${input.key}`);
         return backing.releaseIntent(input);
+      },
+      // pay-dem starts no transfer through a log that cannot record its hash.
+      async putAttempt(input) {
+        lifecycle.push(`attempt:${input.key}`);
+        return backing.putAttempt!(input);
+      },
+      readAttempt(key) {
+        return backing.readAttempt!(key);
       },
     };
     const contexts: unknown[] = [];
@@ -1001,6 +1023,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       payer: PAYER,
       payee: SELLER_HEX,
       amountOs: "1250000000",
+      // createPayDemRail recorded the hash before its broadcast, so the
+      // restart reconciles that exact hash.
+      txHash: TX_HASH,
     });
     expect(contexts).toEqual([expect.objectContaining({
       settlementKey: key,
@@ -1009,7 +1034,16 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(lifecycle.indexOf(`intent:${key}`)).toBeLessThan(
       lifecycle.indexOf(`journal:${key}`),
     );
-    expect(lifecycle).toContain(`outcome:${key}`);
+    expect(lifecycle.indexOf(`journal:${key}`)).toBeLessThan(
+      lifecycle.indexOf(`outcome:${key}`),
+    );
+    // createPayDemRail records its hash under the generation before it broadcasts.
+    expect(lifecycle.indexOf(`intent:${key}`)).toBeLessThan(
+      lifecycle.indexOf(`attempt:${key}`),
+    );
+    expect(lifecycle.indexOf(`attempt:${key}`)).toBeLessThan(
+      lifecycle.indexOf(`outcome:${key}`),
+    );
   });
 
   test("a non-final reconciliation cannot authorize rebroadcast", async () => {
@@ -1450,7 +1484,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(reconcile).not.toHaveBeenCalled();
   });
 
-  test("accepts a structurally valid class-based settlement store", async () => {
+  // A class store is a valid store, but a new transfer needs the fence of the
+  // SDK store whose own attempt lookup it carries; one that runs submit itself
+  // starts none, because a restart could not bind the hash.
+  test("starts no transfer through a class store that runs submit itself, but pays through one carrying the SDK store's methods", async () => {
     class ClassStore {
       async once(
         _key: string,
@@ -1460,10 +1497,20 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return submit();
       }
     }
+    class DelegatingStore {
+      readonly #inner = createIdempotencyStore();
+      readonly once = this.#inner.once;
+      readonly readOutcome = this.#inner.readOutcome;
+      readonly readAttempt = this.#inner.readAttempt;
+    }
     const rail = await sdkRail();
 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: new ClassStore(),
+    })(req({ jobId: "job-class-store" }))).rejects.toThrow(/refusing to start a new transfer whose hash a restart could not bind/);
+    expect(sdk.transfer).not.toHaveBeenCalled();
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store: new DelegatingStore(),
     })(req({ jobId: "job-class-store" }))).resolves.toMatchObject({
       ok: true,
       txHash: TX_HASH,

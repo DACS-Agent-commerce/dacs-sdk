@@ -613,11 +613,13 @@ under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
 `(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
-`PayDemSettlementRecoveryContext` and must return either an exact
+`PayDemSettlementRecoveryContext`, extended with the exact recorded `txHash`
+when an attempt record is present, and must return either an exact
 `PayDemReconciledSettlement` (including the observed `amountOs`) with
 `execution: "executed"` only after reading the node's transaction record for
 the hash and finding it `confirmed` for this payer, payee and amount; a
-`PayDemReconciledFailure` for a bound `failed` record; or `null` only when
+`PayDemReconciledFailure` for a bound `failed` record. It must never return
+`null` when given a `txHash`; without one, `null` is allowed only when
 authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
@@ -627,16 +629,156 @@ own read of the node record makes a fresh payment final, through the rail
 transfer itself, so the record it reads is this call's transfer at the fee the
 node confirmed. A custom `DemosNativeClient` or `PayDemRail` is refused before
 its transfer or `settle` runs, because the SDK could not bind a transfer it did
-not sign and broadcast to the call; it can never debit the buyer and then leave
-the payment held, and a payment one already made still reconciles, because
-recovery never calls it. See
+not sign and broadcast to the call. Recovery through a custom rail requires an
+SDK attempt record binding the retained hash to this payment and never calls
+that rail. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory
-recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
-must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
+recovery fails closed and never authorizes a broadcast.
+
+A recovery request that carries `priorAttempts` (as `runSession` sends for a
+session holding a transaction-bearing outcome) is an audit of that retained
+transaction that never submits: it never
+calls the rail, even when the rail log lost its record. It reads only and
+never claims a submit generation or writes an intent, attempt record or outcome. It requires both `settlementStore.readOutcome`
+and `reconcile` and
+fails closed without either, except that a bridge without `reconcile` still
+returns the definitive result it bound to the key itself when the key's
+attempt record names that hash and the store saved that same result. A
+`SettlementLog` that keeps attempt records must implement `readOutcome`, which
+reads without a lease. The `createIdempotencyStore` lookup never claims,
+leases or binds a key; over an older log without `readOutcome` it refuses. For an
+audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
+`txHash`, the retained hash in canonical form (64 lower-case hex digits, no
+`0x`). `getTxByHash` matches that stored form exactly and answers any other form
+as not found; `getTransactionStatus` lower-cases hex but rejects a `0x` prefix,
+so a reader that mixes them can see `included` with no record. The reconciler
+returns a normalized reconciliation result derived from the node's record
+for that hash (`PayDemReconciledSettlement` or `PayDemReconciledFailure`),
+and, whenever it can load one, the
+original prepared-transfer journal entry for that hash as `preparedTransfer`.
+The raw node record's `content` and `status` are not this SDK result shape;
+see the [normalization example](docs/pay-dem-execution.md#normalizing-a-reconciliation-result).
+Recovery preserves a known network fee when the reader omits it and refuses
+a different fee for the same finalized payment. When a fee is reported or
+preserved from an authenticated outcome, a supplied journal's confirmed total
+debit must equal the successful result's OS amount plus that fee. An omitted
+fee with no authenticated value to preserve does not prevent recovery or
+authenticate a fee from the supplied journal.
+
+The SDK counts the retained hash for this payment only through its own record
+that this key signed it, and refuses the audit otherwise. That record is the
+key's attempt record, or a result this bridge submitted that the attempt record
+accepted. Every audit reads the attempt record,
+and a record naming another hash refuses it, whatever this bridge holds in
+memory. A
+`createIdempotencyStore` store hands its settlement fence a `recordAttempt`
+method when its `SettlementLog` implements the optional `putAttempt` and
+`readAttempt` pair (the in-memory log does). `createPayDemRail` signs the hash
+itself and records it through that fence before its one broadcast, and does
+not broadcast if the record is refused, and `payDemSettle` does not write it
+again after the payment is final (it writes only when the SDK rail returned a
+hash its own pre-broadcast write did not report, which `createPayDemRail`
+never does; a refusal there fails closed and leaves the hash unbound).
+An unbound audit refuses without changing the log, even when reconciliation
+finds a same-party, same-amount transfer. Reconciliation cannot create the
+original job/phase binding required by DACS-4 §9.5.1 PC-7.
+The fence a rail receives records
+the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
+passes, and rejects a value that is not a Demos transaction hash, so a rail
+that awaits it never broadcasts one. The record is compare-and-set
+under the submit generation and never changes, so after a crash, a timeout or
+an ambiguous result a restarted process can still audit the payment. Missing
+or contradictory recovery fails closed rather than resubmitting or reporting
+a final payment unpaid (DACS-4 §9.5.1 PC-7). A durable
+log needs the attempt pair for restart audits, so `payDemSettle` starts no new
+transfer through a `createIdempotencyStore` store over a log without it: the
+call fails before the rail runs, nothing is signed or sent, and the intent is
+released. Nor does it start one through any other store, wrapper or fence: a
+new transfer runs only when the fence a store hands its submit is that store's
+own fence for this key and these terms (a wrapper whose `once` hands another
+key's fence starts nothing) and records through
+the same `createIdempotencyStore` store whose own `readOutcome` and
+`readAttempt` it carries, so pass that store, or an object carrying its own
+`once`, `readOutcome` and `readAttempt`. A log
+without the pair still serves the payments it holds: an audit counts the hash
+that an outcome the log holds for these exact terms names, once the
+reconciliation agrees with that outcome on block and result, and a key the log
+holds no outcome for stays fail closed. Once the log keeps attempts, an outcome
+without a record never counts.
+
+Durable adapters must implement `readOutcome`, `putAttempt` and `readAttempt`
+(`putAttempt` compare-and-set under the generation, a record never changing).
+`createIdempotencyStore` also throws for a log that provides only one of the
+attempt pair, or the pair without `readOutcome`. Pass the store itself, or an
+object carrying its own `once`, `readOutcome` and `readAttempt`. Recovery of
+payments or saved outcomes written by older SDK versions is outside the current
+support scope. The restart guarantees here apply to payments made with the
+current SDK and a log implementing all three methods.
+The durable rail log is the idempotency authority. Back it up and restore it
+together with the session store; restoring session history alone cannot
+recover a lost payment binding for a request that omits that history.
+
+A supplied entry is always checked as well. It must name the retained hash, the
+same payer, payee, OS amount and network, a `recovery` tuple equal to this rail,
+job and phase, and (when present) a known denomination and debit bounds no
+lower than the amount; for a permanent failure its nonce must also be the
+proof's nonce. The entry is the reconciler's object, not the one the rail wrote
+before broadcast, so it can refuse an audit but never counts the hash on its
+own. Nor does an injected store's records, or a rail-log outcome on a log that
+keeps attempts: a restart reconciliation can have written that outcome from a
+lookup by key alone.
+
+So an audit never counts another job's transfer of the same amount to the same
+payee for this one, even when the reconciler returns an entry naming this job.
+The reconciler throws when the entry it loads conflicts with the node's record,
+and never returns `null` for the retained hash.
+
+A failure after the record and before its broadcast, including a process crash
+or a fence refusal, leaves a recorded
+hash that nothing sent. The SDK never signs or sends again for that key: when
+the reconciler finds nothing for the recorded hash, the restart is refused and
+the key stays held. The operator clears it in the durable log only after
+establishing that the recorded transaction did not land and can no longer
+land. This requires an executed, finalized transaction at the payer's journaled nonce
+on a node that serves that block, with a hash different from the recorded
+hash. Verify the replacement's hash, payer and nonce against its finalized node
+record with `status: "confirmed"`: it must have executed and consumed the journaled
+nonce. An included transaction with `status: "failed"` is not proof of nonce
+consumption and does not authorize clearing the key. If execution or the original
+payment's disposition cannot be established, retain the key.
+A moved nonce alone is insufficient: it also matches the recorded
+transaction having landed. If the hashes match, recover that payment's
+outcome and retain the key. Missing records or a lagging node leave the key
+held; they do not authorize a replacement payment.
+
+After proving those conditions, clearing a key means removing its whole durable
+record (lease, attempt and outcome), as an operator action outside the
+`SettlementLog` contract. Removing only the lease leaves the immutable attempt
+in place and cannot enable a replacement. If session history still names the
+abandoned hash, clearing the rail log alone also cannot enable a replacement:
+abandon that job and use a new `jobId`, or explicitly clear its retained session
+settlement outcome together with the whole rail-log record under the same
+operator procedure.
+
+A restart without history (the lease expired and the session holds no hash)
+reconciles in the store. When the key has an attempt record, the reconciler
+receives its hash as `txHash` and any other transaction is refused. Without
+one, a success is refused unless this same bridge already submitted and bound
+that hash to the key. A key-only reconciliation or saved outcome cannot bind
+another job's same-party, same-amount transaction to this payment. The check runs
+before saving a reconciled success and before returning a cached success. A
+supplied entry is checked on this path too and never persisted. A payment that the bridge, its rail log or the
+session already recorded as successful is never reported unpaid: a reconciliation that
+contradicts it is refused rather than returned as a permanent failure (DACS-4
+§9.5.1 PC-7). The SDK's own record is only as trustworthy as the host's
+`SettlementLog`: the store checks every record's key and binding hash, but
+it cannot detect a log that forges them.
+
+Every pay-DEM settlement request must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and
 must not be described as restart-safe.

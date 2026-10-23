@@ -22,9 +22,14 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
-import type {
-  SettlementBinding,
-  SettlementIdempotencyStore,
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  isBindingCheckedOutcomeLookup,
+  isOutcomeOnlyLogLookup,
+  type SettlementBinding,
+  type SettlementIdempotencyStore,
+  type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
@@ -514,6 +519,65 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       .resolves.toEqual(outcome);
     expect(poison).not.toHaveBeenCalled();
     expect(store.keys).toEqual(["rail:job:4"]);
+  });
+
+  test("passes on an SDK store's own lookups and binds an injected outcome lookup", async () => {
+    const sdkStore = createIdempotencyStore();
+    const injected = {
+      keys: [] as string[],
+      once: vi.fn(),
+      // Uses its receiver, so it must stay bound to the store.
+      readOutcome: vi.fn(async function (this: { keys: string[] }, key: string) {
+        this.keys.push(key);
+        return null;
+      }),
+      // Never consulted, so never passed on.
+      readAttempt: vi.fn(async () => "56".repeat(32)),
+    };
+    mocks.createPayDemRail.mockResolvedValue({});
+    mocks.payDemSettle.mockReturnValue(vi.fn());
+    const descriptor = await authenticatedDefinition();
+    for (const settlementStore of [sdkStore, injected]) {
+      await settleFromRail(descriptor, {
+        demosRpc: "https://demos.example",
+        demosSecret: "test-secret",
+        payDem: { settlementStore },
+      });
+    }
+    const [sdkCaptured, injectedCaptured] = mocks.payDemSettle.mock.calls.map((call) => call[2].store!);
+    // payDemSettle lets only the SDK's attempt lookup bind a retained hash.
+    expect(sdkCaptured.readOutcome).toBe(sdkStore.readOutcome);
+    expect(sdkCaptured.readAttempt).toBe(sdkStore.readAttempt);
+    expect(isBindingCheckedOutcomeLookup(sdkCaptured.readOutcome)).toBe(true);
+    expect(isBindingCheckedOutcomeLookup(sdkCaptured.readAttempt)).toBe(true);
+    expect(isBindingCheckedOutcomeLookup(injectedCaptured.readOutcome)).toBe(false);
+    expect(injectedCaptured.readAttempt).toBeUndefined();
+    await expect(injectedCaptured.readOutcome!("rail:job:4", storeBinding())).resolves.toBeNull();
+    expect(injected.readOutcome).toHaveBeenCalledWith("rail:job:4", storeBinding());
+    expect(injected.keys).toEqual(["rail:job:4"]);
+  });
+
+  // payDemSettle starts no transfer through a log without attempt records and
+  // binds only that store's own outcomes, so dispatch must pass its lookup on as is.
+  test("passes on the outcome lookup of an SDK store over a log without attempt records", async () => {
+    const memory = createInMemorySettlementLog();
+    const { putAttempt: _put, readAttempt: _read, ...outcomesOnly } = memory;
+    const legacyStore = createIdempotencyStore(outcomesOnly as SettlementLog);
+    mocks.createPayDemRail.mockResolvedValue({});
+    mocks.payDemSettle.mockReturnValue(vi.fn());
+    const descriptor = await authenticatedDefinition();
+    for (const settlementStore of [legacyStore, createIdempotencyStore(memory)]) {
+      await settleFromRail(descriptor, {
+        demosRpc: "https://demos.example",
+        demosSecret: "test-secret",
+        payDem: { settlementStore },
+      });
+    }
+    const [legacyCaptured, currentCaptured] = mocks.payDemSettle.mock.calls.map((call) => call[2].store!);
+    expect(legacyCaptured.readOutcome).toBe(legacyStore.readOutcome);
+    expect(legacyCaptured.readAttempt).toBeUndefined();
+    expect(isOutcomeOnlyLogLookup(legacyCaptured.readOutcome)).toBe(true);
+    expect(isOutcomeOnlyLogLookup(currentCaptured.readOutcome)).toBe(false);
   });
 
   test("retains a class store receiver across restart-style dispatch reconstruction", async () => {

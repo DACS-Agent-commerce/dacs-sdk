@@ -92,6 +92,120 @@ below).
   restart, a durable outcome and a reconciliation that disagree on the
   transaction, the block, success or any failure-proof field, the nonce
   included, are refused.
+- A settlement request carrying `priorAttempts` (which `runSession` sends for
+  a session holding a transaction-bearing outcome) is an audit of that
+  retained transaction that never submits. It reads only and never claims a
+  submit generation or writes an intent, attempt record or outcome.
+  `payDemSettle` never calls the rail for it, even
+  when the rail log lost its record, and requires both
+  `settlementStore.readOutcome` and `reconcile` (a bridge without `reconcile`
+  returns only the definitive result it bound to the key itself, when the
+  attempt record and the saved outcome agree). A log that keeps attempt
+  records must implement `readOutcome`, which reads without a lease. The
+  `createIdempotencyStore` lookup never claims, leases or binds a key; over
+  an older log without `readOutcome` it refuses.
+  The reconciler then receives a
+  `PayDemSettlementAuditContext` with `txHash`, the retained hash in canonical
+  form (64 lower-case hex digits, no `0x`). It returns a normalized reconciliation
+  result derived from the node's record for that hash, not the raw record's
+  `content`/`status` shape (see the example below), and, whenever it can load one, the prepared-transfer journal entry
+  for that hash as `preparedTransfer`. The hash counts for this payment only
+  through the SDK's own record that this key signed it: the key's attempt
+  record, or a result this bridge submitted and the attempt record accepted.
+  An unbound audit refuses without changing the log, even when reconciliation
+  finds a same-party, same-amount transfer. Reconciliation cannot create the
+  original job/phase binding required by DACS-4 §9.5.1 PC-7. Every audit reads
+  the attempt record, and a record naming another hash refuses it, whatever
+  the bridge holds in memory.
+- The attempt record is written through the settlement fence's
+  `recordAttempt`, which a `createIdempotencyStore` store provides when its
+  `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
+  in-memory log does). `createPayDemRail` signs the hash itself, records it
+  before its one broadcast and does not broadcast when the record is refused;
+  `payDemSettle` does not write it again after the payment is final (it
+  writes only when the SDK rail returned a hash its own pre-broadcast write
+  did not report, which `createPayDemRail` never does; a refusal there fails
+  closed and leaves the hash unbound). The fence a
+  rail receives records the canonical form (64 lower-case hex digits, no `0x`)
+  whichever form the rail passes, and rejects a value that is not a Demos
+  transaction hash before the rail can broadcast it. The write is
+  compare-and-set under the submit generation and the record never changes. A
+  crash after broadcast, a timeout or an ambiguous result therefore still lets
+  a restarted process audit the payment. A durable log needs the pair, so
+  `payDemSettle` starts no new transfer through a `createIdempotencyStore`
+  store over a log without it: the call fails before the rail runs, nothing is
+  signed or sent, and the intent is released. Nor does it start one through
+  any other store, wrapper or fence: a new transfer runs only when the fence a
+  store hands its submit is that store's own fence for this key and these
+  terms (a wrapper whose `once` hands another key's fence starts nothing) and
+  records through the same `createIdempotencyStore`
+  store whose own `readOutcome` and `readAttempt` it carries. A log without
+  the pair still
+  serves the payments it holds. An audit counts the hash that an outcome the
+  log holds for these exact terms names, once the reconciliation agrees with
+  it on block and result; a key with no saved outcome stays fail closed.
+  Once the log keeps attempts, an outcome
+  without a record never counts.
+
+  A supplied entry is always checked: it must name that hash, the same payer,
+  payee, OS amount and network, a `recovery` tuple equal to this rail, job and
+  phase, and (when present) a known denomination and debit bounds no lower
+  than the amount; a permanent failure's proof must also carry the journaled
+  nonce. When a network fee is reported or preserved from an authenticated
+  outcome, the successful result's OS amount plus that fee must equal
+  `confirmedTotalDebitOs` whenever that field is present. A missing fee with
+  no authenticated value to preserve does not prevent recovery or authenticate
+  a fee from the supplied journal. Recovery preserves a
+  previously authenticated network fee if the reader omits it, and refuses a
+  conflicting fee without changing the recorded success. The entry is the reconciler's object, not the one the rail wrote
+  before broadcast, so it can refuse an audit but never counts the hash on its
+  own. Nor does an injected store's records, or a rail-log outcome on a log
+  that keeps attempts, which a key-only restart reconciliation can have
+  written. The reconciler throws
+  when a loaded entry conflicts with the record and never returns `null` for
+  the retained hash.
+- Any failure after the record and before the broadcast, including a crash or
+  fence refusal, leaves a recorded hash
+  that nothing sent. The SDK never signs or sends again for the key: when the
+  reconciler finds nothing for the recorded hash, the restart is refused and
+  the key stays held until the operator establishes that the transaction
+  did not land and can no longer land before clearing the key in the durable
+  log. This requires an executed, finalized transaction at the payer's journaled nonce
+  on a node that serves that block, with a hash different from the recorded
+  hash. Verify the replacement's hash, payer and nonce against its finalized node
+  record with `status: "confirmed"`: it must have executed and consumed the journaled
+  nonce. An included transaction with `status: "failed"` is not proof of nonce
+  consumption and does not authorize clearing the key. If execution or the original
+  payment's disposition cannot be established, retain the key.
+  A moved nonce alone is insufficient: it also matches the recorded
+  transaction having landed. If the hashes match, recover that payment's
+  outcome and retain the key. Missing records or a lagging node leave the key
+  held; they do not authorize a replacement payment.
+  Once those conditions are proved, clearing the key is an
+  operator action outside the `SettlementLog` contract: remove its whole durable record
+  (lease, attempt and outcome). Removing only the lease leaves the immutable
+  attempt in place. If the session still retains that hash, clearing the rail
+  log alone cannot permit replacement: abandon the job and use a new `jobId`,
+  or explicitly clear the session's retained settlement outcome together with
+  the whole rail-log record under the same operator procedure.
+- A restart without history reconciles in the store. With an attempt record
+  the reconciler receives its hash as `txHash`, and any other transaction is
+  refused. Without one, a success is refused unless this same bridge already
+  submitted and bound the hash to the key. The same check runs before saving a
+  reconciled success and before returning a cached success: another job's
+  same-party, same-amount payment cannot complete this job through a key-only
+  reconciliation or saved outcome.
+- A success that the bridge, its rail log or the session recorded is never
+  reported unpaid: a reconciliation that contradicts it is refused rather than
+  returned as a permanent failure (DACS-4 §9.5.1 PC-7).
+- Durable adapters must implement `readOutcome`, `putAttempt` and `readAttempt`
+  (`putAttempt` compare-and-set under the generation, a record never changing).
+  `createIdempotencyStore` also throws for a log that provides only one of the
+  attempt pair, or the pair without `readOutcome`. Pass the store itself, or an
+  object carrying its own `once`, `readOutcome` and `readAttempt`. Recovery of
+  payments or saved outcomes written by older SDK versions is outside the current
+  support scope. The restart guarantees here apply to payments made with the
+  current SDK and a log implementing all three methods.
 
 Which capabilities the SDK built, and which successes its own client
 returned, is kept private to the rails module, keyed by object identity. No
@@ -139,6 +253,46 @@ Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
 reading a bound `confirmed` record.
 
+Direct `createPayDemRail().settle()` use without a fence that implements
+`recordAttempt` is supported at the low level, but records no durable payment
+binding in the SDK settlement log and cannot provide the bridge's restart-audit
+guarantees. A host's prepared-transfer journal is a separate recovery mechanism.
+
+### Normalizing a reconciliation result
+
+The callback returns `PayDemReconciledSettlement` or `PayDemReconciledFailure`,
+not a raw `getTxByHash` reply. For success, first validate the record's hash,
+native-send payer, payee, amount and nonce against the requested payment and
+prepared journal, and check both inclusion and `record.status === "confirmed"`.
+Decode the amount and fees into integer OS using the record's denomination.
+After those checks, the success mapping looks like this:
+
+```ts
+const result: PayDemReconciledSettlement = {
+  ok: true,
+  execution: "executed",
+  txHash: record.hash,
+  chainId: context.network,
+  payer: record.content.from,
+  payee: record.content.to,
+  amountOs: verifiedAmountOs,
+  blockNumber: record.blockNumber,
+  txRefKind: "demos",
+  finality: { model: "bft-final" },
+  ...(verifiedFeeOs === undefined ? {} : { networkFeeOs: verifiedFeeOs }),
+  ...(preparedTransfer === undefined ? {} : { preparedTransfer }),
+};
+```
+
+`verifiedAmountOs` and `verifiedFeeOs` come from those validated chain facts,
+not the requested amount or an estimated fee. A bound `failed` record instead
+maps to the permanent failure shape with its exact `failureProof` and no
+`execution` assertion. Throw for an indeterminate read; a missing record for a
+retained hash must never return `null` as permission to pay again. See the
+exported result types for the full shapes. The SDK checks the callback's
+normalized statement and bindings; the integrator is responsible for its
+chain reads.
+
 ## Finality
 
 DACS-4 §9.5.9 treats Demos inclusion as BFT-final, and the rail stamps
@@ -165,6 +319,10 @@ These were read from kynesyslabs/node `stabilisation@61b8e75` and
   `{result: 404, response: null, extra: {reason: "not_found", checkedThroughBlock}}`
   at 52e2e569 and at `11e7c8207732e25035de5a04cab25c5346046493`, which serves
   the same record shape and status handler.
+- `getTxByHash` matches the stored lower-case hash exactly and answers any
+  other spelling as not found; `getTransactionStatus` lower-cases hex but
+  rejects a `0x` prefix as an invalid request. The rail always passes the
+  canonical form.
 
 The default `testnet` branch had no `getTransactionStatus` when read on
 2026-10-20, so against such a node the rail never observes inclusion and stays

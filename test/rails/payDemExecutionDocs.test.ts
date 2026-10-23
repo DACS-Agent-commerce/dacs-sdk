@@ -39,6 +39,83 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(readme).toContain("(docs/pay-dem-execution.md)");
   });
 
+  it("states the attempt-record contract for the SDK's rails and durable logs", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const readme = read("README.md").replace(/\s+/g, " ");
+    for (const text of [doc, readme]) {
+      expect(text).toContain("`createPayDemRail` signs the hash itself");
+      expect(text).toContain("An unbound audit refuses without changing the log");
+      expect(text).not.toContain("record the exact hash they will return before they broadcast");
+      expect(text).not.toContain("through the journal hook the SDK hands");
+      // A log that can start a transfer reads outcomes without a claim, and
+      // the lookup of an older log refuses rather than claims.
+      expect(text).toContain("that keeps attempt records must implement `readOutcome`");
+      expect(text).toContain("`createIdempotencyStore` lookup never claims, leases or binds a key");
+      expect(text).not.toContain("so it is not read-only");
+      expect(text).not.toContain("records that hash again");
+      expect(text).toContain("does not write it again after the payment is final");
+      expect(text).toContain("never claims a submit generation");
+    }
+    for (const text of [doc, readme]) {
+      expect(text).not.toContain("keeps working for fresh settlement");
+      expect(text).toContain("starts no new transfer through a `createIdempotencyStore` store over a log without it");
+      expect(text).toContain("Once the log keeps attempts, an outcome without a record never counts.");
+    }
+    for (const text of [doc, readme]) {
+      expect(text).toContain("records the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail passes");
+    }
+    for (const text of [doc, readme]) {
+      expect(text).toContain("that never submits");
+      expect(text).toContain("or writes an intent, attempt record or outcome");
+      expect(text).not.toContain("This is the one place an audit changes the log");
+      expect(text).toContain("that store's own fence for this key and these terms");
+      expect(text).toContain("`createIdempotencyStore` also throws for a log that provides only one of the attempt pair");
+      expect(text).toContain("it writes only when the SDK rail returned a hash its own pre-broadcast write did not report");
+    }
+    for (const text of [doc, readme]) {
+      expect(text).toContain("Nor does it start one through any other store, wrapper or fence");
+      expect(text).toContain("whose own `readOutcome` and `readAttempt` it carries");
+      expect(text).not.toContain("lookup reads through `claimIntent`");
+      expect(text).toContain("over an older log without `readOutcome` it refuses");
+      expect(text).not.toContain("is never recorded");
+      expect(text).not.toContain("saved before attempt records existed");
+      expect(text).not.toContain("also records any hash a rail returns");
+      expect(text).not.toContain("must therefore implement the optional `readOutcome` method");
+    }
+  });
+
+  it("requires a different executed transaction consuming the journaled nonce before clearing a key", () => {
+    for (const path of ["README.md", "docs/pay-dem-execution.md"]) {
+      const text = read(path).replace(/\s+/g, " ");
+      expect(text).toContain("did not land and can no longer land");
+      expect(text).toContain("finalized transaction at the payer's journaled nonce");
+      expect(text).toContain("on a node that serves that block, with a hash different from the recorded hash");
+      expect(text).toContain("Verify the replacement's hash, payer and nonce against its finalized node record with `status: \"confirmed\"`");
+      expect(text).toContain("it must have executed and consumed the journaled nonce");
+      expect(text).toContain("An included transaction with `status: \"failed\"` is not proof of nonce consumption and does not authorize clearing the key");
+      expect(text).toContain("If execution or the original payment's disposition cannot be established, retain the key");
+      expect(text).toContain("A moved nonce alone is insufficient: it also matches the recorded transaction having landed.");
+      expect(text).toContain("If the hashes match, recover that payment's outcome and retain the key.");
+      expect(text).toContain("Missing records or a lagging node leave the key held");
+    }
+  });
+
+  it("describes registry retained audits as reading an existing binding without acquiring authority", () => {
+    const source = read("src/registry/dispatch.ts").replace(/\s*\*\s*/g, " ");
+    expect(source).toContain("A retained audit reads the existing SDK payment binding without claiming a generation or writing a record; without that binding it refuses.");
+    expect(source).not.toContain("audit finishes only through that store's");
+  });
+
+  it("describes normalized reconciliation and clearing the complete abandoned record", () => {
+    for (const path of ["README.md", "docs/pay-dem-execution.md"]) {
+      const text = read(path).replace(/\s+/g, " ");
+      expect(text).toContain("normalized reconciliation");
+      expect(text).toContain("lease, attempt and outcome");
+      expect(text).toContain("operator action outside the `SettlementLog` contract");
+    }
+    expect(read("docs/pay-dem-execution.md")).toContain('execution: "executed"');
+  });
+
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain(

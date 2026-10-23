@@ -4,7 +4,7 @@ import { types as nodeTypes } from "node:util";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import type { SettlementEffectFence } from "./idempotency.js";
+import { isStoreAttemptRecorderClosure, type SettlementEffectFence } from "./idempotency.js";
 
 /** Durable schema written by wallet-spend stores. */
 export const WALLET_SPEND_STATE_VERSION = 1 as const;
@@ -390,11 +390,22 @@ export function combineWalletSpendEffectFenceV1(
       "wallet spend permit does not bind the active settlement generation",
     );
   }
+  const recordProperty = stableProperty(settlement, "recordAttempt", "settlement attempt recorder");
+  // Keep store-owned closures identifiable by the bridge. Other methods still
+  // need their captured receiver when the combined fence calls them.
+  const recordAttempt = recordProperty.value === undefined
+    ? undefined
+    : isStoreAttemptRecorderClosure(recordProperty.value)
+      ? recordProperty.value
+      : stableMethod<NonNullable<SettlementEffectFence["recordAttempt"]>>(
+          settlement, "recordAttempt", "settlement attempt recorder",
+        );
   return Object.freeze({
     settlementKey,
     bindingHash,
     owner,
     generation,
+    ...(recordAttempt === undefined ? {} : { recordAttempt }),
     ...(effectIdentity === undefined
       ? {}
       : { effectIdentity }),

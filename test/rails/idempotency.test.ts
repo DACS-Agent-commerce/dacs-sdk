@@ -41,6 +41,22 @@ const binding = (
 });
 const KEY = "evm-erc20-usdc:job-1:0";
 
+test.each([
+  " padded-hash", "padded-hash ", "\thash\n", { trim() { return this; } },
+])("the generic attempt recorder rejects an inexact hash before touching the log: %s", async (hash) => {
+  const log = createInMemorySettlementLog();
+  const putAttempt = vi.spyOn(log, "putAttempt");
+  const store = createIdempotencyStore(log);
+  await store.once(KEY, binding(), async (fence) => {
+    await expect(fence!.recordAttempt!(hash as string)).rejects.toThrow(/non-empty exact transaction hash/);
+    expect(putAttempt).not.toHaveBeenCalled();
+    await fence!.recordAttempt!("exact-hash");
+    expect(putAttempt).toHaveBeenCalledTimes(1);
+    return ok("exact-hash");
+  });
+  await expect(log.readAttempt!(KEY)).resolves.toMatchObject({ txHash: "exact-hash" });
+});
+
 describe("settlement idempotency store (#43)", () => {
   test("a repeated call for the same key returns the recorded result WITHOUT resubmitting", async () => {
     const store = createIdempotencyStore();
@@ -693,6 +709,39 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
 
+  test.each([false, true])("optional undefined log methods work across ERC-20 bridge restarts (readOutcome undefined=%s)", async (omitOutcome) => {
+    const log = {
+      ...createInMemorySettlementLog(),
+      putAttempt: undefined,
+      readAttempt: undefined,
+      ...(omitOutcome ? { readOutcome: undefined } : {}),
+    };
+    const rail = countingRail();
+    await expect(evmErc20Settle(rail, cfg, { store: createIdempotencyStore(log) })(req))
+      .resolves.toMatchObject({ ok: true, txHash: "0x1" });
+    await expect(evmErc20Settle(rail, cfg, { store: createIdempotencyStore(log) })(req))
+      .resolves.toMatchObject({ ok: true, txHash: "0x1" });
+    expect(rail.transferCalls).toBe(1);
+  });
+
+  test.each(["putAttempt", "readAttempt", "readOutcome"] as const)("undefined optional %s shadows inherited methods", (name) => {
+    const log = Object.create(createInMemorySettlementLog()) as SettlementLog;
+    Object.defineProperty(log, "putAttempt", { value: undefined, configurable: true });
+    Object.defineProperty(log, "readAttempt", { value: undefined, configurable: true });
+    Object.defineProperty(log, name, { value: undefined });
+    expect(() => createIdempotencyStore(log)).not.toThrow();
+  });
+
+  test.each(["putAttempt", "readAttempt", "readOutcome"] as const)("still rejects invalid optional %s without invoking accessors", (name) => {
+    const log = createInMemorySettlementLog();
+    Object.defineProperty(log, name, { value: null, configurable: true });
+    expect(() => createIdempotencyStore(log)).toThrow(/stable callable data/);
+    let reads = 0;
+    Object.defineProperty(log, name, { get() { reads += 1; return undefined; } });
+    expect(() => createIdempotencyStore(log)).toThrow(/stable callable data/);
+    expect(reads).toBe(0);
+  });
+
   test("direct EVM bridge rejects a destination mismatch before transfer", async () => {
     const rail = countingRail();
     expect(() =>
@@ -802,11 +851,24 @@ describe("read-only settlement outcome lookup", () => {
     await expect(createIdempotencyStore(log).readOutcome!(KEY, binding())).rejects.toThrow();
   });
 
-  test("legacy logs fail closed for read-only recovery while ordinary once remains compatible", async () => {
-    const { readOutcome: _read, ...legacy } = createInMemorySettlementLog();
+  // A log without `readOutcome` refuses the lookup before touching the log: a
+  // lookup never claims, leases or binds a key, whatever terms it names, and
+  // `once` over such a log is unchanged.
+  test("a legacy log without readOutcome refuses the lookup without touching the log, and once stays compatible", async () => {
+    const memory = createInMemorySettlementLog();
+    const { readOutcome: _read, putAttempt: _put, readAttempt: _attempt, ...legacy } = memory;
+    const claimIntent = vi.spyOn(legacy, "claimIntent");
+    const releaseIntent = vi.spyOn(legacy, "releaseIntent");
     const store = createIdempotencyStore(legacy);
-    await expect(store.readOutcome!(KEY, binding())).rejects.toThrow(/requires read-only outcome lookup/);
-    await expect(store.once(KEY, binding(), async () => ok("legacy-effect"))).resolves.toMatchObject({ txHash: "legacy-effect" });
+    await expect(store.readOutcome!(KEY, binding({ amount: "1000000" })))
+      .rejects.toThrow(/settlement log requires read-only outcome lookup for retained recovery/);
+    expect(claimIntent).not.toHaveBeenCalled();
+    expect(releaseIntent).not.toHaveBeenCalled();
+    // The lookup bound no terms: the first submission, under other terms, runs.
+    await expect(store.once(KEY, binding({ amount: "2000000" }), async () => ok("legacy-effect")))
+      .resolves.toMatchObject({ txHash: "legacy-effect" });
+    await expect(store.readOutcome!(KEY, binding({ amount: "2000000" })))
+      .rejects.toThrow(/settlement log requires read-only outcome lookup for retained recovery/);
   });
 
   test("captures the lookup receiver and method before awaiting caller-controlled code", async () => {

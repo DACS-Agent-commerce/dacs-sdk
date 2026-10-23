@@ -12,8 +12,9 @@ import {
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
-import type {
-  SettlementIdempotencyStore,
+import {
+  isBindingCheckedOutcomeLookup,
+  type SettlementIdempotencyStore,
 } from "../rails/idempotency.js";
 import {
   isAuthenticatedRailDefinition,
@@ -57,7 +58,19 @@ export interface RailDispatchOptions {
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
    * restart recovery should supply all three of `settlementStore`,
    * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
-   * low-level process-local compatibility behavior but is not restart-safe.
+   * low-level process-local behavior (a resumed call can return the
+   * bridge's own bound definitive result) but is not restart-safe.
+   * Omitting `settlementStore` uses the SDK's in-memory store, which can start
+   * payments. A supplied store for new transfers or restart audits must be a
+   * `createIdempotencyStore` store over a
+   * `SettlementLog` with `readOutcome` and the `putAttempt`/`readAttempt` pair
+   * (or an object carrying that store's own `once`, `readOutcome` and
+   * `readAttempt`): an injected store's
+   * own lookups never bind a hash and any other store starts no new transfer.
+   * A retained audit reads the existing SDK payment binding without claiming
+   * a generation or writing a record; without that binding it refuses.
+   * A store over a log without the pair starts no new transfer and binds only
+   * the hashes the outcomes the log holds name.
    */
   payDem?: {
     /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
@@ -306,15 +319,27 @@ function captureSettlementStore(
     "once",
     "pay-dem settlement store once",
   );
-  const readOutcome = optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
-    source,
-    "readOutcome",
-    "pay-dem settlement store readOutcome",
-  );
+  // A `createIdempotencyStore` lookup is a closure over its own log; passing it
+  // unbound keeps the provenance `payDemSettle` checks before it lets that
+  // store's attempt record bind a retained hash.
+  const lookup = stableDispatchProperty(source, "readOutcome", "pay-dem settlement store readOutcome");
+  const readOutcome = lookup.found && isBindingCheckedOutcomeLookup(lookup.value)
+    ? lookup.value as NonNullable<SettlementIdempotencyStore["readOutcome"]>
+    : optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
+        source,
+        "readOutcome",
+        "pay-dem settlement store readOutcome",
+      );
+  // Another store's attempt lookup is never consulted, so it is not passed on.
+  const attempt = stableDispatchProperty(source, "readAttempt", "pay-dem settlement store readAttempt");
+  const readAttempt = attempt.found && isBindingCheckedOutcomeLookup(attempt.value)
+    ? attempt.value as NonNullable<SettlementIdempotencyStore["readAttempt"]>
+    : undefined;
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),
     ...(readOutcome === undefined ? {} : { readOutcome }),
+    ...(readAttempt === undefined ? {} : { readAttempt }),
   };
   return Object.freeze(wrapper);
 }

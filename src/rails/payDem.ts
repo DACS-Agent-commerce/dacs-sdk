@@ -15,6 +15,11 @@ import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddre
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
   createIdempotencyStore,
+  isBindingCheckedOutcomeLookup,
+  isOutcomeOnlyLogLookup,
+  isStoreAttemptRecorder,
+  isStoreLookupPair,
+  settlementBindingHash,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -220,7 +225,7 @@ function canonicalDemosTxHash(value: unknown): string | null {
 }
 
 /**
- * pay-dem settlement rail — native DEM transfer (DACS-4 §9.5.9, SR-4).
+ * pay-dem settlement rail — native DEM transfer (DACS-4 §9.5.9).
  *
  * The plain native path: the buyer submits a `demos.transfer` of the agreed DEM
  * amount straight to the seller's address; the buyer-signed runtime agreement +
@@ -306,12 +311,55 @@ export interface PayDemSettlementRecoveryContext {
 }
 
 /**
+ * Reconciliation context of an audit of a retained transaction (a
+ * settlement request carrying `priorAttempts`), and of a restart
+ * reconciliation for a key whose attempt record names its hash. Restart
+ * reconciliation of a key without one receives the plain
+ * {@link PayDemSettlementRecoveryContext}.
+ */
+export interface PayDemSettlementAuditContext extends PayDemSettlementRecoveryContext {
+  /**
+   * Retained Demos transaction hash in canonical form: 64 lower-case hex
+   * digits without `0x`. `getTxByHash` matches the stored lower-case form
+   * exactly and answers any other form as not found; `getTransactionStatus`
+   * lower-cases hex but rejects a `0x` prefix, so a reader that mixes them can
+   * see `included` with no record. Reconciliation returns a normalized
+   * settlement result derived from that record and, whenever it can load one,
+   * the original prepared-transfer journal entry for it as `preparedTransfer`.
+   * On a log keeping attempts,
+   * the audit needs the SDK's own record naming this hash for this key: the
+   * attempt record a `createIdempotencyStore` store wrote when this key signed
+   * it, or a result this bridge submitted or already bound. A returned entry
+   * must also name this exact hash and recovery tuple, but it is the reconciler's
+   * object, so it never stands in for that record. An injected store's records
+   * cannot substitute either. A log without attempt records can also use
+   * that log's saved outcome. An audit never claims a generation or records
+   * a new payment binding from reconciliation.
+   * Recovery of pre-upgrade state is outside the current SDK's support scope.
+   * Throw when a loaded entry conflicts with the record, and never return
+   * `null` for the retained hash: absence never authorizes a new transfer.
+   */
+  txHash: string;
+}
+
+/**
  * Authoritative pay-DEM reconciliation observation. `amountOs` is repeated in
  * the observation so the SDK can compare the chain reader's answer with the
  * exact PC-7 recovery request before a generic idempotency store persists it.
  */
 export interface PayDemReconciledSettlement extends SettleResult {
   amountOs: string;
+  /**
+   * The prepared-transfer journal entry the rail wrote for `txHash` before its
+   * one broadcast. Checked whenever supplied: its hash must be `txHash`, its
+   * `recovery` must equal the context's tuple, and its denomination and debit
+   * bounds must be well formed, so the reconciler can never present a
+   * transaction of the same payer, payee and amount made for another rail, job
+   * or phase as this one. It never counts a transaction on its own: in reply
+   * to a {@link PayDemSettlementAuditContext}, only the SDK's own record does
+   * (see there). It is not persisted with the settlement.
+   */
+  preparedTransfer?: PayDemPreparedTransfer;
   /**
    * The reconciler's statement, which the SDK cannot authenticate, that the
    * node's transaction record for `txHash` is `confirmed` at `blockNumber` and
@@ -342,12 +390,17 @@ export interface PayDemReconciledSettlement extends SettleResult {
 export interface PayDemReconciledFailure extends SettleResult {
   ok: false;
   amountOs: string;
+  /**
+   * As {@link PayDemReconciledSettlement.preparedTransfer}; its signed nonce
+   * must also be the failure proof's nonce.
+   */
+  preparedTransfer?: PayDemPreparedTransfer;
   errorClass: "permanent";
   failureProof: DemosFailedRecordProof;
 }
 
 export type PayDemSettlementReconcile = (
-  context: Readonly<PayDemSettlementRecoveryContext>,
+  context: Readonly<PayDemSettlementRecoveryContext | PayDemSettlementAuditContext>,
 ) => Promise<PayDemReconciledSettlement | PayDemReconciledFailure | null>;
 
 /** The result of submitting a native transfer and independently observing finality. */
@@ -411,6 +464,8 @@ export interface DemosNativeClient {
   transfer(args: {
     to: string;
     amountOs: bigint;
+    /** Effective invocation network, including any per-payment override. */
+    network?: string;
     maxTotalDebitOs?: bigint;
     recovery?: Readonly<PayDemSettlementRecoveryContext>;
     journalPreparedTransfer?: (
@@ -458,6 +513,12 @@ function captureSettlementEffectFence(
     "assertCurrent",
     "pay-dem effect fence assertion",
   );
+  const recordProperty = stableDataProperty(value, "recordAttempt", "pay-dem effect fence attempt record");
+  const recordAttempt = !recordProperty.found || recordProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementEffectFence["recordAttempt"]>>(
+        value, "recordAttempt", "pay-dem effect fence attempt record",
+      );
   return Object.freeze({
     owner,
     generation: generationProperty.value as number,
@@ -465,6 +526,7 @@ function captureSettlementEffectFence(
     bindingHash,
     ...(effectIdentity === undefined ? {} : { effectIdentity }),
     assertCurrent,
+    ...(recordAttempt === undefined ? {} : { recordAttempt }),
   });
 }
 
@@ -699,6 +761,7 @@ export async function payDemSettleCore(
   const response = await transfer({
     to: recipient,
     amountOs,
+    network,
     ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
     ...(recovery === undefined ? {} : { recovery }),
     ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }),
@@ -1638,6 +1701,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     transfer: async ({
       to,
       amountOs,
+      network: invocationNetwork,
       maxTotalDebitOs: invocationMaxTotalDebitOs,
       recovery,
       journalPreparedTransfer: invocationJournal,
@@ -1770,7 +1834,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         payee: canonicalPayee,
         amountOs: amountOs.toString(),
         denomination: postFork ? "os" : "dem",
-        network: network ?? "demos",
+        network: invocationNetwork ?? network ?? "demos",
         ...(effectiveMaxTotalDebitOs === undefined
           ? {}
           : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
@@ -1792,7 +1856,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // after the transaction has already landed. The attached handlers absorb a
       // late fulfilment/rejection; inclusion is established independently below
       // from the pre-journaled signed hash, and ambiguity never authorises a
-      // second submission.
+      // second submission. The settlement store records the signed hash under
+      // this generation first, so a restart after the broadcast can tie the
+      // transfer to its key; a failed record aborts before broadcast.
+      if (effectFence?.recordAttempt !== undefined) await effectFence.assertCurrent();
+      await effectFence?.recordAttempt?.(txHash);
       await effectFence?.assertCurrent();
       const broadcastAttempt = Promise.resolve().then(() => broadcast(validity));
       void broadcastAttempt.then(
@@ -1964,6 +2032,29 @@ function sameFailureProof(left: SettleResult, right: SettleResult): boolean {
     : canonicalize(left.failureProof) === canonicalize(right.failureProof);
 }
 
+/**
+ * Whether two results for the same transaction and block report the same
+ * outcome: success, or failure under the same canonical proof. Fee accounting
+ * is preserved separately by preservePayDemFee; a fee change never changes
+ * whether the transaction executed.
+ */
+function sameSettledOutcome(left: SettleResult, right: SettleResult): boolean {
+  return left.ok === right.ok &&
+    left.errorClass === right.errorClass &&
+    sameFailureProof(left, right);
+}
+
+/** Preserve an omitted authenticated fee, and refuse a contradictory debit. */
+function preservePayDemFee(result: SettleResult, saved?: SettleResult | null): SettleResult {
+  if (result.ok && saved?.ok && saved.networkFeeOs !== undefined &&
+      result.networkFeeOs !== undefined && result.networkFeeOs !== saved.networkFeeOs) {
+    throw new DacsError("pay-dem reconciliation fee conflicts with the authenticated network fee; refusing inconsistent accounting");
+  }
+  return result.ok && saved?.ok && saved.networkFeeOs !== undefined
+    ? { ...result, networkFeeOs: saved.networkFeeOs }
+    : result;
+}
+
 function samePayDemResult(left: SettleResult, right: SettleResult): boolean {
   return left.ok === right.ok &&
     left.errorClass === right.errorClass &&
@@ -2093,9 +2184,108 @@ function capturePayDemResult(
   };
 }
 
+const PAY_DEM_PREPARED_TRANSFER_KEYS = new Set([
+  "txHash",
+  "nonce",
+  "payer",
+  "payee",
+  "amountOs",
+  "denomination",
+  "network",
+  "maxTotalDebitOs",
+  "confirmedTotalDebitOs",
+  "recovery",
+]);
+
+const PAY_DEM_RECOVERY_CONTEXT_KEYS = [
+  "railId",
+  "jobId",
+  "phaseIndex",
+  "settlementKey",
+  "network",
+  "payer",
+  "payee",
+  "amountOs",
+] as const;
+
+/**
+ * DACS-4 §9.5.1 PC-7: a prepared-transfer journal entry a reconciliation
+ * supplies must name the exact hash and carry this exact rail/session/phase
+ * tuple, so it never presents another job's transfer of the same payer, payee
+ * and amount as this one. The reconciler supplies it, so passing this check
+ * never counts a transaction for this payment.
+ */
+function assertPreparedTransferBinds(
+  value: unknown,
+  context: Readonly<PayDemSettlementRecoveryContext>,
+  captured: SettleResult,
+): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new DacsError(
+      "pay-dem reconciliation returned a malformed prepared-transfer journal entry; refusing reuse or rebroadcast",
+    );
+  }
+  const prepared = value as Record<string, unknown>;
+  const recovery = prepared.recovery as Record<string, unknown> | null | undefined;
+  // A rail journals the debit bounds only after checking that the confirmed
+  // amount plus fee fits under the ceiling, so neither is below the amount.
+  const debitBound = (bound: unknown) => bound === undefined ||
+    (typeof bound === "string" && /^[1-9][0-9]*$/.test(bound) &&
+      BigInt(bound) >= BigInt(context.amountOs));
+  if (
+    Object.keys(prepared).some((key) => !PAY_DEM_PREPARED_TRANSFER_KEYS.has(key)) ||
+    canonicalDemosTxHash(prepared.txHash) !== captured.txHash ||
+    typeof prepared.nonce !== "number" ||
+    !Number.isSafeInteger(prepared.nonce) ||
+    prepared.nonce < 0 ||
+    typeof prepared.payer !== "string" ||
+    normalizeDemosNativeAddress(prepared.payer) !== context.payer ||
+    typeof prepared.payee !== "string" ||
+    normalizeDemosNativeAddress(prepared.payee) !== context.payee ||
+    prepared.amountOs !== context.amountOs ||
+    prepared.network !== context.network ||
+    (prepared.denomination !== undefined && prepared.denomination !== "os" &&
+      prepared.denomination !== "dem") ||
+    !debitBound(prepared.maxTotalDebitOs) ||
+    !debitBound(prepared.confirmedTotalDebitOs) ||
+    (prepared.maxTotalDebitOs !== undefined && prepared.confirmedTotalDebitOs !== undefined &&
+      BigInt(prepared.confirmedTotalDebitOs as string) > BigInt(prepared.maxTotalDebitOs as string)) ||
+    recovery === null ||
+    typeof recovery !== "object" ||
+    Array.isArray(recovery) ||
+    Object.keys(recovery).length !== PAY_DEM_RECOVERY_CONTEXT_KEYS.length ||
+    PAY_DEM_RECOVERY_CONTEXT_KEYS.some((key) => recovery[key] !== context[key])
+  ) {
+    throw new DacsError(
+      "pay-dem prepared-transfer journal does not bind the retained transaction to this exact payment; refusing reuse or rebroadcast",
+    );
+  }
+  if (captured.failureProof !== undefined && captured.failureProof.nonce !== prepared.nonce) {
+    throw new DacsError(
+      "pay-dem failed-record proof does not match the journaled signed nonce; refusing reuse or rebroadcast",
+    );
+  }
+  // A later transaction record may omit the confirmation's gas-operation fee.
+  // Missing accounting is not a contradiction; a known fee must still agree.
+  if (captured.ok && prepared.confirmedTotalDebitOs !== undefined &&
+      captured.networkFeeOs !== undefined &&
+      BigInt(context.amountOs) + BigInt(captured.networkFeeOs) !== BigInt(prepared.confirmedTotalDebitOs as string)) {
+    throw new DacsError(
+      "pay-dem reconciliation fee does not match the journal's confirmed total debit; refusing inconsistent accounting",
+    );
+  }
+}
+
+/**
+ * A supplied prepared-transfer journal entry is always checked against this
+ * payment. It is the reconciler's object, not the entry the rail wrote before
+ * broadcast, so it never ties a hash to the key by itself.
+ */
 function capturePayDemReconciliation(
   value: unknown,
   context: Readonly<PayDemSettlementRecoveryContext>,
+  retainedTxHash?: string,
+  savedResults: readonly (SettleResult | null | undefined)[] = [],
 ): SettleResult {
   const snapshot = snapshotCanonicalJsonRead(
     value,
@@ -2116,7 +2306,8 @@ function capturePayDemReconciliation(
   const settlement = { ...record };
   delete settlement.amountOs;
   delete settlement.execution;
-  const captured = capturePayDemResult(
+  delete settlement.preparedTransfer;
+  let captured = capturePayDemResult(
     settlement,
     context,
     "pay-dem reconciliation result",
@@ -2136,6 +2327,13 @@ function capturePayDemReconciliation(
     throw new DacsError(
       "pay-dem reconciliation does not attest that the transaction record shows the transfer executed (#338); refusing reuse or rebroadcast",
     );
+  }
+  if (retainedTxHash !== undefined && captured.txHash !== retainedTxHash) {
+    throw new DacsError("pay-dem reconciliation does not match the retained transaction; refusing reuse or rebroadcast");
+  }
+  for (const saved of savedResults) captured = preservePayDemFee(captured, saved);
+  if (record.preparedTransfer !== undefined) {
+    assertPreparedTransferBinds(record.preparedTransfer, context, captured);
   }
   return captured;
 }
@@ -2161,6 +2359,105 @@ function captureFreshPayDemResult(
 }
 
 /**
+ * DACS-4 §9.5.1 PC-7: a payment this bridge, its rail log or the session saw
+ * succeed is never reported unpaid. A contradicting observation fails closed
+ * and leaves the recorded success in place.
+ */
+function assertPayDemSuccessKept(succeeded: boolean, captured: SettleResult): void {
+  if (succeeded && !captured.ok) {
+    throw new DacsError(
+      "pay-dem reconciliation contradicted an authenticated successful outcome; refusing to report a final payment unpaid",
+    );
+  }
+}
+
+/**
+ * A native transfer cannot supersede another retained transaction. Returns the
+ * retained hash and whether the session recorded any attempt as successful.
+ */
+function retainedPayDemAttempt(
+  req: SettleRequest,
+  network: string,
+): Readonly<{ txHash: string; succeeded: boolean }> | undefined {
+  const prior = stableDataProperty(req, "priorAttempts", "pay-dem recovery history");
+  if (!prior.found || prior.value === undefined) return undefined;
+  if (!Array.isArray(prior.value) || nodeTypes.isProxy(prior.value) ||
+      prior.value.length === 0 || prior.value.length > 256) {
+    throw new DacsError("pay-dem recovery history must contain 1–256 transaction attempts");
+  }
+  const attempts = snapshotCanonicalJsonRead(prior.value, "pay-dem recovery history");
+  let retained: string | undefined;
+  let succeeded = false;
+  for (const attempt of attempts as unknown[]) {
+    if (attempt === null || typeof attempt !== "object" || Array.isArray(attempt)) {
+      throw new DacsError("pay-dem recovery history has a malformed attempt");
+    }
+    const record = attempt as Record<string, unknown>;
+    const hash = canonicalDemosTxHash(record.txHash);
+    if (Object.keys(record).length !== 3 || hash === null ||
+        record.chainId !== network || typeof record.ok !== "boolean") {
+      throw new DacsError("pay-dem recovery history has an invalid transaction identity or network");
+    }
+    if (retained !== undefined && retained !== hash) {
+      throw new DacsError("pay-dem recovery history contains conflicting native transactions; refusing reuse or rebroadcast");
+    }
+    retained = hash;
+    succeeded ||= record.ok === true;
+  }
+  return retained === undefined ? undefined : Object.freeze({ txHash: retained, succeeded });
+}
+
+const NO_READABLE_ATTEMPT_RECORD =
+  "pay-dem settlement store records no attempt this bridge can read back; refusing to start a new transfer whose hash a restart could not bind (nothing was signed or sent; pass a createIdempotencyStore store over a log with readOutcome, putAttempt and readAttempt, with its own once, readOutcome and readAttempt)";
+
+/**
+ * The attempt record compares hashes as exact strings, and the bridge records
+ * the canonical form. The fence a rail receives therefore records the
+ * canonical form too, whichever form the rail returns, and refuses a value
+ * that is not a Demos hash before the rail can broadcast. Everything else is
+ * the store's own fence.
+ */
+function canonicalAttemptFence(
+  fence: Readonly<SettlementEffectFence> | undefined,
+  onRecorded?: (hash: string) => void,
+): Readonly<SettlementEffectFence> | undefined {
+  if (fence === undefined) return undefined;
+  const property = stableDataProperty(fence, "recordAttempt", "pay-dem effect fence attempt record");
+  if (!property.found || property.value === undefined) return fence;
+  const recordAttempt = stableMethod<NonNullable<SettlementEffectFence["recordAttempt"]>>(
+    fence, "recordAttempt", "pay-dem effect fence attempt record",
+  );
+  return Object.freeze(Object.create(fence, {
+    recordAttempt: {
+      enumerable: true,
+      value: async (txHash: unknown) => {
+        const hash = canonicalDemosTxHash(txHash);
+        if (hash === null) {
+          throw new DacsError(
+            "pay-dem attempt record needs a 32-byte Demos transaction hash; refusing broadcast",
+          );
+        }
+        await recordAttempt(hash);
+        onRecorded?.(hash);
+      },
+    },
+  }) as SettlementEffectFence);
+}
+
+function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
+  return Object.freeze({
+    ...result,
+    payee,
+    ...(result.failureProof === undefined
+      ? {}
+      : { failureProof: Object.freeze({ ...result.failureProof }) }),
+    ...(result.finality === undefined
+      ? {}
+      : { finality: Object.freeze({ ...result.finality }) }),
+  });
+}
+
+/**
  * Bridge a PayDemRail to the runSession `settle` seam.
  *
  * DESTINATION (legacy safety guard, not PB-2 conformance): the transfer
@@ -2181,7 +2478,37 @@ function captureFreshPayDemResult(
  * SAFE BY DEFAULT (#43/#52): settlement is submitted at most once per
  * `(railId, jobId, phaseIndex)`. The default store protects concurrent and
  * same-process retries; inject a durable store and reconcile capability for
- * restart/crash recovery.
+ * restart/crash recovery. A request carrying priorAttempts is an audit: it
+ * never calls the rail, even if the rail store lost its record. The audit
+ * requires `store.readOutcome` and `reconcile` and fails closed without them,
+ * except that without `reconcile` it returns the definitive result this
+ * bridge bound to the key itself when the attempt record and the saved
+ * outcome agree. It counts the retained hash when the key's attempt
+ * record in a `createIdempotencyStore` store, or a result this bridge
+ * submitted and that record accepted, names that hash. Otherwise it refuses
+ * without acquiring a generation or writing a record. `createPayDemRail`
+ * writes the record through the fence's `recordAttempt` before its
+ * broadcast. It always reads the record, which
+ * refuses another hash whatever this bridge holds. A new transfer runs only
+ * through `createPayDemRail` (a custom rail is never called for one), and
+ * only when the fence the store hands `submit` records through the same
+ * `createIdempotencyStore` store whose `readAttempt` and `readOutcome` this
+ * bridge reads (a log that keeps attempts must have `readOutcome`); the fence
+ * records the canonical form and refuses a value that is not a Demos hash.
+ * Any other store, wrapper or fence, and a log without the attempt pair,
+ * starts no new transfer (nothing is signed or sent, and the intent is
+ * released). On a log without the pair, an outcome the log holds for the
+ * exact terms names the hash once the reconciliation agrees on block and
+ * outcome; without `readOutcome` the audit refuses. Any other rail-log
+ * outcome or an injected store's records never do, and
+ * neither does a prepared-transfer journal entry the reconciliation returns:
+ * that entry is checked against this exact payment tuple and can refuse the
+ * audit, but never counts the hash on its own. Once
+ * audited, a key stays audit-only for the life of this bridge (one small entry
+ * per key, never pruned, like its authenticated results), so omitting history
+ * later cannot restore submit authority.
+ * A success this bridge, its rail log or the session recorded is never
+ * reported unpaid: a contradicting reconciliation is refused (PC-7).
  *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
@@ -2217,6 +2544,31 @@ export function payDemSettle(
     "once",
     "pay-dem settlement store once",
   );
+  const readOutcomeProperty = stableDataProperty(store, "readOutcome", "pay-dem settlement store readOutcome");
+  const storeReadOutcome = !readOutcomeProperty.found || readOutcomeProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
+        store, "readOutcome", "pay-dem settlement store readOutcome",
+      );
+  // The attempt record is the hash this key's own submit signed. Only the
+  // lookup `createIdempotencyStore` built checks its key and terms itself; an
+  // injected store's answer is the caller's and never ties a hash to the key.
+  // A rail-log outcome never does either: a key-only restart reconciliation
+  // can have written it.
+  const readAttemptProperty = stableDataProperty(store, "readAttempt", "pay-dem settlement store readAttempt");
+  const storeReadAttempt = readAttemptProperty.found &&
+      isBindingCheckedOutcomeLookup(readAttemptProperty.value)
+    ? readAttemptProperty.value as NonNullable<SettlementIdempotencyStore["readAttempt"]>
+    : undefined;
+  // A `createIdempotencyStore` store over a log that keeps no attempt records
+  // (one written before they existed). It starts no new transfer (`submit`
+  // below); only its own outcome lookup can bind the hashes its outcomes name.
+  const outcomeOnlyLog = storeReadAttempt === undefined && readOutcomeProperty.found &&
+    isOutcomeOnlyLogLookup(readOutcomeProperty.value);
+  // A new transfer also needs this store's own outcome lookup, which reads
+  // its log without a claim, so a restart can finish what the transfer did.
+  const storeLookupsPaired = readOutcomeProperty.found &&
+    isStoreLookupPair(storeReadAttempt, readOutcomeProperty.value);
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -2292,14 +2644,30 @@ export function payDemSettle(
   // injected durable store. After restart the cache is empty, so a cached
   // outcome is independently reconciled against the full amount/address tuple
   // before reuse. This prevents a `(railId, jobId, phaseIndex)` collision from
-  // inheriting a result for different committed terms.
+  // inheriting a result for different committed terms. `boundToKey` is true
+  // only for a hash this bridge submitted and the key's attempt record accepted
+  // or that the record names: a
+  // reconciler's answer, with or without a journal entry, may be another job's
+  // transfer of the same parties and amount. The record, when the store keeps
+  // one, always overrides this cache.
   const authenticatedResults = new Map<
     string,
     Readonly<{
       context: Readonly<PayDemSettlementRecoveryContext>;
       result: SettleResult;
+      boundToKey: boolean;
     }>
   >();
+  // Once an identity has been retained for audit, omitting history on a later
+  // call to this bridge cannot turn the same key back into a fresh payment.
+  const retainedAudits = new Map<string, Readonly<{
+    context: Readonly<PayDemSettlementRecoveryContext>;
+    txHash: string;
+    succeeded: boolean;
+  }>>();
+  // Keep a slow submit/reconcile from being overtaken by another call for the
+  // same effect. Different settlement keys remain independent.
+  const operations = new Map<string, Promise<SettleResult>>();
   return async (req) => {
     const {
       amount,
@@ -2389,16 +2757,8 @@ export function payDemSettle(
       payee: payeeAddress,
       amountOs,
     }) satisfies Readonly<PayDemSettlementRecoveryContext>;
-    const priorAuthenticated = authenticatedResults.get(key);
-    if (
-      priorAuthenticated !== undefined &&
-      !sameRecoveryContext(priorAuthenticated.context, context) &&
-      priorAuthenticated.result.txHash.length > 0
-    ) {
-      throw new DacsError(
-        "pay-dem retained intent/outcome belongs to different payment terms; refusing reconciliation or rebroadcast",
-      );
-    }
+    const supplied = retainedPayDemAttempt(req, network);
+    const suppliedTxHash = supplied?.txHash;
     const binding = Object.freeze({
       bindingVersion: "1",
       railId,
@@ -2413,126 +2773,345 @@ export function payDemSettle(
       network,
       finality: Object.freeze({ model: "bft-final" }),
     }) satisfies Readonly<SettlementBinding>;
-    const submit = async (
-      effectFence?: Readonly<SettlementEffectFence>,
-    ): Promise<SettleResult | SettlementNotInvokedResult> => {
-      // Decide before the effect: the store calls submit only for a fresh
-      // attempt or a reconciler-granted replay, never to recover a retained
-      // one. Nothing runs, so the store releases the key rather than hold it.
-      if (!recordVerifiedRail) {
-        return Object.freeze({
-          disposition: "not-invoked" as const,
-          result: Object.freeze({
-            ok: false,
-            txHash: "",
-            chainId: network,
-            payer: payerAddress,
-            payee: payeeAddress,
-          }),
-        });
+    // The hash this key's own submit recorded, in canonical form, or null.
+    const recordedAttempt = async (): Promise<string | null> => {
+      if (storeReadAttempt === undefined) return null;
+      const raw = await storeReadAttempt(key, binding);
+      if (raw === null) return null;
+      const hash = canonicalDemosTxHash(raw);
+      if (hash === null) {
+        throw new DacsError("pay-dem rail log records a malformed attempt hash; refusing reuse or rebroadcast");
       }
-      const submitted = await railSettle({
-        recipient: payeeAddress,
-        amount: amountOs,
-        network,
-        recovery: context,
-      }, effectFence);
-      const captured = captureFreshPayDemResult(submitted, context);
-      authenticatedResults.set(key, { context, result: captured });
-      return captured;
+      return hash;
     };
-    if (recordVerifiedRail) sdkRecordReadingSubmissions.add(submit);
-    const reconcileForStore: SettlementReconcile | undefined = reconcile === undefined
-      ? undefined
-      : async (reconcileKey) => {
-          if (reconcileKey !== key) {
-            throw new DacsError(
-              "pay-dem idempotency store requested reconciliation under a different settlement key",
-            );
+    const previous = operations.get(key);
+    const operation = (previous ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const priorAuthenticated = authenticatedResults.get(key);
+      if (
+        priorAuthenticated !== undefined &&
+        !sameRecoveryContext(priorAuthenticated.context, context) &&
+        priorAuthenticated.result.txHash.length > 0
+      ) {
+        throw new DacsError(
+          "pay-dem retained intent/outcome belongs to different payment terms; refusing reconciliation or rebroadcast",
+        );
+      }
+      const retainedAudit = retainedAudits.get(key);
+      if (retainedAudit !== undefined &&
+          (!sameRecoveryContext(retainedAudit.context, context) ||
+            (suppliedTxHash !== undefined && suppliedTxHash !== retainedAudit.txHash))) {
+        throw new DacsError("pay-dem retained audit belongs to different payment terms or transaction; refusing reuse or rebroadcast");
+      }
+      const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash;
+      if (retainedTxHash !== undefined) {
+        // A success the session recorded for this key stays recorded.
+        const historySucceeded = supplied?.succeeded === true || retainedAudit?.succeeded === true;
+        // Independent session/rail snapshots must agree on the effect identity.
+        // Never let history B discard an authenticated or durably recorded A.
+        const assertHash = (result: SettleResult) => {
+          if (result.txHash.length > 0 && result.txHash !== retainedTxHash) {
+            // The session's success claim was for the conflicting hash, not this one.
+            retainedAudits.set(key, { context, txHash: result.txHash, succeeded: false });
+            throw new DacsError("pay-dem retained transaction conflicts with the rail outcome; refusing reuse or rebroadcast");
           }
-          const found = await reconcile(context);
-          if (found === null) return null;
-          const captured = capturePayDemReconciliation(found, context);
-          authenticatedResults.set(key, { context, result: captured });
-          return captured;
         };
-    const result = await storeOnce(
-      key,
-      binding,
-      submit,
-      reconcileForStore,
-    );
-    let captured = capturePayDemResult(
-      result,
-      context,
-      "cached or completed pay-dem settlement",
-    );
-    // This rail's settle is never called, so a result with no transaction is
-    // submit's refusal: this call's, or a concurrent call's it shared.
-    if (!recordVerifiedRail && !captured.ok && captured.txHash === "") {
-      throw new DacsError(
-        "pay-dem rail settle must be the one createPayDemRail returned: another rail's result could never be final; refusing",
+        if (priorAuthenticated !== undefined) assertHash(priorAuthenticated.result);
+        // Remember the identity before awaiting the store: uncertainty must not
+        // restore submit authority when a subsequent call omits its history.
+        retainedAudits.set(key, { context, txHash: retainedTxHash, succeeded: historySucceeded });
+        if (storeReadOutcome === undefined) {
+          throw new DacsError("pay-dem retained recovery requires read-only outcome lookup; refusing reuse or rebroadcast");
+        }
+        const readOutcome = async () => {
+          const raw = await storeReadOutcome(key, binding);
+          if (raw === null) return null;
+          const outcome = capturePayDemResult(raw, context, "pay-dem read-only rail outcome");
+          if (!outcome.ok && outcome.errorClass !== "permanent") {
+            throw new DacsError("pay-dem read-only rail outcome is not definitive");
+          }
+          assertHash(outcome);
+          return outcome;
+        };
+        // Only the SDK's attempt record (the hash this key's own submit signed,
+        // written under its generation) or this bridge's bound result ties the
+        // hash to the payment. The session's history, any rail-log outcome
+        // (a key-only reconciliation can have written it), an injected
+        // store's records and the reconciler's journal entry cannot.
+        const attemptNames = async () => {
+          const recorded = await recordedAttempt();
+          if (recorded !== null && recorded !== retainedTxHash) {
+            // The session's success claim was for another hash than the one this key signed.
+            retainedAudits.set(key, { context, txHash: recorded, succeeded: false });
+            throw new DacsError("pay-dem retained transaction conflicts with this key's recorded attempt; refusing reuse or rebroadcast");
+          }
+          return recorded === retainedTxHash;
+        };
+        if (reconcile === undefined) {
+          // Without a reconciler this bridge still returns the definitive
+          // result it bound to this key itself, when the key's attempt record
+          // names that hash and the store saved that same result.
+          const own = priorAuthenticated;
+          if (own !== undefined && own.boundToKey && own.result.txHash === retainedTxHash &&
+              (own.result.ok || own.result.errorClass === "permanent")) {
+            const saved = await readOutcome();
+            if (await attemptNames() && saved !== null && samePayDemResult(saved, own.result)) {
+              assertPayDemSuccessKept(historySucceeded, own.result);
+              return publicPayDemResult(own.result, expectedPayee);
+            }
+          }
+          throw new DacsError("pay-dem retained transaction requires read-only reconciliation; refusing reuse or rebroadcast");
+        }
+        const before = await readOutcome();
+        // The durable record is always checked, even when this bridge bound the
+        // hash itself: the record wins over anything held in memory.
+        const recordedBefore = await attemptNames() ||
+          (priorAuthenticated?.boundToKey === true && priorAuthenticated.result.txHash === retainedTxHash);
+        const recovered = await reconcile(Object.freeze({ ...context, txHash: retainedTxHash }));
+        if (recovered === null) {
+          throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
+        }
+        // A different store/bridge can finish while the chain read is pending.
+        // Gather its authenticated fee before checking the journal's debit,
+        // without a lease or outcome write.
+        const after = await readOutcome();
+        let captured = capturePayDemReconciliation(recovered, context, retainedTxHash, [priorAuthenticated?.result, before, after]);
+        for (const existing of [priorAuthenticated?.result, before, after]) {
+          if (existing === undefined || existing === null || existing.txHash.length === 0) continue;
+          if (existing.blockNumber !== undefined && existing.blockNumber !== captured.blockNumber) {
+            throw new DacsError("pay-dem retained transaction block conflicts with the rail outcome");
+          }
+          assertPayDemSuccessKept(existing.ok, captured);
+          // A failed record is identified by its block and canonical proof, not
+          // by fee accounting or other fields a reconciler may present differently.
+          if (existing.errorClass === "permanent" && !sameSettledOutcome(existing, captured)) {
+            throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
+          }
+          captured = preservePayDemFee(captured, existing);
+        }
+        assertPayDemSuccessKept(historySucceeded, captured);
+        // On a log that keeps no attempt records, its own outcome for these
+        // exact terms names the hash when the reconciliation agrees on the
+        // block and outcome. A log that keeps attempts never counts an outcome.
+        const outcomeNames = (existing: SettleResult | null) => outcomeOnlyLog &&
+          existing !== null && existing.txHash === retainedTxHash &&
+          existing.blockNumber === captured.blockNumber && sameSettledOutcome(existing, captured);
+        // Another process may record this key's attempt while the chain read runs.
+        if (recordedBefore || outcomeNames(before) || outcomeNames(after) || await attemptNames()) {
+          authenticatedResults.set(key, { context, result: captured, boundToKey: true });
+          return publicPayDemResult(captured, expectedPayee);
+        }
+        // Auditing cannot establish this key's payment identity. In particular,
+        // never claim an intent or promote a reconciler's answer to an attempt
+        // record: a crash could leave an unpaid key looking like a submission.
+        throw new DacsError(
+          "pay-dem: no SDK record binds the retained transaction to this payment (no attempt record of this key in a createIdempotencyStore store names it; an injected store's records never count); refusing reuse or rebroadcast",
+        );
+      }
+      let refusedWithoutAttemptRecords = false;
+      const submit = async (
+        effectFence?: Readonly<SettlementEffectFence>,
+      ): Promise<SettleResult | SettlementNotInvokedResult> => {
+        // Decide before the effect: the store calls submit only for a fresh
+        // attempt or a reconciler-granted replay, never to recover a retained
+        // one. Nothing runs, so the store releases the key rather than hold it.
+        if (!recordVerifiedRail) {
+          return Object.freeze({
+            disposition: "not-invoked" as const,
+            result: Object.freeze({
+              ok: false, txHash: "", payer: payerAddress, payee: payeeAddress, chainId: network,
+            }),
+          });
+        }
+        // A new transfer runs only when this fence records its hash, under this
+        // very key and these terms, through the same `createIdempotencyStore`
+        // store whose own `readAttempt` and `readOutcome` a restart reads back.
+        // Any other store, wrapper or fence (a wrapper's `once` can hand the
+        // store another key's fence), or a log without the attempt pair, could
+        // leave a broadcast no restart can bind or finish under this key.
+        // Nothing is signed or sent, so the store releases the intent.
+        const recorderProperty = effectFence === undefined
+          ? undefined
+          : stableDataProperty(effectFence, "recordAttempt", "pay-dem effect fence attempt record");
+        const fenceKey = effectFence === undefined
+          ? undefined
+          : stableDataProperty(effectFence, "settlementKey", "pay-dem effect fence settlementKey");
+        const fenceTerms = effectFence === undefined
+          ? undefined
+          : stableDataProperty(effectFence, "bindingHash", "pay-dem effect fence bindingHash");
+        const fenceIsThisKeys = fenceKey?.found === true && fenceKey.value === key &&
+          fenceTerms?.found === true && fenceTerms.value === settlementBindingHash(binding);
+        const recordAttempt = storeLookupsPaired && fenceIsThisKeys && recorderProperty?.found === true &&
+            isStoreAttemptRecorder(recorderProperty.value, storeReadAttempt, key, binding)
+          ? recorderProperty.value as NonNullable<SettlementEffectFence["recordAttempt"]>
+          : undefined;
+        if (recordAttempt === undefined) {
+          refusedWithoutAttemptRecords = true;
+          return Object.freeze({
+            disposition: "not-invoked" as const,
+            result: Object.freeze({
+              ok: false, txHash: "", payer: payerAddress, payee: payeeAddress, chainId: network,
+            }),
+          });
+        }
+        let recordedBeforeBroadcast: string | undefined;
+        const submitted = await railSettle({
+          recipient: payeeAddress,
+          amount: amountOs,
+          network,
+          recovery: context,
+        }, canonicalAttemptFence(effectFence, (hash) => { recordedBeforeBroadcast = hash; }));
+        const captured = captureFreshPayDemResult(submitted, context);
+        // Keep what the rail reported so a later call cannot contradict it, but
+        // bind it to the key only once the attempt record accepted it.
+        authenticatedResults.set(key, { context, result: captured, boundToKey: false });
+        // `createPayDemRail` signed the hash and recorded it through this
+        // call's fence before its broadcast, so it is not written again after
+        // the payment is final. A refused record fails closed and leaves the
+        // hash unbound. A result without a hash names no transaction, so it
+        // binds none.
+        const bound = captured.txHash.length > 0 && recordVerifiedRail;
+        if (bound && recordedBeforeBroadcast !== captured.txHash) await recordAttempt(captured.txHash);
+        authenticatedResults.set(key, { context, result: captured, boundToKey: bound });
+        return captured;
+      };
+      if (recordVerifiedRail) sdkRecordReadingSubmissions.add(submit);
+      // A hash this key's attempt record names stays bound when a later
+      // reconciliation confirms it; without a record, so does one this bridge
+      // already bound. A reconciliation never binds one itself, even with a
+      // journal entry.
+      const boundAfterReconciliation = (reconciled: SettleResult, recorded: string | null) => {
+        if (recorded !== null) return recorded === reconciled.txHash;
+        const prior = authenticatedResults.get(key);
+        return prior?.boundToKey === true && prior.result.txHash === reconciled.txHash;
+      };
+      // DACS-4 §9.5.1 PC-7 requires the original job/phase binding and
+      // transaction references on recovery. Matching parties and amount (or
+      // an outcome saved by a key-only reconciliation) cannot establish which
+      // job paid. Check before persistence as well as before public completion.
+      const requireSuccessBinding = async (result: SettleResult): Promise<void> => {
+        if (result.ok && !boundAfterReconciliation(result, await recordedAttempt())) {
+          throw new DacsError(
+            "pay-dem: no SDK record binds the reconciled or cached transaction to this payment; refusing reuse or rebroadcast",
+          );
+        }
+      };
+      // A restart reconciliation asks for the exact recorded hash when this key
+      // has one, and refuses any other transaction.
+      const reconcileRecorded = async (recorded: string | null, saved?: SettleResult) => {
+        const found = await reconcile!(recorded === null
+          ? context
+          : Object.freeze({ ...context, txHash: recorded }));
+        return found === null
+          ? null
+          : capturePayDemReconciliation(found, context, recorded ?? undefined, [authenticatedResults.get(key)?.result, saved]);
+      };
+      const reconcileForStore: SettlementReconcile | undefined = reconcile === undefined
+        ? undefined
+        : async (reconcileKey) => {
+            if (reconcileKey !== key) {
+              throw new DacsError(
+                "pay-dem idempotency store requested reconciliation under a different settlement key",
+              );
+            }
+            const recorded = await recordedAttempt();
+            const captured = await reconcileRecorded(recorded);
+            if (captured === null) return null;
+            // An expired lease after a lost outcome write must not demote the
+            // success this bridge already authenticated for the key.
+            assertPayDemSuccessKept(authenticatedResults.get(key)?.result.ok === true, captured);
+            await requireSuccessBinding(captured);
+            authenticatedResults.set(key, {
+              context, result: captured, boundToKey: boundAfterReconciliation(captured, recorded),
+            });
+            return captured;
+          };
+      const result = await storeOnce(
+        key,
+        binding,
+        submit,
+        reconcileForStore,
       );
-    }
-    const known = authenticatedResults.get(key);
-    if (
-      known === undefined ||
-      !sameRecoveryContext(known.context, context) ||
-      !samePayDemResult(known.result, captured)
-    ) {
-      if (reconcile === undefined) {
-        throw new DacsError(
-          "pay-dem durable outcome cannot be authenticated after restart without reconciliation; refusing reuse or rebroadcast",
-        );
-      }
-      const recovered = await reconcile(context);
-      if (recovered === null) {
-        throw new DacsError(
-          "pay-dem durable outcome contradicts reconciliation proof of absence; refusing reuse or rebroadcast",
-        );
-      }
-      const reconciled = capturePayDemReconciliation(recovered, context);
-      if (
-        reconciled.txHash !== captured.txHash ||
-        reconciled.blockNumber !== captured.blockNumber
-      ) {
-        throw new DacsError(
-          "pay-dem durable outcome does not match the authoritative reconciled transaction",
-        );
-      }
-      // The same transaction recorded as executed in one place and failed in
-      // the other (or failed under another proof) is a contradiction, not a
-      // reason to prefer the reconciliation over the durable outcome.
-      if (
-        reconciled.ok !== captured.ok ||
-        reconciled.errorClass !== captured.errorClass ||
-        !sameFailureProof(reconciled, captured)
-      ) {
-        throw new DacsError(
-          "pay-dem durable outcome contradicts the authoritative reconciled outcome; refusing reuse or rebroadcast",
-        );
-      }
-      authenticatedResults.set(key, { context, result: reconciled });
-      captured = reconciled;
-    }
-    // The low-level native rail reports the exact on-chain address. The public
-    // settlement seam must return the request-bound identifier verbatim so the
-    // orchestrator can check it without applying rail-specific normalization.
-    // Verify the equivalence here before restoring that identifier.
-    const resultPayeeAddress =
-      demosAddressFromClaim(captured.payee) ??
-      normalizeDemosNativeAddress(captured.payee);
-    if (resultPayeeAddress !== payeeAddress) {
-      throw new DacsError(
-        `pay-dem settlement returned payee ${captured.payee}, expected Demos address ${payeeAddress}`,
+      if (refusedWithoutAttemptRecords) throw new DacsError(NO_READABLE_ATTEMPT_RECORD);
+      let captured = capturePayDemResult(
+        result,
+        context,
+        "cached or completed pay-dem settlement",
       );
-    }
-    return Object.freeze({
-      ...captured,
-      payee: expectedPayee,
-      ...(captured.finality === undefined
-        ? {}
-        : { finality: Object.freeze({ ...captured.finality }) }),
+      // This rail's settle is never called, so a result with no transaction is
+      // submit's refusal: this call's, or a concurrent call's it shared.
+      if (!recordVerifiedRail && !captured.ok && captured.txHash === "") {
+        throw new DacsError(
+          "pay-dem rail settle must be the one createPayDemRail returned: another rail's result could never be final; refusing",
+        );
+      }
+      // Likewise through a store without the SDK store's own attempt and
+      // outcome lookups, whose fence never lets the rail run.
+      if (!storeLookupsPaired && !captured.ok && captured.txHash === "") {
+        throw new DacsError(NO_READABLE_ATTEMPT_RECORD);
+      }
+      const known = authenticatedResults.get(key);
+      if (
+        known === undefined ||
+        !sameRecoveryContext(known.context, context) ||
+        !samePayDemResult(known.result, captured)
+      ) {
+        if (reconcile === undefined) {
+          throw new DacsError(
+            "pay-dem durable outcome cannot be authenticated after restart without reconciliation; refusing reuse or rebroadcast",
+          );
+        }
+        const recorded = await recordedAttempt();
+        const reconciled = await reconcileRecorded(recorded, captured);
+        if (reconciled === null) {
+          throw new DacsError(
+            "pay-dem durable outcome contradicts reconciliation proof of absence; refusing reuse or rebroadcast",
+          );
+        }
+        if (
+          reconciled.txHash !== captured.txHash ||
+          reconciled.blockNumber !== captured.blockNumber
+        ) {
+          throw new DacsError(
+            "pay-dem durable outcome does not match the authoritative reconciled transaction",
+          );
+        }
+        // The same transaction recorded as executed in one place and failed in
+        // the other (or failed under another proof) is a contradiction, not a
+        // reason to prefer the reconciliation over the durable outcome.
+        if (!sameSettledOutcome(reconciled, captured)) {
+          throw new DacsError(
+            "pay-dem durable outcome contradicts the authoritative reconciled outcome; refusing reuse or rebroadcast",
+          );
+        }
+        // Another writer's cached failure may not demote a success this bridge
+        // already authenticated, even when the reconciliation agrees with it.
+        assertPayDemSuccessKept(known?.result.ok === true, reconciled);
+        await requireSuccessBinding(reconciled);
+        authenticatedResults.set(key, {
+          context, result: reconciled, boundToKey: boundAfterReconciliation(reconciled, recorded),
+        });
+        captured = reconciled;
+      }
+      await requireSuccessBinding(captured);
+      // The low-level native rail reports the exact on-chain address. The public
+      // settlement seam must return the request-bound identifier verbatim so the
+      // orchestrator can check it without applying rail-specific normalization.
+      // Verify the equivalence here before restoring that identifier.
+      const resultPayeeAddress =
+        demosAddressFromClaim(captured.payee) ??
+        normalizeDemosNativeAddress(captured.payee);
+      if (resultPayeeAddress !== payeeAddress) {
+        throw new DacsError(
+          `pay-dem settlement returned payee ${captured.payee}, expected Demos address ${payeeAddress}`,
+        );
+      }
+      return publicPayDemResult(captured, expectedPayee);
     });
+    operations.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (operations.get(key) === operation) operations.delete(key);
+    }
   };
 }
