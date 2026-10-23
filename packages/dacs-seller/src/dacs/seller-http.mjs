@@ -11,6 +11,7 @@ import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 
 const MAX_BODY = 64 * 1024;
+const MAX_RESPONSE_LIST = 256;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 export const loopbackSocket = (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 // The seller agent's profile gates, each thrown only before any read, write,
@@ -45,7 +46,7 @@ const NO_EFFECT_ERRORS = new Set(['peer_job_capacity', 'session_not_admitted', '
 // claim releases its slot, so another claim cannot take it.
 const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
-const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) === true; } catch { return true; } };
+const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 
@@ -166,7 +167,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           const reconcile = contextStep ? context.reconcile : typeof agent.reconcileTransport === 'function' ? agent.reconcileTransport : null;
           // A request its expired delegation admits only for readback reconciles read only.
           const readOnly = authentication.readbackOnly?.(request) === true;
-          const proof = reconcile && typeof authentication.store.reconcile === 'function' ? await reconcile({ request, body, rawBody, ...(readOnly ? { readOnly } : {}) }) : null;
+          const proof = reconcile && typeof authentication.store.reconcile === 'function' ? await reconcile.call(contextStep?context:agent,{ request, body, rawBody, ...(readOnly ? { readOnly } : {}) }) : null;
           // The first exception: a native payment claim that ran again from
           // what the agent retained (`retry`, seller-agent.mjs
           // reconcileTransport: its retained evidence work, or its start when
@@ -217,7 +218,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         try { authentication.store.finish(reservation, status, JSON.stringify(answer), retained ? { retry: true } : { noEffect: agentRefusal && !reservation.resumed }); } catch { /* durable intent remains uncertain */ }
         // The context step has ended either way: its unused write reservation
         // is released (its writes keep their own rows; it runs again only as a resume).
-        if (context !== null) await context.settled(reservation.contextHold);
+        if (context !== null) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
       }
       try { return await send(res, status, answer, request, { close: status === 408 || status === 413 }); } catch {
         // A failed seller signer or journal cannot turn into a definite refusal.
@@ -323,6 +324,12 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       }
       const responseBytes = Buffer.concat(chunks);
       const answer = admitRawJson(responseBytes);
+      const pending=[answer];
+      while(pending.length){
+        const member=pending.pop();
+        if(Array.isArray(member)&&member.length>MAX_RESPONSE_LIST)throw new Error('response collection exceeds item limit');
+        if(member&&typeof member==='object')for(const value of Object.values(member))pending.push(value);
+      }
       const answerText = new TextDecoder('utf-8', { fatal: true }).decode(responseBytes);
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
