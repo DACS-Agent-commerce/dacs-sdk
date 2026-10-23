@@ -56,11 +56,24 @@ it("invokes only Compose config and writes the rendered artifact", () => {
   const root = mkdtempSync(join(tmpdir(), "dacs-compose-command-"));
   try {
     const bin = join(root, "bin"); mkdirSync(bin);
-    writeFileSync(join(bin, "docker"), '#!/bin/sh\n[ "$#" = 4 ] && [ "$1" = compose ] && [ "$2" = --file ] && [ "$3" = "$(dirname "$(dirname "$0")")/project with spaces/compose.yaml" ] && [ "$4" = config ] || exit 91\nprintf "rendered config\\n"\n', { mode: 0o700 });
+    const project = join(root, "project with spaces"); mkdirSync(project);
+    writeFileSync(join(project, ".env"), "DACS_EVM_RPC_URL=https://rpc.invalid/project-dotenv-private-marker\n");
+    // Model Compose's project .env interpolation; an explicit env file replaces it.
+    writeFileSync(join(bin, "docker"), `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] !== "compose" || args.at(-1) !== "config") process.exit(91);
+const file = args[args.indexOf("--file") + 1];
+const envIndex = args.indexOf("--env-file");
+const envFile = envIndex < 0 ? path.join(path.dirname(file), ".env") : args[envIndex + 1];
+process.stdout.write(fs.readFileSync(envFile, "utf8") || "rendered config\\n");
+`, { mode: 0o700 });
     const env = { acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: `${bin}:/usr/bin:/bin` };
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], { encoding: "utf8", env });
     expect(result.status, result.stderr).toBe(0);
-    expect(readFileSync(join(root, "compose.rendered.yaml"), "utf8")).toBe("rendered config\n");
+    const artifact = readFileSync(join(root, "compose.rendered.yaml"), "utf8");
+    expect(artifact).not.toContain("project-dotenv-private-marker");
+    expect(artifact).toBe("rendered config\n");
     const unsafe = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render.replace(" config ", " up ")], { encoding: "utf8", env });
     expect(unsafe.status).toBe(91);
   } finally { rmSync(root, { recursive: true, force: true }); }

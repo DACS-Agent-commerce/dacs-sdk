@@ -40,7 +40,7 @@ env \
   DACS_SELLER_EVM_SECRET_FILE="$compose_inputs/seller-evm" \
   DACS_X402_LISTING_DRAFT_FILE="$compose_inputs/listing-x402.json" \
   DACS_PAY_DEM_LISTING_DRAFT_FILE="$compose_inputs/listing-pay-dem.json" \
-  docker compose --file "$project/compose.yaml" config \
+  docker compose --env-file /dev/null --file "$project/compose.yaml" config \
     > "$artifact_stage/compose.rendered.yaml"
 
 stage=image-build
@@ -121,6 +121,7 @@ cp "$project/package.json" "$artifact_stage/generated-package.json"
 cp "$project/package-lock.json" "$artifact_stage/generated-package-lock.json"
 cp "$consumer_root/generated-tests.exit-code" "$artifact_stage/"
 cp "$consumer_root/doctor.log" "$artifact_stage/"
+cp "$consumer_root/doctor.json" "$artifact_stage/"
 cp "$consumer_root/doctor.exit-code" "$artifact_stage/"
 cp "$consumer_root/npm-audit.json" "$artifact_stage/"
 cp "$consumer_root/npm-audit.exit-code" "$artifact_stage/"
@@ -142,6 +143,9 @@ node scripts/registry-container-disposition.mjs --policy-findings \
 
 node - "$artifact_stage" "$version" "$runtime_image" \
   "$generated_mode" "$generated_role" "$generated_rails" <<'NODE'
+(async () => {
+const { runDacsLiveDoctorV1 } = await import("./packages/dacs-node/dist/doctor.js");
+const { canonicalize, sha256Hex } = await import("./dist/canonical/index.js");
 const fs = require("node:fs");
 const path = require("node:path");
 const root = process.argv[2];
@@ -210,7 +214,21 @@ const credentialBlocks = new Map([
 const requiredDoctorPasses = ["local.node-version", "local.package-integrity", "local.version-bindings",
   "local.configuration", "local.data-directory", "local.disk-space", "local.deployment-runtime"];
 const blockedDoctorChecks = requiredDoctorChecks.filter(check => check.status === "blocked");
-const doctorBlockedWithoutCredentials = doctorExitCode === 5 && doctorReport?.exitCode === 5 &&
+// Use this checkout's shipped catalog and requirement rules, without running probes.
+const expectedDoctor = await runDacsLiveDoctorV1({
+  phase: "pre-start", scope: "start", sdkVersion: version,
+  standardRevision: "acceptance", profile: "acceptance", now: () => 0,
+  enabledRailProfiles: generatedRails === "both" ? ["x402", "pay-dem"] : [generatedRails],
+});
+const completeDoctorChecks = doctorChecks.length === expectedDoctor.checks.length &&
+  expectedDoctor.checks.every(expected => doctorChecks.some(check => check?.id === expected.id &&
+    check.required === expected.required && check.category === expected.category &&
+    ["pass", "fail", "blocked"].includes(check.status) && typeof check.summary === "string" &&
+    Number.isFinite(check.durationMs) && check.durationMs >= 0));
+const { reportHash, ...doctorBody } = doctorReport;
+const doctorIntegrityPassed = doctorReport.safety?.readOnly === true && doctorReport.safety?.funded === false &&
+  doctorReport.sdkVersion === version && reportHash === sha256Hex(canonicalize(doctorBody));
+const doctorBlockedWithoutCredentials = completeDoctorChecks && doctorIntegrityPassed && doctorExitCode === 5 && doctorReport?.exitCode === 5 &&
   doctorReport.schema === "dacs-live-doctor-report/v1" && doctorReport.phase === "pre-start" && doctorReport.scope === "start" &&
   doctorReport.gate?.status === "blocked" && doctorReport.gate.required === requiredDoctorChecks.length &&
   doctorReport.gate.failed === 0 && doctorReport.gate.blocked === blockedDoctorChecks.length &&
@@ -273,6 +291,7 @@ fs.writeFileSync(
   path.join(root, "acceptance-summary.json"),
   JSON.stringify(summary, null, 2) + "\n",
 );
+})().catch(error => { console.error(error); process.exitCode = 1; });
 NODE
 
 # Publish evidence without nesting under an earlier completed result.
