@@ -53,3 +53,31 @@ describe("runtime inventory boundary regressions", () => {
       .toMatchObject({ scanComplete: true, unexpected: [{ location, name, version, integrity: location === "node_modules/a" ? "sha512-fixture" : null }] });
   });
 });
+
+describe("inventory metadata and lock entry validation", () => {
+  it.each([".bin file", ".bin link", ".package-lock.json link", ".package-lock.json directory"])(
+    "records an unexpected metadata entry type: %s", kind => {
+      const directory = root(); pkg(join(directory, "node_modules/a"));
+      const name = kind.slice(0, kind.indexOf(" "));
+      const path = join(directory, "node_modules", name);
+      if (kind.endsWith("link")) symlinkSync(join(directory, "node_modules/a"), path);
+      else if (kind.endsWith("directory")) pkg(path, name);
+      else writeFileSync(path, "module.exports = 42;");
+      const inventory = runtimeImageInventory(directory);
+      expect(inventory.packages).toContainEqual(expect.objectContaining({ location: "node_modules/" + name }));
+      expect(runtimeImageInventoryFindings(inventory, lock()).scanComplete).toBe(false);
+    });
+  it.each(["@node_modules/a", "@some_node_modules/a"])("derives the scoped identity %s at path boundaries", name => {
+    for (const location of [`node_modules/${name}`, `node_modules/parent/node_modules/${name}`]) {
+      expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [
+        { location, name, version: "1.0.0" },
+      ] }, { packages: { "": {}, [location]: { version: "1.0.0" } } }))
+        .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+    }
+  });
+  it.each([null, [], "invalid", 1])("reports malformed lock entries without throwing: %j", entry => {
+    const directory = root(); pkg(join(directory, "node_modules/a"));
+    expect(runtimeImageInventoryFindings(runtimeImageInventory(directory), { packages: { "": {}, "node_modules/a": entry } }))
+      .toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/malformed.*lock/)] });
+  });
+});
