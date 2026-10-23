@@ -566,6 +566,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | ef6723b2e7509c38a37fee121912cfc7c197895a |
 | D11 | fix(client): D11 keep rollback guard vectors portable to the Node floor | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ef1915ddcdc37b96297aed4492ed04fd6009b724 |
+| D11 | fix(client): D11 document exact public interfaces and test the packed journal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 13d71f2e8ed865ee4ae9686cc57c5214307c8a55 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | c074963573ad7c710ca3b873a44105bbec0c1946 |
 
 ## Reviewed merge snapshots
 
@@ -1401,6 +1405,15 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/README.md:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/public-api.test.mjs:1` |
 
 ## Original moved files
 
