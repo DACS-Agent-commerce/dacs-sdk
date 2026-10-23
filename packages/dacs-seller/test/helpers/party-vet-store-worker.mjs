@@ -3,7 +3,15 @@ import DatabaseSync from 'better-sqlite3';
 import { createInMemoryPartyVetStore, openPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
 
 const [mode, path] = process.argv.slice(2);
-if (mode === 'writer') {
+if (mode === 'init-crash') {
+  const execute = DatabaseSync.prototype.exec;
+  DatabaseSync.prototype.exec = function(sql) {
+    if (sql.startsWith('CREATE TABLE meta ')) process.kill(process.pid, 'SIGKILL');
+    return execute.call(this, sql);
+  };
+  openPartyVetStore({ path });
+  assert.fail('TEST initializer did not reach the crash boundary');
+} else if (mode === 'writer') {
   const db = new DatabaseSync(path);
   db.exec('BEGIN IMMEDIATE');
   db.prepare('UPDATE jobs SET value = ? WHERE key = ?').run('{"n":99}', 'n');
