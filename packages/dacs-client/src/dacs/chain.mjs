@@ -7,7 +7,7 @@
 // delegated to the SDK's observePayDemTransferCore.
 import { observePayDemTransferCore } from '@kynesyslabs/dacs/seller';
 import { DEMOS_CCI_RESPONSE_LIMITS, assertDemosCciResponseBounds } from '@kynesyslabs/dacs/identity';
-import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
+import { fetchBoundedJson, OutboundError, observeWithDeadline } from '../util/http.mjs';
 import { normalizeDemosAddress } from '../signatures.mjs';
 
 const LOCATOR = /^stor-[0-9a-f]{40}$/;
@@ -244,14 +244,16 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   }
 
   async function observeTransfer(hash, options = {}) {
-    options.signal?.throwIfAborted();
-    const result = await observePayDemTransferCore(hash, {
-      getTransactionStatus: hash => nodeCall('getTransactionStatus', { hash }, options),
-      getTxByHash: hash => nodeCall('getTxByHash', { hash }, options),
-      getBlockByNumber: blockNumber => nodeCall('getBlockByNumber', { blockNumber }, options),
-    });
-    options.signal?.throwIfAborted();
-    return result;
+    return observeWithDeadline(async ({ signal }) => {
+      const readOptions = { ...options, signal };
+      const result = await observePayDemTransferCore(hash, {
+        getTransactionStatus: hash => nodeCall('getTransactionStatus', { hash }, readOptions),
+        getTxByHash: hash => nodeCall('getTxByHash', { hash }, readOptions),
+        getBlockByNumber: blockNumber => nodeCall('getBlockByNumber', { blockNumber }, readOptions),
+      });
+      signal.throwIfAborted();
+      return result;
+    }, { timeoutMs, signal: options.signal });
   }
 
   return {
