@@ -108,6 +108,16 @@ test('public readback refuses a hash other than its saved pointer before reading
   assert.deepEqual(calls, []);
 });
 
+test('settlement validates and retains one materialized host observation', async t => {
+  let serializations = 0;
+  const observation = { ...INCLUDED, toJSON() { return ++serializations === 1 ? { ...INCLUDED } : { status: 'pending' }; } };
+  const w = world(t, observation), result = await w.verify();
+  assert.equal(result.verification.outcome, 'verified');
+  assert.equal(w.coordinates.get(w.op.id).observation.observation.status, 'included');
+  assert.equal(serializations, 1);
+  assert.equal((await w.verify()).verification.observation.status, 'included');
+});
+
 for (const [label, observation] of [
   ['Number amount', { ...INCLUDED, amountOs: 2500000000 }],
   ['bigint amount', { ...INCLUDED, amountOs: 2500000000n }],
@@ -119,6 +129,7 @@ for (const [label, observation] of [
   ['string inclusion time', { ...INCLUDED, includedAt: 'TEST-time' }],
   ['out of range inclusion time', { ...INCLUDED, includedAt: 8640000000000001 }],
   ['different hash', { ...INCLUDED, txHash: '2'.repeat(64) }],
+  ['oversized extension', { ...INCLUDED, extra: 'x'.repeat(64 * 1024 + 1) }],
   ['bigint extension', { ...INCLUDED, extra: 1n }],
   ['null result', null],
   ['non-string reason', { status: 'failed', reason: 7 }],
