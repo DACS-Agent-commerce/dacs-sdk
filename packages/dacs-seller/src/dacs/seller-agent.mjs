@@ -523,13 +523,140 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     else if (railPin && !inFlight) existing.railPin = railPin;
     const session = sessions.get(jobId);
-    throw new SellerAgentError("proposal_not_assembled", "proposal signing is not assembled", 503);
+    persist(session);
+    const signUnderPin = (bytes) => {
+      if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
+      if (!inFlight) assertListingCurrent();
+      // The key is only a pointer. An intent or a thrown signer never makes
+      // this pin in flight; signOnce's completed record is the authority.
+      session.agreementSignatureKey = `signature:${sha256Hex(bytes)}`;
+      persist(session);
+      const signature = sign(bytes);
+      if (session.railPin) { session.railPinSigned = true; persist(session); }
+      return signature;
+    };
+    const progress = await respondToFixedPriceAgreementProposalDurable(
+      { proposal, transportIdentity, seller: { party: claim, algorithm: 'ed25519', sign: signUnderPin } },
+      {
+        store,
+        workerId: 'seller-agent',
+        leaseTtlMs: 60_000,
+        resolveAuthenticatedAgreementContext: async (query) => {
+          const draft = query.candidateDraft;
+          // Existing signed sessions remain readable/recoverable after upgrade.
+          if (inlineSizeProblem && !inFlight) return { disposition: 'rejected', reason: inlineSizeProblem };
+          if (query.seller !== claim || canonicalize(query.listingPin) !== canonicalize(pin)) return { disposition: 'rejected', reason: 'proposal names another Listing or seller' };
+          if (query.buyer !== session.buyerBundle.presentedBy || query.jobId !== jobId) return { disposition: 'rejected', reason: 'proposal names another buyer or job' };
+          const generatedAt = draft?.generatedAt;
+          const observedAt = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission.observedAt : now();
+          const timeProblem = proposalTimeProblem({ generatedAt, observedAt, deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit,
+            admitted: admittedContextRequest({ jobId, buyerBundle: session.buyerBundle, generatedAt }) });
+          if (timeProblem) return { disposition: 'rejected', reason: timeProblem };
+          session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt };
+          if (deliveryContext) {
+            const retained = session.demDeliveryContext;
+            const resolved = retained ?? await resolveDemDeliverySellerContext(deliveryContext, { jobId, listing, buyerBundle: session.buyerBundle, generatedAt });
+            if (resolved.disposition !== 'present') return { disposition: resolved.disposition, reason: resolved.reason };
+            if (retained && (retained.input.generatedAt !== generatedAt || retained.input.jobId !== jobId)) return { disposition: 'rejected', reason: 'retained DEM delivery Agreement context differs' };
+            // A context reference over the not-performed marker names no Vet record.
+            const notPerformed = agreementInput({ jobId, listing, buyerBundle: session.buyerBundle, generatedAt });
+            if (['buyer', 'seller'].some((role) => resolved.input[role].vetRecordRef.contentHash === notPerformed[role].vetRecordRef.contentHash)) {
+              return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
+            }
+            // The delivery audit source carries these invocations. The core
+            // delivery runner's own predicate refuses here, before signing,
+            // what it would refuse at delivery after payment: one invocation
+            // per party record, that party, its counterparty verifier, the
+            // Listing's buyer requirement and every required claim covered.
+            // A retained context is checked again, here and against its
+            // records below: it may have been kept under an earlier, weaker check.
+            const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement,
+              buyer: { primaryClaim: session.buyerBundle.presentedBy, vetRecordRef: resolved.input.buyer.vetRecordRef },
+              seller: { primaryClaim: claim, vetRecordRef: resolved.input.seller.vetRecordRef } });
+            if (invocationProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${invocationProblem}` };
+            // DACS-2 §7.7.1: a reference is relied on only through the record it names.
+            // §7.7.2: each party's record is verified by its counterparty, the
+            // buyer's by the seller and the seller's by the buyer. The seller's
+            // record is of the bundle the Agreement carries: the Listing's, or
+            // this session's presentation of exactly it, which must verify.
+            const sessionSeller = resolved.input.seller.identityBundle;
+            const presentationProblem = sellerSessionPresentationProblem(sessionSeller, sellerBundle);
+            if (presentationProblem) return { disposition: 'rejected', reason: `seller identity differs: ${presentationProblem}` };
+            const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sessionSeller, session.buyerBundle.presentedBy]];
+            for (const [role, party, bundle, verifier] of parties) {
+              const ref = resolved.input[role].vetRecordRef;
+              const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
+              let record;
+              try { record = await admission.resolveVetRecord(structuredClone({ jobId, role, party, ref })); }
+              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              const problem = await vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now });
+              if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
+              // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
+              // only with its SR-2 receipt at `accepted` or later, before any signature.
+              let receipt;
+              try { receipt = await admission.readVetAnchorReceipt(structuredClone({ jobId, role, party, ref })); }
+              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party });
+              if (receiptProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${receiptProblem}` };
+              // CORE SR2-4: the receipt's fields alone are assertions, not proof.
+              // Only the operator's authentication of this record's receipt passes.
+              let verdict;
+              try { verdict = await admission.verifyVetAnchorReceipt(structuredClone({ jobId, role, party, ref, record, receipt })); }
+              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt could not be verified: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              if (verdict !== 'valid') return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet record SR-2 receipt is not verified (${typeof verdict === 'string' ? verdict.slice(0, 40) : 'no verdict'})` };
+            }
+            session.demDeliveryContext = structuredClone(resolved);
+            persist(session);
+            return { disposition: 'present', value: structuredClone(resolved.input) };
+          }
+          persist(session);
+          return { disposition: 'present', value: agreementInput({ jobId, listing, buyerBundle: session.buyerBundle, generatedAt }) };
+        },
+        verifyContribution: contributionVerifier,
+        reconcileSellerSignature: (input) => (signatures.has(input.planHash) ? { disposition: 'present', value: signatures.get(input.planHash) } : { disposition: 'absent', reason: 'not signed yet' }),
+        transport: {
+          publishSellerContribution: (contribution, identity) => {
+            contributions.set(identity.proposalHash, structuredClone(contribution));
+            signatures.set(contribution.planHash, contribution.signature.value);
+            session.sellerContribution = structuredClone(contribution);
+            session.sellerContributionProposalHash = identity.proposalHash;
+            persist(session);
+            return { disposition: 'submitted' };
+          },
+          reconcileSellerContributionPublication: (identity) =>
+            contributions.has(identity.proposalHash) ? { disposition: 'present', value: contributions.get(identity.proposalHash) } : { disposition: 'absent', reason: 'not published' },
+        },
+      },
+    );
+    if (progress.disposition !== 'complete') return { disposition: progress.disposition, stage: progress.stage, reason: progress.reason };
+    session.proposal = structuredClone(proposal);
+    session.transportIdentity = structuredClone(transportIdentity);
+    session.agreementHash = transportIdentity.agreementHash;
+    const agreementRef = { anchor: { kind: 'storage-program', locator: fixedPriceAgreementLogicalAddress(jobId) }, contentHash: session.agreementHash };
+    recordPhase(session, 0, session.proposalAdmission.observedAt, { ok: true,
+      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } });
+    persist(session);
+    return { disposition: 'complete', contribution: progress.result.sellerContribution };
   }
+
+  function agreementState(identity) {
+    assertSettlementCredit(identity?.jobId);
+    // Read without replacing the object owned by a concurrent job operation.
+    const session = durable ? durable.loadSession(identity?.jobId) : sessions.get(identity?.jobId);
+    if (!session?.proposal || session.transportIdentity?.proposalHash !== identity.proposalHash) return { proposal: null, contribution: null };
+    return structuredClone({ proposal: session.proposal, contribution: session.sellerContribution ?? null });
+  }
+
+  // The buyer-anchored Agreement and the reference that names it: the
+  // fixture-substrate write by default, or the buyer's authenticated native
+  // SR-2 CREATE with the opt-in capability (its receipt kept as `native`).
   return {
     assertSettlementCredit,
     claim,
     listingPin: pin,
     issueSessionChallenge,
+    receiveProposal: recoveryCall(receiveProposal),
+    agreementState,
     transportAgreementOf: (jobId) => {
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       return structuredClone(session?.agreement ?? session?.proposal?.plan?.draft ?? null);
