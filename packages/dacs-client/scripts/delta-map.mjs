@@ -168,7 +168,8 @@ export function checkDeltas(packageDir=pkg) {
     if(!expected) { let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{} expected=[baseline]; }
     const rel=path.slice(prefix.length); const local=join(packageDir,rel);
     const actual=existsSync(local)?blob(readFileSync(local)):null;
-    if(!expected.includes(actual)) failures.push(`${path}: current blob differs from enumerated deltas`);
+    const selected = committed.get(path)?.hash ?? null;
+    if(!expected.includes(selected) || actual!==selected) failures.push(`${path}: current blob differs from enumerated deltas (working bytes must equal HEAD)`);
   }
   if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(data)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
   return {failures,allowed};
