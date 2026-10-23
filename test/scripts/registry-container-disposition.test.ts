@@ -83,42 +83,6 @@ function workflowStepScript(stepName: string, path = workflowPath): string {
   return body.join("\n");
 }
 
-// The keys of a workflow's top-level `on:` or `jobs:` block, without a YAML
-// dependency: each is a two-space-indented `key:` line in the block.
-function workflowBlockKeys(path: string, block: "on" | "jobs") {
-  const lines = readFileSync(path, "utf8").split("\n");
-  const start = lines.indexOf(`${block}:`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const keys: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (/^\S/.test(line)) break;
-    const key = /^ {2}([\w-]+):/.exec(line)?.[1];
-    if (key) keys.push(key);
-  }
-  return keys;
-}
-
-// One job's own keys: each four-space `key: value` line, with the trimmed
-// lines nested under it appended one per line.
-function workflowJob(path: string, jobId: string) {
-  const lines = readFileSync(path, "utf8").split("\n");
-  const start = lines.indexOf(`  ${jobId}:`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const job: Record<string, string> = {};
-  let key = "";
-  for (const line of lines.slice(start + 1)) {
-    if (/^ {0,2}\S/.test(line)) break;
-    const own = /^ {4}([\w-]+):\s*(.*)$/.exec(line);
-    if (own) {
-      key = own[1] ?? "";
-      job[key] = own[2] ?? "";
-    } else if (key && line.trim() !== "") {
-      job[key] += `\n${line.trim()}`;
-    }
-  }
-  return job;
-}
-
 const scratch: string[] = [];
 afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
