@@ -1836,6 +1836,42 @@
           "after": "8560f9547739573a5f2c8c32c27a085fbd59370d"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 authenticate portal diagnostics and align discovery hints",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "57735129dcc0ef6e024dde68082933b3f8fa9b11",
+          "after": "04293a54ce00029c33754e8bce1f0945d1c22c11"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "6326c1528d3734f9db46a310ea02740b66de71d8",
+          "after": "f532121b0c11fe1db2b33170cb756e82d1348b4c"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "22eeab29c92ded184522e70d2ebd095ea4322a94",
+          "after": "e8df9e160ed00b2ef9174161da9dd68bea795249"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "ce11cbefbf4a92ef6f4b4d0a4797dc1ca26734c6",
+          "after": "c7f0e0a27f870ab8a5560186b5f2a655ad2d8d65"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "71d3ee0f2d75534c349560f55e36c08a834c7d73",
+          "after": "3e81e6c396c79999e349672610070370fab51cbd"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "e78ebdddeac6e94164a7e0a8e8d7109387c030f1",
+          "after": "6bc784e3f999fcebbdc8f28c361f594ab0d6f644"
+        }
+      ]
     }
   ]
 }

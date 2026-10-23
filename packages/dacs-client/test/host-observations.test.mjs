@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPurchaseService as createPublicPurchaseService, createCoordinateStore, createProtocolPurchases, createSqlitePurchaseStore } from '@kynesyslabs/dacs-client';
+import { createPurchaseService as createPublicPurchaseService, createCoordinateStore, createProtocolPurchases, createSqlitePurchaseStore, createDeliveryDeadlineWatch } from '@kynesyslabs/dacs-client';
 import { createPayDemSellerObserver } from '@kynesyslabs/dacs/seller';
 import { createPurchaseService } from '../src/purchases.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
@@ -220,7 +220,7 @@ for (const status of ['awaiting_approval', 'agreement_pending']) {
     assert.equal(read.operation.status, 'expired');
     assert.equal(read.approvalUrl, null);
     assert.match(read.next, /historical.*held/);
-    const evidence = w.purchases.portalEvidence(portal);
+    const evidence = w.purchases.portalEvidence(w.op.id, token);
     assert.equal(evidence.actionable, false);
     assert.match(evidence.next, /historical.*held/);
     assert.deepEqual((await w.verify()).operation, portal);
@@ -280,7 +280,7 @@ test('public nested protocol guidance remains historical and held', t => {
   const read = w.purchases.status(w.op.accountId, w.op.id);
   assert.equal(read.protocol.historical, true);
   assert.match(read.protocol.next, /historical.*held/);
-  assert.match(w.purchases.portalEvidence(read.operation).protocol.next, /historical.*held/);
+  assert.match(w.purchases.portalEvidence(w.op.id, w.ops.handoffTokenFor(w.op.id)).protocol.next, /historical.*held/);
 });
 
 for (const field of ['payer', 'payee', 'amountOs']) {
@@ -341,11 +341,11 @@ for (const failure of [null, undefined, 'TEST-reader-failed', new Error('TEST-lo
 test('inclusion time accepts epoch milliseconds and old malformed saved times render safely', async t => {
   const w = world(t, { ...INCLUDED, includedAt: 0 });
   assert.equal((await w.verify()).verification.outcome, 'verified');
-  assert.equal(w.purchases.portalEvidence(w.ops.get(w.op.accountId, w.op.id)).receipt.includedAt, '1970-01-01T00:00:00.000Z');
+  assert.equal(w.purchases.portalEvidence(w.op.id, w.ops.handoffTokenFor(w.op.id)).receipt.includedAt, '1970-01-01T00:00:00.000Z');
   const historical = w.coordinates.get(w.op.id).observation;
   historical.observation.includedAt = 'TEST-bad-time';
   w.db.prepare('UPDATE write_coordinates SET observation=? WHERE operation_id=?').run(JSON.stringify(historical), w.op.id);
-  assert.equal(w.purchases.portalEvidence(w.ops.get(w.op.accountId, w.op.id)).receipt.includedAt, null);
+  assert.equal(w.purchases.portalEvidence(w.op.id, w.ops.handoffTokenFor(w.op.id)).receipt.includedAt, null);
 });
 
 test('public diagnostic reads validate malformed observations without saving them', async t => {
@@ -408,5 +408,123 @@ test('public diagnostics re-read saved settlements and never report saved succes
   assert.equal(result.verification.outcome, 'readback_only');
   assert.deepEqual(result.verification.observation, { status: 'pending' });
   assert.deepEqual(w.coordinates.get(w.op.id), before);
-  assert.equal(w.purchases.portalEvidence(w.ops.get(w.op.accountId, w.op.id)).receipt.historical, true);
+  assert.equal(w.purchases.portalEvidence(w.op.id, w.ops.handoffTokenFor(w.op.id)).receipt.historical, true);
 });
+
+for (const method of ['portalOperation', 'portalEvidence']) {
+  for (const invalid of ['forged-operation', 'missing-token', 'wrong-token', 'missing-id', 'object-token']) {
+    test(`${method} authenticates ${invalid} before secondary reads`, t => {
+      const w = world(t, INCLUDED, { publicApi: true });
+      const token = w.ops.handoffTokenFor(w.op.id), calls = [];
+      const lookup = w.ops.getByHandoff, lookups = [];
+      w.ops.getByHandoff = (...args) => { lookups.push(args); return lookup(...args); };
+      const args = {
+        'forged-operation': [{ ...w.op, accountId: 'TEST-attacker' }, token],
+        'missing-token': [w.op.id],
+        'wrong-token': [w.op.id, 'TEST-wrong-token'],
+        'missing-id': [undefined, token],
+        'object-token': [w.op.id, { token }],
+      }[invalid];
+      w.coordinates.get = () => { calls.push('coordinates'); throw new Error('TEST-private-read'); };
+      w.ops.history = () => { calls.push('history'); };
+      assert.throws(() => w.purchases[method](...args), { code: 'not_found' });
+      assert.deepEqual(calls, []);
+      if (invalid !== 'wrong-token') assert.deepEqual(lookups, []);
+    });
+  }
+
+  for (const mismatch of ['id', 'kind']) {
+    test(`${method} rejects a host ${mismatch} mismatch before secondary reads`, t => {
+      const w = world(t, INCLUDED, { publicApi: true });
+      const calls = [];
+      w.ops.getByHandoff = () => ({ ...w.op, [mismatch]: 'TEST-other' });
+      w.coordinates.get = () => { calls.push('coordinates'); throw new Error('TEST-private-read'); };
+      assert.throws(() => w.purchases[method](w.op.id, 'TEST-token'), { code: 'not_found' });
+      assert.deepEqual(calls, []);
+    });
+  }
+}
+
+test('portal evidence authenticates each repeated read and uses fresh stored data', t => {
+  const w = world(t, INCLUDED, { publicApi: true });
+  const token = w.ops.handoffTokenFor(w.op.id), lookup = w.ops.getByHandoff, calls = [];
+  w.ops.getByHandoff = (id, suppliedToken) => { calls.push([id, suppliedToken]); return lookup(id, suppliedToken); };
+  const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
+  const first = w.purchases.portalEvidence(w.op.id, token);
+  assert.equal(first.reportedTxHash, HASH);
+  assert.equal(first.actionable, false);
+  assert.deepEqual(w.purchases.portalEvidence(w.op.id, token), first);
+  w.db.prepare('UPDATE operations SET state=? WHERE id=?').run(JSON.stringify({ preparedVerification: { evidence: { directoryMode: 'TEST-fresh' } } }), w.op.id);
+  assert.equal(w.purchases.portalEvidence(w.op.id, token).directoryMode, 'TEST-fresh');
+  assert.deepEqual(calls, Array.from({ length: 3 }, () => [w.op.id, token]));
+  assert.deepEqual(w.coordinates.get(w.op.id), before);
+  assert.deepEqual(w.ops.history(w.op.id), history);
+  assert.equal(w.consumed(), 0);
+  w.ops.getByHandoff = () => null;
+  assert.throws(() => w.purchases.portalEvidence(w.op.id, token), { code: 'not_found' });
+});
+
+test('portal evidence refuses another operation handoff token', t => {
+  const w = world(t, INCLUDED, { publicApi: true });
+  const other = w.ops.createIdempotent({ accountId: w.op.accountId, kind: 'purchase', idempotencyKey: 'TEST-other', request: {},
+    status: w.op.status, terms: w.op.terms, termsHash: CHAIN, expiresAt: w.op.expiresAt });
+  assert.throws(() => w.purchases.portalEvidence(w.op.id, other.handoffToken), { code: 'not_found' });
+  assert.equal(w.purchases.portalEvidence(other.operation.id, other.handoffToken).reportedTxHash, null);
+});
+
+for (const source of ['lookup', 'buyer-access']) {
+  test(`portal evidence preserves ${source} refusals before private reads`, t => {
+    const cause = new Error('TEST-host-refusal');
+    const w = world(t, INCLUDED, { publicApi: true, ...(source === 'buyer-access' ? { buyerRefusal: cause } : {}) });
+    if (source === 'lookup') w.ops.getByHandoff = () => { throw cause; };
+    const calls = [];
+    w.coordinates.get = () => { calls.push('coordinates'); };
+    assert.throws(() => w.purchases.portalEvidence(w.op.id, w.ops.handoffTokenFor(w.op.id)), error => error === cause);
+    assert.deepEqual(calls, []);
+  });
+}
+
+for (const bookkeeping of ['overdue', 'operator-hold']) {
+  test(`${bookkeeping} bookkeeping cannot enable public actions or establish a fresh verdict`, async t => {
+    const w = world(t, INCLUDED, { publicApi: true, buyerAccess: { assertWallet() {} } });
+    const deadline = Date.now() - 240000;
+    const terms = { ...w.op.terms, seller: { ...w.op.terms.seller, claim: 'TEST-seller' },
+      protocol: { jobId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' } };
+    const state = { protocol: {
+      stage: bookkeeping === 'overdue' ? 'payment-evidenced' : 'delivered',
+      commitment: { verifiedAt: new Date().toISOString() },
+      agreement: { hash: CHAIN, ref: { contentHash: CHAIN }, terms: { seller: 'TEST-seller', deadline },
+        artifact: { terms: { deadline }, parties: [{ role: 'seller', primaryClaim: 'TEST-seller' }] } },
+      ...(bookkeeping === 'operator-hold' ? { delivery: { status: 'verified', evidenceRef: { contentHash: CHAIN } } } : {}),
+    } };
+    w.db.prepare('UPDATE operations SET status=?, terms=?, state=? WHERE id=?')
+      .run('settled_verified', JSON.stringify(terms), JSON.stringify(state), w.op.id);
+    w.coordinates.recordObservation(w.op.id, INCLUDED, true);
+    const operation = w.ops.get(w.op.accountId, w.op.id);
+    if (bookkeeping === 'overdue') {
+      const watch = createDeliveryDeadlineWatch({ db: w.db, ops: w.ops, coordinates: w.coordinates, store: createSqlitePurchaseStore(), enabled: true });
+      const observed = watch.observe(operation, { notPresent: true, delivery: { status: 'absent' }, checkedAt: Date.now() });
+      assert.equal(observed.state.protocol.deliveryDeadline.overdue.source, 'host-supplied');
+      assert.equal(observed.state.protocol.deliveryDeadline.overdue.disposition, 'indeterminate');
+    } else {
+      const held = w.protocol.holdChainReadback(operation, 'TEST-missing-pointer');
+      assert.equal(held.state.protocol.chainReadbackHeld.source, 'host-supplied');
+    }
+    const before = w.ops.get(w.op.accountId, w.op.id), history = w.ops.history(w.op.id), coordinates = w.coordinates.get(w.op.id);
+    const token = w.ops.handoffTokenFor(w.op.id);
+    assert.equal(w.purchases.portalEvidence(w.op.id, token).actionable, false);
+    assert.equal(w.purchases.status(w.op.accountId, w.op.id).approvalUrl, null);
+    for (const method of ['prepare', 'issueApprovalChallenge', 'approve', 'prepareHandoff', 'reportWalletResult', 'cancel',
+      'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign', 'protocolRecheck']) {
+      await assert.rejects(async () => w.purchases[method]({ accountId: w.op.accountId, operationId: w.op.id, token }), { code: 'profile_not_admitted' });
+    }
+    await assert.rejects(w.protocol.checkDelivery(before), { code: 'native_completion_held' });
+    const read = await w.verify();
+    assert.equal(read.verification.outcome, 'readback_only');
+    assert.equal(read.verification.authority, 'unqualified_host');
+    assert.deepEqual(w.ops.get(w.op.accountId, w.op.id), before);
+    assert.deepEqual(w.ops.history(w.op.id), history);
+    assert.deepEqual(w.coordinates.get(w.op.id), coordinates);
+    assert.equal(w.consumed(), 0);
+  });
+}

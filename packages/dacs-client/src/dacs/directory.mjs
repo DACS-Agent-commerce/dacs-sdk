@@ -41,6 +41,17 @@ function projectRevocationBinding(value) {
     markerAnchor: { kind: value.markerAnchor.kind, locator: value.markerAnchor.locator } };
 }
 
+// DACS-1 §6.3.6 calls this field revocation; the pinned Community wire
+// contract calls it revocationBinding. Conflicting hints remain unavailable.
+function summaryRevocation(raw) {
+  const standard = projectRevocationBinding(raw.revocation);
+  const community = projectRevocationBinding(raw.revocationBinding);
+  if (raw.revocation !== undefined && raw.revocationBinding !== undefined) {
+    return standard && community && JSON.stringify(standard) === JSON.stringify(community) ? standard : undefined;
+  }
+  return standard ?? community;
+}
+
 // Whitelist projection: only these fields ever reach the model, with lengths
 // capped, so a hostile directory cannot inject arbitrary payloads.
 export function projectSummary(raw) {
@@ -71,7 +82,7 @@ export function projectSummary(raw) {
     publicEndpoint: str(raw.publicEndpoint, 512),
     artifactProfile: str(raw.artifactProfile, 64),
     status: raw.status,
-    revocationBinding: projectRevocationBinding(raw.revocationBinding),
+    revocationBinding: summaryRevocation(raw),
     catalogObservedAt: normalizeCatalogObservedAt(raw.catalogObservedAt),
   };
 }

@@ -133,7 +133,7 @@ test('every public diagnostic omits payment payloads and signing messages while 
   const before = w.ops.get(op.accountId, op.id), coords = w.coordinates.get(op.id);
   const status = w.purchases.status(op.accountId, op.id);
   const portal = w.purchases.portalOperation(op.id, w.ops.handoffTokenFor(op.id));
-  for (const result of [status, portal, w.purchases.portalEvidence(portal), protocolView(before), await w.purchases.verifyDeal({ accountId: op.accountId, operationId: op.id })]) {
+  for (const result of [status, portal, w.purchases.portalEvidence(op.id, w.ops.handoffTokenFor(op.id)), protocolView(before), await w.purchases.verifyDeal({ accountId: op.accountId, operationId: op.id })]) {
     const json = JSON.stringify(result);
     assert.doesNotMatch(json, /"payload"|"agreementMessage"|"anchorMessage"|TEST-.*-sign/);
   }

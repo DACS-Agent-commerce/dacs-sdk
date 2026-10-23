@@ -425,6 +425,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // ---- portal (browser) side; every call carries the handoff token ----
 
   function portalOperation(operationId, token) {
+    if (typeof operationId !== 'string' || !operationId || typeof token !== 'string' || !token) {
+      throw new OperationError('not_found', 'unknown or invalid approval link');
+    }
     const found = ops.getByHandoff(operationId, token);
     if (!found || found.kind !== 'purchase' || found.id !== operationId) throw new OperationError('not_found', 'unknown or invalid approval link');
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
@@ -434,7 +437,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // Evidence the portal may show, taken only from what was recorded: the
   // listing verification made at prepare time and any chain observation of
   // the payment. Never inferred from the configured network or RPC URL.
-  function portalEvidence(operation) {
+  function portalEvidence(operationId, token) {
+    const operation = portalOperation(operationId, token);
     const coords = coordinates.get(operation.id);
     const listingMode = operation.state?.preparedVerification?.evidence?.chainMode ?? null;
     const directoryMode = operation.state?.preparedVerification?.evidence?.directoryMode ?? null;

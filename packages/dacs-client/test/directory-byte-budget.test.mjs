@@ -15,6 +15,19 @@ const revocationBinding = {
   listingContentHash: summary.contentHash, logicalAddress: `dacs1-revoked:${summary.seller.primaryClaim}:example:v1`,
   markerAnchor: { kind: 'storage-program', locator: `stor-${'d'.repeat(40)}` }, markerContentHash: 'e'.repeat(64),
 };
+test('Directory preserves a Standard-named revocation binding through search and findSummary', async () => {
+  const raw = { ...summary, status: 'revoked', revocation: revocationBinding };
+  assert.deepEqual(projectSummary(raw).revocationBinding, revocationBinding);
+  const client = createDirectoryClient({ origin, fetchImpl: async () => new Response(JSON.stringify({ listings: [raw] }), { headers: { 'content-type': 'application/json' } }) });
+  assert.deepEqual((await client.search()).listings[0].revocationBinding, revocationBinding);
+  assert.deepEqual((await client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim })).revocationBinding, revocationBinding);
+});
+test('Directory projects equal aliases and drops ambiguous or malformed aliases', () => {
+  const both = { ...summary, status: 'revoked', revocationBinding, revocation: { ...revocationBinding } };
+  assert.deepEqual(projectSummary(both).revocationBinding, revocationBinding);
+  assert.equal(projectSummary({ ...both, revocation: { ...revocationBinding, markerContentHash: 'f'.repeat(64) } }).revocationBinding, undefined);
+  assert.equal(projectSummary({ ...both, revocation: {} }).revocationBinding, undefined);
+});
 test('Directory revocation discovery projects seven bounded fields and copies nested anchors', () => {
   const raw = { ...revocationBinding, extra: { text: 'TEST-untrusted-extension' },
     markerAnchor: { ...revocationBinding.markerAnchor, extra: ['TEST-extension'] } };

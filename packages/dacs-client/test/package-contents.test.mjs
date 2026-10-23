@@ -117,6 +117,7 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       // Deliberately mis-scoped host seam: the installed client must check ownership.
       let secondaryReads = 0;
       const ops = { get: (_account, id) => id === 'first' ? saved : null,
+        getByHandoff: (id, token) => id === 'first' && token === 'TEST-token' ? saved : null,
         history: () => { secondaryReads++; return []; }, handoffTokenFor: forbidden,
         transition: forbidden, record: forbidden };
       const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store,
@@ -133,11 +134,13 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       await assert.rejects(service.verifyDeal({ accountId: 'someone-else', operationId: 'first' }), { code: 'not_found' });
       assert.throws(() => service.status('someone-else', 'first'), { code: 'not_found' });
       assert.equal(secondaryReads, 0);
+      assert.throws(() => service.portalEvidence({ ...saved, accountId: 'someone-else' }), { code: 'not_found' });
+      assert.throws(() => service.portalEvidence('first', 'TEST-wrong-token'), { code: 'not_found' });
       for (const status of ['awaiting_approval', 'approved', 'payment_handoff', 'settled_verified']) {
         saved.status = status;
         assert.equal(service.status('buyer', 'first').approvalUrl, null);
         assert.match(service.status('buyer', 'first').next, /historical.*held/);
-        assert.equal(service.portalEvidence(saved).actionable, false);
+        assert.equal(service.portalEvidence('first', 'TEST-token').actionable, false);
       }
       saved.status = 'broadcast_reported';
       for (const method of ['cancel', 'reportWalletResult', 'protocolRecheck']) {
