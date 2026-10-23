@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/util/text.mjs at DACS-Agent-commerce/frontend 15fdf23: the whole
 // file.
-// The source lines below are unchanged (RUNTIME-PORTS.json).
 // Grapheme clusters where Intl.Segmenter exists; whole code points otherwise.
 const segmenter = typeof Intl?.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const pieces = (value) => (segmenter ? Array.from(segmenter.segment(value), (part) => part.segment) : value);

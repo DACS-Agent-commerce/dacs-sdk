@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/util/http.mjs at DACS-Agent-commerce/frontend 15fdf23: the whole
 // file.
-// The source lines below are unchanged except exact-byte JSON admission (RUNTIME-PORTS.json).
 import { admitRawJson } from '@kynesyslabs/dacs';
 // Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,
 // post-decompression byte cap, no ambient credentials. Failures are typed so

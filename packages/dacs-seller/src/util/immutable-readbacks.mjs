@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/util/immutable-readbacks.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: the whole file.
-// The source lines below are unchanged (RUNTIME-PORTS.json).
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 
 // Short-lived, bounded, in-memory reuse of verified immutable readbacks.

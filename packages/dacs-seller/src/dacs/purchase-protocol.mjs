@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/purchase-protocol.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: lines 14-24, 26-31, 33-34, 38-40, 44-90, 95-162, 184-202, 221-247, 373-536, 545-546.
-// The source lines below are unchanged except import paths (RUNTIME-PORTS.json).
 // Left out: the buyer Agreement exchange and commitment readback, Agreement planning, the app
 // purchase-terms check, deliveryIsFinal and two structural aliases; none is reached by the
 // seller.

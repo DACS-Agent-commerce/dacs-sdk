@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/chain.mjs at DACS-Agent-commerce/frontend 15fdf23: lines
 // 22, 24-31.
-// The source lines below are unchanged (RUNTIME-PORTS.json).
 // Left out: the chain reader and node parsers; only the OS and DEM amount patterns.
 const DEM_DECIMALS = 9;
 // The most digits an exact OS amount read from the node may have (enough for

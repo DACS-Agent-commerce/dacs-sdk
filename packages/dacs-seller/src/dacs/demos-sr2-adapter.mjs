@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/demos-sr2-adapter.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: the whole file.
-// The source lines below are unchanged except import paths and foreign-owner filtering before DACS payload validation and the public root helper import comment (RUNTIME-PORTS.json).
 // OFFLINE integration adapter, not a live Demos writer. Only marked literal
 // loopback reads are permitted. The adapter has no key and never broadcasts.
 // It plans immutable CREATEs, authenticates the exact wallet authorization,

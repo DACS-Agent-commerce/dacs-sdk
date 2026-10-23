@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/wallet-transactions.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: lines 18, 20-22, 27-31, 69-100.
-// The source lines below are unchanged except exact owner bytes (RUNTIME-PORTS.json).
 // Left out: the native-send payload, amount encoding, payload hash and the application
 // coordinate store.
 import { createHash } from 'node:crypto';

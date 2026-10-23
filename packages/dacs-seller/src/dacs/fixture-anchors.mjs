@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/fixture-anchors.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: lines 13, 15-16, 18-21, 23-80, 134-139.
-// The source lines below are unchanged except import paths (RUNTIME-PORTS.json).
 // Left out: the loopback fixture substrate HTTP client (createFixtureAnchorClient); this package
 // ships no fixture substrate.
 import { canonicalize, contentHash, sha256Hex, storAddress, isAnchorReceipt } from '@kynesyslabs/dacs';

@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/dem-delivery-context-consumer.mjs at
 // DACS-Agent-commerce/frontend 15fdf23: lines 1-9, 11, 13-16, 21-30, 37-99, 133-152.
-// The source lines below are unchanged except the counterparty Vet verifier and the session seller presentation and the intrinsic DEM payout destination (DACS-4 PB-2 tier 1) (RUNTIME-PORTS.json).
 // Left out: the buyer-side resolver and its answer capture.
 // Explicit application capability for the fixed-price DEM delivery profile.
 //

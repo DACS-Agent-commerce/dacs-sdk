@@ -6,8 +6,7 @@ loopback. The agent runs negotiation (DACS-3), the finalized commitment,
 `pay-dem` payment intake and delivery through the core SDK
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This is the devnet-demo seller kit, ported from the
-plugin seller kit (`RUNTIME-PORTS.json` and `PROVENANCE.json` in the
-repository). It is a **fixture-only kit**: its native capabilities accept
+plugin seller kit (see [SOURCES.md](SOURCES.md)). It is a **fixture-only kit**: its native capabilities accept
 only `TEST-` authorities and a loopback fixture node, so it cannot start
 against, or read from, a real Demos node (see "What the host does and does
 not do"). It is not qualified for mainnet. The standalone host retains

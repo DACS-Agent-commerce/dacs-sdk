@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,18 @@ const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/se
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgent', 'createSellerAgentClient', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
   'createSellerTransportServerAuth', 'createSellerTransportStore', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+
+test('every executable seller test runs through both supported entry points',()=>{
+ const actual=readdirSync(join(root,'packages/dacs-seller/test')).filter(name=>name.endsWith('.test.mjs')).sort();
+ const script=JSON.parse(readFileSync(join(root,'package.json'),'utf8')).scripts['seller:test'];
+ const cli=[...script.matchAll(/packages\/dacs-seller\/test\/([^ ]+\.test\.mjs)/g)].map(match=>match[1]).sort();
+ const wrapper=readFileSync(join(root,'test/seller/standalone.test.ts'),'utf8');
+ const list=/const files\s*=\s*\[([\s\S]*?)\];/.exec(wrapper)?.[1];
+ assert.ok(list,'the CI wrapper must declare its executable file list');
+ const ci=[...list.matchAll(/'([^']+\.test\.mjs)'/g)].map(match=>match[1]).sort();
+ assert.deepEqual(cli,actual,'seller:test must execute every test file exactly once');
+ assert.deepEqual(ci,actual,'the core CI wrapper must execute the same complete set');
+});
 
 test('the packed seller installs outside the repository and serves one Listing without test hooks', { timeout: 600000 }, async (t) => {
   const manifestPath = join(packageDirectory, 'package.json');
@@ -45,8 +57,8 @@ test('the packed seller installs outside the repository and serves one Listing w
   const [corePack] = JSON.parse(npm(['pack', '--json', '--ignore-scripts', '--pack-destination', packs], root));
   const [sellerPack] = JSON.parse(npm(['pack', '--json', '--ignore-scripts', '--pack-destination', packs, '--workspace', '@kynesyslabs/dacs-seller'], root));
 
-  // The governing profile and admission/port metadata ship with the source.
-  for (const file of ['PROFILE.json', 'ADMISSION.md', 'RUNTIME-PORTS.json']) assert.ok(manifest.files.includes(file));
+  // The governing profile, admission guidance and source references ship with the source.
+  for (const file of ['PROFILE.json', 'ADMISSION.md', 'SOURCES.md']) assert.ok(manifest.files.includes(file));
   assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
 
   // Exactly the manifest's files, its manifest, README and LICENSE.

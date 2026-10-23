@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/native-payment-evidence-consumer.mjs at
 // DACS-Agent-commerce/frontend 15fdf23: the whole file.
-// The source lines below are unchanged except import paths (RUNTIME-PORTS.json).
 // Consumed, opt-in SOURCE/loopback capability. SDK intake's bft-final field
 // describes the fixture node's included view, NOT independent consensus.
 import { contentHash, createPayDemSellerObserver, paymentEvidenceAddress, verifySettlementEvidence } from '@kynesyslabs/dacs';

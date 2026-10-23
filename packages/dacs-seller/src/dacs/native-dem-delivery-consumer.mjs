@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/native-dem-delivery-consumer.mjs at
 // DACS-Agent-commerce/frontend 15fdf23: the whole file.
-// The source lines below are unchanged (RUNTIME-PORTS.json).
 // Explicit application capability for native DEM deliverable publication and
 // public readback. It is deliberately opaque/default-absent: copying its
 // descriptor or setting a Boolean never grants a seller write or buyer proof.

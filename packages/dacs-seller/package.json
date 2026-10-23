@@ -73,7 +73,7 @@
     "src/util/text.mjs",
     "PROFILE.json",
     "ADMISSION.md",
-    "RUNTIME-PORTS.json"
+    "SOURCES.md"
   ],
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"

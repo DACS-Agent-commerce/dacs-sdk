@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/devnet-demo/buyer-access.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: lines 1-51.
-// The source lines below are unchanged except import paths (RUNTIME-PORTS.json).
 // Left out: the operator relay, resend log and approval wrappers.
 import { OperationError } from '../operations.mjs';
 import { claimForAddress } from '../dacs/demos-claims.mjs';

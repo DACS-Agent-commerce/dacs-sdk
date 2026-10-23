@@ -8,8 +8,7 @@ qualified live deployment; unsupported qualification stays blocked.
 
 The kit has one purchase source: the seller agent's durable sessions. It has
 one Vet/context mode: the authenticated context route. There is no app database
-resolver or context switch. The package's run-time imports are present
-(RUNTIME-PORTS.json). The standalone host (README.md) does not mount the
+resolver or context switch. The standalone host (README.md) does not mount the
 context route; a host that mounts it must wire these modules as described here,
 including the open items below.
 
@@ -114,10 +113,7 @@ Capacity lookup work is bounded by retained rows with indexed effect/job referen
 Standalone validation is available through `npm run seller:test` and the stock
 SDK `npm test` command. The entry point runs the isolated D5 files, bilateral
 Vet authority and receipt checks, exact-byte HTTP admission, native nonce and
-deployment qualification checks, durable settlement collisions and a fresh
-checkout provenance check. The remaining copied browser/plugin harness files
-are historical port inputs, outside the executable standalone selection; their
-imports do not establish lifecycle coverage.
+deployment qualification checks, durable settlement collisions.
 
 Native publication requires `pins.deployment` at the supported node source commit
 `61b8e75aa8db5e408c49e1c3a89db4d673f45578` (the fee, nonce, broadcast and

@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/devnet-demo/stop-request.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: the whole file.
-// The source lines below are unchanged (RUNTIME-PORTS.json).
 // The compose CLI's stop flag, set once SIGINT or SIGTERM starts its shutdown.
 // Import-free, so the CLI loads it before it installs its handlers. A Listing
 // publication reads it just before its CREATE intent would be journaled, and

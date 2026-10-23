@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/delivery-evidence.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: the whole file.
-// The source lines below are unchanged except import paths (RUNTIME-PORTS.json).
 import { ARTIFACT_SEPARATORS, contentHash, isCanonicalJobId, isSettlementEvidence, signedBytes } from '@kynesyslabs/dacs';
 import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 

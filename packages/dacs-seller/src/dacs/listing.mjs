@@ -1,6 +1,5 @@
 // Run-time port of http-mcp/src/dacs/listing.mjs at DACS-Agent-commerce/frontend 15fdf23: the
 // whole file.
-// The source lines below are unchanged except import paths and the SDK provenance source (this package's core peer) and the issued session nonce (CORE SN-1..SN-3) and the inline payload size declaration (RUNTIME-PORTS.json).
 // Listing construction (for wallet signing) and Standard validation.
 //
 // Provenance:
