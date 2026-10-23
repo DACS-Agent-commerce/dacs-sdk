@@ -292,7 +292,9 @@ describe("registry/container workflow wiring", () => {
       .map((line) => line.trim().replace(/^- "(.*)"$/, "$1")).filter(Boolean) ?? [];
     expect(paths).toEqual(expect.arrayContaining([".github/workflows/registry-container-acceptance.yml",
       ".github/workflows/registry-container-audit-drift.yml", "scripts/registry-container-disposition.mjs",
-      "scripts/registry-container-audit-baseline.json", "scripts/verify-registry-container-consumer.sh"]));
+      "scripts/registry-container-audit-baseline.json", "scripts/verify-registry-container-consumer.sh",
+      "scripts/acceptance-evidence-io.mjs", "scripts/bounded-build.mjs", "scripts/bounded-command.mjs",
+      "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh", "scripts/bounded-http.sh", "scripts/http-json-limits.mjs"]));
   });
 
   it("has the scheduled drift workflow call acceptance with drift enforced", () => {
