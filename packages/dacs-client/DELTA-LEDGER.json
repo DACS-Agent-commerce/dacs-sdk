@@ -1534,6 +1534,17 @@
           "after": "4abceff4d2f43e41f00707479962c194ca06070f"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 remove trailing observation fixture whitespace",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "b2db7b91c5e1e6de55edde544c2b5d078c1f3978",
+          "after": "0af1586bc61b3a59509d361eebe3644f36d40150"
+        }
+      ]
     }
   ]
 }

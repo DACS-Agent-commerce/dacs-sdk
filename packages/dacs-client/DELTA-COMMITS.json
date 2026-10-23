@@ -813,5 +813,17 @@
       "packages/dacs-client/src/purchases.mjs",
       "packages/dacs-client/test/d11-seam-parameters.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 remove trailing observation fixture whitespace",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs"
+    ]
   }
 ]
