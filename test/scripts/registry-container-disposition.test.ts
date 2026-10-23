@@ -136,6 +136,26 @@ describe("registry/container acceptance disposition", () => {
     expect(registryContainerDisposition(summary).exitCode).toBe(3);
   });
 
+  it("is the exit status the acceptance script reports for a written summary", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-summary-"));
+    scratch.push(directory);
+    const summaryPath = join(directory, "acceptance-summary.json");
+    writeFileSync(summaryPath, JSON.stringify(baselineOnlySummary()));
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", summaryPath], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(4);
+    expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8"))
+      .toContain('node scripts/registry-container-disposition.mjs --record "$output_dir/acceptance-summary.json"');
+    const recorded = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--record", summaryPath], {
+      cwd: repoRoot, encoding: "utf8",
+    });
+    expect(recorded.status).toBe(4);
+    expect(JSON.parse(readFileSync(summaryPath, "utf8"))).toMatchObject({ failureClass: "policy",
+      disposition: { exitCode: 4, failureClass: "policy" } });
+  });
+
   it("cross-checks the unlisted advisory IDs the summary recorded", () => {
     // R5-228a: an unlisted ID dropped from the recorded list is a tampered summary.
     const summary = baselineOnlySummary();
@@ -145,6 +165,108 @@ describe("registry/container acceptance disposition", () => {
     expect(registryAuditDriftDisposition(summary).exitCode).toBe(3);
   });
 });
+
+// Runs the acceptance script up to its first npm command, with stubs that
+// leave partial consumer output behind and then fail with status 17.
+function runEarlyFailure(extraStubCommands = "") {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-failure-"));
+  scratch.push(directory);
+  const npmBody = [
+    'for directory in "$RUNNER_TEMP"/dacs-registry-acceptance.*; do',
+    '  printf "partial doctor diagnostic\\n" > "$directory/consumer/doctor.log"',
+    '  mkdir -p "$directory/consumer/one-click-agent"',
+    `  printf '{"name":"one-click-agent"}\\n' > "$directory/consumer/one-click-agent/package.json"`,
+    `  printf '{"lockfileVersion":3}\\n' > "$directory/consumer/one-click-agent/package-lock.json"`,
+    extraStubCommands,
+    "done",
+    "exit 17",
+  ].join("\n");
+  // curl, docker and npm are stubs and node is this process's binary; the
+  // script's temporary root is this private directory.
+  chmodSync(directory, 0o700);
+  const PATH = stubBin(directory, { curl: "exit 0", docker: "exit 0", npm: npmBody });
+  const output = join(directory, "evidence");
+  const result = runBash(["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
+    cwd: repoRoot, env: { RUNNER_TEMP: directory, HOME: directory, PATH },
+  });
+  return { directory, output, result };
+}
+
+// A gzip'd ustar archive holding package/package.json, as npm pack writes it.
+function packTarball(manifest: Record<string, string>) {
+  const body = Buffer.from(JSON.stringify(manifest));
+  const header = Buffer.alloc(512);
+  header.write("package/package.json", 0, 100, "utf8");
+  header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
+  header.write(body.length.toString(8).padStart(11, "0") + "\0", 124);
+  header.write("00000000000\0", 136); header.write("        ", 148); header.write("0", 156); header.write("ustar\0" + "00", 257);
+  let sum = 0; for (const byte of header) sum += byte;
+  header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+  return gzipSync(Buffer.concat([header, body, Buffer.alloc((512 - (body.length % 512)) % 512), Buffer.alloc(1024)]));
+}
+
+// Runs the whole acceptance script up to its consumer container, where the
+// generated project's doctor fails (exit 1, not the expected 5). Docker, npm
+// and curl are stubs; node is this process's binary; the registry is a
+// loopback server that serves exactly the published candidates.
+async function runToConsumerStage() {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-"));
+  scratch.push(directory);
+  chmodSync(directory, 0o700);
+  const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string;
+  const releaseSet = join(directory, "release-set");
+  mkdirSync(releaseSet);
+  const served: Record<string, string> = {};
+  const packages: Record<string, { integrity: string }> = {};
+  for (const [name, file] of [["@kynesyslabs/dacs", "kynesyslabs-dacs"], ["@kynesyslabs/dacs-node", "kynesyslabs-dacs-node"],
+    ["create-dacs-agent", "create-dacs-agent"]] as const) {
+    const bytes = packTarball({ name, version });
+    writeFileSync(join(releaseSet, `${file}-${version}.tgz`), bytes);
+    served["/" + name.replace("/", "%2f")] = sri(bytes);
+    packages[name] = { integrity: sri(bytes) };
+  }
+  writeFileSync(join(releaseSet, "release-provenance.json"), JSON.stringify({ version, source: { clean: true }, packages }));
+  writeFileSync(join(releaseSet, "SHA256SUMS"), "fixture\n");
+  const npmRoot = join(directory, "npm-root");
+  mkdirSync(join(npmRoot, "npm/node_modules/libnpmpublish"), { recursive: true });
+  writeFileSync(join(npmRoot, "npm/package.json"), JSON.stringify({ version: "11.19.0" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/package.json"), JSON.stringify({ main: "index.js" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/index.js"), "exports.publish = async () => {};\n");
+  const server = createServer((request, response) => {
+    const integrity = served[request.url ?? ""];
+    response.writeHead(integrity ? 200 : 404, { "content-type": "application/json" });
+    response.end(JSON.stringify(integrity ? { versions: { [version]: { dist: { integrity } } } } : {}));
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const port = (server.address() as { port: number }).port;
+  const PATH = stubBin(directory, {
+    curl: ['case "$*" in', "  *org.couchdb.user*) printf '{\"token\":\"local-acceptance-token\"}' ;;", "esac", "exit 0"].join("\n"),
+    npm: ['case "$1" in', "  --version) echo 11.19.0 ;;", `  root) echo '${npmRoot}' ;;`, `  view) echo '${version}' ;;`,
+      `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, "esac", "exit 0"].join("\n"),
+    // `docker run` with a /work volume is the consumer container: it leaves
+    // what the generated project wrote before its doctor failed, then exits 1.
+    docker: ['if [ "$1" = inspect ]; then echo ' + port + "; exit 0; fi",
+      'if [ "$1" != run ]; then exit 0; fi', "work=; previous=",
+      'for argument in "$@"; do', '  if [ "$previous" = --volume ]; then case "$argument" in *:/work) work=${argument%:/work} ;; esac; fi',
+      '  previous=$argument', "done", '[ -n "$work" ] || exit 0', 'mkdir -p "$work/one-click-agent"',
+      `printf '{"name":"one-click-agent"}\\n' > "$work/one-click-agent/package.json"`,
+      `printf '{"lockfileVersion":3,"packages":{}}\\n' > "$work/one-click-agent/package-lock.json"`,
+      `printf '0\\n' > "$work/generated-tests.exit-code"`,
+      `printf 'doctor: release metadata is unreadable\\n' > "$work/doctor.log"`, `printf '1\\n' > "$work/doctor.exit-code"`,
+      "echo 'npm run dacs:doctor exited 1'", "exit 1"].join("\n"),
+  });
+  const output = join(directory, "evidence");
+  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+    const child = spawn("bash", ["--norc", "--noprofile", "scripts/verify-registry-container-consumer.sh", "--output-dir", output],
+      { cwd: repoRoot, env: { HOME: directory, RUNNER_TEMP: directory, PATH } });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status) => done({ status, stdout, stderr }));
+  });
+  server.close();
+  return { directory, output, result };
+}
 
 const CANDIDATE_VERSION = "0.1.0-test";
 // A summary the producer composed for CANDIDATE_VERSION, judged as that release.
@@ -178,6 +300,9 @@ function dependencyPolicyHarness() {
     "@x402/evm", "@x402/fetch", "better-sqlite3", "viem",
   ].map((name) => [name, CANDIDATE_VERSION])) };
   const report = join(directory, "report.json");
+  expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")).toContain(
+    'node scripts/registry-container-disposition.mjs --dependency-policy "$project" "$consumer_registry" \\\n' +
+    '  "$artifact_stage/dependency-policy.json" "$release_set" "$version"');
   // The package.json installed at each candidate lock location: by default
   // the lock entry's own name and version; `null` installs none.
   const installed: Record<string, Record<string, unknown> | null> = {};
@@ -239,6 +364,47 @@ function writeSummary(overrides: Record<string, string> = {}) {
 }
 
 describe("registry/container evidence", () => {
+  it("exports partial evidence and preserves the early failure status", () => {
+    const { output, result } = runEarlyFailure();
+    expect(result.status).toBe(17);
+    expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    expect(readFileSync(join(output, "generated-package.json"), "utf8")).toBe('{"name":"one-click-agent"}\n');
+    expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe('{"lockfileVersion":3}\n');
+    // The runner's tool versions are evidence too; the stubs print nothing.
+    expect(readFileSync(join(output, "runner-tools.txt"), "utf8")).toMatch(/^bash \d+\.\d+/);
+  });
+
+  it("keeps the consumer's diagnostics when the generated doctor fails before any of them is exported", async () => {
+    const { output, result, directory } = await runToConsumerStage();
+    expect(result.status, result.stderr).toBe(1);
+    const evidence = (name: string) => readFileSync(join(output, name), "utf8");
+    expect(evidence("doctor.log")).toBe("doctor: release metadata is unreadable\n");
+    expect(evidence("doctor.exit-code")).toBe("1\n");
+    expect(evidence("generated-tests.exit-code")).toBe("0\n");
+    expect(evidence("generated-package.json")).toBe('{"name":"one-click-agent"}\n');
+    expect(evidence("generated-package-lock.json")).toBe('{"lockfileVersion":3,"packages":{}}\n');
+    expect(evidence("generation.log")).toContain("dacs:doctor exited 1");
+    for (const name of ["release-provenance.json", "SHA256SUMS", "registry.log", "runner-tools.txt"]) {
+      expect(existsSync(join(output, name)), name).toBe(true);
+    }
+    expect(JSON.parse(evidence("acceptance-summary.json"))).toMatchObject({ complete: false, failedStage: "consumer",
+      exitCode: 1, failureClass: "functional" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage consumer");
+    // The temporary acceptance root, which held them, is gone.
+    expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
+  });
+
+  it("finishes cleanup and keeps the original status when an evidence write fails", () => {
+    // A directory where the exit-code file belongs makes that write fail.
+    const { directory, output, result } = runEarlyFailure(
+      '  mkdir -p "$directory/artifacts/acceptance.exit-code"',
+    );
+    expect(result.status).toBe(17);
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
+  });
+
   it("rejects a registry lock entry with different tarball bytes and reports both digests", () => {
     const { packages, run } = dependencyPolicyHarness();
     expect(run().status).toBe(0);
@@ -1047,6 +1213,19 @@ describe("lock engine scan", () => {
     expect(satisfiesEngineRange(version, range)).toBe(expected);
   });
 
+  it("records the container's Node and npm with the script's own command, not a second npm ci", () => {
+    const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8");
+    expect(script).not.toContain("--no-engine-strict");
+    const command = script.split("\n").find((line) => line.includes("> /work/engine-versions.json"))!.trim()
+      .replace("/work/engine-versions.json", "engine-versions.json");
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-versions-"));
+    scratch.push(directory);
+    const result = runBash(["-ceu", command], { cwd: directory,
+      env: { PATH: stubBin(directory, { npm: "echo 11.19.0" }) } });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(readFileSync(join(directory, "engine-versions.json"), "utf8")))
+      .toEqual({ node: process.version, npm: "11.19.0" });
+  });
 });
 
 describe("acceptance failure class", () => {
@@ -1138,6 +1317,16 @@ describe("acceptance failure class", () => {
       const read = reader({ "generation.log": npmOutput("npm-install-network-errors", name) });
       expect(classifyAcceptanceFailure({ stage: "consumer", read }).failureClass).toBe("network");
     });
+
+  it("records the class in the early-failure summary and its annotation", () => {
+    const { output, result } = runEarlyFailure();
+    expect(result.status).toBe(17);
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      schema: "dacs-registry-container-acceptance/v1", complete: false, failedStage: "release-set", exitCode: 17,
+      failureClass: "functional" });
+    expect(result.stdout).toContain(
+      "::error title=Registry/container acceptance functional failure::stopped at stage release-set with exit 17");
+  });
 
 });
 
