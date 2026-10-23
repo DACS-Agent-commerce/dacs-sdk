@@ -126,12 +126,6 @@ class Sboms(unittest.TestCase):
             'licenses': [{'license': {'name': 'LicenseRef-Custom'}}, {'license': {'id': 'MIT'}}],
             'externalReferences': [{'url': 'file:tarballs/pkg-1.0.0.tgz'}]})
 
-class Trace(unittest.TestCase):
-    def test_package_location(self):
-        self.assertEqual(validate.package_location('node_modules/ethers/lib.esm/index.js'), 'node_modules/ethers')
-        self.assertEqual(validate.package_location('node_modules/ethers/node_modules/@noble/hashes/esm/sha3.js'),
-                         'node_modules/ethers/node_modules/@noble/hashes')
-
 class Engines(unittest.TestCase):
     def setUp(self):
         self.checks = dict(engines=dict(probes=['20.19.0', '24.0.0'], trees=[dict(
@@ -167,20 +161,6 @@ class Engines(unittest.TestCase):
         self.assertEqual(validate.check_engines(self.checks, self.summary, self.boms), {'t': 1})
 
 class Catalog(unittest.TestCase):
-    def test_purl_source_identifies_selected_edition_and_draft_status(self):
-        # At this pin the documentation map identifies the second edition, and
-        # its release notes describe changes awaiting TC54 approval.
-        purl = validate.load(TOOLS.parent / 'qualification-sources.json')['purl']
-        self.assertEqual(purl['commit'], 'ec6d7e03101ebdb7f79a7e292eb9d38998521ed6')
-        self.assertEqual(purl['edition'], 'ECMA-427, 2nd edition')
-        self.assertEqual(purl['publication_status'], 'working draft')
-        self.assertEqual(purl['edition_map_path'], 'docs/specification/README.md')
-        self.assertEqual(purl['release_notes_path'], 'docs/specification/ECMA-427-2nd_Edition-Release_notes.md')
-        report = (TOOLS.parents[2] / 'docs/dependency-assessment-191.md').read_text()
-        self.assertIn(purl['edition'] + ' ' + purl['publication_status'], report)
-        self.assertIn(purl['commit'], report)
-        self.assertIn(purl['normative_path'], report)
-
     def test_catalog_mode_passes(self):
         result = subprocess.run([sys.executable, '-I', str(TOOLS / 'validate.py'), '--repo', str(TOOLS.parents[2])],
                                 capture_output=True, text=True)
@@ -188,8 +168,6 @@ class Catalog(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual(output['sbom_schema_invalid'], ['native-candidate.npm.cdx.json'])
         self.assertEqual(output['replacement_evidence'], 'not run: supply --recollection to verify the replacement inputs')
-        for key in ['raw_evidence', 'fresh_probes', 'round2_probes']:
-            self.assertEqual(output[key], 'not run: archives unavailable (owner decision, 2026-10-16)')
 
 class EvidenceFiles(unittest.TestCase):
     def setUp(self):

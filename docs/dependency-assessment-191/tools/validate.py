@@ -1,4 +1,4 @@
-"""Validate the portable catalog and optional historical or replacement evidence."""
+"""Validate the portable catalog and optional replacement evidence."""
 from pathlib import Path
 import argparse
 import collections
@@ -84,12 +84,6 @@ def schema_result(validator, bom):
     errors = sorted(errors)
     duplicates = {k: n for k, n in sorted(bom_refs(bom).items()) if n > 1}
     return dict(valid=not errors and not duplicates, errors=errors, duplicate_bom_refs=duplicates)
-
-def package_location(file):
-    """Installed package directory that contains a traced file: the last node_modules/<name> segment."""
-    parts = file.split('/')
-    index = max(i for i, part in enumerate(parts) if part == 'node_modules')
-    return '/'.join(parts[:index + (3 if parts[index + 1].startswith('@') else 2)])
 
 def via_sources(items, name):
     found, queue, seen = {}, [name], set()
@@ -280,9 +274,6 @@ def check_recollection(root, evidence, out, summaries, rollup, ranges, boms, val
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[3])
-    parser.add_argument('--collection', type=Path, help='Retained directory containing raw/ and tarballs/.')
-    parser.add_argument('--probe-root', type=Path, help='Fix-round scratch directory containing raw/ and consumers/.')
-    parser.add_argument('--round2-root', type=Path, help='Extracted round-2 evidence containing raw/ and consumers/.')
     parser.add_argument('--recollection', type=Path, help='Replacement collection with raw/, sources/, tarballs/ and its archive alongside it.')
     parser.add_argument('--npm-root', type=Path, help='npm 10.9.9 installation for pinned semver checks in every mode.')
     parser.add_argument('--output', type=Path, help='Optional result file; default is stdout only.')
@@ -341,7 +332,7 @@ def main():
     summaries = load(OUT / 'summary.json')
     boms = {}
     results = []
-    match = semver_matcher(args.npm_root) if args.collection or args.recollection else None
+    match = semver_matcher(args.npm_root) if args.recollection else None
     for summary in summaries:
         name = summary['tree']
         rows = [r for r in rollup if r['tree'] == name]
@@ -351,32 +342,7 @@ def main():
             assert severity[key] == summary['audit_package_counts'][key]
         assert sum(r['tree'] == name for r in ranges) == summary['source_range_rows']
         bom = boms[name] = load(OUT / 'sboms' / (name + '.physical.cdx.json'))
-        locations = check_bom(bom, summary['physical_components'])
-        if args.collection:
-            raw = args.collection / 'raw' / name
-            assert digest(raw / 'package-lock.json') == summary['lock_sha256']
-            assert (raw / 'npm-audit.json').read_bytes() == (raw / 'audit.stdout.log').read_bytes()
-            assert 'overrides' not in load(raw / 'package.json')
-            audit = audit_items(load(raw / 'npm-audit.json'))
-            inventory = load(raw / 'physical-inventory.json')
-            assert locations == {x['location'] for x in inventory}
-            assert bom == normalize_bom(load(raw / 'sbom-installed.cdx.json'))
-            installed = {x['location']: x for x in inventory}
-            for row in [*rows, *(r for r in ranges if r['tree'] == name)]:
-                for instance in row['instances']:
-                    if instance['installed']:
-                        assert instance['version'] == installed[instance['location']]['version']
-            want_packages, want_ranges = expected_rows(name, audit, load(raw / 'package-lock.json')['packages'],
-                                                       set(installed), match)
-            compare_rows(want_packages, rows, name + ' package rows')
-            compare_rows(want_ranges, [r for r in ranges if r['tree'] == name], name + ' exact-range rows')
-            assert load(raw / 'sbom.command.json')['exit_code'] == summary['primary_sbom_exit']
-            if summary['primary_sbom_exit']:
-                assert 'ESBOMPROBLEMS' in (raw / 'sbom.stderr.log').read_text()
-            else:
-                assert (raw / 'sbom.cdx.json').read_bytes() == (raw / 'sbom.stdout.log').read_bytes()
-                assert load(raw / 'sbom.cdx.json')['bomFormat'] == 'CycloneDX'
-                assert load(OUT / 'sboms' / (name + '.npm.cdx.json')) == normalize_bom(load(raw / 'sbom.cdx.json'))
+        check_bom(bom, summary['physical_components'])
         results.append(dict(tree=name, physical_components=summary['physical_components'],
                             package_rows=len(rows), source_range_rows=summary['source_range_rows'],
                             primary_sbom_exit=summary['primary_sbom_exit']))
@@ -384,95 +350,6 @@ def main():
     assert engine_floor['native-candidate'] == 0
     replacement = check_recollection(args.recollection, load(OUT / 'recollection-2026-10-16.json'), OUT,
                                     summaries, rollup, ranges, boms, validator, match) if args.recollection else None
-
-    raw_checked = 0
-    if args.collection:
-        for entry in manifest['raw_files']:
-            path = args.collection / entry['path']
-            assert digest(path) == entry['sha256'] and path.stat().st_size == entry['bytes'], entry['path']
-            raw_checked += 1
-        archive = args.collection / 'evidence-original.tar.gz'
-        assert digest(archive) == manifest['raw_archive']['sha256']
-        with tarfile.open(archive) as tar:
-            for entry in manifest['raw_files']:
-                assert hashlib.sha256(tar.extractfile(entry['path']).read()).hexdigest() == entry['sha256']
-        for pack in [*load(OUT / 'packs.json'), manifest['native_artifact']]:
-            path = args.collection / 'tarballs' / pack['tarball'].rsplit('/', 1)[-1]
-            assert digest(path) == pack['sha256']
-            with tarfile.open(archive) as tar:
-                assert hashlib.sha256(tar.extractfile('tarballs/' + path.name).read()).hexdigest() == pack['sha256']
-            with tarfile.open(path) as tar:
-                package = json.load(tar.extractfile('package/package.json'))
-                assert package['version'] == ('0.1.0-alpha.2' if pack is manifest['native_artifact'] else '0.1.0-alpha.0')
-                assert 'overrides' not in package
-
-    fresh = []
-    if args.probe_root:
-        for entry in [*manifest['fix_round']['raw_files'], *manifest['fix_round']['source_files']]:
-            path = args.probe_root / entry['path']
-            assert digest(path) == entry['sha256'] and path.stat().st_size == entry['bytes'], entry['path']
-        if args.collection:
-            archive = args.collection / manifest['fix_round']['archive']['path'].rsplit('/', 1)[-1]
-            assert digest(archive) == manifest['fix_round']['archive']['sha256']
-            with tarfile.open(archive) as tar:
-                for entry in [*manifest['fix_round']['raw_files'], *manifest['fix_round']['source_files']]:
-                    assert hashlib.sha256(tar.extractfile(entry['path']).read()).hexdigest() == entry['sha256']
-        for name in ['live-buyer', 'live-seller']:
-            raw = args.probe_root / 'raw' / name
-            for check in ['typecheck', 'build', 'static-imports']:
-                assert load(raw / (check + '.command.json'))['exit_code'] == 0
-            assert load(raw / 'sbom.command.json')['exit_code'] == 1
-            assert 'ESBOMPROBLEMS' in (raw / 'sbom.stderr.log').read_text()
-            assert load(raw / 'npm-ls.command.json')['exit_code'] == 1
-            counts = tap_counts(raw / 'generated-tests.stdout.log')
-            assert counts == {'tests': 10, 'pass': 9, 'fail': 1, 'skipped': 0}
-            assert 'ok 5 - pre-start doctor rejects an occupied service port' in (raw / 'generated-tests.stdout.log').read_text()
-            assert len(re.findall(r'^test\(', (args.probe_root / 'consumers' / name / 'test/live-bootstrap.test.ts').read_text(), re.M)) == 10
-            fresh.append(dict(tree=name, **counts))
-        raw = args.probe_root / 'raw/native-compatibility'
-        assert tap_counts(raw / 'pure-data-tests.stdout.log') == {'tests': 3, 'pass': 3, 'fail': 0, 'skipped': 0}
-        for name, code in [('original-typecheck', 0), ('import-only-typecheck', 2),
-                           ('adapted-typecheck', 0), ('adapted-without-broad-typecheck', 2)]:
-            assert load(raw / (name + '.command.json'))['exit_code'] == code
-        controls = []
-        for version in ['4.0.16', '4.0.18']:
-            raw = args.probe_root / 'raw' / ('demosdk-' + version)
-            items = audit_items(load(raw / 'audit.stdout.log'))
-            assert len(items) == 73
-            assert collections.Counter(v['severity'] for v in items.values()) == {'low': 19, 'moderate': 14, 'high': 37, 'critical': 3}
-            controls.append({(name, value['severity']) for name, value in items.items()})
-        assert controls[0] == controls[1]
-
-    literal_pins = []
-    if args.round2_root:
-        for entry in manifest['fix_round2']['files']:
-            path = args.round2_root / entry['path']
-            assert digest(path) == entry['sha256'] and path.stat().st_size == entry['bytes'], entry['path']
-        if args.collection:
-            archive = args.collection / manifest['fix_round2']['archive']['path'].rsplit('/', 1)[-1]
-            assert digest(archive) == manifest['fix_round2']['archive']['sha256']
-        for name in ['live-buyer', 'live-seller']:
-            raw = args.round2_root / 'raw' / name
-            for label, counts in [('file-spec-tests', {'tests': 10, 'pass': 9, 'fail': 1, 'skipped': 0}),
-                                  ('literal-pin-tests', {'tests': 10, 'pass': 10, 'fail': 0, 'skipped': 0})]:
-                assert tap_counts(raw / (label + '.stdout.log')) == counts
-                assert load(raw / (label + '.command.json'))['exit_code'] == counts['fail']
-            comparison = load(raw / 'literal-pin-comparison.json')
-            assert comparison['installed_modules_unchanged'] and comparison['manifest_restored']
-            assert comparison['lock_sha256_before'] == comparison['lock_sha256_after']
-            generated = load(args.collection / 'raw' / name / 'generated-package.json') if args.collection else None
-            literal = load(raw / 'literal-pin-package.json')
-            for package in ['@kynesyslabs/dacs', '@kynesyslabs/dacs-node']:
-                assert literal['dependencies'][package] == '0.1.0-alpha.0'
-                if generated: assert generated['dependencies'][package] == literal['dependencies'][package]
-            assert load(raw / 'trace-without-flag.command.json')['exit_code'] == 1
-            assert load(raw / 'static-imports.command.json')['exit_code'] == 0
-            trace = load(raw / 'static-imports.json')
-            # The retained trace predates the owner fix: six nameless module-type stubs stood in for five packages.
-            assert len(trace['files']) == 643 and len({package_location(f) for f in trace['files']}) == 71
-            literal_pins.append(dict(tree=name, tests=10, passed=10, failed=0,
-                                     cause='The assessment replaced generated literal version pins with file references.'))
-        assert load(args.round2_root / 'raw/trace-fixture/missing-relative.command.json')['exit_code'] == 1
 
     # Check authored catalog text without changing original tool data.
     terms = ['gh'+'sa', 'advi'+'sory', 'vulnera'+'bility', 'by'+'pass']
@@ -499,13 +376,8 @@ def main():
                   catalog_files_checked=len(manifest['catalog_files']), links_checked=len(links),
                   sbom_schema_checked=len(shipped),
                   sbom_schema_invalid=sorted(n for n in shipped if not schema['files'][n]['valid']),
-                  original_raw_files_checked=raw_checked, trees=results, fresh_generated_tests=fresh,
+                  trees=results,
                   replacement_evidence=replacement or 'not run: supply --recollection to verify the replacement inputs',
-                  raw_evidence='verified, including every package and exact-range row' if args.collection
-                  else 'not run: archives unavailable (owner decision, 2026-10-16)',
-                  fresh_probes='verified' if args.probe_root else 'not run: archives unavailable (owner decision, 2026-10-16)',
-                  literal_pin_probes=literal_pins,
-                  round2_probes='verified' if args.round2_root else 'not run: archives unavailable (owner decision, 2026-10-16)',
                   open_checks=['D-2: supporting file dependency specifications is an optional owner decision; no generated doctor defect established.'],
                   blocked=['Primary live npm SBOM commands still fail on optional range conflicts.',
                            'D-1 also requires the primary output to pass the CycloneDX 1.5 schema with every bom-ref unique.',
