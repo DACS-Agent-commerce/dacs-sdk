@@ -143,27 +143,8 @@ describe("advisory-ID baseline", () => {
       .toMatchObject({ unlistedAdvisories: ["GHSA-23hp-3jrh-7fpw"], assessedAdvisories: [] });
   });
 });
-// The real b7b180f evidence (run 38214792229): functional pass, every non-audit
-// check failing on findings that main's published dependency tree carries.
-// The lock keeps only the entries these tests use, each byte-identical to that
-// run's lock. engine-versions.json holds the container versions its
-// engine-strict.log reports (`Actual:`); that run did not yet write the file.
+// Selected original lock entries used by the offline engine scan.
 const b7b180f = join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f");
-// .gitignore ignores *.log, so that run's engine-strict.log is stored as
-// engine-strict.log.txt; every other file keeps its artifact name.
-const b7b180fFile = (name: string) => join(b7b180f, name === "engine-strict.log" ? "engine-strict.log.txt" : name);
-// That run predates the runtime-image inventory, so these tests stand in one
-// derived from the lock in use: its production closure without the optional
-// entries, which is what the image's `npm prune --omit=dev --omit=optional`
-// leaves. A CI run uploads observed fixtures with a real inventory.
-function closureInventory(lockText: string | undefined) {
-  const packages: Record<string, { version?: string; name?: string; dev?: boolean; optional?: boolean }> =
-    JSON.parse(lockText ?? "{}").packages ?? {};
-  return JSON.stringify({ schema: "dacs-runtime-image-inventory/v1", packages: Object.entries(packages)
-    .filter(([location, entry]) => location.startsWith("node_modules/") && !entry.dev && !entry.optional)
-    .map(([location, entry]) => ({ location, version: entry.version,
-      name: entry.name ?? location.slice(location.lastIndexOf("node_modules/") + 13) })) });
-}
 describe("runtime-image package inventory", () => {
   it("reports a lock without packages as an incomplete scan", () => {
     expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [] }, {}))
@@ -237,10 +218,8 @@ describe("runtime-image package inventory", () => {
 // EBADENGINE and then failed npm's lock sync check on the nested Git `avsc`
 // (EUSAGE), so the scan never completed and the job exited 3.
 describe("lock engine scan", () => {
-  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
   const lock = () => JSON.parse(readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8"));
   const container = { node: "v20.19.1", npm: "11.19.0" };
-  const byLocation = (items: { location: string }[]) => [...items].sort((a, b) => a.location.localeCompare(b.location));
   it("skips optional packages and non-object engines, as npm's check does", () => {
     // @arbitrum/sdk (optional) declares engines.npm "please-use-yarn"; verror
     // (optional) declares the legacy array form.
