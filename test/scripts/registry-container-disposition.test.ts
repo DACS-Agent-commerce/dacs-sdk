@@ -493,7 +493,250 @@ function closureInventory(lockText: string | undefined) {
     .map(([location, entry]) => ({ location, version: entry.version,
       name: entry.name ?? location.slice(location.lastIndexOf("node_modules/") + 13) })) });
 }
+function b7b180fEvidence(overrides: Record<string, string | undefined> = {}) {
+  const recorded = (name: string) => name in overrides ? overrides[name]
+    : (() => { try { return readFileSync(b7b180fFile(name), "utf8"); } catch { return undefined; } })();
+  const read = (name: string) => name === "runtime-image-inventory.json" && !(name in overrides)
+    ? closureInventory(recorded("generated-package-lock.json")) : recorded(name);
+  const summary = JSON.parse(readFileSync(join(b7b180f, "acceptance-summary.json"), "utf8"));
+  summary.securityGate.findings = extractPolicyFindings(read);
+  return summary;
+}
+
+describe("#191 policy-finding baseline", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+
+  it("classifies the b7b180f run as baseline-only (exit 4), not exit 3", () => {
+    const summary = b7b180fEvidence();
+    expect(classifyPolicyChecks(summary, baseline)).toEqual({ registryDependency: "baseline", productionImage: "baseline",
+      engineStrict: "baseline", lockSbom: "baseline", physicalSbom: "baseline" });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, failureClass: "policy" });
+    expect(summary.securityGate.findings.engine.violations).toHaveLength(16);
+    // Without the recorded findings the same run is blocked, as at b7b180f.
+    expect(registryContainerDisposition(summary, { ...baseline, policyFindings: undefined }).exitCode).toBe(3);
+  });
+
+  const lock = () => JSON.parse(readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8"));
+  const withLock = (edit: (packages: Record<string, Record<string, unknown>>) => void) => {
+    const value = lock(); edit(value.packages); return JSON.stringify(value);
+  };
+  const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ schema: "dacs-registry-dependency-policy/v1",
+    passed: false, violations });
+  const avsc = { location: "node_modules/@bundlr-network/client/node_modules/arbundles", field: "dependencies.avsc",
+    value: "https://github.com/Irys-xyz/avsc#csp-fixes" };
+  const strictLog = readFileSync(b7b180fFile("engine-strict.log"), "utf8");
+  const sbomErr = (name: string) => readFileSync(join(b7b180f, name), "utf8");
+  it.each([
+    ["a different Git dependency", "registryDependency", { "dependency-policy.json": dependencyPolicy([avsc,
+      { location: "node_modules/other", field: "dependencies.x", value: "git+https://github.com/x/y.git" }]) }],
+    ["the same Git dependency from another ref", "registryDependency", { "dependency-policy.json":
+      dependencyPolicy([{ ...avsc, value: "https://github.com/Irys-xyz/avsc#main" }]) }],
+    ["the Git dependency at another lock location", "registryDependency", { "dependency-policy.json":
+      dependencyPolicy([{ ...avsc, location: "node_modules/arbundles" }]) }],
+    ["a direct file: dependency", "registryDependency", { "dependency-policy.json":
+      dependencyPolicy([{ location: "package.json", value: "file:../dacs" }]) }],
+    ["a new engine violation", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/new-pkg"] = { version: "1.0.0", integrity: "sha512-new", engines: { node: ">=22" } }; }) }],
+    ["a new violation of a package's npm engine", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/minipass"]!.engines = { node: ">=16", npm: ">=12" }; }) }],
+    ["a baselined package with a changed range", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/@npmcli/agent"]!.engines = { node: ">=24" }; }) }],
+    ["a strict failure not explained by the scan", "engineStrict", { "engine-strict.log":
+      strictLog.replaceAll("@npmcli/agent@5.0.2", "other@1.0.0") }],
+    ["an engine range the scan cannot read", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/minipass"]!.engines = { node: "please-use-yarn" }; }) }],
+    ["an engine scan without the container's versions", "engineStrict", { "engine-versions.json": undefined }],
+    ["an engine scan without the container's npm version", "engineStrict", { "engine-versions.json":
+      JSON.stringify({ node: "v20.19.1" }) }],
+    ["an engine-strict failure other than EBADENGINE", "engineStrict", { "engine-strict.log": "npm error code EBADPLATFORM\n" }],
+    ["a new lock SBOM problem", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err") +
+      "npm error invalid: viem@2.0.0, ^2.55.19 required by x@1.0.0\n" }],
+    ["a lock SBOM usage error", "lockSbom", { "consumer-lock-sbom.err": "npm error code EUSAGE\n" }],
+    ["baselined SBOM lines under another error code", "physicalSbom", { "consumer-physical-sbom.err":
+      sbomErr("consumer-physical-sbom.err").replace("ESBOMPROBLEMS", "EINVALIDTREE") }],
+    ["a new physical SBOM problem", "physicalSbom", { "consumer-physical-sbom.err": sbomErr("consumer-physical-sbom.err") +
+      "npm error missing: other@1.0.0, required by x@1.0.0\n" }],
+    ["a lock SBOM problem against a changed range", "lockSbom", { "consumer-lock-sbom.err":
+      sbomErr("consumer-lock-sbom.err").replace(">=0.62.0 <1.0.0", ">=0.63.0 <1.0.0") }],
+    ["typescript in the image but not at the lock's top level", "productionImage", {
+      "generated-package-lock.json": withLock(p => { delete p["node_modules/typescript"]; }) }],
+    ["rubic-sdk in the image", "productionImage", { "runtime-image-policy.json": JSON.stringify({
+      ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }) }],
+  ])("still exits 3 for %s", (_label, check, overrides) => {
+    const summary = b7b180fEvidence(overrides as Record<string, string | undefined>);
+    expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("blocked");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  // Final r11 review: the consumer installs without a lockfile, so a patch
+  // release under the same rule (make-fetch-happen takes @npmcli/agent ^5.0.0)
+  // must not turn every PR, the drift job and prereleases red.
+  const release = (location: string, version: string) => (p: Record<string, Record<string, unknown>>) => {
+    p[location]!.version = version; p[location]!.integrity = `sha512-${version}-next-release`;
+  };
+  it.each([
+    ["@npmcli/agent 5.0.3 with the same engine range", "engineStrict", {
+      "generated-package-lock.json": withLock(release("node_modules/@npmcli/agent", "5.0.3")),
+      "engine-strict.log": strictLog.replaceAll("@npmcli/agent@5.0.2", "@npmcli/agent@5.0.3") }],
+    ["arbundles 0.6.24 with the same Git avsc spec", "registryDependency", {
+      "generated-package-lock.json": withLock(release("node_modules/@bundlr-network/client/node_modules/arbundles", "0.6.24")) }],
+    ["typescript 5.9.3 in the image", "productionImage", {
+      "generated-package-lock.json": withLock(release("node_modules/typescript", "5.9.3")) }],
+    ["lock SBOM problems with other installed versions", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err")
+      .replace("arbundles@0.6.23", "arbundles@0.6.24").replace("@ton/core@0.59.1", "@ton/core@0.59.2")
+      .replace("@ton/ton@15.4.0", "@ton/ton@15.4.1").replace("@solana/spl-token@0.4.15", "@solana/spl-token@0.4.16") }],
+    ["a physical SBOM problem with other installed versions", "physicalSbom", { "consumer-physical-sbom.err":
+      sbomErr("consumer-physical-sbom.err").replace("node-fetch@2.7.0", "node-fetch@2.7.1")
+        .replace("@near-js/providers@0.2.3", "@near-js/providers@0.2.4") }],
+  ])("stays baseline-only (exit 4) for %s", (_label, check, overrides) => {
+    const summary = b7b180fEvidence(overrides as Record<string, string | undefined>);
+    expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("baseline");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, failureClass: "policy" });
+  });
+
+  it("passes a check with no findings and blocks a passing flag that carries findings", () => {
+    const summary = b7b180fEvidence();
+    summary.securityGate.registryDependencyPolicyPassed = true;
+    expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("blocked");
+    summary.securityGate.findings.gitDependencies = [];
+    expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("passed");
+  });
+});
+
+// The image check sees every package in the final image, not only the two the
+// policy names: each must be in the lock's production closure at the lock's
+// name and version, and the image must hold every required closure entry.
 describe("runtime-image package inventory", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const lockText = readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8");
+  const inventory = (edit: (packages: Array<Record<string, unknown>>) => void) => {
+    const value = JSON.parse(closureInventory(lockText)); edit(value.packages); return JSON.stringify(value);
+  };
+  const add = (location: string, name: string, version: string) =>
+    inventory(packages => { packages.push({ location, name, version }); });
+
+  it("as recorded, without an inventory, blocks the b7b180f run (exit 3)", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": undefined });
+    expect(summary.securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  it.each([
+    ["vitest", add("node_modules/vitest", "vitest", "3.2.4")],
+    ["eslint", add("node_modules/eslint", "eslint", "9.30.0")],
+    ["a nested esbuild", add("node_modules/sigstore/node_modules/esbuild", "esbuild", "0.25.5")],
+    ["a scoped package", add("node_modules/@types/node", "@types/node", "20.19.1")],
+    ["a closure package at another version", inventory(packages => {
+      packages.find(item => item.location === "node_modules/semver")!.version = "7.7.1"; })],
+    ["a closure location holding another package", inventory(packages => {
+      packages.find(item => item.location === "node_modules/ssri")!.name = "evil-ssri"; })],
+    ["an optional entry the image keeps at another version", add("node_modules/verror", "verror", "1.10.1")],
+  ])("blocks %s in the image (exit 3)", (_label, observed) => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": observed });
+    expect(summary.securityGate.findings.productionImageDependencies.length).toBeGreaterThan(1);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+    // A run whose named-package flag passed is blocked by the same finding.
+    summary.securityGate.productionImageDependencyPolicyPassed = true;
+    summary.securityGate.findings.productionImageDependencies =
+      summary.securityGate.findings.productionImageDependencies.filter((item: { name: string }) => item.name !== "typescript");
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("stays baseline-only for an optional entry the image keeps, and for an absent one", () => {
+    for (const observed of [add("node_modules/verror", "verror", "1.10.0"), undefined]) {
+      const summary = b7b180fEvidence(observed === undefined ? {} : { "runtime-image-inventory.json": observed });
+      expect(summary.securityGate.findings.productionImageInventory).toEqual({ scanComplete: true, errors: [], missing: [] });
+      expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("baseline");
+      expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4 });
+    }
+  });
+
+  it("blocks an image that lacks a required closure package", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": inventory(packages => {
+      packages.splice(packages.findIndex(item => item.location === "node_modules/minipass"), 1); }) });
+    expect(summary.securityGate.findings.productionImageInventory.missing).toEqual(["node_modules/minipass"]);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("blocks a dev-only lock entry in the image", () => {
+    const summary = b7b180fEvidence({
+      "generated-package-lock.json": withDev("node_modules/proc-log"),
+      "runtime-image-inventory.json": inventory(() => undefined),
+    });
+    expect(summary.securityGate.findings.productionImageDependencies).toContainEqual(
+      { name: "proc-log", location: "node_modules/proc-log", version: "7.0.0", integrity: expect.any(String) });
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("lists every extra image package when neither named package is present", () => {
+    const policy = JSON.parse(readFileSync(b7b180fFile("runtime-image-policy.json"), "utf8"));
+    const summary = b7b180fEvidence({
+      "runtime-image-policy.json": JSON.stringify({ ...policy, typescriptPresent: false, rubicSdkPresent: false }),
+      "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4"),
+    });
+    expect(summary.securityGate.findings.productionImageDependencies).toEqual([
+      { name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null }]);
+  });
+
+  it("lists a named package once when it is also outside the closure", () => {
+    const summary = b7b180fEvidence({
+      "generated-package-lock.json": withDev("node_modules/typescript"),
+      "runtime-image-inventory.json": inventory(() => undefined),
+    });
+    expect(summary.securityGate.findings.productionImageDependencies
+      .filter((item: { location: string }) => item.location === "node_modules/typescript")).toHaveLength(1);
+  });
+  function withDev(location: string) {
+    const value = JSON.parse(lockText); value.packages[location].dev = true; return JSON.stringify(value);
+  }
+
+  it.each([
+    ["unreadable JSON", "{"],
+    ["another schema", JSON.stringify({ schema: "dacs-runtime-image-inventory/v0", packages: [] })],
+    ["no package list", JSON.stringify({ schema: "dacs-runtime-image-inventory/v1" })],
+    ["an entry without a version", add("node_modules/x", "x", undefined as never)],
+    ["an entry without a name", add("node_modules/x", undefined as never, "1.0.0")],
+    ["a repeated location", add("node_modules/semver", "semver", "7.8.5")],
+    ["a scope directory as a package", add("node_modules/@sigstore", "@sigstore", "1.0.0")],
+    ["a location outside node_modules", add("lib/x", "x", "1.0.0")],
+    ["a dot directory", add("node_modules/.bin", ".bin", "1.0.0")],
+  ])("blocks an inventory with %s", (_label, observed) => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": observed });
+    expect(summary.securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("waives a package only when the baseline records its name and location", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4") });
+    const narrow = { ...baseline, policyFindings: { ...baseline.policyFindings, productionImageDependencies: [
+      ...baseline.policyFindings.productionImageDependencies, { name: "vitest", location: "node_modules/vitest" }] } };
+    expect(classifyPolicyChecks(summary, narrow).productionImage).toBe("baseline");
+    expect(registryContainerDisposition(summary, narrow)).toMatchObject({ exitCode: 4 });
+    const elsewhere = { ...narrow, policyFindings: { ...narrow.policyFindings, productionImageDependencies: [
+      ...baseline.policyFindings.productionImageDependencies, { name: "vitest", location: "node_modules/x/node_modules/vitest" }] } };
+    expect(classifyPolicyChecks(summary, elsewhere).productionImage).toBe("blocked");
+  });
+
+  // A blocked run's log must say which findings the baseline lacks, so they
+  // can be reviewed without the run's artifacts.
+  it("names the findings outside the baseline when it blocks", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4") });
+    const recorded = baseline.policyFindings.physicalSbomProblems as string[];
+    summary.securityGate.physicalSbomExitCode = 1;
+    summary.securityGate.findings.physicalSbom = { exitCode: 1, code: "ESBOMPROBLEMS",
+      problems: [...recorded, "invalid: left-pad@9.9.9 node_modules/left-pad"] };
+    const result = registryContainerDisposition(summary, baseline);
+    expect(result).toMatchObject({ exitCode: 3,
+      checks: { productionImage: "blocked", physicalSbom: "blocked" } });
+    expect(result.message).toContain('productionImage: {"name":"vitest","location":"node_modules/vitest"');
+    expect(result.message).toContain("physicalSbom: invalid: left-pad@9.9.9 node_modules/left-pad");
+    for (const problem of recorded) expect(result.message).not.toContain(problem);
+    expect(unlistedPolicyFindings(summary, baseline, ["physicalSbom"]))
+      .toEqual({ physicalSbom: ["invalid: left-pad@9.9.9 node_modules/left-pad"] });
+  });
+
   it("reports a lock without packages as an incomplete scan", () => {
     expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [] }, {}))
       .toEqual({ scanComplete: false, errors: ["the generated lock has no packages"], unexpected: [], missing: [] });
@@ -570,6 +813,21 @@ describe("lock engine scan", () => {
   const lock = () => JSON.parse(readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8"));
   const container = { node: "v20.19.1", npm: "11.19.0" };
   const byLocation = (items: { location: string }[]) => [...items].sort((a, b) => a.location.localeCompare(b.location));
+
+  it("lists every violation of a tree with a nested Git dependency, exactly the #191 baseline", () => {
+    const value = lock();
+    expect(value.packages["node_modules/@bundlr-network/client/node_modules/arbundles"].dependencies.avsc)
+      .toBe("https://github.com/Irys-xyz/avsc#csp-fixes");
+    const scan = scanLockEngines(value, container);
+    expect(scan).toMatchObject({ scanComplete: true, errors: [], node: "v20.19.1", npm: "11.19.0" });
+    expect(scan.evaluatedPackages).toBe(Object.values(value.packages)
+      .filter((entry) => (entry as { optional?: boolean }).optional !== true).length);
+    expect(byLocation(scan.violations)).toEqual(byLocation(baseline.policyFindings.engineViolations));
+    expect(scan.violations).toHaveLength(16);
+    expect(b7b180fEvidence().securityGate.findings.engine).toMatchObject({ scanComplete: true,
+      scan: { node: "v20.19.1", npm: "11.19.0", errors: [] }, reportedPackage: "@npmcli/agent@5.0.2" });
+  });
+
   it("skips optional packages and non-object engines, as npm's check does", () => {
     // @arbitrum/sdk (optional) declares engines.npm "please-use-yarn"; verror
     // (optional) declares the legacy array form.
