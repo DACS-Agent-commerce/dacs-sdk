@@ -226,7 +226,7 @@ function tokenComparators(token) {
 function hyphenComparators([, fM, fm, fp, , tM, tm, tp, tpr]) {
   const from = isX(fM) ? [] : [[">=", [Number(fM), isX(fm) ? 0 : Number(fm), isX(fm) || isX(fp) ? 0 : Number(fp)]]];
   const to = isX(tM) ? [] : isX(tm) ? [["<", [Number(tM) + 1, 0, 0]]] : isX(tp) ? [["<", [Number(tM), Number(tm) + 1, 0]]]
-    : [[tpr === undefined ? "<=" : "<", [Number(tM), Number(tm), Number(tp)]]];
+    : [["<", [Number(tM), Number(tm), Number(tp) + (tpr === undefined ? 1 : 0)]]];
   return [...from, ...to];
 }
 
@@ -267,6 +267,9 @@ export function satisfiesEngineRange(current, range) {
     }
     return tokens.flatMap(tokenComparators);
   });
+  if (sets.some(set => set.some(([, bound]) => bound?.some(part => !Number.isSafeInteger(part))))) {
+    throw new Error(`unsupported expanded engine range bound in ${JSON.stringify(range)}`);
+  }
   return sets.some(set => set.every(comparator => testComparator(version, comparator)));
 }
 
