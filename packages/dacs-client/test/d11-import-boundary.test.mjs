@@ -15,10 +15,11 @@ test('buyer modules avoid seller state, portal, wallet seams and eager SQLite', 
  import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
  let sqliteAllowed=false,sqliteLoads=0;
  registerHooks({resolve(specifier,context,next){const result=next(specifier,context);
- if(/seller-agent\\.mjs|seller-state|\\/public\\/portal\\/|wallet-not-wired/.test(result.url))throw Error('forbidden buyer dependency '+result.url);
+ if(/seller-agent\\.mjs|seller-state|\\/public\\/portal\\/|wallet-actions-not-wired/.test(result.url))throw Error('forbidden buyer dependency '+result.url);
  if(result.url==='node:sqlite'){assert.equal(sqliteAllowed,true,'eager SQLite');sqliteLoads++;}return result;}});
  await import(${JSON.stringify(new URL('../src/dacs/seller-http.mjs',import.meta.url).href)});
  await import(${JSON.stringify(new URL('../src/wallet/devnet-native-transport.mjs',import.meta.url).href)});
+ await assert.rejects(import(${JSON.stringify(new URL('../src/seams/wallet-actions-not-wired.mjs',import.meta.url).href)}), /forbidden buyer dependency/);
  const {createSellerTransportStore}=await import(${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs',import.meta.url).href)});
  assert.equal(sqliteLoads,0);sqliteAllowed=true;
  const dir=mkdtempSync(join(tmpdir(),'dacs-import-store-'));
@@ -26,8 +27,10 @@ test('buyer modules avoid seller state, portal, wallet seams and eager SQLite', 
  store.bind({seller:'TEST-seller',listingPin:{listingId:'TEST-listing',version:1,contentHash:'a'.repeat(64)}});store.close();assert.equal(sqliteLoads,1);}
  finally{rmSync(dir,{recursive:true,force:true});}`);
 });
-test('provider re-exports the shared payload functions and error identity', () => {
- for(const name of ['EmbeddedWalletError','nativePayloadDigest','storageConfirmationShapeMatches'])assert.equal(wallet[name],helpers[name],name);
+test('served provider loads as a standalone data module', async () => {
+ const source=readFileSync(new URL('../src/public/portal/embedded-wallet/sdk-provider.mjs',import.meta.url),'utf8');
+ const served=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+ assert.equal(await served.nativePayloadDigest({}),await helpers.nativePayloadDigest({}));
 });
 test('production native claim uses the pure payload digest without wallet actions', async () => {
  const {pins}=JSON.parse(readFileSync(new URL('./fixtures/sr2-public-creates.json',import.meta.url)));
