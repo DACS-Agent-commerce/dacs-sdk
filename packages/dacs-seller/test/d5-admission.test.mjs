@@ -1,21 +1,8 @@
-import './helpers/d5-isolated-dependencies.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import {paymentEvidenceAddress} from '@kynesyslabs/dacs';
-import { address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
-const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,withContextHolds,heldPolicyBudget,sellerPurchaseSource,releaseSellerContextHolds }=await import('../src/devnet-demo/operator-approval.mjs');
-const { sellerRecordsPurchaseResolver,SELLER_PURCHASE_OPEN_WINDOW_MS,sellerHeldEvidenceJobs }=await import('../src/devnet-demo/seller-purchase-source.mjs');
-async function directory(t){const root=await mkdtemp(join(tmpdir(),'d5-unit-'));t.after(()=>rm(root,{recursive:true,force:true}));return root;}
-const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,prePaymentOpen:false});
-async function policy(t,{resolvePurchase=()=>null,limits={},paymentPhaseIndex=()=>2}={}){
- const evidencePath=join(await directory(t),'approvals.jsonl');
- const p=createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath,now:()=>T0,sellerApproval:{mode:'policy',...limits},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex}});
- return {p,evidencePath};
-}
+import { parsePolicyLedger, withContextHolds, heldPolicyBudget } from '../src/devnet-demo/operator-approval.mjs';
+import { JOB, NOW, buyer as buyerWallet } from './helpers/protocol-fixture.mjs';
+const JOBS = [JOB, JOB.slice(0,-1) + 'B'], T0 = NOW, buyer = buyerWallet.claim;
 
 test('L2 context holds and sign-authorized rows share the job and hourly budgets without double conversion',()=>{
  const hold={contextHold:'h',jobId:JOBS[0],writes:2,totalOs:'4',recordedAt:100,released:false};
