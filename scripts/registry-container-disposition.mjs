@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { rmSync, writeFileSync, readFileSync, existsSync, appendFileSync } from "node:fs";
+import { rmSync, writeFileSync, readFileSync, existsSync, appendFileSync, renameSync } from "node:fs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { pathToFileURL } from "node:url";
-import { join, posix } from "node:path";
-import { createHash } from "node:crypto";
+import { join, posix, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 // Pure classification of observed advisory IDs against the curated baseline.
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
@@ -69,6 +69,7 @@ function validateAuditGraph(audit) {
   const reached = new Set();
   const dependents = new Map();
   for (const [name, value] of entries) {
+    if (typeof value.isDirect !== "boolean") throw new Error("npm audit directness must be an explicit boolean");
     if (!Array.isArray(value.via) || value.via.length === 0 || value.via.length > MAX_ADVISORY_EDGES) {
       throw new Error("incomplete npm audit advisory graph");
     }
@@ -105,9 +106,9 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
   // A run that stopped before its audit was classified has no advisory IDs to
   // compare: report where and why it stopped, not a malformed baseline.
   if (summary?.schema === ACCEPTANCE_SUMMARY_SCHEMA && summary.complete === false) {
-    const failureClass = FAILURE_CLASSES.includes(summary.failureClass) ? summary.failureClass : "functional";
+    const failureClass = interruptedFailureClass(summary);
     return { exitCode: 1, evaluated: false, failureClass, message: "Advisory-ID drift was not evaluated: acceptance stopped " +
-      `at stage ${String(summary.failedStage)} (${failureClass} failure${failureClass === "network" ? "; rerun the workflow" : ""})` };
+      `at stage ${String(summary.failedStage || "unknown")} (${failureClass} failure${failureClass === "network" ? "; rerun the workflow" : ""})` };
   }
   if (summary.complete !== true) return { exitCode: 3, message: "acceptance is not complete" };
   try {
@@ -296,6 +297,12 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
 // npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
 // `Response timeout while trying to fetch` for a body timeout.
 export const FAILURE_CLASSES = ["network", "policy", "functional"];
+function interruptedFailureClass(summary) {
+  return typeof summary.failedStage === "string" && summary.failedStage.trim() && FAILURE_CLASSES.includes(summary.failureClass) &&
+    (summary.failureClass !== "network" || (Array.isArray(summary.failureEvidence) && summary.failureEvidence.some(line =>
+      typeof line === "string" && line.trim()))) ? summary.failureClass : "functional";
+}
+
 const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
 
 // npm's EBADENGINE check (npm-install-checks) tests each non-optional package's
@@ -643,9 +650,9 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
     return { exitCode: 1, failureClass: "functional", message: "registry/container acceptance summary has an unexpected schema" };
   }
   if (summary.complete === false) {
-    const failureClass = FAILURE_CLASSES.includes(summary.failureClass) ? summary.failureClass : "functional";
+    const failureClass = interruptedFailureClass(summary);
     return { exitCode: 1, failureClass, message: `registry/container acceptance stopped at stage ` +
-      `${String(summary.failedStage)} (${failureClass} failure)` };
+      `${String(summary.failedStage || "unknown")} (${failureClass} failure)` };
   }
   if (summary.complete !== true) return { exitCode: 1, failureClass: "functional", message: "acceptance is not complete" };
   if (summary.docker?.policy?.schema !== RUNTIME_IMAGE_POLICY_SCHEMA ||
@@ -715,6 +722,19 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
     ...policy };
 }
 
+function invalidateReport(input, output) {
+  if (resolve(input) === resolve(output)) throw new Error("evidence input and output must differ");
+  rmSync(output, { force: true });
+}
+
+function atomicWriteJson(path, value) {
+  const temporary = `${path}.tmp-${randomUUID()}`;
+  try {
+    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+    renameSync(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
+}
+
 function annotate(result) {
   if (result.exitCode !== 0 && result.exitCode !== 4) {
     process.stdout.write(`::error title=Registry/container acceptance ${result.failureClass} failure::${result.message}\n`);
@@ -724,6 +744,7 @@ function annotate(result) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [mode, input, output] = process.argv.slice(2);
   if (mode === "--audit-policy" && input && output) {
+    invalidateReport(input, output);
     const audit = JSON.parse(readFileSync(input, "utf8"));
     const counts = audit.metadata?.vulnerabilities;
     validateAuditGraph(audit);
@@ -781,6 +802,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
       violations }, null, 2) + "\n");
   } else if (mode === "--policy-findings" && input && output) {
+    invalidateReport(input, output);
     const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
     writeFileSync(output, JSON.stringify(extractPolicyFindings(read), null, 2) + "\n");
   } else {
@@ -794,8 +816,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       : registryContainerDisposition(summary, undefined, { unlistedAdvisories });
     if (record) {
       const { exitCode, failureClass, message, checks } = result;
-      writeFileSync(summaryPath, JSON.stringify({ ...summary, failureClass,
-        disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } }, null, 2) + "\n");
+      atomicWriteJson(summaryPath, { ...summary, failureClass,
+        disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } });
     }
     // The pull-request re-check of exit 4 turns unlisted IDs into a warning and
     // a step-summary line; failing acceptance names them in its error.
