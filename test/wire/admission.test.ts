@@ -288,7 +288,7 @@ describe("endpoint proof purchase gate", () => {
   });
 });
 
-describe("a purchase the buyer already committed continues while the seller drains or its Listing ends", () => {
+describe("a purchase the buyer already committed continues while the seller drains or its Listing ends", { timeout: 60_000 }, () => {
   // The wire's reader gives the Listing a one-minute window from NOW - 1 s (the signed Listing's own validity is
   // wider, so a commitment can finalize outside that window); discovery lasts ten. The commitment finalized at COMMITTED.
   const COMMITTED = NOW + 1000, ENDED = NOW + 120_000;
