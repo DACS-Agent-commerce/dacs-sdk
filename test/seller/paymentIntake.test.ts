@@ -826,7 +826,7 @@ describe("verifySellerPaymentIntake", () => {
     },
   );
 
-  it.each([undefined, "failed", "unknown", null, true, "confirmed"])(
+  it.each(["failed", "unknown", null, true, "confirmed"])(
     "rejects an included observation with execution %s before fulfilment",
     async (execution) => {
       const ctx = makeContext("pay-dem");
@@ -842,14 +842,15 @@ describe("verifySellerPaymentIntake", () => {
     },
   );
 
-  it("refuses a field-free included observation before claiming delivery", async () => {
+  it.each(["absent", "undefined"])("holds an included observation with %s execution before claiming delivery", async (field) => {
     const ctx = makeContext("pay-dem");
     const store = ctx.deps.receiptStore;
     const claim = vi.fn(store.claim.bind(store));
     ctx.deps.receiptStore = { ...store, claim };
-    delete (ctx.demosObservation as { execution?: string }).execution;
+    if (field === "absent") delete (ctx.demosObservation as { execution?: string }).execution;
+    else if (ctx.demosObservation.status === "included") ctx.demosObservation.execution = undefined;
     const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
-    expect(result).toMatchObject({ disposition: "error", fulfilment: "none" });
+    expect(result).toMatchObject({ disposition: "indeterminate", reason: "demos-execution-unconfirmed", fulfilment: "none" });
     expect(result.evidenceInput).toBeUndefined();
     expect(claim).not.toHaveBeenCalled();
   });

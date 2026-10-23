@@ -1373,7 +1373,8 @@ function isDemosTransferObservationValue(
     return hasOnlyKeys(value, ["status", "reason"]) &&
       (value.reason === undefined || typeof value.reason === "string");
   }
-  return value.status === "included" && value.execution === "executed" && hasExactKeys(value, [
+  return value.status === "included" &&
+    (value.execution === undefined || value.execution === "executed") && hasExactKeys(value, [
     "status",
     "txHash",
     "payer",
@@ -1381,7 +1382,7 @@ function isDemosTransferObservationValue(
     "amountOs",
     "blockNumber",
     "includedAt",
-    "execution",
+    ...(Object.prototype.hasOwnProperty.call(value, "execution") ? ["execution"] : []),
     ...(Object.prototype.hasOwnProperty.call(value, "nonce") ? ["nonce"] : []),
   ]) &&
     (value.nonce === undefined || isSafeUint(value.nonce)) &&
@@ -2572,6 +2573,7 @@ export async function verifySellerPaymentIntake(
       if (observed.status === "invalid") return reject("demos-transfer-invalid");
       return indeterminate(`demos-${observed.status}`);
     }
+    if (observed.execution === undefined) return indeterminate("demos-execution-unconfirmed");
     const observedPayer = normalizeDemosNativeAddress(observed.payer);
     const observedPayee = normalizeDemosNativeAddress(observed.payee);
     if (

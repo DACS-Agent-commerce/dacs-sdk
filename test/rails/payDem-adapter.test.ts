@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DacsError } from "../../src/errors.js";
 import {
@@ -53,6 +53,10 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubGlobal("fetch", vi.fn(async (_url, init: RequestInit) => {
+    const request = JSON.parse(String(init.body)) as { params: [{ data: { hash: string } }] };
+    return new Response(JSON.stringify({ result: 200, response: await sdk.getTxByHash(request.params[0].data.hash) }));
+  }));
   sdk.connect.mockResolvedValue(undefined);
   sdk.connectWallet.mockResolvedValue(undefined);
   sdk.getNetworkInfo.mockResolvedValue({
@@ -116,6 +120,8 @@ beforeEach(() => {
   });
   sdk.waitForNonce.mockResolvedValue(undefined);
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("createPayDemRail nonce coordination", () => {
   it("preserves signed and confirmed wire key order through broadcast", async () => {

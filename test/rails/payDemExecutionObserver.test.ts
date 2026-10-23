@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { observeDemosExecutionByHash } from "../../src/rails/payDem.js";
 
@@ -35,6 +35,14 @@ const FAST = {
   statusRequestTimeoutMs: 5,
   transactionRecordTimeoutMs: 30,
 };
+
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_000); });
+afterEach(() => { vi.useRealTimers(); });
+
+async function advanceObservation<T>(pending: Promise<T>, budgetMs = FAST.transactionRecordTimeoutMs): Promise<T> {
+  await vi.advanceTimersByTimeAsync(budgetMs);
+  return pending;
+}
 
 describe("the execution observer tells failed from indeterminate (#338)", () => {
   // `settle()` maps both outcomes to the same not-ok result, so this asserts
@@ -73,10 +81,10 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
   }
 
   function observe(read: (hash: string) => Promise<unknown>, budgetMs = 1_000) {
-    return observeDemosExecutionByHash(TX_HASH, read, expected, {
+    return advanceObservation(observeDemosExecutionByHash(TX_HASH, read, expected, {
       ...FAST,
       transactionRecordTimeoutMs: budgetMs,
-    });
+    }), budgetMs);
   }
 
   it("reports an executed record that matches the prepared transfer", async () => {
@@ -172,28 +180,65 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
   ])("is indeterminate when the budget ends with %s", async (_case, reason, read) => {
     const spy = vi.fn(read);
 
-    await expect(observe(spy, FAST.transactionRecordTimeoutMs)).resolves.toEqual({
+    await expect(observe(spy, FAST.transactionRecordTimeoutMs)).resolves.toMatchObject({
       state: "indeterminate",
       reason,
     });
     expect(spy.mock.calls.length).toBeGreaterThan(1);
   });
 
+
+  it.each(["confirmed", "failed"])("polls a terminal %s record with another hash until a matching record arrives", async (status) => {
+    const read = vi.fn()
+      .mockResolvedValueOnce({ ...executedRecord(), hash: "86".repeat(32), status })
+      .mockResolvedValueOnce(executedRecord());
+    await expect(observe(read)).resolves.toEqual({ state: "executed" });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["large string", "x".repeat(100_000)],
+    ["long array", Array.from({ length: 257 }, () => "entry")],
+    ["wide object", Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`field${i}`, 1]))],
+    ["deep tree", Array.from({ length: 17 }).reduce<unknown>((child) => ({ child }), null)],
+    ["many nodes", Array.from({ length: 16 }, () => Array.from({ length: 256 }, () => 1))],
+    ["total bytes", Array.from({ length: 128 }, () => "x".repeat(600))],
+  ])("refuses a record with %s before canonicalization", async (_case, extra) => {
+    const read = vi.fn(async () => ({ ...executedRecord(), extra }));
+    await expect(observe(read)).resolves.toMatchObject({
+      state: "indeterminate", reason: "transaction record exceeds observation limits",
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ETIMEDOUT", "ECONNREFUSED"])("retains the %s transport cause", async (code) => {
+    const cause = Object.assign(new Error(code), { code });
+    const outcome = await observe(async () => { throw cause; }, FAST.transactionRecordTimeoutMs);
+    expect(outcome).toMatchObject({ state: "indeterminate", reason: "transaction record read failed", cause });
+    if (outcome.state !== "indeterminate") throw new Error("expected indeterminate");
+    expect(outcome.cause).toBe(cause);
+  });
+
   it("waits the poll interval between record reads", async () => {
     const read = vi.fn(async () => null);
 
-    await expect(observeDemosExecutionByHash(TX_HASH, read, expected, {
+    const pending = observeDemosExecutionByHash(TX_HASH, read, expected, {
       ...FAST,
       inclusionPollIntervalMs: 10,
       transactionRecordTimeoutMs: 50,
-    })).resolves.toEqual({
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(9);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(40);
+    await expect(pending).resolves.toEqual({
       state: "indeterminate",
       reason: "transaction record is missing or malformed",
     });
-    // About five reads fit a 50 ms budget at 10 ms; without the wait the node
-    // would be read back to back for the whole budget.
-    expect(read.mock.calls.length).toBeGreaterThan(1);
-    expect(read.mock.calls.length).toBeLessThanOrEqual(7);
+    expect(read).toHaveBeenCalledTimes(5);
   });
 });
 
@@ -234,12 +279,12 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
   it("reports node2's confirmed native send as executed", async () => {
     const read = served(CONFIRMED_HASH);
 
-    await expect(observeDemosExecutionByHash(
+    await expect(advanceObservation(observeDemosExecutionByHash(
       CONFIRMED_HASH,
       read,
       { blockNumber: 498_447, transfer: transfer(28) },
       FAST,
-    )).resolves.toEqual({ state: "executed" });
+    ))).resolves.toEqual({ state: "executed" });
     expect(read).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledWith(CONFIRMED_HASH);
   });
@@ -247,12 +292,12 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
   it("reports node2's TX_NONCE_INVALID_LOW record as failed", async () => {
     const read = served(FAILED_HASH);
 
-    await expect(observeDemosExecutionByHash(
+    await expect(advanceObservation(observeDemosExecutionByHash(
       FAILED_HASH,
       read,
       { blockNumber: 480_877, transfer: transfer(9) },
       FAST,
-    )).resolves.toEqual({ state: "failed" });
+    ))).resolves.toEqual({ state: "failed" });
     expect(read).toHaveBeenCalledTimes(1);
   });
 
@@ -270,12 +315,12 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
     nonce,
     reason,
   ) => {
-    await expect(observeDemosExecutionByHash(
+    await expect(advanceObservation(observeDemosExecutionByHash(
       hash,
       served(hash),
       { blockNumber, transfer: transfer(nonce) },
       FAST,
-    )).resolves.toEqual({ state: "indeterminate", reason });
+    ))).resolves.toEqual({ state: "indeterminate", reason });
   });
 
   it.each([
@@ -286,12 +331,12 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
   ])("polls %s until the budget ends", async (_case, response) => {
     const read = vi.fn(async () => response);
 
-    await expect(observeDemosExecutionByHash(
+    await expect(advanceObservation(observeDemosExecutionByHash(
       CONFIRMED_HASH,
       read,
       { blockNumber: 498_447, transfer: transfer(28) },
       FAST,
-    )).resolves.toEqual({
+    ))).resolves.toEqual({
       state: "indeterminate",
       reason: "transaction record is missing or malformed",
     });
