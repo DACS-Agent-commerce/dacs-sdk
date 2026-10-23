@@ -298,9 +298,9 @@ describe("registry dependency allowlist", () => {
 
   it("refuses a registry that is neither HTTPS nor this run's loopback registry", () => {
     for (const value of ["http://registry.npmjs.org", "http://10.0.0.1:4873"]) {
-      expect(() => registryDependencyViolations({ manifest: {}, lock: { packages: {} }, registry: value })).toThrow("HTTPS or loopback");
+      expect(() => registryDependencyViolations({ manifest: {}, lock: { packages: { "": {} } }, registry: value })).toThrow("HTTPS or loopback");
     }
-    expect(registryDependencyViolations({ manifest: {}, lock: { packages: {} }, registry: "https://registry.npmjs.org" })).toEqual([]);
+    expect(registryDependencyViolations({ manifest: {}, lock: { packages: { "": {} } }, registry: "https://registry.npmjs.org" })).toEqual([]);
   });
 
   it("reports exactly the #191 baseline's Git dependency for the b7b180f lock", () => {

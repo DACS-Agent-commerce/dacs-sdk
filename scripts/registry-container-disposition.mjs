@@ -49,12 +49,25 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
 // GitHub/GitLab shorthands with or without a ref, tarballs on any other host
 // (codeload.github.com included), file:, link:, paths, entries without
 // `resolved` or `integrity`, and `overrides`.
-const registryRange = "[\\w.*^~<>=|+ -]*";
-const registrySpec = new RegExp(`^(?:${registryRange}|npm:(?:@[\\w.-]+/)?[\\w.-]+(?:@${registryRange})?)$`);
 const tarballFile = /\.(?:tgz|tar|tar\.gz)$/i;
 const sri = /^(?:sha512|sha384|sha256|sha1)-[A-Za-z0-9+/]+={0,2}$/;
 const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
+
+// npm distinguishes registry versions/ranges/tags from local paths. Aliases
+// name one registry package; their suffix is a version/range/tag, never another alias.
+function registrySourceSpec(value) {
+  if (typeof value !== "string" || value.startsWith(".") || tarballFile.test(value)) return false;
+  if (value.startsWith("npm:")) {
+    const alias = /^npm:(?:@[a-z0-9~][\w.~-]*\/)?[a-z0-9~][\w.~-]*(?:@([\s\S]*))?$/i.exec(value);
+    if (!alias) return false;
+    value = alias[1] ?? "";
+    if (value.startsWith(".") || tarballFile.test(value)) return false;
+  }
+  try { satisfiesEngineRange("0.0.0", value); return true; } catch { /* A registry tag may not be a range. */ }
+  try { return value !== "" && encodeURIComponent(value) === value; } catch { return false; }
+}
+
 
 // The run's own registry: HTTPS, or the loopback Verdaccio the acceptance
 // script starts (reached as host.docker.internal from a non-Linux container).
@@ -70,6 +83,8 @@ export function consumerRegistry(value) {
 export function registryDependencyViolations({ manifest, lock, registry }) {
   const { origin, path } = consumerRegistry(registry);
   const violations = [];
+  if (!isPlainObject(manifest)) violations.push({ location: "package.json", field: "manifest", value: null });
+  if (isPlainObject(lock?.packages) && !isPlainObject(lock.packages[""])) violations.push({ location: "package-lock.json", field: "root", value: null });
   const specs = (location, owner) => {
     for (const field of specFields) {
       // A present map that is not a plain object (an array, a string, null)
@@ -79,7 +94,7 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
         continue;
       }
       for (const [name, value] of Object.entries(owner?.[field] ?? {})) {
-        if (typeof value !== "string" || !registrySpec.test(value) || tarballFile.test(value)) {
+        if (!registrySourceSpec(value)) {
           violations.push({ location, field: `${field}.${name}`, value });
         }
       }
