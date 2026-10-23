@@ -4,6 +4,7 @@
 // keys, one-use challenges and approvals are enforced by UNIQUE constraints and
 // survive process restarts.
 import { DatabaseSync } from 'node:sqlite';
+import { PURCHASE_STATE_SCHEMA } from '../../src/purchase-state-schema.mjs';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
