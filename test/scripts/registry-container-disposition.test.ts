@@ -23,12 +23,12 @@ const completeInventory = { scanComplete: true, errors: [], missing: [] };
 // rehearsal works and only the recorded #191 transitive audit findings remain.
 function baselineOnlySummary() {
   return {
-    schema: "dacs-registry-container-acceptance/v1",
+    schema: "dacs-registry-container-acceptance/v1", complete: true,
     packageVersion: JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string,
     generatedTestsPassed: true,
     functionalPassed: true,
     docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
-    audit: { observedAdvisories: ["GHSA-23hp-3jrh-7fpw"], unlistedAdvisories: [] as string[], info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
+    audit: { directAdvisories: [] as string[], observedAdvisories: ["GHSA-23hp-3jrh-7fpw"], unlistedAdvisories: [] as string[], info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
     securityGate: {
       passed: false,
       registryDependencyPolicyPassed: true,
@@ -37,7 +37,9 @@ function baselineOnlySummary() {
       auditExitCode: 1,
       lockSbomExitCode: 0,
       physicalSbomExitCode: 0,
-      findings: { schema: "dacs-registry-policy-findings/v1",
+      findings: { schema: "dacs-registry-policy-findings/v1", gitDependencies: [], productionImageDependencies: [],
+        engine: { exitCode: 0, code: null, scanComplete: true, violations: [] },
+        lockSbom: { exitCode: 0, code: null, problems: [] }, physicalSbom: { exitCode: 0, code: null, problems: [] },
         productionImageInventory: completeInventory } as Record<string, unknown>,
     },
   };
@@ -705,6 +707,7 @@ describe("assessed advisories", () => {
     summary.securityGate.passed = true;
     summary.audit.observedAdvisories = [assessedId];
     if (direct !== null) summary.audit.directAdvisories = direct;
+    else Reflect.deleteProperty(summary.audit, "directAdvisories");
     return summary;
   };
 
@@ -720,6 +723,7 @@ describe("assessed advisories", () => {
   it("keeps #191 baseline IDs beside assessed ones baseline-only", () => {
     const summary = cleared();
     summary.audit.observedAdvisories = ["GHSA-23hp-3jrh-7fpw", assessedId];
+    summary.securityGate.passed = false;
     expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
   });
 
