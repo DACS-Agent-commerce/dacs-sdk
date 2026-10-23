@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createIdempotencyStore, createInMemorySettlementLog,
   settlementBindingHash, type SettlementBinding, type SettlementEffectFence } from "../../src/rails/idempotency.js";
-import { payDemSettle, type PayDemPreparedTransfer } from "../../src/rails/payDem.js";
-import { demosNode, demosRpcFetch, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
+import { payDemSettle, type PayDemPreparedTransfer, type PayDemSettlementReconcile } from "../../src/rails/payDem.js";
+import { demosNode, demosRpcFetch, nodeRecord, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
   (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
@@ -149,6 +149,73 @@ test.each([undefined, false, true])(
     assert.equal(demosNode.reads.length, 0);
   },
 );
+
+test("a transaction-bearing cached failure is reconciled against the node instead of reused as an unpaid closure", async () => {
+  const log = createInMemorySettlementLog();
+  const bindingHash = settlementBindingHash(binding);
+  const txHash = demosNode.nextHash;
+  const failed = {
+    ok: false as const, txHash, chainId: "demos", payer, payee, blockNumber: 42,
+    txRefKind: "demos", errorClass: "permanent" as const,
+    failureProof: { kind: "demos-failed-record" as const, txHash, payer, payee,
+      nonce: 9, blockNumber: 42, amountOs: binding.amount },
+  };
+  const claim = await log.claimIntent({ key, bindingHash, owner: "worker", now: 1, leaseDurationMs: 10 });
+  assert.equal(claim.status, "acquired");
+  assert.equal((await log.putOutcome({ key, bindingHash, lease: claim.lease, result: failed, now: 2 })).status,
+    "recorded");
+  const stored = await log.readOutcome!(key);
+  assert.deepEqual(stored?.result, failed);
+  assert.equal(await log.readAttempt!(key), null);
+  // The paired log agrees on the failed claim; the node says this hash executed.
+  demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee, amountOs: binding.amount }));
+  const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({ ...failed, amountOs: binding.amount }));
+  const resumed = payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log), reconcile });
+
+  // No supplied history or recoveryOnly: exercise the cached-outcome closure reader.
+  await assert.rejects(resumed(req), /contradicts the node record/);
+  assert.deepEqual(reconcile.mock.calls, [[{
+    railId: "pay-dem", jobId: "sweepfix", phaseIndex: 0, settlementKey: key,
+    network: "demos", payer, payee, amountOs: binding.amount,
+  }]]);
+  assert.deepEqual(demosNode.reads, [txHash]);
+  assert.deepEqual(await log.readOutcome!(key), stored);
+  assert.equal(await log.readAttempt!(key), null);
+  assert.equal(demosNode.transfers, 0);
+  assert.equal(demosNode.broadcasts, 0);
+});
+
+test("a recorded attempt prevents a cached empty-hash outcome from being reused as an unpaid closure", async () => {
+  const log = createInMemorySettlementLog();
+  const bindingHash = settlementBindingHash(binding);
+  const txHash = demosNode.nextHash;
+  const claim = await log.claimIntent({ key, bindingHash, owner: "worker", now: 1, leaseDurationMs: 10 });
+  assert.equal(claim.status, "acquired");
+  assert.equal(await log.putAttempt!({ key, bindingHash, lease: claim.lease, txHash, now: 2 }), "recorded");
+  const unpaid = { ok: false, txHash: "", chainId: "demos", payer, payee };
+  assert.equal((await log.putOutcome({ key, bindingHash, lease: claim.lease, result: unpaid, now: 3 })).status,
+    "recorded");
+  const storedAttempt = await log.readAttempt!(key);
+  const storedOutcome = await log.readOutcome!(key);
+  assert.deepEqual(storedAttempt, { bindingHash, txHash });
+  assert.deepEqual(storedOutcome?.result, unpaid);
+  const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({
+    ok: true, txHash, chainId: "demos", payer, payee, amountOs: binding.amount,
+    execution: "executed", blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" },
+  }));
+  const resumed = payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log), reconcile });
+
+  // The saved attempt must win over the empty hash even without request history.
+  await assert.rejects(resumed(req), /does not match the authoritative reconciled transaction/);
+  assert.deepEqual(reconcile.mock.calls, [[{
+    railId: "pay-dem", jobId: "sweepfix", phaseIndex: 0, settlementKey: key,
+    network: "demos", payer, payee, amountOs: binding.amount, txHash,
+  }]]);
+  assert.deepEqual(await log.readAttempt!(key), storedAttempt);
+  assert.deepEqual(await log.readOutcome!(key), storedOutcome);
+  assert.equal(demosNode.transfers, 0);
+  assert.equal(demosNode.broadcasts, 0);
+});
 
 test("an empty-hash result without a durable operator closure still refuses", async () => {
   const store = createIdempotencyStore(createInMemorySettlementLog());
