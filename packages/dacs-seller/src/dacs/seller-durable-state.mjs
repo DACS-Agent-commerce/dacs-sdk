@@ -8,13 +8,13 @@ import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, open
 import { isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { isMainThread } from 'node:worker_threads';
-import { canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { verifyFixtureRecord } from './fixture-anchors.mjs';
 
 const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => canonicalize(a) === canonicalize(b);
-const fail = (code) => { throw new SellerRecoveryError(code); };
+const fail = (code, cause) => { throw new SellerRecoveryError(code, { cause }); };
 // A job lock row's owner is `<pid>:<process>:<acquired ms>:<acquisition>`,
 // then `:<namespace>` where this host names this process's boot and start.
 // `<process>` is made once per realm and shared by every copy of this module
@@ -181,7 +181,7 @@ let identityWarned = false;
 const running = new AsyncLocalStorage();
 
 export class SellerRecoveryError extends Error {
-  constructor(code) { super(code); this.code = code; this.status = 503; }
+  constructor(code, options) { super(code, options); this.code = code; this.status = 503; }
 }
 
 export const DEFAULT_SELLER_MAX_JOBS = 10000;
@@ -219,10 +219,13 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     'CREATE TABLE seller_settlements (id TEXT PRIMARY KEY, job TEXT NOT NULL, value TEXT NOT NULL)',
     'CREATE TABLE seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL)',
   ];
+  let needsEffects = false;
   try {
     if (created) db.exec(schema.join(';'));
     const actual = db.prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.sql);
-    if (!same(actual, [...schema].sort((a,b) => a.split(' ')[2].localeCompare(b.split(' ')[2])))) fail('seller_state_corrupt');
+    const sorted = tables => [...tables].sort((a,b) => a.split(' ')[2].localeCompare(b.split(' ')[2]));
+    needsEffects = !created && same(actual, sorted(schema.filter(sql => !/seller_(effects|settlements) /.test(sql))));
+    if (!needsEffects && !same(actual, sorted(schema))) fail('seller_state_corrupt');
   } catch (error) { db.close(); throw error; }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
@@ -251,6 +254,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     const config = get('SELECT value FROM seller_meta WHERE key=?', 'context');
     if (config) verified(config.value, 'context', 'context');
     else if (!created) fail('seller_state_corrupt');
+    if (needsEffects) transaction(() => db.exec(schema.filter(sql => /seller_(effects|settlements) /.test(sql)).join(';')));
     const fencedStore = await createFsFencedSessionStore({ dir: join(dir, 'sdk-agreements') });
     const receiptStore = await createFsSellerReceiptStore({ dir: join(dir, 'sdk-receipts') });
     function load(jobId) {
@@ -310,6 +314,28 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           } catch { /* held, unreadable or gone: kept */ } finally { try { probe?.close(); } catch { /* removed or kept either way */ } }
         }
       });
+    }
+    // Callback adapters must enforce maxBytes before decoding their wire reply.
+    const ANCHOR_READ_BYTES = 1024 * 1024, ANCHOR_READ_TIMEOUT_MS = 10000;
+    async function readAnchorRecord(anchors, address) {
+      const controller = new AbortController();
+      let timer;
+      const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+        const cause = new DOMException('anchor read timed out', 'TimeoutError'); controller.abort(cause); reject(cause);
+      }, ANCHOR_READ_TIMEOUT_MS); });
+      try {
+        const raw = await Promise.race([Promise.resolve().then(() => anchors.read(address, { signal: controller.signal, maxBytes: ANCHOR_READ_BYTES, timeoutMs: ANCHOR_READ_TIMEOUT_MS })), deadline]);
+        let budget = ANCHOR_READ_BYTES;
+        const text = raw instanceof Uint8Array ? raw : JSON.stringify(raw, (key, value) => {
+          budget -= key.length + 1 + (typeof value === 'string' ? value.length : 0);
+          if (budget < 0) throw new Error('anchor read exceeds decoded budget');
+          return value;
+        });
+        if (typeof text === 'string' && Buffer.byteLength(text) > ANCHOR_READ_BYTES) throw new Error('anchor read exceeds byte limit');
+        const record = admitRawJson(text instanceof Uint8Array ? text : Buffer.from(text), { maxBytes: ANCHOR_READ_BYTES });
+        if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.status !== 'string') throw new Error('malformed anchor read');
+        return record;
+      } finally { clearTimeout(timer); controller.abort(); }
     }
     const pendingReleases = new Map();
     function release(jobId, owner) {
@@ -455,7 +481,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           const previous = row ? verified(row.value, 'settlement', settlementId) : null;
           if (previous && row.job !== previous.job) fail('seller_state_corrupt');
           const claims = previous?.claims ?? (previous ? [{ jobId: previous.job }] : []);
-          if (!claims.some(c => c.jobId === jobId)) claims.push({ jobId, ...(claim ? { claim } : {}) });
+          if (claim === null) return claims.length === 1 && claims[0].jobId === jobId && Number.isSafeInteger(claims[0].phaseIndex);
+          if (!Number.isSafeInteger(claim.phaseIndex) || claim.phaseIndex < 0) fail('seller_state_binding_invalid');
+          if (!claims.some(c => c.jobId === jobId && c.phaseIndex === claim.phaseIndex)) claims.push({ jobId, phaseIndex: claim.phaseIndex, claim });
           const value = { job: previous?.job ?? jobId, claims };
           run('INSERT OR REPLACE INTO seller_settlements VALUES (?,?,?)', settlementId, value.job, authenticated('settlement', settlementId, value));
           return claims.length === 1;
@@ -466,7 +494,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         if (!row) return null;
         const retained = verified(row.value, 'settlement', settlementId);
         if (row.job !== retained.job) fail('seller_state_corrupt');
-        return (retained.claims?.length ?? 1) === 1 ? retained.job : null;
+        return retained.claims?.length === 1 && Number.isSafeInteger(retained.claims[0].phaseIndex) ? retained.job : null;
       },
       // CORE SN-1..SN-4: the seller's own challenge ledger. An issued nonce is
       // kept with its job, buyer and lifetime before any presentation exists;
@@ -481,6 +509,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // The challenge as it was before this attempt (null when never issued);
       // the attempt is kept only when it is the first.
       attemptChallenge(nonce, attempt) {
+        if (!attempt || typeof attempt !== 'object' || Array.isArray(attempt) || typeof attempt.presentationHash !== 'string' || !/^[0-9a-f]{64}$/.test(attempt.presentationHash)) fail('seller_challenge_attempt_invalid');
         return transaction(() => {
           const prior = effect(`session-challenge:${nonce}`);
           if (prior?.kind !== 'session-challenge') return null;
@@ -552,24 +581,17 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
             if (!same(binding, value)) fail('seller_effect_conflict');
             return false;
           }
-          putEffect(id, { ...value, state: 'intent' });
           return true;
         });
         if (perform) {
-          let writerSignature, receipt;
-          try { writerSignature = authorize(); } catch { fail('seller_anchor_reconciliation_required'); }
-          // Checked again last, with nothing awaited between it and the write.
+          let writerSignature;
+          try { writerSignature = authorize(); } catch (error) { fail('seller_anchor_reconciliation_required', error); }
+          transaction(() => { fence(jobId); if (effect(id)) fail('seller_state_busy'); putEffect(id, { ...value, state: 'intent' }); });
+          // Retain the exact intended scope before the external write. Once an
+          // outcome is uncertain, retries only read; never submit a second time.
           fence(jobId);
-          try { receipt = await anchors.write({ logicalAddress, artifact, writer: signer.claim, writerSignature }); } catch { fail('seller_anchor_reconciliation_required'); }
-          const record = { status: 'present', artifact, receipt };
-          if (verifyFixtureRecord(record, { logicalAddress, expectedWriter: signer.claim }) !== 'valid') fail('seller_anchor_reconciliation_required');
-          // Fenced: a holder that lost its row during the write records
-          // nothing, and the retained intent leaves the write to readback.
-          transaction(() => {
-            fence(jobId);
-            putEffect(id, { ...value, state: 'complete', receipt });
-          });
-          return receipt;
+          try { await anchors.write({ logicalAddress, artifact: clone(value.artifact), writer: signer.claim, writerSignature }); }
+          catch (error) { fail('seller_anchor_reconciliation_required', error); }
         }
         // A signed state snapshot is historical context, not anchor proof. Both
         // completed and uncertain anchors must be read and authenticated again.
@@ -581,7 +603,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         const scoped = running.getStore()?.api === api;
         if (scoped) transaction(() => fence(prior.jobId));
         let record;
-        try { record = await anchors.read(prior.logicalAddress); } catch { fail('seller_anchor_reconciliation_required'); }
+        try { record = await readAnchorRecord(anchors, prior.logicalAddress); } catch (error) { fail('seller_anchor_reconciliation_required', error); }
         if (record.status !== 'present') fail('seller_anchor_reconciliation_required');
         if (!same(record.artifact, prior.artifact) || verifyFixtureRecord(record, { logicalAddress: prior.logicalAddress, expectedWriter: signer.claim }) !== 'valid') fail('seller_anchor_reconciliation_invalid');
         // Inside an acquisition the update is fenced like every job-scoped
@@ -605,7 +627,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         const outcomes = [];
         for (const row of rows) {
           const retained = verified(row.value, 'effect', row.id);
-          if (retained.kind !== 'anchor' || retained.jobId !== jobId || retained.state === 'complete') continue;
+          if (retained.kind !== 'anchor' || retained.jobId !== jobId) continue;
           try { await api.reconcileAnchor(row.id, anchors); outcomes.push({ address: retained.logicalAddress, status: 'present-authenticated' }); }
           catch (error) { outcomes.push({ address: retained.logicalAddress, status: 'held', reason: error.code }); }
         }
