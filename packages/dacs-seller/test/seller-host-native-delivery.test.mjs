@@ -476,6 +476,415 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
 const shown = (answer) => JSON.stringify(answer);
 
+test('the host takes a native payment to anchored, read-back payment evidence and hands the order to delivery; the confirmed anchor is never sent again', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.evidenceAddress, address);
+  assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to the SDK delivery runner');
+  // The evidence CREATE reads back as this payment's seller-signed SettlementEvidence.
+  const read = await w.node.reader.read(address, { expectedWriter: w.sellerKey.claim, expectedArtifactKind: 'SettlementEvidence', signedProjection: answer.signedProjection });
+  assert.equal(read.status, 'present');
+  assert.equal(core.contentHash(read.artifact), answer.evidenceHash);
+  assert.equal(read.artifact.jobId, p.jobId);
+  assert.deepEqual(read.artifact.paymentTxRefs.map((ref) => ref.txHash), [tx]);
+  assert.deepEqual(w.effects.signCreate, [address]);
+  // While the delivery is not final, each claim runs the retained work again,
+  // also on a restarted host: it reads the confirmed anchor back and sends nothing.
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  await w.restart();
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.deepEqual(w.effects.signCreate, [address], 'a confirmed anchor is not signed again');
+  assert.equal(w.effects.broadcast.length, 1, 'nor sent again');
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('an anchor whose answer was lost after the write is read back, not sent again', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('lost');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.deepEqual(w.effects.signCreate, [address]);
+  assert.equal(w.effects.broadcast.length, 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('an indeterminate readback sends nothing: the anchor is sent again only on a proven absence', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.signCreate.push('throw');
+  assert.equal((await p.claim(tx)).status, 'held');
+  w.node.faults.indexDown = (programName) => programName === core.logicalToStorageProgramName(address);
+  const unknown = await p.claim(tx);
+  assert.equal(unknown.status, 'held', shown(unknown));
+  assert.equal(unknown.readback, 'indeterminate');
+  assert.deepEqual(w.effects.signCreate, [address], 'nothing is asked or sent while the readback is unknown');
+  w.node.faults.indexDown = () => false;
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.deepEqual(w.effects.signCreate, [address, address]);
+  assert.equal(w.effects.signed.length, 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('a confirmed anchor is not sent again when the name index later reads it absent', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  w.node.faults.indexEmpty = (programName) => programName === core.logicalToStorageProgramName(address);
+  await p.claim(tx);
+  w.node.faults.indexEmpty = () => false;
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.deepEqual(w.effects.signCreate, [address]);
+  assert.equal(w.effects.broadcast.length, 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
+// DACS-4 PC-7(b) is write-once and a name-index miss is no proof of absence
+// (CORE §5.1): the node answers its name search only for programs already
+// applied in a block and, besides a nonce its writer's account has reached,
+// rejects only an existing storage address, which is nonce-derived, so a
+// second CREATE under the same name lands. An anchor that was sent (or whose
+// answer was lost) and does not read back yet is waited for: the journal
+// broadcasts the same signed bytes again and nothing is signed anew.
+for (const [label, fault] of [['an anchor the wallet sent', undefined], ['an anchor whose answer was lost after the write', 'lost']]) {
+  test(`${label} is not sent again while the name index lags: one CREATE (DACS-4 PC-7(b) write-once)`, async (t) => {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+    w.node.faults.indexEmpty = (programName) => programName === name;
+    if (fault) w.faults.broadcast.push(fault);
+    for (const claim of [1, 2, 3]) {
+      const held = await p.claim(tx);
+      assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
+      assert.equal(held.readback, 'indeterminate', `claim ${claim}: an index miss after a send is not absence`);
+      assert.equal(held.anchorOutcome, fault ? 'unknown' : 'sent');
+    }
+    await w.restart();
+    assert.equal((await p.claim(tx)).status, 'held', 'nor after a restart');
+    assert.deepEqual(w.effects.signCreate, [address], 'the wallet is asked to sign once');
+    assert.equal(new Set(w.effects.broadcast).size, 1, 'every broadcast is the same signed bytes');
+    assert.equal(w.createsAt(address), 1, 'one CREATE at the payment address');
+    // The index catches up: the one CREATE reads back and the order goes on.
+    w.node.faults.indexEmpty = () => false;
+    const answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', shown(answer));
+    assert.equal(typeof answer.delivery, 'object');
+    assert.deepEqual(w.effects.signCreate, [address]);
+    assert.equal(w.createsAt(address), 1);
+  });
+}
+
+test('the host does not start without the wallet\'s journal question: a paid order whose anchor outcome is unknown would have no way on', async (t) => {
+  await assert.rejects(world(t, { reconcile: false }), { name: 'TypeError', message: /requires reconcilePaymentEvidence$/ });
+});
+
+// DACS-4 PC-7(b): the answer that lets the agent sign the same evidence again
+// ('unsigned' from the reconciliation; no answer of the anchor does) is taken
+// only from one package wallet journal, which keeps every signed CREATE and
+// reads its fate from the chain. A wallet that would answer falsely never
+// reaches the host (nor an agent composed directly: seller-settlement-profile).
+test('the host takes the evidence anchor and its reconciliation only from one wallet journal: a scripted \'refused\' or \'unsigned\' answer cannot authorize a second signature', async (t) => {
+  const w = await world(t);
+  const journal = w.walletJournal(), other = w.openJournal('other-journal.sqlite');
+  t.after(() => other.close());
+  const refused = async () => ({ status: 'refused', reason: 'TEST a wallet that says it sent nothing' });
+  const unsigned = async () => ({ status: 'unsigned', reason: 'TEST a wallet that says nothing can land' });
+  for (const [label, nativeAnchor, reconcilePaymentEvidence] of [['a scripted anchor and reconciliation', refused, unsigned],
+    ['the journal\'s anchor with a scripted reconciliation', journal.anchorEvidence, unsigned], ['a scripted anchor with the journal\'s reconciliation', refused, journal.reconcilePaymentEvidence],
+    ['the anchor and the reconciliation of two journals', journal.anchorEvidence, other.reconcilePaymentEvidence], ['the reconciliation as the anchor', journal.reconcilePaymentEvidence, journal.reconcilePaymentEvidence]]) {
+    await assert.rejects(w.startShipped({ nativePaymentEvidence: w.evidenceConsumer(nativeAnchor), reconcilePaymentEvidence }),
+      { name: 'TypeError', message: /only from one createPaymentEvidenceWalletJournal/ }, label);
+  }
+  // The running host's own journal still takes the order to delivery, signed once.
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.equal(w.effects.signed.length, 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
+// DACS-4 PC-7(b): after the evidence checkpoint the agent's retained work
+// decides what a retry may send. A readback that fails on the buyer's retry
+// (the node's name index answers 503 once) is a held answer with its cause,
+// never an uncertain effect that only a read-only reconciliation can reach.
+test('a readback outage on the buyer\'s retry keeps the paid order a retry: once the node answers, the evidence is anchored once and the order is delivered, also across a restart', async (t) => {
+  for (const [label, kind, fault, restart] of [['signing threw', 'signCreate', 'throw', false], ['a dropped broadcast, across a restart', 'broadcast', 'drop', true]]) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults[kind].push(fault);
+    assert.equal((await p.claim(tx)).status, 'held', label);
+    let outage = 1;
+    w.node.faults.indexDown = () => outage-- > 0;
+    const down = await p.claim(tx);
+    assert.equal(down.status, 'held', `${label}: ${shown(down)}`);
+    assert.equal(down.readback, 'indeterminate', label);
+    assert.match(down.reason, /^seller-commitment-readback-unavailable: /, `${label}: the cause is kept`);
+    assert.equal(typeof down.nativeReadCode, 'string', label);
+    if (restart) await w.restart();
+    let answer = down;
+    for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `${label}, restart ${restart}: ${shown(answer)}`);
+    assert.equal(typeof answer.delivery, 'object', `${label}: the paid order is handed to delivery`);
+    assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
+    assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
+  }
+});
+
+// The same, after a crash: a host that died during a payment claim
+// leaves the claim reserved and never finished in its transport journal. The
+// restarted host runs the retained work again through reconciliation (read
+// back first; the journal decides any resend), never sends twice, and hands
+// the claim back to the ordinary retry until the order is delivered.
+test('a payment claim a crash left reserved and unfinished is not stranded: the restarted host runs the retained work again, anchors once and delivers', async (t) => {
+  for (const [label, kind, fault] of [['signing threw', 'signCreate', 'throw'], ['the broadcast was dropped', 'broadcast', 'drop']]) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults[kind].push(fault);
+    assert.equal((await p.claim(tx)).status, 'held', label);
+    await w.crashMidClaim(p, tx);
+    let answer = { status: 'not-claimed' };
+    for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
+    assert.equal(typeof answer.delivery, 'object', `${label}: the paid order is handed to delivery`);
+    assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
+    assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
+    assert.equal(new Set(w.effects.broadcast).size, 1, `${label}: every broadcast is the same signed bytes`);
+    assert.equal((await p.claim(tx)).status, 'payment-evidenced', `${label}: the delivered order answers again`);
+    assert.equal(w.createsAt(address), 1);
+  }
+});
+
+// The same before the evidence checkpoint: a host that died during the
+// buyer's first payment claim, before the agent retained any work, sent
+// nothing (everything before the checkpoint is free of external effects and
+// replay-idempotent). The restarted host runs that claim again from its start
+// through reconciliation and hands it back to the ordinary retry: the paid
+// order is anchored once and delivered, and a repeated claim answers the same.
+test('a crash during the first payment claim, before any work is retained, does not strand the paid order: the restarted host runs the claim again, anchors once and delivers', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  await w.crashMidClaim(p, tx);
+  assert.equal((await w.retainedSession(p.jobId)).nativeEvidenceWork, undefined, 'no work was retained before the crash');
+  await w.restart();
+  let answer = { status: 'not-claimed' };
+  for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to delivery');
+  assert.equal(w.createsAt(address), 1, 'one CREATE');
+  assert.equal(w.effects.signed.length, 1, 'signed once');
+  const again = await p.claim(tx);
+  assert.equal(again.status, 'payment-evidenced', 'the repeated claim answers the same');
+  assert.equal(again.evidenceHash, answer.evidenceHash);
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.signed.length, 1);
+});
+
+// DACS-4 PC-7(b) with the package's own wallet journal: the exact signed
+// CREATE is kept before it is broadcast, so after a throw before signing, a
+// dropped broadcast or a lost answer, and a restart of both the host and the
+// wallet, the order is delivered with one CREATE, signed once, and every
+// broadcast carries the same signed bytes.
+test('the shipped wallet journal takes a paid order to delivery with one CREATE after a throw before signing, a dropped broadcast or a lost answer, across a restart of the host and the wallet', async (t) => {
+  for (const [label, kind, fault] of [['signing threw', 'signCreate', 'throw'], ['the broadcast was dropped', 'broadcast', 'drop'], ['the broadcast answer was lost', 'broadcast', 'lost']]) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults[kind].push(fault);
+    const first = await p.claim(tx);
+    if (fault !== 'lost') assert.equal(first.status, 'held', `${label}: ${shown(first)}`);
+    w.restartWallet();
+    await w.restart();
+    let answer = first;
+    for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
+    assert.equal(typeof answer.delivery, 'object', `${label}: the paid order is handed to delivery`);
+    assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
+    assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
+    assert.equal(new Set(w.effects.broadcast).size, 1, `${label}: every broadcast is the same signed bytes`);
+  }
+});
+
+// DACS-4 PC-7(b) with the shipped journal when the kept CREATE can no longer
+// be included: its broadcast was dropped and another job's commitment, a later
+// write of the same seller wallet, landed above its nonce. The journal reads
+// that from the chain, answers 'unsigned', and the same evidence is signed
+// anew once: one evidence CREATE, and the order is delivered.
+test('the shipped wallet journal signs anew, once, an evidence CREATE another write of the seller wallet overtook: one CREATE and delivery, also across a restart of the host and the wallet', async (t) => {
+  for (const restart of [false, true]) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults.broadcast.push('drop');
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', shown(held));
+    assert.equal(w.createsAt(address), 0, 'the node did not apply it');
+    const overtaken = w.signedCreate(address);
+    await w.purchase();
+    assert.ok(w.node.accountNonce(w.sellerKey.address) > overtaken.content.nonce, 'another job\'s commitment landed above the kept nonce');
+    if (restart) { w.restartWallet(); await w.restart(); }
+    let answer = held;
+    for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `restart ${restart}: ${shown(answer)}`);
+    assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to delivery');
+    assert.equal(w.createsAt(address), 1, 'one evidence CREATE');
+    assert.equal(w.effects.signed.length, 2, 'signed anew once');
+    assert.notEqual(w.signedCreate(address).hash, overtaken.hash, 'the applied CREATE is the new signature');
+    assert.equal(w.node.transactionState(overtaken.hash), 'absent', 'the overtaken CREATE never lands');
+    assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+    assert.equal(w.effects.signed.length, 2, 'once read back, never signed again');
+    assert.equal(w.createsAt(address), 1);
+  }
+});
+
+// DACS-4 PC-7(b): the anchor retry catches up, idempotent on the payment
+// address. An attempt that was sent or whose outcome is unknown and does not
+// read back is resolved by the wallet's own journal (reconcilePaymentEvidence):
+// only 'unsigned' lets the same evidence be anchored again; a rebroadcast of
+// the one signed transaction is waited for. A throw from the wallet is not a
+// refusal: the anchor's own answer never lets it be sent again.
+test('a wallet that threw before signing is asked its journal: nothing signed, so the same evidence is sent once more and the order is delivered, also after a restart', async (t) => {
+  for (const restart of [false, true]) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults.signCreate.push('throw');
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', shown(held));
+    assert.equal(held.anchorOutcome, 'unknown', 'a throw is not a refusal');
+    assert.equal(held.anchorError?.code, 'TEST-wallet-failed', 'the wallet error keeps its cause');
+    assert.equal(held.readback, 'indeterminate', 'the first claim only reads back');
+    assert.deepEqual(w.effects.signCreate, [address]);
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', shown(answer));
+    assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to the SDK delivery runner');
+    assert.deepEqual(w.effects.signCreate, [address, address], 'asked again once, after the journal proved nothing signed');
+    assert.equal(w.effects.signed.length, 1, 'signed once');
+    assert.equal(w.createsAt(address), 1, 'one CREATE');
+    assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+    assert.equal(w.effects.signCreate.length, 2, 'once read back, never sent again');
+  }
+});
+
+test('a sent anchor the node dropped is broadcast again as the same signed transaction, never signed anew: one CREATE, then delivery', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  const held = await p.claim(tx);
+  assert.equal(held.status, 'held', shown(held));
+  assert.equal(held.anchorOutcome, 'sent');
+  assert.equal(w.createsAt(address), 0, 'the node did not apply it');
+  const signed = w.signedCreate(address);
+  await w.restart();
+  const pending = await p.claim(tx);
+  assert.equal(pending.status, 'held', 'the rebroadcast is waited for, not read in the same claim');
+  assert.equal(w.effects.broadcast.length, 2, 'the journal broadcast it again');
+  assert.equal(w.createsAt(address), 1, 'the same signed CREATE landed');
+  assert.deepEqual(w.signedCreate(address), signed, 'the exact signed bytes, not a new transaction');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.deepEqual(w.effects.signCreate, [address], 'the wallet is asked to sign once');
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'every broadcast is the same signed bytes');
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('a lost anchor answer while the name index lags: the journal names the one signed CREATE, nothing is signed again, and the order goes on once it reads back', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  w.faults.broadcast.push('lost');
+  for (const claim of [1, 2, 3]) {
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
+    assert.equal(held.readback, 'indeterminate');
+    assert.equal(held.anchorOutcome, 'unknown');
+  }
+  assert.deepEqual(w.effects.signCreate, [address], 'the wallet is asked to sign once');
+  assert.equal(w.createsAt(address), 1, 'one CREATE');
+  w.node.faults.indexEmpty = () => false;
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.equal(w.createsAt(address), 1);
+});
+
+// The journal supersedes a kept CREATE only once it reads from the chain that
+// it can no longer be executed. Here another write of the seller wallet
+// overtook its nonce, but the account nonce cannot be read: the same bytes are
+// broadcast again and nothing is signed anew; once the read answers, the
+// evidence is signed anew once and the order is delivered.
+test('a journal that cannot read a kept CREATE\'s fate signs nothing anew: the claim stays held, and once the read answers the evidence is signed anew once and delivered', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  const overtaken = w.signedCreate(address);
+  await w.purchase();
+  assert.ok(w.node.accountNonce(w.sellerKey.address) > overtaken.content.nonce, 'another job\'s commitment landed above the kept nonce');
+  w.faults.readAccountNonce.push('throw', 'throw');
+  for (const claim of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
+    assert.equal(held.anchorOutcome, 'sent', `claim ${claim}`);
+  }
+  assert.equal(w.effects.signed.length, 1, 'nothing is signed anew while the fate is unread');
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'only the kept bytes are broadcast');
+  assert.equal(w.createsAt(address), 0);
+  let answer = { status: 'not-claimed' };
+  for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.effects.signed.length, 2, 'signed anew once');
+  assert.equal(w.createsAt(address), 1);
+  const work = (await w.retainedSession(p.jobId)).nativeEvidenceWork;
+  assert.equal(work.reconcileAnswer.status, 'unsigned');
+  assert.match(work.reconcileAnswer.reason, /not executed through block [0-9]+.*can no longer be executed$/, 'only the bounded status, hash and reason of a journal answer are kept');
+  assert.equal(work.anchorOutcome, 'sent', 'the one new signature was sent');
+});
+
+// Settlement credit (SB-2): one transfer claimed by two jobs gives neither
+// job credit. Job A's failed anchor leaves its checkpoint bound to the
+// transfer; once job B claims it too, job A reads nothing back, sends nothing
+// and gets no answer about the job.
+test('settlement credit: a transfer another job also claims is anchored for neither job and handed to no delivery', async (t) => {
+  const w = await world(t);
+  const a = await w.purchase(), b = await w.purchase(), tx = a.pay(), address = paymentAddress(a);
+  w.faults.signCreate.push('throw');
+  assert.equal((await a.claim(tx)).status, 'held');
+  assert.deepEqual(await b.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
+  const reads = w.node.searches.length;
+  assert.equal((await a.claim(tx)).error, 'seller_unavailable', 'no answer for a job whose credit is contested');
+  assert.deepEqual(w.node.searches.slice(reads).filter((name) => name === core.logicalToStorageProgramName(address)), [], 'the contested checkpoint is not read back');
+  assert.deepEqual(w.effects.signCreate, [address], 'nothing is anchored once the credit is contested');
+  assert.equal(w.createsAt(address) + w.createsAt(paymentAddress(b)), 0);
+});
+
+test('settlement credit is checked again right before the anchor is sent: a claim on another job during the readback stops it', async (t) => {
+  const w = await world(t);
+  const a = await w.purchase(), b = await w.purchase(), tx = a.pay(), address = paymentAddress(a), name = core.logicalToStorageProgramName(address);
+  w.faults.signCreate.push('throw');
+  assert.equal((await a.claim(tx)).status, 'held');
+  let contested = null;
+  w.node.faults.beforeSearch = async (programName) => { if (programName === name && contested === null) contested = await b.claim(tx); };
+  assert.equal((await a.claim(tx)).error, 'seller_unavailable');
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' }, 'job B claimed the transfer while job A read back');
+  assert.deepEqual(w.effects.signCreate, [address], 'job A sends nothing once its credit is contested');
+  assert.equal(w.createsAt(address), 0);
+});
+
+// Another tool holding the seller's key landed its own CREATE at the payment
+// address, of seller-signed evidence naming another transfer, in place of the
+// journal's: it reads back, but not as this payment's evidence.
+test('a readback that is not this payment\'s evidence is refused before delivery', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('other');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'rejected', shown(answer));
+  assert.equal(answer.reason, 'native-payment-evidence-scope-mismatch');
+  assert.equal(answer.delivery, undefined, 'no delivery is attempted');
+  assert.equal((await p.claim(tx)).status, 'rejected');
+  assert.deepEqual(w.effects.signCreate, [address], 'a CREATE that is present is never sent again');
+  assert.equal(w.effects.broadcast.length, 1);
+});
+
+// Delivery. Each party's Vet record is verified by its counterparty (DACS-2
+// §7.7.2), as the core delivery runner checks in the audit source.
 test('the package builds capabilities only for the loopback fixture node and TEST authorities: a real node endpoint and an unregistered source are refused', () => {
   for (const rpcUrl of ['https://node2.demos.sh/', 'http://node2.demos.sh/', 'http://localhost:53550/', 'http://127.0.0.1:9/node']) {
     assert.throws(() => createNativePaymentEvidenceConsumer({ rpcUrl }), { name: 'TypeError', message: /owned literal loopback or the exact opaque source/ }, rpcUrl);
@@ -498,4 +907,33 @@ test('configured job capacity refuses a new job definitely before consuming its 
     assert.equal(challenges.filter(c => c.attempt === null).length, 1, 'the refused job retains its unused challenge');
   } finally { db.close(); }
 });
+
+test('host close retains its directory lock until a disconnected signing handler finishes', { timeout: 20000 }, async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  w.node.faults.beforeSearch = async () => { entered(); await gate; };
+  const signed = await w.signedClaim(p, tx);
+  const request = http.request(new URL('/dacs/v1/payments', w.host().url), { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header } });
+  request.on('error', () => {});
+  request.end(signed.rawBody);
+  t.after(() => release());
+  await waiting;
+  const disconnected = new Promise(resolve => request.once('close', resolve));
+  request.destroy();
+  await disconnected;
+  let closed = false;
+  const closing = w.host().close().then(() => { closed = true; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closed, false);
+    await assert.rejects(async () => {
+      const replacement = await w.startShipped({});
+      await replacement.close();
+    }, { code: 'seller_state_locked' });
+  } finally { release(); await closing; }
+  assert.equal(closed, true);
+});
+
 
