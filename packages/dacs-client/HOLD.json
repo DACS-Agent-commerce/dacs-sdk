@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "f519b105520949d6701d06b457407d58edb05c95"
+        "blob": "15be0c573319a3dc5f2ed3b686f22d81db496f09"
       },
       "DELTA-LEDGER.json": {
-        "blob": "0e224641c8e70267acec075dcde0eed588ee86cb"
+        "blob": "5d1a3132b9b753726070699461b1bc0063cbde26"
       },
       "DELTA-MAP.md": {
-        "blob": "7ed251825f9866fac2e43eadfca240fc3b302956"
+        "blob": "17b058833eb7bb2c1ee808606700655706201678"
       },
       "DELTA-NOTES.md": {
-        "blob": "0340370da842242e6f991e7b382d2c2833b573be"
+        "blob": "d48720363102f7b434aaa172571ac22d39dd3c5e"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "71f3fba52223170c5f24202f82b64790a421a535"
+        "blob": "b5fd8c8ca66b93c64436c0c0ce50b41cf7cecc67"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "cdeb388fd716e179cb5a99035b21ac7b10e66ff7"
+        "blob": "b3c5157bf7b23d7a1ea7f94e88ed9ad17db4d404"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6bbbc70aa61fa68b8f161949c7b7d9018de2cbdc"
@@ -1109,7 +1109,7 @@
         "blob": "56c7e6150b5db9b61730373385d9a5214e4518f1"
       },
       "src/dacs/delivery-deadline-watch.mjs": {
-        "blob": "8c7c654c791025fd50aed4e339abcf5445732037"
+        "blob": "9bff8dcef805bb2b8d291452aa5245b43fb28eed"
       },
       "src/dacs/delivery-evidence.mjs": {
         "blob": "e5bd883b4b7fc16842bc6425c8952139c6e36a16"
@@ -1127,7 +1127,7 @@
         "blob": "aae9cc8e17848ff796c10b1c2289b7da798eefa0"
       },
       "src/dacs/directory.mjs": {
-        "blob": "f502e07bec76483406f982ae9e275740c7da545c"
+        "blob": "76efe20dd340005ef69f6d13d85952cb9b65604e"
       },
       "src/dacs/listing.mjs": {
         "blob": "40f44cef846981dd2d87bd4654e8192b8e784ac6"
@@ -1226,7 +1226,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "622ecb8e56e8439a0106dfd911175b581c55beb8"
+        "blob": "e917d62fca14236bc278ec7fe91ed9dbb3c1d213"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1289,10 +1289,10 @@
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
       },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "49d49fdf4c3eec90c35156b102d36c34f0e0111e"
+        "blob": "e84c5a65caf5cf7e6f9229738cee510055bb7612"
       },
       "test/directory-byte-budget.test.mjs": {
-        "blob": "706bb842ea657118e226624eec1332b244963641"
+        "blob": "a7cc1e9a97c03fe5c08095d10210b7500daa7aea"
       },
       "test/domain-store-crash.test.mjs": {
         "blob": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
@@ -1607,7 +1607,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "f9eed04971e432660ed2f0343c13debc43b14939"
+        "blob": "ee629529936314a335be0bd9f1081b26480996e6"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "d30d15034babe88428fd7c634243cb810e98e826"
@@ -1622,7 +1622,7 @@
         "blob": "fd8943b54a6e03026a28eafeaa992de1d66d2fdc"
       },
       "test/package-contents.test.mjs": {
-        "blob": "73b84bb84b931459b40a6ca8416085aa1706fbc2"
+        "blob": "84b222cd3ec30df147e61cd776534666fd9e75fd"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"

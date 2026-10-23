@@ -1995,6 +1995,47 @@
           "after": "f9eed04971e432660ed2f0343c13debc43b14939"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 bind diagnostic read capabilities and observation times",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "8c7c654c791025fd50aed4e339abcf5445732037",
+          "after": "9bff8dcef805bb2b8d291452aa5245b43fb28eed"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "f502e07bec76483406f982ae9e275740c7da545c",
+          "after": "76efe20dd340005ef69f6d13d85952cb9b65604e"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "622ecb8e56e8439a0106dfd911175b581c55beb8",
+          "after": "e917d62fca14236bc278ec7fe91ed9dbb3c1d213"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "49d49fdf4c3eec90c35156b102d36c34f0e0111e",
+          "after": "e84c5a65caf5cf7e6f9229738cee510055bb7612"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "706bb842ea657118e226624eec1332b244963641",
+          "after": "a7cc1e9a97c03fe5c08095d10210b7500daa7aea"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "f9eed04971e432660ed2f0343c13debc43b14939",
+          "after": "ee629529936314a335be0bd9f1081b26480996e6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "73b84bb84b931459b40a6ca8416085aa1706fbc2",
+          "after": "84b222cd3ec30df147e61cd776534666fd9e75fd"
+        }
+      ]
     }
   ]
 }

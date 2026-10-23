@@ -124,8 +124,11 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
         diagnosticOnly: false, settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }, false);
       db.prepare('UPDATE operations SET handoff_token_hash=?, handoff_expires_at=? WHERE id=?')
         .run((await import('node:crypto')).createHash('sha256').update('dacs-handoff-hash:TEST-token').digest('hex'), new Date(Date.now() + 3600000).toISOString(), 'first');
+      await assert.rejects(service.verifyDeal({ accountId: 'buyer', operationId: 'first' }), { code: 'not_found' });
+      assert.throws(() => service.status('buyer', 'first'), { code: 'not_found' });
+      assert.equal(secondaryReads, 0);
       const snapshot = coordinates.get('first');
-      const result = await service.verifyDeal({ accountId: 'buyer', operationId: 'first', txHash: hash });
+      const result = await service.verifyDeal({ accountId: 'buyer', operationId: 'first', token: 'TEST-token', txHash: hash });
       assert.equal(result.verification.outcome, 'readback_only');
       assert.equal(result.verification.authority, 'unqualified_host');
       assert.equal(result.verification.observation.status, 'included');
@@ -140,8 +143,8 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       assert.throws(() => service.portalEvidence('first', 'TEST-wrong-token'), { code: 'not_found' });
       for (const status of ['awaiting_approval', 'approved', 'payment_handoff', 'settled_verified']) {
         saved.status = status;
-        assert.equal(service.status('buyer', 'first').approvalUrl, null);
-        assert.match(service.status('buyer', 'first').next, /historical.*held/);
+        assert.equal(service.status('buyer', 'first', 'TEST-token').approvalUrl, null);
+        assert.match(service.status('buyer', 'first', 'TEST-token').next, /historical.*held/);
         assert.equal(service.portalEvidence('first', 'TEST-token').actionable, false);
       }
       saved.status = 'broadcast_reported';
@@ -157,4 +160,13 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
     } finally { db.close(); }
   `);
   run(process.execPath, ['consumer.mjs'], app);
+});
+
+test('documented local packing builds core before skipping pack lifecycle scripts', () => {
+  const readme = readFileSync(join(packageDir, 'README.md'), 'utf8');
+  const commands = /```sh\n([\s\S]*?)```/.exec(readme)?.[1].trim().split('\n');
+  assert.ok(commands, 'local installation command block is present');
+  const install = commands.indexOf('npm ci'), build = commands.indexOf('npm run build');
+  const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
+  assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
 });

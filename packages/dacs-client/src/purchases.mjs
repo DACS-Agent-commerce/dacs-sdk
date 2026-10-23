@@ -374,8 +374,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return { operation: expireIfNeeded(operation), created, approvalUrl: portalUrl(operation, handoffToken), verification };
   }
 
-  function ownedPurchase(accountId, operationId) {
+  function ownedPurchase(accountId, operationId, token) {
     if (typeof accountId !== 'string' || !accountId || typeof operationId !== 'string' || !operationId) {
+      throw new OperationError('not_found', 'purchase not found for this account');
+    }
+    // Public account labels do not authenticate a reader. Reuse the stored,
+    // operation-scoped capability before consulting account-scoped host data.
+    if (diagnosticOnly && handoffPurchase(operationId, token).accountId !== accountId) {
       throw new OperationError('not_found', 'purchase not found for this account');
     }
     const found = ops.get(accountId, operationId);
@@ -413,8 +418,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // Read-only: an elapsed approval window is reported as expired without
   // persisting the transition (mutating paths persist it).
-  function status(accountId, operationId) {
-    const found = ownedPurchase(accountId, operationId);
+  function status(accountId, operationId, token) {
+    const found = ownedPurchase(accountId, operationId, token);
     const operation = projectExpiry(found);
     const coords = coordinates.get(operation.id);
     const approval = approvalFor.get(operation.id);
@@ -445,7 +450,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     // wall-clock lifetime. Unknown or out-of-range epoch milliseconds deny access.
     const suppliedHash = createHash('sha256').update(`dacs-handoff-hash:${token}`).digest();
     if (!capability || capability.kind !== 'purchase' || !validIncludedAt(clock)
-      || !Number.isFinite(expiry) || !(expiry > Math.max(clock, Date.now()))
+      || !validIncludedAt(expiry) || new Date(expiry).toISOString() !== capability.handoff_expires_at
+      || !(expiry > Math.max(clock, Date.now()))
       || !/^[0-9a-f]{64}$/.test(capability.handoff_token_hash ?? '')
       || !timingSafeEqual(suppliedHash, Buffer.from(capability.handoff_token_hash, 'hex'))) {
       throw new OperationError('not_found', 'unknown or invalid approval link');
@@ -1223,8 +1229,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // verify_deal: owner-scoped independent re-check; an optional hash is a pointer.
   // attachOnly: see attachHashAndVerify. Replacing a recorded pointer stays
   // the explicit verify_deal correction.
-  async function verifyDeal({ accountId, operationId, txHash, attachOnly = false }) {
-    const found = ownedPurchase(accountId, operationId);
+  async function verifyDeal({ accountId, operationId, token, txHash, attachOnly = false }) {
+    const found = ownedPurchase(accountId, operationId, token);
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);}
     catch(error){
       if(error?.code!=='buyer_access_closed'||error?.details?.buyerAccessMissing)throw error;

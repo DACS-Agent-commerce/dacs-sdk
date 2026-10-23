@@ -69,6 +69,11 @@ export function projectSummary(raw) {
   if (raw.anchor?.kind !== 'storage-program' || !LOCATOR.test(raw.anchor?.locator ?? '')) return null;
   if (!CLAIM.test(raw.seller?.primaryClaim ?? '')) return null;
   if (!['active', 'revoked'].includes(raw.status)) return null;
+  // RB-3/RB-6: refuse inconsistent discovery rather than erase evidence
+  // and let a downstream reader interpret it as clean revocation absence.
+  if (raw.status === 'active' && (raw.revocation !== undefined || raw.revocationBinding !== undefined)) {
+    throw new OutboundError('invalid', 'active-record-has-binding');
+  }
   const pricing = raw.pricing ?? {};
   return {
     verified: false,

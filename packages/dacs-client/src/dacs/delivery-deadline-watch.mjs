@@ -63,10 +63,11 @@ export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = fa
     if (!enabled || stopped || !readback?.notPresent || readback.delivery?.status !== 'absent') return operation;
     return transaction(db, () => {
       const current = ops.get(operation.accountId, operation.id), p = current?.state?.protocol;
-      const deadline = deadlineOf(current ?? {}), checkedAt = readback.checkedAt;
+      const deadline = deadlineOf(current ?? {}), checkedAt = readback.checkedAt, clock = now();
       if (!eligible(current) || p.deliveryDeadline?.overdue || verifiedDelivery(p)
         || p.agreement.hash !== operation.state.protocol.agreement.hash
-        || !validDeadline(checkedAt) || checkedAt <= deadline + DELIVERY_DEADLINE_GRACE_MS) return current ?? operation;
+        || !validDeadline(clock) || !validDeadline(checkedAt) || checkedAt > clock
+        || checkedAt <= deadline + DELIVERY_DEADLINE_GRACE_MS) return current ?? operation;
       const overdue = { deadline, checkedAt, read: 'not-present', disposition: 'indeterminate', obligatedParty: 'seller',
         seller: p.agreement.terms.seller, authority: 'local-observation', source: 'host-supplied' };
       return ops.transition(current.id, current.status, current.status, { state: { protocol: { ...p, deliveryDeadline: { overdue } } },

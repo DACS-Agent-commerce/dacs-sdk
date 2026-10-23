@@ -34,22 +34,22 @@ function world(t, observation, { native = false, observer = 'TEST-host-reader', 
   const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, chainReadTimeoutMs, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
   return { db, chain, protocol, coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
     consumed: () => db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n,
-    verify: () => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id }) };
+    verify: () => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id, token: ops.handoffTokenFor(op.id) }) };
 }
 
 for (const method of ['status', 'verifyDeal', 'cancel']) {
   test(`account lookup refuses a wrong-owner operation before secondary reads (${method})`, async t => {
     const w = world(t, INCLUDED, { publicApi: method !== 'cancel' });
     w.db.prepare('UPDATE operations SET status=? WHERE id=?').run('awaiting_approval', w.op.id);
-    const get = w.ops.get;
+    const token = w.ops.handoffTokenFor(w.op.id), get = w.ops.get;
     w.ops.get = (_account, id) => get(w.op.accountId, id);
     const calls = [];
     w.coordinates.get = () => { calls.push('coordinates'); };
     w.ops.history = () => { calls.push('history'); };
     w.ops.handoffTokenFor = () => { calls.push('token'); };
     w.chain.networkIdentity = async () => { calls.push('chain'); };
-    const run = () => method === 'status' ? w.purchases.status('TEST-other', w.op.id)
-      : w.purchases[method]({ accountId: 'TEST-other', operationId: w.op.id });
+    const run = () => method === 'status' ? w.purchases.status('TEST-other', w.op.id, token)
+      : w.purchases[method]({ accountId: 'TEST-other', operationId: w.op.id, token });
     if (method === 'status') assert.throws(run, { code: 'not_found' });
     else await assert.rejects(run, { code: 'not_found' });
     assert.deepEqual(calls, []);
@@ -82,7 +82,7 @@ test('public readback does not bypass a missing-capability refusal', async t => 
 test('account lookup refuses an operation with another id', async t => {
   const w = world(t, INCLUDED, { publicApi: true });
   w.ops.get = () => ({ ...w.op, id: 'TEST-other-operation' });
-  assert.throws(() => w.purchases.status(w.op.accountId, w.op.id), { code: 'not_found' });
+  assert.throws(() => w.purchases.status(w.op.accountId, w.op.id, w.ops.handoffTokenFor(w.op.id)), { code: 'not_found' });
   await assert.rejects(w.verify(), { code: 'not_found' });
 });
 
@@ -90,7 +90,7 @@ test('public readback allows a closed buyer capability only for its recorded has
   const cause = Object.assign(new Error('TEST-closed'), { code: 'buyer_access_closed' });
   const w = world(t, INCLUDED, { publicApi: true, buyerRefusal: cause });
   assert.deepEqual((await w.verify()).verification.observation, INCLUDED);
-  await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, txHash: '2'.repeat(64) }), error => error === cause);
+  await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, token: w.ops.handoffTokenFor(w.op.id), txHash: '2'.repeat(64) }), error => error === cause);
   w.coordinates.get = () => null;
   await assert.rejects(w.verify(), error => error === cause);
 });
@@ -99,7 +99,7 @@ test('public readback refuses a hash other than its saved pointer before reading
   const w = world(t, INCLUDED, { publicApi: true });
   const calls = [];
   w.chain.networkIdentity = async () => { calls.push('chain'); };
-  await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, txHash: '2'.repeat(64) }), { code: 'invalid_state' });
+  await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, token: w.ops.handoffTokenFor(w.op.id), txHash: '2'.repeat(64) }), { code: 'invalid_state' });
   assert.deepEqual(calls, []);
 });
 
@@ -194,10 +194,10 @@ test(`public host readers remain diagnostic and cannot settle or consume a nonce
   assert.deepEqual(w.ops.history(w.op.id), history);
   assert.equal(w.consumed(), 0);
   for (const attachOnly of [false, true]) {
-    const diagnostic = await w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id,
+    const diagnostic = await w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, token: w.ops.handoffTokenFor(w.op.id),
       txHash: HASH, attachOnly });
     assert.equal(diagnostic.verification.outcome, 'readback_only');
-    await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id,
+    await assert.rejects(w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, token: w.ops.handoffTokenFor(w.op.id),
       txHash: '2'.repeat(64), attachOnly }), { code: 'invalid_state' });
     assert.deepEqual(w.coordinates.get(w.op.id), before, 'optional hashes are never attached');
     assert.deepEqual(w.ops.history(w.op.id), history);
@@ -216,7 +216,7 @@ for (const status of ['awaiting_approval', 'agreement_pending']) {
     const token = w.ops.handoffTokenFor(w.op.id);
     const portal = w.purchases.portalOperation(w.op.id, token);
     assert.deepEqual(portal, { ...before, status: 'expired' });
-    const read = w.purchases.status(w.op.accountId, w.op.id);
+    const read = w.purchases.status(w.op.accountId, w.op.id, w.ops.handoffTokenFor(w.op.id));
     assert.deepEqual(portal, read.operation);
     assert.equal(read.operation.status, 'expired');
     assert.equal(read.approvalUrl, null);
@@ -249,7 +249,7 @@ for (const status of ['awaiting_approval', 'agreement_pending', 'approved', 'set
     w.db.prepare('UPDATE operations SET status=?, expires_at=? WHERE id=?').run(status, expiresAt, w.op.id);
     const before = w.ops.get(w.op.accountId, w.op.id);
     assert.deepEqual(w.purchases.portalOperation(w.op.id, w.ops.handoffTokenFor(w.op.id)), before);
-    assert.deepEqual(w.purchases.status(w.op.accountId, w.op.id).operation, before);
+    assert.deepEqual(w.purchases.status(w.op.accountId, w.op.id, w.ops.handoffTokenFor(w.op.id)).operation, before);
   });
 }
 
@@ -278,7 +278,7 @@ test('handoff lookup rejects an operation with another id before buyer or coordi
 test('public nested protocol guidance remains historical and held', t => {
   const w = world(t, INCLUDED, { publicApi: true, native: true });
   w.db.prepare('UPDATE operations SET state=? WHERE id=?').run(JSON.stringify({ protocol: { stage: 'agreement-signing' } }), w.op.id);
-  const read = w.purchases.status(w.op.accountId, w.op.id);
+  const read = w.purchases.status(w.op.accountId, w.op.id, w.ops.handoffTokenFor(w.op.id));
   assert.equal(read.protocol.historical, true);
   assert.match(read.protocol.next, /historical.*held/);
   assert.match(w.purchases.portalEvidence(w.op.id, w.ops.handoffTokenFor(w.op.id)).protocol.next, /historical.*held/);
@@ -514,10 +514,10 @@ for (const bookkeeping of ['overdue', 'operator-hold']) {
     const before = w.ops.get(w.op.accountId, w.op.id), history = w.ops.history(w.op.id), coordinates = w.coordinates.get(w.op.id);
     const token = w.ops.handoffTokenFor(w.op.id);
     assert.equal(w.purchases.portalEvidence(w.op.id, token).actionable, false);
-    assert.equal(w.purchases.status(w.op.accountId, w.op.id).approvalUrl, null);
+    assert.equal(w.purchases.status(w.op.accountId, w.op.id, w.ops.handoffTokenFor(w.op.id)).approvalUrl, null);
     for (const method of ['prepare', 'issueApprovalChallenge', 'approve', 'prepareHandoff', 'reportWalletResult', 'cancel',
       'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign', 'protocolRecheck']) {
-      await assert.rejects(async () => w.purchases[method]({ accountId: w.op.accountId, operationId: w.op.id, token }), { code: 'profile_not_admitted' });
+      await assert.rejects(async () => w.purchases[method]({ accountId: w.op.accountId, operationId: w.op.id, token: w.ops.handoffTokenFor(w.op.id), token }), { code: 'profile_not_admitted' });
     }
     await assert.rejects(w.protocol.checkDelivery(before), { code: 'native_completion_held' });
     const read = await w.verify();
@@ -686,3 +686,50 @@ test('portal capabilities accept the pinned exact-byte hash vector', t => {
     assert.throws(() => w.purchases[method](w.op.id, 'TEST-capability-vector '), { code: 'not_found' });
   }
 });
+
+// Account and operation IDs are labels, not read capabilities.
+for (const method of ['status', 'verifyDeal']) {
+  for (const proof of ['missing', 'wrong', 'other-operation', 'expired']) {
+    test(`public ${method} refuses a known owner/id with ${proof} capability`, async t => {
+      const w = world(t, INCLUDED, { publicApi: true });
+      let token = proof === 'missing' ? undefined : proof === 'wrong' ? 'TEST-wrong-token' : w.ops.handoffTokenFor(w.op.id);
+      if (proof === 'other-operation') token = w.ops.createIdempotent({ accountId: w.op.accountId, kind: 'purchase',
+        idempotencyKey: 'TEST-other-read', request: {}, status: w.op.status, terms: w.op.terms,
+        termsHash: CHAIN, expiresAt: w.op.expiresAt }).handoffToken;
+      if (proof === 'expired') w.db.prepare('UPDATE operations SET handoff_expires_at=? WHERE id=?').run('1970-01-01T00:00:00.000Z', w.op.id);
+      w.ops.getByHandoff = () => w.op; // Host lookup deliberately grants no protection.
+      w.coordinates.get = () => assert.fail('unauthenticated coordinate read');
+      w.ops.history = () => assert.fail('unauthenticated history read');
+      w.chain.networkIdentity = async () => assert.fail('unauthenticated chain read');
+      const run = () => method === 'status' ? w.purchases.status(w.op.accountId, w.op.id, token)
+        : w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, token });
+      if (method === 'status') assert.throws(run, { code: 'not_found' });
+      else await assert.rejects(run, { code: 'not_found' });
+    });
+  }
+  test(`public ${method} accepts its capability and rechecks expiry on repeat`, async t => {
+    const w = world(t, INCLUDED, { publicApi: true });
+    const token = w.ops.handoffTokenFor(w.op.id);
+    const read = () => method === 'status' ? w.purchases.status(w.op.accountId, w.op.id, token)
+      : w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, token });
+    assert.equal((await read()).operation.id, w.op.id);
+    w.db.prepare('UPDATE operations SET handoff_expires_at=? WHERE id=?').run('1970-01-01T00:00:00.000Z', w.op.id);
+    if (method === 'status') assert.throws(read, { code: 'not_found' });
+    else await assert.rejects(read, { code: 'not_found' });
+  });
+}
+
+for (const method of ['portalOperation', 'portalEvidence']) {
+  for (const format of ['sqlite', 'local-iso', 'offset', 'epoch-text', 'normalized-date']) {
+    test(`${method} refuses ambiguous or noncanonical ${format} expiry`, t => {
+      const w = world(t, INCLUDED, { publicApi: true });
+      const token = w.ops.handoffTokenFor(w.op.id), iso = new Date(Date.now() + 3600000).toISOString();
+      const expiry = { sqlite: iso.slice(0, 19).replace('T', ' '), 'local-iso': iso.slice(0, -1),
+        offset: iso.replace('Z', '+00:00'), 'epoch-text': String(Date.now() + 3600000),
+        'normalized-date': '9999-02-30T00:00:00.000Z' }[format];
+      w.db.prepare('UPDATE operations SET handoff_expires_at=? WHERE id=?').run(expiry, w.op.id);
+      w.ops.getByHandoff = () => assert.fail('invalid expiry reached private host lookup');
+      assert.throws(() => w.purchases[method](w.op.id, token), { code: 'not_found' });
+    });
+  }
+}

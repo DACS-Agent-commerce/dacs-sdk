@@ -34,8 +34,8 @@ test('exact lookup uses the pinned seller route to discover a revoked summary', 
   assert.deepEqual(paths, ['/api/dacs/listings', `/api/dacs/sellers/${encodeURIComponent(summary.seller.primaryClaim)}`]);
 });
 for (const alias of ['revocation', 'revocationBinding']) {
-  test(`active summaries suppress ${alias} while valid revoked hints remain unverified`, () => {
-    assert.equal(projectSummary({ ...summary, [alias]: revocationBinding }).revocationBinding, undefined);
+  test(`active summaries refuse ${alias} while valid revoked hints remain unverified`, () => {
+    assert.throws(() => projectSummary({ ...summary, [alias]: revocationBinding }), { kind: 'invalid', message: 'active-record-has-binding' });
     const revoked = projectSummary({ ...summary, status: 'revoked', [alias]: revocationBinding });
     assert.deepEqual(revoked.revocationBinding, revocationBinding);
     assert.equal(revoked.verified, false);
@@ -222,3 +222,22 @@ for (const status of [404, 429, 500]) {
     else await assert.rejects(read, error => error.kind === 'unavailable' && error.status === status);
   });
 }
+
+for (const alias of ['revocation', 'revocationBinding']) {
+  for (const binding of [revocationBinding, {}, null]) {
+    test(`Directory search and exact lookup refuse active ${alias} evidence (${binding === null ? 'null' : Object.keys(binding).length})`, async () => {
+      const raw = { ...summary, [alias]: binding };
+      const client = createDirectoryClient({ origin, fetchImpl: async () =>
+        new Response(JSON.stringify({ listings: [raw] }), { headers: { 'content-type': 'application/json' } }) });
+      await assert.rejects(client.search(), { kind: 'invalid', message: 'active-record-has-binding' });
+      await assert.rejects(client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim }),
+        { kind: 'invalid', message: 'active-record-has-binding' });
+    });
+  }
+}
+test('Directory search and exact lookup accept active summaries without a binding', async () => {
+  const client = createDirectoryClient({ origin, fetchImpl: async () =>
+    new Response(JSON.stringify({ listings: [summary] }), { headers: { 'content-type': 'application/json' } }) });
+  assert.equal((await client.search()).listings[0].status, 'active');
+  assert.equal((await client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim })).status, 'active');
+});
