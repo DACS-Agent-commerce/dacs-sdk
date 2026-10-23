@@ -7,12 +7,12 @@ export class EmbeddedWalletError extends Error {
   }
 }
 
-async function sha256HexOfText(value) {
+export async function sha256HexOfText(value) {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function anchorJson(value, depth = 0, ancestors = new Set()) {
+export function anchorJson(value, depth = 0, ancestors = new Set()) {
   const invalid = () => { throw new EmbeddedWalletError('invalid_params', 'the anchor must be bounded plain canonical JSON'); };
   const string = (v, normalize) => {
     if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(v)) invalid();
@@ -52,7 +52,7 @@ export async function nativePayloadDigest(content) {
     data: content?.data ?? null, nonce: content?.nonce ?? null, timestamp: content?.timestamp ?? null }));
 }
 
-const hasKeys = (value, keys) => isPlainObject(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+export const hasKeys = (value, keys) => isPlainObject(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 
 // Shared by the original wallet approval and server-side identical recovery.
 export function storageConfirmationShapeMatches(data) {
