@@ -394,11 +394,11 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   async function hasIntent(logicalAddress) {
     return Boolean(await journal.get(keyFor(logicalAddress)));
   }
-  async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false}) {
-    if(writer!==claim || !kinds.has(artifactKind)) return {status:'rejected',reason:'demo retained read scope differs'};
+  async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false,proofOfNoIntent=false}) {
+    if(writer!==claim || !kinds.has(artifactKind) || typeof proofOfNoIntent!=='boolean') return {status:'rejected',reason:'demo retained read scope differs'};
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
-      if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
+      if(!retained) return proofOfNoIntent?noIntentAbsence(logicalAddress):{status:'absent',reason:'no seller-owned demo CREATE intent'};
       if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress) return {status:'rejected',reason:'retained demo CREATE scope differs'};
       authorizeRetained(retained);
       // As read: only an exact 'closing' row reads as the proven absence (the
