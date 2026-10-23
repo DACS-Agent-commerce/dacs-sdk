@@ -564,6 +564,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | 99154dd18992f65e0a498a9e2be1064fffa08a14 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | bd7f7cc507a40c8d76ad523382073fb1ccd95d29 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | ef6723b2e7509c38a37fee121912cfc7c197895a |
+| D11 | fix(client): D11 keep rollback guard vectors portable to the Node floor | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ef1915ddcdc37b96297aed4492ed04fd6009b724 |
 
 ## Reviewed merge snapshots
 
@@ -1393,6 +1395,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
