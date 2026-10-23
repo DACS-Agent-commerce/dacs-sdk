@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
@@ -10,7 +12,6 @@ const { registryContainerDisposition, registryAuditDriftDisposition, classifyReg
   await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
-
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
 
