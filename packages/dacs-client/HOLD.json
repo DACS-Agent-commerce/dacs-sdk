@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "451ef7be8fcbfb664ee40cbd489d79fdd26b811f"
+        "blob": "83ad1b3c10d8bc2365163d834096bf28e96acc75"
       },
       "DELTA-LEDGER.json": {
-        "blob": "5480f35e2e4e2f6e10deb313a355457384378562"
+        "blob": "c0191dc47850e778dcfc75cd2c3bf77b0aab49b6"
       },
       "DELTA-MAP.md": {
-        "blob": "7051a248a41afab30fc4e355760d7c0b9b5b1f06"
+        "blob": "1e6cc4b1c2b409e33ac392d0a77bb186d149c226"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "5843903ac48420d6437de34a86254c257ac12132"
+        "blob": "b700d8c720379202f40923fd1b342e590cc10b0b"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "9c7911528bb231de9f8913cdaba90be0e45b2d47"
+        "blob": "d9fa15605490b2f2cff8d7027ff889f77e1bdbed"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1208,7 +1208,7 @@
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
       "src/index.mjs": {
-        "blob": "a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17"
+        "blob": "ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5"
       },
       "src/public-verification.mjs": {
         "blob": "eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"
@@ -1640,7 +1640,7 @@
         "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
       },
       "test/package-contents.test.mjs": {
-        "blob": "171253367491218f30989ba8511f92305937f75b"
+        "blob": "13d71f2e8ed865ee4ae9686cc57c5214307c8a55"
       },
       "test/passive-observation.test.mjs": {
         "blob": "1dec9cb232b14799e41ade73d4a637b0212cbb18"
@@ -1649,7 +1649,7 @@
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
       },
       "test/public-api.test.mjs": {
-        "blob": "5f2ef3b4e30101b70f88e665ded5485f77764da9"
+        "blob": "c074963573ad7c710ca3b873a44105bbec0c1946"
       },
       "test/purchase-executed-only.test.mjs": {
         "blob": "36cf0c10d71208afda5d52f6aef02adc0121da62"

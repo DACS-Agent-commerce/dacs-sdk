@@ -1,13 +1,13 @@
-// Public buyer API. The root loads SQLite lazily when a transaction runs.
+// Public buyer API. Root import leaves SQLite unloaded; constructing the SQLite store loads it.
 /** createPurchaseService(options) returns authenticated diagnostic status/readback methods; requires db, ops, coordinates, chain, store and purposes. Actions throw OperationError(profile_not_admitted); missing/expired capabilities throw not_found. purchaseNext(operation) returns held guidance, PURCHASE_STATUS_HELP is its status map, and networkIdentityLabel(domain) returns a genesis label; these formatters do not write. */
 export { createPublicPurchaseService as createPurchaseService, diagnosticPurchaseNext as purchaseNext, DIAGNOSTIC_PURCHASE_STATUS_HELP as PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
 /** createProtocolPurchases({db,ops,coordinates,store,...}) returns held protocol methods; actions refuse with profile_not_admitted. protocolView(operation,options) returns redacted historical guidance; usesAgreementContext/usesNativeDemDelivery(operation) return booleans. Projection has no writes; invalid seams throw. */
 export { createProtocolPurchases, diagnosticProtocolView as protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
-/** createDeliveryDeadlineWatch({db,ops,coordinates,store,enabled=false,now}) returns observe and guidance methods. When enabled, observe may call ops.transition and persist overdue/delivery events despite purchase actions being held; invalid/async stores throw NotWiredError. */
+/** createDeliveryDeadlineWatch({db,ops,coordinates,store,enabled=false,now}) returns observe/sweep/start/stop/setDeliveryCheck methods. When enabled, observe may call ops.transition and persist overdue/delivery events despite purchase actions being held; invalid/async stores throw NotWiredError. */
 export { createDeliveryDeadlineWatch } from './dacs/delivery-deadline-watch.mjs';
 /** createCoordinateStore({db,now}) returns save/get/reportHash/recordObservation and nonce lookup methods over PURCHASE_STATE_SCHEMA. Mutators write SQLite coordinates; invalid state and uniqueness failures throw SQLite errors. The purchase hold does not disable this host utility. */
 export { createCoordinateStore } from './dacs/wallet-transactions.mjs';
-/** createDirectoryClient({origin,timeoutMs,maxBytes,fetchImpl}) returns bounded search/findSummary/revocation reads. It performs HTTP reads and throws OutboundError for invalid or unavailable responses; directory summaries confer no purchase authority. */
+/** createDirectoryClient({origin,timeoutMs,maxBytes,fetchImpl}) returns bounded search/findSummary/getListingDetail reads. It performs HTTP reads and throws OutboundError for invalid or unavailable responses; directory summaries confer no purchase authority. */
 export { createDirectoryClient } from './dacs/directory.mjs';
 /** createListingVerifier(options) returns {verify(request)}; verify always rejects with OperationError(profile_not_admitted) before resolution in this candidate. NotConfiguredError(message) identifies missing verifier configuration; constructor/configuration errors can also throw. */
 export { createListingVerifier, NotConfiguredError } from './public-verification.mjs';
