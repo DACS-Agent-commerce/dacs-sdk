@@ -499,6 +499,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 8b38b0a63507a18a55f0fe55f153e03866343a30 |
 | D11 | fix(client): D11 resolve duplicate schema import after stack merge | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | f1e6076cb72330b0bfed0ede94455e39d360272d |
+| D11 | fix(client): D11 track cached host statements before transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
 
 ## Complete commit and file inventory
 
@@ -1184,6 +1187,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 
 ## Original moved files
 
