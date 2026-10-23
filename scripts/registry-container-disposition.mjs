@@ -177,9 +177,10 @@ export function candidateIntegrityErrors({ lock, registry, candidates, installed
       errors.push("candidate record has no release version: " + name);
       continue;
     }
-    const locations = [...new Set([...Object.keys(packages).filter(location => location === "node_modules/" + name ||
-      location.endsWith("/node_modules/" + name) || packages[location]?.name === name),
-      ...installedInventory.filter(item => item.name === name).map(item => item.location)])];
+    const candidateLocation = location => typeof location === "string" &&
+      (location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
+    const locations = [...new Set([...Object.keys(packages).filter(location => candidateLocation(location) || packages[location]?.name === name),
+      ...installedInventory.filter(item => item.name === name || candidateLocation(item.location)).map(item => item.location)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
       const entry = packages[location];
