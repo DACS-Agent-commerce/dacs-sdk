@@ -39,6 +39,7 @@ jobs:
   # protection; the publish job needs it, so it never creates the environment.
   publish-environment:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read
@@ -49,15 +50,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          api="repos/$GITHUB_REPOSITORY/environments/npm-prerelease-gated"
-          gh api "$api" > "$RUNNER_TEMP/publish-environment.json"
-          gh api "$api/deployment-branch-policies" > "$RUNNER_TEMP/publish-environment-policies.json"
-          node scripts/check-publish-environment.mjs "$RUNNER_TEMP/publish-environment.json" \
-            "$RUNNER_TEMP/publish-environment-policies.json"
+          bash scripts/require-publish-environment.sh
 
   publish:
     needs: [registry-container-acceptance, publish-environment]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     environment: npm-prerelease-gated
     permissions:
       contents: read
@@ -122,9 +120,5 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DACS_NPM_PUBLISH_CONFIRM: publish:${{ inputs.confirm_version }}:next
         run: |
-          api="repos/$GITHUB_REPOSITORY/environments/npm-prerelease-gated"
-          gh api "$api" > "$RUNNER_TEMP/publish-environment.json"
-          gh api "$api/deployment-branch-policies" > "$RUNNER_TEMP/publish-environment-policies.json"
-          node scripts/check-publish-environment.mjs "$RUNNER_TEMP/publish-environment.json" \
-            "$RUNNER_TEMP/publish-environment-policies.json"
+          bash scripts/require-publish-environment.sh
           node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next

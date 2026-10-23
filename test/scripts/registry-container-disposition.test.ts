@@ -80,6 +80,42 @@ function workflowStepScript(stepName: string, path = workflowPath): string {
   return body.join("\n");
 }
 
+// The keys of a workflow's top-level `on:` or `jobs:` block, without a YAML
+// dependency: each is a two-space-indented `key:` line in the block.
+function workflowBlockKeys(path: string, block: "on" | "jobs") {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.indexOf(`${block}:`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const keys: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break;
+    const key = /^ {2}([\w-]+):/.exec(line)?.[1];
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+// One job's own keys: each four-space `key: value` line, with the trimmed
+// lines nested under it appended one per line.
+function workflowJob(path: string, jobId: string) {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.indexOf(`  ${jobId}:`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const job: Record<string, string> = {};
+  let key = "";
+  for (const line of lines.slice(start + 1)) {
+    if (/^ {0,2}\S/.test(line)) break;
+    const own = /^ {4}([\w-]+):\s*(.*)$/.exec(line);
+    if (own) {
+      key = own[1] ?? "";
+      job[key] = own[2] ?? "";
+    } else if (key && line.trim() !== "") {
+      job[key] += `\n${line.trim()}`;
+    }
+  }
+  return job;
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -367,29 +403,31 @@ describe("registry/container workflow wiring", () => {
   it("fails closed until the publish environment exists with its protection", () => {
     const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
     const guard = workflowJob(publish, "publish-environment");
-    expect(Object.keys(guard)).toEqual(["runs-on", "permissions", "steps"]);
+    expect(Object.keys(guard)).toEqual(["runs-on", "timeout-minutes", "permissions", "steps"]);
     expect(guard.permissions).toBe("\ncontents: read\nactions: read");
     expect(guard.steps).not.toMatch(/continue-on-error|\bif:/);
-    const run = (environment: unknown, policies: unknown, beforePublish = false) => {
+    const run = (environment: unknown, policies: unknown, beforePublish = false, transportFailure = 0) => {
       const directory = mkdtempSync(join(tmpdir(), "dacs-publish-environment-"));
       scratch.push(directory);
       const checkout = join(directory, "checkout");
       mkdirSync(join(checkout, "scripts"), { recursive: true });
-      writeFileSync(join(checkout, "scripts/check-publish-environment.mjs"),
-        readFileSync(join(repoRoot, "scripts/check-publish-environment.mjs")));
+      for (const file of ["check-publish-environment.mjs", "require-publish-environment.sh", "bounded-http.sh", "http-json-limits.mjs"]) {
+        writeFileSync(join(checkout, "scripts", file), readFileSync(join(repoRoot, "scripts", file)));
+      }
       // The publisher stub performs no external write. A failing recheck must
       // stop before it is invoked, even after the earlier job admitted setup.
       const published = join(directory, "published");
       writeFileSync(join(checkout, "scripts/publish-release-set.mjs"),
         `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(published)}, "called");`);
       const fixture = (name: string, value: unknown) => {
-        if (value === undefined) return "echo 'gh: Not Found (HTTP 404)' >&2; exit 1";
+        if (value === undefined) return "echo 'curl: HTTP 404' >&2; exit 1";
         writeFileSync(join(directory, name), JSON.stringify(value));
         return `cat '${join(directory, name)}'`;
       };
-      const calls = join(directory, "gh-calls");
-      const PATH = stubBin(directory, { gh: `echo "$*" >> '${calls}'\ncase "$2" in\n` +
-        `  */deployment-branch-policies) ${fixture("policies.json", policies)} ;;\n` +
+      const calls = join(directory, "http-calls");
+      const PATH = stubBin(directory, { curl: 'case "$*" in *--version*) echo "curl 8.5.0"; exit 0 ;; esac\n' +
+        `echo "HTTP $*" >> '${calls}'\n` + (transportFailure ? `exit ${transportFailure}\n` : "") +
+        `case "$*" in\n  */deployment-branch-policies) ${fixture("policies.json", policies)} ;;\n` +
         `  *) ${fixture("environment.json", environment)} ;;\nesac` });
       const runnerTemp = join(directory, "runner-temp");
       mkdirSync(runnerTemp);
@@ -406,8 +444,13 @@ describe("registry/container workflow wiring", () => {
     const tagOnly = { total_count: 1, branch_policies: [{ name: "v*", type: "tag" }] };
     const passed = run(protectedEnvironment, tagOnly);
     expect(passed.status, passed.stdout + passed.stderr).toBe(0);
-    expect(passed.calls).toBe("api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated\n" +
-      "api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated/deployment-branch-policies\n");
+    expect(passed.calls.match(/--max-filesize 65536/g)).toHaveLength(2);
+    expect(passed.calls).toContain("https://api.github.com/repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated/deployment-branch-policies");
+    for (const failure of [28, 63]) {
+      const stopped = run(protectedEnvironment, tagOnly, true, failure);
+      expect(stopped.status).toBe(failure);
+      expect(stopped.published).toBe(false);
+    }
     const rechecked = run(protectedEnvironment, tagOnly, true);
     expect(rechecked.status, rechecked.stdout + rechecked.stderr).toBe(0);
     expect(rechecked.published).toBe(true);
@@ -452,7 +495,7 @@ describe("registry/container workflow wiring", () => {
       if (reason) expect(result.stdout).toContain(`::error title=Unprotected publish environment::`);
       if (reason) expect(result.stdout).toContain(reason);
     }
-  });
+  }, 30_000);
 
   it("cannot select the warn policy from a caller that enforces drift", () => {
     // The called workflow's only input is enforce-audit-drift, and the policy
@@ -486,7 +529,8 @@ describe("registry/container workflow wiring", () => {
     for (const path of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
       "scripts/registry-container-disposition.mjs", "scripts/runtime-image-inventory.mjs",
       "scripts/verify-registry-container-consumer.sh",
-      "scripts/publish-exact-local-registry.mjs", "scripts/check-publish-environment.mjs", "package.json",
+      "scripts/publish-exact-local-registry.mjs", "scripts/check-publish-environment.mjs", "scripts/require-publish-environment.sh",
+      "scripts/bounded-http.sh", "scripts/http-json-limits.mjs", "package.json",
       "scripts/publish-release-set.mjs", "scripts/verify-release-set.mjs", "scripts/check-npm-advisories.mjs",
       "package-lock.json", ".github/workflows/", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${path} @randomblocker`);
