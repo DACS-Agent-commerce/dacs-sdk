@@ -114,6 +114,8 @@ interface CommittedListing {
 const TP1_PAY_PHASE = "pay-dem";
 const TP1_DELIVERY_PHASE = "deliver-storage-program";
 const TP1_DELIVERABLE_KIND = "storage-program";
+const TP1_PHASES = ["negotiate-fixed-price", TP1_COMMIT_PHASE, TP1_PAY_PHASE, TP1_DELIVERY_PHASE];
+const TP1_RECEIPT_SUBSTRATE = "demos:testnet";
 
 /**
  * DACS-1 §6.3.4: a Listing verifier reconstructs `dacs-listing:v1:` followed
@@ -173,6 +175,7 @@ function committedListing(value: unknown, scope: CommitmentScope): CommittedList
   const pays = kinds.filter((kind) => kind.startsWith("pay-")), deliveries = kinds.filter((kind) => kind.startsWith("deliver-"));
   if (pays.length !== 1 || pays[0] !== TP1_PAY_PHASE) fail("continuation_phase_unsupported", 500, "PAY-PHASE");
   if (deliveries.length !== 1 || deliveries[0] !== TP1_DELIVERY_PHASE) fail("continuation_phase_unsupported", 500, "DELIVERY-PHASE");
+  if (kinds.some((kind) => !TP1_PHASES.includes(kind))) fail("continuation_phase_unsupported", 500, "PIPELINE-PHASE");
   if (listing.offering.deliverable.kind !== TP1_DELIVERABLE_KIND) fail("continuation_listing_invalid", 500, "DELIVERABLE-KIND");
   if (listing.pricing.kind !== "fixed" || listing.pricing.price.currency !== "DEM") fail("continuation_listing_invalid", 500, "TP1-PRICING");
   const seconds = listing.terms.deadlineSecAfterCommit;
@@ -309,7 +312,7 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, listin
   // The commitment gate's own structural checks (CORE §5.1 receipt, DACS-4 §9.3 transaction reference) come first.
   if (!isReadableAnchorReceipt(receipt) || !isChainTxRef(c.anchorTxRef)) invalid();
   if (!isRecord(c.anchorTxRef) || typeof c.nativeAddress !== "string" || c.nativeAddress.length === 0 || !isRecord(receipt) ||
-      receipt.state !== "finalized" || receipt.observationDisposition !== "established" || receipt.logicalAddress !== logicalAddress ||
+      receipt.substrate !== TP1_RECEIPT_SUBSTRATE || receipt.state !== "finalized" || receipt.observationDisposition !== "established" || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== c.nativeAddress || receipt.contentHash !== contentHash(record) ||
       !isRecord(blockRef) || !isUint(blockRef.timestamp)) invalid();
   const committedAt = (blockRef as JsonRecord).timestamp as number;
