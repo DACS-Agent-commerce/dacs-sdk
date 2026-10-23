@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "6b48abd8cba6832c34fc60942ac56233894fecef"
+        "blob": "d7369c4bc9f60bfdd6b13de1b3a867a80ce79a39"
       },
       "DELTA-LEDGER.json": {
-        "blob": "b8370ecd6df33d067afad1a854e537f44bdd11c2"
+        "blob": "18317b98bfb4bb4ad06ce7e6c43e89b105ee0629"
       },
       "DELTA-MAP.md": {
-        "blob": "d6d95714625413f8948c7d4a28363dc91b1c7716"
+        "blob": "3d886ac5eecb8f9024edf4db0eff95a06bd92afe"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "407684b0c3fdfe6159dcfd1a8c05c5c7512509fc"
+        "blob": "9d0f979d409bd4a71ee222e61fd75df4517b369f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1147,14 +1147,17 @@
       "src/dacs/purchase-protocol.mjs": {
         "blob": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
       },
+      "src/dacs/seller-agent-error.mjs": {
+        "blob": "a701b193b0b8e1b01237d684ca33c4ee8ea001b6"
+      },
       "src/dacs/seller-agent.mjs": {
-        "blob": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b"
+        "blob": "f4040282b697373ed8c41585699c049b8230f325"
       },
       "src/dacs/seller-durable-state.mjs": {
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "afac16899f4f2d95463ce7f3ab6e9aa7e03e0ef1"
+        "blob": "b7e0ec6e243d6e81499a97dcbbb609566a0a4134"
       },
       "src/dacs/seller-session-lifecycle.mjs": {
         "blob": "86fd5777a41c76183f2b3383898400469bdc60b3"
@@ -1166,7 +1169,7 @@
         "blob": "14a0693cb2484eb39c9db122914b46ef31503757"
       },
       "src/dacs/seller-transport-auth.mjs": {
-        "blob": "0997b8a6390c44daf9f5075711406d9f2d60dd98"
+        "blob": "68a8a8946386f010d7a157a25e184bfb52370108"
       },
       "src/dacs/source-demo-seller-transport.mjs": {
         "blob": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
@@ -1247,16 +1250,22 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "54bead46b8880560f26cacda3d10f6024e24596d"
+        "blob": "ecab598d2695975c776aaddd6038e71db5432f6f"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
+      },
+      "src/wallet/payload-helpers.mjs": {
+        "blob": "32c65aec6b18cde12321600f9eb1c6ba4e439cae"
       },
       "test/buyer-chain-indeterminate.test.mjs": {
         "blob": "5e2e079c0c7bcb73c0711d0c825f54e6dc72dd6d"
       },
       "test/commitment-contradiction-classifier.test.mjs": {
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
+      },
+      "test/d11-seam-parameters.test.mjs": {
+        "blob": "3c96ca8c5a47dcb88862af46324df331961d153e"
       },
       "test/delivery-access-model.test.mjs": {
         "blob": "478a2e3976a84f76d8d5afc0cc480e7674c8d32d"

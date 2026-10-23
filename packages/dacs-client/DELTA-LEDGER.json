@@ -1204,6 +1204,47 @@
           "after": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 02 isolate buyer runtime imports",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent-error.mjs",
+          "before": null,
+          "after": "a701b193b0b8e1b01237d684ca33c4ee8ea001b6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b",
+          "after": "f4040282b697373ed8c41585699c049b8230f325"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "afac16899f4f2d95463ce7f3ab6e9aa7e03e0ef1",
+          "after": "b7e0ec6e243d6e81499a97dcbbb609566a0a4134"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "0997b8a6390c44daf9f5075711406d9f2d60dd98",
+          "after": "68a8a8946386f010d7a157a25e184bfb52370108"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "54bead46b8880560f26cacda3d10f6024e24596d",
+          "after": "ecab598d2695975c776aaddd6038e71db5432f6f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": null,
+          "after": "32c65aec6b18cde12321600f9eb1c6ba4e439cae"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": null,
+          "after": "3c96ca8c5a47dcb88862af46324df331961d153e"
+        }
+      ]
     }
   ]
 }

@@ -626,5 +626,23 @@
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/scripts/delta-map.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 02 isolate buyer runtime imports",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/seller-agent-error.mjs",
+      "packages/dacs-client/src/dacs/seller-agent.mjs",
+      "packages/dacs-client/src/dacs/seller-http.mjs",
+      "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "packages/dacs-client/src/wallet/payload-helpers.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs"
+    ]
   }
 ]
