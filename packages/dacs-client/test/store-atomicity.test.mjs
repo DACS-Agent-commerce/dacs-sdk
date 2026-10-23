@@ -17,6 +17,7 @@ for (const kind of ['callback-then-thenable', 'deferred', 'pass-through']) {
 }
 
 import { DatabaseSync } from 'node:sqlite';
+const nativeExec = DatabaseSync.prototype.exec;
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -292,3 +293,14 @@ for (const reject of [false, true]) {
     assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'client_not_wired' });
   });
 }
+test('a retained native exec cannot persist schema writes after a caught rollback', t => {
+  const { db, path } = database(t), store = createSqlitePurchaseStore();
+  db.exec("INSERT INTO records VALUES ('TEST-existing')");
+  assert.throws(() => store.transaction(db, () => {
+    assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')"), /UNIQUE/);
+    assert.throws(() => nativeExec.call(db, 'CREATE TABLE escaped AS SELECT 1'), /readonly/);
+  }), { code: 'client_not_wired' });
+  const reopened = new DatabaseSync(path);
+  try { assert.equal(reopened.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n, 0); }
+  finally { reopened.close(); }
+});
