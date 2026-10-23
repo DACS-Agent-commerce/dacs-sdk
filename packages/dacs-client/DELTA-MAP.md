@@ -447,7 +447,7 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` | 717c0a6ab525d95c330ec2dafcda3074e7b47b24 |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | a2cd8b437ac464174f10834f7870b960966d0393 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | c8a2fd31115b3af715df4b9cb589c188280dbe4a |
-| | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:15`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:18`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:22`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:30`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:42`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:56`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:87` | f1e6076cb72330b0bfed0ede94455e39d360272d |
+| | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | f1e6076cb72330b0bfed0ede94455e39d360272d |
 | | `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:45`, `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:84` | 8b91a598be9918d7177fdb04c4c35cdf9d41df0b |
 | | `packages/dacs-client/test/helpers/readback-review-loader.mjs:1` | 0fd55490fb08991a2c021ccc4e48679f0a2b00b6 |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 498f20be5b423d6328ffb0031d71d4e3d8233c43 |
@@ -526,11 +526,19 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | f80619dee3a06bfc04b11247821e8f1d5dd82bad |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 0cae28f8588f2e4d35350d4f009ddfa58e84abc4 |
 | D11 | fix(client): D11 share buyer schema with the database fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:15`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:18`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:22`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:30`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:42`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:56`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:87` | a454605da7223935b8e8417722828049bf904eaf |
+| | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | a454605da7223935b8e8417722828049bf904eaf |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | 940e94f63ffc2a65f42ea03bf262fb42fc200525 |
 | D11 | fix(client): D11 track cached host statements before transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
+| D11 | fix(client): D11 reconcile held buyer seam merge provenance | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 9fa8ce3f7c831bd65179dc99a9e70877349c1f6d |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d697a51b58d0e71ab9992bcd0f17272c85c28f5f |
+| | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 8b38b0a63507a18a55f0fe55f153e03866343a30 |
+| D11 | fix(client): D11 resolve duplicate schema import after stack merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | f1e6076cb72330b0bfed0ede94455e39d360272d |
+| D11 | fix(client): D11 reconcile adapter initialization merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | eb7c37692bdd5da4ac476e6791a35172f404212e |
 
 ## Complete commit and file inventory
 
@@ -1100,7 +1108,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:15`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:18`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:22`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:30`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:42`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:56`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:87` |
+| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:45`, `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:84` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/helpers/readback-review-loader.mjs:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
@@ -1267,7 +1275,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:15`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:18`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:22`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:30`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:42`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:56`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:87` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
@@ -1276,6 +1284,22 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
