@@ -734,5 +734,20 @@
       "packages/dacs-client/src/wallet/payload-helpers.mjs",
       "packages/dacs-client/test/d11-import-boundary.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 retain validated observation snapshots and cover native refusal",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs",
+      "packages/dacs-client/test/native-supersession-unavailable.test.mjs"
+    ]
   }
 ]

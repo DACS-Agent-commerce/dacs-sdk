@@ -199,7 +199,7 @@ test('public watch refuses a host promise before its continuation can persist an
   const before = world.snapshot('delivery'), op = world.operation('delivery');
   const transition = world.ops.transition.bind(world.ops);
   world.ops.transition = (...args) => Promise.resolve().then(() => transition(...args));
-  const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true });
+  const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true, now: () => ABSENT.checkedAt });
   assert.throws(() => watch.observe(op, ABSENT), { code: 'client_not_wired' });
   await new Promise(resolve => setImmediate(resolve));
   const reopened = openWorld(path);

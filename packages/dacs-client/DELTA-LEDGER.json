@@ -1439,6 +1439,32 @@
           "after": "e1085f274e14f20b87335189155f76284fd3b92a"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 retain validated observation snapshots and cover native refusal",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "427f897f08c2e6eba7f14290c899b56cdbab7cb5",
+          "after": "8494a56749dee2fa254d8fb025e681cf7f70ccd2"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "19be8559b54d902e57fd1056dab758c48d052dbe",
+          "after": "f213a2cfade904c48b9515355f49fb5a7a89d9fd"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "05af633db6d7e5bd8d18a40f23e9afef0dae01ef",
+          "after": "b2db7b91c5e1e6de55edde544c2b5d078c1f3978"
+        },
+        {
+          "path": "packages/dacs-client/test/native-supersession-unavailable.test.mjs",
+          "before": null,
+          "after": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
+        }
+      ]
     }
   ]
 }

@@ -1,5 +1,4 @@
 import test from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
 import { createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
@@ -11,7 +10,7 @@ import { createOperationStore } from './helpers/purchase-integrity-operations.mj
 
 const HASH = '1'.repeat(64), CHAIN = 'f'.repeat(64), WALLET = '0x' + 'a'.repeat(64), PAYEE = '0x' + '7'.repeat(64);
 const INCLUDED = { status: 'included', txHash: HASH, payer: WALLET, payee: PAYEE, amountOs: '2500000000', blockNumber: 10 };
-function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false, chainReadTimeoutMs = 8000, now } = {}) {
+function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, chainReadTimeoutMs = 8000, now } = {}) {
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) }), coordinates = createCoordinateStore({ db });
@@ -33,11 +32,21 @@ function world(t, observation, { native = false, observer = 'TEST-host-reader', 
   coordinates.reportHash(op.id, HASH);
   const protocol = native || buyerRefusal || buyerAccess ? createProtocolPurchases({ db, ops, coordinates, store,
     buyerAccess: buyerRefusal ? { assertWallet() { throw buyerRefusal; } } : buyerAccess }) : null;
-  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, chainReadTimeoutMs, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
+  const purchases = createPurchaseService({ db, ops, coordinates, config: {}, chain, protocol, store, chainReadTimeoutMs, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
   return { db, chain, protocol, coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
     consumed: () => db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n,
     verify: () => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id, token: ops.handoffTokenFor(op.id) }) };
 }
+
+test('settlement validates and retains one materialized host observation', async t => {
+  let serializations = 0;
+  const observation = { ...INCLUDED, toJSON() { return ++serializations === 1 ? { ...INCLUDED } : { status: 'pending' }; } };
+  const w = world(t, observation), result = await w.verify();
+  assert.equal(result.verification.outcome, 'verified');
+  assert.equal(w.coordinates.get(w.op.id).observation.observation.status, 'included');
+  assert.equal(serializations, 1);
+  assert.equal((await w.verify()).verification.observation.status, 'included');
+});
 
 for (const [label, observation] of [
   ['Number amount', { ...INCLUDED, amountOs: 2500000000 }],
@@ -50,6 +59,7 @@ for (const [label, observation] of [
   ['string inclusion time', { ...INCLUDED, includedAt: 'TEST-time' }],
   ['out of range inclusion time', { ...INCLUDED, includedAt: 8640000000000001 }],
   ['different hash', { ...INCLUDED, txHash: '2'.repeat(64) }],
+  ['oversized extension', { ...INCLUDED, extra: 'x'.repeat(64 * 1024 + 1) }],
   ['bigint extension', { ...INCLUDED, extra: 1n }],
   ['null result', null],
   ['non-string reason', { status: 'failed', reason: 7 }],
