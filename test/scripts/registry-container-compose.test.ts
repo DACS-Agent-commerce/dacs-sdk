@@ -92,4 +92,3 @@ it("invokes only Compose config and writes the rendered artifact", () => {
     expect(unsafe.status).toBe(91);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
-
