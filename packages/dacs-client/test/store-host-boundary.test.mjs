@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { spawnSync } from 'node:child_process';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 
 function world(t) {
@@ -93,4 +94,18 @@ test('schema refresh replaces renamed trigger targets without accumulating guard
     assert.equal(triggers.find(row=>row.tbl_name==='records')?.n,3);
     assert.ok(triggers.every(row=>row.n===3));
   }
+});
+
+test('constructing the adapter tracks host statements before its first transaction', () => {
+  const result=spawnSync(process.execPath,['--input-type=module','-e',`
+    import {DatabaseSync} from 'node:sqlite';
+    import {createSqlitePurchaseStore} from ${JSON.stringify(new URL('../src/seams/purchase-store-not-wired.mjs',import.meta.url).href)};
+    const db=new DatabaseSync(':memory:'),store=createSqlitePurchaseStore();
+    db.exec('CREATE TABLE records(id TEXT)');
+    const write=db.prepare("INSERT INTO records VALUES ('TEST-cached')");
+    store.transaction(db,()=>write.run());
+    if(db.prepare('SELECT count(*) n FROM records').get().n!==1)throw Error('TEST-missing');
+    db.close();
+  `],{encoding:'utf8'});
+  assert.equal(result.status,0,result.stdout+result.stderr);
 });
