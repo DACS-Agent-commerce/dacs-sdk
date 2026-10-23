@@ -15,10 +15,10 @@ import { execFileSync } from "node:child_process";
 // list records it. Nothing here permits production publication while #191
 // remains blocked.
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
+import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 // The evidence a complete summary embeds, by the schema its producer writes.
@@ -283,6 +283,7 @@ export function auditEndpointError(text) {
 // The evidence each network-dependent stage leaves behind. Consumer output
 // also holds generated-test logs, so only npm and Docker errors count there.
 const stageEvidence = {
+  "release-set": [["release-set.log", () => true]],
   "registry-start": [["registry.log", () => true]],
   "registry-auth": [["registry.log", () => true]],
   publish: [["registry.log", () => true]],
