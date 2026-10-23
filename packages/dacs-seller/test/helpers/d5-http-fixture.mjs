@@ -1,3 +1,4 @@
+import DatabaseSync from 'better-sqlite3';
 import { testWallet } from './protocol-fixture.mjs';
 let nextTestWallet = 30;
 const key = () => { const wallet = testWallet(nextTestWallet++); return { claim: wallet.claim, sign: wallet.signBytes }; };
@@ -6,7 +7,6 @@ import {mkdtemp,rm,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PassThrough} from 'node:stream';
-import {DatabaseSync} from 'node:sqlite';
 import {canonicalize,identityBundleHash,sha256Hex} from '@kynesyslabs/dacs';
 const {createSellerHttpHandler}=await import('../../src/dacs/seller-http.mjs');
 const {createSellerContextRoute,SELLER_CONTEXT_LIMITS}=await import('../../src/dacs/seller-context-route.mjs');
@@ -47,7 +47,7 @@ async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},m
   const client=createSellerTransportClientAuth({buyerSigner:actor,seller:seller.claim,resolveJob:()=>({listingPin:pin,agreementHash:sellerContextScopeHash(scope)}),now:()=>time});
   const {header}=await client.request(SELLER_CONTEXT_PATH,body,text);return {text,header};
  };
- const counts=()=>{const db=new DatabaseSync(path,{readOnly:true});try{return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'peer_%' AND name NOT IN ('peer_meta','peer_context_challenges') ORDER BY name").all().map(({name})=>[name,db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]))}finally{db.close()}};
+ const counts=()=>{const db=new DatabaseSync(path,{readonly:true});try{return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'peer_%' AND name NOT IN ('peer_meta','peer_context_challenges') ORDER BY name").all().map(({name})=>[name,db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]))}finally{db.close()}};
  const effects=()=>({holds,writes,logs,releases,counts:counts()});
  return {handler,wire,store,auth,route,buyer,other,seller,pin,path,effects,now:()=>time,advance:ms=>{time+=ms}};
 }
