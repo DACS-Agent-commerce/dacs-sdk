@@ -1,7 +1,9 @@
 // A valid strict-verification result authenticates a record, independently of
 // its overallDecision. Stub only those two SDK operations to supply each
 // valid non-pass result; run the actual provider and party-Vet state store.
-import './helpers/d5-isolated-dependencies.mjs';
+import vm from 'node:vm';
+import { readFile } from 'node:fs/promises';
+import * as sdk from '@kynesyslabs/dacs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compositeVerificationAddress,vetPhaseFailureClass} from '@kynesyslabs/dacs';
@@ -14,18 +16,29 @@ globalThis.__d5PartyVet=async input=>{
  records.set(compositeVerificationAddress(input.jobId,input.evaluatedParty),record);
  return {record,recordRef:{anchor:{kind:'storage-program',locator:'native'},contentHash:'a'.repeat(64),signer:seller},receipt:{nativeAddress:'native'}};
 };
-const {createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
+const sourceUrl=new URL('../src/devnet-demo/agreement-context.mjs',import.meta.url);
+const module=new vm.SourceTextModule(await readFile(sourceUrl,'utf8'),{identifier:sourceUrl.href});
+await module.link(async specifier=>{
+ const values=specifier==='@kynesyslabs/dacs'?{...sdk,partyVetCore:(...args)=>globalThis.__d5PartyVet(...args),verifyCompositeVerificationRecord:(...args)=>globalThis.__d5Strict(...args)}:await import(specifier.startsWith('.')?new URL(specifier,sourceUrl).href:specifier);
+ return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value]of Object.entries(values))this.setExport(key,value);});
+});await module.evaluate();
+const {createDevnetDemoAgreementContextProvider}=module.namespace;
 const {createInMemoryPartyVetStore}=await import('../src/devnet-demo/party-vet-store.mjs');
 const stores=new WeakMap();
+const {fixtureListing}=await import('./fixtures/listings.mjs');
+const {seller:fixtureSeller}=await import('./helpers/protocol-fixture.mjs');
+const sdkFixtureListing=fixtureListing(fixtureSeller,{now:1800000000000});sdkFixtureListing.seller.identity={...bundleTemplate()};
+function bundleTemplate(){return {presentedBy:seller,bundleVersion:'1',presentedAt:1800000000000,sessionNonce:'b'.repeat(64),claims:[{ref:seller}]};}
+const {listingPin:pinFor}=await import('../src/dacs/purchase-protocol.mjs');
 const scope={jobId,generatedAt:1800000000000,payee:'0x'+'2'.repeat(64)};
 const bundle={presentedBy:buyer,bundleVersion:'1',presentedAt:scope.generatedAt,sessionNonce:'a'.repeat(64),claims:[{ref:buyer}],presentation:{kind:'per-claim',signatures:[{ref:buyer,signature:'fixture'}]}};
 function provider(buyerRequirement={requirementVersion:'1',required:[],preferredPresentation:'any'}){
  let store=stores.get(records);if(!store){store=createInMemoryPartyVetStore();stores.set(records,store);}
- const counterparty={issueChallenge:async()=>({issuer:buyer,seller,jobId,sessionNonce:'d'.repeat(64),expiresAt:scope.generatedAt+60000}),evaluate:async input=>{
+ const counterparty={readRecord:async input=>({status:'unattempted',issuer:buyer,jobId,bundleHash:sdk.identityBundleHash(input.identityBundle),requirementHash:sdk.sha256Hex(sdk.canonicalize(input.requirement))}),issueChallenge:async()=>({issuer:buyer,seller,jobId,sessionNonce:'d'.repeat(64),expiresAt:scope.generatedAt+60000}),evaluate:async input=>{
   madeRequirements.push(structuredClone(input.requirement));
   return {recordVersion:'1',jobId,evaluatedParty:seller,overallDecision:nonPassParty===seller?decision:'pass',signature:{signer:buyer}};
  }};
- return createDevnetDemoAgreementContextProvider({anchor:{writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized'}};}},wallet:{claim:seller,signBytes:()=>Buffer.alloc(64)},listing:{pin:{listingId:'D5',version:1,contentHash:'b'.repeat(64)},seller:{identity:{...bundle,presentedBy:seller}},buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
+ return createDevnetDemoAgreementContextProvider({anchor:{writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:()=>Buffer.alloc(64)},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
 }
 for(const party of [buyer,seller])for(const value of ['fail','indeterminate','error'])test(`VPC4 ${party===buyer?'buyer':'seller'} ${value}: valid record never creates initial or recovered context`,async()=>{
  records=new Map();decision=value;nonPassParty=party;const p=provider();
@@ -43,7 +56,7 @@ test('VPC2 initial, retained and recovered contexts keep distinct buyer and expl
  records=new Map();decision='pass';madeRequirements=[];strictRequirements=[];
  const buyerRequirement={requirementVersion:'1',required:[{scheme:'key',verificationRequired:false}],preferredPresentation:'any'},empty={requirementVersion:'1',required:[],preferredPresentation:'any'};
  const p=provider(buyerRequirement);await p.resolveBuyer({scope,buyerIdentityBundle:bundle});assert.deepEqual(madeRequirements,[buyerRequirement,empty]);assert.deepEqual(strictRequirements,[buyerRequirement,empty,empty,buyerRequirement,empty]);
- const retained=await p.resolveSeller({jobId,listingPin:{listingId:'D5',version:1,contentHash:'b'.repeat(64)},buyerIdentityBundle:bundle,generatedAt:scope.generatedAt});assert.deepEqual(retained.value.vetRequirements.map(r=>r.requirement),[buyerRequirement,empty]);
+ const retained=await p.resolveSeller({jobId,listingPin:pinFor({...sdkFixtureListing,buyerRequirement}),buyerIdentityBundle:bundle,generatedAt:scope.generatedAt});assert.deepEqual(retained.value.vetRequirements.map(r=>r.requirement),[buyerRequirement,empty]);
  strictRequirements=[];await provider(buyerRequirement).recoverBuyer({scope,buyerIdentityBundle:bundle});assert.deepEqual(strictRequirements,[buyerRequirement,empty]);
 });
 
@@ -77,6 +90,6 @@ test('a truthy authenticated non-pass recovery result never authorizes a durable
  // verifier intentionally accepts it so the disposition check decides alone.
  records.get(compositeVerificationAddress(jobId,seller)).overallDecision='fail';
  const fresh=provider();
- const answer=await fresh.resolveSeller({jobId,listingPin:{listingId:'D5',version:1,contentHash:'b'.repeat(64)},buyerIdentityBundle:bundle,generatedAt:scope.generatedAt});
+ const answer=await fresh.resolveSeller({jobId,listingPin:pinFor({...sdkFixtureListing,buyerRequirement:{requirementVersion:'1',required:[],preferredPresentation:'any'}}),buyerIdentityBundle:bundle,generatedAt:scope.generatedAt});
  assert.equal(answer.disposition,'indeterminate');assert.equal(fresh.contexts.size,0);
 });
