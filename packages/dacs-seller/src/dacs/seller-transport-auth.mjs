@@ -6,7 +6,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { admitRawJson, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 
@@ -44,8 +44,9 @@ function requireJobId(jobId) {
   if (!isCanonicalJobId(jobId)) fail('peer_job_invalid', 409);
 }
 
+/** Transport refusal with a stable code, HTTP status and optional original cause. */
 export class SellerTransportError extends Error {
-  constructor(code, status = 401) { super(code); this.code = code; this.status = status; }
+  constructor(code, status = 401, options) { super(code, options); this.code = code; this.status = status; }
 }
 
 function pinValid(pin) {
@@ -65,6 +66,7 @@ function payloadValid(p, kind) {
     (kind !== 'response' || (HASH.test(p.requestHash) && uint(p.status) && p.status >= 200 && p.status <= 599));
 }
 
+/** Return the exact envelope signing bytes; throw on malformed payloads. */
 export function sellerTransportSigningBytes(payload) {
   if (!payloadValid(payload, payload?.kind)) fail('peer_envelope_invalid');
   return Buffer.from(`${DOMAIN}${canonicalize(payload)}`, 'utf8');
@@ -92,7 +94,11 @@ function verifiedHeader(header, kind, principal, { requireDelegation = false, on
   const bytes = Buffer.from(header, 'base64url');
   if (bytes.toString('base64url') !== header) fail('peer_envelope_invalid');
   let envelope;
-  try { envelope = admitRawJson(bytes); } catch { fail('peer_envelope_invalid'); }
+  try { envelope = admitRawJson(bytes); } catch (cause) {
+    const error = new SellerTransportError('peer_envelope_invalid', 401, { cause });
+    if (cause instanceof RawJsonAdmissionError) { error.admissionCode = cause.code; error.admissionStage = cause.stage; }
+    throw error;
+  }
   const delegated = kind === 'request' && requireDelegation && Object.hasOwn(envelope ?? {}, 'delegation');
   if (!keys(envelope, ['payload', 'signature', ...(delegated ? ['delegation'] : [])]) || !payloadValid(envelope.payload, kind)) fail('peer_envelope_invalid');
   if (requireDelegation && !delegated) fail('peer_delegation_required');
@@ -110,6 +116,7 @@ function publicKeyFor(raw) {
   return createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(raw, 'hex')]), format: 'der', type: 'spki' });
 }
 
+/** Return delegation signing bytes; throw on invalid scope or lifetime. */
 export function sellerSessionDelegationSigningBytes(payload) {
   if (!keys(payload, ['version', 'kind', 'buyer', 'sessionPublicKey', 'seller', 'listingPin', 'jobId', 'notBefore', 'expiresAt']) ||
       payload.version !== '1' || payload.kind !== 'seller-session-delegation' || typeof payload.buyer !== 'string' || typeof payload.seller !== 'string' || !CLAIM.test(payload.buyer) || !CLAIM.test(payload.seller) ||
@@ -126,6 +133,7 @@ function delegationSignatureBytes(signature) {
   try { return decodeSignature(signature); } catch { fail('peer_delegation_signature_invalid'); }
 }
 
+/** Return canonical base64url wallet signature bytes; throw on malformed input. */
 export function normalizeSellerSessionDelegationSignature(signature) {
   return delegationSignatureBytes(signature).toString('base64url');
 }
@@ -133,6 +141,7 @@ export function normalizeSellerSessionDelegationSignature(signature) {
 // time: also require notBefore <= time < expiresAt. allowExpired keeps only
 // the notBefore check; it is for readback of already journaled effects (see
 // docs/SELLER-SESSION-DELEGATION.md), never for starting a new seller effect.
+/** Authenticate delegation scope and optional time bounds; return its payload or throw. */
 export function verifySellerSessionDelegation(delegation, { buyer, seller, listingPin, jobId, time, deadline, allowExpired = false } = {}) {
   if (!keys(delegation, ['payload', 'signature'])) fail('peer_delegation_invalid');
   const p = delegation.payload, bytes = sellerSessionDelegationSigningBytes(p);
@@ -158,6 +167,7 @@ const effectIdentity = (p) => sha256Hex(canonicalize({ ...requestIdentity(p), me
 export const sellerTransportEffect = effectIdentity;
 
 function validateBody(p, body) {
+  if (!record(body)) fail('peer_body_invalid', 409);
   if (p.path === SELLER_CONTEXT_CHALLENGE_PATH) {
     if (!keys(body, ['scope']) || !keys(body.scope, SELLER_CONTEXT_SCOPE_KEYS.filter(k => k !== 'buyerBundleHash')) ||
         body.scope.jobId !== p.jobId || body.scope.buyer !== p.buyer || body.scope.seller !== p.seller ||
@@ -594,6 +604,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   };
 }
 
+/** Create request validation and response signing over a supplied store; throw on invalid configuration. */
 export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = 60000, requireDelegation = false }) {
   checkSigner(sellerSigner);
   if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > 60000) throw new Error('seller transport configuration is invalid');
@@ -605,7 +616,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   const guardedStore = Object.freeze({
     bind: (value) => store.bind(value),
     issueContextChallenge: (request, ...args) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.issueContextChallenge(request, ...args),
-    attemptContextPresentation: (...args) => store.attemptContextPresentation(...args),
+    attemptContextPresentation: (request, ...args) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.attemptContextPresentation(request, ...args),
     reserve: (request, body, options = {}) => store.reserve(request, body, readbackOnly.has(request) ? { ...options, journaledOnly: true } : options),
     ...(typeof store.classify === 'function' ? { classify: (request, body, options = {}) => store.classify(request, body, readbackOnly.has(request) ? { ...options, journaledOnly: true } : options) } : {}),
     ...(typeof store.contextAdmission === 'function' ? { contextAdmission: (jobId) => store.contextAdmission(jobId) } : {}),
@@ -633,7 +644,6 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       requireJobId(request?.jobId);
       if (request.seller !== sellerSigner.claim) fail('peer_audience_wrong');
       if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
-      onAuthenticatedBody?.();
       const time = now();
       // An expired retry can follow a previously completed effect. It is a
       // timeout/unknown answer, never proof that the operation was refused.
@@ -659,6 +669,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
           if (request.expiresAt > delegation.payload.expiresAt) fail('peer_delegation_expired', 408);
         } else readbackOnly.add(request);
       }
+      onAuthenticatedBody?.();
     },
     async responseHeader(request, status, text) {
       requireJobId(request?.jobId);
@@ -671,6 +682,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
 // A delegated app supplies only its session signer and the wallet-signed
 // public delegation. Legacy fixtures may supply their own buyer signer.
 // resolveJob comes from the approved Agreement, never an HTTP response.
+/** Create signed requests and bound response verification; throw on invalid configuration. */
 export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, delegation, seller, resolveJob, now = () => Date.now(), lifetimeMs = 30000, nonce = () => randomBytes(24).toString('base64url') }) {
   const signing = sessionSigner ?? buyerSigner;
   checkSigner(signing);
@@ -681,6 +693,7 @@ export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, de
   if (!CLAIM.test(seller) || seller === buyer || typeof resolveJob !== 'function' || !uint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > 60000) throw new Error('buyer transport configuration is invalid');
   return {
     async request(path, body, text) {
+      if (!record(body)) fail('peer_body_invalid', 409);
       const jobId = [CONTEXT, SELLER_CONTEXT_CHALLENGE_PATH].includes(path) ? body.scope?.jobId : body.transportIdentity?.jobId ?? body.jobId;
       requireJobId(jobId);
       const context = clone(await resolveJob(jobId));
