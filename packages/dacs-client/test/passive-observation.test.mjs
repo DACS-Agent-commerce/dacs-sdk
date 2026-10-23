@@ -89,3 +89,19 @@ test('failed execution is refused without releasing retained claims', async t =>
   assert.equal(result.status, 'invalid');
   assert.deepEqual(await w.journal.entries(), before); assert.deepEqual(w.writes, []);
 });
+
+test('observation deadline aborts its reader using a controlled timer', async t => {
+  const { observeWithDeadline } = await import('../src/util/http.mjs');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  const read = observeWithDeadline(options => { signal = options.signal; return new Promise(() => {}); }, { timeoutMs: 123 });
+  await Promise.resolve(); t.mock.timers.tick(123);
+  await assert.rejects(read, { kind: 'timeout' });
+  assert.equal(signal.aborted,true);
+});
+test('observation deadline preserves reader errors and aborts its signal on completion', async () => {
+  const { observeWithDeadline } = await import('../src/util/http.mjs');
+  const cause = new Error('TEST-cause'); let signal;
+  await assert.rejects(observeWithDeadline(options => { signal = options.signal; throw cause; }, { timeoutMs: 10000 }), error => error === cause);
+  assert.equal(signal.aborted,true);
+});

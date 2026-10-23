@@ -1591,6 +1591,22 @@
           "after": "eee757ac92a1d6b163a362c7edb9b0894f0654ad"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share the cancellable passive observation deadline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "557fedfd8a745c4ad4d83972d9739708db6f8948",
+          "after": "dad306f9b723c185815fbb41b63ab6d56f135a8b"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "eee757ac92a1d6b163a362c7edb9b0894f0654ad",
+          "after": "03e4731889a75769c2f2b429d2a99fbb89f10baf"
+        }
+      ]
     }
   ]
 }

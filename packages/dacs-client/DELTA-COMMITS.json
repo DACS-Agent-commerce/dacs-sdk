@@ -845,5 +845,18 @@
       "packages/dacs-client/test/helpers/passive-native-world.mjs",
       "packages/dacs-client/test/passive-observation.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 share the cancellable passive observation deadline",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/http.mjs",
+      "packages/dacs-client/test/passive-observation.test.mjs"
+    ]
   }
 ]
