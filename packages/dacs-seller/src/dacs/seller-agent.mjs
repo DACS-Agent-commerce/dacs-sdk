@@ -53,7 +53,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
-import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
+import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
@@ -85,8 +85,8 @@ import {
 } from './purchase-protocol.mjs';
 
 export class SellerAgentError extends Error {
-  constructor(code, message, status = 422) {
-    super(message);
+  constructor(code, message, status = 422, options = {}) {
+    super(message,options);
     this.code = code;
     this.status = status;
   }
@@ -321,7 +321,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (prior.attempt === null) prior.attempt = structuredClone(attempt);
       return before;
     },
-    admitChallenge: (nonce, presentationHash) => { const prior = memoryChallenges.get(nonce); if (prior?.attempt?.presentationHash === presentationHash) prior.attempt.admitted = true; },
+    admitChallenge: (nonce, presentationHash, accepted) => { const prior = memoryChallenges.get(nonce); if (prior?.attempt?.presentationHash === presentationHash) prior.attempt={...prior.attempt,admitted:true,...accepted===undefined?{}:{accepted:structuredClone(accepted)}}; },
   };
   const signatures = new Map(); // planHash -> seller signature
   const contributions = new Map(); // proposalHash -> contribution
@@ -506,7 +506,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const bundleHash = identityBundleHash(buyerIdentityBundle);
     if (nativeProfile && existing && canonicalize(existing.buyerBundle) !== canonicalize(buyerIdentityBundle)) throw new SellerAgentError('session_not_admitted', 'the presentation differs from the retained accepted presentation', 409);
     authenticateBuyerBundle(buyerIdentityBundle);
-    if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
+    if (!sameCanonicalClaimIdentity(transportIdentity.buyer,buyerIdentityBundle.presentedBy)) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
     if (existing && existing.buyerBundleHash !== bundleHash) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
     // A new session is admitted before anything of it is kept, read, signed or sent.
     if (newSession) {
@@ -515,7 +515,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       // on first admission. DACS-1 §6.3.2 reverifies the retained accepted
       // presentation on retry; it does not accept its consumed nonce anew.
       const challengeProblem = !issued ? 'the presentation nonce is not a challenge this seller issued'
-        : issued.jobId !== jobId || issued.buyer !== buyerIdentityBundle.presentedBy ? 'the presentation nonce is a challenge issued for another job or buyer'
+        : issued.jobId !== jobId || !sameCanonicalClaimIdentity(issued.buyer,buyerIdentityBundle.presentedBy) ? 'the presentation nonce is a challenge issued for another job or buyer'
           : issued.attempt !== null && !(issued.attempt.presentationHash === presentationHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
             : issued.attempt === null && !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
       if (challengeProblem) throw new SellerAgentError('session_not_admitted', challengeProblem, 409);
@@ -525,12 +525,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
       const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: bundleHash, sessionNonce: nonce,
         seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
+      const accepted=issued.attempt?.admitted===true?issued.attempt.accepted:null;
+      if(issued.attempt?.admitted===true&&(!accepted||accepted.buyerBundleHash!==bundleHash||canonicalize(accepted.buyerBundle??null)!==canonicalize(buyerIdentityBundle)))throw new SellerAgentError('session_admission_unavailable','the retained accepted presentation is incomplete or differs',503);
       let answer;
-      try { answer = await admission.admit(structuredClone(query)); }
-      catch (error) { throw new SellerAgentError('session_admission_unavailable', `the seller's session admission is unavailable: ${String(error?.message ?? error).slice(0, 180)}`, 503); }
+      try { answer = accepted?structuredClone(accepted.admission):await readAdmissionCapability(admission,'admit',query); }
+      catch (cause) { throw new SellerAgentError('session_admission_unavailable', 'the seller session admission is unavailable', 503,{cause}); }
       const problem = sessionAdmissionProblem(answer, query);
-      if (problem) throw new SellerAgentError('session_not_admitted', problem, 409);
-      challenges.admitChallenge(nonce, presentationHash);
+      if (problem) throw new SellerAgentError(accepted?'session_admission_unavailable':'session_not_admitted', problem, accepted?503:409);
+      if(!accepted)challenges.admitChallenge(nonce, presentationHash,{buyerBundle:structuredClone(buyerIdentityBundle),buyerBundleHash:bundleHash,admission:structuredClone(answer),admittedAt:now()});
     }
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     else if (railPin && !inFlight) existing.railPin = railPin;
