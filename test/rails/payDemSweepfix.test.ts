@@ -20,6 +20,37 @@ const absence = { originalLogRetained: true as const, reconcile: async () => nul
 const req = { rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "sweepfix",
   amount: "1", asset: "DEM", payee: `did:demos:agent:${payee}`, expectedPayee: payee };
 
+test("credential-bearing primary and archive URLs recover all chain reads without a second broadcast", async () => {
+  const { log, first, record } = await savedPayment();
+  const messages = new Set<string>();
+  vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const request = new Request(input, init);
+    const archive = new URL(request.url).hostname === "archive.test";
+    assert.equal(request.url, archive ? "https://archive.test/history?tenant=archive" : "https://node.test/rpc?tenant=primary");
+    assert.equal(request.headers.get("Authorization"), `Basic ${Buffer.from(archive ? "arch@ive:p:fixture" : "operator:fixture").toString("base64")}`);
+    assert.equal(request.redirect, "error");
+    const { message } = JSON.parse(init!.body as string).params[0];
+    messages.add(`${archive ? "archive" : "primary"}:${message}`);
+    return demosRpcFetch(input, init);
+  });
+  demosNode.reply = (_hash, rpc) => rpc?.startsWith("https://archive.test/") ? record : null;
+  const adapter = payDemSettle(await sdkPayDemRail(undefined, {
+    rpc: "https://operator:fixture@node.test/rpc?tenant=primary",
+    recoveryRpc: "https://arch%40ive:p%3Afixture@archive.test/history?tenant=archive",
+  }), {}, { store: createIdempotencyStore(log), reconcile: async () => ({ ...first,
+    amountOs: binding.amount, execution: "executed" }) });
+  for (let retry = 0; retry < 2; retry++) {
+    assert.deepEqual(await adapter({ ...req, recoveryOnly: true }), first);
+  }
+  for (const node of ["primary", "archive"]) {
+    for (const message of ["getNetworkInfo", "getTxByHash", "getBlockByNumber"]) {
+      assert.ok(messages.has(`${node}:${message}`), `missing ${node} ${message} read`);
+    }
+  }
+  assert.equal(demosNode.transfers, 1);
+  assert.equal(demosNode.broadcasts, 1);
+});
+
 test("a lost attempt-write acknowledgement keeps the intent held", async () => {
   const log = createInMemorySettlementLog();
   const putAttempt = log.putAttempt!.bind(log);

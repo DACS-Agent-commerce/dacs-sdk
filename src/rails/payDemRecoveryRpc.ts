@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { DacsError } from "../errors.js";
 
 // Recovery reads only individual records and inclusion blocks. Bound the
@@ -18,9 +19,23 @@ export function payDemRecoveryRpc(rpc: string, timeoutMs: number) {
       }, timeoutMs);
     });
     const read = async () => {
-      const response = await fetchRpc(rpc, {
+      // demosdk's Axios transport accepts URL userinfo; Fetch rejects it.
+      // Keep primary and archive recovery compatible without passing credentials
+      // to Fetch's URL parser (or its URL-bearing diagnostics).
+      const url = new URL(rpc);
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      let endpoint = rpc;
+      if (url.username !== "" || url.password !== "") {
+        headers.Authorization = `Basic ${Buffer.from(
+          `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`, "utf8",
+        ).toString("base64")}`;
+        url.username = "";
+        url.password = "";
+        endpoint = url.href;
+      }
+      const response = await fetchRpc(endpoint, {
         method: "POST", redirect: "error",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ method: "nodeCall", params: [{ message, data }] }),
         signal: controller.signal,
       });

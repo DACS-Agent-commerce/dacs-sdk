@@ -19,7 +19,7 @@ const seller = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(see
 const terms = { price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" },
   deliveryPhase: "deliver-attested-payload", deliveryFormat: "application/json" };
 
-async function fixture(store?: SessionStore) {
+async function fixture(store?: SessionStore, rpc?: string) {
   const kv = new Map<string, Record<string, unknown>>();
   kv.set("stor:listing", await buildSignedArtifact({ agentId: seller, serviceId: "svc", name: "n",
     description: "d", claimRequirements: [], supportedNegotiation: ["negotiate-fixed-price"],
@@ -27,7 +27,7 @@ async function fixture(store?: SessionStore) {
   ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
   const log = createInMemorySettlementLog();
   const adapter = async (archive = false) => payDemSettle(await sdkPayDemRail(undefined,
-    archive ? { recoveryRpc: "https://archive.test" } : {}), {}, { store: createIdempotencyStore(log, { now: () => 1, leaseDurationMs: 1 }),
+    { ...(rpc === undefined ? {} : { rpc }), ...(archive ? { recoveryRpc: "https://archive.test" } : {}) }), {}, { store: createIdempotencyStore(log, { now: () => 1, leaseDurationMs: 1 }),
     reconcile: async () => ({ ok: true, execution: "executed", txHash: demosNode.nextHash,
       payer: demosNode.address, payee: seller.split(":").at(-1)!, chainId: "demos", amountOs: "1000000000",
       blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } }) });
@@ -50,6 +50,35 @@ async function fixture(store?: SessionStore) {
   };
   return { deps, adapter, kv, log };
 }
+
+test.each([false, true])("credential RPC sessions recover paid evidence and replay without another transfer (outage=%s)", async (outage) => {
+  let reads = 0;
+  vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const request = new Request(input, init);
+    assert.equal(request.url, "https://rpc.test/node%2Fcall?tenant=a%2Fb");
+    assert.equal(request.headers.get("Authorization"), `Basic ${Buffer.from("operator:fixture").toString("base64")}`);
+    reads++;
+    return demosRpcFetch(input, init);
+  });
+  const f = await fixture(createInMemorySessionStore(), "https://operator:fixture@rpc.test/node%2Fcall?tenant=a%2Fb");
+  const healthyAnchor = f.deps.anchor;
+  if (outage) f.deps.anchor = async (name, value) => {
+    if (name === sessionAnchorName.evidence("sweep-session")) throw new Error("anchor outage");
+    return healthyAnchor(name, value);
+  };
+  const paid = await runSessionCore("stor:listing", terms, f.deps);
+  assert.equal(paid.outcome, outage ? "settlement-pending" : "completed");
+  assert.equal(reads, 0); // fresh payment uses the SDK transport
+  const restarted = { ...f.deps, anchor: healthyAnchor, settle: await f.adapter() };
+  assert.equal((await runSessionCore("stor:listing", terms, restarted, "sweep-session")).outcome, "completed");
+  const auditedReads = reads;
+  assert.ok(auditedReads > 0);
+  assert.equal((await runSessionCore("stor:listing", terms, restarted, "sweep-session")).outcome, "completed");
+  assert.ok(reads > auditedReads); // saved success is audited on every replay
+  assert.ok(f.kv.has(`stor:${sessionAnchorName.evidence("sweep-session")}`));
+  assert.equal(demosNode.transfers, 1);
+  assert.equal(demosNode.broadcasts, 1);
+});
 
 test("fresh native sessions require a SessionStore before signing, and accept a configured store", async () => {
   const f = await fixture();

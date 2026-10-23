@@ -321,7 +321,11 @@ callers must ensure their stores are durable.
 Every native resume, including a completed-session replay, requires a trusted
 node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
 recoveryRpc })` to use an operator-authenticated archival RPC when the primary
-record is unavailable. When an archive is configured, the primary must expose
+record is unavailable. Both `rpc` and `recoveryRpc` accept HTTP Basic credentials
+in URL userinfo. Recovery percent-decodes the username and password, sends their
+UTF-8 bytes in the Authorization header, and removes userinfo from the request
+URL while preserving its path and query. Recovery refuses redirects.
+When an archive is configured, the primary must expose
 its chain ID and complete `forkScheduleDigest` before a fresh payment is signed.
 This requires the node profile introduced by `11e7c820`; the older `52e2e569`
 response omits registered forks and cannot authenticate a complete schedule.
