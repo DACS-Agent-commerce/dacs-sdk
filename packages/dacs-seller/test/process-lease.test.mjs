@@ -88,3 +88,8 @@ test('kernel lease stays live until child exit and only same-boot exit is reclai
 test('recovery errors and default capacity are explicit', () => {
   const error = new SellerRecoveryError('TEST-refusal'); assert.equal(error.code, 'TEST-refusal'); assert.equal(error.status, 503); assert(DEFAULT_SELLER_MAX_JOBS > 0);
 });
+test('lease implementation imports without the Node 22-only SQLite builtin', async () => {
+  const child = fork(new URL('./helpers/minimum-node-import.mjs', import.meta.url), [], { execArgv: ['--experimental-loader', new URL('./helpers/minimum-node-loader.mjs', import.meta.url).href], stdio: ['ignore','ignore','pipe','ipc'] });
+  let error='';child.stderr.on('data',data=>{error+=data;});
+  const [code]=await once(child,'exit');assert.equal(code,0,error);
+});
