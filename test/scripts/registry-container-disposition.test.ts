@@ -1768,7 +1768,9 @@ describe("runtime-image package inventory", () => {
     summary.securityGate.findings = extractPolicyFindings(read);
     expect(summary.securityGate.findings.productionImageDependencies)
       .toContainEqual({ name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null });
-    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3 });
+    // This offline replay supplies the historical run's absent completion and directness metadata.
+    expect(historicalDisposition({ ...summary, complete: true, audit: { ...summary.audit, directAdvisories: [] } }))
+      .toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
     expect(workflowStepCondition("Assemble disposition fixtures")).toBe("always()");
     expect(workflowStepCondition("Upload disposition fixtures")).toBe("always()");
     expect(workflowStepLines("Upload disposition fixtures").lines.slice(
