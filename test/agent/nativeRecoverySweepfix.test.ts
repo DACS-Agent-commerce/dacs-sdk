@@ -103,3 +103,29 @@ test("closing an expired unsigned intent lets the original session finish failed
   assert.equal(demosNode.transfers, 1); // only the pre-signing call that threw
   assert.equal(demosNode.broadcasts, 0);
 });
+
+test.each(["default store", "no reconciler", "resume adapter"])(
+  "an unattempted retry refuses %s before consuming permission, then accepts repaired configuration", async (fault) => {
+    const store = createInMemorySessionStore();
+    const f = await fixture(store);
+    vi.spyOn(f.log, "claimIntent").mockRejectedValueOnce(new Error("DB outage"));
+    f.deps.settle = await f.adapter(); // capture the faulting log method before constructing the adapter
+    await assert.rejects(runSessionCore("stor:listing", terms, f.deps), /before invoking/);
+    const before = await store.load("sweep-session");
+    const unconfigured = fault === "no reconciler"
+      ? payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(f.log) })
+      : payDemSettle(await sdkPayDemRail());
+    const resumed = { ...f.deps, ...(fault === "resume adapter"
+      ? { resumeSettlement: unconfigured } : { settle: unconfigured }) };
+    await assert.rejects(runSessionCore("stor:listing", terms, resumed, "sweep-session"), /caller-supplied settlement store and reconciler/);
+    assert.equal(demosNode.transfers, 0);
+    assert.equal(demosNode.broadcasts, 0);
+    const after = await store.load("sweep-session");
+    if (before.status !== "ok" || after.status !== "ok") throw new Error("missing session");
+    assert.deepEqual(after.record.checkpoints.filter((cp) => cp.key === "settle:unattempted"),
+      before.record.checkpoints.filter((cp) => cp.key === "settle:unattempted"));
+    assert.equal((await runSessionCore("stor:listing", terms, f.deps, "sweep-session")).outcome, "completed");
+    assert.equal((await runSessionCore("stor:listing", terms, f.deps, "sweep-session")).outcome, "completed");
+    assert.equal(demosNode.broadcasts, 1);
+  },
+);

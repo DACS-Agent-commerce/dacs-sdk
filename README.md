@@ -894,7 +894,8 @@ When a retained `SessionStore` has saved a successful payment but evidence
 publication is unavailable, `runSession` returns `outcome: "settlement-pending"`
 with `payment.ok: true` and `pendingEvidenceAddress`. An unavailable native
 record re-read also returns this pending result for a saved rail-final payment,
-without publishing unchecked evidence. Contradictory records still refuse.
+without publishing unchecked evidence. Integrator reconciler exceptions propagate
+to the caller; contradictory records still refuse.
 Resume that same job while its Listing remains valid to retry publication;
 the saved payment is never submitted again. The existing expired-Listing
 admission gate can still prevent catch-up after expiry.
@@ -916,9 +917,14 @@ in-memory log remains available for direct, process-local rail calls.
 Every native resume, including a completed-session replay, requires a trusted
 node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
 recoveryRpc })` to use an operator-authenticated archival RPC when the primary
-record is unavailable. The SDK compares fresh `chainId` and `forkScheduleDigest`
-values from both nodes and requires the archive's confirmed inclusion block to
-match the primary's confirmed block, with the retained hash in both transaction
+record is unavailable. When an archive is configured, the primary must expose
+its chain ID and complete `forkScheduleDigest` before a fresh payment is signed.
+This requires the node profile introduced by `11e7c820`; the older `52e2e569`
+response omits registered forks and cannot authenticate a complete schedule.
+Primary-only payments remain supported on that older node profile. The archive
+itself is read only when recovery needs it. The SDK compares fresh `chainId`
+and `forkScheduleDigest` values from both nodes and requires the archive's
+confirmed inclusion block to match the primary's, with the retained hash in both transaction
 lists. Both nodes must have reached that height. Missing or contradictory chain
 history keeps recovery unresolved, including after a reset. Archive and history
 RPC reads cancel at `statusRequestTimeoutMs`, admit at most 1 MiB before JSON

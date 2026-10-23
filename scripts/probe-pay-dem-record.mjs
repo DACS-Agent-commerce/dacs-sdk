@@ -1,11 +1,18 @@
 import { pathToFileURL } from "node:url";
 import { observeDemosExecutionByHash } from "../dist/rails/payDem.js";
+import { payDemRecoveryRpc } from "../dist/rails/payDemRecoveryRpc.js";
 
-/** Read-only deployment check. The expected transfer is operator-held input. */
-export async function probePayDemRecord(node, expected, version) {
+/** Read-only deployment check. The expected transfer and clean build are operator-held inputs. */
+export async function probePayDemRecord(node, expected, version, approvedCommit) {
   const info = await node.nodeCall("getNetworkInfo", {});
+  if (typeof approvedCommit !== "string" || !/^[0-9a-f]{40}$/.test(approvedCommit) ||
+      info?.nodeVersion?.commit !== approvedCommit || info?.nodeVersion?.dirty !== false ||
+      typeof version?.commit !== "string" ||
+      !new RegExp(`^(?:<[^>]+>)?${approvedCommit}$`).test(version.commit) || version.dirty === true) {
+    throw new Error("deployment probe requires an approved clean node build matching both version responses");
+  }
   const postFork = info?.forks?.osDenomination?.activated;
-  console.log(JSON.stringify({ version, nodeVersion: info?.nodeVersion, postFork }));
+  console.log(JSON.stringify({ version, nodeVersion: info.nodeVersion, postFork }));
   if (typeof postFork !== "boolean") throw new Error("missing denomination fork state");
   const result = await observeDemosExecutionByHash(expected.hash,
     (hash) => node.getTxByHash(hash), {
@@ -19,26 +26,51 @@ export async function probePayDemRecord(node, expected, version) {
   return result;
 }
 
+/** Bound decompressed version bytes and the entire read before decoding. */
+export async function readProbeVersion(rpc) {
+  const response = await fetch(new URL("/version", rpc), {
+    signal: AbortSignal.timeout(6000), redirect: "error",
+  });
+  if (!response.ok || response.body === null) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`version HTTP ${response.status}`);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 65536) throw new Error("version response exceeds byte limit");
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // A chain reset invalidates historical tuples; require a current tuple together.
+  if (!process.env.DACS_RECORD_PROBE_CONFIRMED_JSON) {
+    throw new Error("DACS_RECORD_PROBE_CONFIRMED_JSON is required; configure a current operator-held transfer tuple");
+  }
+  const approvedCommit = process.env.DACS_RECORD_PROBE_NODE_COMMIT;
+  if (!approvedCommit || !/^[0-9a-f]{40}$/.test(approvedCommit)) {
+    throw new Error("DACS_RECORD_PROBE_NODE_COMMIT must identify an approved clean node build");
+  }
+  const expected = JSON.parse(process.env.DACS_RECORD_PROBE_CONFIRMED_JSON);
   const rpc = process.env.DACS_RECORD_PROBE_RPC ?? "https://node2.demos.sh";
-  const confirmed = {
-    hash: "6ab2b6008fe99e3b6e6ffc36502f44a280ffc55c4c523b8c19a4339250882a2c",
-    blockNumber: 12148, payer: "0ba3102de26ce54078294c5924a2f208693d3b512bd276cd731b722c0056ca7a",
-    payee: "01e836295780008f15d4658e657c93de52ea374219a469420d8222f59503400e",
-    amountOs: "2400000000000", nonce: 5, denomination: "os", state: "executed",
-  };
-  // After a network reset, replace the entire operator-held tuple together.
-  const expected = process.env.DACS_RECORD_PROBE_CONFIRMED_JSON
-    ? JSON.parse(process.env.DACS_RECORD_PROBE_CONFIRMED_JSON) : confirmed;
-  const response = await fetch(new URL("/version", rpc), { signal: AbortSignal.timeout(6000) });
-  if (!response.ok) throw new Error(`version HTTP ${response.status}`);
-  const version = await response.json();
-  const { Demos } = await import("@kynesyslabs/demosdk/websdk");
-  const node = new Demos();
-  await node.connect(rpc);
-  await probePayDemRecord(node, { ...expected, state: "executed" }, version);
+  const version = await readProbeVersion(rpc);
+  // No wallet or demosdk connection: every RPC read uses the bounded transport.
+  const call = payDemRecoveryRpc(rpc, 1000);
+  const node = { nodeCall: call, getTxByHash: (hash) => call("getTxByHash", { hash }) };
+  await probePayDemRecord(node, { ...expected, state: "executed" }, version, approvedCommit);
   if (process.env.DACS_RECORD_PROBE_FAILED_JSON) {
     await probePayDemRecord(node,
-      { ...JSON.parse(process.env.DACS_RECORD_PROBE_FAILED_JSON), state: "failed" }, version);
+      { ...JSON.parse(process.env.DACS_RECORD_PROBE_FAILED_JSON), state: "failed" }, version, approvedCommit);
   } else console.log("No operator-held failed-record tuple configured");
 }

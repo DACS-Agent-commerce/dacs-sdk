@@ -487,3 +487,50 @@ test.each(["primary", "archive"])("archive recovery refuses malformed or unconfi
   }
   assert.equal(demosNode.broadcasts, 1);
 });
+
+test.each(["no chain ID", "no digest"])(
+  "configured archive refuses %s before signing and accepts restored identity", async (fault) => {
+    // Real older shapes: 61b8e75 lacks chain ID; 52e2e569 exposes two forks but no complete schedule digest.
+    demosNode.networkInfoReply = () => ({ ...(fault === "no chain ID" ? {} : { chainId: 1 }),
+      forks: { osDenomination: { activationHeight: 0, activated: true, currentHeight: 42 },
+        ...(fault === "no digest" ? { signatureDomain: { activationHeight: null, activated: false, currentHeight: 42 } } : {}) },
+    });
+    const adapter = payDemSettle(await sdkPayDemRail(undefined, { recoveryRpc: "https://archive.test" }), {}, {
+      store: createIdempotencyStore(createInMemorySettlementLog()),
+    });
+    await assert.rejects(adapter(req), /archive recovery requires.*chain identity/);
+    assert.equal(demosNode.transfers, 0);
+    assert.equal(demosNode.broadcasts, 0);
+    demosNode.networkInfoReply = undefined;
+    assert.equal((await adapter(req)).ok, true);
+    assert.equal(demosNode.transfers, 1);
+    assert.equal(demosNode.broadcasts, 1);
+  },
+);
+
+test("primary-only payments accept the older node response without an archive identity", async () => {
+  demosNode.networkInfoReply = () => ({ chainId: 1, forks: {
+    osDenomination: { activationHeight: 0, activated: true, currentHeight: 42 },
+    signatureDomain: { activationHeight: null, activated: false, currentHeight: 42 },
+  } });
+  const adapter = payDemSettle(await sdkPayDemRail(), {}, {
+    store: createIdempotencyStore(createInMemorySettlementLog()),
+  });
+  assert.equal((await adapter(req)).ok, true);
+  assert.equal(demosNode.broadcasts, 1);
+});
+
+test("a fresh archive-configured payment never contacts an unavailable archive", async () => {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", (...args: Parameters<typeof fetch>) => {
+    calls.push(String(args[0]));
+    if (args[0] === "https://archive.test") throw new Error("archive outage");
+    return demosRpcFetch(...args);
+  });
+  const adapter = payDemSettle(await sdkPayDemRail(undefined, { recoveryRpc: "https://archive.test" }), {}, {
+    store: createIdempotencyStore(createInMemorySettlementLog()),
+  });
+  assert.equal((await adapter(req)).ok, true);
+  assert.deepEqual(calls, ["https://node.test"]);
+  assert.equal(demosNode.broadcasts, 1);
+});

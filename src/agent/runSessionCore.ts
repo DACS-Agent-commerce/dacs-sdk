@@ -4482,6 +4482,10 @@ export async function runSessionCore(
       if (durable.status === "ok" && !prior && priorAttempts.length === 0) {
         const unattempted = [...durable.record.checkpoints].reverse().find((cp) => cp.key === "settle:unattempted");
         if (unattempted?.stage === "outcome" && unattempted.data?.agreementHash === agreementHash) {
+          // This recovery seam is about to initiate payment. Enforce the same
+          // recoverable configuration as a fresh call before consuming permission.
+          assertNativeConfiguration();
+          preflightPayDemSettlement(resumeSettlement, settleRequest);
           // Consume the retry permission durably BEFORE entering the rail. A
           // later crash or lost rail log must never reuse an earlier refusal.
           const consumed = await store.transition({ jobId, expectedRevision: durable.record.revision,

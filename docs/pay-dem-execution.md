@@ -321,9 +321,14 @@ callers must ensure their stores are durable.
 Every native resume, including a completed-session replay, requires a trusted
 node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
 recoveryRpc })` to use an operator-authenticated archival RPC when the primary
-record is unavailable. The SDK compares fresh `chainId` and `forkScheduleDigest`
-values from both nodes and requires the archive's confirmed inclusion block to
-match the primary's confirmed block, with the retained hash in both transaction
+record is unavailable. When an archive is configured, the primary must expose
+its chain ID and complete `forkScheduleDigest` before a fresh payment is signed.
+This requires the node profile introduced by `11e7c820`; the older `52e2e569`
+response omits registered forks and cannot authenticate a complete schedule.
+Primary-only payments remain supported on that older node profile. The archive
+itself is read only when recovery needs it. The SDK compares fresh `chainId`
+and `forkScheduleDigest` values from both nodes and requires the archive's
+confirmed inclusion block to match the primary's, with the retained hash in both transaction
 lists. Both nodes must have reached that height. Missing or contradictory chain
 history keeps recovery unresolved, including after a reset. Archive and history
 RPC reads cancel at `statusRequestTimeoutMs`, admit at most 1 MiB before JSON
@@ -526,9 +531,29 @@ outcome is the durable retry item: an operator or worker resumes the same job,
 which audits the original payment and retries that same write-once evidence
 address before publishing the bundle, while the Listing remains valid. The
 existing expired-Listing admission gate can still prevent catch-up after expiry.
-An unavailable native record re-read returns the saved `payment.ok: true` in
+An unavailable SDK native record re-read returns the saved `payment.ok: true` in
 `settlement-pending`, without publishing unchecked evidence; contradictions
-still refuse. Never start a new payment from this result.
+still refuse. Integrator reconciler exceptions propagate to the caller.
+Never start a new payment from this result.
 Failed payments and failures before the paid checkpoint is durable retain their
 existing error behavior. Direct sessions without a durable store cannot offer
 durable evidence catch-up; fresh native sessions require that store.
+
+
+## Read-only deployment record probe
+
+The scheduled record probe requires repository variables
+`DACS_RECORD_PROBE_CONFIRMED_JSON` (a current, complete operator-held transfer
+tuple) and `DACS_RECORD_PROBE_NODE_COMMIT` (the approved 40-character node
+source commit). It skips the job until both are configured. There is no default
+transaction after a network reset; replace the whole tuple together.
+The CLI also refuses missing configuration before reading the network.
+An optional `DACS_RECORD_PROBE_FAILED_JSON` supplies a known failed transfer.
+
+A passing probe requires `/version` and `getNetworkInfo.nodeVersion` to name
+the approved commit, and the latter must explicitly report `dirty: false`.
+Unknown or dirty deployments cannot establish a passing provenance check.
+Version responses are limited to 64 KiB and six seconds; RPC responses use
+the recovery transport's byte limit and one-second deadline, without a wallet
+or a demosdk connection. The complete archive identity is available on node `11e7c820`. Older nodes
+without the complete digest or a chain ID cannot establish archive chain identity.

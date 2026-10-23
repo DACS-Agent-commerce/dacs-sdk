@@ -2024,6 +2024,15 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       }
       const effectiveMaxTotalDebitOs = invocationMaxTotalDebitOs ??
         configuredMaxTotalDebitOs;
+      if (recoveryRpc !== undefined) {
+        // Do not create a payment under an archive configuration whose primary
+        // cannot identify its own chain/schedule on a later recovery. The
+        // archive itself stays lazy: its outage must not block a fresh payment.
+        const identity = recoveryNetworkIdentity(await primaryHistoryCall("getNetworkInfo", {}));
+        if (identity === null) {
+          throw new DacsError("pay-dem archive recovery requires primary chain identity and forkScheduleDigest before signing");
+        }
+      }
       // The transaction is already signed. Demos nodes compare GCR edits via
       // order-sensitive JSON bytes, so JCS key sorting here would invalidate
       // an otherwise valid signature/confirmation payload.
@@ -2299,7 +2308,8 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   sdkRailRecordReaders.set(settle, async (expected) => {
     const primary = await primaryReader(expected);
     // A terminal primary result remains authoritative; an archive cannot
-    // override a failed record or a mismatch with the retained success.
+    // override a terminal failed record. Indeterminate reads may use the archive
+    // only after its record and confirmed inclusion history are checked below.
     if (primary.state !== "indeterminate" || archiveCall === undefined) return primary;
     // No bound terminal record was established. Read the archive under the
     // same checks, including for demosdk's not-found and transport envelopes.
@@ -2400,8 +2410,8 @@ function sdkRecoveryReader(
       return { state: "indeterminate", reason: "the payment's payer is not this rail's wallet" };
     }
     // Read the node's fork state afresh for every recovery:
-    // demosdk 4.0.16's `getNetworkInfo` keeps an instance's first reply for good
-    // (later versions may refresh it), so a rail that read the fork inactive
+    // demosdk 4.0.18's `getNetworkInfo` caches an instance's reply,
+    // so a rail that read the fork inactive
     // could hold every payment signed after it.
     const info = await boundedPromise(
       (async () => nodeCall("getNetworkInfo", {}))(),

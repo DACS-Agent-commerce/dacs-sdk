@@ -7,6 +7,7 @@ permissions:
   contents: read
 jobs:
   record-profile:
+    if: ${{ vars.DACS_RECORD_PROBE_CONFIRMED_JSON != '' && vars.DACS_RECORD_PROBE_NODE_COMMIT != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -20,6 +21,7 @@ jobs:
       - name: Read confirmed and optional failed records without a wallet
         env:
           DACS_RECORD_PROBE_CONFIRMED_JSON: ${{ vars.DACS_RECORD_PROBE_CONFIRMED_JSON }}
+          DACS_RECORD_PROBE_NODE_COMMIT: ${{ vars.DACS_RECORD_PROBE_NODE_COMMIT }}
           DACS_RECORD_PROBE_FAILED_JSON: ${{ vars.DACS_RECORD_PROBE_FAILED_JSON }}
         run: |
           set -o pipefail
