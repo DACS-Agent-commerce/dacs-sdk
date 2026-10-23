@@ -677,6 +677,8 @@ The retained protocol readback shortcut shares the stored portal capability chec
 | | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` | 706bb842ea657118e226624eec1332b244963641 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 0eb8b02891900e64f2725e907934ec098ef017c7 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 18c6e3c74c2817a1c38f58676eb2053d76398ebb |
+| D11 | delta(client): D11 correct capability hash contract source coordinate | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | f9eed04971e432660ed2f0343c13debc43b14939 |
 
 ## Complete commit and file inventory
 
@@ -1467,6 +1469,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 validate capability clocks and discovery hints | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` |
 | delta(client): D11 validate capability clocks and discovery hints | `packages/dacs-client/test/host-observations.test.mjs:1` |
 | delta(client): D11 validate capability clocks and discovery hints | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| delta(client): D11 correct capability hash contract source coordinate | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 correct capability hash contract source coordinate | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D11 correct capability hash contract source coordinate | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 correct capability hash contract source coordinate | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 correct capability hash contract source coordinate | `packages/dacs-client/README.md:1` |
+| delta(client): D11 correct capability hash contract source coordinate | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 correct capability hash contract source coordinate | `packages/dacs-client/test/host-observations.test.mjs:1` |
 
 ## Original moved files
 

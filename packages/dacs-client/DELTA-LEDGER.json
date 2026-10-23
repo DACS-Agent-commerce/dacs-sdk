@@ -1984,6 +1984,17 @@
           "after": "18c6e3c74c2817a1c38f58676eb2053d76398ebb"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 correct capability hash contract source coordinate",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "0eb8b02891900e64f2725e907934ec098ef017c7",
+          "after": "f9eed04971e432660ed2f0343c13debc43b14939"
+        }
+      ]
     }
   ]
 }

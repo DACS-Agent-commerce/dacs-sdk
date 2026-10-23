@@ -973,5 +973,18 @@
       "packages/dacs-client/test/host-observations.test.mjs",
       "packages/dacs-client/test/store-host-boundary.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 correct capability hash contract source coordinate",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs"
+    ]
   }
 ]

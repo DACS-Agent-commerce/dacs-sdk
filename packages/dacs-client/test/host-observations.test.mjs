@@ -675,7 +675,7 @@ test('purchase construction reports an actionable error for the pre-capability s
 });
 
 // Wire vector pinned to the original store's hashHandoffToken contract:
-// 9d820e0:test/helpers/purchase-integrity-operations.mjs:43.
+// 9d820e0:packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:43.
 test('portal capabilities accept the pinned exact-byte hash vector', t => {
   const w = world(t, INCLUDED, { publicApi: true });
   w.db.prepare('UPDATE operations SET handoff_token_hash=? WHERE id=?').run(
