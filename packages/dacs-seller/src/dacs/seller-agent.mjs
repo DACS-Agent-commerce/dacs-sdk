@@ -205,6 +205,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (!nativeProfile && (typeof anchors?.read !== 'function' || typeof anchors.write !== 'function')) throw new TypeError('a seller agent needs agreementAnchor and nativeArtifactAnchor, or an explicit fixture substrate (anchors)');
   if (nativeProfile && simulatedFixture) throw new TypeError('the native seller profile is not the simulated fixture profile');
   if (!nativeProfile && !simulatedFixture) throw new TypeError('the fixture substrate (anchors) is the simulated fixture profile: it signs over not-performed Vet references and an unsigned rail, and needs simulatedFixture: true');
+  // This native profile has no extended-pointer publisher. A signed exact
+  // size is its pre-payment capacity bound, including for default Listings.
+  // General DACS Listings may omit it; this inline-only profile cannot.
+  const inlineSize = listing?.offering?.deliverable?.expectedSizeBytes;
+  const minimumReportSize = Buffer.byteLength(canonicalize({ jobId: '0'.repeat(26), agreementHash: '0'.repeat(64), settlementId: `demos:${'0'.repeat(64)}` }));
+  // An extra JSON member costs at least five bytes (,"":0); the four
+  // lengths immediately above the binding-only object cannot be produced.
+  const inlineSizeProblem = nativeProfile && (!Number.isSafeInteger(inlineSize) || inlineSize < minimumReportSize ||
+    (inlineSize > minimumReportSize && inlineSize < minimumReportSize + 5))
+    ? `unsupported Listing: inline storage delivery requires expectedSizeBytes equal to ${minimumReportSize} or between ${minimumReportSize + 5} and 131072` : null;
   const rail = railAuthorityConfig(railAuthority);
   if (rail && !nativeProfile) throw new TypeError('the simulated fixture profile takes no railAuthority; it uses only the simulated fixture rail');
   if (nativeProfile && !rail) throw new TypeError(`the native seller profile needs railAuthority: it selects ${DEM_RAIL.railId} only from its steward-signed definition`);
@@ -502,6 +512,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessions.get(jobId);
     persist(session);
     const signUnderPin = (bytes) => {
+      if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
       if (!inFlight) assertListingCurrent();
       // The key is only a pointer. An intent or a thrown signer never makes
       // this pin in flight; signOnce's completed record is the authority.
@@ -519,6 +530,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         leaseTtlMs: 60_000,
         resolveAuthenticatedAgreementContext: async (query) => {
           const draft = query.candidateDraft;
+          // Existing signed sessions remain readable/recoverable after upgrade.
+          if (inlineSizeProblem && !inFlight) return { disposition: 'rejected', reason: inlineSizeProblem };
           if (query.seller !== claim || canonicalize(query.listingPin) !== canonicalize(pin)) return { disposition: 'rejected', reason: 'proposal names another Listing or seller' };
           if (query.buyer !== session.buyerBundle.presentedBy || query.jobId !== jobId) return { disposition: 'rejected', reason: 'proposal names another buyer or job' };
           const generatedAt = draft?.generatedAt;
@@ -1069,6 +1082,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           return { status: 'rejected', reason: 'delivery preparation scope differs' };
         }
         const report = deliveryReport(session, work.intake.settlementId);
+        const size = Buffer.byteLength(canonicalize(report));
+        const expected = listing.offering.deliverable.expectedSizeBytes;
+        // A producer can be corrected after payment. Do not let a size
+        // disagreement become the core's permanent preparation-failed handoff.
+        if (size > 128 * 1024 || (expected !== undefined && size !== expected)) {
+          return { status: 'indeterminate', reason: `inline delivery size ${size} differs from supported expectedSizeBytes ${expected ?? 'undeclared'} (maximum 131072)` };
+        }
         return { status: 'prepared', delivery: { artifact: { kind: phase, cleartextPayload: report, anchoredValue: report, access: { model: 'public' } } } };
       },
       submitDelivery: async (input) => {

@@ -1,6 +1,6 @@
 // Run-time port of http-mcp/src/dacs/listing.mjs at DACS-Agent-commerce/frontend 15fdf23: the
 // whole file.
-// The source lines below are unchanged except import paths and the SDK provenance source (this package's core peer) and the issued session nonce (CORE SN-1..SN-3) (RUNTIME-PORTS.json).
+// The source lines below are unchanged except import paths and the SDK provenance source (this package's core peer) and the issued session nonce (CORE SN-1..SN-3) and the inline payload size declaration (RUNTIME-PORTS.json).
 // Listing construction (for wallet signing) and Standard validation.
 //
 // Provenance:
@@ -119,6 +119,7 @@ export function buildListingDraft({
   notBefore,
   notAfter,
   deadlineSecAfterCommit = 3600,
+  expectedSizeBytes,
 }) {
   const { amount } = normalizeDemAmount(priceDem);
   const draft = {
@@ -132,7 +133,7 @@ export function buildListingDraft({
       description,
       category,
       tags,
-      deliverable: { kind: 'storage-program', schemaUrl: 'urn:dacs-chatgpt-plugin:v0.1:seller-defined-delivery', accessModel: 'public' },
+      deliverable: { ...(expectedSizeBytes === undefined ? {} : { expectedSizeBytes }), kind: 'storage-program', schemaUrl: 'urn:dacs-chatgpt-plugin:v0.1:seller-defined-delivery', accessModel: 'public' },
     },
     buyerRequirement: { requirementVersion: '1', required: [], preferredPresentation: 'any' },
     pipeline: [

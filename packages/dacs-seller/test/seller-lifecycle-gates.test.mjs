@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {agentFixture} from './helpers/seller-agent-isolated-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 
-for(const accessModel of ['private','restricted','encrypted',{},false])test(`seller refuses non-public delivery access ${JSON.stringify(accessModel)} before publication`,async()=>{
+for(const accessModel of ['buyer-only','encrypt-to-buyer','private','restricted','encrypted',{},false])test(`seller refuses non-public delivery access ${JSON.stringify(accessModel)} before publication`,async()=>{
  const w=await agentFixture();
  try{
   w.listing.offering.deliverable={accessModel};

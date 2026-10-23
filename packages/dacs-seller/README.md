@@ -80,9 +80,16 @@ unknown schemas refuse construction before any Agreement can be signed. Its
 An `indeterminate` verdict retains its reason and holds preparation for retry,
 including after restart, without consuming the delivery permit. An `invalid`
 verdict remains a preparation failure. This kit prepares inline public storage
-payloads only: Listings declaring `expectedSizeBytes` above 131072 are refused
-before any Agreement is signed (DACS-4 §9.6.1 requires an extended pointer above
-128 KiB). Producers must stay within that inline limit even when size is undeclared.
+payloads only. The native host requires an explicit `expectedSizeBytes` in the
+signed Listing before any Agreement is signed. Pass it to `buildListingDraft`;
+it is the exact UTF-8 byte length of the canonical JSON payload, not an estimate
+or an upper bound. It must fit the report's job/Agreement/settlement bindings
+and must not exceed 131072 bytes. Listings without a size remain valid general
+DACS Listings but need a different delivery profile. DACS-4 §9.6.1 requires an
+extended pointer above 128 KiB; this profile has no pointer publisher. An actual
+producer output that exceeds the limit or differs from the declared exact size
+holds preparation for retry without consuming the payment permit. After fixing
+the producer, retry the same payment claim; do not collect another payment.
 
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
@@ -411,8 +418,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   (`vet_context_required` otherwise; it never signs the synthetic
   not-performed references), commits and takes payment only with the whole
   chain (`settlement_profile_unavailable`), and takes payment only as native
-  payment evidence (`native_evidence_required`), so it never commits an
-  Agreement it cannot settle or claims a payment it cannot deliver for. These
+  payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
+  commitment or payment intake. Actual delivery still depends on valid producer
+  output and available operator capabilities. These
   capabilities accept only `TEST-` authorities and a loopback fixture node
   (below), so the host does not start against a real node.
 - It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`

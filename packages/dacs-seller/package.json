@@ -19,7 +19,8 @@
   "exports": {
     ".": "./src/index.mjs",
     "./src/*": "./src/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./PROFILE.json": "./PROFILE.json"
   },
   "files": [
     "src/dacs/agreement-context-consumer.mjs",
@@ -69,7 +70,10 @@
     "src/public/portal/seller-session-limits.mjs",
     "src/util/http.mjs",
     "src/util/immutable-readbacks.mjs",
-    "src/util/text.mjs"
+    "src/util/text.mjs",
+    "PROFILE.json",
+    "ADMISSION.md",
+    "RUNTIME-PORTS.json"
   ],
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"

@@ -17,5 +17,11 @@
     "preferredPresentation": "any"
   },
   "liveDeployment": null,
-  "historicalPlanningDocuments": "Non-normative port context only; no protocol authority"
+  "historicalPlanningDocuments": "Non-normative port context only; no protocol authority",
+  "qualificationBlockers": [
+    "No qualified production transport, wallet custody, live-node genesis reader or complete authenticated transaction-absence reader ships.",
+    "RAV-R4 rail-down classification requires an authenticated failure signal distinct from transient RPC failures and counterparty errors.",
+    "Terminal job reclamation and a supported archive/rotation procedure under the seller-state lock are not implemented.",
+    "Externally supplied delivery schema authority must be pinned across sessions and restarts before production qualification."
+  ]
 }

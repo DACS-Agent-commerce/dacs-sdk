@@ -19,7 +19,7 @@ function sellerWorld() {
   const now = Date.now(), unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt: now - 1000, sessionSeed: 'profile' });
   const draft = seller.buildListingDraft({ identityBundle: seller.attachIdentityPresentation(unsigned, wallet(unsigned.message)), displayName: 'Profile seller',
     publicEndpoint: 'https://seller.invalid/agent', listingId: 'profile-report', listingVersion: 1, title: 'Profile report', description: 'Substrate profile vectors.',
-    category: 'services.market-report', tags: ['profile'], priceDem: '1', notBefore: now - 60000 });
+    expectedSizeBytes: 1024, category: 'services.market-report', tags: ['profile'], priceDem: '1', notBefore: now - 60000 });
   const listing = seller.attachListingSignature(draft, wallet(seller.listingSigningMessage(draft)));
   const unreachable = async () => { throw new Error('not reached at construction'); };
   return {
@@ -77,7 +77,7 @@ test('PROFILE.json names the Standard pin and the seller requirement the run tim
   assert.equal(canonicalize({ standardRevision: profile.standardRevision, documentVersions: profile.documentVersions }), canonicalize(SELLER_PROFILE));
 });
 
-test('a session admission is taken only by the native profile and only with all five of its functions, the Vet receipt and revocation readers included', async () => {
+test('a session admission is taken only by the native profile and only with all six of its functions, the Vet receipt and revocation readers included', async () => {
   const w = sellerWorld(), native = { ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority };
   const complete = { admit: async () => null, resolveVetRecord: async () => null, readVetAnchorReceipt: async () => null, verifyVetAnchorReceipt: async () => 'invalid', readRevocationSurfaces: async () => [], readRevocationMarker: async () => null };
   const without = (name) => { const { [name]: _missing, ...rest } = complete; return rest; };

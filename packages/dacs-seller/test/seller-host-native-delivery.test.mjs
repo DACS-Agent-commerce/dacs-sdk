@@ -179,7 +179,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true } = {}) {
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -190,6 +190,11 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
     category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
   if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
+  // All binding strings have fixed canonical lengths. Declare the exact
+  // output size for this test producer unless exercising the unsupported path.
+  const sample = (deliverableProducer ?? report())({ agreement: { jobId: '0'.repeat(26) }, listing: draft, settlementId: `demos:${'0'.repeat(64)}` });
+  if (!omitExpectedSize) draft.offering.deliverable.expectedSizeBytes = sample && typeof sample.then !== 'function'
+    ? Buffer.byteLength(core.canonicalize(sample)) : 1024;
   Object.assign(draft.offering.deliverable, deliverableExtension);
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
   // One buyer presentation per job, of the challenge the host issued for it
@@ -203,10 +208,11 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
-  const effects = { deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [] };
+  const effects = { deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [], componentSigns: [] };
   const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [] };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
+    effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
     if (faults.sign[0] === 'throw-evidence' && evidenceBytes(bytes)) { faults.sign.shift(); throw new Error('TEST the seller signer failed'); }
     return sellerKey.sign(bytes);
   } };
@@ -392,7 +398,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
 
   // One buyer purchase: the buyer signs, finalizes and anchors the Agreement,
   // asks the seller to commit, and pays the Agreement's payee.
-  const purchase = async ({ commit = true } = {}) => {
+  const purchase = async ({ commit = true, expectSigned = true } = {}) => {
     const jobId = core.generateCanonicalJobId();
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
     const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
@@ -401,6 +407,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     const client = () => seller.createSellerAgentClient({ url: host.url, authentication: seller.createSellerTransportClientAuth({
       buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock }) });
     const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundleFor(jobId) });
+    if (!expectSigned) return answer;
     assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
@@ -919,7 +926,7 @@ test('a Deliverable the producer does not bind to this job, Agreement and settle
 test('a delivery candidate that is not the exact report is not sent: the producer answered differently at submission', async (t) => {
   for (const schemaUrl of [true, false]) {
     let answers = 0;
-    const w = await world(t, { schemaUrl, deliverableProducer: (input) => report({ body: [`TEST report, answer ${++answers}`] })(input) });
+    const w = await world(t, { schemaUrl, deliverableProducer: (input) => report({ body: [`TEST report, answer ${String(++answers).padStart(8, '0')}`] })(input) });
     assert.equal('schemaUrl' in w.listing.offering.deliverable, schemaUrl);
     const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`, label = schemaUrl ? 'with a schema' : 'without a schema';
     const answer = await p.claim(tx);
@@ -1310,6 +1317,22 @@ test('an unavailable schema verifier preserves the permit and recovers on retry,
   }
 });
 
+test('an unspecified-size Listing with oversized actual output is refused before any Agreement', async (t) => {
+  const producer = (input) => {
+    const payload = report({ body: [''] })(input);
+    payload.body[0] = 'a'.repeat(131073 - Buffer.byteLength(core.canonicalize(payload)));
+    return payload;
+  };
+  const w = await world(t, { deliverableProducer: producer, omitExpectedSize: true });
+  const answer = await w.purchase({ expectSigned: false });
+  assert.notEqual(answer.disposition, 'complete', shown(answer));
+  assert.match(answer.reason, /unsupported Listing: inline storage delivery requires expectedSizeBytes/);
+  assert.equal(w.effects.componentSigns.filter(bytes => [core.ARTIFACT_SEPARATORS.AgreementDocument, core.ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument].some(separator => bytes.startsWith(separator))).length, 0, 'no Agreement contribution is signed');
+  assert.equal(w.effects.published.length, 0, 'no commitment is published');
+  assert.equal(w.effects.signCreate.length, 0, 'no payment evidence is signed');
+  await w.restart(); // The Listing can still reopen its retained state for recovery.
+});
+
 test('inline delivery refuses oversized Listings before signing and delivers the exact 128 KiB boundary', async (t) => {
   await assert.rejects(world(t, { deliverableExtension: { expectedSizeBytes: 132283 } }), /unsupported Listing: inline storage delivery/);
   await assert.rejects(world(t, { deliverableExtension: { expectedSizeBytes: 131073 } }), /unsupported Listing: inline storage delivery/);
@@ -1323,6 +1346,47 @@ test('inline delivery refuses oversized Listings before signing and delivers the
   const p = await w.purchase(), answer = await p.claim(p.pay());
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
   assert.equal(Buffer.byteLength(core.canonicalize(w.writtenAt(`dacs4:deliverable:${p.jobId}`))), size);
+});
+
+test('inline size admission accepts feasible minimal reports and refuses impossible declared sizes', async (t) => {
+  const producer = ({ agreement, settlementId }) => ({ jobId: agreement.jobId, agreementHash: core.contentHash(agreement), settlementId });
+  const w = await world(t, { schemaUrl: false, deliverableProducer: producer });
+  const p = await w.purchase(), done = await p.claim(p.pay());
+  assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+  const size = Buffer.byteLength(core.canonicalize(w.writtenAt(`dacs4:deliverable:${p.jobId}`)));
+  for (const expectedSizeBytes of [0, size - 1, size + 1, size + 4]) {
+    const small = await world(t, { schemaUrl: false, deliverableProducer: producer, deliverableExtension: { expectedSizeBytes } });
+    const refused = await small.purchase({ expectSigned: false });
+    assert.notEqual(refused.disposition, 'complete', shown(refused));
+    assert.match(refused.reason, /inline storage delivery requires expectedSizeBytes/);
+  }
+  const extended = await world(t, { schemaUrl: false, deliverableProducer: input => ({ ...producer(input), '': 0 }) });
+  const extra = await extended.purchase(), delivered = await extra.claim(extra.pay());
+  assert.equal(delivered.delivery?.status, 'delivery-ready', shown(delivered));
+  assert.equal(Buffer.byteLength(core.canonicalize(extended.writtenAt(`dacs4:deliverable:${extra.jobId}`))), size + 5);
+});
+
+test('producer size mismatches hold the paid permit and recover with corrected bytes, including restart', async (t) => {
+  for (const [declared, actual] of [[100000, 4000], [4000, 131073]]) for (const restart of [false, true]) {
+    let size = actual;
+    const producer = (input) => {
+      const payload = report({ body: [''] })(input);
+      payload.body[0] = 'a'.repeat(size - Buffer.byteLength(core.canonicalize(payload)));
+      return payload;
+    };
+    const w = await world(t, { deliverableExtension: { expectedSizeBytes: declared }, deliverableProducer: producer });
+    const p = await w.purchase(), tx = p.pay(), held = await p.claim(tx);
+    assert.equal(held.delivery?.status, 'held', shown(held));
+    assert.equal(w.effects.deliverySubmit.length, 0);
+    if (restart) await w.restart();
+    size = declared;
+    const done = await p.claim(tx);
+    assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+    assert.match(held.delivery.reason, /inline delivery size/);
+    assert.equal(Buffer.byteLength(core.canonicalize(w.writtenAt(`dacs4:deliverable:${p.jobId}`))), declared);
+    assert.equal(w.effects.deliverySubmit.length, 1);
+    assert.equal(w.createsAt(paymentAddress(p)), 1);
+  }
 });
 
 test('host maxJobs above the default transport cap admits job 10001 with the ordinary nonce budget', async (t) => {

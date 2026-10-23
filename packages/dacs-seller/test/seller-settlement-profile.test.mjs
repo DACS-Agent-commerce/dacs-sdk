@@ -51,7 +51,7 @@ async function world(t, { listingChanges = () => {} } = {}) {
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'settlement-profile', listingVersion: 1, title: 'Settlement profile report', description: 'Settlement profile vectors.',
-    category: 'services.market-report', tags: ['profile'], priceDem: '2.5', notBefore: now - 60000 });
+    expectedSizeBytes: 1024, category: 'services.market-report', tags: ['profile'], priceDem: '2.5', notBefore: now - 60000 });
   listingChanges(draft);
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft)));
   const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached`); };

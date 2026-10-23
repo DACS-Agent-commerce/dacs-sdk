@@ -64,7 +64,7 @@ const railAuthority = { rail: { ...unsignedRail, signature: { algorithm: 'ed2551
   value: sign(null, Buffer.from(`dacs-rail:v1:${core.contentHash(unsignedRail)}`, 'ascii'), steward.privateKey).toString('base64url') } }, stewardClaim, stewardPublicKey, railRegistryVersion: 1, production: false };
 const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Installed seller', publicEndpoint: 'https://seller.invalid/agent',
   listingId: 'installed-report', listingVersion: 1, title: 'Installed package report', description: 'A report served by the installed seller package.',
-  category: 'services.market-report', tags: ['installed'], priceDem: '2.5', notBefore: now - 60000 });
+  expectedSizeBytes: 1024, category: 'services.market-report', tags: ['installed'], priceDem: '2.5', notBefore: now - 60000 });
 const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft)));
 const pin = seller.listingPin(listing);
 out.sellerClaim = sellerKey.claim;

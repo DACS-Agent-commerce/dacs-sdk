@@ -30,7 +30,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.equal(manifest.private, true, 'the fixture kit cannot be published independently of its unreleased core peer');
   assert.equal(manifest.version, core.version);
   assert.equal(manifest.type, 'module');
-  assert.deepEqual(manifest.exports, { '.': './src/index.mjs', './src/*': './src/*', './package.json': './package.json' });
+  assert.deepEqual(manifest.exports, { '.': './src/index.mjs', './src/*': './src/*', './package.json': './package.json', './PROFILE.json': './PROFILE.json' });
   assert.match(manifest.engines.node, /^>=22\./);
   assert.equal(manifest.peerDependencies['@kynesyslabs/dacs'], core.version);
   assert.ok(Array.isArray(manifest.files) && manifest.files.every((file) => !file.includes('*')), 'files is an explicit list');
@@ -44,6 +44,10 @@ test('the packed seller installs outside the repository and serves one Listing w
   mkdirSync(packs); mkdirSync(app);
   const [corePack] = JSON.parse(npm(['pack', '--json', '--ignore-scripts', '--pack-destination', packs], root));
   const [sellerPack] = JSON.parse(npm(['pack', '--json', '--ignore-scripts', '--pack-destination', packs, '--workspace', '@kynesyslabs/dacs-seller'], root));
+
+  // The governing profile and admission/port metadata ship with the source.
+  for (const file of ['PROFILE.json', 'ADMISSION.md', 'RUNTIME-PORTS.json']) assert.ok(manifest.files.includes(file));
+  assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
 
   // Exactly the manifest's files, its manifest, README and LICENSE.
   const packed = sellerPack.files.map((entry) => entry.path).sort();

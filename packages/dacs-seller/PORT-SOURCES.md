@@ -149,3 +149,8 @@ Run `node packages/dacs-seller/scripts/check-provenance.mjs` and
 The historical `check-step1-provenance.mjs --root <original snapshot> --source
 <frontend repository>` remains available for owners holding those source
 objects. Current qualification does not depend on its preparation commits.
+
+The upstream frontend repository is private. Running `runtime-ports.mjs` without
+`--source` verifies target files against this repository's recorded hashes only;
+it does not independently authenticate upstream source bytes. An owner with the
+pinned upstream snapshot can run `--source <http-mcp directory> --check`.

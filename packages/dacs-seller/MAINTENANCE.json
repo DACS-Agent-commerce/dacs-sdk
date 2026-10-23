@@ -4,8 +4,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "3dd4daf036c0fc060aa620f632c4b83bb324f27e5f7c8a59e6ed2de101bd46b8",
-      "reason": "Preserve retryable schema verification, refuse unsupported declared delivery sizes before agreements, and retain commitment publication intent across retries."
+      "sha256": "bb3c806f31a973c513bddaea796db61179eef4d19537fef482a89a32aeb7af53",
+      "reason": "Require bounded inline Listing sizes before native Agreements and preserve the payment permit when actual producer size disagrees."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-context-route.mjs",
@@ -46,7 +46,7 @@
     {
       "path": "packages/dacs-seller/src/devnet-demo/deployment-qualification.mjs",
       "originalSha256": null,
-      "sha256": "612de9d2f09b947f2cf35a20d0c01d9921591088bd8388f9810707fcb3f657dd",
+      "sha256": "065d93812c22fc0ddf68767082e3dde22df4c419103299acd6d3bd97d3bf21f4",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -148,7 +148,7 @@
     {
       "path": "packages/dacs-seller/test/seller-lifecycle-gates.test.mjs",
       "originalSha256": null,
-      "sha256": "2ea6db723f33b971107d2e4adf4e7e49b4bfbd6d2295d95d4df2729be973f492",
+      "sha256": "29415bcc9a80c908d1960f1eced1314e00fef32cf4253774ce8d5ed74e92c796",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -262,8 +262,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/listing.mjs",
       "originalSha256": null,
-      "sha256": "a3a8eda3248897d7d6346ef19dbef4b30f15bf6c4aaa5730e7fa8bfc940641a7",
-      "reason": "Seller run time: port from the plugin seller kit; the SDK provenance source and the issued session nonce are named replacements (RUNTIME-PORTS.json)."
+      "sha256": "67b58cb869d0db60ff49b458780aa2a385772b0d1a35bfaa62ed1397774b632a",
+      "reason": "Seller run time: port from the plugin seller kit; the SDK provenance source, issued session nonce and inline payload size declaration are named replacements (RUNTIME-PORTS.json)."
     },
     {
       "path": "packages/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs",
@@ -358,13 +358,13 @@
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "2b977b6b0e750f33899ee579374be8175f43616deab30dc96e3c912fc0717b4a",
+      "sha256": "76ebac63e6ddad224689868f6fc95dbb509e13c5fbc0f200fa3510d1184b8c07",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/installed-package.test.mjs",
       "originalSha256": null,
-      "sha256": "c1dc11ffe0f58be2ac989a27529329b815a034b7799064d7f68ca7d6e5e8ea0e",
+      "sha256": "56e22010e5fefc0de6d3825707af148caf7aa33902ecc3e42b0802fb08f3306c",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -376,13 +376,13 @@
     {
       "path": "packages/dacs-seller/test/seller-substrate-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "0c3dc65c301135023954cb8978cd604b3a907dcbe603a20efacc19fe909f3acc",
+      "sha256": "a4dc06e870a67c340a30fa3f74f97315060f846ba3560267c3e4d87807015c4e",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "3272666b3bc6c4820453852bb31af6ff5d19e1bcee47889985970913819004a2",
+      "sha256": "77530a7893451cfcc1d19f50b33773606f3d2a65f32552a7c5535d500b683f66",
       "reason": "Pin retained unsigned proposal recovery after challenge expiry and restart, preserving first-admission expiry."
     },
     {
@@ -430,7 +430,7 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "f2ac4fdb48c72a3adeaf35f112d1f6ad9541ece77922d8ac0d764f29c1dfcff5",
+      "sha256": "4e0f28939c41529a5c3ed70cf67e3dd33fafd78d9caa27e02a1a9e46f5076b69",
       "reason": "Cover delivery recovery, inline size boundaries, independent job limits and commitment publication reconciliation."
     },
     {

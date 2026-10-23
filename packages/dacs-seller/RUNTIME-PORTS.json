@@ -32,10 +32,20 @@
           "//  - Signing bytes, hashing and the ordered reader come from the vendored\n//    @kynesyslabs/dacs 0.1.0-alpha.0 support build (dacs-sdk 6658691, embedded\n//    Standard pin exposed as DACS_STANDARD_PIN). This is not SDK main and not a\n//    claim of complete Standard v0.4 conformance.",
           "//  - Signing bytes, hashing and the ordered reader come from this repository's\n//    @kynesyslabs/dacs peer at the seller package's version, with its embedded\n//    Standard pin exposed as DACS_STANDARD_PIN. This is not a claim of complete\n//    Standard v0.4 conformance.",
           "the SDK provenance source (this package's core peer)"
+        ],
+        [
+          "  deadlineSecAfterCommit = 3600,",
+          "  deadlineSecAfterCommit = 3600,\n  expectedSizeBytes,",
+          "the inline payload size declaration"
+        ],
+        [
+          "deliverable: { kind: 'storage-program', schemaUrl:",
+          "deliverable: { ...(expectedSizeBytes === undefined ? {} : { expectedSizeBytes }), kind: 'storage-program', schemaUrl:",
+          "the inline payload size declaration"
         ]
       ],
       "sourceSha256": "a57eb4285cf7002229f796cfaa12512624c49aba00f0b2262eb13c10af33919d",
-      "sha256": "a3a8eda3248897d7d6346ef19dbef4b30f15bf6c4aaa5730e7fa8bfc940641a7"
+      "sha256": "67b58cb869d0db60ff49b458780aa2a385772b0d1a35bfaa62ed1397774b632a"
     },
     {
       "target": "src/dacs/delivery-evidence.mjs",
