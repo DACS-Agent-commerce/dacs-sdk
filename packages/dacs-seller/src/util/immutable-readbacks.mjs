@@ -8,9 +8,11 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 // entry. Entries expire after `ttlMs`; callers on the payment path read fresh
 // instead and evict an entry whose fresh read no longer verifies. Nothing is
 // persisted, and a cached proof never authorizes a write or a resend.
+const MAX_IMMUTABLE_READBACK_ENTRIES = 10_000;
 export const IMMUTABLE_READBACK_TTL_MS = 60000;
 
 export function createImmutableReadbacks({ limit = 256, ttlMs = IMMUTABLE_READBACK_TTL_MS, now = () => Date.now() } = {}) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_IMMUTABLE_READBACK_ENTRIES) throw new TypeError('immutable readback limit must be an integer from 1 to 10000');
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new TypeError('immutable readback reuse needs a positive TTL');
   const entries = new Map();
   const key = ({ purchaseId, locator, contentHash, scope }) => canonicalize([purchaseId ?? null, locator, contentHash, sha256Hex(canonicalize(scope))]);
