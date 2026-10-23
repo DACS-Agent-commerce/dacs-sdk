@@ -27,10 +27,11 @@ export function runtimeImageInventory(root) {
       throw error;
     }
     for (const name of names) {
-      if (!scope && (name === ".bin" || name === ".package-lock.json")) continue;
       const path = join(directory, name);
       const location = `${prefix}/${name}`;
       const stat = lstatSync(path);
+      if (!scope && ((name === ".bin" && stat.isDirectory()) ||
+          (name === ".package-lock.json" && stat.isFile()))) continue;
       if (!scope && name.startsWith("@") && stat.isDirectory()) {
         visit(path, location, true);
         continue;
