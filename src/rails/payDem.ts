@@ -28,6 +28,7 @@ const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 const DEFAULT_INCLUSION_POLL_INTERVAL_MS = 500;
 const DEFAULT_STATUS_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS = 60_000;
+const DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS = 30_000;
 const DACS_DEMOS_INCLUDED_STATE = "included";
 const DEMOS_EXECUTED_RECORD_STATUS = "confirmed";
 const DEMOS_FAILED_RECORD_STATUS = "failed";
@@ -165,6 +166,15 @@ function canonicalDemosTxHash(value: unknown): string | null {
  * included, so minting evidence on acceptance would attest an unobserved payment.
  * A transfer that doesn't reach observed inclusion settles `ok: false` and no
  * finality is stamped — evidence is never minted for a payment we didn't see land.
+ *
+ * EXECUTION-GATED (#338): inclusion alone is not execution. A node can include a
+ * transaction and record it `failed` (for example a stale nonce). After the
+ * status index reports `included`, the rail reads the node's transaction record
+ * for the signed hash and reports success only for a `confirmed` record at the
+ * same block whose body is exactly the prepared transfer (hash, payer, payee,
+ * nonce, amount). A `failed` record settles `ok: false`; a record the bounded
+ * read cannot establish stays indeterminate (`ok: false` with the hash retained,
+ * so the settlement intent stays held). Neither ever causes another broadcast.
  *
  * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
  * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
@@ -684,6 +694,22 @@ export interface PayDemRailConfig {
   statusRequestTimeoutMs?: number;
   /** Bound for the post-inclusion account-nonce projection (default 60 seconds). */
   nonceVisibilityTimeoutMs?: number;
+  /**
+   * Overall budget for reading the node's transaction record after inclusion
+   * (default 30 seconds). Each read is also bounded by `statusRequestTimeoutMs`.
+   * When execution is not established within it, the settlement is
+   * indeterminate and never resubmitted. demosdk's transport retries a
+   * connection error or a 502–504 up to four times inside one read, backing
+   * off 250, 500, 1 000 and 2 000 ms (up to 8 seconds only when the node sends
+   * `Retry-After`). One transient error adds about 250 ms. Five fast failures
+   * end the read in about 3.75 seconds with an error result, which is polled
+   * again. A read outlasts a 5 second `statusRequestTimeoutMs` only when all
+   * four backoffs (3.75 seconds) plus the requests' own time pass it, when the
+   * node sends a `Retry-After` of 5 seconds or more, or when one response is
+   * slow. It then counts as stalled and the settlement is indeterminate at
+   * once (liveness only, never a resubmission).
+   */
+  transactionRecordTimeoutMs?: number;
 }
 
 /** Immutable public recovery facts persisted before a pay-DEM broadcast. */
@@ -1261,7 +1287,8 @@ export async function observeDemosExecutionByHash(
  * Construct a pay-dem rail from a Demos RPC + wallet secret. Lazily imports
  * demosdk so the SDK core stays importable without the chain deps installed.
  * Submits via sign → confirm → durable preparation journal → one broadcast,
- * while independently observing inclusion by the signed hash.
+ * while independently observing inclusion and then execution (the node's
+ * transaction record) by the signed hash.
  *
  * The low-level rail signs a fresh transaction on every call. The exported
  * runSession bridge, {@link payDemSettle}, therefore wraps it in the shared
@@ -1322,6 +1349,12 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "pay-dem nonceVisibilityTimeoutMs",
     DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS,
   );
+  const transactionRecordTimeoutMs = optionalPositiveInteger(
+    config,
+    "transactionRecordTimeoutMs",
+    "pay-dem transactionRecordTimeoutMs",
+    DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS,
+  );
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const demos = new Demos();
@@ -1369,6 +1402,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     demos,
     "nodeCall",
     "pay-dem Demos.nodeCall",
+  );
+  const getTxByHash = stableMethod<(hash: string) => Promise<unknown>>(
+    demos,
+    "getTxByHash",
+    "pay-dem Demos.getTxByHash",
   );
   const waitForNonce = stableMethod<(
     address: string,
@@ -1591,9 +1629,46 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         };
       }
 
+      // `included` is not execution (#338): the node can include the signed
+      // transaction and record it failed. Require the transaction record to
+      // show this exact prepared transfer executed before reporting success.
+      const execution = await observeDemosExecutionByHash(
+        txHash,
+        getTxByHash,
+        { blockNumber: terminal.blockNumber, transfer: transferBinding },
+        {
+          transactionRecordTimeoutMs,
+          inclusionPollIntervalMs,
+          statusRequestTimeoutMs,
+        },
+      );
+      if (execution.state === "failed") {
+        return {
+          ok: false,
+          state: "failed",
+          hash: txHash,
+          blockNumber: terminal.blockNumber,
+          failureProof: {
+            kind: "demos-failed-record",
+            txHash, nonce: signedNonce, blockNumber: terminal.blockNumber,
+            payer: normalizeDemosNativeAddress(address)!,
+            payee: normalizeDemosNativeAddress(to)!, amountOs: amountOs.toString(),
+          },
+          message: "pay-dem transaction was included but its record reports it failed",
+        };
+      }
+      if (execution.state === "indeterminate") {
+        return {
+          ok: false,
+          state: "indeterminate",
+          hash: txHash,
+          message: `pay-dem execution was not established: ${execution.reason}`,
+        };
+      }
+
       // Inclusion can precede the account read reflecting the consumed nonce.
       // Bound even a non-cooperative projection read. DACS-4 §9.5.1 PC-7 makes
-      // the included payment final regardless: a lag may delay only idempotent
+      // the executed payment final regardless: a lag may delay only idempotent
       // evidence-anchor bookkeeping and can never authorise resubmission.
       await boundedPromise(
         Promise.resolve().then(() => waitForNonce(address, signedNonce)),
@@ -1603,6 +1678,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       return {
         ok: true,
         state: "included",
+        execution: "executed",
         hash: txHash,
         blockNumber: terminal.blockNumber,
         ...(confirmedDebitOs === null

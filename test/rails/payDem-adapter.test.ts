@@ -17,6 +17,7 @@ const sdk = vi.hoisted(() => ({
   connect: vi.fn(),
   connectWallet: vi.fn(),
   getNetworkInfo: vi.fn(),
+  getTxByHash: vi.fn(),
   nodeCall: vi.fn(),
   transfer: vi.fn(),
   waitForNonce: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
     readonly connect = sdk.connect;
     readonly connectWallet = sdk.connectWallet;
     readonly getNetworkInfo = sdk.getNetworkInfo;
+    readonly getTxByHash = sdk.getTxByHash;
     readonly nodeCall = sdk.nodeCall;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
@@ -95,6 +97,23 @@ beforeEach(() => {
   });
   sdk.broadcast.mockResolvedValue({ response: { hash: TX_HASH } });
   sdk.nodeCall.mockResolvedValue({ state: "included", blockNumber: 42 });
+  // The node's transaction record (#338): by default it is exactly the
+  // broadcast transaction, executed at the included block, with the nonce
+  // projected as the node serves it (a decimal string).
+  sdk.getTxByHash.mockImplementation(async () => {
+    const validity = sdk.broadcast.mock.calls.at(-1)?.[0] as
+      | { response?: { data?: { transaction?: Record<string, unknown> } } }
+      | undefined;
+    const transaction = validity?.response?.data?.transaction;
+    if (transaction === undefined) return null;
+    const content = transaction.content as Record<string, unknown>;
+    return {
+      ...transaction,
+      content: { ...content, nonce: String(content.nonce) },
+      status: "confirmed",
+      blockNumber: 42,
+    };
+  });
   sdk.waitForNonce.mockResolvedValue(undefined);
 });
 
@@ -250,6 +269,22 @@ describe("createPayDemRail nonce coordination", () => {
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/confirmed transaction hash does not match/);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no transaction", { response: { data: {} } }],
+    ["an array transaction", { response: { data: { transaction: [] } } }],
+  ])("rejects a confirmation with %s before broadcast", async (_case, confirmation) => {
+    sdk.confirm.mockResolvedValue(confirmation);
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/confirmation has no stable transaction body; refusing broadcast/);
     expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
