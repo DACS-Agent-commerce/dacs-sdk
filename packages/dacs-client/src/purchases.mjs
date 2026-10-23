@@ -942,12 +942,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // persisting it (in particular, bigint cannot be serialized as JSON).
   function checkedTransferObservation(value, hash) {
     const invalid = reason => ({ status: 'malformed', reason });
+    const exceeded = new RangeError('chain observation exceeds its byte limit');
     try {
       let used = 0;
       const containers = new WeakMap();
-      const charge = amount => { used += amount; if (used > MAX_TRANSFER_OBSERVATION_BYTES) throw new RangeError('observation byte limit'); };
+      const charge = amount => { used += amount; if (used > MAX_TRANSFER_OBSERVATION_BYTES) throw exceeded; };
       const stringBytes = text => {
-        if (text.length > MAX_TRANSFER_OBSERVATION_BYTES - used) throw new RangeError('observation byte limit');
+        if (text.length > MAX_TRANSFER_OBSERVATION_BYTES - used) throw exceeded;
         return Buffer.byteLength(JSON.stringify(text));
       };
       const bytes = JSON.stringify(value, function (key, field) {
@@ -957,16 +958,16 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         if (parent) { charge(parent.count++ ? 1 : 0); if (!parent.array) charge(stringBytes(key) + 1); }
         if (field && typeof field === 'object') {
           // Bound native JSON's key/index enumeration before it allocates it.
-          if (array && field.length > MAX_TRANSFER_OBSERVATION_BYTES) throw new RangeError('observation list limit');
+          if (array && field.length > MAX_TRANSFER_OBSERVATION_BYTES) throw exceeded;
           let count = 0;
-          for (const name in field) if (Object.hasOwn(field, name) && (++count > MAX_TRANSFER_OBSERVATION_BYTES || name.length > MAX_TRANSFER_OBSERVATION_BYTES)) throw new RangeError('observation key limit');
+          for (const name in field) if (Object.hasOwn(field, name) && (++count > MAX_TRANSFER_OBSERVATION_BYTES || name.length > MAX_TRANSFER_OBSERVATION_BYTES)) throw exceeded;
           charge(2); containers.set(field, { array, count: 0 });
         } else charge(typeof field === 'string' ? stringBytes(field) : (JSON.stringify(omitted ? null : field)?.length ?? 0));
         return field;
       });
       if (typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TRANSFER_OBSERVATION_BYTES) return invalid('chain observation exceeds its byte limit');
       value = JSON.parse(bytes);
-    } catch { return invalid('chain observation must be JSON serializable'); }
+    } catch (error) { return invalid(error === exceeded ? exceeded.message : 'chain observation must be JSON serializable'); }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('chain observation must be an object');
     if (!['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
     if (value.reason !== undefined && typeof value.reason !== 'string') return invalid('chain observation reason must be text');
