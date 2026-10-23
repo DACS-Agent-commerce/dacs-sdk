@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "7ba9811a155ea5998757b354de56c851adb1461a"
+        "blob": "f952b79e7a7dd756cb0d1b601d27f21e83ba6771"
       },
       "DELTA-LEDGER.json": {
-        "blob": "64e168a26fa61db9730852a814e6a28d8d1ada8f"
+        "blob": "0db61cb93c6a6b859dbfa31a58445e63883ede1c"
       },
       "DELTA-MAP.md": {
-        "blob": "3bc9a20ba18283529783e556959ce1b9c564d04d"
+        "blob": "c000cda0d80a0b8f0e91111323765dbbd333ec9b"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "c066079e13ea766008d8decebc340ae1a21be081"
+        "blob": "14d98485a00535cd493e94a91d479b13f27d66fd"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1514,7 +1514,7 @@
         "blob": "7d54a8614b441aff137c4c4ebc83a3e75cfb3504"
       },
       "test/helpers/purchase-integrity-database.mjs": {
-        "blob": "5863b0e71bcd0580199dbc733cdbe629e7aa8831"
+        "blob": "f1e6076cb72330b0bfed0ede94455e39d360272d"
       },
       "test/helpers/purchase-integrity-operations.mjs": {
         "blob": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b"
