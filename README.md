@@ -1049,6 +1049,10 @@ npm run acceptance:registry-container -- --output-dir "$review_parent/evidence"
 The ignored `registry-container-artifacts/` path keeps evidence out of the Git
 worktree. A directory outside the repository also works; other in-repository
 paths appear as untracked files.
+Acceptance requires explicit completion and consistent policy outcomes. npm
+responses and command execution have byte and time limits. Failed runs retain
+collected evidence, including structured `doctor.json`, `doctor.log` and the
+recorded exit status when available.
 The acceptance audits the generated consumer's tree by advisory ID against
 `scripts/registry-container-audit-baseline.json`. On pull requests an advisory
 ID outside that baseline is a warning, unless it is high or critical on a

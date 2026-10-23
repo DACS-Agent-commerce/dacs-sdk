@@ -11,4 +11,3 @@ http_limits_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/http-json-limits
 HTTP_JSON_MAX_RESPONSE_BYTES=$(node --input-type=module -e 'import(process.argv[1]).then(({ HTTP_JSON_MAX_BYTES }) => console.log(HTTP_JSON_MAX_BYTES))' "$http_limits_path")
 http_json_curl=(--disable --silent --show-error --fail --connect-timeout "$HTTP_JSON_CONNECT_TIMEOUT_SECONDS"
   --max-time "$HTTP_JSON_REQUEST_TIMEOUT_SECONDS" --max-filesize "$HTTP_JSON_MAX_RESPONSE_BYTES")
-

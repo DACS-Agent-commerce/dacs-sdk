@@ -151,5 +151,5 @@ The initial advisory baseline copies all 88 advisory IDs from
 `audit-policy.json` in the artifact
 `dacs-registry-container-9dd394cb7d3a6db6bf767bf9c35fb24f6aae5d27` of job
 114652354976 (https://github.com/DACS-Agent-commerce/dacs-sdk/runs/114652354976)
-for commit 35e6ce0, recorded in the JSON's `source`. It does not use counts as
-policy.
+for commit 35e6ce0, recorded in the JSON's `source`. Advisory IDs determine baseline membership. Audit counts must still agree
+with the advisory evidence and npm exit status before the result is admitted.
