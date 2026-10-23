@@ -797,5 +797,19 @@
       "packages/dacs-client/test/host-observations.test.mjs",
       "packages/dacs-client/test/native-supersession-unavailable.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 document public contracts and keep packed checks offline",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs"
+    ]
   }
 ]

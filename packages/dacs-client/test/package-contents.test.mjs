@@ -64,7 +64,7 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
   const manifest = { name: 'TEST-packed-buyer', private: true, type: 'module', dependencies };
   writeFileSync(join(app, 'package.json'), JSON.stringify(manifest));
   // Reuse the repository's exact registry resolutions and cached tarballs,
-  // falling back to the registry when this npm cache has not been populated.
+  // populated during dependency setup; consumer installation must stay offline.
   const lock = JSON.parse(readFileSync(join(sdkDir, 'package-lock.json')));
   lock.name = manifest.name;
   lock.packages[''] = manifest;
@@ -77,10 +77,11 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       dependencies: pkg.dependencies, peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
   }
   writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
-  run('npm', ['ci', '--prefer-offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+  run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
   // This consumer has no source-tree imports or test database helper.
   writeFileSync(join(app, 'consumer.mjs'), `
     import assert from 'node:assert/strict';
+    Date.now = () => 1700000000000;
     import { DatabaseSync } from 'node:sqlite';
     import { PURCHASE_STATE_SCHEMA, createSqlitePurchaseStore, createCoordinateStore,
       createPurchaseService, createProtocolPurchases, createDeliveryDeadlineWatch } from '@kynesyslabs/dacs-client';
@@ -123,7 +124,7 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store,
         diagnosticOnly: false, settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }, false);
       db.prepare('UPDATE operations SET handoff_token_hash=?, handoff_expires_at=? WHERE id=?')
-        .run((await import('node:crypto')).createHash('sha256').update('dacs-handoff-hash:TEST-token').digest('hex'), new Date(Date.now() + 3600000).toISOString(), 'first');
+        .run((await import('node:crypto')).createHash('sha256').update('dacs-handoff-hash:TEST-token').digest('hex'), '2099-01-01T00:00:00.000Z', 'first');
       await assert.rejects(service.verifyDeal({ accountId: 'buyer', operationId: 'first' }), { code: 'not_found' });
       assert.throws(() => service.status('buyer', 'first'), { code: 'not_found' });
       assert.equal(secondaryReads, 0);
