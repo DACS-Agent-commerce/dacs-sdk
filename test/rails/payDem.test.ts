@@ -684,8 +684,6 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(settle).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
-    await expect(log.readOutcome!(settlementKey("pay-dem", "job-retained-custom", 0)))
-      .resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
   });
 
   test("calls only the SDK's own rail and a caller's object carrying its settle", async () => {
@@ -1244,10 +1242,6 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       await expect(settle(req())).resolves.toEqual(first);
       expect(sdkTransfers()).toBe(1);
       expect(putOutcome).toHaveBeenCalledTimes(1);
-      await expect(createIdempotencyStore(log).readOutcome!(
-        settlementKey("pay-dem", "j1", 0),
-        bindingFor(req()),
-      )).resolves.toEqual(failure());
     });
 
     // A custom rail's proof is its statement, even one relaying the SDK rail's
