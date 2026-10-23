@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-=======
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
->>>>>>> stack/228/06-candidate-integrity
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -14,14 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-<<<<<<< HEAD
-const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
-  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines,
-  registryDependencyViolations, runtimeImageInventoryFindings, RELEASE_VERSION, unlistedPolicyFindings } =
-  await import(dispositionModulePath);
-=======
-const { candidateIntegrityErrors, classifyRegistryAudit, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
->>>>>>> stack/228/06-candidate-integrity
+const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings, classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines, registryDependencyViolations, runtimeImageInventoryFindings, RELEASE_VERSION, unlistedPolicyFindings, candidateIntegrityErrors } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const repoRoot = resolve(import.meta.dirname, "../..");
