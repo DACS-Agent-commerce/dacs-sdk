@@ -2,13 +2,17 @@
 // SQLite file, atomic synchronous changes, deletion, explicit capacity and
 // integrity checks. Local files only.
 import test from 'node:test';
+import { fork, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 import { createInMemoryPartyVetStore, openPartyVetStore, PARTY_VET_STORE_LIMITS } from '../src/devnet-demo/party-vet-store.mjs';
 
+const WORKER = fileURLToPath(new URL('./helpers/party-vet-store-worker.mjs', import.meta.url));
 const dirFor = (t) => { const dir = mkdtempSync(join(tmpdir(), 'party-vet-store-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const code = (expected) => (error) => error?.code === expected;
 
@@ -64,9 +68,7 @@ test('a row changed outside the store, or a file of another format, fails closed
   await store.update('k', () => ({ v: 1 }));
   store.close();
   const db = new DatabaseSync(path); db.prepare("UPDATE jobs SET value = '{\"v\":2}', bytes = 7 WHERE key = 'k'").run(); db.close();
-  const reopened = openPartyVetStore({ path }); t.after(() => reopened.close());
-  await assert.rejects(reopened.read('k'), code('journal-integrity'));
-  await assert.rejects(reopened.update('k', () => ({ v: 3 })), code('journal-integrity'));
+  assert.throws(() => openPartyVetStore({ path }), code('journal-integrity'), 'existing rows are validated before returning a handle');
   // Created private first: SQLite would create it 0666 & ~umask (0644 on CI).
   const other = join(dir, 'other.sqlite'); writeFileSync(other, '', { mode: 0o600 });
   const odb = new DatabaseSync(other); odb.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES (\'format\', \'something-else\')'); odb.close();
@@ -86,11 +88,51 @@ test('a group- or world-accessible store file is refused before it is read, what
   }
 });
 
-test('two instances on one file (two processes): every change is one atomic read and write', async (t) => {
-  const path = join(dirFor(t), 'shared.sqlite');
-  const a = openPartyVetStore({ path }), b = openPartyVetStore({ path }); t.after(() => { a.close(); b.close(); });
-  await a.update('n', () => ({ n: 0 }));
-  await Promise.all(Array.from({ length: 50 }, (_, i) => (i % 2 ? a : b).update('n', (row) => ({ n: row.n + 1 }))));
-  assert.deepEqual(await a.read('n'), { n: 50 });
-  assert.equal(b.storeId, a.storeId);
+
+test('an existing empty or truncated checkpoint file is not a fresh store', async t => {
+  const path = join(dirFor(t), 'truncated.sqlite'), store = openPartyVetStore({ path });
+  await store.update('job', () => ({ checkpoint: 'issued' })); store.close();
+  writeFileSync(path, '');
+  assert.throws(() => openPartyVetStore({ path }), code('journal-integrity'));
+});
+
+for (const sql of ['DROP TABLE jobs', 'ALTER TABLE jobs ADD COLUMN unexpected TEXT', 'DROP TABLE meta', 'ALTER TABLE meta ADD COLUMN unexpected TEXT']) test(`reopen rejects changed application schema: ${sql}`, async t => {
+  const path = join(dirFor(t), 'schema.sqlite'), store = openPartyVetStore({ path });
+  await store.update('job', () => ({ checkpoint: 'issued' })); store.close();
+  const db = new DatabaseSync(path); db.exec(sql); db.close();
+  assert.throws(() => openPartyVetStore({ path }), code('journal-integrity'));
+});
+
+for (const mode of ['reject-memory', 'reject-sqlite']) test(`${mode}: a handled asynchronous callback refusal leaves no unhandled rejection`, t => {
+  const child = spawnSync(process.execPath, [WORKER, mode, join(dirFor(t), 'async.sqlite')], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.signal, null);
+});
+
+for (const [label, make] of [['memory', () => createInMemoryPartyVetStore()], ['sqlite', t => openPartyVetStore({ path: join(dirFor(t), 'closed.sqlite') })]]) test(`${label}: close is idempotent and all later operations refuse`, async t => {
+  const store = make(t); await store.update('k', () => ({ v: 1 })); store.close(); store.close();
+  await assert.rejects(store.read('k'), code('journal-closed'));
+  await assert.rejects(store.entries(), code('journal-closed'));
+  await assert.rejects(store.update('k', () => ({ v: 2 })), code('journal-closed'));
+  assert.throws(() => store.usage(), code('journal-closed'));
+});
+
+test('a competing process cannot enter an update callback; killing the writer rolls back and permits retry', { timeout: 10000 }, async t => {
+  const path = join(dirFor(t), 'shared.sqlite'), store = openPartyVetStore({ path, busyTimeoutMs: 0 });
+  t.after(() => store.close()); await store.update('n', () => ({ n: 0 }));
+  const child = fork(WORKER, ['writer', path], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+  const exited = once(child, 'exit');
+  const [message] = await Promise.race([once(child, 'message'), exited.then(() => { throw new Error(`writer exited before locking: ${stderr}`); })]);
+  assert.equal(message, 'locked');
+  let entered = false;
+  await assert.rejects(store.update('n', row => { entered = true; return { n: row.n + 1 }; }), error => error.code === 'journal-busy' && error.cause instanceof Error);
+  assert.equal(entered, false, 'the IMMEDIATE transaction must refuse before the change callback');
+  assert.deepEqual(await store.read('n'), { n: 0 }, 'the uncommitted child write is invisible');
+  child.kill('SIGKILL'); assert.equal((await exited)[1], 'SIGKILL');
+  assert.deepEqual(await store.read('n'), { n: 0 }, 'the dead writer rolled back');
+  assert.deepEqual(await store.update('n', row => ({ n: row.n + 1 })), { n: 1 });
+  store.close(); const reopened = openPartyVetStore({ path }); t.after(() => reopened.close());
+  assert.deepEqual(await reopened.entries(), [['n', { n: 1 }]]);
 });
