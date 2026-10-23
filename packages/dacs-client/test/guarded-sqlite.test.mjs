@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+const nativeExec = DatabaseSync.prototype.exec;
+const probe = new DatabaseSync(':memory:');
+const nativeRun = Object.getPrototypeOf(probe.prepare('SELECT 1')).run;
+probe.close();
 import { withSqliteStatementGuard } from '../src/util/guarded-sqlite.mjs';
 
 function world(t) {
@@ -72,4 +76,21 @@ test('guarded exec preserves native argument errors instead of silently acceptin
   withSqliteStatementGuard(db, () => {}, () => {
     for (const value of [undefined, null, 123, {}]) assert.throws(() => db.exec(value), { code: 'ERR_INVALID_ARG_TYPE' });
   });
+});
+test('captured native execution functions cannot bypass a guarded callback', t => {
+  const db = world(t), prepared = db.prepare("INSERT INTO records VALUES ('TEST-bypass')");
+  withSqliteStatementGuard(db, () => {}, () => {
+    for (const write of [() => nativeExec.call(db, "CREATE TABLE escaped AS SELECT 1"), () => nativeRun.call(prepared)]) assert.throws(write, /readonly/);
+    db.exec("INSERT INTO records VALUES ('TEST-guarded')");
+  });
+  nativeExec.call(db, "INSERT INTO records VALUES ('TEST-outside')");
+  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
+});
+test('read-only host policy is preserved within and after nested guards', t => {
+  const db = world(t); db.exec('PRAGMA query_only=ON');
+  withSqliteStatementGuard(db, () => {}, () => {
+    withSqliteStatementGuard(db, () => {}, () => assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST')"), /readonly/));
+    assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
+  });
+  assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
 });

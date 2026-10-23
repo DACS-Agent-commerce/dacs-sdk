@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "83b7d9735c7bc86e92392aa3045d9ebcc993e2c9"
+        "blob": "ee1d56e80471e5429c5c4f5be55e2ab6299883c1"
       },
       "DELTA-LEDGER.json": {
-        "blob": "88b11229b0f17f08b92b176817f73cb3bc4a37e2"
+        "blob": "872d6f0ef87d0c99d01d12631a9dff753e2eef32"
       },
       "DELTA-MAP.md": {
-        "blob": "a3dc147a55e7618883eb446a1dd3fe84f7dd0773"
+        "blob": "0f30b86811242cd38b1b58b3777e7743e417278b"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "8bdab15c555ae872d96313eaea5641289c6aae1d"
+        "blob": "c2ee82b27fa7225478c305abd6d96ab2129efde7"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1238,7 +1238,7 @@
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
       },
       "src/util/guarded-sqlite.mjs": {
-        "blob": "b481d335f5d260dafa236b520c0b4c1b21269164"
+        "blob": "f377b3dd6895e2ad1f02bedddc9eb18177f9eb57"
       },
       "src/util/http.mjs": {
         "blob": "dad306f9b723c185815fbb41b63ab6d56f135a8b"
@@ -1343,7 +1343,7 @@
         "blob": "4ee7eacda377c731fd70105eaa3bf862421e01c3"
       },
       "test/guarded-sqlite.test.mjs": {
-        "blob": "e38a86a1fabd4f8767da17a18416e73529b2ee55"
+        "blob": "8173b4c5b350f1a39a3b6bad62e8343f3e688258"
       },
       "test/helpers/agreement-context-integration.mjs": {
         "blob": "3bbc74d4d3f72101e8b3d3b2ff27449ba4105add"
@@ -1652,7 +1652,7 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/store-atomicity.test.mjs": {
-        "blob": "7fb6c88ed1400bffc509fc23453150bf78519cbe"
+        "blob": "aca495eb87c54f557b02a7a2ce5d5b2882f1ce83"
       },
       "test/store-host-boundary.test.mjs": {
         "blob": "18c6e3c74c2817a1c38f58676eb2053d76398ebb"
