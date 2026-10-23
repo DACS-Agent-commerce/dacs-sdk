@@ -447,3 +447,48 @@ test('a replaced journal refuses sent attempts with missing or malformed transac
   }
   assert.equal((await journal.reconcilePaymentEvidence(w.input({ attempt: { outcome: 'failed-before-signing' } }))).status, 'unsigned');
 });
+
+
+test('a multibyte signed transaction beyond the wire byte limit is not retained or broadcast', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const input = w.input({ artifact: { TEST: '🙂'.repeat(300_000) } });
+  await assert.rejects(journal.anchorEvidence(input), { code: 'wallet_sign_invalid' });
+  assert.equal(await journal.readSignedProjection(input), null);
+  assert.equal(w.calls.broadcast.length, 0);
+});
+
+test('opening another initialized journal handle does not wait for an active signer', async (t) => {
+  const w = wallet(t), node = walletChain({ state: w.chain });
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const signing = new Promise(resolve => { entered = resolve; });
+  const first = w.open({ signCreate: async input => { entered(); await gate; return node.signCreate(input); } });
+  t.after(() => first.close());
+  const anchor = first.anchorEvidence(w.input());
+  await signing;
+  try {
+    const second = w.open();
+    try { assert.equal(second.journalId, first.journalId); } finally { second.close(); }
+  } finally {
+    release();
+    await anchor;
+  }
+});
+
+test('a superseded named attempt cannot broadcast or answer for its live successor after reopen', async (t) => {
+  const w = wallet(t);
+  let journal = w.open();
+  w.faults.broadcast.push('drop');
+  const first = await journal.anchorEvidence(w.input());
+  w.other();
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
+  const second = await journal.anchorEvidence(w.input());
+  journal.close(); journal = w.open(); t.after(() => journal.close());
+  const broadcasts = w.calls.broadcast.length;
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input({ attempt: { outcome: 'sent', answer: first } })), { code: 'wallet_journal_stale_attempt' });
+  assert.equal(w.calls.broadcast.length, broadcasts);
+  assert.equal((await journal.readSignedProjection(w.input())).hash, second.txHash);
+  assert.equal((await journal.reconcilePaymentEvidence(w.input({ attempt: { answer: second } }))).txHash, second.txHash);
+  assert.equal(w.calls.sign, 2);
+});
