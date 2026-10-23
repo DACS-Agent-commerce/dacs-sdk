@@ -743,3 +743,18 @@ for (const method of ['portalOperation', 'portalEvidence']) {
     });
   }
 }
+test('oversized strings are refused before serializing later observation fields', async t => {
+  let visited=0;
+  const value={...INCLUDED,extra:'x'.repeat(64*1024+1),get tail(){visited++;return 'TEST-tail';}};
+  const result=await world(t,value).verify();
+  assert.equal(result.verification.outcome,'invalid_observation');
+  assert.equal(visited,0);
+});
+test('raw included facts cannot settle when their one JSON snapshot is pending', async t => {
+  let calls=0;
+  const w=world(t,{...INCLUDED,toJSON(){calls++;return {status:'pending'};}});
+  const result=await w.verify();
+  assert.equal(result.verification.outcome,'awaiting_inclusion');
+  assert.equal(w.coordinates.get(w.op.id).observation.observation.status,'pending');
+  assert.equal(w.consumed(),0); assert.equal(calls,1);
+});
