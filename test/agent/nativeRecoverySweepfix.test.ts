@@ -51,16 +51,20 @@ async function fixture(store?: SessionStore, rpc?: string) {
   return { deps, adapter, kv, log };
 }
 
-test.each([false, true])("credential RPC sessions recover paid evidence and replay without another transfer (outage=%s)", async (outage) => {
+test.each([false, true].flatMap((outage) => [
+  { outage, userinfo: "operator:fixture", decoded: "operator:fixture" },
+  { outage, userinfo: "operator:100%", decoded: "operator:100%" },
+  { outage, userinfo: "operator:p%FFx", decoded: "operator:p%FFx" },
+]))("credential RPC sessions recover paid evidence and replay without another transfer ($userinfo, outage=$outage)", async ({ outage, userinfo, decoded }) => {
   let reads = 0;
   vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const request = new Request(input, init);
     assert.equal(request.url, "https://rpc.test/node%2Fcall?tenant=a%2Fb");
-    assert.equal(request.headers.get("Authorization"), `Basic ${Buffer.from("operator:fixture").toString("base64")}`);
+    assert.equal(request.headers.get("Authorization"), `Basic ${Buffer.from(decoded).toString("base64")}`);
     reads++;
     return demosRpcFetch(input, init);
   });
-  const f = await fixture(createInMemorySessionStore(), "https://operator:fixture@rpc.test/node%2Fcall?tenant=a%2Fb");
+  const f = await fixture(createInMemorySessionStore(), `https://${userinfo}@rpc.test/node%2Fcall?tenant=a%2Fb`);
   const healthyAnchor = f.deps.anchor;
   if (outage) f.deps.anchor = async (name, value) => {
     if (name === sessionAnchorName.evidence("sweep-session")) throw new Error("anchor outage");

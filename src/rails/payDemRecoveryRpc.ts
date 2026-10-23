@@ -5,6 +5,25 @@ import { DacsError } from "../errors.js";
 // decompressed bytes before JSON decoding, including replies with no length.
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
+// Match demosdk's Axios transport: a malformed percent escape leaves the whole
+// credential field literal, independently of whether the other field decodes.
+function decodeUserinfo(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+/** Fetch-compatible endpoint shared by read-only RPC and deployment checks. */
+export function payDemReadEndpoint(rpc: string): { endpoint: string; headers: Record<string, string> } {
+  const url = new URL(rpc);
+  const headers: Record<string, string> = {};
+  if (url.username === "" && url.password === "") return { endpoint: rpc, headers };
+  headers.Authorization = `Basic ${Buffer.from(
+    `${decodeUserinfo(url.username)}:${decodeUserinfo(url.password)}`, "utf8",
+  ).toString("base64")}`;
+  url.username = "";
+  url.password = "";
+  return { endpoint: url.href, headers };
+}
+
 /** Read-only Demos RPC transport: no wallet, SDK connect, retries or effects. */
 export function payDemRecoveryRpc(rpc: string, timeoutMs: number) {
   const fetchRpc = fetch;
@@ -22,20 +41,10 @@ export function payDemRecoveryRpc(rpc: string, timeoutMs: number) {
       // demosdk's Axios transport accepts URL userinfo; Fetch rejects it.
       // Keep primary and archive recovery compatible without passing credentials
       // to Fetch's URL parser (or its URL-bearing diagnostics).
-      const url = new URL(rpc);
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      let endpoint = rpc;
-      if (url.username !== "" || url.password !== "") {
-        headers.Authorization = `Basic ${Buffer.from(
-          `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`, "utf8",
-        ).toString("base64")}`;
-        url.username = "";
-        url.password = "";
-        endpoint = url.href;
-      }
+      const { endpoint, headers } = payDemReadEndpoint(rpc);
       const response = await fetchRpc(endpoint, {
         method: "POST", redirect: "error",
-        headers,
+        headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ method: "nodeCall", params: [{ message, data }] }),
         signal: controller.signal,
       });

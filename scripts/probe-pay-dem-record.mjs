@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { observeDemosExecutionByHash } from "../dist/rails/payDem.js";
-import { payDemRecoveryRpc } from "../dist/rails/payDemRecoveryRpc.js";
+import { payDemReadEndpoint, payDemRecoveryRpc } from "../dist/rails/payDemRecoveryRpc.js";
 
 /** Read-only deployment check. The expected transfer and clean build are operator-held inputs. */
 export async function probePayDemRecord(node, expected, version, approvedCommit) {
@@ -28,7 +28,9 @@ export async function probePayDemRecord(node, expected, version, approvedCommit)
 
 /** Bound decompressed version bytes and the entire read before decoding. */
 export async function readProbeVersion(rpc) {
-  const response = await fetch(new URL("/version", rpc), {
+  const { endpoint, headers } = payDemReadEndpoint(new URL("/version", rpc).href);
+  const response = await fetch(endpoint, {
+    headers,
     signal: AbortSignal.timeout(6000), redirect: "error",
   });
   if (!response.ok || response.body === null) {

@@ -919,7 +919,7 @@ node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
 recoveryRpc })` to use an operator-authenticated archival RPC when the primary
 record is unavailable. When an archive is configured, the primary must expose
 its chain ID and complete `forkScheduleDigest` before a fresh payment is signed.
-This requires the node profile introduced by `11e7c820`; the older `52e2e569`
+This requires the node profile present at `11e7c820`; the older `52e2e569`
 response omits registered forks and cannot authenticate a complete schedule.
 Primary-only payments remain supported on that older node profile. The archive
 itself is read only when recovery needs it. The SDK compares fresh `chainId`

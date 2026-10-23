@@ -17,6 +17,10 @@ it("uses the Demos read-only wire envelope and refuses redirects", async () => {
 
 it.each([
   ["operator:fixture", "operator:fixture"],
+  ["operator:100%", "operator:100%"],
+  ["operator:p%FFx", "operator:p%FFx"],
+  ["op%FF:p%3Ass", "op%FF:p:ss"],
+  ["op%40example:p%41%ss", "op@example:p%41%ss"],
   ["op%40example:p%3Aa%25ss%40word", "op@example:p:a%ss@word"],
   ["operator", "operator:"],
   [":fixture", ":fixture"],
