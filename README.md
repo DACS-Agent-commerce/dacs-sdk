@@ -1036,9 +1036,19 @@ are qualified package candidates, not evidence that the packages were published
 to npm.
 
 Registry/container acceptance writes evidence to the new directory passed to
-`--output-dir`, including partial evidence when a run fails. Use a directory
-under the ignored `registry-container-artifacts/` path, or a directory outside
-the repository; other in-repository paths will appear as untracked files.
+`--output-dir`. Failures after preflight retain partial evidence. Run on a host
+with Docker/Compose, curl 8.4+ and GNU mv. Create the parent first and choose a
+fresh output directory for each run:
+
+```sh
+mkdir -p registry-container-artifacts
+review_parent=$(mktemp -d registry-container-artifacts/review.XXXXXX)
+npm run acceptance:registry-container -- --output-dir "$review_parent/evidence"
+```
+
+The ignored `registry-container-artifacts/` path keeps evidence out of the Git
+worktree. A directory outside the repository also works; other in-repository
+paths appear as untracked files.
 The acceptance audits the generated consumer's tree by advisory ID against
 `scripts/registry-container-audit-baseline.json`. On pull requests an advisory
 ID outside that baseline is a warning, unless it is high or critical on a
