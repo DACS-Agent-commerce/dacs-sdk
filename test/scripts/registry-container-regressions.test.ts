@@ -54,3 +54,23 @@ describe("curated advisory validation regressions", () => {
     for (const name of names) expect(policy[name], name).toBeDefined();
   });
 });
+
+describe("baseline input completeness", () => {
+  it.each(["observed", "baseline", "assessments", "direct"])("rejects sparse %s arrays", input => {
+    const sparse = Array(1);
+    const configured = { ...baseline,
+      ...(input === "baseline" ? { advisoryIds: sparse } : {}),
+      ...(input === "assessments" ? { assessedAdvisories: sparse } : {}),
+    };
+    expect(() => policy.classifyRegistryAudit(input === "observed" ? sparse : [listed], configured,
+      input === "direct" ? sparse : [])).toThrow(/malformed/);
+  });
+  it.each([
+    { url: undefined }, { evidence: undefined }, { url: " " }, { evidence: " " },
+    { url: "https://github.com/DACS-Agent-commerce/dacs-sdk/runs/123" },
+    { url: "https://example.invalid/runs/114652354976" },
+  ])("requires source evidence and a URL identifying the declared job: %j", change => {
+    expect(() => policy.classifyRegistryAudit([], { ...baseline, source: { ...baseline.source, ...change } }))
+      .toThrow(/malformed/);
+  });
+});
