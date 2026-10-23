@@ -33,6 +33,11 @@ function validateJsonLists(bytes, contentType) {
   }
 }
 
+function decodeBounded(bytes, decode, maximum) {
+  try { return decode(bytes, { maxOutputLength: maximum }); }
+  catch (error) { if (error.code === "ERR_BUFFER_TOO_LARGE") throw limitError(); throw error; }
+}
+
 /** Buffers bounded encoded bytes, then bounded decompression; throws ELIMIT before downstream decoding. */
 async function readBoundedResponse(response, maximum) {
   if (Number(response.headers["content-length"]) > maximum) throw limitError();
@@ -47,11 +52,11 @@ async function readBoundedResponse(response, maximum) {
   const encoding = response.headers["content-encoding"]?.toLowerCase();
   const decode = { gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync }[encoding];
   if (encoding && encoding !== "identity" && !decode) throw new Error("unsupported npm HTTP content encoding");
-  if (decode) {
-    try { bytes = decode(bytes, { maxOutputLength: maximum }); }
-    catch (error) { if (error.code === "ERR_BUFFER_TOO_LARGE") throw limitError(); throw error; }
-  }
+  if (decode) bytes = decodeBounded(bytes, decode, maximum);
   if (bytes.length > maximum) throw limitError();
+  // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
+  // Validate expansion without changing the exact archive bytes npm hashes.
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) decodeBounded(bytes, gunzipSync, maximum);
   validateJsonLists(bytes, response.headers["content-type"]);
   return bytes;
 }
