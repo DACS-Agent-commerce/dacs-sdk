@@ -22,6 +22,11 @@ test('malformed stored start identity cannot take over a live holder', async t =
   holder.processStart = 'not-a-start-time'; await writeFile(file, JSON.stringify(holder));
   await assert.rejects(acquireSellerStateLock(dir), error => error.reason === 'doubt');
 });
+test('non-string start values and failed mapping observations stay doubtful', () => {
+  const self = currentSellerStateHolder(0);
+  for (const processStart of [Number(self.processStart), {}, [], true]) assert.equal(sellerStateHolderState({ ...self, processStart }, self, sameMapping), 'doubt');
+  assert.equal(sellerStateHolderState(self, self, { readPidMapping: () => { throw Object.assign(new Error('TEST mapping missing'), { code: 'ENOENT' }); } }), 'doubt');
+});
 test('a live clone with another boot and a slower clock remains doubtful', async t => {
   const self = currentSellerStateHolder(2000), holder = { ...self, bootId: 'TEST-other-boot', acquiredAt: 0 };
   assert.equal(sellerStateHolderState(holder, self, { ...sameMapping, readBootTime: () => 1000 }), 'doubt');
