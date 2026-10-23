@@ -332,6 +332,8 @@ jobs:
           NODE
 
       - name: Test (unit + conformance harness)
+        env:
+          DACS_REQUIRE_SELLER_TESTS: ${{ matrix.node-version == '22' && '1' || '0' }}
         run: npm test
 
       - name: Test durable RFQ filesystem record-size boundaries
