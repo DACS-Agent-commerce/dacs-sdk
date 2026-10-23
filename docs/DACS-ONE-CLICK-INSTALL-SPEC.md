@@ -711,13 +711,7 @@ including the receipt needed for exact native-address authentication.
 This permits the buyer's Vet of the seller and the seller's Vet of the buyer to
 run concurrently under separate actor wallets. Each challenge is fresh,
 single-session and durably reserved, and every later message hashes the exact
-preceding payload. The five-minute challenge deadline starts at the verifier's
-first send attempt, includes peer downtime, and is never refreshed by retries.
-A presentation must reach the durable inbox within that deadline. Recovery
-uses its original receipt time and may resume validation of the exact same
-authenticated envelope after the deadline; another envelope is a new attempt.
-A peer outage that outlasts the deadline requires a fresh job.
-The buyer MUST authenticate finality and exact native
+preceding payload. The buyer MUST authenticate finality and exact native
 readback of the returned buyer Vet before including its reference in an
 agreement proposal. Native receipt verification and exact native-address
 readback are the gate; logical-name index visibility is not on this path. The

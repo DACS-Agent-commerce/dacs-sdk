@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
+import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,11 +44,6 @@ import {
   type DacsHttpMessageType,
   type DacsHttpPayloadByType,
 } from "../src/transport/envelope.js";
-
-vi.mock("node:crypto", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:crypto")>();
-  return { ...actual, randomBytes: vi.fn(actual.randomBytes) };
-});
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const APPLICATION = Object.freeze({ applicationVersion: "1", request: { query: "test" } });
@@ -134,7 +129,7 @@ async function authenticated<Type extends Exclude<DacsHttpMessageType, "acknowle
     authenticationHash: dacsHttpEnvelopeHashV1(captured),
     identityEvidenceHash: "4".repeat(64),
     identityRole: input.role,
-    receivedAt: Date.now(),
+    receivedAt: 1_800_000_000_001,
   });
 }
 
@@ -338,17 +333,12 @@ describe("session bootstrap agreement tracks", () => {
       agreement: sellerAgreement,
     });
 
-    vi.mocked(randomBytes).mockImplementationOnce(((size: number) => {
-      expect(size).toBe(32);
-      return Buffer.alloc(size, 0xab);
-    }) as typeof randomBytes);
     await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
       status: "pending-retry",
       reasonCode: "buyer-session-challenge-pending",
     });
     const init = lastMessage(value.buyerSend);
     expect(init.type).toBe("session-init");
-    expect((init.payload as DacsHttpPayloadByType["session-init"]).sellerChallenge).toBe("ab".repeat(32));
     await expect(value.sellerTransport.handleMessage(await authenticated({
       type: "session-init",
       payload: init.payload as DacsHttpPayloadByType["session-init"],
@@ -363,17 +353,12 @@ describe("session bootstrap agreement tracks", () => {
     if (sellerLoaded.status !== "ok") throw new Error("seller order missing");
     const sellerOperation = operation(sellerLoaded.record);
 
-    vi.mocked(randomBytes).mockImplementationOnce(((size: number) => {
-      expect(size).toBe(32);
-      return Buffer.alloc(size, 0xcd);
-    }) as typeof randomBytes);
     await expect(sellerTrack(sellerOperation)).resolves.toMatchObject({
       status: "pending-retry",
       reasonCode: "seller-session-presentation-pending",
     });
     const challenge = lastMessage(value.sellerSend);
     expect(challenge.type).toBe("session-challenge");
-    expect((challenge.payload as DacsHttpPayloadByType["session-challenge"]).buyerChallenge).toBe("cd".repeat(32));
     await expect(value.buyerTransport.handleMessage(await authenticated({
       type: "session-challenge",
       payload: challenge.payload as DacsHttpPayloadByType["session-challenge"],

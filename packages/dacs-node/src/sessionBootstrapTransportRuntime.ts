@@ -324,15 +324,13 @@ function payloadValidation(
 ): DacsHttpPayloadValidationV1 {
   const valid = role === "buyer"
     ? input.type === "session-challenge"
-      // Authenticated attempts reach handleMessage before presentation schema
-      // validation, so malformed presentations consume their issued challenge.
-      ? plainObject(input.payload)
+      ? validateDacsHttpSessionChallengePayloadV1(input.payload)
       : input.type === "session-admission" &&
         validateDacsHttpSessionAdmissionPayloadV1(input.payload)
     : input.type === "session-init"
       ? validateDacsHttpSessionInitPayloadV1(input.payload)
       : input.type === "session-presentation" &&
-        plainObject(input.payload);
+        validateDacsHttpSessionPresentationPayloadV1(input.payload);
   return valid
     ? Object.freeze({ status: "valid" as const })
     : Object.freeze({ status: "invalid" as const,
@@ -351,126 +349,18 @@ function reserveChallenge(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
   challenge: string,
-  presenter: "buyer" | "seller",
 ): void {
   const localBindingHash = orderLocalBindingHash(order);
   const reserved = context.database.reserveIdentity({
     kind: "session",
     identity: `session-nonce:${challenge}`,
     bindingHash: localBindingHash,
-    payloadHash: sha256Hex(canonicalize({ challenge, presenter: order[presenter] })),
+    payloadHash: sha256Hex(challenge),
     jobId: order.jobId,
   });
   if (reserved.status === "conflict") {
     throw new DacsSessionBootstrapTransportError("session-challenge-reused");
   }
-}
-
-// Verifier-owned records use the existing immutable SQLite effect ledger. The
-// issue time is retained across restarts; a retry never extends the lifetime.
-const CHALLENGE_LIFETIME_MS = 300_000;
-function challengeIssueId(role: "buyer" | "seller", challenge: string): string {
-  return sha256Hex(`dacs-session-challenge-issued:v1:${role}:${challenge}`);
-}
-
-function issueChallenge(
-  context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
-  kind: "init" | "challenge",
-  challenge: string,
-): void {
-  reserveChallenge(context, order, challenge, context.role === "buyer" ? "seller" : "buyer");
-  const id = challengeIssueId(context.role, challenge);
-  const existing = context.database.loadEffectInput("session", id);
-  if (existing !== undefined) {
-    challengeIssue(context, order, challenge);
-    return;
-  }
-  // An older pending transcript without an issuance record must not receive a
-  // fresh lifetime during upgrade. Start a new job instead.
-  if (context.database.loadEffectInput("session", bindingId(context.role, kind, order.jobId)) !== undefined) {
-    throw new DacsSessionBootstrapTransportError("session-challenge-issuance-missing");
-  }
-  const issuedAt = Date.now();
-  const result = context.database.putEffectIntent({
-    kind: "session", effectId: id, idempotencyKey: id,
-    bindingHash: orderLocalBindingHash(order), jobId: order.jobId,
-    input: { challenge, jobId: order.jobId, localBindingHash: orderLocalBindingHash(order),
-      presenter: context.role === "buyer" ? order.seller : order.buyer,
-      issuedAt, expiresAt: issuedAt + CHALLENGE_LIFETIME_MS },
-  });
-  if (result.status === "conflict") {
-    // Concurrent issuance may have won with its own earlier timestamp.
-    challengeIssue(context, order, challenge);
-  }
-}
-
-function challengeIssue(
-  context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
-  challenge: string,
-): Readonly<{ issuedAt: number; expiresAt: number }> {
-  const value = context.database.loadEffectInput("session", challengeIssueId(context.role, challenge));
-  if (!plainObject(value) || !exactKeys(value, [
-      "challenge", "jobId", "localBindingHash", "presenter", "issuedAt", "expiresAt",
-    ]) || value.challenge !== challenge || value.jobId !== order.jobId ||
-      value.localBindingHash !== orderLocalBindingHash(order) ||
-      value.presenter !== (context.role === "buyer" ? order.seller : order.buyer) ||
-      !Number.isSafeInteger(value.issuedAt) || !Number.isSafeInteger(value.expiresAt) ||
-      (value.expiresAt as number) - (value.issuedAt as number) !== CHALLENGE_LIFETIME_MS) {
-    throw new DacsSessionBootstrapTransportError("session-challenge-issuance-invalid");
-  }
-  return value as unknown as Readonly<{ issuedAt: number; expiresAt: number }>;
-}
-
-// An exact authenticated delivery can resume validation after a crash, or be
-// deduplicated after acceptance. A fresh envelope (even for the same signed
-// presentation) is a new attempt. SQLite's unique reservation consumes the
-// challenge before any presentation binding or signature validation.
-function consumeChallenge(
-  context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<DacsLiveOrderRecordV1>,
-  kind: "challenge" | "presentation",
-  authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
-): "attempt" | "accepted-delivery" {
-  const sourceKind = kind === "challenge" ? "init" : "challenge";
-  const source = context.database.loadEffectInput("session", bindingId(context.role, sourceKind, order.jobId));
-  const binding = captureBinding(source);
-  if (binding.localBindingHash !== orderLocalBindingHash(order)) {
-    throw new DacsSessionBootstrapTransportError("session-challenge-issuance-invalid");
-  }
-  const challenge = kind === "challenge"
-    ? (binding.payload as DacsLiveSessionInitPayloadV1).sellerChallenge
-    : (binding.payload as DacsSessionChallengePayloadV1).buyerChallenge;
-  // The caller has already authenticated and addressed this job. Its retained
-  // verifier challenge is consumed even if the attempt omits or contradicts
-  // both nonce fields; presentation/schema validation happens afterwards.
-  const issued = challengeIssue(context, order, challenge);
-  const attempt = context.database.reserveIdentity({
-    kind: "session", identity: `session-challenge-attempt:${challenge}`,
-    bindingHash: orderLocalBindingHash(order), jobId: order.jobId,
-    payloadHash: sha256Hex(canonicalize({
-      envelopeId: authenticated.envelope.envelopeId,
-      authenticationHash: authenticated.authenticationHash,
-      identityEvidenceHash: authenticated.identityEvidenceHash,
-    })),
-  });
-  if (attempt.status === "existing") {
-    const retained = context.database.loadEffectInput("session", bindingId(context.role, kind, order.jobId));
-    if (retained !== undefined) {
-      // retain checks the entire authenticated payload and its delivery identity.
-      retain(context, order, kind, authenticated.envelope.payload as BootstrapPayload, authenticated);
-      return "accepted-delivery";
-    }
-  }
-  if (attempt.status === "conflict") {
-    throw new DacsSessionBootstrapTransportError("session-challenge-consumed");
-  }
-  // The durable inbox receipt time survives recovery and processing delays.
-  if (authenticated.receivedAt < issued.issuedAt || authenticated.receivedAt >= issued.expiresAt) {
-    throw new DacsSessionBootstrapTransportError("session-challenge-expired");
-  }
-  return "attempt";
 }
 
 function signatureBytes(value: unknown): Uint8Array | undefined {
@@ -593,7 +483,7 @@ async function outboundSemantics(
         canonicalize(init.application) !== canonicalize(retained.application)) {
       throw new DacsSessionBootstrapTransportError("session-init-binding-mismatch");
     }
-    issueChallenge(context, order, "init", init.sellerChallenge);
+    reserveChallenge(context, order, init.sellerChallenge);
     return;
   }
   if (kind === "challenge") {
@@ -612,8 +502,7 @@ async function outboundSemantics(
         )) {
       throw new DacsSessionBootstrapTransportError("session-challenge-binding-mismatch");
     }
-    if (context.role === "seller") issueChallenge(context, order, "challenge", challenge.buyerChallenge);
-    else reserveChallenge(context, order, challenge.buyerChallenge, "buyer");
+    reserveChallenge(context, order, challenge.buyerChallenge);
     return;
   }
   if (kind === "presentation") {
@@ -736,9 +625,6 @@ export function createDacsBuyerSessionBootstrapTransportRuntimeV1(
         bindingHash: order.bindingHash, localBindingHash: order.localBindingHash,
       }) }) as unknown as DacsLiveTrackOperationInputV1;
       try {
-        if (kind === "challenge" && consumeChallenge(context, order, kind, authenticated) === "accepted-delivery") {
-          return Object.freeze({ disposition: "accepted" as const });
-        }
         await outboundSemantics(kind, authenticated.envelope.payload, context, operation);
         const retained = retain(context, order, kind, authenticated.envelope.payload,
           authenticated);
@@ -832,7 +718,7 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1<
             application: admission.application,
           });
           if (stored.status === "conflict") throw new Error();
-          reserveChallenge(context, admission.order, input.sellerChallenge, "seller");
+          reserveChallenge(context, admission.order, input.sellerChallenge);
           retain(context, admission.order, "init", input, authenticated);
           await inbound.coordinator.startOrder(admission.order);
           return Object.freeze({ disposition: "accepted" as const });
@@ -857,9 +743,6 @@ export function createDacsSellerSessionBootstrapTransportRuntimeV1<
         bindingHash: order.bindingHash, localBindingHash: order.localBindingHash,
       }) }) as unknown as DacsLiveTrackOperationInputV1;
       try {
-        if (consumeChallenge(context, order, "presentation", authenticated) === "accepted-delivery") {
-          return Object.freeze({ disposition: "accepted" as const });
-        }
         await outboundSemantics("presentation", authenticated.envelope.payload, context, operation);
         const retained = retain(context, order, "presentation",
           authenticated.envelope.payload, authenticated);

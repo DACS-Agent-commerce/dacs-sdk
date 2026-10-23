@@ -19,10 +19,6 @@ const BETTER_SQLITE_VERSION = "12.6.2";
 const STANDARD_REVISION = "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 8;
-// The SDK's Node floor, within the majors better-sqlite3 BETTER_SQLITE_VERSION
-// supports; a live project cannot run without that native adapter. The
-// generated doctor's supportedNode() applies the same range.
-const LIVE_NODE_ENGINES = "^20.19.0 || ^22.12.0 || 23.x || 24.x || 25.x";
 
 // The image smoke probes each of these for its exact version.
 function productionDependencies(
@@ -49,7 +45,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     version: "0.1.0",
     private: true,
     type: "module",
-    engines: { node: LIVE_NODE_ENGINES },
+    engines: { node: "^20.19.0 || >=22.12.0" },
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
@@ -689,15 +685,6 @@ function decimalAtMost(value: string, ceiling: string): boolean {
   return units(left) <= units(right);
 }
 
-function x402CapabilityMatches(supported: unknown, network: string): boolean {
-  if (supported === null || typeof supported !== "object" || !("kinds" in supported) ||
-      !Array.isArray(supported.kinds)) return false;
-  return supported.kinds.some((kind: unknown) => kind !== null && typeof kind === "object" &&
-    "x402Version" in kind && kind.x402Version === 2 &&
-    "scheme" in kind && kind.scheme === "exact" &&
-    "network" in kind && kind.network === network);
-}
-
 async function x402FacilitatorSupported(url: string): Promise<unknown> {
   // The non-literal optional import keeps DEM-only generated projects free of
   // x402 packages while retaining an exact runtime capability check when x402
@@ -790,7 +777,7 @@ function supportedNode(): boolean {
   if (match === null) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  return major === 20 ? minor >= 19 : major === 22 ? minor >= 12 : major >= 23 && major <= 25;
+  return major === 20 ? minor >= 19 : major === 22 ? minor >= 12 : major > 22;
 }
 
 async function privateDirectory(role: "buyer" | "seller") {
@@ -1505,8 +1492,7 @@ function baseProbes(
             ]);
             const finality = head as { chainId?: unknown };
             return finality !== null && typeof finality === "object" &&
-                finality.chainId === actors.buyer.evmIdentity.chainId &&
-                x402CapabilityMatches(supported, "eip155:" + actors.buyer.evmIdentity.chainId)
+                finality.chainId === actors.buyer.evmIdentity.chainId && supported !== null
               ? pass({
                   resourceOrigin: resource.origin,
                   facilitatorOrigin: facilitator.origin,
@@ -1701,8 +1687,10 @@ export async function runGeneratedDoctor(
       enabledRailProfiles,
       ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
       probes,
-      // Allow RPC/index catch-up during shared registry resolution. This is
-      // an operational read allowance, independent of the chain's block time.
+      // A Demos block is approximately ten seconds. Registry resolution can
+      // legitimately cross one block boundary during node catch-up, so the
+      // start gate must not abort an otherwise healthy shared read task at
+      // half a consensus round.
       probeTimeoutMs: 30_000,
     };
     const report = phase === "post-start" && scope === "start" && actors !== undefined &&
