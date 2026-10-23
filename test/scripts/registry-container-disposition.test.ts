@@ -20,6 +20,34 @@ const { runtimeImageInventory } = await import(inventoryModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
+
+// A runtime-image inventory that matches the lock's production closure.
+const completeInventory = { scanComplete: true, errors: [], missing: [] };
+
+// The shape written by scripts/verify-registry-container-consumer.sh when the
+// rehearsal works and only the recorded #191 transitive audit findings remain.
+function baselineOnlySummary() {
+  return {
+    schema: "dacs-registry-container-acceptance/v1",
+    packageVersion: JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string,
+    generatedTestsPassed: true,
+    functionalPassed: true,
+    docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
+    audit: { observedAdvisories: ["GHSA-23hp-3jrh-7fpw"], unlistedAdvisories: [] as string[], info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
+    securityGate: {
+      passed: false,
+      registryDependencyPolicyPassed: true,
+      productionImageDependencyPolicyPassed: true,
+      engineStrictExitCode: 0,
+      auditExitCode: 1,
+      lockSbomExitCode: 0,
+      physicalSbomExitCode: 0,
+      findings: { schema: "dacs-registry-policy-findings/v1",
+        productionImageInventory: completeInventory } as Record<string, unknown>,
+    },
+  };
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -41,6 +69,82 @@ function runBash(args: string[], options: { cwd: string; env: Record<string, str
   return spawnSync("bash", ["--norc", "--noprofile", ...args], { cwd: options.cwd, encoding: "utf8",
     env: { HOME: options.cwd, ...options.env } });
 }
+
+
+describe("registry/container acceptance disposition", () => {
+  it("passes only when both the rehearsal and the release security gate pass", () => {
+    const summary = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    summary.audit.total = 0;
+    summary.audit.observedAdvisories = [];
+    summary.securityGate.auditExitCode = 0;
+    expect(registryContainerDisposition(summary).exitCode).toBe(0);
+    expect(registryContainerDisposition({ ...summary, functionalPassed: false }).exitCode).toBe(1);
+    expect(registryContainerDisposition({}).exitCode).toBe(1);
+  });
+
+  it("reports audit findings within the recorded #191 baseline distinctly from a regression", () => {
+    expect(registryContainerDisposition(baselineOnlySummary()).exitCode).toBe(4);
+  });
+
+  it("treats a summary without the expected schema or passing generated tests as a functional failure", () => {
+    const { schema: _schema, ...unversioned } = baselineOnlySummary();
+    expect(registryContainerDisposition(unversioned).exitCode).toBe(1);
+    expect(registryContainerDisposition({ ...baselineOnlySummary(), schema: "other/v1" }).exitCode).toBe(1);
+    expect(registryContainerDisposition({ ...baselineOnlySummary(), generatedTestsPassed: false }).exitCode)
+      .toBe(1);
+  });
+
+  it("refuses a summary for another or no package version", () => {
+    const { packageVersion: version, ...unversioned } = baselineOnlySummary();
+    expect(version).toBe(RELEASE_VERSION);
+    for (const summary of [unversioned, { ...unversioned, packageVersion: "999.999.999" },
+      { ...unversioned, packageVersion: `${version}-other` }, { ...unversioned, packageVersion: null }]) {
+      expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "functional",
+        message: expect.stringContaining(`not the release version ${JSON.stringify(version)}`) });
+    }
+    // The version is the caller's release, never the summary's own claim.
+    expect(registryContainerDisposition(baselineOnlySummary(), undefined, { packageVersion: "0.0.0" }).exitCode).toBe(1);
+    expect(registryContainerDisposition(baselineOnlySummary(), undefined, { packageVersion: "" }).exitCode).toBe(1);
+    expect(registryContainerDisposition({ ...baselineOnlySummary(), packageVersion: "1.2.3" }, undefined,
+      { packageVersion: "1.2.3" }).exitCode).toBe(4);
+  });
+
+  it.each([
+    ["a registry dependency policy violation", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.registryDependencyPolicyPassed = false;
+    }],
+    ["a production image dependency violation", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.productionImageDependencyPolicyPassed = false;
+    }],
+    ["an engine-strict failure", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.engineStrictExitCode = 1;
+    }],
+    ["a lockfile SBOM failure", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.lockSbomExitCode = 1;
+    }],
+    ["a physical SBOM failure", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.physicalSbomExitCode = 1;
+    }],
+    ["a failed audit with no findings", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.audit.total = 0;
+      s.audit.observedAdvisories = [];
+    }],
+  ])("keeps %s as a blocking security result", (_label, mutate) => {
+    const summary = baselineOnlySummary();
+    mutate(summary);
+    expect(registryContainerDisposition(summary).exitCode).toBe(3);
+  });
+
+  it("cross-checks the unlisted advisory IDs the summary recorded", () => {
+    // R5-228a: an unlisted ID dropped from the recorded list is a tampered summary.
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push("GHSA-2222-3333-4444");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3,
+      message: expect.stringContaining("does not match baseline") });
+    expect(registryAuditDriftDisposition(summary).exitCode).toBe(3);
+  });
+});
 
 const CANDIDATE_VERSION = "0.1.0-test";
 // A summary the producer composed for CANDIDATE_VERSION, judged as that release.
@@ -327,6 +431,47 @@ describe("advisory-ID baseline", () => {
       .toMatchObject({ unlistedAdvisories: ["GHSA-23hp-3jrh-7fpw"], assessedAdvisories: [] });
   });
 });
+
+// Once #191's findings are gone, SECURITY.md's audit policy still allows
+// transitive advisories assessed for reachability; the gate must be able to
+// pass with them, and never with a direct high/critical one.
+describe("assessed advisories", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const assessedId = "GHSA-2222-3333-4444";
+  const assessed = { ...baseline, assessedAdvisories: [{ id: assessedId, assessment: "SECURITY.md#audit-policy" }] };
+  const cleared = (direct: string[] | null = []) => {
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    summary.audit.observedAdvisories = [assessedId];
+    if (direct !== null) summary.audit.directAdvisories = direct;
+    return summary;
+  };
+
+  it("passes the gate (exit 0) when every observed advisory is an assessed transitive one", () => {
+    expect(registryContainerDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0, failureClass: null,
+      checks: { audit: "passed" }, assessedAdvisories: [assessedId] });
+    expect(registryAuditDriftDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0 });
+    // Not yet assessed: the same tree is an unlisted ID.
+    expect(registryContainerDisposition({ ...cleared(), audit: { ...cleared().audit, unlistedAdvisories: [assessedId] } }))
+      .toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+  it("keeps #191 baseline IDs beside assessed ones baseline-only", () => {
+    const summary = cleared();
+    summary.audit.observedAdvisories = ["GHSA-23hp-3jrh-7fpw", assessedId];
+    expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
+  });
+
+  it("never accepts an assessed advisory that is high or critical on a direct dependency", () => {
+    const result = registryContainerDisposition(cleared([assessedId]), assessed, { unlistedAdvisories: "warn" });
+    expect(result).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+    expect(result.message).toContain(`which an assessment cannot accept: ${assessedId}`);
+    // A summary that does not record directness cannot show it is transitive.
+    expect(registryContainerDisposition(cleared(null), assessed)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+});
+
 // The real b7b180f evidence (run 38214792229): functional pass, every non-audit
 // check failing on findings that main's published dependency tree carries.
 // The lock keeps only the entries these tests use, each byte-identical to that
@@ -514,3 +659,107 @@ describe("lock engine scan", () => {
 
 });
 
+describe("acceptance failure class", () => {
+  const reader = (files: Record<string, string>) => (name: string) => files[name];
+  it.each([
+    ["consumer", { "generation.log": "npm error code ETIMEDOUT\nnpm error network request failed" }, "network"],
+    ["consumer", { "generation.log": "npm error code E503\nnpm error 503 Service Unavailable" }, "network"],
+    ["consumer", { "generation.log": "not ok 3 - doctor rejects ECONNREFUSED port\nnpm error code 1" }, "functional"],
+    ["registry-start", { "registry.log": "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout" }, "network"],
+    ["registry-ready", {}, "network"],
+    ["registry-auth", { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 32768" }, "network"],
+    ["publish", { "registry.log": "Error: candidate integrity mismatch" }, "functional"],
+    ["audit-policy", { "npm-audit.json": '{"metadata":{}}' }, "policy"],
+    ["dependency-policy", {}, "policy"],
+    ["image-build", { "docker-build.log": "#12 3.1 npm error code ECONNRESET" }, "network"],
+    ["image-build", { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
+    ["release-set", { "generation.log": "npm error code ETIMEDOUT" }, "functional"],
+  ])("classifies a %s failure with %j as %s", (stage, files, failureClass) => {
+    expect(classifyAcceptanceFailure({ stage, read: reader(files) }).failureClass).toBe(failureClass);
+    const summary = failureSummary({ stage, exitCode: 1, read: reader(files) });
+    expect(summary).toMatchObject({ complete: false, failedStage: stage, failureClass });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass });
+  });
+
+  // Captured from real npm 10.9.9 against a loopback server: `npm audit --json`
+  // stdout when the audit endpoint fails (npm's lib/utils/audit-error.js
+  // shape), and `npm install`'s error lines when the registry fails.
+  const npmOutput = (kind: string, name: string) => readFileSync(join(repoRoot, "test/scripts/fixtures", kind, name), "utf8");
+  // invalid-json-body.json is a 200 answer with an HTML page (a captive proxy's
+  // or CDN's error page); aborted-body.json is a connection dropped mid-body.
+  it.each(["503.json", "502.json", "500.json", "504.json", "429.json", "timeout.json", "econnreset.json",
+    "econnrefused.json", "socket-hang-up.json", "invalid-json-body.json", "aborted-body.json",
+  ])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
+    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
+    const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
+    expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.stringMatching(/^npm-audit\.json: audit endpoint error: /)] });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "network",
+      message: "registry/container acceptance stopped at stage audit-policy (network failure)" });
+    // The scheduled drift check reports the stopped stage, not a malformed baseline.
+    const drift = registryAuditDriftDisposition(summary);
+    expect(drift).toMatchObject({ exitCode: 1, evaluated: false, failureClass: "network" });
+    expect(drift.message).toBe("Advisory-ID drift was not evaluated: acceptance stopped at stage audit-policy " +
+      "(network failure; rerun the workflow)");
+  });
+
+  it.each(["403.json", "404.json"])("classifies npm's non-transient audit endpoint answer %s as functional, not policy", (name) => {
+    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toMatchObject({ failureClass: "functional",
+      evidence: [expect.stringContaining(`${name.slice(0, 3)} `)] });
+  });
+
+  it.each([
+    ["a fetch error npm has not been seen to write", { message: "request aborted by an unknown cause" }, "network"],
+    ["a transient fetch message beside a status", { message: "invalid json response body at http://r/ reason: x",
+      statusCode: 200 }, "network"],
+    ["a status answer npm does not retry", { message: "418 I'm a teapot - POST http://r/", statusCode: 418 }, "functional"],
+  ])("classifies every npm audit-error object as an endpoint error: %s", (_label, error, failureClass) => {
+    const read = reader({ "npm-audit.json": JSON.stringify({ ...error, error: { summary: "", detail: "" } }) });
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toEqual({ failureClass,
+      evidence: [`npm-audit.json: audit endpoint error: ${error.message}`] });
+  });
+
+  // Daybreak r9 P3: a report the policy rejected, whose advisory title carries
+  // a network phrase, was classed network and invited a pointless rerun.
+  it("classifies a report-shaped audit the policy rejected as policy, whatever text its advisories carry", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-malformed-report-"));
+    scratch.push(stage);
+    const report = { auditReportVersion: 2,
+      metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 } },
+      vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
+        via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
+    writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(report, null, 2));
+    const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
+      join(stage, "npm-audit.json"), join(stage, "audit-policy.json")], { cwd: repoRoot, encoding: "utf8" });
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("npm audit advisory URL missing");
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
+      "audit-policy", String(policy.status)], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance policy failure::stopped at stage audit-policy");
+    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      failedStage: "audit-policy", failureClass: "policy", failureEvidence: [] });
+    // Text that is not an audit document still counts as network evidence.
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read: reader({ "npm-audit.json": "socket hang up\n" }) }))
+      .toMatchObject({ failureClass: "network" });
+  });
+
+  it.each(["timeout.txt", "503.txt", "429.txt", "reset.txt", "refused.txt"])(
+    "classifies npm install's registry error %s in the consumer stage as network", (name) => {
+      const read = reader({ "generation.log": npmOutput("npm-install-network-errors", name) });
+      expect(classifyAcceptanceFailure({ stage: "consumer", read }).failureClass).toBe("network");
+    });
+
+});
+
+
+it("pins the recorded pqcrypto image version while accepting its recorded metadata spelling", () => {
+  const known = { name: "pqcrypto", location: "node_modules/pqcrypto", version: "1.0.01" };
+  const baseline = { policyFindings: { productionImageDependencies: [known] } };
+  const summary = (version: string) => ({ securityGate: {
+    productionImageDependencyPolicyPassed: false, engineStrictExitCode: 0,
+    lockSbomExitCode: 0, physicalSbomExitCode: 0,
+    findings: { productionImageDependencies: [{ ...known, version }], productionImageInventory: completeInventory },
+  } });
+  expect(classifyPolicyChecks(summary("1.0.01"), baseline).productionImage).toBe("baseline");
+  expect(classifyPolicyChecks(summary("9.0.0"), baseline).productionImage).toBe("blocked");
+});
