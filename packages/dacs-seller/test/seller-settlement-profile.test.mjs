@@ -7,13 +7,13 @@
 // call and refuses, so a refused step is shown to have reached nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
+import { createHash, sign, verify } from 'node:crypto';
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
-import * as seller from '../src/index.mjs';
+import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
@@ -23,12 +23,8 @@ import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
-function key() {
-  const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
-  return { privateKey: pair.privateKey, address: `0x${raw.toString('hex')}`, claim: `did:demos:agent:${raw.toString('hex')}`,
-    sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey),
-    signWallet: (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}` };
-}
+let nextWallet=90;
+function key(){const tag=nextWallet++,privateKey=core.privateKeyFromSeed(new Uint8Array(32).fill(tag)),raw=Buffer.from(core.rawPublicKey(core.publicKeyFromSeed(new Uint8Array(32).fill(tag))));return{privateKey,address:'0x'+raw.toString('hex'),claim:'did:demos:agent:'+raw.toString('hex'),sign:bytes=>Buffer.from(core.ed25519Sign(bytes,privateKey)),signWallet:message=>'0x'+Buffer.from(core.ed25519Sign(Buffer.from(message),privateKey)).toString('hex')};}
 const identityFor = (party, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
@@ -47,7 +43,7 @@ const presentWithout = (party, presentedAt) => {
 };
 
 async function world(t, { listingChanges = () => {} } = {}) {
-  const sellerKey = key(), buyerKey = key(), now = Date.now(), reached = [], steward = railSteward();
+  const sellerKey = key(), buyerKey = key(), now = 1780000000000, reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'settlement-profile', listingVersion: 1, title: 'Settlement profile report', description: 'Settlement profile vectors.',
@@ -184,77 +180,6 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
   assert.deepEqual(w.reached, []);
 });
 
-const clone = (value) => JSON.parse(JSON.stringify(value));
-function nativeChain(w) {
-  const TX = 'a1'.repeat(32), BLOCK = 'b2'.repeat(32), seen = { publish: 0, fetch: 0 }, retained = { stored: null, agreement: null };
-  const nativeArtifactAnchor = {
-    writer: w.signer.claim,
-    publish: async ({ logicalAddress, artifact }) => {
-      seen.publish++;
-      const receipt = { receiptVersion: '1', substrate: 'TEST-offline-demos-sr2', finalityProfile: 'TEST-one-node-not-finality', logicalAddress,
-        nativeAddress: `TEST-native-${core.sha256Hex(logicalAddress).slice(0, 16)}`, contentHash: core.contentHash(artifact), transactionRef: { kind: 'demos-tx', value: TX },
-        writer: w.signer.claim, nonce: '7', state: 'finalized', observationDisposition: 'established', observedAt: Date.now() + 1000,
-        evidence: { kind: 'demos-tx', value: TX }, blockRef: { id: BLOCK, height: '9', timestamp: Date.now() + 1000 } };
-      retained.stored = { artifact: clone(artifact), receipt, txRef: { kind: 'demos', txHash: TX, blockNumber: 9 }, signedProjection: { TEST: 'projection' } };
-      return { status: 'present', ...clone(retained.stored) };
-    },
-    readRetained: async () => (retained.stored ? { status: 'present', ...clone(retained.stored) } : { status: 'absent', reason: 'TEST nothing retained' }),
-    verifyReceipt: async () => 'valid',
-  };
-  const agreementAnchor = { source: 'TEST-agreement',
-    readAgreement: async ({ logicalAddress }) => (retained.agreement
-      ? { disposition: 'present', artifact: clone(retained.agreement), ref: { anchor: { kind: 'storage-program', locator: logicalAddress }, contentHash: core.contentHash(retained.agreement) },
-        native: { source: 'TEST-agreement', evidenceMode: 'TEST-scripted', nativeAddress: 'TEST-native-agreement', txRef: { kind: 'demos', txHash: 'c3'.repeat(32), blockNumber: 8 } } }
-      : { disposition: 'absent', reason: 'TEST not anchored' }) };
-  const nativePaymentEvidence = w.chain.nativePaymentEvidence({ fetchImpl: async () => { seen.fetch++; throw new Error('TEST transfer observation is not answered'); } });
-  const options = (railAuthority, durableDirectory) => ({ ...w.capabilities, nativeArtifactAnchor, agreementAnchor, durableDirectory, railAuthority, nativePaymentEvidence,
-    reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
-  // The buyer finalizes the Agreement from both contributions and anchors it.
-  const anchorAgreement = async (session) => {
-    retained.agreement = await core.finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], seller.contributionVerifier);
-  };
-  return { seen, options, anchorAgreement };
-}
-const nativeClaim = (w) => ({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
-
-function inProcessFetch(handle, last) {
-  return async (url, init) => {
-    const req = Readable.from([Buffer.from(init.body)]);
-    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
-    const res = { destroyed: false, writableEnded: false, headersSent: false, status: 0, headers: {}, text: '',
-      writeHead(status, headers) { this.status = status; this.headers = headers; this.headersSent = true; },
-      end(text) { this.text = String(text); this.writableEnded = true; } };
-    await handle(req, res);
-    last.status = res.status; last.answer = JSON.parse(res.text);
-    return new Response(res.text, { status: res.status, headers: res.headers });
-  };
-}
-// `gate` maps an agent method to a refusal code it throws once, before calling the agent.
-async function httpSeller(t, w, { gate = {} } = {}) {
-  const chain = nativeChain(w), durableDirectory = w.dir(), peerDirectory = w.dir(), last = {};
-  const build = (railAuthority) => w.agent(chain.options(railAuthority, durableDirectory));
-  let agent = await build(w.steward.railAuthority());
-  const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite') });
-  t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
-  const pin = seller.listingPin(w.listing);
-  const gated = (name) => (body) => {
-    const code = gate[name];
-    if (code) { delete gate[name]; throw new seller.SellerAgentError(code, `TEST ${code}`, code === 'native_evidence_required' ? 409 : 503); }
-    return agent[name](body);
-  };
-  const facade = { claim: w.signer.claim, listingPin: pin, reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
-    receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
-  const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
-  const proposal = await w.proposalFor(w.vetted);
-  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
-    authentication: seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer.claim,
-      resolveJob: () => ({ listingPin: pin, agreementHash: proposal.proposal.plan.agreementHash }) }) });
-  const restart = async (railAuthority) => { agent.close(); agent = await build(railAuthority); };
-  return { chain, client, proposal, last, restart, get agent() { return agent; } };
-}
-const answered = async (work) => { try { await work(); } catch { /* the answer is read from the wire */ } };
-
-const PRE_EFFECT_GATES = [['vet_context_required', 503], ['session_admission_required', 503], ['settlement_profile_unavailable', 503], ['rail_unavailable', 503], ['native_evidence_required', 409], ['bundle_finalization_unavailable', 503]];
 test('the seller issues a fresh 256-bit challenge bound to one job and buyer; a nonce is issued once', async (t) => {
   const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
@@ -383,7 +308,7 @@ test('capacity reclaims only proven-exited unsaved reservations; live holders an
 });
 
 test('capacity never reclaims an unproven reservation', async (t) => {
-  const { DatabaseSync } = await import('node:sqlite');
+  const { default: DatabaseSync } = await import('better-sqlite3');
   const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-unproven-reservation-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
