@@ -75,3 +75,17 @@ test('nonce-consumption evidence retains its composite uniqueness and operation 
   assert.throws(() => consume.run('TEST-one'), /UNIQUE/);
   assert.throws(() => consume.run('missing'), /FOREIGN KEY/);
 });
+
+test('fixture and package share operation columns including nullable handoff expiry', async t => {
+  const {openDatabase}=await import('./helpers/purchase-integrity-database.mjs');
+  const fixture=openDatabase(':memory:'), db=schema(t);
+  t.after(()=>fixture.close());
+  const info=db.prepare('PRAGMA table_info(operations)').all();
+  assert.deepEqual(fixture.prepare('PRAGMA table_info(operations)').all(),info);
+  assert.equal(info.find(row=>row.name==='handoff_expires_at')?.type,'TEXT');
+  assert.equal(info.find(row=>row.name==='handoff_expires_at')?.notnull,0);
+  operation(db,'TEST-expiry');
+  assert.equal(db.prepare('SELECT handoff_expires_at FROM operations').get().handoff_expires_at,null);
+  db.prepare('UPDATE operations SET handoff_expires_at=?').run('2030-01-01T00:00:00.000Z');
+  assert.equal(db.prepare('SELECT handoff_expires_at FROM operations').get().handoff_expires_at,'2030-01-01T00:00:00.000Z');
+});
