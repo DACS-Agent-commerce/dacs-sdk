@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -138,7 +138,7 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
     assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned', `${label}: nothing is kept`);
   }
   assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
-  const db = new DatabaseSync(w.path, { readOnly: true });
+  const db = new DatabaseSync(w.path, { readonly: true });
   try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM evidence_creates').get().n, 0); } finally { db.close(); }
   assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', 'a true signature is kept and sent');
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
@@ -317,7 +317,7 @@ test('a process killed after signing, after the signed CREATE is kept, or after 
     assert.equal(signedByChild.length, 1, `${cut}: the child signed once`);
     const journal = w.open();
     t.after(() => journal.close());
-    const db = () => { const d = new DatabaseSync(w.path, { readOnly: true }); try { return d.prepare('SELECT tx_hash, superseded_at FROM evidence_creates').all().map((row) => ({ ...row })); } finally { d.close(); } };
+    const db = () => { const d = new DatabaseSync(w.path, { readonly: true }); try { return d.prepare('SELECT tx_hash, superseded_at FROM evidence_creates').all().map((row) => ({ ...row })); } finally { d.close(); } };
     const answer = await journal.reconcilePaymentEvidence(w.input());
     if (cut === 'signed') {
       // Killed inside signCreate: signed, never kept, never sent. Nothing kept can land.
@@ -373,4 +373,77 @@ test('only a complete absence snapshot at or beyond the nonce snapshot releases 
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
   await journal.anchorEvidence(w.input());
   assert.equal(w.calls.sign, 2);
+});
+
+test('overlapping retries across handles reuse the winning signature and answer', async (t) => {
+  const w = wallet(t), node = walletChain({ state: w.chain });
+  let release, entered, signatures = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const signing = new Promise((resolve) => { entered = resolve; });
+  const signCreate = async (input) => { signatures++; entered(); await gate; return node.signCreate(input); };
+  const first = w.open({ signCreate }), second = w.open({ signCreate });
+  t.after(() => { first.close(); second.close(); });
+  const a = first.anchorEvidence(w.input());
+  await signing;
+  const b = first.anchorEvidence(w.input()), c = second.anchorEvidence(w.input());
+  const settled = Promise.allSettled([a, b, c]);
+  await new Promise(setImmediate);
+  release();
+  const answers = await settled;
+  assert.equal(signatures, 1);
+  assert.ok(answers.every((answer) => answer.status === 'fulfilled'));
+  assert.deepEqual(answers[0], answers[1]);
+  assert.deepEqual(answers[0], answers[2]);
+  assert.equal(new Set(w.calls.broadcast).size, 1);
+});
+
+const hostileCreateEdits = [
+  ['a missing timestamp', (content) => { delete content.timestamp; }],
+  ['an invalid timestamp', (content) => { content.timestamp = 'TEST'; }],
+  ['a negative timestamp', (content) => { content.timestamp = -1; }],
+  ['an amount', (content) => { content.amount = 7; }],
+  ['a network fee', (content) => { content.transaction_fee.network_fee = 999; }],
+  ['an RPC fee', (content) => { content.transaction_fee.rpc_fee = 1; }],
+  ['an additional fee', (content) => { content.transaction_fee.additional_fee = 1; }],
+  ['an RPC payee', (content) => { content.transaction_fee.rpc_address = content.from; }],
+  ['a private ACL', (content) => { content.data[1].acl.mode = 'private'; }],
+  ['off-chain storage', (content) => { content.data[1].storageLocation = 'offchain'; }],
+  ['an unknown storage location', (content) => { content.data[1].storageLocation = 'TEST-invalid'; }],
+  ['an extra execution field', (content) => { content.TEST = true; }],
+  ['an extra operation field', (content) => { content.data[1].TEST = true; }],
+  ['an extra metadata field', (content) => { content.data[1].metadata.TEST = true; }],
+];
+for (const [label, edit] of hostileCreateEdits) test(`refuses ${label} before retention and a corrected signer recovers`, async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  w.faults.sign.push({ edit });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid' });
+  assert.equal(await journal.readSignedProjection(w.input()), null);
+  assert.equal(w.calls.broadcast.length, 0);
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
+});
+
+for (const [label, change] of [
+  ['artifact envelope', { artifact: { TEST: 'evidence', signatures: [{ TEST: 'changed envelope' }] } }],
+  ['artifact kind', { artifactKind: 'TEST-other-kind' }],
+  ['writer', { writer: `did:demos:agent:${'ab'.repeat(32)}` }],
+]) test(`retained replay refuses another ${label} with the same receipt hash`, async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  await journal.anchorEvidence(w.input());
+  const broadcasts = w.calls.broadcast.length;
+  await assert.rejects(journal.anchorEvidence(w.input(change)), { code: 'wallet_journal_conflict' });
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input(change)), { code: 'wallet_journal_conflict' });
+  assert.equal(w.calls.broadcast.length, broadcasts);
+  assert.equal(w.calls.sign, 1);
+});
+
+test('a replaced journal refuses sent attempts with missing or malformed transaction hashes', async (t) => {
+  const w = wallet(t); let journal = w.open();
+  await journal.anchorEvidence(w.input()); journal.close(); rmSync(w.path);
+  journal = w.open(); t.after(() => journal.close());
+  for (const txHash of [undefined, null, 123, '', 'TEST-invalid']) {
+    for (const attempt of [{ answer: { status: 'submitted', txHash } }, { outcome: 'sent', answer: { txHash } }]) {
+      await assert.rejects(journal.reconcilePaymentEvidence(w.input({ attempt })), { code: 'wallet_journal_unknown_attempt' });
+    }
+  }
+  assert.equal((await journal.reconcilePaymentEvidence(w.input({ attempt: { outcome: 'failed-before-signing' } }))).status, 'unsigned');
 });
