@@ -58,16 +58,16 @@ describe("pinned npm semver compatibility", () => {
   });
 });
 
-describe("retained concrete build metadata length", () => {
-  it.each(["20.0.0+", "v20.0.0+"])("counts build metadata in a plain comparator: %s", version => {
+describe("stripped concrete build metadata", () => {
+  it.each(["20.0.0+", "v20.0.0+"])("strips build metadata before checking a plain comparator: %s", version => {
     const bound = version + "a".repeat(256 - version.length);
     expect(scan(">=" + bound)).toMatchObject({ scanComplete: true, violations: [] });
-    expect(scan(">=" + bound + "a").scanComplete).toBe(false);
+    expect(scan(">=" + bound + "a")).toMatchObject({ scanComplete: true, violations: [] });
     // Caret expansion discards build metadata before constructing comparators.
     expect(scan("^" + bound + "a")).toMatchObject({ scanComplete: true, violations: [] });
   });
-  it("counts npm's appended prerelease suffix on a concrete hyphen lower bound", () => {
+  it("strips build metadata before expanding a concrete hyphen lower bound", () => {
     const bound = "v20.0.0+" + "a".repeat(247);
-    expect(scan(bound + " - 30.0.0").scanComplete).toBe(false);
+    expect(scan(bound + " - 30.0.0")).toMatchObject({ scanComplete: true, violations: [] });
   });
 });
