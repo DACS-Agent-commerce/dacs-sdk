@@ -71,7 +71,11 @@ export async function startSellerHost(options) {
   // second start); taken before anything is opened, released after all of it.
   const lock = await acquireSellerStateLock(dataDirectory);
   const opened = [() => lock.release()];
-  const release = () => { for (const close of opened.splice(0).reverse()) { try { close(); } catch { /* keep releasing */ } } };
+  const release = async () => {
+    const errors=[];
+    for(const close of opened.splice(0).reverse())try{await close();}catch(error){errors.push(error);}
+    if(errors.length)throw new AggregateError(errors,'seller host cleanup failed',{cause:errors[0]});
+  };
   try {
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
       agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
@@ -104,7 +108,7 @@ export async function startSellerHost(options) {
       server.closeIdleConnections();
       await Promise.allSettled([...active]);
       await socketsClosed;
-      release();
+      await release();
     })();
     return Object.freeze({
       url: `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`,
@@ -117,7 +121,7 @@ export async function startSellerHost(options) {
       close,
     });
   } catch (error) {
-    release();
+    try{await release();}catch(cleanupError){Object.defineProperty(error,'cleanupError',{value:cleanupError});}
     throw error;
   }
 }
