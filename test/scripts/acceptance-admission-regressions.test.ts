@@ -54,7 +54,7 @@ describe("explicit acceptance outcomes", () => {
       const via = baseline.advisoryIds.slice(0, 2).map((id: string) => ({ url: "https://github.com/advisories/" + id, severity: "high" }));
       const input = join(root, "audit.json"), output = join(root, "policy.json");
       writeFileSync(input, JSON.stringify({ metadata: { vulnerabilities: { ...counts, high: 2, total: 2 } },
-        vulnerabilities: { x: { severity: "high", via: [...via, "y"] }, y: { severity: "high", via: ["x"] } } }));
+        vulnerabilities: { x: { severity: "high", isDirect: false, via: [...via, "y"] }, y: { severity: "high", isDirect: false, via: ["x"] } } }));
       expect(cli("--audit-policy", input, output).status).toBe(0);
       expect(JSON.parse(readFileSync(output, "utf8")).observedAdvisories).toHaveLength(2);
     } finally { rmSync(root, { recursive: true, force: true }); }
