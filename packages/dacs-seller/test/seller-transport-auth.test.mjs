@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import { canonicalize } from '@kynesyslabs/dacs';
+import { canonicalize, createFixedPriceAgreementSigningPlan, createFixedPriceAgreementSignatureContribution, sha256Hex } from '@kynesyslabs/dacs';
 import { createSellerTransportClientAuth, createSellerTransportServerAuth, sellerSessionDelegationSigningBytes,
-  verifySellerSessionDelegation, normalizeSellerSessionDelegationSignature, SELLER_CONTEXT_PATH, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+  verifySellerSessionDelegation, normalizeSellerSessionDelegationSignature, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
 import { assertSellerSessionLifetime, SELLER_SESSION_MAX_LIFETIME_MS } from '../src/public/portal/seller-session-limits.mjs';
 
 // Fixed public test seeds, never operator credentials.
@@ -22,7 +22,7 @@ function delegation(overrides = {}) {
     seller: seller.claim, listingPin: pin, jobId, notBefore: 900, expiresAt: 1500, ...overrides };
   return { payload, signature: buyer.sign(sellerSessionDelegationSigningBytes(payload)).toString('base64url') };
 }
-function world({ delegated = false, context = false, time = 1000, grant = delegation() } = {}) {
+function world({ delegated = false, context = false, time = 1000, grant = delegation(), route, requestBody, bindingHash } = {}) {
   const calls = [], now = () => time;
   const store = { journaledOnlyReserve: true, bind() {}, finish() {}, close() {},
     reserve: (...args) => { calls.push(['reserve', ...args]); return { disposition: 'cached' }; },
@@ -32,13 +32,13 @@ function world({ delegated = false, context = false, time = 1000, grant = delega
     reconcile: (...args) => { calls.push(['reconcile', ...args]); }, resume: (...args) => { calls.push(['resume', ...args]); } };
   const scope = { source: 'TEST', wallet: 'TEST', jobId, buyer: buyer.claim, buyerBundleHash: 'c'.repeat(64), seller: seller.claim,
     listingPin: pin, rail: 'TEST', payee: seller.claim, price: '1', generatedAt: 900 };
-  const body = context ? { scope, buyerIdentityBundle: { presentedBy: buyer.claim } } : stateBody();
-  const path = context ? SELLER_CONTEXT_PATH : statePath;
+  const body = requestBody ?? (context ? { scope, buyerIdentityBundle: { presentedBy: buyer.claim } } : stateBody());
+  const path = route ?? (context ? SELLER_CONTEXT_PATH : statePath);
   const client = createSellerTransportClientAuth({ ...(delegated ? { sessionSigner: session, delegation: grant } : { buyerSigner: buyer }), seller: seller.claim,
-    resolveJob: () => ({ listingPin: pin, agreementHash: context ? sellerContextScopeHash(scope) : agreementHash }), now, lifetimeMs: 100, nonce: () => Buffer.alloc(24, 4).toString('base64url') });
+    resolveJob: () => ({ listingPin: pin, agreementHash: bindingHash ?? (context ? sellerContextScopeHash(scope) : agreementHash) }), now, lifetimeMs: 100, nonce: () => Buffer.alloc(24, 4).toString('base64url') });
   const server = createSellerTransportServerAuth({ sellerSigner: seller, listingPin: pin, store, now, requireDelegation: delegated });
   return { client, server, store, calls, body, path, setTime: (value) => { time = value; },
-    async request(value = body) { const rawBody = Buffer.from(JSON.stringify(value)); const signed = await client.request(path, value, rawBody); return { request: server.readRequest(signed.header), rawBody, body: value, header: signed.header }; },
+    async request(value = body, rawBody = Buffer.from(JSON.stringify(value))) { const signed = await client.request(path, value, rawBody); return { request: server.readRequest(signed.header), rawBody, body: value, header: signed.header }; },
     validate(asked, extra = {}) { return server.validate(asked.request, { method: 'POST', path, rawBody: asked.rawBody, body: asked.body, ...extra }); } };
 }
 const encoded = (envelope) => Buffer.from(canonicalize(envelope)).toString('base64url');
@@ -118,4 +118,86 @@ test('session lifetime accepts its boundary and refuses malformed or excessive d
   assert.doesNotThrow(() => assertSellerSessionLifetime(SELLER_SESSION_MAX_LIFETIME_MS));
   for (const duration of [0, -1, 1.5, '100', SELLER_SESSION_MAX_LIFETIME_MS + 1]) assert.throws(() => assertSellerSessionLifetime(duration), RangeError);
   assert.throws(() => delegation({ expiresAt: 900 + SELLER_SESSION_MAX_LIFETIME_MS + 1 }), { code: 'peer_delegation_invalid' });
+});
+
+
+test('unsigned copies and changed authenticated requests never reach the authenticated callback', async () => {
+  const w = world(), asked = await w.request(); let calls = 0;
+  const onAuthenticatedBody = () => { calls++; };
+  assert.throws(() => w.validate({ ...asked, request: structuredClone(asked.request) }, { onAuthenticatedBody }), { code: 'peer_request_unauthenticated' });
+  asked.request.nonce = Buffer.alloc(24, 9).toString('base64url');
+  assert.throws(() => w.validate(asked, { onAuthenticatedBody }), { code: 'peer_request_mismatch' });
+  assert.equal(calls, 0);
+});
+
+test('body substitution and duplicate signed JSON members cannot reach the authenticated callback', async () => {
+  const w = world(), asked = await w.request({ ...stateBody(), operation: 'safe' }); let calls = 0;
+  const onAuthenticatedBody = () => { calls++; };
+  assert.throws(() => w.validate({ ...asked, body: { ...asked.body, operation: 'changed' } }, { onAuthenticatedBody }), { code: 'peer_body_mismatch' });
+  const rawBody = Buffer.from(`{"transportIdentity":${JSON.stringify(stateBody().transportIdentity)},"operation":"safe","operation":"changed"}`);
+  const duplicate = await w.request(JSON.parse(rawBody), rawBody);
+  assert.throws(() => w.validate(duplicate, { onAuthenticatedBody }), error => error.code === 'peer_body_invalid' && error.cause?.code === 'DUPLICATE-MEMBER');
+  assert.equal(calls, 0);
+});
+
+test('the authenticated callback receives the owned value admitted from the signed raw bytes', async () => {
+  const w = world(), asked = await w.request(); let admitted;
+  w.validate(asked, { onAuthenticatedBody: value => { admitted = value; } });
+  assert.deepEqual(admitted, asked.body);
+  assert.notEqual(admitted, asked.body);
+});
+
+function agreementDraft(deadline = 2000) {
+  return { agreementVersion: '1', jobId, listingRef: pin,
+    parties: [['buyer', buyer], ['seller', seller]].map(([role, actor]) => ({ role, primaryClaim: actor.claim,
+      bundleHash: sha256Hex(`TEST bundle ${role}`), vetRecordRef: { anchor: { kind: 'storage-program', locator: `TEST-vet-${role}` }, contentHash: sha256Hex(`TEST vet ${role}`) } })),
+    terms: { deliverable: { deliverableType: 'attested-payload', hash: sha256Hex('TEST deliverable') },
+      price: { amount: '1', currency: 'DEM' }, deadline }, derivedFromPattern: 'fixed-price', generatedAt: 900 };
+}
+async function proposalBody(deadline) {
+  const plan = createFixedPriceAgreementSigningPlan(agreementDraft(deadline));
+  const buyerContribution = await createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyer.claim, algorithm: 'ed25519', sign: buyer.sign });
+  const material = { proposalVersion: '1', plan, buyerContribution }, proposalHash = sha256Hex(canonicalize(material));
+  return { proposal: { ...material, proposalHash }, buyerIdentityBundle: { presentedBy: buyer.claim },
+    transportIdentity: { ...stateBody().transportIdentity, agreementHash: plan.agreementHash, planHash: plan.planHash, proposalHash } };
+}
+
+test('proposal route accepts exact plans and rejects malformed or substituted proposal bindings', async () => {
+  const body = await proposalBody(), w = world({ route: '/dacs/v1/agreements/proposals', requestBody: body, bindingHash: body.transportIdentity.agreementHash });
+  w.validate(await w.request());
+  const malformed = await w.request({ ...body, proposal: {} });
+  assert.throws(() => w.validate(malformed), { code: 'peer_proposal_invalid' });
+  const mismatch = await w.request({ ...body, buyerIdentityBundle: { presentedBy: seller.claim } });
+  assert.throws(() => w.validate(mismatch), { code: 'peer_proposal_mismatch' });
+});
+
+
+test('payment route accepts a bound paying key and hash and refuses either substitution', async () => {
+  const body = { jobId, payerPayingKey: buyer.claim, txHash: 'a'.repeat(64) }, w = world({ route: '/dacs/v1/payments', requestBody: body });
+  w.validate(await w.request());
+  for (const change of [{ payerPayingKey: seller.claim }, { txHash: 'invalid' }]) {
+    const asked = await w.request({ ...body, ...change });
+    assert.throws(() => w.validate(asked), { code: 'peer_payment_mismatch' });
+  }
+});
+
+test('challenge route authenticates its exact context scope and rejects a changed field', async () => {
+  const { buyerBundleHash, ...scope } = world({ context: true }).body.scope;
+  const w = world({ route: SELLER_CONTEXT_CHALLENGE_PATH, requestBody: { scope }, bindingHash: sellerContextScopeHash(scope) });
+  w.validate(await w.request());
+  const asked = await w.request({ scope: { ...scope, price: '2' } });
+  assert.throws(() => w.validate(asked), { code: 'peer_context_mismatch' });
+});
+
+test('delegated server checks Agreement scope and deadlines before the authenticated callback', async () => {
+  const w = world({ delegated: true }), asked = await w.request(); let calls = 0;
+  w.validate(asked, { agreement: agreementDraft(1500), onAuthenticatedBody: () => { calls++; } });
+  for (const [agreement, code] of [[agreementDraft(1499), 'peer_delegation_deadline'],
+    [{ ...agreementDraft(), listingRef: { ...pin, version: 2 } }, 'peer_delegation_agreement_mismatch']]) {
+    assert.throws(() => w.validate(asked, { agreement, onAuthenticatedBody: () => { calls++; } }), { code });
+  }
+  assert.equal(calls, 1);
+  const body = await proposalBody(1499), proposal = world({ delegated: true, route: '/dacs/v1/agreements/proposals', requestBody: body, bindingHash: body.transportIdentity.agreementHash });
+  const proposed = await proposal.request();
+  assert.throws(() => proposal.validate(proposed), { code: 'peer_delegation_deadline' });
 });
