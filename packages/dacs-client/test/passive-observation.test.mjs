@@ -67,6 +67,7 @@ test('native source abort reaches its actual bounded identity fetch and stops la
   const before = await w.journal.entries(), count = w.calls.length;
   await assert.rejects(() => w.source.chainReader().observePassiveTransfer(HASH, { signal: controller.signal }));
   assert.equal(forwarded.aborted, true); assert.equal(w.calls.length, count + 1);
+  await w.source.close();
   assert.deepEqual(await w.journal.entries(), before); assert.deepEqual(w.writes, []); assert.equal(w.held(), false);
 });
 for (const target of ['getTransactionStatus', 'getTxByHash', 'getBlockByNumber']) {
@@ -104,4 +105,43 @@ test('observation deadline preserves reader errors and aborts its signal on comp
   const cause = new Error('TEST-cause'); let signal;
   await assert.rejects(observeWithDeadline(options => { signal = options.signal; throw cause; }, { timeoutMs: 10000 }), error => error === cause);
   assert.equal(signal.aborted,true);
+});
+
+for(const status of ['included','finalized'])test(`passive readback accepts the core final body label ${status}`, async t=>{
+  const w=passiveNativeWorld({status});t.after(()=>w.source.close());await w.seed();
+  const before=await w.journal.entries();
+  assert.equal((await w.source.chainReader().observePassiveTransfer(HASH)).sourceDisposition,'included');
+  assert.deepEqual(await w.journal.entries(),before);assert.deepEqual(w.writes,[]);
+});
+test('passive readback rejects inconsistent transfer facts across body reads', async t=>{
+  let active=false,reads=0;
+  const w=passiveNativeWorld({onFetch:message=>{
+    if(active&&message==='getTxByHash'){
+      const amount=++reads===1?'2000000000':'1000000000';
+      w.transaction.content.amount=amount;w.transaction.content.data[1].args[1]=amount;
+    }
+  }});t.after(()=>w.source.close());await w.seed();active=true;
+  const before=await w.journal.entries();
+  await assert.rejects(()=>w.source.chainReader().observePassiveTransfer(HASH),{code:'readback_unverified'});
+  assert.deepEqual(await w.journal.entries(),before);assert.deepEqual(w.writes,[]);
+});
+test('bounded fetch reports abort even when stream cancellation never settles', async()=>{
+  const controller=new AbortController();let error;
+  const read=fetchBoundedJson('https://rpc.invalid/',{timeoutMs:10000,maxBytes:1024,signal:controller.signal,
+    fetchImpl:async()=>{
+      controller.abort(new Error('TEST-abort'));
+      return new Response(new ReadableStream({cancel(){return new Promise(()=>{});}}),{headers:{'content-type':'application/json'}});
+    }}).catch(cause=>{error=cause;});
+  for(let i=0;i<100;i++)await Promise.resolve();
+  assert.equal(error?.message,'TEST-abort');await read;
+});
+test('the actual transfer reader enforces a deadline when fetch ignores abort', async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});let started,error;
+  const entered=new Promise(resolve=>{started=resolve;});
+  const reader=createDemosChainReader({rpcUrl:'https://rpc.invalid/',network:'testnet',timeoutMs:123,
+    fetchImpl:()=>{started();return new Promise(()=>{});}});
+  const read=reader.observeTransfer(HASH).catch(cause=>{error=cause;});
+  await entered;t.mock.timers.tick(123);
+  for(let i=0;i<100;i++)await Promise.resolve();
+  assert.equal(error?.kind,'timeout');await read;
 });
