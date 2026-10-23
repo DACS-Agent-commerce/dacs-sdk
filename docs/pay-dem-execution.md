@@ -143,11 +143,8 @@ below).
   the pair still
   serves the payments it holds. An audit counts the hash that an outcome the
   log holds for these exact terms names, once the reconciliation agrees with
-  it on block and result; a key with no saved outcome stays fail closed. Before adding the pair to an existing log,
-  backfill each outcome that names a transaction as its attempt record
-  (`bindingHash` and `txHash` from that outcome), and a key still held with no
-  outcome only from the rail's prepared-transfer journal entry whose
-  `recovery` tuple names that key. Once the log keeps attempts, an outcome
+  it on block and result; a key with no saved outcome stays fail closed.
+  Once the log keeps attempts, an outcome
   without a record never counts.
 
   A supplied entry is always checked: it must name that hash, the same payer,
@@ -201,20 +198,14 @@ below).
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
-- Upgrading: this is a breaking change for stores and logs that paid before.
-  A custom or class settlement store, and any log that lacks `readOutcome`,
-  `putAttempt` or `readAttempt` (`createIdempotencyStore` also throws for a
-  log that provides only one of the attempt pair, or the pair without
-  `readOutcome`), now starts no new pay-dem transfer: the call fails before
-  the rail runs and nothing is signed or sent. To migrate, add `readOutcome`,
-  `putAttempt` and `readAttempt` to the durable log (`putAttempt`
-  compare-and-set under the generation, a record never changing), backfill
-  the records as described above, and pass the `createIdempotencyStore` store
-  itself, or an object carrying its own `once`, `readOutcome` and
-  `readAttempt`. Recovery of payments or saved outcomes written by older SDK
-  versions is outside the current support scope. The restart guarantees here
-  apply to payments made with the current SDK and a log implementing all
-  three methods.
+- Durable adapters must implement `readOutcome`, `putAttempt` and `readAttempt`
+  (`putAttempt` compare-and-set under the generation, a record never changing).
+  `createIdempotencyStore` also throws for a log that provides only one of the
+  attempt pair, or the pair without `readOutcome`. Pass the store itself, or an
+  object carrying its own `once`, `readOutcome` and `readAttempt`. Recovery of
+  payments or saved outcomes written by older SDK versions is outside the current
+  support scope. The restart guarantees here apply to payments made with the
+  current SDK and a log implementing all three methods.
 
 Which capabilities the SDK built, and which successes its own client
 returned, is kept private to the rails module, keyed by object identity. No

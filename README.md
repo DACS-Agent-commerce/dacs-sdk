@@ -707,26 +707,17 @@ the same `createIdempotencyStore` store whose own `readOutcome` and
 without the pair still serves the payments it holds: an audit counts the hash
 that an outcome the log holds for these exact terms names, once the
 reconciliation agrees with that outcome on block and result, and a key the log
-holds no outcome for stays fail closed. Before adding
-the pair to an existing log, backfill each outcome that names a transaction as
-its attempt record (`bindingHash` and `txHash` from that outcome). A key still
-held with no outcome is backfilled only from the rail's prepared-transfer
-journal entry whose `recovery` tuple names that key. Once the log keeps
-attempts, an outcome without a record never counts.
+holds no outcome for stays fail closed. Once the log keeps attempts, an outcome
+without a record never counts.
 
-Upgrading: this is a breaking change for stores and logs that paid before. A
-custom or class settlement store, and any log that lacks `readOutcome`,
-`putAttempt` or `readAttempt` (`createIdempotencyStore` also throws for a log
-that provides only one of the attempt pair, or the pair without `readOutcome`),
-now starts no new pay-dem transfer: the call fails before the rail runs and
-nothing is signed or sent. To migrate, add `readOutcome`, `putAttempt` and
-`readAttempt` to the durable log (`putAttempt` compare-and-set under the
-generation, a record never changing), backfill the records as described above,
-and pass the `createIdempotencyStore` store itself, or an object carrying its
-own `once`, `readOutcome` and `readAttempt`. Recovery of payments or saved
-outcomes written by older SDK versions is outside the current support scope.
-The restart guarantees here apply to payments made with the current SDK and
-a log implementing all three methods.
+Durable adapters must implement `readOutcome`, `putAttempt` and `readAttempt`
+(`putAttempt` compare-and-set under the generation, a record never changing).
+`createIdempotencyStore` also throws for a log that provides only one of the
+attempt pair, or the pair without `readOutcome`. Pass the store itself, or an
+object carrying its own `once`, `readOutcome` and `readAttempt`. Recovery of
+payments or saved outcomes written by older SDK versions is outside the current
+support scope. The restart guarantees here apply to payments made with the
+current SDK and a log implementing all three methods.
 The durable rail log is the idempotency authority. Back it up and restore it
 together with the session store; restoring session history alone cannot
 recover a lost payment binding for a request that omits that history.

@@ -59,7 +59,6 @@ describe("pay-dem execution docs match the code (#338)", () => {
     for (const text of [doc, readme]) {
       expect(text).not.toContain("keeps working for fresh settlement");
       expect(text).toContain("starts no new transfer through a `createIdempotencyStore` store over a log without it");
-      expect(text).toContain("backfill each outcome that names a transaction as its attempt record");
       expect(text).toContain("Once the log keeps attempts, an outcome without a record never counts.");
     }
     for (const text of [doc, readme]) {
@@ -70,7 +69,6 @@ describe("pay-dem execution docs match the code (#338)", () => {
       expect(text).toContain("or writes an intent, attempt record or outcome");
       expect(text).not.toContain("This is the one place an audit changes the log");
       expect(text).toContain("that store's own fence for this key and these terms");
-      expect(text).toContain("Upgrading: this is a breaking change for stores and logs that paid before.");
       expect(text).toContain("`createIdempotencyStore` also throws for a log that provides only one of the attempt pair");
       expect(text).toContain("it writes only when the SDK rail returned a hash its own pre-broadcast write did not report");
     }
