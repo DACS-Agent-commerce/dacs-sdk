@@ -1,3 +1,4 @@
+import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type {
   LegacyMvpListing,
@@ -19,6 +20,7 @@ import { normalizedBindingOwner } from "../discovery/owner.js";
 import {
   scanAnchorPage,
   type AnchorHistoryPageFetcher,
+  type ScanPageCode,
 } from "../discovery/scanner.js";
 import { parseCanonicalClaimReference } from "../identity/claimReference.js";
 import { DEMOS_HISTORY_MAX_PAGE_SIZE } from "../substrate/demosHistory.js";
@@ -231,6 +233,7 @@ export type ListingReadResult =
 
 export interface ListingDiscoveryDeps {
   index: BindingIndex;
+  /** Return records admitted from exact external bytes via admitArtifactJson. */
   readAnchor: (
     nativeAddress: string,
     anchorKind?: string,
@@ -512,7 +515,7 @@ export async function readListingByLogicalAddress(
 
   let record: Record<string, unknown>;
   try {
-    const snapshot: unknown = structuredClone(readValue);
+    const snapshot: unknown = snapshotAdmittedArtifact(readValue);
     if (!isRecord(snapshot)) throw new Error("record is not a JSON object");
     record = snapshot;
   } catch (error) {
@@ -785,11 +788,23 @@ export type ListingEnumerationResult =
       reason: string;
     }
   | {
+      /** Permanent history fault: alert or repair the source before starting again. */
+      status: "history-error";
+      stage: "history";
+      code: Exclude<ScanPageCode, "history-restart-required">;
+      listings: readonly [];
+      diagnostics: readonly [];
+      reason: string;
+      cursor: string | null;
+    }
+  | {
       status: "indeterminate";
       stage: "history" | "index" | "read" | "verification" | "validation";
       listings: readonly [];
       diagnostics: readonly [];
       reason: string;
+      /** Present when the history traversal must restart from null. */
+      code?: "history-restart-required";
       retryCursor: string | null;
     };
 
@@ -881,26 +896,45 @@ export async function enumerateListingsForSeller(
       retryCursor: cursor,
     };
   }
+  // A legacy Listing's address may carry a serviceId outside the CF-4 listingId
+  // grammar, which classifies as `unknown`. Every `dacs1:` row goes through the
+  // same address parser as the direct read, so enumeration neither drops a
+  // Listing that read authenticates nor skips a bad address silently.
   const scan = await scanAnchorPage(fetchPage, cursor, {
+    includeUnknown: true,
     ...(historyPageSize === undefined
       ? {}
       : { limit: historyPageSize }),
   });
   if (scan.status === "indeterminate") {
+    if (scan.code !== undefined && scan.code !== "history-restart-required") {
+      return {
+        status: "history-error",
+        stage: "history",
+        code: scan.code,
+        listings: [],
+        diagnostics: [],
+        reason: scan.reason,
+        cursor,
+      };
+    }
     return {
       status: "indeterminate",
       stage: "history",
       listings: [],
       diagnostics: [],
       reason: scan.reason,
-      retryCursor: cursor,
+      ...(scan.code === undefined ? {} : { code: scan.code }),
+      // A cursor the fetcher can no longer resume never succeeds on retry.
+      retryCursor: scan.code === "history-restart-required" ? null : cursor,
     };
   }
 
   const listings: AuthenticatedListing[] = [];
   const diagnostics: ListingEnumerationDiagnostic[] = [];
   for (const candidate of scan.anchors) {
-    if (candidate.kind !== "listing") continue;
+    // Both `listing` rows and unclassified legacy Listing rows start `dacs1:`.
+    if (!candidate.logicalAddress.startsWith("dacs1:")) continue;
     if (
       candidate.owner === undefined ||
       !DEMOS_OWNER.test(candidate.owner) ||

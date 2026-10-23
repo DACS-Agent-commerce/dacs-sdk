@@ -676,7 +676,266 @@ cursor is owner-bound and at-least-once: `historyPageSize` counts raw history
 rows, a page can contain no Listings, and `nextCursor: null` means only that the
 current traversal reached its end. Upsert results idempotently by
 `(logicalAddress, contentHash, ref)`. Restart from a null cursor to see a binding
-repaired after its history page was already consumed.
+repaired after its history page was already consumed. Every `dacs1:` history row
+goes through the same address parser as `readListing`, including a legacy
+Listing whose `serviceId` falls outside the CF-4 `listingId` grammar (which
+`classifyAnchor` reports as `unknown`): enumeration returns what a direct read
+authenticates, and an address that read refuses is an `invalid-address`
+diagnostic, never a silent skip.
+
+External artifact reads must retain CF-5 provenance. `DemosAdapter.readAnchor`
+admits the exact public storage response bytes before parsing its `data` member.
+Custom adapters must call `admitArtifactJson(exactReceivedBytes)` (or select a
+member with its second argument after admitting the full envelope). Parsed
+objects, clones, changed admitted objects and reserialized external data do not
+establish that provenance. Discovery refuses them before content hashing or
+signature verification. Retain the admitted record through verification; the
+repository's owned snapshots preserve its admission capability.
+
+For other artifact kinds, `createScanningArtifactRepository` composes the bound
+repository with `scanAnchorPage` and `resolveAndRead`. Supply the adapter,
+published index, explicit authorized publisher, expected owner, page fetcher and
+artifact verifier. Scanning only reads; `write` retains the bound repository's
+explicit publication path. A connected Demos adapter supplies the fetcher through
+`adapter.createAnchorHistoryPageFetcher(expectedOwner)`; the helper never connects
+or selects a service itself.
+Create a separate Demos fetcher for each concurrent traversal. A null-cursor call
+resets that instance's conflict memory; callers sharing an instance must keep
+their own traversal-specific scanner metadata. The scanning repository already
+keeps this metadata, and Listing enumeration creates a fetcher on each call.
+
+The Demos node pages address history by offset, ordered only by the transaction
+timestamp the signer set, so rows that share a timestamp can come back in a
+different order on each query. The Demos fetcher's cursor therefore names the
+last emitted timestamp and every row emitted with it, and each continuation
+re-reads that timestamp group before moving on, so a reordered group loses no
+row. A group that no longer holds every emitted row, or that does not fit in the
+fetcher's 100-row window, requires a restart. A history with more than about 99
+rows that share one timestamp cannot be traversed at all: every restart reaches
+the same group and restarts again, so alert on repeated restarts. History
+includes both sender and recipient matches; do not assume every row was created
+by the owner being scanned. Rows added
+after a traversal starts with a timestamp newer than its cursor, at the head or
+behind the cursor, are seen only by a new traversal. These ordering, status,
+row-shape and not-found assumptions were checked against the `kynesyslabs/node`
+source at commit `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`,
+`@kynesyslabs/demosdk` 4.0.16, and node2 testnet responses recorded on
+2026-10-15 through 2026-10-17, including a real DACS create row
+(`test/fixtures/demos-node2-history.json`). A node whose ordering, status or row shape
+differs from these is not supported. A cursor from an earlier release (`dacs-demos-history-v1.`)
+requires a restart from null; `enumerateListings` returns `retryCursor: null`
+for it.
+
+This offline example inspects an unsigned synthetic candidate. It deliberately
+returns `unverifiable` until a signature and authorization provider is supplied:
+
+```ts
+import {
+  admitArtifactJson,
+  contentHash,
+  createInMemoryBindingStore,
+  createScanningArtifactRepository,
+  UnsupportedArtifactKindError,
+} from "@kynesyslabs/dacs";
+
+const expectedOwner = "offline-seller";
+const logicalAddress = "dacs1:offline-seller:example:v1";
+const nativeAddress = "stor-offline-example";
+const artifact = admitArtifactJson(new TextEncoder().encode('{"listingVersion":1}')); // Synthetic bytes.
+const bindings = createInMemoryBindingStore([{
+  logicalAddress, nativeAddress, owner: expectedOwner,
+  contentHash: contentHash(artifact), version: 1,
+}]);
+const repository = createScanningArtifactRepository({
+  expectedOwner,
+  index: bindings,
+  publisher: bindings, // Explicit in-memory target; scanPage never publishes.
+  adapter: {
+    getAddress: () => "offline-reader",
+    anchorWriteOnce: async () => { throw new Error("read-only demo"); },
+    readAnchor: async (address) => address === nativeAddress ? artifact : null,
+  },
+  fetchPage: async (cursor) => cursor === null
+    ? { entries: [{ logicalAddress, nativeAddress, owner: expectedOwner }],
+        nextCursor: "second-page" }
+    : { entries: [], nextCursor: null },
+  verifyArtifact: () => {
+    throw new UnsupportedArtifactKindError("no offline signature and authorization provider");
+  },
+});
+const first = await repository.scanPage(); // outcome.status: "unverifiable"
+const second = await repository.scanPage(first.state); // Empty, exhausted page.
+```
+
+Keep the returned `state` with its owner, cursor, `seen` and `metadata` maps,
+`consumedCursors` set, `pagesConsumed` count, `exhausted` flag, `pendingRow` and
+`deferred` rows. Persist maps as entries and reconstruct them with
+`new Map(entries)`; persist the set as values and reconstruct it with
+`new Set(values)`; `pendingRow` and `deferred` are plain JSON. A state that is
+not in this shape, such as a Map persisted with plain `JSON.stringify`, is never
+read. Nor is a state whose fields contradict each other: a cursor, a consumed
+cursor or `exhausted` before any consumed page; a `pagesConsumed` other than one
+more than the consumed cursors after one; a cursor after exhaustion, or no
+cursor without it; an `exhausted` state with a pending row; a row both in `seen`
+and `deferred`, or deferred twice; a pending row already in `seen` or
+`deferred`, or without an entry in `metadata`; or `seen` or `deferred`
+disagreeing with `metadata` about a row's logical address. Such a state is
+`restart-required` with `invalid-state`.
+Only fully handled rows enter `seen`; filtered rows remain in `metadata` for
+conflict detection and can be read on an overlapping page when `includeUnknown`
+is enabled. Input state is unchanged. Overlapping pages deduplicate by native
+address while rejecting conflicting logical metadata.
+
+Every non-`page` result carries a machine-readable `code`. Act on its `status`:
+
+- `indeterminate`: retry later with the returned state, backing off between
+  retries: attempts are counted per call, not per unit of time, so a tight retry
+  loop defers a row moments into a short outage. The state keeps the page's
+  starting cursor and remembers only the handled prefix, so the retry re-fetches
+  the page and re-reads the failed row. It also keeps the page's observed
+  `metadata`, so a failed row rewritten to another logical address before the
+  retry is a `conflict`. Row codes are `index-indeterminate`,
+  `binding-not-yet-visible`, `read-indeterminate`, `record-not-yet-visible` and
+  `verifier-unavailable`; `history-unavailable` is a page that could not be
+  fetched. The rows after a failed row are not read until it succeeds or is
+  deferred.
+- `indeterminate` with `invalid-limit` or `page-limit-exceeded` (a fetcher
+  returned more entries than `limit`) is a caller or fetcher fault, not a reason
+  to retry later: retrying cannot clear it. Fix the `limit` option or the
+  fetcher.
+- Deferral: after `maxRowAttempts` (default 5) consecutive `indeterminate`
+  attempts on the same row, counted in `state.pendingRow`, the row is deferred
+  with its code, reason and attempt count, and the page continues. The call
+  returns the rows it deferred in `deferred`; `state.deferred` keeps all of them,
+  and they never enter `seen`. Alert on deferred rows. The traversal does not
+  retry them, even after a restart from a valid state: start a new traversal
+  from null (`scanPage()` without state), which re-reads every row, or check one
+  row with `repository.read(anchor.logicalAddress, expectedOwner, verifier)` and
+  compare its `nativeAddress` with the deferred `anchor.nativeAddress`.
+- `restart-required`: retrying the same state cannot succeed. Continue with the
+  returned `state`, which restarts from a null cursor; this call reads and
+  advances nothing.
+  - `cursor-cycle`, `page-bound` (10,000 consumed pages) and
+    `history-restart-required` (the fetcher threw
+    `AnchorHistoryRestartRequiredError`, as the Demos fetcher does when its page
+    boundary is missing, duplicated or outside its window, or its cursor cannot
+    be decoded for this owner) come from a valid state. Any thrown value whose
+    `code` is `history-restart-required` counts, so a fetcher from another copy
+    of the package is recognized; a restart only re-reads history. The returned
+    state keeps `seen`, `metadata`, `deferred` and `pendingRow`, so rows already
+    reported are not reported again, but the pages are fetched again: a history
+    longer than 10,000 pages reaches `page-bound` again, and a fetcher whose
+    cursors cycle keeps cycling.
+  - `invalid-state` (including a state saved before `pendingRow` and `deferred`
+    existed) and `foreign-owner-state`: nothing in the old state can be
+    trusted, so the returned state is a fresh traversal that reads and reports
+    every row again.
+
+  Delivery: within a valid traversal, each `anchor.nativeAddress` is handled at
+  most once, even across these restarts. A binding rewritten or repaired for an
+  address already handled is therefore not read again: start a new traversal
+  (`scanPage()` without state) to see it. An `invalid-state` or
+  `foreign-owner-state` restart reports earlier rows again. A failing row is
+  reported as `indeterminate` on every retry before it is handled or deferred,
+  so deduplicate on final outcomes only, or keep the latest result per
+  `anchor.nativeAddress`; keeping the first can keep an `indeterminate` and drop
+  the `verified` that followed it. Alert on repeated restarts; they do not stop
+  by themselves.
+- `conflict` (`metadata-conflict`): history assigns two logical addresses to one
+  native address, across pages or, from the Demos fetcher, in the two metadata
+  fields of one row. The page stops with the unchanged cursor. Retrying cannot
+  clear it; alert on it. A restart from a valid state keeps the old `metadata`,
+  so if history was rewritten and a handled row now has another logical address,
+  every later call returns this conflict. After operator review, recover by
+  starting a new traversal (`scanPage()` without state); the Demos fetcher also
+  forgets its remembered metadata when a traversal starts from a null cursor.
+
+State size is bounded only by the page bound: `seen` and `metadata` hold up to
+10,000 × `limit` entries (one million at the default limit of 100), and each page
+copies them. `deferred` gains one row, with its anchor and reason, per deferred
+row; it is copied on every page too and is not pruned until a new traversal.
+Reducing this state is a follow-up.
+
+Each result retains its classified `anchor` and discriminated `outcome`:
+`conflict`, `binding-mismatch`, `unclassified`, `hash-mismatch`,
+`signature-invalid`, `unverifiable`, `indeterminate` or `verified`. A history row
+whose binding is not yet in the index is `indeterminate` with
+`code: "binding-not-yet-visible"`, as in `write`, which anchors before it
+publishes. A read that finds no record at the bound native address is
+`indeterminate` with `code: "record-not-yet-visible"`: an ordinary not-found is
+never proof of absence, and a lagging node reports a history-confirmed anchor
+that way. It is retried and, if it persists (a deleted program looks the same),
+deferred. Known binding conflicts carry
+`code: "binding-conflict"` in the underlying resolver/read API and are
+`conflict` here. A row whose history `owner`
+differs from `expectedOwner` is `binding-mismatch`; this check depends on the
+fetcher returning `owner` (the Demos fetcher does). Without it, only the binding
+owner check, the native-address check and the verifier constrain the row. Only an
+exact binding hash plus literal `true` from the artifact-specific signature and
+authorization verifier yields `verified`. The verifier must check signed scope,
+domain, supported version, expected owner/role and logical slot for each kind.
+Return `false` only for a completed negative signature or authorization check,
+which produces `signature-invalid`. Throw `UnsupportedArtifactKindError` for an
+unsupported kind or version, which produces a final `unverifiable` with
+`code: "unsupported-kind"`. Any other throw means verification is unavailable
+and produces a retryable `indeterminate` with `code: "verifier-unavailable"`.
+That includes an error that only carries `code: "unsupported-kind"`, such as a
+forwarded service error body: the check is `instanceof`, so throw the class
+exported by this package. The verifier and the repository must use the same
+installed copy of the package: an instance from another copy, such as a
+duplicated bundle, is not recognized and stays retryable. A row that
+`classifyAnchor` reports as `unknown`, shown only with `includeUnknown`, is a
+final `unclassified`: it is neither resolved, read nor verified. That includes
+a DACS address whose job ID is not a canonical uppercase ULID, which is never
+repaired, and one that is not canonical CF-4: a variable segment (such as a
+claim or rail ID) with a lowercase or unneeded `%` escape, a raw `?`, `&`, `=`
+or `%`, a lone surrogate or decoded non-NFC text, or a fixed segment
+outside its grammar (a `listingId` that is not 1 to 128 URL-safe ASCII
+characters, or a `scheme` that is not a lowercase token). The CF-2 form of a
+ClaimReference inside a segment, including scheme-specific whitespace or control
+restrictions, is left to the verifier. A DACS-5 bundle row (`stor-` and 64 hex characters, a shape a DACS-1
+stor-cred slot shares) is read and checked against the binding's hash over the
+DACS-5 §10.4.1 scope, which omits `signatures` and `anchoredByRole`, then is a
+final `unverifiable` with `code: "unsupported-kind"` without calling the
+verifier: a generic binding carries none of the DACS-5 BundleBinding fields its
+verification needs. The inherited `write` binds the generic content hash, which
+keeps `anchoredByRole`, so a role copy published through it scans as
+`hash-mismatch`; do not publish bundles through the generic repository.
+A deliverable (`dacs4:deliverable:{jobId}`) is an unsigned record: its binding
+hash is the sha256 of the complete canonical anchored record (DACS-4 §9.6.1
+step 4), so a top-level `signature` or `signatures` member is bound like any
+other field. This SDK interpretation has no discriminating Standard vector:
+CORE's signature-omitting content-hash definition and DV-1's canonical-payload
+wording need an upstream signature-bearing payload known answer before a
+coordinated release. Payloads containing such members require compatibility
+assessment against older SDK writers. `write` and `read` use the same hash for that address, and every
+other kind binds its signed scope (`contentHash`). `artifactBindingHashOf`
+returns the hash rule for a logical address. That binding hash equals DV-1's
+`deliverableContentHash` only when the anchored record is the cleartext payload
+(`public` and `buyer-only` delivery). Under `encrypt-to-buyer` the anchored
+record is ciphertext, and under the extended-pointer pattern it is a pointer
+record: the binding hash covers those bytes, not the payload. For example, a
+`verified` encrypt-to-buyer row says only that the ciphertext matches its
+binding; decrypt it and compare `sha256Hex(canonicalize(cleartextPayload))`
+with verified `SettlementEvidence.deliverableContentHash`, bound to the agreement
+and delivery anchor, before treating it as delivered. The agreement's
+`terms.deliverable.hash` hashes the deliverable specification.
+Payment-disposition and payload-attestation rows are
+classified as their own kinds and reach the verifier.
+The SDK ships no per-kind verifier for this seam. For settlement evidence,
+payment dispositions, payload attestations, deliverables and entitlements,
+`verified` means only that the bytes match the published binding and that your
+verifier returned `true`. It is not a payment or delivery verdict:
+before acting on payment or delivery, run the agreement-bound checks (DACS-4
+SB-1's complete PC-2 tuple, DPA-2's exact-byte digest, DV-1's cleartext hash),
+through the fulfilment validators or your own verifier. The verifier receives the record as read, the
+binding and the classified anchor (`kind`, `logicalAddress`, `nativeAddress`),
+which is what it needs to check the logical slot.
+A missing or non-function `verifyArtifact` is refused when the repository is
+created. Neither classification, a verified artifact nor `exhausted: true`
+proves complete enumeration, freshness, or non-revocation;
+perform the artifact's protocol-specific admission and revocation checks before
+using it.
 
 Global/category discovery uses the open DACS-1 §6.3.6 catalog surface. Catalog
 summaries are untrusted candidates: use `queryListingCatalog` to search, then
@@ -722,9 +981,29 @@ operational pre-filters, never validity or trust evidence.
 
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
-it returns no Listings or diagnostics, and the caller retries its unchanged
-`retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
+it returns no Listings or diagnostics, and the caller retries `retryCursor`.
+`code: "history-restart-required"` sets `retryCursor: null` to restart the
+traversal; uncoded uncertainty preserves the input cursor. A `history-error`
+is a terminal page fault with `code` (`metadata-conflict`, `cursor-cycle`,
+`page-limit-exceeded` or `invalid-limit`), the failing `cursor`, and no
+`retryCursor`. Alert or repair the source or fetcher before starting again;
+retrying that cursor cannot resolve the fault. It also returns no Listings or
+diagnostics. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
+
+When upgrading, handle the new `history-error` enumeration status explicitly.
+`attestationAddress`, `paymentEvidenceAddress` and `ratingAddress` reject empty
+values, lone surrogates and non-NFC text in variable identifiers. Scheme-specific
+identifier and rail restrictions belong to their verifiers. Validate inputs
+before calling these builders or handle their `DacsError`. NFC is checked on the decoded value,
+before CF-4 delimiter encoding; discovery applies the same text rule.
+The bound repository applies that segment validation to recognized CF-4 keys
+and publishes the exact encoded address, preserving its bytes even when the
+encoded form itself is not NFC. Demos transport metadata, retained transaction
+evidence and native metadata comparisons preserve those encoded strings;
+CF-1 normalization of signed DACS artifacts is unchanged.
+Large timestamp groups still have the 100-row window limit described above;
+repeated boundary restarts require an operational alert.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
