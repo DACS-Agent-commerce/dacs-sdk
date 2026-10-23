@@ -521,11 +521,13 @@ test('retry survives reopen, preserves nonce replay, replaces owners and forbids
   assert.deepEqual(w.store.reserve(p, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "pending" }' });
   const fresh = { ...p, nonce: 'retry' };
   assert.deepEqual(w.store.reserve(fresh, {}, { journaledOnly: true }), { disposition: 'cached', status: 200, text: '{ "TEST": "pending" }' });
-  const retry = w.store.reserve(fresh, {});
+  const next = { ...fresh, nonce: 'retry-perform' };
+  const retry = w.store.reserve(next, {});
   assert.equal(retry.disposition, 'perform'); assert.equal(retry.retried, true); assert.notEqual(retry.owner, first.owner);
   assert.throws(() => w.store.finish(first, 200, '{}'), { code: 'peer_store_conflict' });
   w.store.finish(retry, 200, '{ "TEST": "done" }');
-  assert.deepEqual(w.store.reserve(fresh, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "done" }' });
+  assert.deepEqual(w.store.reserve(next, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "done" }' });
+  assert.deepEqual(w.store.reserve(fresh, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "pending" }' });
   assert.deepEqual(w.store.reserve(p, {}), { disposition: 'cached', status: 200, text: '{ "TEST": "pending" }' });
   noMutations(() => assert.throws(() => w.store.reserve(request(w, 1), {}, { journaledOnly: true }), { code: 'peer_delegation_expired' }));
 });
@@ -561,4 +563,69 @@ test('reconciliation of the last interrupted read frees an otherwise empty job b
   w.store.reserve(read, {}); w.store.finish(proposal, 409, '{}', { noEffect: true }); w.reopen();
   const uncertain = w.store.reserve(read, {}); w.store.reconcile(uncertain, read, 200, '{}');
   assert.equal(w.count('peer_jobs'), 0); assert.equal(w.count('peer_effect_jobs'), 0);
+});
+
+
+test('a fresh nonce joining an interrupted read retains the reconciled answer across reopen', t => {
+  const w = world(t, { maxRecords: 8 });
+  const proposal = request(w, 0);
+  w.store.finish(w.store.reserve(proposal, {}), 200, '{"proposal":"kept"}');
+  const first = request(w, 0, { path: '/dacs/v1/agreements/state', nonce: 'read-a' });
+  w.store.reserve(first, {});
+  const joined = { ...first, nonce: 'read-b' }, uncertain = w.store.reserve(joined, {});
+  assert.equal(uncertain.disposition, 'uncertain');
+  w.store.reconcile(uncertain, joined, 200, '{"state":"observed"}');
+  w.reopen();
+  assert.deepEqual(w.store.reserve(joined, {}), { disposition: 'cached', status: 200, text: '{"state":"observed"}' });
+});
+
+test('a journal-only nonce keeps its pending answer after another nonce completes the retry', t => {
+  const w = world(t, { maxRecords: 8 }), first = request(w, 0);
+  w.store.finish(w.store.reserve(first, {}), 200, '{"state":"pending"}', { retry: true });
+  const retained = { ...first, nonce: 'journal-only' };
+  assert.equal(w.store.reserve(retained, {}, { journaledOnly: true }).text, '{"state":"pending"}');
+  const retry = w.store.reserve({ ...first, nonce: 'new-attempt' }, {});
+  w.store.finish(retry, 200, '{"state":"done"}'); w.reopen();
+  assert.equal(w.store.reserve(retained, {}).text, '{"state":"pending"}');
+});
+
+test('terminal context cleanup cannot admit another buyer proposal for that job after reopen', t => {
+  const w = world(t, { maxRecords: 5, maxContextRecords: 1 }), first = context(w, 0);
+  w.store.finish(w.store.reserve(first, contextBody(0), { admit: w.now }), 200, '{}');
+  w.terminal(first.jobId, 'finalised'); w.advance(HOUR + 1);
+  w.store.reserve(context(w, 1), contextBody(1), { admit: w.now });
+  assert.equal(w.store.contextAdmission(first.jobId), null); w.reopen();
+  const attack = request(w, 0, { buyer: other, nonce: 'another-owner' });
+  noMutations(() => assert.throws(() => w.store.classify(attack, {}), { code: 'context_session_terminal' }));
+  assert.throws(() => w.store.reserve(attack, {}), { code: 'context_session_terminal' });
+});
+
+test('buyer nonce quota survives reopen and nonce cleanup until the full rate window ends', t => {
+  const options = { maxRecords: 10, maxNoncesPerBuyerPerWindow: 1, nonceWindowMs: 1000 }, w = world(t, options);
+  const first = request(w, 0, { expiresAt: w.now() + 10 });
+  w.store.finish(w.store.reserve(first, {}), 409, '{}', { noEffect: true }); w.reopen();
+  noMutations(() => assert.throws(() => w.store.classify(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }));
+  const secondHandle = createSellerTransportStore({ ...options, path: w.path, now: w.now });
+  try { assert.throws(() => secondHandle.reserve(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }); }
+  finally { secondHandle.close(); }
+  w.advance(20);
+  const otherReservation = w.store.reserve(request(w, 2, { buyer: other }), {});
+  w.store.finish(otherReservation, 409, '{}', { noEffect: true });
+  assert.equal(w.count('peer_nonces'), 1, 'expired completed nonce was reclaimed');
+  assert.throws(() => w.store.reserve(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' });
+  w.advance(981); w.reopen();
+  assert.equal(w.store.reserve(request(w, 1), {}).disposition, 'perform');
+});
+
+
+test('an exact pre-admission state nonce keeps its null answer after a proposal is admitted', t => {
+  const w = world(t, { maxRecords: 8, maxJobs: 1 }), read = request(w, 0, { path: '/dacs/v1/agreements/state', nonce: 'before-admission' });
+  const answer = w.store.reserve(read, {});
+  assert.equal(answer.disposition, 'cached'); assert.equal(w.count('peer_jobs'), 0);
+  const proposal = request(w, 0);
+  w.store.finish(w.store.reserve(proposal, {}), 200, '{"proposal":"kept"}'); w.reopen();
+  assert.deepEqual(w.store.reserve(read, {}), answer);
+  assert.equal(w.store.reserve(request(w, 1, { path: '/dacs/v1/agreements/state', nonce: 'other-unadmitted' }), {}).disposition, 'cached');
+  assert.equal(w.count('peer_jobs'), 1);
+  assert.equal(w.store.reserve({ ...read, nonce: 'fresh-read' }, {}).disposition, 'perform');
 });
