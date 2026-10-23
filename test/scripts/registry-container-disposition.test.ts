@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -209,13 +210,14 @@ async function runToConsumerStage(complete = false) {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-")); scratch.push(directory); chmodSync(directory, 0o700);
   const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string;
   const releaseSet = join(directory, "release-set"); mkdirSync(releaseSet);
-  const served: Record<string, { integrity: string; tarball: string }> = {};
+  const served: Record<string, { integrity: string; tarball: string; manifest: { name: string; version: string }; shasum: string }> = {};
   const archives: Record<string, Buffer> = {};
   const packages: Record<string, { integrity: string }> = {};
   for (const [name, file] of [["@kynesyslabs/dacs", "kynesyslabs-dacs"], ["@kynesyslabs/dacs-node", "kynesyslabs-dacs-node"], ["create-dacs-agent", "create-dacs-agent"]] as const) {
-    const bytes = packTarball({ name, version }); const tarball = "/" + file + ".tgz";
+    const manifest = { name, version };
+    const bytes = packTarball(manifest); const tarball = "/" + file + ".tgz";
     writeFileSync(join(releaseSet, `${file}-${version}.tgz`), bytes); archives[tarball] = bytes;
-    served["/" + name.replace("/", "%2f")] = { integrity: sri(bytes), tarball }; packages[name] = { integrity: sri(bytes) };
+    served["/" + name.replace("/", "%2f")] = { integrity: sri(bytes), tarball, manifest, shasum: createHash("sha1").update(bytes).digest("hex") }; packages[name] = { integrity: sri(bytes) };
   }
   writeFileSync(join(releaseSet, "release-provenance.json"), JSON.stringify({ version, source: { clean: true }, packages }));
   writeFileSync(join(releaseSet, "SHA256SUMS"), "fixture\n");
@@ -223,11 +225,14 @@ async function runToConsumerStage(complete = false) {
   writeFileSync(join(npmRoot, "npm/package.json"), JSON.stringify({ version: "11.19.0" }));
   writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/package.json"), JSON.stringify({ main: "index.js" }));
   writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/index.js"), "exports.publish = async () => {};\n");
+  const npmEntry = process.env.npm_execpath;
+  if (!npmEntry) throw new Error("driver fixture needs the executing npm parser");
+  symlinkSync(dirname(createRequire(npmEntry).resolve("npm-package-arg/package.json")), join(npmRoot, "npm/node_modules/npm-package-arg"));
   const server = createServer((request, response) => {
     const archive = archives[request.url ?? ""]; const record = served[request.url ?? ""];
     response.writeHead(archive || record ? 200 : 404, { "content-type": archive ? "application/octet-stream" : "application/json" });
-    response.end(archive ?? JSON.stringify(record ? { "dist-tags": { acceptance: version }, versions: { [version]: {
-      dist: { integrity: record.integrity, tarball: `http://${request.headers.host}${record.tarball}` } } } } : {}));
+    response.end(archive ?? JSON.stringify(record ? { name: record.manifest.name, "dist-tags": { acceptance: version }, versions: { [version]: { ...record.manifest,
+      dist: { integrity: record.integrity, shasum: record.shasum, tarball: `http://${request.headers.host}${record.tarball}` } } } } : {}));
   });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const address = server.address(); if (!address || typeof address === "string") throw new Error("fixture server has no port");
@@ -243,9 +248,12 @@ async function runToConsumerStage(complete = false) {
     mkdirSync(join(project, location), { recursive: true }); writeFileSync(join(project, location, "package.json"), JSON.stringify({ name, version }));
     inventory.push({ location, name, version });
   }
+  writeFileSync(join(project, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\nFROM node:20\n");
+  writeFileSync(join(project, ".dockerignore"), "**\n");
   writeFileSync(join(project, "package.json"), JSON.stringify(manifest)); writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages: lock }));
   const files: Record<string, string> = { "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n", "doctor.log": "blocked without credentials\n",
-    "npm-audit.exit-code": "0\n", "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: { total: 0, critical: 0 } }, vulnerabilities: {} }),
+    "doctor.json": readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"),
+    "npm-audit.exit-code": "0\n", "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } }, vulnerabilities: {} }),
     "engine-strict.exit-code": "0\n", "engine-strict.log": "", "engine-versions.json": JSON.stringify({ node: "20.19.1", npm: "11.19.0" }) };
   for (const kind of ["lock", "physical"]) { files[`consumer-${kind}.cdx.json`] = "{}"; files[`consumer-${kind}-sbom.err`] = ""; files[`consumer-${kind}-sbom.exit-code`] = "0\n"; }
   for (const [name, value] of Object.entries(files)) writeFileSync(join(fixture, name), value);
@@ -253,7 +261,7 @@ async function runToConsumerStage(complete = false) {
   const PATH = stubBin(directory, {
     curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
     npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
-      `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, `  view) echo '${version}' ;;`,
+      `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
       `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
     docker: [`printf '%s\\n' "$*" >> '${commands}'`, `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
       `if [ "$1" = build ]; then touch '${built}'; exit 0; fi`,
@@ -417,10 +425,20 @@ describe("registry/container evidence", () => {
     const { directory, output, result, commands } = await runToConsumerStage(true);
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(existsSync(join(directory, "npm-pinned"))).toBe(true);
-    expect(readFileSync(commands, "utf8")).toMatch(/^build .*--tag /m);
-    for (const name of ["compose.rendered.yaml", "docker-image.json", "runtime-image-inventory.json", "runtime-image-policy.json", "policy-findings.json", "release-set.log"]) expect(existsSync(join(output, name)), name).toBe(true);
+    const invoked = readFileSync(commands, "utf8");
+    expect(invoked).toMatch(/^build .*--tag /m);
+    expect(invoked).toContain("--file "); expect(invoked).toContain("Dockerfile.acceptance");
+    expect(invoked).toContain("--env DACS_BOUNDED_NPM_HTTP=1");
+    expect(invoked).toContain("--env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs");
+    expect(invoked).toContain("--env npm_config_fetch_retries=2");
+    for (const name of ["doctor.json", "compose.rendered.yaml", "docker-image.json", "runtime-image-inventory.json", "runtime-image-policy.json", "policy-findings.json", "release-set.log"]) expect(existsSync(join(output, name)), name).toBe(true);
     expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: true, functionalPassed: true, disposition: { exitCode: 0 } });
   }, 30_000);
+  it.each(["git-dns.txt", "git-connect.txt"])("classifies the release-set Git diagnostic %s through its stage mapping", name => {
+    const text = readFileSync(join(repoRoot, "test/scripts/fixtures/acceptance-transport", name), "utf8");
+    expect(classifyAcceptanceFailure({ stage: "release-set", read: () => text }).failureClass).toBe("network");
+  });
+
   it("retains release-set network errors and classifies them as network failures", () => {
     const { output } = runEarlyFailure('printf "npm error code ECONNRESET\\n"');
     expect(readFileSync(join(output, "release-set.log"), "utf8")).toContain("ECONNRESET");
