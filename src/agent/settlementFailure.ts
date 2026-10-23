@@ -1,19 +1,41 @@
+import { baseUnits } from "../canonical/index.js";
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "../rails/demosAddress.js";
+
+/** DACS-4 §9.5.9: 1 DEM = 10^9 OS (the rail's `DEM_DECIMALS`). */
+const DEM_OS_DECIMALS = 9;
+
+/**
+ * The exact OS amount a native DEM payment request commits to, or `null` when
+ * the request is not a `pay-dem` DEM payment or its amount does not convert.
+ */
+export function payDemRequestAmountOs(
+  request: Readonly<{ phase: string; asset: string; amount: string }>,
+): string | null {
+  if (request.phase !== "pay-dem" || request.asset !== "DEM") return null;
+  try {
+    const amountOs = baseUnits(request.amount, DEM_OS_DECIMALS);
+    return amountOs === "0" ? null : amountOs;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A rail's projection of a terminal failed Demos record. The rail must build it
  * from the node's `getTxByHash` record only after matching the signed
- * hash/nonce, inclusion block and native body; nothing in this package builds
- * one yet. It describes failure of this attempt; it never authorizes a
- * replacement debit.
+ * hash/nonce, inclusion block and native body; `createPayDemRail` builds it
+ * that way and carries it on `SettleResult` as `failureProof`. The SDK drops a
+ * proof from a custom client or rail (the result stays indeterminate); a
+ * reconciler's proof is only its statement and is never recorded by itself.
+ * It describes failure of this attempt; it never authorizes a replacement debit.
  *
  * Fields are projections of the node's `getTxByHash` record, in canonical form:
  * `txHash`, `payer` and `payee` are 64 lower-case hex without `0x` (the node
  * serves `0x`-prefixed keys); `nonce` is the record's decimal nonce string
  * converted to a safe integer; `amountOs` is the decimal OS amount. Internal:
- * it is not exported from the package roots, no `SettleResult` carries it and
- * no module in `src` imports it.
+ * it is not exported from the package roots; a `SettleResult` carries it as
+ * `failureProof`.
  */
 export interface DemosFailedRecordProof {
   kind: "demos-failed-record";
@@ -45,8 +67,10 @@ type DemosFailureResult = {
 /**
  * Check that a failed result carries a well-formed failure proof bound to it.
  * This checks shape and bindings only; it does not authenticate the proof
- * against the node, so `true` may be acted on only for a proof the caller's
- * own rail built as described on {@link DemosFailedRecordProof}.
+ * against the node. A proof acts as a definitive outcome only when the SDK
+ * built it from a node record it read itself (`createPayDemRail`); the rails
+ * module keeps that set private, so no caller can add to it. From any other
+ * source a proof is a statement and the settlement intent stays held.
  *
  * The input is first copied as data-only JSON, so proxies, accessors, exotic
  * prototypes (`Date`, class instances), symbol or non-enumerable keys and

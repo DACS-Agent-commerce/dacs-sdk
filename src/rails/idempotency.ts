@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
+import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
+// The rails module owns the private set of SDK record-reading submissions; this
+// read-only predicate is the only way to consult it. The import is cyclic
+// (payDem imports this module) and is used only at call time.
+import { isRecordVerifiedSource } from "./payDem.js";
 import type { SettleResult } from "../agent/runSessionCore.js";
 import {
   canonicalize,
@@ -320,6 +325,11 @@ function captureBoundResult(
       `${label} does not match the retained settlement network or parties`,
     );
   }
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      (binding.phase !== "pay-dem" || binding.agreementAsset !== "DEM" ||
+        !hasDefinitiveDemosFailure(result, binding.amount, binding.network))) {
+    throw new DacsError(`${label} terminal-failure proof does not bind the payment`);
+  }
   if (!result.ok) {
     if (result.finality !== undefined) {
       throw new DacsError(`${label} failure must not claim settlement finality`);
@@ -626,8 +636,21 @@ export function settlementKey(railId: string, jobId: string, phaseIndex: number)
   return `${railId}:${jobId}:${phaseIndex}`;
 }
 
-function isDefinitive(result: Readonly<SettleResult>): boolean {
-  return result.ok && result.txHash.trim().length > 0;
+/**
+ * A success with a hash is definitive. A bound terminal failure is definitive
+ * only when `recordVerified`: the submission is `payDemSettle`'s around
+ * `createPayDemRail`'s own settle, whose proof the SDK built from a node record
+ * it read itself. A proof from a caller's rail, submission or reconciler is a
+ * statement, so its intent stays held.
+ */
+function isDefinitive(
+  result: Readonly<SettleResult>,
+  binding: Readonly<SettlementBinding>,
+  recordVerified: boolean,
+): boolean {
+  return (result.ok && result.txHash.trim().length > 0) ||
+    (recordVerified &&
+      hasDefinitiveDemosFailure(result, binding.amount, binding.network));
 }
 
 function storeOptions(options: Readonly<SettlementIdempotencyStoreOptions>): Readonly<{
@@ -902,7 +925,7 @@ export function createIdempotencyStore(
               capturedBinding,
               "reconciled settlement result",
             );
-            if (!isDefinitive(found)) {
+            if (!isDefinitive(found, capturedBinding, false)) {
               throw new DacsError(
                 `settlement ${key} reconciliation was not definitive; require a finalized result or bound replay authorization`,
               );
@@ -960,13 +983,16 @@ export function createIdempotencyStore(
         // their irreversible request. An ordinary empty-hash failure is still
         // ambiguous; only an explicit not-invoked rail disposition releases.
         await effectFence.assertCurrent();
+        const recordVerified = isRecordVerifiedSource(submit);
         const submission = captureSubmission(await submit(effectFence));
         const result = captureBoundResult(
           ("disposition" in submission ? submission.result : submission) as SettleResult,
           capturedBinding,
           "submitted settlement result",
         );
-        if (isDefinitive(result)) return persist(result, effectFence);
+        if (isDefinitive(result, capturedBinding, recordVerified)) {
+          return persist(result, effectFence);
+        }
         if ("disposition" in submission) {
           const released = await durable.releaseIntent({
             key,
