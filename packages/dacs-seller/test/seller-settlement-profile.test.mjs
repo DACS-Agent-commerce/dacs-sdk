@@ -7,17 +7,14 @@
 // call and refuses, so a refused step is shown to have reached nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, sign, verify } from 'node:crypto';
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
 import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
-import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
-import { SELLER_PRE_EFFECT_REFUSALS } from '../src/dacs/seller-http.mjs';
+import { createNativePaymentEvidenceConsumer } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from '../src/dacs/session-admission.mjs';
 import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
@@ -33,12 +30,6 @@ const identityFor = (party, presentedAt) => {
 const presentWith = (party, presentedAt, sessionNonce) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
   const bundle = { ...unsigned.bundle, sessionNonce }, bundleHash = core.sha256Hex(core.canonicalize(bundle));
-  return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
-};
-// A presentation that carries no session nonce at all, signed by the party.
-const presentWithout = (party, presentedAt) => {
-  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
-  const { sessionNonce: _nonce, ...bundle } = unsigned.bundle, bundleHash = core.sha256Hex(core.canonicalize(bundle));
   return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
@@ -125,25 +116,9 @@ async function world(t, { listingChanges = () => {} } = {}) {
   const agent = (options) => seller.createSellerAgent(options);
   return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward, buyerKey, sellerKey, buyerBundle, admission, now, agent };
 }
-const refused = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status }; } };
-const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
-const notCalled = async () => { throw new Error('TEST not called'); };
 
 const complete = (w, extra = {}) => ({ ...w.capabilities, nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence,
   demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery(), ...extra });
-// A RevocationMarker for the world's Listing (DACS-1 RB-1), signed by `signerKey`
-// (the Listing signer by default) and kept by the admission's marker reader at
-// `locator`, and the revoked catalog surface whose binding names it (RB-2).
-const revocationOf = async (w, { signerKey = w.sellerKey, locator } = {}) => {
-  const listingContentHash = core.contentHash(w.listing), presentedBy = w.listing.seller.identity.presentedBy;
-  const marker = await core.signComponentArtifact({ listingId: w.listing.listingId, listingVersion: w.listing.listingVersion, listingContentHash, revokedAt: w.now - 1, reason: 'TEST withdrawn' },
-    'dacs-revocation:v1:', { algorithm: 'ed25519', signer: signerKey.claim, sign: signerKey.sign });
-  const logicalAddress = `dacs1-revoked:${core.encodeAddressSegment(presentedBy)}:${w.listing.listingId}:v${w.listing.listingVersion}`;
-  const binding = { sellerPrimaryClaim: presentedBy, listingId: w.listing.listingId, listingVersion: w.listing.listingVersion, listingContentHash, logicalAddress,
-    markerAnchor: { kind: 'storage-program', locator: locator ?? logicalAddress }, markerContentHash: core.contentHash(marker) };
-  w.admission.markers.set(binding.markerAnchor.locator, marker);
-  return { marker, binding, surface: { kind: 'catalog', status: 'revoked', readStatus: 'ok', catalogObservedAt: w.now, binding } };
-};
 
 test('without the steward-signed rail authority the native profile is refused before any state is opened', async (t) => {
   const w = await world(t), durableDirectory = w.dir({ empty: true });
