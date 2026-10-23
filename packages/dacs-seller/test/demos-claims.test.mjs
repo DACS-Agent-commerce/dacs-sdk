@@ -1,9 +1,9 @@
-import { deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
+import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 // The claim, address and wallet-signature contract the ported seller kit relies on.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { addressForClaim, claimForAddress, decodeSignature, normalizeDemosAddress, verifyDemosSignature, DemosClaimFormatError } from '../src/dacs/demos-claims.mjs';
+import { addressForClaim, claimForAddress, decodeSignature, normalizeDemosAddress, verifyDemosSignature, isCanonicalEd25519Signature, DemosClaimFormatError } from '../src/dacs/demos-claims.mjs';
 
 const keyHex = () => randomBytes(32).toString('hex');
 
@@ -52,4 +52,47 @@ test('a wallet signature verifies over the exact UTF-8 message; anything else is
 test('storage addresses hash the exact owner bytes, including case, as demosdk does', () => {
   assert.equal(deriveStorageAddress('0xABCDEF', 'probe', 1, ''), 'stor-26913fea878a28f7ca48cbccd148baa6db47a6f4');
   assert.equal(deriveStorageAddress('0xabcdef', 'probe', 1, ''), 'stor-b52de5b1050c95ef271b53a0d40b5be43717d48c');
+});
+
+
+test('wallet framing preserves a base64url signature beginning with 0x or 0X', () => {
+  for (const [first, second] of [[0xd3, 0x10], [0xd1, 0x70]]) {
+    const bytes = Buffer.alloc(64, 0x5a); bytes[0] = first; bytes[1] = second;
+    const encoded = bytes.toString('base64url');
+    assert.match(encoded, /^0[xX]/);
+    for (const prefix of ['', '0x', '0X', '0x0X']) assert.deepEqual(decodeSignature(prefix + encoded), bytes);
+  }
+});
+
+test('advisory claim parameters preserve the resolved address and require canonical spelling', () => {
+  const hex = 'ab'.repeat(32), claim = `did:demos:agent:${hex}`;
+  for (const suffix of ['?unknown=value', '?jurisdiction=GB&unknown=value']) assert.equal(addressForClaim(claim + suffix), `0x${hex}`);
+  for (const suffix of ['?z=1&a=2', '?x=%41', '?x=1&x=2']) assert.throws(() => addressForClaim(claim + suffix), DemosClaimFormatError);
+});
+
+test('missing or null signature verification arguments are malformed, without throwing', () => {
+  assert.equal(verifyDemosSignature(), false);
+  assert.equal(verifyDemosSignature(null), false);
+});
+
+test('the strict DACS signature predicate accepts only canonical 64-byte base64url', () => {
+  const bytes = Buffer.alloc(64, 0xfb), value = bytes.toString('base64url');
+  assert.equal(isCanonicalEd25519Signature(value), true);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const residual = value.slice(0, -1) + alphabet[alphabet.indexOf(value.at(-1)) | 1];
+  for (const bad of [residual, value + '==', ` ${value}`, value + '\n', bytes.toString('base64'), bytes.toString('hex'), value.slice(1), value + 'A', null, 4]) assert.equal(isCanonicalEd25519Signature(bad), false);
+});
+
+test('CREATE payload binds the exact artifact, logical address and public zero-spend operation', () => {
+  const from = `0x${'ab'.repeat(32)}`, programName = 'TEST-program', nonce = 3;
+  const storageAddress = deriveStorageAddress(from, programName, nonce), signedListing = { TEST: 'artifact' };
+  const payload = buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress: 'TEST-logical', signedListing, nonce, timestamp: 42 });
+  assert.deepEqual(payload, { content: { type: 'storageProgram', from, to: storageAddress, amount: 0,
+    data: ['storageProgram', { operation: 'CREATE_STORAGE_PROGRAM', storageAddress, programName, encoding: 'json', data: signedListing,
+      metadata: { logicalAddress: 'TEST-logical' }, acl: { mode: 'public' }, salt: '', storageLocation: 'onchain' }],
+    nonce, timestamp: 42, transaction_fee: { network_fee: 0, rpc_fee: 0, additional_fee: 0, rpc_address: null } },
+    signature: null, hash: '', status: '', blockNumber: null });
+  assert.equal(payload.content.data[1].data, signedListing);
+  payload.content.transaction_fee.network_fee = 1;
+  assert.equal(buildStorageProgramCreatePayload({}).content.transaction_fee.network_fee, 0);
 });
