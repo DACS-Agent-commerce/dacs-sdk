@@ -7,6 +7,8 @@ const require = createRequire(import.meta.url);
 const active = new WeakMap();
 const fenced = new WeakSet();
 const guards = new WeakMap();
+// SQLite extended constraint codes: PRIMARYKEY, UNIQUE and ROWID.
+const UNIQUE_CONSTRAINT_CODES = new Set([1555, 2067, 2579]);
 const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
 function synchronousResult(result, refuse = () => {}) {
   if (result && typeof result.then === 'function') {
@@ -64,20 +66,19 @@ function writeGuard(db) {
     },
     refresh() {
       const current = JSON.stringify(schemaVersions());
-      for (const [key, triggers] of tables) {
-        if (['main', 'temp'].includes(JSON.parse(key)[0])) continue;
-        for (const trigger of triggers) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(trigger.name)}`);
-        tables.delete(key);
-      }
       if (current === versions && !schemaVersions().some(([schema]) => !['main', 'temp'].includes(schema))) return;
-      const installed = new Set(db.prepare("SELECT name FROM temp.sqlite_master WHERE type='trigger'").all().map(row => row.name));
+      // SQLite retargets TEMP triggers on rename. Rebuild their actual table
+      // bindings whenever schema identities change, including replacements.
+      for (const triggers of tables.values()) for (const trigger of triggers) {
+        db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(trigger.name)}`);
+      }
+      tables.clear();
       for (const { schema, name: table, type } of db.prepare('PRAGMA table_list').all()) {
         if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
         const key = JSON.stringify([schema, table]);
-        const triggers = (tables.get(key) ?? []).filter(trigger => installed.has(trigger.name));
+        const triggers = [];
         tables.set(key, triggers);
         for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
-          if (triggers.some(trigger => trigger.action === action && installed.has(trigger.name))) continue;
           const trigger = `${name}_${serial++}`;
           db.exec(`CREATE TEMP TRIGGER ${identifier(trigger)} BEFORE ${action}
             ON ${identifier(schema)}.${identifier(table)}
@@ -187,7 +188,7 @@ function sqliteTransaction(db, fn) {
   }
 }
 function sqliteUniqueViolation(error) {
-  return error?.code === 'ERR_SQLITE_ERROR' && /UNIQUE constraint failed/.test(error.message);
+  return error?.code === 'ERR_SQLITE_ERROR' && UNIQUE_CONSTRAINT_CODES.has(error.errcode);
 }
 
 export function createSqlitePurchaseStore() {
