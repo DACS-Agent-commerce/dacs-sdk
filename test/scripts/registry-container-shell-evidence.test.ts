@@ -15,7 +15,7 @@ function compose(overrides: Record<string, string> = {}) {
   const stage = scratch();
   const files = {
     "docker-image.json": JSON.stringify([{ Id: "fixture", Size: 1, Config: { User: "10001:10001" } }]),
-    "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: {} } }),
+    "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } } }),
     "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: true, violations: [] }),
     "audit-policy.json": JSON.stringify({ schema: "dacs-registry-audit-policy/v1", passed: true, observedAdvisories: [], unlistedAdvisories: [], assessedAdvisories: [], directAdvisories: [] }),
     "runtime-image-policy.json": JSON.stringify({ schema: "dacs-runtime-image-policy/v1", functionalPassed: true, productionDependencyPolicyPassed: true }),
