@@ -1266,6 +1266,22 @@
           "after": "e1085f274e14f20b87335189155f76284fd3b92a"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 add inert guarded SQLite statement execution",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": null,
+          "after": "b69c3e30476cb097d782da1c27d0b936ebf2641e"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": null,
+          "after": "147a5481e0d8783c9d7c929b76b32417839185a8"
+        }
+      ]
     }
   ]
 }
