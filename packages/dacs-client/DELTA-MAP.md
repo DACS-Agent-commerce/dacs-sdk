@@ -530,6 +530,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` | b7183e63a75b68cda34c2b30a4d532963794b13f |
 | | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | 3df4a602a8fba8bcdaba2a75919aeebd53f1a46d |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 7cbf9eb0efa87e4b197e8d320a9080363465ef61 |
+| D11 | fix(client): D11 fence SQLite callbacks and preserve exec semantics | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f68603bd3f057c2bf42c8670dd6cb6d52cf05db4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e547911cd3385e9eed8337be4b655bc424c82aaf |
 
 ## Reviewed merge snapshots
 
@@ -1284,6 +1287,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
 | fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
 | fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
