@@ -200,6 +200,7 @@ for (const closed of [false, true]) {
 for (const native of [false, true]) {
 test(`public host readers remain diagnostic and cannot settle or consume a nonce (native=${native})`, async t => {
   const w = world(t, INCLUDED, { publicApi: true, native });
+  if (native) w.chain.observePassiveTransfer = async () => ({ ...INCLUDED });
   const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
   const result = await w.verify();
   assert.equal(result.verification.outcome, 'readback_only');

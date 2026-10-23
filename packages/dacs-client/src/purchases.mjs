@@ -418,6 +418,28 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return { ...operation, state: { ...operation.state, protocol } };
   };
 
+  const transferDiagnosticFields = ['status', 'txHash', 'payer', 'payee', 'amountOs', 'blockNumber', 'includedAt', 'sourceDisposition', 'reason'];
+  function diagnosticFields(value, fields) {
+    const result = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+    for (const key of fields) {
+      const field = value[key];
+      if (field === null || typeof field === 'boolean' || (typeof field === 'number' && Number.isFinite(field))
+        || (typeof field === 'string' && field.length <= (key === 'reason' ? 240 : 1024))) result[key] = field;
+    }
+    return result;
+  }
+  function diagnosticCoordinates(coords) {
+    if (!coords) return null;
+    const record = diagnosticFields(coords, ['operationId', 'kind', 'network', 'from', 'nonceFence', 'expectedNonce', 'target', 'amountOs', 'payloadHash', 'savedAt', 'handoffs', 'reportedTxHash', 'reportedAt', 'verifiedAt']);
+    const observation = coords.observation;
+    record.observation = observation ? {
+      ...diagnosticFields(observation, [...transferDiagnosticFields, 'outcome', 'chainMode', 'observer', 'observedAt', 'nativeNonceResolved', 'nativeLaneResolved', 'supersededBy', 'slotConsumed', 'slotConsumedCarried', 'signedByAlternateKey']),
+      ...(observation.observation ? { observation: diagnosticFields(observation.observation, transferDiagnosticFields) } : {}),
+    } : null;
+    return record;
+  }
+
   // Read-only: an elapsed approval window is reported as expired without
   // persisting the transition (mutating paths persist it).
   function status(accountId, operationId, token) {
@@ -428,7 +450,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return {
       operation: diagnosticOnly ? diagnosticOperation(operation) : operation,
       approval: approval ? { signer: approval.signer_address, approvedAt: approval.approved_at, termsHash: approval.terms_hash } : null,
-      coordinates: diagnosticOnly && coords ? (({ payload: _payload, ...record }) => record)(coords) : coords,
+      coordinates: diagnosticOnly ? diagnosticCoordinates(coords) : coords,
       history: ops.history(operation.id),
       approvalUrl: !diagnosticOnly && linkable(operation) ? portalUrl(operation, ops.handoffTokenFor(operation.id)) : null,
       next: nextFor(operation, coords?.observation?.chainMode),
@@ -970,14 +992,15 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         observation = await observeWithDeadline(async options => {
           await assertBoundDomain(operation, options);
           options.signal.throwIfAborted();
-          const value = await (usesNativeAgreementPayment(operation) && chain.observePassiveTransfer
-            ? chain.observePassiveTransfer(hash, options) : chain.observeTransfer(hash, options));
+          const observe = chain.observePassiveTransfer ?? (usesNativeAgreementPayment(operation) ? null : chain.observeTransfer);
+          if (typeof observe !== 'function') throw new OperationError('passive_reader_unavailable', 'native diagnostics require a passive chain reader');
+          const value = await observe.call(chain, hash, options);
           options.signal.throwIfAborted();
           // Retain only bounded primitive contract fields. Never traverse or
           // serialize arbitrary host extension objects or collections.
           if (!value || typeof value !== 'object' || Array.isArray(value)) return checkedTransferObservation(value, hash);
           const projected = {};
-          for (const key of ['status', 'txHash', 'payer', 'payee', 'amountOs', 'blockNumber', 'includedAt', 'sourceDisposition', 'reason']) {
+          for (const key of transferDiagnosticFields) {
             const field = value[key];
             if (field === undefined) continue;
             if ((!['string', 'number', 'boolean'].includes(typeof field) && field !== null)
