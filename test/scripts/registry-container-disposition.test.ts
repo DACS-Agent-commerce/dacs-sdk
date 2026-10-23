@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -8,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { extractPolicyFindings, unlistedPolicyFindings, RELEASE_VERSION, classifyAcceptanceFailure, classifyPolicyChecks, classifyRegistryAudit, failureSummary, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
+const { extractPolicyFindings, unlistedPolicyFindings, RELEASE_VERSION, classifyAcceptanceFailure, classifyPolicyChecks, classifyRegistryAudit, failureSummary, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines, candidateIntegrityErrors } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -41,6 +42,11 @@ function baselineOnlySummary() {
         productionImageInventory: completeInventory } as Record<string, unknown>,
     },
   };
+}
+
+function requiredFixtureEntry<T>(entry: T | undefined, location: string): T {
+  if (entry === undefined) throw new Error("missing fixture entry: " + location);
+  return entry;
 }
 
 const scratch: string[] = [];
@@ -570,13 +576,13 @@ describe("#191 policy-finding baseline", () => {
     ["a new engine violation", "engineStrict", { "generated-package-lock.json": withLock(p => {
       p["node_modules/new-pkg"] = { version: "1.0.0", integrity: "sha512-new", engines: { node: ">=22" } }; }) }],
     ["a new violation of a package's npm engine", "engineStrict", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/minipass"]!.engines = { node: ">=16", npm: ">=12" }; }) }],
+      requiredFixtureEntry(p["node_modules/minipass"], "node_modules/minipass").engines = { node: ">=16", npm: ">=12" }; }) }],
     ["a baselined package with a changed range", "engineStrict", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/@npmcli/agent"]!.engines = { node: ">=24" }; }) }],
+      requiredFixtureEntry(p["node_modules/@npmcli/agent"], "node_modules/@npmcli/agent").engines = { node: ">=24" }; }) }],
     ["a strict failure not explained by the scan", "engineStrict", { "engine-strict.log":
       strictLog.replaceAll("@npmcli/agent@5.0.2", "other@1.0.0") }],
     ["an engine range the scan cannot read", "engineStrict", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/minipass"]!.engines = { node: "please-use-yarn" }; }) }],
+      requiredFixtureEntry(p["node_modules/minipass"], "node_modules/minipass").engines = { node: "please-use-yarn" }; }) }],
     ["an engine scan without the container's versions", "engineStrict", { "engine-versions.json": undefined }],
     ["an engine scan without the container's npm version", "engineStrict", { "engine-versions.json":
       JSON.stringify({ node: "v20.19.1" }) }],
@@ -604,7 +610,8 @@ describe("#191 policy-finding baseline", () => {
   // release under the same rule (make-fetch-happen takes @npmcli/agent ^5.0.0)
   // must not turn every PR, the drift job and prereleases red.
   const release = (location: string, version: string) => (p: Record<string, Record<string, unknown>>) => {
-    p[location]!.version = version; p[location]!.integrity = `sha512-${version}-next-release`;
+    const entry = requiredFixtureEntry(p[location], location);
+    entry.version = version; entry.integrity = `sha512-${version}-next-release`;
   };
   it.each([
     ["@npmcli/agent 5.0.3 with the same engine range", "engineStrict", {
@@ -660,9 +667,9 @@ describe("runtime-image package inventory", () => {
     ["a nested esbuild", add("node_modules/sigstore/node_modules/esbuild", "esbuild", "0.25.5")],
     ["a scoped package", add("node_modules/@types/node", "@types/node", "20.19.1")],
     ["a closure package at another version", inventory(packages => {
-      packages.find(item => item.location === "node_modules/semver")!.version = "7.7.1"; })],
+      requiredFixtureEntry(packages.find(item => item.location === "node_modules/semver"), "node_modules/semver").version = "7.7.1"; })],
     ["a closure location holding another package", inventory(packages => {
-      packages.find(item => item.location === "node_modules/ssri")!.name = "evil-ssri"; })],
+      requiredFixtureEntry(packages.find(item => item.location === "node_modules/ssri"), "node_modules/ssri").name = "evil-ssri"; })],
     ["an optional entry the image keeps at another version", add("node_modules/verror", "verror", "1.10.1")],
   ])("blocks %s in the image (exit 3)", (_label, observed) => {
     const summary = b7b180fSimulation({ "runtime-image-inventory.json": observed });
@@ -1117,4 +1124,80 @@ describe("candidate alias lookup through dependency maps", () => {
     fixture.packages["node_modules/alias"] = { ...fixture.packages["node_modules/@kynesyslabs/dacs"], name: "@kynesyslabs/dacs" };
     expect(fixture.run().status).toBe(0);
   });
+});
+
+
+describe("candidate file shadows and omitted copies", () => {
+  it.each([".js", ".json", ".node"])("rejects canonical and declared alias file shadows with extension %s", extension => {
+    for (const name of ["dacs", "dacs-node"]) for (const alias of [false, true]) {
+      const fixture = dependencyPolicyHarness();
+      const spec = alias ? "candidate-alias" : `@kynesyslabs/${name}`;
+      if (alias) fixture.manifest.dependencies = Object.assign({}, fixture.manifest.dependencies, {
+        [spec]: `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}` });
+      const location = `node_modules/${spec}${extension}`;
+      const result = fixture.run(project => {
+        writeFileSync(join(project, location), extension === ".json" ? "{}" : "module.exports = 42;");
+        expect(createRequire(join(project, "package.json")).resolve(spec)).toBe(join(project, location));
+      });
+      expect(result.status, `${name} ${spec}${extension}`).not.toBe(0);
+      expect(result.stderr).toContain(location);
+    }
+  });
+  it.each(["optional", "dev", "devOptional"])("allows an omitted %s alias but authenticates it when present", flag => {
+    const fixture = dependencyPolicyHarness();
+    const alias = "node_modules/candidate-alias";
+    fixture.packages[alias] = { ...fixture.packages["node_modules/@kynesyslabs/dacs"], name: "@kynesyslabs/dacs", [flag]: true };
+    fixture.manifest.optionalDependencies = { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` };
+    fixture.installed[alias] = null;
+    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: true } });
+    fixture.installed[alias] = { name: "@kynesyslabs/dacs", version: "0.0.0-wrong" };
+    expect(fixture.run().status).not.toBe(0);
+  });
+  it("requires a top-level candidate even if its absent lock entry is optional", () => {
+    const fixture = dependencyPolicyHarness();
+    const location = "node_modules/@kynesyslabs/dacs";
+    fixture.packages[location] = { ...fixture.packages[location], optional: true };
+    fixture.installed[location] = null;
+    expect(fixture.run().status).not.toBe(0);
+  });
+  it.each([new SyntaxError("fixture malformed JSON"), Object.assign(new Error("permission denied"), { code: "EACCES" })])(
+    "preserves installed manifest failure cause: %s", cause => {
+      const location = "node_modules/@kynesyslabs/dacs";
+      const errors = candidateIntegrityErrors({ manifest: {}, registry: CANDIDATE_REGISTRY,
+        lock: { packages: { [location]: { version: CANDIDATE_VERSION, resolved: `${CANDIDATE_REGISTRY}/dacs.tgz`, integrity: "sha512-fixture" } } },
+        candidates: [{ name: "@kynesyslabs/dacs", version: CANDIDATE_VERSION, integrity: "sha512-fixture" }],
+        installedManifest: () => { throw cause; } });
+      expect(errors.join("\n")).toContain(location);
+      expect(errors.join("\n")).toContain(cause.message);
+      expect(errors.join("\n")).toContain(cause instanceof SyntaxError ? "SyntaxError" : "EACCES");
+    });
+});
+
+describe("candidate executable and nested alias lookup", () => {
+  it("accepts an installed candidate's ordinary executable link", () => {
+    const fixture = dependencyPolicyHarness();
+    expect(fixture.run(project => {
+      const directory = join(project, "node_modules/.bin");
+      mkdirSync(directory);
+      writeFileSync(join(project, "node_modules/@kynesyslabs/dacs/cli.js"), "module.exports = 42;");
+      symlinkSync("../@kynesyslabs/dacs/cli.js", join(directory, "dacs"));
+    })).toMatchObject({ status: 0, report: { passed: true } });
+  });
+  it.each([false, true])("rejects a declared dependency alias file shadow, hoisted=%s", hoisted => {
+    const fixture = dependencyPolicyHarness();
+    fixture.packages["node_modules/plugin"] = { version: "1.0.0", resolved: `${CANDIDATE_REGISTRY}/plugin.tgz`,
+      integrity: sri(Buffer.from("plugin")), dependencies: { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } };
+    const location = hoisted ? "node_modules/candidate-alias.js" : "node_modules/plugin/node_modules/candidate-alias.js";
+    const result = fixture.run(project => {
+      mkdirSync(dirname(join(project, location)), { recursive: true });
+      writeFileSync(join(project, location), "module.exports = 42;");
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(location);
+  });
+});
+
+it("reports the missing historical fixture location before editing", () => {
+  expect(() => requiredFixtureEntry(undefined, "node_modules/semver"))
+    .toThrow("missing fixture entry: node_modules/semver");
 });
