@@ -316,7 +316,7 @@ const versionId = "0|[1-9]\\d{0,15}";
 const rangeId = `${versionId}|x|X|\\*`;
 const prereleaseId = "(?:0|[1-9]\\d*|\\d*[a-zA-Z-][a-zA-Z0-9-]*)";
 const partialVersion = `v?(${rangeId})(?:\\.(${rangeId})(?:\\.(${rangeId})(?:-(${prereleaseId}(?:\\.${prereleaseId})*))?` +
-  "(?:\\+[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*)?)?)?";
+  "?)?)?(?:\\+[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*)?";
 const rangeToken = new RegExp(`^(<=|>=|<|>|=|~>|~|\\^)?${partialVersion}$`);
 const hyphenRange = new RegExp(`^${partialVersion} - ${partialVersion}$`);
 const MAX_SEMVER_LENGTH = 256;
@@ -334,7 +334,10 @@ const numericAfterX = (M, m, p) => (isX(M) && !(isX(m) && isX(p))) || (isX(m) &&
 // semver desugars carets, tildes and X-ranges. [] is any version.
 function tokenComparators(token) {
   const match = rangeToken.exec(token);
-  if (!match || !validVersionBound(match[2], match[3], match[4], match[5]) || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
+  // Concrete plain comparators retain v and build metadata; expansions drop them.
+  const retained = match && !match.slice(2, 5).some(isX) && !/^[~^]/.test(match[1] ?? "");
+  if (!match || (retained && token.replace(/^[<>=]+/, "").length > MAX_SEMVER_LENGTH) ||
+      !validVersionBound(match[2], match[3], match[4], match[5]) || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
     throw new Error(`unsupported engine range token ${JSON.stringify(token)}`);
   }
   const [, operator = "", M, m, p, prerelease] = match;
@@ -392,7 +395,10 @@ export function satisfiesEngineRange(current, range) {
     const set = part.trim();
     const hyphen = hyphenRange.exec(set);
     if (hyphen) {
-      for (const bound of set.split(" - ")) tokenComparators("~" + bound);
+      const [from, to] = set.split(" - ");
+      const concreteFrom = !hyphen.slice(1, 4).some(isX);
+      tokenComparators(concreteFrom ? ">=" + from + (hyphen[4] === undefined ? "-0" : "") : "~" + from);
+      tokenComparators("~" + to);
       return hyphenComparators(hyphen);
     }
     // `>= 1.2` is `>=1.2`, as semver trims an operator's trailing space.
@@ -432,7 +438,7 @@ export function scanLockEngines(lock, versions) {
       const failed = engines ? ["node", "npm"].filter(key => engines[key] && !satisfiesEngineRange(current[key], engines[key])) : [];
       evaluatedPackages += 1;
       if (failed.length) {
-        const name = entry.name ?? (location === "" ? lock.name : location.slice(location.lastIndexOf("node_modules/") + 13));
+        const name = entry.name ?? (location === "" ? lock.name : location.split(/(?:^|\/)node_modules\//).at(-1));
         violations.push({ package: `${name}@${entry.version}`, location, integrity: entry.integrity ?? null, required: engines });
       }
     } catch (error) { errors.push(`${location}: ${error.message}`); }
