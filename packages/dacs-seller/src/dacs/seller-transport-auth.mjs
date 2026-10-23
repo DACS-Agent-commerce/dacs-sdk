@@ -202,6 +202,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > 60000) throw new Error('seller transport configuration is invalid');
   if (typeof requireDelegation !== 'boolean' || (requireDelegation && store.journaledOnlyReserve !== true)) throw new Error('seller delegation configuration is invalid');
   const delegations = new WeakMap();
+  const authenticatedRequests = new WeakMap();
   // Requests authenticated by an expired delegation; the store admits them
   // only for readback of effects already journaled for the job.
   const readbackOnly = new WeakSet();
@@ -231,8 +232,18 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     // True for a request its expired session delegation admits only to read
     // back already journaled effects: its reconciliation runs read only.
     readbackOnly: (request) => readbackOnly.has(request),
-    readRequest: (header) => verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) }),
+    readRequest(header) {
+      const request = verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) });
+      authenticatedRequests.set(request, canonicalize(request));
+      return request;
+    },
     validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody }) {
+      const authenticated = authenticatedRequests.get(request);
+      if (authenticated === undefined) fail('peer_request_unauthenticated');
+      let current;
+      try { current = canonicalize(request); }
+      catch (cause) { throw new SellerTransportError('peer_request_mismatch', 401, { cause }); }
+      if (!payloadValid(request, 'request') || current !== authenticated) fail('peer_request_mismatch');
       requireJobId(request?.jobId);
       if (request.seller !== sellerSigner.claim) fail('peer_audience_wrong');
       if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
@@ -241,11 +252,19 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       // timeout/unknown answer, never proof that the operation was refused.
       if (!uint(time) || request.expiresAt <= time || request.expiresAt > time + maxLifetimeMs) fail('peer_expired', 408);
       if (!exact(request.listingPin, pin)) fail('peer_listing_mismatch', 409);
-      validateBody(request, body);
+      let admittedBody;
+      try {
+        admittedBody = admitRawJson(rawBody);
+        if (!exact(admittedBody, body)) fail('peer_body_mismatch', 409);
+      } catch (cause) {
+        if (cause instanceof SellerTransportError) throw cause;
+        throw new SellerTransportError('peer_body_invalid', 409, { cause });
+      }
+      validateBody(request, admittedBody);
       const delegation = delegations.get(request);
       if (requireDelegation && !delegation) fail('peer_delegation_required');
       if (delegation) {
-        const draft = body.proposal?.plan?.draft;
+        const draft = admittedBody.proposal?.plan?.draft;
         for (const artifact of [draft, agreement].filter((value) => value != null)) {
           if (artifact.jobId !== request.jobId || !exact(artifact.listingRef, pin) ||
               artifact.parties?.find((party) => party.role === 'buyer')?.primaryClaim !== request.buyer ||
@@ -261,7 +280,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
           if (request.expiresAt > delegation.payload.expiresAt) fail('peer_delegation_expired', 408);
         } else readbackOnly.add(request);
       }
-      onAuthenticatedBody?.();
+      onAuthenticatedBody?.(admittedBody);
+      return admittedBody;
     },
     async responseHeader(request, status, text) {
       requireJobId(request?.jobId);
