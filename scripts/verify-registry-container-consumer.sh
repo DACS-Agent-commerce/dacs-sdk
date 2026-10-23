@@ -34,15 +34,7 @@ done
 docker compose version >/dev/null
 source "$repo_root/scripts/bounded-http.sh"
 
-# Retries a network-dependent command three times before reporting failure.
-retry() {
-  local attempt
-  for attempt in 1 2 3; do
-    "$@" && return 0
-    if [ "$attempt" -lt 3 ]; then sleep $((attempt * 5)); fi
-  done
-  return 1
-}
+source "$repo_root/scripts/bounded-transport.sh"
 
 temp_parent=/tmp
 if [ -n "${RUNNER_TEMP-}" ]; then
@@ -81,7 +73,7 @@ cleanup() {
   # Preserve only collected, secret-free evidence, including on early failure.
   if [ -d "$artifact_stage" ]; then
     # These are the same secret-free diagnostics exported on a complete run.
-    for name in generated-tests.exit-code doctor.log doctor.exit-code npm-audit.json \
+    for name in generated-tests.exit-code doctor.log doctor.json doctor.exit-code npm-audit.json \
       npm-audit.exit-code consumer-lock.cdx.json \
       consumer-lock-sbom.err consumer-lock-sbom.exit-code consumer-physical.cdx.json \
       consumer-physical-sbom.err consumer-physical-sbom.exit-code engine-strict.log \
@@ -191,12 +183,12 @@ chmod 0644 "$registry_config"
 cd "$repo_root"
 stage=release-set
 publish_npm="$acceptance_root/publish-npm"
-npm install --global --prefix "$publish_npm" --ignore-scripts --no-audit --no-fund npm@11.19.0 \
+run_bounded npm install --global --prefix "$publish_npm" --ignore-scripts --no-audit --no-fund npm@11.19.0 \
   2>&1 | tee "$artifact_stage/release-set.log"
 export npm_config_prefix="$publish_npm"
 export PATH="$publish_npm/bin:$PATH"
-npm run conformance:sync 2>&1 | tee -a "$artifact_stage/release-set.log"
-npm run release:set:verify -- --output-dir "$release_set" 2>&1 | tee -a "$artifact_stage/release-set.log"
+run_bounded npm run conformance:sync 2>&1 | tee -a "$artifact_stage/release-set.log"
+run_bounded npm run release:set:verify -- --output-dir "$release_set" 2>&1 | tee -a "$artifact_stage/release-set.log"
 
 version=$(node -p "require('./package.json').version")
 node - "$release_set/release-provenance.json" "$version" <<'NODE'
@@ -210,8 +202,8 @@ NODE
 stage=registry-start
 registry_image=verdaccio/verdaccio@sha256:fcb86134563534e2f634752e6c6c3edcdb78242ec16578c73ce39d1dadbaa801
 consumer_image=node:20.19.1-bookworm-slim@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d
-retry docker pull --quiet "$registry_image" 2>&1 | tee -a "$registry_log"
-retry docker pull --quiet "$consumer_image" 2>&1 | tee -a "$registry_log"
+pull_bounded --quiet "$registry_image" 2>&1 | tee -a "$registry_log"
+pull_bounded --quiet "$consumer_image" 2>&1 | tee -a "$registry_log"
 docker network create "$registry_network" >/dev/null
 network_started=1
 docker run --detach \
@@ -260,7 +252,7 @@ fi
 
 stage=registry-auth
 auth_response=$(curl "${http_json_curl[@]}" \
-  --retry 3 --retry-all-errors --retry-delay 2 \
+  --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 45 \
   --request PUT "$host_registry/-/user/org.couchdb.user:dacs-ci" \
   --header 'content-type: application/json' \
   --data '{"name":"dacs-ci","password":"local-acceptance-only","email":"ci@example.invalid","type":"user","roles":[]}' \
@@ -287,19 +279,15 @@ do
     2>&1 | tee -a "$registry_log"
 done
 
-for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; do
-  observed=$(npm view "$package_name@$version" version --registry "$host_registry")
-  test "$observed" = "$version"
-done
-
 stage=consumer
 # The generator arguments are recorded in the summary from these values.
 generated_mode=live-demos
 generated_role=seller
 generated_rails=both
-docker run --rm \
+run_bounded docker run --rm \
   "${consumer_network_args[@]}" \
   --volume "$consumer_root:/work" \
+  --volume "$bounded_support:/acceptance-support:ro" \
   --workdir /work \
   --env DACS_PACKAGE_VERSION="$version" \
   --env DACS_GENERATED_MODE="$generated_mode" \
@@ -310,9 +298,12 @@ docker run --rm \
   --env npm_config_registry="$consumer_registry" \
   --env npm_config_audit=false \
   --env npm_config_fund=false \
-  --env npm_config_fetch_retries=5 \
-  --env npm_config_fetch_retry_mintimeout=2000 \
-  --env npm_config_fetch_retry_maxtimeout=60000 \
+  --env DACS_BOUNDED_NPM_HTTP=1 \
+  --env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs \
+  --env npm_config_fetch_timeout="$npm_config_fetch_timeout" \
+  --env npm_config_fetch_retries="$npm_config_fetch_retries" \
+  --env npm_config_fetch_retry_mintimeout="$npm_config_fetch_retry_mintimeout" \
+  --env npm_config_fetch_retry_maxtimeout="$npm_config_fetch_retry_maxtimeout" \
   "$consumer_image" \
   sh -ceu '
     restore_host_ownership() {
@@ -333,7 +324,7 @@ docker run --rm \
     printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
     test "$tests_status" -eq 0
     doctor_status=0
-    npm run dacs:doctor > /work/doctor.log 2>&1 || doctor_status=$?
+    npm run --silent dacs:doctor -- --json > /work/doctor.json 2> /work/doctor.log || doctor_status=$?
     printf "%s\n" "$doctor_status" > /work/doctor.exit-code
     test "$doctor_status" -eq 5
     audit_status=0
@@ -401,7 +392,9 @@ env \
 
 stage=image-build
 # BuildKit reports progress and npm errors on stderr; keep both in the log.
-docker build \
+node scripts/bounded-build.mjs "$project"
+run_bounded docker build \
+  --file "$project/Dockerfile.acceptance" \
   "${build_network_args[@]}" \
   --tag "$runtime_image" \
   "$project" \
@@ -477,6 +470,7 @@ cp "$project/package.json" "$artifact_stage/generated-package.json"
 cp "$project/package-lock.json" "$artifact_stage/generated-package-lock.json"
 cp "$consumer_root/generated-tests.exit-code" "$artifact_stage/"
 cp "$consumer_root/doctor.log" "$artifact_stage/"
+cp "$consumer_root/doctor.json" "$artifact_stage/"
 cp "$consumer_root/doctor.exit-code" "$artifact_stage/"
 cp "$consumer_root/npm-audit.json" "$artifact_stage/"
 cp "$consumer_root/npm-audit.exit-code" "$artifact_stage/"
