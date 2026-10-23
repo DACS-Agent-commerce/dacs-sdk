@@ -132,6 +132,7 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
 
 // Resolve declared candidate aliases with Node's nearest node_modules lookup,
 // including hoisting. Installed identity cannot identify a substituted alias.
+const moduleFileExtensions = [".js", ".json", ".node"];
 function candidateAliasLocations(manifest, packages, inventory, candidate) {
   const available = new Set([...Object.keys(packages), ...inventory.map(item => item.location)]);
   const aliases = new Set();
@@ -144,7 +145,9 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
         for (;;) {
           if (parts.at(-1) !== "node_modules") {
             const location = [...parts, "node_modules", alias].join("/");
-            if (available.has(location)) { aliases.add(location); break; }
+            const found = [location, ...moduleFileExtensions.map(extension => location + extension)]
+              .filter(candidate => available.has(candidate));
+            if (found.length) { for (const candidate of found) aliases.add(candidate); break; }
           }
           if (parts.length === 0) break;
           parts.pop();
@@ -159,10 +162,11 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
 // reads it, in the installed package.json.
-export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory = [] }) {
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
-  const errors = installedInventory.filter(item => item.link === true)
+  const inventory = installedInventory ?? [];
+  const errors = inventory.filter(item => item.link === true && !/\/\.bin\/[^/]+$/.test(item.location))
     .map(item => "cannot inspect linked installed packages: " + item.location);
   for (const { name, integrity, version } of candidates) {
     if (typeof version !== "string" || version === "") {
@@ -172,11 +176,17 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
     const candidateLocation = location => typeof location === "string" &&
       (location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
     const locations = [...new Set([...Object.keys(packages).filter(location => candidateLocation(location) || packages[location]?.name === name),
-      ...installedInventory.filter(item => item.name === name || candidateLocation(item.location)).map(item => item.location),
-      ...candidateAliasLocations(manifest, packages, installedInventory, name)])];
+      ...inventory.filter(item => item.name === name || candidateLocation(item.location) ||
+        (typeof item.location === "string" && moduleFileExtensions.some(extension =>
+          item.location.endsWith(extension) && candidateLocation(item.location.slice(0, -extension.length)))))
+        .map(item => item.location),
+      ...candidateAliasLocations(manifest, packages, inventory, name)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
       const entry = packages[location];
+      if (installedInventory && location !== "node_modules/" + name &&
+          (entry?.optional === true || entry?.dev === true || entry?.devOptional === true) &&
+          !inventory.some(item => item.location === location)) continue;
       if (!entry) { errors.push("installed candidate has no lock entry: " + location); continue; }
       let url = null;
       try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
@@ -193,7 +203,12 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
       }
       if (installedManifest) {
         let manifest;
-        try { manifest = installedManifest(location); } catch { manifest = undefined; }
+        try { manifest = installedManifest(location); }
+        catch (error) {
+          errors.push("installed candidate package is not the release: " + location + " (cannot read manifest: " +
+            (error?.code ?? error?.name ?? "Error") + ": " + (error?.message ?? String(error)) + ")");
+          continue;
+        }
         if (manifest?.name !== name || manifest?.version !== version) {
           errors.push("installed candidate package is not the release: " + location + " (expected " + name + "@" +
             version + ", observed " + String(manifest?.name) + "@" + String(manifest?.version) + ")");
