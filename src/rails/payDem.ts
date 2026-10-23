@@ -49,7 +49,6 @@ const DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS = 30_000;
 const DACS_DEMOS_INCLUDED_STATE = "included";
 const DEMOS_EXECUTED_RECORD_STATUS = "confirmed";
 const DEMOS_FAILED_RECORD_STATUS = "failed";
-const MAX_RECOVERY_RECORD_JSON_CHARS = 256 * 1024;
 
 /**
  * Capabilities whose verdicts come from a node transaction record the SDK read
@@ -112,7 +111,7 @@ type SdkRecordRead =
       nonce: number;
       networkFeeOs?: string;
     }>
-  | Readonly<{ state: "indeterminate"; reason: string; cause?: unknown }>;
+  | Readonly<{ state: "indeterminate"; reason: string; cause?: unknown; unavailable?: true }>;
 
 type SdkRecordReader = (expected: Readonly<{
   txHash: string;
@@ -1113,6 +1112,18 @@ export class PayDemIncludedNonceVisibilityError extends DacsError {
   }
 }
 
+/** A recovery read is unavailable; retry the same payment without resubmitting. */
+export class PayDemRecordUnavailableError extends DacsError {
+  constructor(readonly txHash: string, readonly reason: string, options?: { cause?: unknown }) {
+    super(
+      `pay-dem recovery could not establish the node record for ${txHash}: ${reason}; ` +
+        "the payment stays unresolved and is never resubmitted",
+      { ...options, category: "transient" },
+    );
+    this.name = "PayDemRecordUnavailableError";
+  }
+}
+
 const OS_PER_DEM = 1_000_000_000n;
 
 function confirmedFeeComponentOs(value: unknown, postFork: boolean): bigint | null {
@@ -1753,10 +1764,10 @@ async function readDemosRecordByHash(
     timeoutMs,
   );
   if (result.status === "timeout") {
-    return { state: "indeterminate", reason: "transaction record read timed out" };
+    return { state: "indeterminate", reason: "transaction record read timed out", unavailable: true };
   }
   if (result.status === "rejected") {
-    return { state: "indeterminate", reason: "transaction record read failed", cause: result.reason };
+    return { state: "indeterminate", reason: "transaction record read failed", cause: result.reason, unavailable: true };
   }
   let snapshot: unknown;
   try {
@@ -1769,16 +1780,16 @@ async function readDemosRecordByHash(
   // (`{result: 400, response: "error"}`), which reads as malformed below. Both
   // are indeterminate.
   if (snapshot === null) {
-    return { state: "indeterminate", reason: "transaction record was not found or lookup failed" };
+    return { state: "indeterminate", reason: "transaction record was not found or lookup failed", unavailable: true };
+  }
+  if (snapshot === "error") {
+    return { state: "indeterminate", reason: "transaction record is missing or malformed", unavailable: true };
   }
   if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
     return { state: "indeterminate", reason: "transaction record is missing or malformed" };
   }
-  // Bound the canonical record before the checks below. A native transfer
-  // record is a few KiB.
-  if (canonicalize(snapshot).length > MAX_RECOVERY_RECORD_JSON_CHARS) {
-    return { state: "indeterminate", reason: "transaction record exceeds the size limit" };
-  }
+  // Use the same JSON admission as fresh settlement. Node-added metadata may
+  // be large; it must not make an otherwise identical saved record unreadable.
   const record = snapshot as Record<string, unknown>;
   const content = record.content;
   const nonce = content !== null && typeof content === "object" && !Array.isArray(content)
@@ -2293,7 +2304,7 @@ function sdkRecoveryReader(
       return { state: "indeterminate", reason: "the payment's payer is not this rail's wallet" };
     }
     // Read the node's fork state afresh for every recovery:
-    // demosdk 4.0.18's `getNetworkInfo` caches an instance's reply,
+    // demosdk 4.0.16 and 4.0.18's `getNetworkInfo` caches an instance's reply,
     // so a rail that read the fork inactive
     // could hold every payment signed after it.
     const info = await boundedPromise(
@@ -2301,13 +2312,14 @@ function sdkRecoveryReader(
       timeoutMs,
     );
     if (info.status === "timeout") {
-      return { state: "indeterminate", reason: "denomination fork state read timed out" };
+      return { state: "indeterminate", reason: "denomination fork state read timed out", unavailable: true };
     }
     if (info.status === "rejected") {
       return {
         state: "indeterminate",
         reason: "denomination fork state read failed",
         cause: info.reason,
+        unavailable: true,
       };
     }
     // The record's own payload decides its denomination; the node's current
@@ -2320,10 +2332,10 @@ function sdkRecoveryReader(
     } catch (cause) {
       // demosdk's nodeCall reports a transport failure as `{result: 500,
       // response: <error>}`, which is no JSON value.
-      return { state: "indeterminate", reason: "denomination fork state read failed", cause };
+      return { state: "indeterminate", reason: "denomination fork state read failed", cause, unavailable: true };
     }
     if (typeof forkActive !== "boolean") {
-      return { state: "indeterminate", reason: "denomination fork state is unavailable" };
+      return { state: "indeterminate", reason: "denomination fork state is unavailable", unavailable: true };
     }
     return readDemosRecordByHash(
       expected.txHash,
@@ -3195,6 +3207,9 @@ export function payDemSettle(
         amountOs: BigInt(amountOs),
       }));
       if (read.state === "indeterminate") {
+        if (read.unavailable) {
+          throw new PayDemRecordUnavailableError(claimed.txHash, read.reason, { cause: read.cause });
+        }
         throw new DacsError(
           `pay-dem recovery could not establish the node record for ${claimed.txHash}: ${read.reason}; ` +
             "the payment stays unresolved and is never resubmitted",

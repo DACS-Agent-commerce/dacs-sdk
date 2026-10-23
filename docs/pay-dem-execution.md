@@ -218,7 +218,7 @@ below).
   after it activates. An OS-signed record on a node that reports the fork
   inactive is indeterminate. The SDK reads that fork state from the node for
   each recovery (`nodeCall("getNetworkInfo")`), not from demosdk's
-  `getNetworkInfo`, which in 4.0.18 caches fork information, so a rail
+  `getNetworkInfo`, which in 4.0.16 and 4.0.18 caches fork information, so a rail
   that saw the fork inactive still reads a payment signed after it activated.
   A reconciler may omit the fee, and one that
   reports another fee is refused. `runSession` re-asserts a saved fee, so a
@@ -311,6 +311,14 @@ callers must ensure their stores are durable.
 Every native resume, including a completed-session replay, requires a trusted
 node to serve the transaction record. A pruned record, node reset or outage
 keeps replay unresolved without changing the saved payment or submitting again.
+Missing records (including the older node's `"error"` not-found reply), failed
+reads and timeouts throw `PayDemRecordUnavailableError`, exported from the package
+root and rails entry point. Its `category` is `"transient"`; `txHash` and `reason`
+identify the read to retry. Restore the trusted node's original transaction
+history or wait for the outage to clear, then retry the same job with the same
+session and rail stores. Permanently pruned history must be restored before
+catch-up can complete. A record that contradicts the payment is a reconciliation
+error rather than this retry signal; neither permits another payment.
 A `SessionStore` alone cannot recover a payment
 whose rail records were discarded. Restore the original rail log and attempt
 records from a trusted backup before retrying such a session; clearing a paid
@@ -320,8 +328,9 @@ Which capabilities the SDK built (its client, its rail's `settle` and
 recovery read, `payDemSettle`'s submissions and the adapters it returned), and
 which successes its own client returned, is kept private to the rails module,
 keyed by object identity. No file in the package exports a way to add to it.
-The exports are five read-only checks: the ones the settlement store and
-`runSession` use; `isPayDemRecordVerifyingRail`; and
+The module exports six read-only capability helpers: `isRecordVerifiedSource`,
+`isPayDemSessionRecoverable`, `isPayDemSettleAdapter`,
+`preflightPayDemSettlement`, `isPayDemRecordVerifyingRail`, and
 `payDemRecordVerifiedTransfer`, which gives the exact transfer terms (payer,
 payee, `amountOs`, network and recovery settlement key) of a frozen success
 `payDemSettleCore` returned from the SDK's own record read, and `undefined`
@@ -347,6 +356,10 @@ proof survives the run, so a resume holds the anchored failure as
 indeterminate instead of reporting it again. A failure read for a saved
 success, a bound permanent one included, is refused instead: the session
 stops and the saved success stays in place (PC-7).
+If a crash left only the session intent, the first resume binds and saves a
+newly recovered failed hash as indeterminate. Resume the same job once more to
+re-read that held hash and finish with the bound permanent failure; neither
+resume submits another transfer.
 
 The dacs-node buyer track runs a fresh payment only on a rail whose success
 the SDK can make final: the default runtime rail, a rail

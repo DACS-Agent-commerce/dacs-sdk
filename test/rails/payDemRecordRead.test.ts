@@ -12,6 +12,7 @@ import {
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import {
+  PayDemRecordUnavailableError,
   payDemSettle,
   type PayDemRail,
   type PayDemSettlementReconcile,
@@ -122,6 +123,59 @@ async function unseenBroadcast(log: SettlementLog, req: SettleRequest) {
 }
 
 describe("same-adapter cached outcomes require a fresh node record", () => {
+  test.each(["missing", "old not-found", "rejected", "timeout", "fork missing", "fork rejected", "fork timeout"])(
+    "reports %s as retryable without changing the saved success", async (observation) => {
+      const { priorAttempts: _history, ...fresh } = request();
+      const log = createInMemorySettlementLog();
+      const settle = payDemSettle(rail, {}, { store: createIdempotencyStore(log) });
+      const saved = await settle(fresh);
+      expect(saved.ok).toBe(true);
+      const before = await log.readOutcome!("pay-dem:retained-native:0");
+      const offline = new Error("node offline");
+      const reply = () => {
+        if (observation.endsWith("timeout")) return new Promise(() => undefined);
+        if (observation.endsWith("rejected")) throw offline;
+        if (observation === "old not-found") return "error";
+        return null;
+      };
+      if (observation.startsWith("fork")) demosNode.networkInfoReply = reply;
+      else demosNode.reply = reply;
+      const error = await settle(request()).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(PayDemRecordUnavailableError);
+      expect(error).toMatchObject({ txHash, category: "transient" });
+      if (observation.endsWith("rejected")) expect(error).toHaveProperty("cause", offline);
+      expect(await log.readOutcome!("pay-dem:retained-native:0")).toEqual(before);
+      demosNode.reply = undefined;
+      demosNode.networkInfoReply = undefined;
+      await expect(settle(request())).resolves.toEqual(saved);
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
+    },
+  );
+
+  test.each(["confirmed", "failed"])("re-reads a %s record with large node attrs after restart", async (status) => {
+    const { priorAttempts: _history, ...fresh } = request();
+    const log = createInMemorySettlementLog();
+    demosNode.recordStatus = status;
+    const attrs = { padding: "x".repeat(262_145) };
+    demosNode.reply = (hash) => ({ ...(demosNode.records.get(hash) as object), attrs });
+    const settle = payDemSettle(rail, {}, { store: createIdempotencyStore(log) });
+    const saved = await settle(fresh);
+    expect(saved).toMatchObject({ ok: status === "confirmed", txHash });
+    const retained = { ...request([prior(saved.ok)]), recoveryOnly: true };
+    await expect(settle(retained)).resolves.toEqual(saved);
+    const reopened = payDemSettle(await sdkPayDemRail(), {}, {
+      store: createIdempotencyStore(log), reconcile: async () => saved.ok ? executed() : failed(),
+    });
+    await expect(reopened(retained)).resolves.toEqual(saved);
+    // Large metadata does not waive the transfer binding checks.
+    demosNode.reply = () => ({ ...nodeRecord({ txHash, payer, payee: "ef".repeat(32),
+      amountOs: "1000000000", status, feeOs: "0" }), attrs });
+    await expect(reopened(retained)).rejects.toThrow("record does not match the payment");
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.broadcasts).toBe(1);
+  });
+
   const cases = [true, false].flatMap((ok) => [true, false].flatMap((history) =>
     ["matching", "opposite", "missing", "pending", "block", ok ? "fee" : "nonce"].map((observation) =>
       ({ ok, history, observation }))));
@@ -149,6 +203,8 @@ describe("same-adapter cached outcomes require a fresh node record", () => {
     if (observation === "matching") await expect(audit()).resolves.toEqual(saved);
     else {
       await expect(audit()).rejects.toThrow(/node record/);
+      if (observation === "missing") await expect(audit()).rejects.toBeInstanceOf(PayDemRecordUnavailableError);
+      else await expect(audit()).rejects.not.toBeInstanceOf(PayDemRecordUnavailableError);
       // An unavailable or conflicting read never poisons the saved outcome.
       demosNode.records.set(txHash, original);
       await expect(audit()).resolves.toEqual(saved);

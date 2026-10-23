@@ -35,6 +35,7 @@ import {
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import {
+  PayDemRecordUnavailableError,
   payDemSettle,
   type PayDemRail,
   type PayDemSettlementReconcile,
@@ -1561,6 +1562,12 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     };
     const recovery = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
     await expect(recovery).rejects.toThrow(expected[reply]);
+    if (reply === "absent" || reply === "timeout") {
+      await expect(recovery).rejects.toBeInstanceOf(PayDemRecordUnavailableError);
+      await expect(recovery).rejects.toMatchObject({ category: "transient", txHash: "cd".repeat(32) });
+    } else {
+      await expect(recovery).rejects.not.toBeInstanceOf(PayDemRecordUnavailableError);
+    }
     expect(custom).not.toHaveBeenCalled();
     expect(demosNode.transfers).toBe(0);
     expect(reconciliations)
@@ -3046,6 +3053,70 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(await lastOutcome(store)).toMatchObject({ ok: false, txHash });
       expect(second.settleCalls.n + third.settleCalls.n).toBe(0);
       expect(demosNode.transfers).toBe(0);
+    });
+
+    test.each([false, true])("retries unavailable current-SDK native records after an evidence crash=%s", async (crash) => {
+      const kv = await demKv();
+      const store = createInMemorySessionStore();
+      const log = createInMemorySettlementLog();
+      const adapter = async () => payDemSettle(await sdkPayDemRail(), {}, {
+        store: createIdempotencyStore(log), reconcile: async () => executedClaim(txHash),
+      });
+      const first = await makeDeps(store, { kv, settle: await adapter(), ...(crash ? {
+        anchor: async (name: string, value: unknown) => {
+          if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence unavailable");
+          kv.set(`stor:${name}`, value as Record<string, unknown>);
+          return `stor:${name}`;
+        },
+      } : {}) });
+      const initial = runSessionCore(first.listingRef, demTerms, first.deps);
+      if (crash) await expect(initial).rejects.toThrow("evidence unavailable");
+      else await expect(initial).resolves.toMatchObject({ outcome: "completed" });
+      const before = await store.load("job-1");
+      const anchors = structuredClone([...kv]);
+      demosNode.reply = () => null;
+      const resumed = await makeDeps(store, { kv, settle: await adapter() });
+      const recovery = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
+      await expect(recovery).rejects.toBeInstanceOf(PayDemRecordUnavailableError);
+      await expect(recovery).rejects.toMatchObject({ txHash, category: "transient" });
+      expect(await store.load("job-1")).toEqual(before);
+      expect([...kv]).toEqual(anchors);
+      demosNode.reply = undefined;
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
+    });
+
+    test.each([false, true])("resumes large native records after an evidence crash=%s and replays completion", async (crash) => {
+      const kv = await demKv();
+      const store = createInMemorySessionStore();
+      const log = createInMemorySettlementLog();
+      const attrs = { padding: "x".repeat(262_145) };
+      demosNode.reply = (hash) => ({ ...(demosNode.records.get(hash) as object), attrs });
+      const adapter = async () => payDemSettle(await sdkPayDemRail(), {}, {
+        store: createIdempotencyStore(log), reconcile: async () => executedClaim(txHash),
+      });
+      const evidence = `stor:${sessionAnchorName.evidence("job-1")}`;
+      const first = await makeDeps(store, { kv, settle: await adapter(), ...(crash ? {
+        anchor: async (name: string, value: unknown) => {
+          const ref = `stor:${name}`;
+          if (ref === evidence) throw new Error("process killed before evidence");
+          kv.set(ref, value as Record<string, unknown>);
+          return ref;
+        },
+      } : {}) });
+      const initial = runSessionCore(first.listingRef, demTerms, first.deps);
+      if (crash) await expect(initial).rejects.toThrow("process killed before evidence");
+      else await expect(initial).resolves.toMatchObject({ outcome: "completed" });
+      for (let restart = 0; restart < 2; restart += 1) {
+        const resumed = await makeDeps(store, { kv, settle: await adapter() });
+        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "completed" });
+      }
+      expect(kv.get(evidence)).toMatchObject({ outcome: "success" });
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
     });
 
     // Cold P1-1: a rail's fee is its debit accounting (the confirmation's gas

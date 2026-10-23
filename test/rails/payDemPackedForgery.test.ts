@@ -84,9 +84,10 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     expect(report.importErrors.map(({ file }) => file)
       .filter((file) => /^dist\/(?:index|agent\/|rails\/)/.test(file))).toEqual([]);
     expect(report.vouchExports).toEqual([]);
-    // Exactly the four read-only checks, whatever the export syntax.
+    // The export-name filter selects four capability queries and the recovery error class.
     expect(report.brandExports.filter((entry) => entry.startsWith("dist/rails/payDem.js#")).sort())
       .toEqual([
+        "dist/rails/payDem.js#PayDemRecordUnavailableError",
         "dist/rails/payDem.js#isPayDemRecordVerifyingRail",
         "dist/rails/payDem.js#isPayDemSettleAdapter",
         "dist/rails/payDem.js#isRecordVerifiedSource",

@@ -892,7 +892,14 @@ a caller-supplied log persists across process restarts. The adapter's default
 in-memory log remains available for direct, process-local rail calls.
 Every native resume, including a completed-session replay, requires a trusted
 node to serve the transaction record. A pruned or unavailable
-record leaves replay unresolved without changing the saved payment or submitting again. A fresh success reports that same record
+record leaves replay unresolved without changing the saved payment or submitting again.
+Missing records and failed or timed-out recovery reads throw
+`PayDemRecordUnavailableError` (`category: "transient"`, with `txHash` and
+`reason`). Restore access to the trusted node's original transaction record,
+then retry the same job with the retained session and rail stores. A permanently
+pruned record requires restoring the node's history; this error does not authorize
+another transfer or completion without a record. Contradicting records remain
+ordinary reconciliation errors. A fresh success reports that same record
 fee as `networkFeeOs`, which the session saves and signs: the rail's own
 `networkFeeOs` (the confirmation's fee) bounds
 `maxTotalDebitOs` and stays on the rail's result, but the record need not carry
@@ -903,7 +910,7 @@ still completes after it activates. The
 reconciler's answer only names the hash and can refuse, and one the
 record contradicts is refused. The fork state that bounds this read (no
 OS-signed record before the fork) is read from the node afresh for each
-recovery, not from demosdk's `getNetworkInfo`, which in 4.0.18 caches fork
+recovery, not from demosdk's `getNetworkInfo`, which in 4.0.16 and 4.0.18 caches fork
 information. Over any other rail the adapter returns no recovered verdict at
 all, only the hash: the session binds it and saves it as an unresolved
 attempt, so a later resume through the adapter over that rail

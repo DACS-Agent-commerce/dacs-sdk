@@ -129,7 +129,7 @@ test("store-reconciled recovery reads the fork and execution record once", async
   expect(demosNode.transfer).toHaveBeenCalledTimes(1);
 });
 
-test.each([262144, 262145])("recovery record canonical size boundary: %s characters", async (size) => {
+test.each([262144, 262145])("recovery accepts node metadata at %s characters, as fresh settlement does", async (size) => {
   const log = createInMemorySettlementLog();
   await payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log) })(request());
   const record = await demosNode.getTxByHash(txHash) as Record<string, unknown>;
@@ -141,8 +141,7 @@ test.each([262144, 262145])("recovery record canonical size boundary: %s charact
     store: createIdempotencyStore(log), reconcile: async () => executedClaim(),
   });
   const before = await log.readOutcome!(key);
-  if (size === 262144) await expect(settle(request())).resolves.toMatchObject({ ok: true, txHash });
-  else await expect(settle(request())).rejects.toThrow(/size limit/);
+  await expect(settle(request())).resolves.toMatchObject({ ok: true, txHash });
   expect(await log.readOutcome!(key)).toEqual(before);
   expect(demosNode.transfer).toHaveBeenCalledTimes(1);
   expect(demosNode.broadcast).toHaveBeenCalledTimes(1);

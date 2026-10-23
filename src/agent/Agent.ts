@@ -448,7 +448,7 @@ export interface RunSessionOptions {
    * prove what happened after a lost rail response. Omit for a new session.
    */
   jobId?: string;
-  /** Optional durable buyer-session lifecycle store used for restart recovery. */
+  /** Durable buyer-session lifecycle store for restart recovery; required for native DEM sessions. */
   sessionStore?: import("./sessionStore.js").SessionStore;
   /**
    * Reconcile a previously claimed payment whose durable session record still
