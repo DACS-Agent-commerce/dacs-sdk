@@ -55,7 +55,7 @@ describe("registry/container acceptance disposition", () => {
   it("passes only when both the rehearsal and the release security gate pass", () => {
     const summary = baselineOnlySummary();
     summary.securityGate.passed = true;
-    summary.audit.total = 0;
+    Object.assign(summary.audit, { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 });
     summary.audit.observedAdvisories = [];
     summary.securityGate.auditExitCode = 0;
     expect(registryContainerDisposition(summary).exitCode).toBe(0);
