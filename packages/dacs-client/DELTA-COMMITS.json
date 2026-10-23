@@ -765,5 +765,18 @@
       "packages/dacs-client/src/purchase-state-schema.mjs",
       "packages/dacs-client/test/purchase-state-schema.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 omit unimplemented diagnostic factory options",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs"
+    ]
   }
 ]

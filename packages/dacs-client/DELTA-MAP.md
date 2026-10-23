@@ -469,6 +469,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 split the held purchase-state schema prerequisite | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 557ea59e906125decb9c56d5b2322a1d30af3321 |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | ce3bb31eb69d5828748e1d04e797bd10de4ef5f3 |
+| D11 | fix(client): D11 omit unimplemented diagnostic factory options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:164`, `packages/dacs-client/src/purchases.mjs:281`, `packages/dacs-client/src/purchases.mjs:416`, `packages/dacs-client/src/purchases.mjs:461`, `packages/dacs-client/src/purchases.mjs:480`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:693`, `packages/dacs-client/src/purchases.mjs:910`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:1107`, `packages/dacs-client/src/purchases.mjs:1114`, `packages/dacs-client/src/purchases.mjs:1132`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1148`, `packages/dacs-client/src/purchases.mjs:1155` | 4aaed8cf6ea80a8871e2a08e32d7d1ff76932695 |
+| | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 4abceff4d2f43e41f00707479962c194ca06070f |
 
 ## Complete commit and file inventory
 
@@ -1087,6 +1090,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/src/purchase-state-schema.mjs:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
+| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:164`, `packages/dacs-client/src/purchases.mjs:281`, `packages/dacs-client/src/purchases.mjs:416`, `packages/dacs-client/src/purchases.mjs:461`, `packages/dacs-client/src/purchases.mjs:480`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:693`, `packages/dacs-client/src/purchases.mjs:910`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:1107`, `packages/dacs-client/src/purchases.mjs:1114`, `packages/dacs-client/src/purchases.mjs:1132`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1148`, `packages/dacs-client/src/purchases.mjs:1155` |
+| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
 
 ## Original moved files
 
@@ -1135,7 +1145,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs` | `http-mcp/public/portal/embedded-wallet/sdk-provider.mjs` | b7183e63a75b68cda34c2b30a4d532963794b13f | changed by D11 | 59a2fd307756d036f813edd17dec2fa8be23e68f |
 | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs` | `http-mcp/public/portal/seller-session-delegation.mjs` | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 | unchanged | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 |
 | `packages/dacs-client/src/public/portal/seller-session-limits.mjs` | `http-mcp/public/portal/seller-session-limits.mjs` | deleted before publication | unchanged | deleted |
-| `packages/dacs-client/src/purchases.mjs` | `http-mcp/src/purchases.mjs` | 79de3d54bc07c27f51c1758f81c61719c0d77595 | changed by D16, D11 | d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9 |
+| `packages/dacs-client/src/purchases.mjs` | `http-mcp/src/purchases.mjs` | 79de3d54bc07c27f51c1758f81c61719c0d77595 | changed by D16, D11 | 4aaed8cf6ea80a8871e2a08e32d7d1ff76932695 |
 | `packages/dacs-client/src/switch-files.mjs` | `http-mcp/src/switch-files.mjs` | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 | unchanged | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 |
 | `packages/dacs-client/src/util/http.mjs` | `http-mcp/src/util/http.mjs` | 569c5316ef89406fbf3a2d60b8b5efac9005ccf3 | changed by D16 | 306f583fa3a05fe470893f8d604131681ada172f |
 | `packages/dacs-client/src/util/ids.mjs` | `http-mcp/src/util/ids.mjs` | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a | unchanged | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a |

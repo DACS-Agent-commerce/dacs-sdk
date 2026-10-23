@@ -1441,6 +1441,22 @@
           "after": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 omit unimplemented diagnostic factory options",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9",
+          "after": "4aaed8cf6ea80a8871e2a08e32d7d1ff76932695"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "a2cd8b437ac464174f10834f7870b960966d0393",
+          "after": "4abceff4d2f43e41f00707479962c194ca06070f"
+        }
+      ]
     }
   ]
 }
