@@ -32,7 +32,7 @@ export function readEvidence(path) {
 export function* evidenceLines(text = "") {
   boundedEvidenceText(text);
   let start = 0, count = 0;
-  while (start <= text.length) {
+  while (start < text.length) {
     const newline = text.indexOf("\n", start), end = newline < 0 ? text.length : newline;
     if (++count > EVIDENCE_MAX_LINES || end - start > EVIDENCE_MAX_LINE_BYTES ||
         Buffer.byteLength(text.slice(start, end)) > EVIDENCE_MAX_LINE_BYTES) throw new Error("evidence line limit exceeded");
