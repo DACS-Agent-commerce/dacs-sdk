@@ -42,6 +42,8 @@ import {
   type SellerFulfilmentAuditSourceV1,
 } from "../../src/seller/fulfilmentAuditSource.js";
 
+import { isSellerFulfilmentVetInvocationMismatch } from "../../src/seller/index.js";
+
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
 const BUYER = "did:demos:buyer";
@@ -1273,6 +1275,22 @@ describe("runFulfilmentCore", () => {
       });
       expect(f.store.consumed).toBe(false);
     }
+  });
+
+  test("the shared Vet predicate accepts authenticated coverage and rejects a substituted verifier", () => {
+    const f = fixture();
+    const invocation = f.auditSource.artifacts.vetRequirements[0];
+    if (!invocation) throw new Error("TEST fixture has no buyer Vet invocation");
+    const context = {
+      jobId: f.authorization.jobId, buyerClaim: BUYER, sellerClaim: SELLER,
+      buyerRequirement: BUYER_REQUIREMENT,
+      bindings: new Map(f.auditSource.artifacts.vetRequirements.map((entry) => [
+        canonicalize(entry.vetRecordRef),
+        { primaryClaim: entry.evaluatedParty, roles: new Set([entry.evaluatedParty === BUYER ? "buyer" : "seller"]) },
+      ])),
+    };
+    expect(isSellerFulfilmentVetInvocationMismatch(invocation, context)).toBe(false);
+    expect(isSellerFulfilmentVetInvocationMismatch({ ...invocation, verifier: BUYER }, context)).toBe(true);
   });
 
   test("completes delivery with required Vet coverage from this job's deal-specific results", async () => {
