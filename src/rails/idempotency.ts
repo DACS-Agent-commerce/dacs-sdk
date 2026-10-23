@@ -688,6 +688,9 @@ function settlementLogMethod<K extends keyof SettlementLog>(
     }
     const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
     if (descriptor !== undefined) {
+      if (optional && "value" in descriptor && descriptor.value === undefined) {
+        return undefined as SettlementLog[K];
+      }
       if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
           nodeTypes.isProxy(descriptor.value)) {
         throw new DacsError(`settlement log ${String(name)} must be stable callable data`);
@@ -798,7 +801,6 @@ export function createIdempotencyStore(
         if (flying.bindingHash !== bindingHash) {
           throw new DacsError(`settlement ${key} is already running under different terms`);
         }
-        await flying.promise;
       }
       const raw = await durable.readOutcome(key);
       if (raw === null) return null;

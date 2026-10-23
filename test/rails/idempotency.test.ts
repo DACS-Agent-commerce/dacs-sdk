@@ -776,21 +776,36 @@ describe("read-only settlement outcome lookup", () => {
     await expect(restarted.readOutcome!("other-key", binding())).rejects.toThrow(/does not match its idempotency key/);
   });
 
-  test("waits for the same-store submission without acquiring another generation", async () => {
+  test.each(["pending", "failed"])("reads independently of a %s same-store submission", async (state) => {
     const log = createInMemorySettlementLog();
     const claim = vi.spyOn(log, "claimIntent");
+    const lookup = vi.spyOn(log, "readOutcome");
     const store = createIdempotencyStore(log);
-    let finish!: (result: SettleResult) => void;
+    let fail!: (error: Error) => void;
     let started!: () => void;
     const submitted = new Promise<void>((resolve) => { started = resolve; });
-    const gate = new Promise<SettleResult>((resolve) => { finish = resolve; });
+    const gate = new Promise<SettleResult>((_resolve, reject) => { fail = reject; });
     const pending = store.once(KEY, binding(), async () => { started(); return gate; });
+    const failure = new Error("submit failed");
+    const rejected = expect(pending).rejects.toBe(failure);
     await submitted;
     const read = store.readOutcome!(KEY, binding());
-    await expect(store.readOutcome!(KEY, binding({ amount: "2000000" }))).rejects.toThrow(/different terms/);
-    finish(ok("in-flight-effect"));
-    await pending;
-    await expect(read).resolves.toMatchObject({ txHash: "in-flight-effect" });
+    void read.catch(() => undefined);
+    try {
+      if (state === "failed") {
+        fail(failure);
+        await rejected;
+      }
+      expect(lookup).toHaveBeenCalledTimes(1);
+      await expect(read).resolves.toBeNull();
+      if (state === "pending") {
+        await expect(store.readOutcome!(KEY, binding({ amount: "2000000" }))).rejects.toThrow(/different terms/);
+      }
+    } finally {
+      fail(failure);
+      await rejected;
+    }
+    await expect(store.readOutcome!(KEY, binding())).resolves.toBeNull();
     expect(claim).toHaveBeenCalledTimes(1);
   });
 
@@ -802,9 +817,9 @@ describe("read-only settlement outcome lookup", () => {
     await expect(createIdempotencyStore(log).readOutcome!(KEY, binding())).rejects.toThrow();
   });
 
-  test("legacy logs fail closed for read-only recovery while ordinary once remains compatible", async () => {
+  test.each(["absent", "undefined"])("legacy logs with %s lookup preserve ordinary once", async (method) => {
     const { readOutcome: _read, ...legacy } = createInMemorySettlementLog();
-    const store = createIdempotencyStore(legacy);
+    const store = createIdempotencyStore(method === "absent" ? legacy : { ...legacy, readOutcome: undefined });
     await expect(store.readOutcome!(KEY, binding())).rejects.toThrow(/requires read-only outcome lookup/);
     await expect(store.once(KEY, binding(), async () => ok("legacy-effect"))).resolves.toMatchObject({ txHash: "legacy-effect" });
   });
