@@ -5,6 +5,11 @@ const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
 // generatedAt fresh; the proposal is then accepted until the derived Agreement's
 // deadline (generatedAt + deadlineSecAfterCommit). Otherwise the clock window applies.
 export function proposalTimeProblem({ generatedAt, observedAt, admitted = false, deadlineSecAfterCommit }) {
-  if (admitted) return Number.isSafeInteger(generatedAt) && observedAt < generatedAt + deadlineSecAfterCommit * 1000 ? null : 'proposal arrives after the admitted context request\'s Agreement deadline';
-  return !Number.isSafeInteger(generatedAt) || Math.abs(generatedAt - observedAt) > GENERATED_AT_SKEW_MS ? 'proposal generatedAt is outside the seller clock window' : null;
+  if (![generatedAt, observedAt].every(value => Number.isSafeInteger(value) && value >= 0) || typeof admitted !== 'boolean') return 'proposal timestamps must be nonnegative safe integers';
+  if (admitted) {
+    if (!Number.isSafeInteger(deadlineSecAfterCommit) || deadlineSecAfterCommit <= 0) return 'the admitted context deadline interval must be a positive safe integer';
+    const deadline = generatedAt + deadlineSecAfterCommit * 1000;
+    return Number.isSafeInteger(deadline) && observedAt < deadline ? null : 'proposal arrives after the admitted context request\'s Agreement deadline';
+  }
+  return Math.abs(generatedAt - observedAt) > GENERATED_AT_SKEW_MS ? 'proposal generatedAt is outside the seller clock window' : null;
 }

@@ -1,10 +1,11 @@
 // A TEST rail steward and its signed demos-native:DEM RailDefinition (PA-1,
 // in-code), for the native seller profile's railAuthority option.
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { sign } from 'node:crypto';
 import * as core from '@kynesyslabs/dacs';
 
-export function railSteward() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+let nextTestSeed = 1;
+export function railSteward(tag = nextTestSeed++) {
+  const seed = Buffer.from(core.sha256Hex(`TEST rail steward ${tag}`), 'hex'), privateKey = core.privateKeyFromSeed(seed), publicKey = core.publicKeyFromSeed(seed);
   const stewardPublicKey = publicKey.export({ format: 'jwk' }).x;
   const stewardClaim = `did:demos:agent:${Buffer.from(stewardPublicKey, 'base64url').toString('hex')}`;
   const signRail = (unsigned) => ({ ...unsigned, signature: { algorithm: 'ed25519', signer: stewardClaim,
