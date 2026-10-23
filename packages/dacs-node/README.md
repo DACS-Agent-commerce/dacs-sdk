@@ -10,7 +10,9 @@ and payment-evidence handshake stores plus durable authenticated HTTP inbox and
 outbox records. It also provides the bounded HTTP listener and durable client
 that operate those stores, authority-separated live role services, and strict
 role-local secret loading. Generated deployment remains a separate stacked
-implementation unit.
+implementation unit. Built-in live completion supports empty Vet requirements
+only. Non-empty passing requirements require a provenance-backed completion
+audit implementation beyond the built-in live profile.
 
 ```ts
 import {
@@ -34,6 +36,69 @@ hook for `@kynesyslabs/demosdk@4.0.16`. It resolves only that release's one
 published extensionless `demoswork/operations/` directory import. Generated
 compiled services use this hook instead of shipping a general TypeScript/esbuild
 transformer in production; all unrelated resolution failures remain unchanged.
+
+The native DEM commerce profile uses Standard commit
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, the same pin and full module
+tuple required by its completed-session admission. At that pin PROFILE.md lists
+the tuple as the unreleased JID-1 corrective candidate, which is not an
+admissible live profile until the Standard records a coordinated release. Until
+then every session profile admission is refused, whatever the deployment
+authority returns (`DACS_STANDARD_PROFILE_STATUS` is `"unreleased-candidate"`).
+The four live factories refuse to build without an admission authority, and
+every live action they build is admitted first. BundleBinding resolution, Demos
+publication and `verifyFixedPricePayDemAuditCompletion` require admission too.
+The admitted factories and generated commerce graphs therefore take no live
+effect at this pin. The lower-level exported `createDacs{Buyer,Seller}LiveCommerceAssemblyV1`
+and `createDacs{Buyer,Seller}PayDemLiveCommerceAssemblyV1` do not perform profile
+admission themselves; direct callers must admit the session before invoking
+their agreement or payment operations. The exported
+`verifyCompletedTwoSidedSession` and `verifyFixedPriceX402AuditCompletion` gates
+require `authenticateSessionProfile` and refuse completion without independently
+authenticated admission. The unreleased profile at this pin therefore prevents
+these gates from returning `audit-complete` as well.
+
+The BundleBinding well-known index uses `sha256-` followed by SHA-256 of the
+RFC 8785 canonical JSON index document for `indexHash`. The pinned Standard
+does not define that computation; deployments must agree on this SDK convention
+until the Standard specifies an interoperable index digest.
+The index may be hosted on another HTTPS origin. Discovery uses the bounded,
+DNS-pinned public JSON reader by default, with a 5-second deadline per read and
+a limit of 4,096 binding records per index. Custom `readJson` implementations
+must bound response bytes before decoding. A timeout or oversized index leaves
+the surface unanswered; it never proves absence.
+
+`createDacsSessionProfileGatedCommerceGraphV1` builds a live graph only when
+`dacsLiveSessionProfileAvailabilityV1` reports admission is possible. Otherwise
+the role service starts with `commerce: blocked` and names the reason:
+`session-profile-unreleased`, `session-profile-admission-unconfigured`, or
+`session-profile-admission-unavailable` when the operator file cannot be read,
+or `session-profile-admission-invalid` when its content is malformed.
+Generated projects use it with `createDacsFileSessionProfileAdmissionV1`, which
+re-reads the operator's statement in `DACS_SESSION_PROFILE_ADMISSION_FILE`
+(`releasePin`, `profileStatus`, `moduleVersions`) for configuration diagnostics.
+This local statement cannot authenticate the peer's pin or bind evidence to an
+exact session, so this source admits no session even after release. A readable
+file reports `session-profile-peer-evidence-unconfigured`. Configure a
+verifier-owned `authenticateSessionProfile` provider with authenticated evidence
+for every participant and exact session before enabling commerce, then restart.
+Docker projects mount
+`DACS_SESSION_PROFILE_ADMISSION_DIRECTORY` read-only and read its `admission.json`
+at `/run/dacs/session-profile/admission.json`. Local projects use the file path
+directly. Restoring a missing file updates its diagnostic but does not enable
+commerce. The blocked graph returns operator action until a verifier is
+configured and the service restarts.
+When the release is cut, the
+pin and that status move to it together. Orders and
+databases bound to the historical
+`965df755aba4ff392f1fb37a93d287242b177ba4` revision are refused;
+there is no automatic migration or relabelling of signed evidence. Retain the
+original database and use its matching SDK release to recover historical work.
+Start current-profile work in a new database.
+
+Coordinator tracks now retain `pausedSince` while using SQLite schema version 8.
+An older SDK may reject those track records as corrupt; rollback with an existing
+database is unsupported. Retain a matching SDK and read-only database snapshot
+for recovery instead of opening the current database with an older SDK.
 
 The SQLite database is permanently bound to one mode/profile, actor role,
 authority, SDK version, and Standard revision. The SDK and Standard revisions
@@ -166,21 +231,192 @@ requirement before exposing them to the seller agreement policy. This keeps the
 two role-owned Vet writes parallel without letting an unverified proposal
 define the seller's local Agreement context.
 
+Pre-agreement Vet failure uses a separate symmetric terminal path. Configure
+`terminalBundle.authenticateProduction` on both live-role factories with the
+application's recursive DACS-2 verifier. This is the only check that the peer's
+Vet production is authentic: the SDK checks only the shape of its result, so
+a stub that returns `{ status: "valid" }` lets any well-formed production
+through. Never configure a stub or a sender assertion in production. A result
+other than `valid`, a thrown error or a malformed result fails closed, with
+nothing retained or signed. Live bootstrap supports empty requirements only
+and refuses non-empty requirements before any session effect, including with
+custom `vet.produce` and `vet.authenticate` host policy. Custom non-pass
+productions for supported requirements can use the terminal path. A custom Vet
+alone does not add requirement support to the built-in completion audits.
+A terminal proposal carries the exact
+finalized `VetProduction` as well as the derived co-signed plan; each role
+independently authenticates the production, reconstructs the authority and
+requires byte-equivalent canonical output before retaining or signing it.
+`pass` creates no terminal authority. Unavailable production authentication
+remains retryable and produces no blame. Every authenticated non-pass decision ends the Vet phase
+at `vet-failed` (DACS-2 VPC-4, VP-R4): `fail` is the evaluated party's
+`counterparty` fault. An authenticated `indeterminate` or `error` defaults to
+permanent verifier fault under VPC-4. Independently authenticated `cause` evidence
+binding the job, record hash and both identity hashes can establish a sole
+counterparty-presentation parse cause, which maps to `counterparty`. A supplied
+cause bound to another production remains indeterminate and produces no terminal
+blame, as does unavailable production authentication.
+
+When configured, the returned graph exposes `terminalBundles`.
+`registerLocalTerminal(input)` durably binds locally observed failure material,
+and `advanceRegisteredTerminal(jobId)` drives the SDK's generation-fenced
+two-role finalizer, authenticated HTTP proposal/contribution exchange, own-role
+Demos bundle publication and BB-1 binding. It is safe to call again after a
+restart: acknowledgement loss, signature checkpoints, ambiguous anchor writes
+and exact finalized-head recovery all retain the same job/role authority. The
+runtime supports both fixed-price x402 and native DEM orders and rejects a
+terminal pipeline for the other rail. The host deliberately does not replace
+the recursive Vet authenticator with a sender assertion.
+
+A role selects one terminal plan per job: the first plan written, from its own
+Vet failure or from the peer's proposal. Local registration and inbound
+proposals share one insert-once selection row, written before the phase claim
+and the plan's binding, so two processes racing on one database agree on it,
+and a crash after it is completed on the next tick instead of stranding the
+phase. A peer's plan selected just before another process commits the job to
+the agreement is refused like one that arrives after it, and the agreement
+decides the job.
+
+The two roles exchange their exact finalized Vet productions before selecting a
+terminal plan. The existing role-specific terminal proposal messages also carry
+`{ vetEvidenceVersion: "1", terminalInput }` during this exchange. Each recipient
+independently authenticates the CVR, its role/session joins and finalized receipt.
+The productions are retained in insert-once rows. Both CVR references, in buyer
+then seller evaluation order, enter `vetRecords`; the same ordered references and
+receipts determine the dependency hash. A plan missing either record is refused.
+A failure waits for the other production, and restart resumes from the retained
+bytes. `registerLocalVetPass(order, input)` retains the full passing production;
+a legacy marker without it cannot authorize a signature.
+
+No role signs a plan before its own Vet result is durable and agrees with it:
+its own failure is that plan, or its own Vet of the peer passed and the plan is
+the peer's failure of this role. A peer's plan that arrives earlier is selected
+but not accepted: `handleMessage` throws `vet-terminal-local-vet-pending`, so
+the inbox keeps the message pending and decides it again on a later cycle, and
+`advanceRegisteredTerminal` neither binds nor signs it. The peer signs its own
+plan only once this role accepts it, so until then neither role has signed.
+The session bootstrap records this role's pass with `registerLocalVetPass`, or
+its failure with `registerLocalTerminal`, before it advances the terminal
+again. Both claim one insert-once local-Vet result row, a failure before its
+plan is selected or bound, so a pass and a failure racing in two processes
+record only the first: the other is refused with
+`vet-terminal-local-vet-conflict` and its track stops at operator action. A
+pass found beside this role's own plan, as earlier versions could leave them,
+stops the terminal at operator action instead of signing either. If this
+role's own Vet never decides (it never receives what it must Vet, or a host
+that drives the runtime itself never records the pass), the peer's plan waits
+pending with nothing signed. `registerLocalVetPass` is optional on
+`DacsVetTerminalBundleTransportRuntimeV1`, so existing implementations still
+conform; the bootstrap skips it when absent.
+
+A plan that differs from the selected one is classified:
+
+- This role's own Vet failure and the peer's first plan, in either arrival
+  order: both Vets failed, with different plans. DACS-2 defers mutual-Vet
+  composition and DACS-5 §10.4.3(d) leaves which party failed to adjudication,
+  so neither plan is signed, by either role. The job stops at operator action
+  (`vet-terminal-plan-disagreement`) once this role has sent its own plan to the
+  peer, which then stops the same way; until the peer acknowledges it, the track
+  is pending (`vet-terminal-plan-disagreement-notice-pending`).
+  `loadPlanDisagreementEvidence(jobId)` returns both plan hashes and the losing
+  plan, with `operatorAlert: true`.
+- A second plan from the peer after one this role retained from it:
+  equivocation. The message is refused (`vet-terminal-proposal-equivocation`),
+  never sealed and never signed, and the job continues with the retained plan,
+  because the role only signs that plan. `loadPeerEquivocationEvidence(jobId)`
+  returns the first refused plan from before this role committed (sent,
+  accepted or signed its plan) and the first from after it; the latter has
+  `operatorAlert: true`, and while the job continues its track reports
+  `vet-terminal-peer-equivocation-alert`. The inbox keeps the authenticated
+  envelope.
+- A second local plan over this role's own retained material is still sealed
+  for an operator, as below.
+
+Both evidence loaders are optional members of
+`DacsVetTerminalBundleTransportRuntimeV1`, so existing implementations of the
+interface still conform.
+
+Native DEM and x402 live factories require a verifier-owned
+`context.authenticateSessionProfile(jobId)` callback, also configurable on the
+role runtime. It must authenticate the exact session's buyer and seller, the
+pinned Standard commit, its PROFILE.md release status and every module version
+from deployment authority independent of caller input and artifacts. It returns
+`{ status: "valid", releasePin, profileStatus, moduleVersions, roles }`, with
+`profileStatus` equal to `DACS_STANDARD_PROFILE_STATUS` and exactly one
+`{ jobId, role, participant }` entry for each role. Admission is refused before
+the callback is asked while `DACS_STANDARD_PROFILE_STATUS` is not `"released"`
+(see above). Every live operation and inbound entry point rechecks this
+authority before effects; missing or conflicting admission refuses the action. The public BundleBinding resolver requires the same
+independent callback before deriving an address, and the Demos publication adapter
+checks it before discovery. Configure this authority for both roles before use.
+The x402 seller also rechecks the matched HTTP session before payment handling
+or retained-response delivery. Supply the callback again when reopening a paid
+session; a previously successful admission is never persisted as authority.
+An unanswered admission read keeps inbound validation `unavailable` (HTTP 503),
+so the durable sender can retry after the authority provider recovers.
+
+The fixed-price live factories also connect that runtime to the agreement
+worker. The first local objective `fail` stores a durable Vet invocation,
+projects the exact signed Listing pipeline and authenticated registry versions,
+registers the terminal material, and stops before Agreement. The Listing must
+select exactly one `vet-credentials` phase; the host never inserts an unsigned
+phase after publication. Both role workers resume the
+same terminal job on later coordinator attempts, including after process
+restart; once their own bundle and BB-1 binding are finalized, the agreement
+track records the attributed DACS-5 failure using that exact publication.
+Remote `fail` bytes on the ordinary admission path never authorize local blame:
+the receiver waits for the independently authenticated terminal proposal.
+A Vet terminal is only admitted before agreement. Once a role's agreement track
+has succeeded, or its retained agreement facts record the evaluated party's Vet
+as passed, that role rejects the proposal (`vet-terminal-not-pre-agreement`),
+never signs it, and its agreement and audit tracks continue normally.
+
+For each role, agreement signing and the Vet terminal are mutually exclusive.
+Before signing or handing off to agreement signing, or retaining terminal
+material, the role records a durable first-writer phase decision. The other
+path fails closed with `agreement-vet-terminal-phase-conflict`. A seller that
+retained or co-signed a Vet failure refuses a later proposal and never signs an
+agreement response.
+
+Proposal admission is not agreement signing. It separately records the
+buyer's authenticated seller-pass evidence before retaining the proposal and
+starting the coordinator order. This excludes seller-failure terminals even
+if admission crashes before proposal retention. It still permits the seller's
+own Vet to fail the buyer: that buyer-failure terminal wins the signing phase,
+is co-signed, and the admitted proposal is refused without an agreement signature.
+
+An operator must never clear or overwrite a valid first-writer phase or
+seller-Vet outcome decision, including when a repair/requeue hits the same
+conflict. Abandon a conflicted or corrupt job out of band and restart under a
+new job ID. Preserve a read-only database snapshot, both decision rows and
+material/proposal/response bindings, the local binding hashes, authenticated
+transport envelopes and acknowledgements, Vet records and anchor receipts,
+and track/error logs with the affected job ID and SDK version. Keep this
+evidence in private operator storage for diagnosis. A read-only phase
+diagnostic is a follow-up; repairTrack does not resolve a phase conflict.
+
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
 tracks. The generated profile's built-in Vet producer is deliberately limited
-to an empty `BundleRequirement`; non-empty claim requirements fail closed until
-a requirement-specific provider is supplied. Complementary seller requirement
+to an empty `BundleRequirement`. The bootstrap refuses all non-empty requirements
+before transport or Vet effects, including with a custom Vet provider.
+Complementary seller requirement
 provenance remains a non-normative policy seam pending Standard issue #331.
 
 `startDacsHttpMessageServerV1()` serves only
 `POST /dacs-transport/v1/messages`. It bounds decoded JSON bodies to 256 KiB,
 rate-limits a bounded set of peers, authenticates the envelope and independently
 validates its typed payload before inbox admission, and emits only a signed
-acknowledgement after the handler disposition is durable. A thrown or malformed
+acknowledgement after the handler disposition is durable. Temporary Vet production
+verification failures and pending terminal prerequisites return HTTP 503; the
+sender retains the same signed envelope for automatic retry. A thrown or malformed
 handler result leaves the reservation pending; call `resumeDacsHttpInboxV1()`
 during startup to resume those items with the same idempotent handler before
-accepting traffic. Plain HTTP is restricted to loopback bindings. Non-loopback
+accepting traffic. Each call resumes one page; pass its `nextCursor` to the
+next call and start again without one when it is absent, so messages that
+stay pending never keep later ones from being resumed.
+`createDacsHttpInboxResumerV1()` does this across calls, and the live service
+uses it every cycle. Plain HTTP is restricted to loopback bindings. Non-loopback
 listeners require TLS key and certificate material.
 
 `createDacsHttpMessageClientV1()` retains the exact self-signed envelope before
@@ -268,6 +504,57 @@ three role-owned agreement, payment-evidence and bundle-signature routes and
 cannot accept the peer direction. A validator outage fails authentication
 closed; a handler exception remains indeterminate so the durable inbox can
 resume it rather than acknowledging work that may not have been retained.
+
+The buyer audit track does not finish merely because both local workers have
+published something. The durable buyer finalizer returns the exact data-only
+seller closure it already authenticated (never a seller signer), and the host
+then runs `verifyCompletedTwoSidedSession()` against fresh buyer and seller
+Demos readbacks, finalized receipts, BB-1 bindings, and the complete seller
+ST-11 dependency graph. Its audit reference is the authenticated native bundle
+address. Native DEM and x402 use the same two-copy finish boundary. A Demos
+read that cannot be answered leaves the track `indeterminate`
+(`buyer-audit-completion-indeterminate`) and it is retried. The seller's copy
+is never looked up by its storage-program name: the buyer discovers the
+seller's signed BundleBindings (its Demos binding program plus any configured
+`bundleBindingDiscovery` surfaces: a DACS-1 §6.3.5 well-known index or §6.3.6
+catalog), resolves them as a DACS-5 BB-6 candidate set (at most 8 fetches per
+signer, collapse, fully-signed precedence) and reads the copy at the bound
+native address. Parties match by CORE B.1 CF-3 identity (scheme and
+identifier), so advisory ClaimReference parameters on the admitted holder, the
+binding signer or the copy never make the same key another party. A binding's
+optional `anchorTx` must equal the raw Demos transaction hash of the copy's
+anchor receipt (`transactionRef.value`), not a `demos-testnet:`-prefixed form;
+a binding with another spelling is inert. A side that no surface binds yet, whose candidates all fail
+validation, or that equivocates is `indeterminate` (BB-7, BB-8), never absent.
+Non-observation alone never gates completion; unresolved BB-6 candidate sets
+remain indeterminate. A completion that was read and failed authentication needs
+operator action. A track that stays `indeterminate` for the coordinator's
+`maximumSubstratePauseMs` (default 3600 s) reports `substrate-pause-exceeded`
+and continues reconciliation, including after restart. This operational alert
+does not implement ST-7's failed-substrate terminal publication. Demos's answer against one copy goes to operator
+action even when a read of the other copy went unanswered in the same check,
+whichever arrives first: both copies settle before the check decides. A read
+that never settles is cut off at one deadline for the whole check (the seller
+closure, both copies and the final pair check): Demos's answer already seen
+still goes to operator action, otherwise the track stays `indeterminate` and is
+retried, and an answer that arrives later changes nothing. The coordinator
+records the audit's result only while the audit track's lease is current, and
+nothing renews that lease during the check. So the deadline is 5 seconds before
+that lease expires, on the role database's clock, or `completionDeadline.timeoutMs`
+on the buyer audit options (60 seconds by default) if that is sooner. With 5
+seconds or less of the lease left, the check stays `indeterminate` without
+reading. The service's coordinator lease (`coordinatorLeaseDurationMs`) is 300
+seconds by default; the core coordinator's own default is 30 seconds. A lease
+too short for the audit's Demos reads keeps it `indeterminate` on every retry.
+Receipt reads are classified by method-specific response bodies and independently
+verified transaction, block and storage records. HTTP status alone does not prove
+an invalid receipt: failed POSTs, including 400/404/410/422, transport failures and
+SDK result-500 wrappers remain indeterminate. Unknown transaction/block RPC
+responses such as `{result:400,response:"error"}` do not establish finality or
+permanent invalidity. Storage-program reads separately recognize the adapter's
+genuine not-found response as absence; missing receipt observations remain
+retryable. A readable authenticated record contradicting the claimed receipt is
+a definitive rejection.
 
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange
@@ -470,4 +757,21 @@ Envelope authentication requires two host-owned, fail-closed callbacks. The
 identity resolver must use verified Demos identity material and retain its
 evidence hash; the payload validator must invoke the corresponding public SDK
 validator/verifier with independently resolved session facts. Neither callback
-may trust the HTTP body as identity or authorization evidence.
+may trust the HTTP body as identity or authorization evidence. A validator that
+cannot read its own state now returns `unavailable`, which decides nothing: the
+endpoint answers 503 with `Retry-After`, the sender retries, and a handler
+leaves the message pending. The Vet terminal runtime answers so when its SQLite
+store stays locked (`SQLITE_BUSY` or `SQLITE_LOCKED`) during validation, and
+its track reports such a read as `indeterminate` with a `-busy` reason, never
+as operator action.
+
+
+Upgrade note: `DacsBuyerAuditAuthorizationV1` callbacks may now return
+`"indeterminate"` as well as a boolean. Existing boolean callbacks still work;
+callers consuming the result must handle `"indeterminate"` as pending verification
+and must check `result === true` before treating it as authorization.
+
+
+Before upgrading the native Vet reference format, drain all in-flight testnet
+jobs on both peers. Retained Vet records and audit references from older builds
+must not be carried into an upgraded session; restart new jobs after the upgrade.

@@ -23,6 +23,12 @@ import {
 } from "./liveCommerceAssembly.js";
 import type { DacsBuyerLiveCommerceGraphV1 } from "./liveCommerceGraph.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import type { DacsSessionVetRuntimeV1 } from "./sessionIdentityVetRuntime.js";
+import type { DacsVetTerminalBundleTransportOptionsV1 } from
+  "./terminalBundleTransportRuntime.js";
+import { createDacsFixedPriceVetTerminalInputFactoryV1 } from
+  "./fixedPriceVetTerminal.js";
+import { admitDacsX402LiveGraph } from "./sessionProfileAdmission.js";
 
 export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -47,6 +53,11 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
   leaseDurationMs?: number;
   retryDelayMs?: number;
   maxBodyBytes?: number;
+  vet?: Readonly<DacsSessionVetRuntimeV1>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 /**
@@ -57,6 +68,9 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
 export async function createDacsFixedPriceX402BuyerLiveV1(
   options: Readonly<DacsFixedPriceX402BuyerLiveOptionsV1>,
 ): Promise<Readonly<DacsBuyerLiveCommerceGraphV1>> {
+  if (typeof options.context.authenticateSessionProfile !== "function") {
+    throw new TypeError("x402 live profile requires independent session profile admission");
+  }
   const asset = options.rail.asset;
   if (asset.kind !== "erc20") {
     throw new TypeError("fixed-price x402 buyer requires an ERC-20 rail asset");
@@ -92,8 +106,13 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
     ...(options.leaseDurationMs === undefined ? {} : { leaseTtlMs: options.leaseDurationMs }),
   });
+  const terminalInput = options.terminalBundle === undefined
+    ? undefined : createDacsFixedPriceVetTerminalInputFactoryV1({
+        rail: options.rail,
+        recipeRegistryVersion: options.recipeRegistryVersion,
+      });
 
-  return createDacsBuyerLiveCommerceAssemblyV1({
+  const graph = await createDacsBuyerLiveCommerceAssemblyV1({
     context: options.context,
     workerId: options.workerId,
     sessionBootstrap: {
@@ -106,6 +125,7 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
           seller: DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
         });
       },
+      ...(options.vet === undefined ? {} : { vet: options.vet }),
     },
     agreement,
     payment: {
@@ -135,5 +155,11 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
     buyerReceived: commerce.buyerReceived,
     bundleTransport: audit.bundleTransport,
     audit: audit.audit,
+    ...(options.terminalBundle === undefined || terminalInput === undefined
+      ? {} : { terminalBundle: {
+          ...options.terminalBundle,
+          createInput: terminalInput,
+        } }),
   });
+  return admitDacsX402LiveGraph(graph, options.context);
 }

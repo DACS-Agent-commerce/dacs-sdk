@@ -1,6 +1,18 @@
 export * from "./config.js";
 export * from "./agreementRuntime.js";
-export * from "./agreementTransportRuntime.js";
+// Listed explicitly so the terminal-boundary reader stays package-internal.
+export {
+  createDacsBuyerAgreementTransportRuntimeV1,
+  createDacsSellerAgreementTransportRuntimeV1,
+  DacsAgreementTransportRuntimeError,
+  loadDacsSellerAgreementVetProductionForOrderV1,
+  type DacsAgreementSellerVetProductionV1,
+  type DacsBuyerAgreementTransportRuntimeOptionsV1,
+  type DacsBuyerAgreementTransportRuntimeV1,
+  type DacsSellerAgreementAdmissionV1,
+  type DacsSellerAgreementTransportRuntimeOptionsV1,
+  type DacsSellerAgreementTransportRuntimeV1,
+} from "./agreementTransportRuntime.js";
 export * from "./auditRuntime.js";
 export * from "./buyerReceivedRuntime.js";
 export * from "./bundleTransportRuntime.js";
@@ -8,6 +20,7 @@ export * from "./commerceRuntime.js";
 export * from "./contracts.js";
 export * from "./doctor.js";
 export * from "./demosRuntime.js";
+export * from "./bundleBindingDiscovery.js";
 export * from "./demosBundlePublication.js";
 export * from "./demosPublication.js";
 export * from "./events.js";
@@ -46,6 +59,7 @@ export * from "./publicFetch.js";
 export * from "./release.js";
 export * from "./liveEffects.js";
 export * from "./liveCommerceGraph.js";
+export * from "./sessionProfileGate.js";
 export * from "./livePayDemCommerceGraph.js";
 export * from "./livePayDemCommerceAssembly.js";
 export * from "./liveCommerceAssembly.js";
@@ -72,6 +86,8 @@ export * from "./sessionIdentityVetRuntime.js";
 export * from "./service.js";
 export * from "./serviceDoctor.js";
 export * from "./supervision.js";
+export * from "./terminalBundleTransportRuntime.js";
+export * from "./fixedPriceVetTerminal.js";
 export * from "./transportDiagnostic.js";
 export * from "./transport/index.js";
 export * from "./x402Payment.js";

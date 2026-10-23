@@ -50,8 +50,8 @@ import {
   validateDacsHttpDiagnosticProbePayloadV1,
 } from "./transport/envelope.js";
 import {
+  createDacsHttpInboxResumerV1,
   createDacsHttpMessageClientV1,
-  resumeDacsHttpInboxV1,
   startDacsHttpMessageServerV1,
   type DacsHttpInboundDispositionV1,
   type DacsHttpMessageClientV1,
@@ -94,7 +94,7 @@ export interface DacsLiveRoleSendInputV1<
 export interface DacsLiveRoleCycleReportV1 {
   startedAt: number;
   completedAt: number;
-  inbox: Readonly<{ inspected: number; disposed: number; pending: number }>;
+  inbox: Readonly<{ inspected: number; disposed: number; pending: number; nextCursor?: string }>;
   coordinator: Readonly<{ processed: number; nextCursor?: string }>;
   outbox: Readonly<{
     attempted: number;
@@ -267,6 +267,8 @@ const OUTBOUND_BY_ROLE: Readonly<
     "pay-dem-payment-notice",
     "payment-evidence-completion",
     "bundle-signature-response",
+    "terminal-bundle-proposal-buyer",
+    "terminal-bundle-contribution-buyer",
     "diagnostic-probe-buyer",
   ]),
   seller: new Set<DacsLiveOutboundMessageType>([
@@ -275,6 +277,8 @@ const OUTBOUND_BY_ROLE: Readonly<
     "agreement-response",
     "payment-evidence-request",
     "bundle-signature-request",
+    "terminal-bundle-proposal-seller",
+    "terminal-bundle-contribution-seller",
     "diagnostic-probe-seller",
   ]),
 });
@@ -1035,6 +1039,10 @@ export function createDacsLiveRoleServiceV1(
     ...(options.transport?.rateLimit === undefined
       ? {} : { rateLimit: options.transport.rateLimit }),
   };
+  // Each cycle resumes the next page of pending inbox messages, so messages
+  // that stay pending (a plan waiting for this role's own Vet) never keep the
+  // ones after them from being resumed.
+  const inboxResumer = createDacsHttpInboxResumerV1(endpointOptions);
 
   const performCycle = async (
     signal: AbortSignal | undefined,
@@ -1057,9 +1065,7 @@ export function createDacsLiveRoleServiceV1(
         }),
       });
     }
-    const inboxReport = await resumeDacsHttpInboxV1(endpointOptions, {
-      limit: workerBatchSize,
-    });
+    const inboxReport = await inboxResumer.resume({ limit: workerBatchSize });
     const coordinatorPage = await coordinator.resumePendingOrders({
       limit: workerBatchSize,
       ...(signal === undefined ? {} : { signal }),

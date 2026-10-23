@@ -68,6 +68,8 @@ import {
   type PaymentEvidenceOutboundRequestClaim,
   type PaymentEvidenceOutbox,
   type PaymentEvidencePage,
+  fixedPriceCarriedSubstratePause,
+  fixedPriceRecordedSubstratePause,
 } from "@kynesyslabs/dacs/commerce";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 import BetterSqlite3 from "better-sqlite3";
@@ -524,6 +526,20 @@ export class DacsNodeSqliteError extends Error {
     super(message);
     this.name = "DacsNodeSqliteError";
   }
+}
+
+/**
+ * Whether `error` is SQLite lock contention a retry may clear: another
+ * connection held the lock past the busy timeout. That is SQLITE_BUSY or
+ * SQLITE_LOCKED, with any extended code, as better-sqlite3 reports it, or the
+ * same primary result code as node:sqlite reports it.
+ */
+export function isDacsNodeSqliteBusyError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const { code, errcode } = error as { code?: unknown; errcode?: unknown };
+  if (typeof code === "string" && /^SQLITE_(?:BUSY|LOCKED)(?:_[A-Z]+)*$/.test(code)) return true;
+  return code === "ERR_SQLITE_ERROR" && typeof errcode === "number" &&
+    ((errcode & 0xff) === 5 || (errcode & 0xff) === 6);
 }
 
 interface MetadataRow {
@@ -4973,6 +4989,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
             attempts: retained.attempts + 1,
             updatedAt,
             lease,
+            ...fixedPriceCarriedSubstratePause(retained),
           };
           const next = saveRecord(current, {
             ...clone(current),
@@ -5075,6 +5092,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                 updatedAt,
                 reasonCode: result.reasonCode,
                 ...(result.retryAt === undefined ? {} : { nextAttemptAt: result.retryAt }),
+                ...fixedPriceRecordedSubstratePause(retained, result.status, updatedAt),
               }) as CoordinatorTrackRecord;
           const tracks = clone(current.tracks) as Partial<
             Record<FixedPriceX402Track, CoordinatorTrackRecord>

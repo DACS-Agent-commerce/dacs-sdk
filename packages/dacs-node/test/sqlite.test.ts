@@ -57,6 +57,7 @@ import {
   inspectDacsNodeSqliteUpgradeSafetyV1,
   inspectExistingDacsNodeSqliteDatabaseV1,
   inspectDacsNodeSqliteLocation,
+  isDacsNodeSqliteBusyError,
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabaseOptions,
@@ -747,6 +748,29 @@ describe("DACS Node SQLite durability foundation", () => {
     const after = statSync(databasePath);
     expect(after.size).toBe(before.size);
     expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it("refuses a historical native database without migrating or relabelling it", async () => {
+    const databasePath = join(temporaryRoot(), "historical-native.sqlite");
+    const liveOptions = { mode: "live-demos" as const, profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const, authority: BUYER };
+    const database = await open(databasePath, liveOptions);
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const raw = new BetterSqlite3(databasePath);
+    try {
+      raw.prepare("UPDATE dacs_store_metadata SET standard_revision = ? WHERE singleton = 1")
+        .run("965df755aba4ff392f1fb37a93d287242b177ba4");
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally { raw.close(); }
+    const before = readFileSync(databasePath);
+    const filesBefore = readdirSync(join(databasePath, ".."));
+    await expect(openDacsNodeSqliteDatabase(options(databasePath, liveOptions)))
+      .rejects.toMatchObject({ reasonCode: "database-binding-mismatch" });
+    expect(readFileSync(databasePath)).toEqual(before);
+    // Opening WAL can create empty sidecars even when admission is refused.
+    expect(readdirSync(join(databasePath, "..")).filter((name) =>
+      !name.endsWith("-wal") && !name.endsWith("-shm"))).toEqual(filesBefore);
   });
 
   it("derives immutable SDK and Standard bindings and rejects caller labels", async () => {
@@ -1816,6 +1840,61 @@ describe("DACS Node SQLite durability foundation", () => {
       .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
     expect(readFileSync(databasePath).equals(before)).toBe(true);
     expect(readdirSync(root).some((name) => name.includes(".backup-v3-"))).toBe(false);
+  });
+
+  // The pause clock and retryable alert survive a database restart.
+  it("keeps a substrate pause's start across a restart and resumes after its alert", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const unanswered = (database: DacsNodeSqliteDatabase): FixedPriceX402TrackOperation =>
+      async () => ({
+        status: "indeterminate",
+        reasonCode: "demos-read-unanswered",
+        retryAt: database.readTime(),
+      });
+    const coordinator = (database: DacsNodeSqliteDatabase, maximumSubstratePauseMs: number) =>
+      createFixedPriceX402BuyerCoordinator({
+        store: database.createLiveCoordinatorStore("buyer"),
+        workerId: `buyer-worker-${maximumSubstratePauseMs}`,
+        maximumSubstratePauseMs,
+        operations: { agreement: unanswered(database) },
+      });
+    const first = await open(databasePath, liveOptions);
+    const before = coordinator(first, 3_600_000);
+    await before.startOrder(liveOrder());
+    await before.runPending({ limit: 1 });
+    const paused = (await before.getOrderStatus(JOB_ID))?.tracks.agreement;
+    expect(paused).toMatchObject({ state: "indeterminate" });
+    expect(paused?.pausedSince).toBe(paused?.updatedAt);
+    first.close();
+    databases.splice(databases.indexOf(first), 1);
+
+    const restarted = await open(databasePath, liveOptions);
+    await coordinator(restarted, 3_600_000).runPending({ limit: 1 });
+    const resumed = (await coordinator(restarted, 3_600_000).getOrderStatus(JOB_ID))
+      ?.tracks.agreement;
+    expect(resumed).toMatchObject({ state: "indeterminate", pausedSince: paused?.pausedSince });
+    expect(resumed!.updatedAt).toBeGreaterThanOrEqual(paused!.updatedAt);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const bounded = coordinator(restarted, 1);
+    await bounded.runPending({ limit: 1 });
+    expect((await bounded.getOrderStatus(JOB_ID))?.tracks.agreement).toMatchObject({
+      state: "indeterminate", reasonCode: "substrate-pause-exceeded", pausedSince: paused?.pausedSince,
+    });
+    const recovery = createFixedPriceX402BuyerCoordinator({
+      store: restarted.createLiveCoordinatorStore("buyer"), workerId: "buyer-recovered",
+      operations: { agreement: async () => ({ status: "final", outcome: "success", reference: "agreement-recovered" }) },
+    });
+    await recovery.runPending({ limit: 1 });
+    expect((await recovery.getOrderStatus(JOB_ID))?.tracks.agreement).toMatchObject({
+      state: "final", outcome: "success", reference: "agreement-recovered",
+    });
   });
 
   it("resumes the live coordinator DAG from durable role-local state", async () => {
@@ -3493,5 +3572,29 @@ describe("DACS Node SQLite durability foundation", () => {
     await expect(openDacsNodeSqliteDatabase(options(link))).rejects.toMatchObject({
       reasonCode: "database-path-symlink",
     });
+  });
+});
+
+// Only a busy or locked database is retried; any other SQLite error is not.
+describe("SQLite busy classification", () => {
+  it.each([
+    [{ code: "SQLITE_BUSY" }, true],
+    [{ code: "SQLITE_BUSY_SNAPSHOT" }, true],
+    [{ code: "SQLITE_LOCKED_SHAREDCACHE" }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 5 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 6 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 517 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 262 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 1 }, false],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 19 }, false],
+    [{ code: "ERR_SQLITE_ERROR" }, false],
+    [{ code: "ERR_SQLITE_ERROR", errcode: "5" }, false],
+    [{ code: "SQLITE_CONSTRAINT" }, false],
+    [{ code: "SQLITE_BUSYNESS" }, false],
+    [{ errcode: 5 }, false],
+    ["SQLITE_BUSY", false],
+    [null, false],
+  ] as const)("classifies %j as busy: %s", (error, busy) => {
+    expect(isDacsNodeSqliteBusyError(error)).toBe(busy);
   });
 });

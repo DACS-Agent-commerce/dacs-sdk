@@ -4,18 +4,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  ARTIFACT_SEPARATORS,
+  type CompositeVerificationRecord,
+  type IdentityBundle,
+} from "@kynesyslabs/dacs/artifacts";
+import { compositeVerificationAddress, type ProtocolAnchorReceipt } from
+  "@kynesyslabs/dacs";
+import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import {
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
   FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
   FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   type FixedPricePayDemTrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
-import { rawPublicKey } from "@kynesyslabs/dacs/crypto";
-import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
+import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
+import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
+import { IndeterminateSubstrateError } from "@kynesyslabs/dacs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPricePayDemOrderPairV1 } from "../src/liveOrder.js";
-import { createDacsLiveSessionIdentityV1 } from "../src/sessionIdentityVetRuntime.js";
+import {
+  authenticateDacsSessionVetProductionV1,
+  createDacsLiveSessionIdentityV1,
+} from "../src/sessionIdentityVetRuntime.js";
 import { authenticateDacsLiveSessionIdentityV1 } from
   "../src/sessionBootstrapTransportRuntime.js";
 import {
@@ -127,5 +139,168 @@ describe("rail-bound live session identity", () => {
       "pay-x402",
       "eip155:84532",
     )).resolves.toBe(false);
+  });
+
+  it("binds a Vet reference to finalized native readback, not the logical name", async () => {
+    const verifierKeys = generateKeyPairSync("ed25519");
+    const evaluatedKeys = generateKeyPairSync("ed25519");
+    const verifier = demosAgentClaimRef(rawPublicKey(verifierKeys.publicKey));
+    const evaluated = demosAgentClaimRef(rawPublicKey(evaluatedKeys.publicKey));
+    const evaluatedIdentity: IdentityBundle = {
+      bundleVersion: "1",
+      presentedBy: evaluated,
+      presentedAt: 1_800_000_000_000,
+      sessionNonce: "native-vet-reference",
+      claims: [{ ref: evaluated }],
+      presentation: {
+        kind: "session-key",
+        key: "native-vet-session-key",
+        signature: "native-vet-presentation",
+      },
+    };
+    const requirement = Object.freeze({ requirementVersion: "1" as const, required: [] });
+    const unsigned = {
+      recordVersion: "1" as const,
+      jobId: JOB_ID,
+      evaluatedParty: evaluated,
+      bundleHash: identityBundleHash(evaluatedIdentity),
+      requirementHash: sha256Hex(canonicalize(requirement)),
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass" as const,
+      generatedAt: 1_800_000_000_100,
+    };
+    const record: CompositeVerificationRecord = {
+      ...unsigned,
+      signature: {
+        algorithm: "ed25519",
+        signer: verifier,
+        value: sign(
+          null,
+          signedBytes(
+            ARTIFACT_SEPARATORS.CompositeVerificationRecord,
+            contentHash(unsigned),
+          ),
+          verifierKeys.privateKey,
+        ).toString("base64url"),
+      },
+    };
+    const logicalAddress = compositeVerificationAddress(JOB_ID, evaluated);
+    const nativeAddress = `stor-${"4".repeat(64)}`;
+    const recordHash = contentHash(record as unknown as Record<string, unknown>);
+    const receipt: ProtocolAnchorReceipt = {
+      receiptVersion: "1",
+      substrate: "demos",
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress,
+      nativeAddress,
+      contentHash: recordHash,
+      transactionRef: { kind: "demos", value: "5".repeat(64) },
+      writer: verifier,
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: 1_800_000_000_500,
+      blockRef: { id: "6".repeat(64), height: "42" },
+      evidence: { kind: "demos-bft", value: "7".repeat(64) },
+    };
+    const context = {
+      demos: { adapter: {
+        verifyDemosAnchorReceipt: async () => true,
+        readAnchor: async (address: string) => address === nativeAddress ? record : null,
+      } },
+    } as never;
+    const exact = {
+      record,
+      recordRef: {
+        anchor: { kind: "storage-program" as const, locator: nativeAddress },
+        contentHash: recordHash,
+        signer: verifier,
+      },
+      anchorReceipt: receipt,
+    };
+
+    await expect(authenticateDacsSessionVetProductionV1({
+      context,
+      jobId: JOB_ID,
+      evaluatedIdentity,
+      requirement,
+      verifier,
+      production: exact,
+    })).resolves.toBe("valid");
+    await expect(authenticateDacsSessionVetProductionV1({
+      context,
+      jobId: JOB_ID,
+      evaluatedIdentity,
+      requirement,
+      verifier,
+      production: {
+        ...exact,
+        recordRef: {
+          ...exact.recordRef,
+          anchor: { kind: "storage-program", locator: logicalAddress },
+        },
+      },
+    })).resolves.toBe("invalid");
+
+    // DACS-2 §7.7.2, VPC-3: each binding of the CVR, its
+    // reference and its receipt is pinned. A forged record is anchored and
+    // read back exactly, so only the check named can refuse it.
+    const anchoredExactly = (forged: CompositeVerificationRecord) => {
+      const hash = contentHash(forged as unknown as Record<string, unknown>);
+      return {
+        record: forged,
+        recordRef: { ...exact.recordRef, contentHash: hash },
+        anchorReceipt: { ...receipt, contentHash: hash },
+      };
+    };
+    const authenticate = (
+      production: typeof exact,
+      adapter: Record<string, unknown> = {},
+    ) => authenticateDacsSessionVetProductionV1({
+      context: { demos: { adapter: {
+        verifyDemosAnchorReceipt: async () => true,
+        readAnchor: async (address: string) => address === nativeAddress ? production.record : null,
+        ...adapter,
+      } } } as never,
+      jobId: JOB_ID,
+      evaluatedIdentity,
+      requirement,
+      verifier,
+      production,
+    });
+    const otherKeys = generateKeyPairSync("ed25519");
+    const other = demosAgentClaimRef(rawPublicKey(otherKeys.publicKey));
+    const forgedSignature = anchoredExactly({
+      ...unsigned,
+      signature: {
+        ...record.signature,
+        value: sign(null, signedBytes(
+          ARTIFACT_SEPARATORS.CompositeVerificationRecord,
+          contentHash(unsigned),
+        ), otherKeys.privateKey).toString("base64url"),
+      },
+    });
+    const invalid: Array<[string, typeof exact]> = [
+      ["a CVR signature by another key", forgedSignature],
+      ["a reference signed by another party", { ...exact, recordRef: { ...exact.recordRef, signer: other } }],
+      ["a reference to other content", { ...exact, recordRef: { ...exact.recordRef, contentHash: "8".repeat(64) } }],
+      ["a receipt on another substrate", { ...exact, anchorReceipt: { ...receipt, substrate: "test:final" } }],
+      ["a receipt at another logical address", { ...exact, anchorReceipt: {
+        ...receipt, logicalAddress: compositeVerificationAddress(JOB_ID, verifier) } }],
+      ["a receipt for other content", { ...exact, anchorReceipt: { ...receipt, contentHash: "8".repeat(64) } }],
+      ["a receipt by another writer", { ...exact, anchorReceipt: { ...receipt, writer: other } }],
+    ];
+    for (const [label, production] of invalid) {
+      await expect(authenticate(production), label).resolves.toBe("invalid");
+    }
+    // Demos answers against the receipt: invalid. Demos does not answer:
+    // indeterminate, never invalid.
+    await expect(authenticate(exact, { verifyDemosAnchorReceipt: async () => false }))
+      .resolves.toBe("invalid");
+    await expect(authenticate(exact, { verifyDemosAnchorReceipt: async () => {
+      throw new IndeterminateSubstrateError("Demos anchor receipt observation unavailable");
+    } })).resolves.toBe("indeterminate");
+    await expect(authenticate(exact)).resolves.toBe("valid");
   });
 });

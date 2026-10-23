@@ -15,6 +15,12 @@ import {
   createDacsSellerLiveCommerceAssemblyV1,
 } from "./liveCommerceAssembly.js";
 import type { DacsSellerLiveCommerceGraphV1 } from "./liveCommerceGraph.js";
+import type { DacsSessionVetRuntimeV1 } from "./sessionIdentityVetRuntime.js";
+import type { DacsVetTerminalBundleTransportOptionsV1 } from
+  "./terminalBundleTransportRuntime.js";
+import { createDacsFixedPriceVetTerminalInputFactoryV1 } from
+  "./fixedPriceVetTerminal.js";
+import { admitDacsSessionProfile, admitDacsX402LiveGraph } from "./sessionProfileAdmission.js";
 
 export interface DacsFixedPriceX402SellerLiveOptionsV1
   extends DacsFixedPriceX402SellerRuntimeOptionsV1 {
@@ -22,6 +28,11 @@ export interface DacsFixedPriceX402SellerLiveOptionsV1
   sellerPayee: string;
   maximumServiceAmount: string;
   maximumClockSkewMs?: number;
+  vet?: Readonly<DacsSessionVetRuntimeV1>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 /**
@@ -33,6 +44,9 @@ export interface DacsFixedPriceX402SellerLiveOptionsV1
 export async function createDacsFixedPriceX402SellerLiveV1(
   options: Readonly<DacsFixedPriceX402SellerLiveOptionsV1>,
 ): Promise<Readonly<DacsSellerLiveCommerceGraphV1>> {
+  if (typeof options.context.authenticateSessionProfile !== "function") {
+    throw new TypeError("x402 live profile requires independent session profile admission");
+  }
   const session = createDacsFixedPriceX402SellerSessionPolicyV1({
     context: options.context,
     rail: options.rail,
@@ -55,20 +69,43 @@ export async function createDacsFixedPriceX402SellerLiveV1(
     fulfilment: x402.fulfilment,
     ...(options.leaseTtlMs === undefined ? {} : { leaseTtlMs: options.leaseTtlMs }),
   });
+  const terminalInput = options.terminalBundle === undefined
+    ? undefined : createDacsFixedPriceVetTerminalInputFactoryV1({
+        rail: options.rail,
+        recipeRegistryVersion: options.recipeRegistryVersion,
+      });
 
-  return createDacsSellerLiveCommerceAssemblyV1({
+  const graph = await createDacsSellerLiveCommerceAssemblyV1({
     context: options.context,
     workerId: options.workerId,
     sessionBootstrap: {
       admitInit: session.admitInit,
       resolveBuyerRequirement: session.resolveBuyerRequirement,
       resolveSellerRequirement: session.resolveSellerRequirement,
+      ...(options.vet === undefined ? {} : { vet: options.vet }),
     },
     agreementTransport: { admitProposal: session.admitProposal },
     agreement,
-    x402: x402.x402,
+    x402: {
+      ...x402.x402,
+      // Resolution is read-only. Re-admit the resolved session before the
+      // paywall handles payment or returns a retained paid response.
+      async resolveHttpRequest(...args) {
+        const resolved = await x402.x402.resolveHttpRequest(...args);
+        if (resolved.status === "matched") {
+          await admitDacsSessionProfile(options.context, resolved.jobId);
+        }
+        return resolved;
+      },
+    },
     paymentEvidence: paymentEvidence.paymentEvidence,
     settlement: paymentEvidence.settlement,
     audit,
+    ...(options.terminalBundle === undefined || terminalInput === undefined
+      ? {} : { terminalBundle: {
+          ...options.terminalBundle,
+          createInput: terminalInput,
+        } }),
   });
+  return admitDacsX402LiveGraph(graph, options.context);
 }

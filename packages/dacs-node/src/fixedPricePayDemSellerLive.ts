@@ -1,3 +1,4 @@
+import { admitDacsNativeLiveGraph } from "./sessionProfileAdmission.js";
 import {
   createPayDemSellerObserver,
   type AuthenticatedRailDefinition,
@@ -22,6 +23,11 @@ import type { DacsSellerPayDemLiveCommerceGraphV1 } from
 import type { DacsPublicStorageDeliverableInputV1 } from
   "./fixedPriceX402SellerFulfilment.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import type { DacsSessionVetRuntimeV1 } from "./sessionIdentityVetRuntime.js";
+import type { DacsVetTerminalBundleTransportOptionsV1 } from
+  "./terminalBundleTransportRuntime.js";
+import { createDacsFixedPriceVetTerminalInputFactoryV1 } from
+  "./fixedPriceVetTerminal.js";
 
 export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -44,12 +50,20 @@ export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
   effectLeaseDurationMs?: number;
   leaseTtlMs?: number;
   retryDelayMs?: number;
+  vet?: Readonly<DacsSessionVetRuntimeV1>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 /** Close the complete fixed-price native DEM seller graph. */
 export async function createDacsFixedPricePayDemSellerLiveV1(
   options: Readonly<DacsFixedPricePayDemSellerLiveOptionsV1>,
 ): Promise<Readonly<DacsSellerPayDemLiveCommerceGraphV1>> {
+  if (typeof options.context.authenticateSessionProfile !== "function") {
+    throw new TypeError("native DEM live profile requires independent session profile admission");
+  }
   if (options.context.role !== "seller" ||
       options.context.commerceStores.role !== "seller") {
     throw new TypeError("fixed-price pay-dem seller live options are invalid");
@@ -96,13 +110,19 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
     ...(options.leaseTtlMs === undefined
       ? {} : { leaseTtlMs: options.leaseTtlMs }),
   });
-  return createDacsSellerPayDemLiveCommerceAssemblyV1({
+  const terminalInput = options.terminalBundle === undefined
+    ? undefined : createDacsFixedPriceVetTerminalInputFactoryV1({
+        rail: options.rail,
+        recipeRegistryVersion: options.recipeRegistryVersion,
+      });
+  const graph = await createDacsSellerPayDemLiveCommerceAssemblyV1({
     context: options.context,
     workerId: options.workerId,
     sessionBootstrap: {
       admitInit: session.admitInit,
       resolveBuyerRequirement: session.resolveBuyerRequirement,
       resolveSellerRequirement: session.resolveSellerRequirement,
+      ...(options.vet === undefined ? {} : { vet: options.vet }),
     },
     agreementTransport: { admitProposal: session.admitProposal },
     agreement,
@@ -133,5 +153,11 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
         ? {} : { retryDelayMs: options.retryDelayMs }),
     },
     audit,
+    ...(options.terminalBundle === undefined || terminalInput === undefined
+      ? {} : { terminalBundle: {
+          ...options.terminalBundle,
+          createInput: terminalInput,
+        } }),
   });
+  return admitDacsNativeLiveGraph(graph, options.context);
 }
