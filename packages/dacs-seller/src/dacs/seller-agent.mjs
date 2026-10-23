@@ -1,6 +1,7 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
+<<<<<<< HEAD
 // Seller agent for one verified fixed-price DEM Listing, acting as phase
 // orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
 // method takes and returns plain JSON; seller-http.mjs is a narrow adapter.
@@ -49,9 +50,14 @@ import {
   ARTIFACT_SEPARATORS,
 } from '@kynesyslabs/dacs';
 import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
+=======
+import { commitOnSignatureConfig } from './commit-on-signature.mjs';
+import { canonicalize, createInMemoryFencedSessionStore, fixedPriceAgreementLogicalAddress, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex } from '@kynesyslabs/dacs';
+>>>>>>> stack/365/33-vetted-agreements
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
+<<<<<<< HEAD
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
@@ -83,6 +89,17 @@ import {
   verifyDelivery,
   verifyPaymentEvidence,
 } from './purchase-protocol.mjs';
+=======
+import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
+import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
+import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
+import { nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
+import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
+import { sellerSessionPresentationProblem } from './session-admission.mjs';
+import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
+import { nativeDemDeliveryConfig } from './native-dem-delivery-consumer.mjs';
+import { agreementInput, contributionVerifier, listingPin, protocolSupport } from './purchase-protocol.mjs';
+>>>>>>> stack/365/33-vetted-agreements
 
 export class SellerAgentError extends Error {
   constructor(code, message, status = 422, options = {}) {
@@ -91,6 +108,7 @@ export class SellerAgentError extends Error {
     this.status = status;
   }
 }
+<<<<<<< HEAD
 
 // What the native profile reads and writes instead of a fixture substrate.
 const fixtureDisabled = async () => { throw new SellerAgentError('fixture_substrate_disabled', 'the native seller profile has no fixture substrate', 503); };
@@ -107,6 +125,9 @@ const UNSENT_ANCHOR_OUTCOMES = Object.freeze(['not-sent', 'unsigned']);
 // Readback failures of retained native evidence work (the commitment and
 // Agreement readback): a retry answers them as held, with the cause.
 const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
+=======
+import { proposalTimeProblem } from './seller-proposal-time.mjs';
+>>>>>>> stack/365/33-vetted-agreements
 // A claimed pay-dem transaction hash as core payment intake reads it
 // (lower case, without `0x`): the transport admits either form.
 const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
@@ -114,6 +135,7 @@ const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, ''
 const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ? answer.status.slice(0, 32) : 'missing',
   ...(typeof answer?.txHash === 'string' ? { txHash: answer.txHash.slice(0, 128) } : {}), ...(typeof answer?.reason === 'string' ? { reason: answer.reason.slice(0, 240) } : {}) });
 
+<<<<<<< HEAD
 // The deterministic test report this agent delivers: derived only from the
 // Agreement and the verified payment, so every replay is byte-identical.
 export function buildReport({ agreement, listing, settlementId }) {
@@ -165,6 +187,10 @@ export function buildReport({ agreement, listing, settlementId }) {
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
+=======
+// Internal authenticated proposal admission and seller contributions.
+// Commitment, payment and delivery are introduced separately.
+>>>>>>> stack/365/33-vetted-agreements
 const MAX_CHALLENGES_PER_JOB=16;
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
@@ -283,7 +309,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const requireOpen=()=>{if(closed)throw new SellerAgentError('seller_closed','the seller agent is closed',503);};
   try {
   const sign = (bytes) => new Uint8Array(durable ? durable.signOnce(`signature:${sha256Hex(bytes)}`, Buffer.from(bytes)) : signer.sign(Buffer.from(bytes)));
+<<<<<<< HEAD
   const rawReceiptStore = durable?.receiptStore ?? suppliedReceiptStore ?? createInMemorySellerReceiptStore();
+=======
+>>>>>>> stack/365/33-vetted-agreements
   const retainedAdmission = durable?.context();
   if(retainedAdmission&&!isVerifiedListingAdmission(listing,retainedAdmission.validation))throw new Error('retained Listing admission differs from the current signed Listing');
   // Historical admission captured once, atomically with the Listing bytes it
@@ -303,7 +332,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   durable?.retainContext({ admittedAt, validation });
   const sellerBundle = listing.seller.identity;
   const store = durable?.fencedStore ?? createInMemoryFencedSessionStore();
+<<<<<<< HEAD
   const fulfilmentStore = deliveryContext ? await createFsFencedSessionStore({ dir: join(durableDirectory, 'sdk-fulfilment') }) : null;
+=======
+>>>>>>> stack/365/33-vetted-agreements
   const sessions = new Map(); // jobId -> session
   // CORE SN-1..SN-4: the challenges this seller issued, by nonce, each bound to
   // one job and buyer (kept with the durable seller state, else in memory).
@@ -322,6 +354,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       return before;
     },
     admitChallenge: (nonce, presentationHash, accepted) => { const prior = memoryChallenges.get(nonce); if (prior?.attempt?.presentationHash === presentationHash) prior.attempt={...prior.attempt,admitted:true,...accepted===undefined?{}:{accepted:structuredClone(accepted)}}; },
+<<<<<<< HEAD
   };
   const signatures = new Map(); // planHash -> seller signature
   const contributions = new Map(); // proposalHash -> contribution
@@ -334,6 +367,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return local && retained;
   };
   const hasSettlementCredit = (id, jobId) => (!settlementJobs.has(id) || (settlementJobs.get(id).size === 1 && settlementJobs.get(id).has(jobId))) && (!durable || durable.settlementJob(id) === jobId);
+=======
+    retireChallenge:(nonce,hash)=>{const row=memoryChallenges.get(nonce);if(row?.attempt?.presentationHash!==hash||row.attempt.admitted!==true)throw new SellerAgentError('seller_state_corrupt','challenge retirement differs',503);row.attempt.retired=true;},
+  };
+  const signatures = new Map(); // planHash -> seller signature
+  const contributions = new Map(); // canonical settlement id -> all admissible claims
+  const hasSettlementCredit = (id, jobId) => !durable || durable.settlementJob(id) === jobId;
+>>>>>>> stack/365/33-vetted-agreements
   const assertSettlementCredit = (jobId) => {
     // A read snapshot can predate intake, and another holder can discover a
     // collision. Neither an absent cached payment nor a cached success grants
@@ -364,6 +404,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     catch(error) { if(error.code!=='settlement_collision')throw error;copy.settlementCredit='indeterminate';copy.stage='settlement-indeterminate'; }
     return copy;
   };
+<<<<<<< HEAD
   const deliveryReport=(session,settlementId)=>{
     const report=deliverableProducer ? deliverableProducer({agreement:structuredClone(session.agreement),listing:structuredClone(listing),settlementId}) : buildReport({agreement:session.agreement,listing,settlementId});
     if (report && typeof report.then === 'function') {
@@ -382,6 +423,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // address lock with nothing awaited before the CREATE intent), or just before
   // a wallet or delivery call. A holder that lost its job's row sends nothing.
   const heldFor = (jobId) => () => { assertSettlementCredit(jobId); return durable ? durable.assertHeld(jobId) : true; };
+=======
+  const persist = (session) => durable?.saveSession(session);
+>>>>>>> stack/365/33-vetted-agreements
   function recordPhase(session, index, invokedAt, result) {
     const contextDelta = structuredClone(result.contextDelta ?? {});
     const entry = { index, step: structuredClone(listing.pipeline[index]), invokedAt, result: { ...structuredClone(result), contextDelta }, contextDelta };
@@ -418,6 +462,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
     throw error;
   }) : fn;
+<<<<<<< HEAD
 
   const sessionFor = (jobId) => {
     const session = sessions.get(jobId);
@@ -425,6 +470,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertSettlementCredit(jobId);
     return session;
   };
+=======
+>>>>>>> stack/365/33-vetted-agreements
 
   function authenticateBuyerBundle(bundle) {
     if (!isIdentityBundle(bundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
@@ -466,6 +513,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertVetContext();
     assertSessionAdmission();
     const existing = sessions.get(jobId);
+    const completedProposalHash=existing?.proposal?.proposalHash??existing?.sellerContributionProposalHash;
+    if(completedProposalHash&&completedProposalHash!==proposal?.proposalHash)return{disposition:'rejected',stage:'context',reason:'another proposal has already completed for this job'};
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
     // signed definition pinned before the Agreement is signed. The pin is in
     // flight only from a successful retained seller signature: until then
@@ -537,7 +586,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     else if (railPin && !inFlight) existing.railPin = railPin;
     const session = sessions.get(jobId);
-    persist(session);
     const signUnderPin = (bytes) => {
       if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
       if (!inFlight) assertListingCurrent();
@@ -549,6 +597,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (session.railPin) { session.railPinSigned = true; persist(session); }
       return signature;
     };
+    let contextFailure=null;
+    const unavailable=(cause,reason)=>{contextFailure=cause;return{disposition:'indeterminate',reason:`VET_RECORD_UNVERIFIED: ${reason}`};};
     const progress = await respondToFixedPriceAgreementProposalDurable(
       { proposal, transportIdentity, seller: { party: claim, algorithm: 'ed25519', sign: signUnderPin } },
       {
@@ -601,29 +651,27 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               const ref = resolved.input[role].vetRecordRef;
               const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
               let record;
-              try { record = await admission.resolveVetRecord(structuredClone({ jobId, role, party, ref })); }
-              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
               const problem = await vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now });
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
               // only with its SR-2 receipt at `accepted` or later, before any signature.
               let receipt;
-              try { receipt = await admission.readVetAnchorReceipt(structuredClone({ jobId, role, party, ref })); }
-              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              try { receipt = await readAdmissionCapability(admission,'readVetAnchorReceipt',{ jobId, role, party, ref }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
               const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party });
               if (receiptProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${receiptProblem}` };
               // CORE SR2-4: the receipt's fields alone are assertions, not proof.
               // Only the operator's authentication of this record's receipt passes.
               let verdict;
-              try { verdict = await admission.verifyVetAnchorReceipt(structuredClone({ jobId, role, party, ref, record, receipt })); }
-              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt could not be verified: ${String(error?.message ?? error).slice(0, 160)}` }; }
-              if (verdict !== 'valid') return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet record SR-2 receipt is not verified (${typeof verdict === 'string' ? verdict.slice(0, 40) : 'no verdict'})` };
+              try { verdict = await readAdmissionCapability(admission,'verifyVetAnchorReceipt',{ jobId, role, party, ref, record, receipt }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
+              if (verdict !== 'valid') return verdict==='invalid'?{disposition:'rejected',reason:`VET_RECORD_UNVERIFIED: ${role}: invalid Vet receipt`}:unavailable(new Error('Vet receipt verification is indeterminate'),`the ${role} Vet receipt verification is indeterminate`);
             }
             session.demDeliveryContext = structuredClone(resolved);
-            persist(session);
             return { disposition: 'present', value: structuredClone(resolved.input) };
           }
-          persist(session);
           return { disposition: 'present', value: agreementInput({ jobId, listing, buyerBundle: session.buyerBundle, generatedAt }) };
         },
         verifyContribution: contributionVerifier,
@@ -634,7 +682,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             signatures.set(contribution.planHash, contribution.signature.value);
             session.sellerContribution = structuredClone(contribution);
             session.sellerContributionProposalHash = identity.proposalHash;
-            persist(session);
             return { disposition: 'submitted' };
           },
           reconcileSellerContributionPublication: (identity) =>
@@ -642,7 +689,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         },
       },
     );
-    if (progress.disposition !== 'complete') return { disposition: progress.disposition, stage: progress.stage, reason: progress.reason };
+    if (progress.disposition !== 'complete') {
+      if(!existing&&!session.agreementSignatureKey&&!session.sellerContribution){if(nativeProfile)challenges.retireChallenge(nonce,presentationHash);sessions.delete(jobId);}
+      const answer={disposition:progress.disposition,stage:progress.stage,reason:progress.reason};
+      if(contextFailure){answer.causeCode=contextFailure?.name==='TimeoutError'||contextFailure?.code==='ETIMEDOUT'?'timeout':contextFailure instanceof RangeError?'reply-limit':'reader';Object.defineProperty(answer,'cause',{value:contextFailure});}
+      return answer;
+    }
     session.proposal = structuredClone(proposal);
     session.transportIdentity = structuredClone(transportIdentity);
     session.agreementHash = transportIdentity.agreementHash;
@@ -664,6 +716,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // The buyer-anchored Agreement and the reference that names it: the
   // fixture-substrate write by default, or the buyer's authenticated native
   // SR-2 CREATE with the opt-in capability (its receipt kept as `native`).
+<<<<<<< HEAD
   async function readBuyerAgreement(agreementAddress, buyer, agreementHash, signedProjection) {
     if (agreementAnchor) {
       const read = await agreementAnchor.readAgreement({ logicalAddress: agreementAddress, writer: buyer, agreementHash, ...(signedProjection === undefined ? {} : { signedProjection }) });
@@ -927,6 +980,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // an absence the reader proved (a shutdown cut the approval before anything
   // was signed): the runner then reconciles its WAL, reads the same absence
   // and submits again, which asks the operator again.
+=======
+>>>>>>> stack/365/33-vetted-agreements
   const api = {
     assertSettlementCredit,
     claim,
