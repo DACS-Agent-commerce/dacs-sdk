@@ -455,6 +455,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
             signatures.set(contribution.planHash, contribution.signature.value);
             session.sellerContribution = structuredClone(contribution);
             session.sellerContributionProposalHash = identity.proposalHash;
+            persist(session);
             return { disposition: 'submitted' };
           },
           reconcileSellerContributionPublication: (identity) =>
