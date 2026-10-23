@@ -34,7 +34,7 @@ function install(db) {
   }
   database.prepare = function (...args) { check(); return Reflect.apply(prepare, this, args); };
   database.exec = function (sql) {
-    if (callbacks.length === 0 || checking) return exec.call(this, sql);
+    if (callbacks.length === 0 || checking || typeof sql !== 'string') return exec.call(this, sql);
     // SQLite itself finds statement boundaries, including CREATE TRIGGER
     // bodies and quoted semicolons. Never pass a whole batch after one check.
     let remaining = sql;

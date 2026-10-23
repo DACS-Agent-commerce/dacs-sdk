@@ -1545,6 +1545,22 @@
           "after": "0af1586bc61b3a59509d361eebe3644f36d40150"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 preserve native guarded SQL argument errors",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "b69c3e30476cb097d782da1c27d0b936ebf2641e",
+          "after": "b481d335f5d260dafa236b520c0b4c1b21269164"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "147a5481e0d8783c9d7c929b76b32417839185a8",
+          "after": "e38a86a1fabd4f8767da17a18416e73529b2ee55"
+        }
+      ]
     }
   ]
 }

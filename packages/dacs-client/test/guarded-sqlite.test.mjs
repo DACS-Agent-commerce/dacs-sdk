@@ -67,3 +67,9 @@ test('nested guards restore the outer predicate and always leave on errors', t =
   assert.equal(outer, before);
   assert.ok(inner > 0);
 });
+test('guarded exec preserves native argument errors instead of silently accepting invalid SQL', t => {
+  const db = world(t);
+  withSqliteStatementGuard(db, () => {}, () => {
+    for (const value of [undefined, null, 123, {}]) assert.throws(() => db.exec(value), { code: 'ERR_INVALID_ARG_TYPE' });
+  });
+});
