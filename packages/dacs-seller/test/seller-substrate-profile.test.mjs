@@ -4,26 +4,24 @@
 // an explicit opt-in. No module hooks; real Listing and signer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { seller as fixtureSeller, NOW } from './helpers/protocol-fixture.mjs';
 import { readFileSync } from 'node:fs';
 import { canonicalize, DACS_STANDARD_PIN } from '@kynesyslabs/dacs';
-import * as seller from '../src/index.mjs';
+import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
 
 function sellerWorld() {
-  const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex');
-  const party = { address: `0x${raw}`, claim: `did:demos:agent:${raw}` };
-  const wallet = (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}`;
-  const now = Date.now(), unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt: now - 1000, sessionSeed: 'profile' });
+  const party=fixtureSeller,wallet=message=>'0x'+fixtureSeller.signBytes(Buffer.from(message)).toString('hex');
+  const now=NOW,unsigned=seller.buildUnsignedIdentityBundle({address:party.address,presentedAt:now-1000,sessionSeed:'profile'});
   const draft = seller.buildListingDraft({ identityBundle: seller.attachIdentityPresentation(unsigned, wallet(unsigned.message)), displayName: 'Profile seller',
     publicEndpoint: 'https://seller.invalid/agent', listingId: 'profile-report', listingVersion: 1, title: 'Profile report', description: 'Substrate profile vectors.',
     expectedSizeBytes: 1024, category: 'services.market-report', tags: ['profile'], priceDem: '1', notBefore: now - 60000 });
   const listing = seller.attachListingSignature(draft, wallet(seller.listingSigningMessage(draft)));
   const unreachable = async () => { throw new Error('not reached at construction'); };
   return {
-    base: { signer: { claim: party.claim, sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey) }, listing, deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: unreachable }, observeDemosTransfer: unreachable },
+    base: { signer: { claim: party.claim, sign:fixtureSeller.signBytes }, listing, deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: unreachable }, observeDemosTransfer: unreachable },
     agreementAnchor: { source: 'profile/agreement-readback', readAgreement: unreachable },
     artifacts: { nativeArtifactAnchor: { writer: party.claim, publish: unreachable, readRetained: unreachable, verifyReceipt: unreachable }, deliverableProducer: () => null },
     anchors: { read: unreachable, write: unreachable },
@@ -57,7 +55,7 @@ test('the simulated fixture profile is only an explicit opt-in, and the native p
   await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture: 'yes' }), { name: 'TypeError', message: /simulatedFixture must be true or false/ });
   await assert.rejects(seller.createSellerAgent({ ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority, simulatedFixture: true }), { name: 'TypeError', message: /native seller profile is not the simulated fixture profile/ });
   await assert.rejects(seller.createSellerAgent({ ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts }), { name: 'TypeError', message: /native seller profile needs railAuthority/ });
-  await assert.rejects(seller.validateListing(w.base.listing, { now: () => Date.now(), revocationSurfaces: [], readMarker: async () => null }), { name: 'TypeError', message: /needs an authenticated railAuthority, or simulatedFixture: true/ });
+  await assert.rejects(seller.validateListing(w.base.listing, { now: () => NOW, revocationSurfaces: [], readMarker: async () => null }), { name: 'TypeError', message: /needs an authenticated railAuthority, or simulatedFixture: true/ });
 });
 
 test('each complete profile constructs', async () => {
