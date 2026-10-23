@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { Agent, request } from "node:http";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Duplex } from "node:stream";
@@ -43,6 +45,11 @@ function packTarball(entries: Record<string, string>): Buffer {
 
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 const REGISTRY = "http://127.0.0.1:4873";
+// Use the running npm's actual HTTP stack, including its error-body handling.
+// Acceptance runs pin this client to PINNED_ACCEPTANCE_NPM_VERSION.
+const npmEntry = realpathSync(process.env.npm_execpath ?? join(
+  execFileSync("npm", ["root", "--global"], { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js"));
+const npmPublish = createRequire(npmEntry)("libnpmpublish").publish;
 
 function candidate(name = "@kynesyslabs/dacs", version = "0.1.0-test") {
   const directory = tempDirectory("dacs-local-publish-");
@@ -71,9 +78,9 @@ function fakeRegistry(packument: (published: { manifest: { name: string; version
     },
   };
 }
-const onlyCandidate = ({ manifest, tarball }: { manifest: { version: string }; tarball: Buffer }) =>
-  ({ "dist-tags": { acceptance: manifest.version },
-    versions: { [manifest.version]: { dist: { integrity: sri(tarball), tarball: `${REGISTRY}/candidate.tgz` } } } });
+const onlyCandidate = ({ manifest, tarball }: { manifest: { name: string; version: string }; tarball: Buffer }) =>
+  ({ name: manifest.name, _id: manifest.name, "dist-tags": { acceptance: manifest.version },
+    versions: { [manifest.version]: { ...manifest, dist: { integrity: sri(tarball), tarball: `${REGISTRY}/candidate.tgz` } } } });
 
 describe("exact local registry publisher", () => {
   it("publishes the exact archive bytes under the acceptance dist-tag without provenance", async () => {
@@ -216,6 +223,157 @@ describe("exact local registry publisher", () => {
     expect(registry.urls).toHaveLength(0);
   });
 
+  it.each(["redirect", "cross-origin redirect", "compressed conflict", "declared conflict", "oversized conflict",
+    "compressed error", "compressed success", "oversized success"])(
+    "preserves the npm client's first refusal for a %s without another PUT", async kind => {
+      const { archivePath } = candidate();
+      const registry = fakeRegistry(onlyCandidate);
+      const requests: string[] = [];
+      const publish = async (manifest: Parameters<typeof registry.publish>[0], bytes: Buffer, options: { agent: Agent }) => {
+        await registry.publish(manifest, bytes, {});
+        options.agent.createConnection = () => {
+          let sent = false;
+          return Object.assign(new Duplex({
+            read() {},
+            write(chunk, _encoding, callback) {
+              callback();
+              if (sent) return;
+              sent = true;
+              requests.push(String(chunk).split("\r\n")[0]!);
+              const status = kind.includes("redirect") ? "302 Found" : kind.endsWith("conflict") ? "409 Conflict"
+                : kind.endsWith("success") ? "201 Created" : "400 Bad Request";
+              const body = kind.startsWith("compressed") ? gzipSync("{}")
+                : kind.startsWith("oversized") ? Buffer.alloc(2 * 1024 * 1024) : Buffer.from("{}");
+              const headers = kind.includes("redirect") ? `Location: ${kind.startsWith("cross-origin") ? "http://localhost:4873" : REGISTRY}/redirect\r\n`
+                : kind.startsWith("compressed") ? "Content-Encoding: gzip\r\n" : "";
+              const framing = kind.startsWith("oversized") ? "" :
+                `Content-Length: ${kind.startsWith("declared") ? 2 * 1024 * 1024 : body.length}\r\n`;
+              this.push(`HTTP/1.1 ${status}\r\n${headers}${framing}Connection: close\r\n\r\n`);
+              this.push(body);
+              this.push(null);
+            },
+          }), { setTimeout() { return this; } });
+        };
+        return npmPublish(manifest, bytes, options);
+      };
+      await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry, publish }))
+        .rejects.toThrow(/redirect|encoded|exceeded/);
+      expect(requests).toEqual(["PUT /@kynesyslabs%2fdacs HTTP/1.1"]);
+      expect(registry.urls).toHaveLength(0);
+    });
+
+  it.each(["root name", "root id", "name", "version", "dependencies", "scripts", "missing field", "extra field", "packed npm field",
+    "version id", "extra dist field"])(
+    "rejects changed registry manifest metadata (%s), including after a conflict", async field => {
+      const { archivePath } = candidate();
+      const manifest = { name: "example", version: "1.0.0", dependencies: { example: "1.0.0" },
+        scripts: { install: "echo example" }, _npmVersion: "packed-value" };
+      const bytes = packTarball({ "package/package.json": JSON.stringify(manifest) });
+      writeFileSync(archivePath, bytes);
+      const registry = fakeRegistry(published => {
+        const packument = onlyCandidate(published);
+        const served: Record<string, unknown> = packument.versions[manifest.version]!;
+        if (field === "root name") packument.name = "other";
+        else if (field === "root id") packument._id = "other";
+        else if (field === "missing field") delete served.dependencies;
+        else if (field === "extra field") served.optionalDependencies = { other: "2.0.0" };
+        else if (field === "version id") served._id = "other@2.0.0";
+        else if (field === "extra dist field") served.dist = { ...packument.versions[manifest.version]!.dist, unknown: true };
+        else served[field === "packed npm field" ? "_npmVersion" : field] = field === "name" ? "other"
+          : field === "version" ? "2.0.0" : { other: "2.0.0" };
+        return packument;
+      });
+      for (const conflict of [false, true]) {
+        const publish = async (...args: Parameters<typeof registry.publish>) => {
+          if (!conflict) return registry.publish(...args);
+          throw Object.assign(new Error("already exists"), { statusCode: 409 });
+        };
+        await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry, publish }))
+          .rejects.toThrow(/metadata/);
+      }
+    });
+
+  it("accepts only known npm-added version metadata and ignores object key order", async () => {
+    const { archivePath } = candidate();
+    const registry = fakeRegistry(published => {
+      const packument = onlyCandidate(published);
+      const served = packument.versions[published.manifest.version]!;
+      packument.versions[published.manifest.version] = Object.assign({
+        ...Object.fromEntries(Object.entries(served).reverse()), _id: `${published.manifest.name}@${published.manifest.version}`,
+        _nodeVersion: process.versions.node, _npmVersion: PINNED_ACCEPTANCE_NPM_VERSION,
+      }, served);
+      return packument;
+    });
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry })).resolves.toBeDefined();
+  });
+
+  it("verifies the real npm client's published metadata and an ordinary conflict on retry", async () => {
+    const { archivePath, bytes, name, version } = candidate();
+    let packument: ReturnType<typeof onlyCandidate> | undefined;
+    let puts = 0;
+    const publish = (manifest: unknown, tarball: Buffer, options: { agent: Agent }) => {
+      options.agent.createConnection = () => {
+        let written = Buffer.alloc(0);
+        let sent = false;
+        return Object.assign(new Duplex({
+          read() {},
+          write(chunk, _encoding, callback) {
+            written = Buffer.concat([written, chunk]);
+            const end = written.indexOf("\r\n\r\n");
+            if (end < 0 || sent) { callback(); return; }
+            const length = /content-length: (\d+)/i.exec(written.subarray(0, end).toString());
+            if (!length) { callback(new Error("expected npm's Content-Length")); return; }
+            callback();
+            if (written.length < end + 4 + Number(length[1])) return;
+            sent = true;
+            packument ??= JSON.parse(written.subarray(end + 4).toString());
+            this.push(`HTTP/1.1 ${puts++ === 0 ? "201 Created" : "409 Conflict"}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`);
+            this.push(null);
+          },
+        }), { setTimeout() { return this; } });
+      };
+      return npmPublish(manifest, tarball, options);
+    };
+    const fetch = async (url: URL) => String(url).endsWith(".tgz")
+      ? new Response(Uint8Array.from(bytes)) : Response.json(packument);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", publish, fetch }))
+        .resolves.toEqual({ name, version, integrity: sri(bytes) });
+    }
+    expect(puts).toBe(2);
+  });
+
+  it("rejects an npm-packed version that npm would normalize before any PUT", async () => {
+    const directory = tempDirectory("dacs-npm-pack-");
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "example", version: "v1.0.0" }));
+    execFileSync(process.execPath, [npmEntry, "pack", "--ignore-scripts", "--offline", "--no-update-notifier", "--json", "--cache", join(directory, "cache")],
+      { cwd: directory, stdio: "pipe" });
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath: join(directory, "example-v1.0.0.tgz"),
+      registry: REGISTRY, token: "t", ...registry })).rejects.toThrow(/canonical.*name.*version/);
+    expect(registry.calls).toHaveLength(0);
+  });
+
+  it.each([
+    [" Example", "1.0.0"], ["@Scope/example", "1.0.0"], ["example/path", "1.0.0"],
+    ["example\n", "1.0.0"], ["example", "1.0.0\n"],
+    ["example", "1.0.0+build"], ["example", "=1.0.0"], ["example", " 1.0.0 "],
+    ["example", "1.0.0-01"], ["example", "01.0.0"], ["example", "9007199254740992.0.0"],
+  ])("rejects noncanonical identity %s@%s before publication", async (name, version) => {
+    const { archivePath } = candidate(name, version);
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/canonical.*name.*version/);
+    expect(registry.calls).toHaveLength(0);
+  });
+
+  it.each(["1.0.0", "1.0.0-rc.0", "0.1.0-alpha.0"])("accepts the canonical version %s", async version => {
+    const { archivePath } = candidate("@kynesyslabs/dacs", version);
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .resolves.toMatchObject({ version });
+  });
+
   it.each(["packument", "tarball"])("bounds streamed %s bytes and cancels an oversized response", async target => {
     const { archivePath } = candidate();
     const registry = fakeRegistry(onlyCandidate);
@@ -331,6 +489,28 @@ describe("exact local registry publisher", () => {
     expect(readPackedManifest(packTarball({ "package/package.json": '{"name":"x","version":"1.0.0"}' })))
       .toEqual({ name: "x", version: "1.0.0" });
     expect(() => readPackedManifest(packTarball({ "package/index.js": "" }))).toThrow("no package/package.json");
+  });
+
+  it.each(["alternate/package.json", "alternate/index.js", "package"])(
+    "rejects a stripping alias outside package/ before publication: %s", async alias => {
+      const { archivePath } = candidate();
+      writeFileSync(archivePath, packTarball({
+        "package/package.json": '{"name":"example","version":"1.0.0"}',
+        [alias]: '{"name":"other","version":"9.9.9"}',
+      }));
+      const registry = fakeRegistry(onlyCandidate);
+      await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+        .rejects.toThrow(/packed tarball.*path/);
+      expect(registry.calls).toHaveLength(0);
+    });
+
+  it("allows an optional package/ root directory entry", () => {
+    const archive = gunzipSync(packTarball({ "package/": "", "package/package.json": '{"name":"example","version":"1.0.0"}' }));
+    archive.write("5", 156);
+    archive.fill(32, 148, 156);
+    const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
+    archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+    expect(readPackedManifest(gzipSync(archive))).toEqual({ name: "example", version: "1.0.0" });
   });
 
   it.each(["duplicate", "alias", "nonregular", "size", "checksum", "truncated", "hidden trailer", "extended header", "trailing slash", "directory body"])(
