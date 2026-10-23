@@ -253,3 +253,108 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     }
   });
 });
+
+const BUYER = `did:demos:agent:${"a".repeat(64)}`;
+const SELLER = `did:demos:agent:${"b".repeat(64)}`;
+const AUTHORITY_JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+
+function controlledAuthority() {
+  let transform: (decision: fixtureWire.Tp1AuthorityDecision) => unknown = (decision) => decision;
+  const scopes: Readonly<fixtureWire.Tp1AuthorityScope>[] = [];
+  const binding = fixtureWire.bindTp1Profile({ record: RECORD, local: A, readAuthority(scope) {
+    scopes.push(scope);
+    return transform({ local: { ...scope.local }, chainIdentity: RECORD.chainIdentity, provenance: "test-generation-1",
+      sessionId: scope.sessionId, participants: scope.participants.map((claim) => ({ claim,
+        profile: { id: fixtureWire.TP1_PROFILE_ID, revision: fixtureWire.TP1_PROFILE_REVISION, base: fixtureWire.TP1_BASE_REVISION,
+          chainIdentity: RECORD.chainIdentity, pinVersion: RECORD.pinVersion }, modules: { ...fixtureWire.TESTNET_PROFILE_TP1.tuple } })) });
+  } });
+  return { binding, scopes, change: (next: typeof transform) => { transform = next; } };
+}
+
+it("refuses a syntactically valid identity record outside the SDK approval list", () => {
+  expect(() => bindTp1Fixture({ record: { ...RECORD, recordId: "unapproved-record" }, local: A }))
+    .toThrow(expect.objectContaining({ code: "tp1_identity_unapproved", status: 500 }));
+});
+
+it("requires the original binding and the current bound local connection", () => {
+  const { binding } = controlledAuthority();
+  expect(() => fixtureWire.assertTp1Binding(binding, A)).not.toThrow();
+  expect(() => fixtureWire.assertTp1Binding({ ...binding }, A)).toThrow(/tp1_binding_required/);
+  expect(() => fixtureWire.assertTp1Authority({ ...binding }, A, [], null)).toThrow(/tp1_binding_required/);
+  for (const field of ["endpoint", "connectionId", "transportAuthority"] as const) {
+    const local = { ...A, [field]: field === "endpoint" ? "https://changed.identity.invalid/" : "changed" };
+    expect(() => fixtureWire.assertTp1Binding(binding, local)).toThrow(/tp1_local_binding_changed/);
+    expect(() => fixtureWire.assertTp1Authority(binding, local, [], null)).toThrow(/tp1_local_binding_changed/);
+  }
+});
+
+it("rechecks revoked or changed authority through assertTp1Binding", () => {
+  const authority = controlledAuthority();
+  for (const transform of [
+    () => null,
+    (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, provenance: "test-generation-2" }),
+    (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, chainIdentity: "0".repeat(64) }),
+    (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, local: { ...A, connectionId: "revoked" } }),
+  ]) {
+    authority.change(transform);
+    expect(() => fixtureWire.assertTp1Binding(authority.binding, A)).toThrow(/tp1_connection_unverified/);
+  }
+});
+
+it("reads fresh frozen authority scope for each exact job and participant pair", () => {
+  const { binding, scopes } = controlledAuthority();
+  fixtureWire.assertTp1Authority(binding, A, [BUYER, SELLER], AUTHORITY_JOB);
+  fixtureWire.assertTp1Authority(binding, A, [BUYER, SELLER], AUTHORITY_JOB);
+  expect(scopes).toHaveLength(3);
+  expect(scopes[1]).not.toBe(scopes[2]);
+  expect(scopes[2]).toEqual({ local: A, sessionId: AUTHORITY_JOB, participants: [BUYER, SELLER] });
+  for (const scope of scopes) {
+    expect(Object.isFrozen(scope) && Object.isFrozen(scope.local) && Object.isFrozen(scope.participants)).toBe(true);
+  }
+});
+
+it.each([
+  (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, sessionId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" }),
+  (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, participants: [...decision.participants].reverse() }),
+  (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, participants: [] }),
+  (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, participants: decision.participants.map((party) => ({ ...party, profile: { ...party.profile, base: "0".repeat(40) } })) }),
+  (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, participants: decision.participants.map((party) => ({ ...party, modules: { ...party.modules, CORE: "0.2" } })) }),
+])("refuses a wrong session, participant, profile or module tuple (%#)", (transform) => {
+  const authority = controlledAuthority();
+  authority.change(transform);
+  expect(() => fixtureWire.assertTp1Authority(authority.binding, A, [BUYER, SELLER], AUTHORITY_JOB)).toThrow(/tp1_participant_profile_mismatch/);
+});
+
+it("rejects malformed sessions and duplicate or missing participants before consulting authority", () => {
+  const { binding, scopes } = controlledAuthority();
+  for (const [participants, session] of [[[BUYER, BUYER], AUTHORITY_JOB], [[BUYER], AUTHORITY_JOB], [[BUYER, SELLER], "invalid-job"]] as const) {
+    expect(() => fixtureWire.assertTp1Authority(binding, A, participants, session)).toThrow(/tp1_participant_profile_mismatch/);
+  }
+  expect(scopes).toHaveLength(1);
+});
+
+it("preserves an authority reader's exact error", () => {
+  const authority = controlledAuthority();
+  const cause = new Error("authority lookup timed out");
+  authority.change(() => { throw cause; });
+  expect(() => fixtureWire.assertTp1Binding(authority.binding, A)).toThrow(cause);
+});
+
+it("enforces every peer and retained purchase profile field", () => {
+  const { binding } = controlledAuthority();
+  fixtureWire.assertPeerProfile(binding.profile, binding);
+  fixtureWire.assertPurchaseProfile(binding.profile, binding);
+  expect(() => fixtureWire.assertPeerProfile(undefined, binding)).toThrow(/tp1_profile_missing/);
+  const { revision: omitted, ...missingRevision } = binding.profile;
+  expect(omitted).toBe("TP-1");
+  expect(() => fixtureWire.assertPeerProfile(missingRevision, binding)).toThrow(/tp1_profile_revision_missing/);
+  expect(() => fixtureWire.assertPeerProfile({ ...binding.profile, revision: "TP-2" }, binding)).toThrow(/tp1_profile_revision_unknown/);
+  for (const field of ["id", "base", "chainIdentity", "pinVersion"] as const) {
+    const profile = { ...binding.profile, [field]: field === "base" ? "0".repeat(40) : field === "chainIdentity" ? "0".repeat(64) : "other" };
+    expect(() => fixtureWire.assertPeerProfile(profile, binding, 502)).toThrow(expect.objectContaining({ code: "tp1_profile_mismatch", status: 502 }));
+    expect(() => fixtureWire.assertPurchaseProfile(profile, binding)).toThrow(/tp1_purchase_profile_mismatch/);
+  }
+  for (const profile of [undefined, missingRevision]) {
+    expect(() => fixtureWire.assertPurchaseProfile(profile, binding)).toThrow(/tp1_purchase_profile_mismatch/);
+  }
+});
