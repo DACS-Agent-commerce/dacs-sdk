@@ -935,5 +935,3 @@ test('host close retains its directory lock until a disconnected signing handler
   } finally { release(); await closing; }
   assert.equal(closed, true);
 });
-
-
