@@ -486,6 +486,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | f213a2cfade904c48b9515355f49fb5a7a89d9fd |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | b2db7b91c5e1e6de55edde544c2b5d078c1f3978 |
 | | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` | 3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc |
+| D11 | fix(client): D11 document public contracts and keep packed checks offline | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 171253367491218f30989ba8511f92305937f75b |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 5f2ef3b4e30101b70f88e665ded5485f77764da9 |
 
 ## Complete commit and file inventory
 
@@ -1125,6 +1129,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/test/host-observations.test.mjs:1` |
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/public-api.test.mjs:1` |
 
 ## Original moved files
 
