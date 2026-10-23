@@ -3,6 +3,7 @@
 // Left out: the native-send payload, amount encoding, payload hash and the application
 // coordinate store.
 import { createHash } from 'node:crypto';
+import { canonicalize } from '@kynesyslabs/dacs';
 
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -12,7 +13,16 @@ export function deriveStorageAddress(owner, programName, nonce, salt = '') {
 
 const ZERO_FEE = Object.freeze({ network_fee: 0, rpc_fee: 0, additional_fee: 0, rpc_address: null });
 
-export function buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress, signedListing, nonce, timestamp }) {
+export function buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress, signedListing, nonce, timestamp, salt = '' }) {
+  if (typeof from !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(from) ||
+      typeof programName !== 'string' || !programName.trim() || programName.includes(':') ||
+      !Number.isSafeInteger(nonce) || nonce < 0 || !Number.isSafeInteger(timestamp) || timestamp < 0 ||
+      typeof logicalAddress !== 'string' || !logicalAddress.trim() || typeof salt !== 'string' ||
+      !signedListing || typeof signedListing !== 'object' || Array.isArray(signedListing) ||
+      storageAddress !== deriveStorageAddress(from, programName, nonce, salt)) {
+    throw new TypeError('storage CREATE requires a valid owner, program name, nonce, timestamp, logical address, artifact and matching storage address');
+  }
+  canonicalize(signedListing);
   return {
     content: {
       type: 'storageProgram',
@@ -29,7 +39,7 @@ export function buildStorageProgramCreatePayload({ from, storageAddress, program
           data: signedListing,
           metadata: { logicalAddress },
           acl: { mode: 'public' },
-          salt: '',
+          salt,
           storageLocation: 'onchain',
         },
       ],
