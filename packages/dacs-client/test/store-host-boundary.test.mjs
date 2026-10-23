@@ -71,3 +71,26 @@ test('a caught callback COMMIT error cannot split a later failure from earlier w
   }), /TEST-failure/);
   assert.deepEqual(rows(), []);
 });
+
+test('uniqueness uses native constraint codes and preserves a trigger policy error', t => {
+  const {db,store}=world(t);
+  db.exec("CREATE TRIGGER policy BEFORE INSERT ON records WHEN NEW.id='TEST-policy' BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: records.id'); END");
+  assert.throws(()=>store.transaction(db,()=>db.exec("INSERT INTO records VALUES ('TEST-policy')")),error=>{
+    assert.equal(error.errcode,1811); assert.equal(store.isUniqueViolation(error),false); return true;
+  });
+  db.exec("INSERT INTO records VALUES ('TEST-existing')");
+  assert.throws(()=>db.exec("INSERT INTO records VALUES ('TEST-existing')"),error=>{
+    assert.equal(store.isUniqueViolation(error),true); return true;
+  });
+});
+test('schema refresh replaces renamed trigger targets without accumulating guards', t => {
+  const {db,store}=world(t);
+  store.transaction(db,()=>{});
+  for(const suffix of ['one','two']){
+    db.exec(`ALTER TABLE records RENAME TO archived_${suffix}; CREATE TABLE records(id TEXT PRIMARY KEY)`);
+    store.transaction(db,()=>db.exec(`INSERT INTO records VALUES ('TEST-${suffix}')`));
+    const triggers=db.prepare("SELECT tbl_name,count(*) n FROM temp.sqlite_master WHERE type='trigger' GROUP BY tbl_name").all();
+    assert.equal(triggers.find(row=>row.tbl_name==='records')?.n,3);
+    assert.ok(triggers.every(row=>row.n===3));
+  }
+});
