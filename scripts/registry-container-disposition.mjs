@@ -3,12 +3,12 @@
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
 function validIds(ids) {
-  return Array.isArray(ids) && ids.every(id => typeof id === "string" && advisoryId.test(id)) &&
+  return Array.isArray(ids) && [...ids].every(id => typeof id === "string" && advisoryId.test(id)) &&
     new Set(ids).size === ids.length;
 }
 
 // Each assessment names where its reachability assessment is recorded.
-const validAssessments = entries => Array.isArray(entries) && entries.every(entry => typeof entry === "object" &&
+const validAssessments = entries => Array.isArray(entries) && [...entries].every(entry => typeof entry === "object" &&
   entry !== null && typeof entry.id === "string" && advisoryId.test(entry.id) && typeof entry.assessment === "string" &&
   entry.assessment.trim() !== "") && new Set(entries.map(entry => entry.id)).size === entries.length;
 
@@ -20,6 +20,8 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
   if (baseline?.schema !== "dacs-registry-audit-baseline/v1" ||
       typeof baseline.source?.commit !== "string" || !/^[a-f0-9]{40}$/.test(baseline.source.commit) ||
       typeof baseline.source?.job !== "string" || !baseline.source.job.trim() ||
+      baseline.source?.url !== `https://github.com/DACS-Agent-commerce/dacs-sdk/runs/${baseline.source.job}` ||
+      typeof baseline.source?.evidence !== "string" || !baseline.source.evidence.trim() ||
       !validIds(baseline.advisoryIds) || !validAssessments(assessments) ||
       assessments.some(({ id }) => baseline.advisoryIds.includes(id)) || !validIds(observedAdvisories) ||
       !validIds(directAdvisories) || directAdvisories.some(id => !observedAdvisories.includes(id))) {
