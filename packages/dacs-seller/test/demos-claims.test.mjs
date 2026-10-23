@@ -2,10 +2,15 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/d
 // The claim, address and wallet-signature contract the ported seller kit relies on.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import { sign } from 'node:crypto';
+import { privateKeyFromSeed, publicKeyFromSeed } from '@kynesyslabs/dacs';
 import { addressForClaim, claimForAddress, decodeSignature, normalizeDemosAddress, verifyDemosSignature, isCanonicalEd25519Signature, DemosClaimFormatError } from '../src/dacs/demos-claims.mjs';
 
-const keyHex = () => randomBytes(32).toString('hex');
+const keyHex = () => 'ab'.repeat(32);
+const testKeyPair = () => {
+  const seed = new Uint8Array(32).fill(7);
+  return { privateKey: privateKeyFromSeed(seed), publicKey: publicKeyFromSeed(seed) };
+};
 
 test('addresses read case-insensitively with one 0x prefix and are written lower-case', () => {
   const hex = keyHex();
@@ -24,7 +29,7 @@ test('claims and addresses convert both ways; claim key digits must be lower-cas
 });
 
 test('signatures decode from canonical base64url first, then from hex or base64url behind 0x prefixes', () => {
-  const bytes = randomBytes(64), base64url = bytes.toString('base64url'), hex = bytes.toString('hex');
+  const bytes = Buffer.alloc(64, 0x5a), base64url = bytes.toString('base64url'), hex = bytes.toString('hex');
   for (const value of [base64url, ` ${base64url} `, hex, `0x${hex}`, `0x0x${hex}`, `0X${hex.toUpperCase()}`, `0x${base64url}`]) assert.deepEqual(decodeSignature(value), bytes);
   // A genuine base64url signature may begin with "0x"; it is not stripped.
   const leading = Buffer.from(bytes); leading[0] = 0xd3; leading[1] = (leading[1] & 0x0f) | 0x10;
@@ -38,7 +43,7 @@ test('signatures decode from canonical base64url first, then from hex or base64u
 });
 
 test('a wallet signature verifies over the exact UTF-8 message; anything else is false, never a throw', () => {
-  const pair = generateKeyPairSync('ed25519'), address = `0x${pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex')}`;
+  const pair = testKeyPair(), address = `0x${pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex')}`;
   const message = 'dacs-bundle-presentation:v1:é', signature = `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}`;
   assert.equal(verifyDemosSignature({ address, message, signature }), true);
   assert.equal(verifyDemosSignature({ address: address.toUpperCase().replace('0X', '0x'), message, signature: Buffer.from(signature.slice(2), 'hex').toString('base64url') }), true);
@@ -94,5 +99,39 @@ test('CREATE payload binds the exact artifact, logical address and public zero-s
     signature: null, hash: '', status: '', blockNumber: null });
   assert.equal(payload.content.data[1].data, signedListing);
   payload.content.transaction_fee.network_fee = 1;
-  assert.equal(buildStorageProgramCreatePayload({}).content.transaction_fee.network_fee, 0);
+  assert.equal(buildStorageProgramCreatePayload(validCreate()).content.transaction_fee.network_fee, 0);
+});
+
+
+test('non-string messages never verify even when their decoded bytes were signed', () => {
+  const pair = testKeyPair();
+  const address = `0x${pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex')}`;
+  const signature = sign(null, Buffer.from([255]), pair.privateKey).toString('base64url');
+  for (const message of [[255], { type: 'Buffer', data: [255] }, Buffer.from([255])]) {
+    assert.equal(verifyDemosSignature({ address, message, signature }), false);
+  }
+});
+
+const validCreate = (salt = '') => {
+  const from = `0x${'ab'.repeat(32)}`, programName = 'TEST-program', nonce = 7;
+  return { from, programName, nonce, salt, storageAddress: deriveStorageAddress(from, programName, nonce, salt),
+    logicalAddress: 'TEST-logical', signedListing: { TEST: 'artifact' }, timestamp: 42 };
+};
+
+test('CREATE retains the salt that derives its requested storage address', () => {
+  const input = validCreate('extra');
+  const operation = buildStorageProgramCreatePayload(input).content.data[1];
+  assert.equal(operation.salt, input.salt);
+  assert.equal(deriveStorageAddress(input.from, operation.programName, input.nonce, operation.salt), operation.storageAddress);
+});
+
+test('CREATE refuses missing and malformed write inputs before exposing a wallet payload', () => {
+  assert.throws(() => buildStorageProgramCreatePayload({}), TypeError);
+  for (const change of [
+    { from: undefined }, { from: 'invalid' }, { programName: '' }, { programName: 'bad:name' },
+    { nonce: undefined }, { nonce: -1 }, { nonce: 1.5 }, { nonce: Number.MAX_SAFE_INTEGER + 1 },
+    { timestamp: undefined }, { timestamp: -1 }, { timestamp: NaN }, { logicalAddress: '' },
+    { logicalAddress: 7 }, { signedListing: undefined }, { signedListing: null }, { signedListing: [] },
+    { storageAddress: deriveStorageAddress(validCreate().from, 'other', 7) }, { salt: 7 },
+  ]) assert.throws(() => buildStorageProgramCreatePayload({ ...validCreate(), ...change }), TypeError);
 });
