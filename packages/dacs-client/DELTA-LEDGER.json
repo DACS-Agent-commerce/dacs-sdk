@@ -1313,6 +1313,27 @@
           "after": "147a5481e0d8783c9d7c929b76b32417839185a8"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 guard every SQLite callback statement after rollback",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba",
+          "after": "dea888ee7f7906fc011ccb8e69319cf00f036c85"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "c202d2b701edc2a536b34d860bdb7317cfed6d77",
+          "after": "00357c230e040c7a2658f717f72e172eedcc8b44"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "8560f9547739573a5f2c8c32c27a085fbd59370d",
+          "after": "7fb6c88ed1400bffc509fc23453150bf78519cbe"
+        }
+      ]
     }
   ]
 }

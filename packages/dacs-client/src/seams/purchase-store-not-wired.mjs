@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { NotWiredError } from '../client-errors.mjs';
+import { withSqliteStatementGuard } from '../util/guarded-sqlite.mjs';
 
 const require = createRequire(import.meta.url);
 const active = new WeakMap();
@@ -63,7 +64,12 @@ function writeGuard(db) {
     },
     refresh() {
       const current = JSON.stringify(schemaVersions());
-      if (current === versions) return;
+      for (const [key, triggers] of tables) {
+        if (['main', 'temp'].includes(JSON.parse(key)[0])) continue;
+        for (const trigger of triggers) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(trigger.name)}`);
+        tables.delete(key);
+      }
+      if (current === versions && !schemaVersions().some(([schema]) => !['main', 'temp'].includes(schema))) return;
       const installed = new Set(db.prepare("SELECT name FROM temp.sqlite_master WHERE type='trigger'").all().map(row => row.name));
       for (const { schema, name: table, type } of db.prepare('PRAGMA table_list').all()) {
         if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
@@ -123,7 +129,9 @@ function sqliteTransaction(db, fn) {
       db.exec(`SAVEPOINT ${savepoint}`);
       opened = true;
       state.barrier = state.guard.blockCommit();
-      const result = transactionResult(db, fn());
+      const result = transactionResult(db, withSqliteStatementGuard(db, () => {
+        if (!fenced.has(db) && !state.guard.present()) throw new Error('purchase transaction ended');
+      }, fn));
       state.guard.check();
       state.barrier.return();
       state.barrier = null;
@@ -155,7 +163,9 @@ function sqliteTransaction(db, fn) {
     guard.start();
     state = { depth: 0, guard, barrier: guard.blockCommit() };
     active.set(db, state);
-    const result = transactionResult(db, fn());
+    const result = transactionResult(db, withSqliteStatementGuard(db, () => {
+      if (!fenced.has(db) && !guard.present()) throw new Error('purchase transaction ended');
+    }, fn));
     guard.check();
     state.barrier.return();
     state.barrier = null;

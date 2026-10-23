@@ -444,6 +444,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 add inert guarded SQLite statement execution | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b69c3e30476cb097d782da1c27d0b936ebf2641e |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 147a5481e0d8783c9d7c929b76b32417839185a8 |
+| D11 | fix(client): D11 guard every SQLite callback statement after rollback | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | dea888ee7f7906fc011ccb8e69319cf00f036c85 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 00357c230e040c7a2658f717f72e172eedcc8b44 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 7fb6c88ed1400bffc509fc23453150bf78519cbe |
 
 ## Complete commit and file inventory
 
@@ -1020,6 +1024,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
 | fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 
 ## Original moved files
 

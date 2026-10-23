@@ -699,5 +699,19 @@
       "packages/dacs-client/src/util/guarded-sqlite.mjs",
       "packages/dacs-client/test/guarded-sqlite.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 guard every SQLite callback statement after rollback",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs"
+    ]
   }
 ]

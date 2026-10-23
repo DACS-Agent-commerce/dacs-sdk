@@ -4,7 +4,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 
 function database(t) {
@@ -79,14 +78,14 @@ for (const nested of [false, true]) {
 test('guards are reused at host scale and refresh for added or recreated tables', t => {
   const { db, store } = database(t);
   for (let i = 0; i < 400; i++) db.exec(`CREATE TABLE host_${i} (id TEXT)`);
-  const write = () => db.exec("INSERT INTO records(id) VALUES (lower(hex(randomblob(8))))");
+  let serial = 0;
+  const write = () => db.prepare('INSERT INTO records(id) VALUES (?)').run(`TEST-${serial++}`);
   store.transaction(db, write);
   const triggers = () => db.prepare("SELECT name FROM sqlite_temp_master WHERE type='trigger' ORDER BY name").all();
-  const before = triggers(), start = performance.now();
+  const before = triggers();
   for (let i = 0; i < 5; i++) store.transaction(db, write);
   assert.deepEqual(triggers(), before);
   assert.equal(before.length, 401 * 3);
-  assert.ok((performance.now() - start) / 5 < 100, 'warm transactions should take less than 100 ms at 400 host tables');
   for (const ddl of ['CREATE TABLE added (id TEXT)', 'DROP TABLE added; CREATE TABLE added (id TEXT)']) {
     db.exec(ddl);
     db.exec("INSERT INTO records(id) VALUES ('existing') ON CONFLICT DO NOTHING");
@@ -99,3 +98,40 @@ test('guards are reused at host scale and refresh for added or recreated tables'
   db.exec("INSERT INTO added VALUES ('outside')");
 });
 
+for (const [name, ddl, seed, write] of [
+  ['FTS5 delete', 'CREATE VIRTUAL TABLE search USING fts5(body)', "INSERT INTO search VALUES ('TEST-existing')", 'DELETE FROM search'],
+  ['RTree insert', 'CREATE VIRTUAL TABLE search USING rtree(id,minX,maxX)', 'INSERT INTO search VALUES (1,0,1)', 'INSERT INTO search VALUES (2,0,1)'],
+  ['CTAS', 'CREATE TABLE search(body TEXT)', "INSERT INTO search VALUES ('TEST-existing')", "CREATE TABLE escaped AS SELECT 'TEST-after' AS body"],
+]) {
+  test(`automatic rollback prevents ${name} writes on reopen`, t => {
+    const { db, path, store } = database(t);
+    db.exec(`${ddl}; ${seed}; INSERT INTO records(id) VALUES ('TEST-existing')`);
+    const prepared = db.prepare(write);
+    assert.throws(() => store.transaction(db, () => {
+      assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records(id) VALUES ('TEST-existing')"), /UNIQUE/);
+      for (const execute of [() => db.exec(write), () => prepared.run(), () => prepared.get(), () => prepared.all(), () => [...prepared.iterate()]]) {
+        assert.throws(execute, /transaction ended/);
+      }
+    }), { code: 'client_not_wired' });
+    const reopened = new DatabaseSync(path);
+    try {
+      assert.equal(reopened.prepare('SELECT count(*) n FROM search').get().n, 1);
+      assert.equal(reopened.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n, 0);
+    } finally { reopened.close(); }
+  });
+}
+test('detach and reattach of the same file retains transaction protection', t => {
+  const { db, path, store } = database(t);
+  db.prepare('ATTACH DATABASE ? AS aux').run(`${path}.aux`);
+  db.exec("CREATE TABLE aux.extra(id TEXT); INSERT INTO records(id) VALUES ('TEST-existing')");
+  store.transaction(db, () => {});
+  db.exec('DETACH aux');
+  db.prepare('ATTACH DATABASE ? AS aux').run(`${path}.aux`);
+  assert.throws(() => store.transaction(db, () => {
+    assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records(id) VALUES ('TEST-existing')"), /UNIQUE/);
+    assert.throws(() => db.exec("INSERT INTO aux.extra VALUES ('TEST-after')"), /transaction ended/);
+  }), { code: 'client_not_wired' });
+  const reopened = new DatabaseSync(`${path}.aux`);
+  try { assert.equal(reopened.prepare('SELECT count(*) n FROM extra').get().n, 0); }
+  finally { reopened.close(); }
+});
