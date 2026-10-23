@@ -36,7 +36,7 @@ import { OperationError, requestHashOf } from './client-errors.mjs';
 import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
-import { OutboundError } from './util/http.mjs';
+import { OutboundError, observeWithDeadline } from './util/http.mjs';
 import { nodeProjectedNonce, OS_INTEGER } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView } from './dacs/protocol-purchases.mjs';
@@ -171,6 +171,7 @@ export function approvalBinding(operation) {
 // Installed hosts have no qualified settlement authority in this candidate.
 // CORE §11.1.2(3): profile admission remains held. Host diagnostics are not
 // artifact verification or the archival path described in §11.1.2(4).
+// verifyDeal accepts an optional signal to cancel its passive chain reads.
 export function createPublicPurchaseService(options) {
   return createPurchaseService(options, true);
 }
@@ -939,48 +940,39 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return value;
   }
 
-  async function diagnosticReadback(operation, rawHash) {
+  async function diagnosticReadback(operation, rawHash, signal) {
     operation = projectExpiry(operation);
     const hash = coordinates.get(operation.id)?.reportedTxHash;
     if (rawHash != null && canonicalHash(rawHash) !== hash) throw new OperationError('invalid_state', 'diagnostic readback only accepts the recorded transaction hash');
     let observation = null;
     if (hash) {
-      const controller = new AbortController();
-      let timer;
       try {
-        observation = await Promise.race([
-          new Promise((_, reject) => { timer = setTimeout(() => {
-            const error = new OutboundError('timeout', 'host chain read timed out');
-            controller.abort(error);
-            reject(error);
-          }, chainReadTimeoutMs); }),
-          (async () => {
-            const options = { signal: controller.signal };
-            await assertBoundDomain(operation, options);
-            controller.signal.throwIfAborted();
-            const value = await (usesNativeAgreementPayment(operation) && chain.observePurchaseTransfer
-              ? chain.observePurchaseTransfer(hash, options) : chain.observeTransfer(hash, options));
-            controller.signal.throwIfAborted();
-            // Retain only bounded primitive contract fields. Never traverse or
-            // serialize arbitrary host extension objects or collections.
-            if (!value || typeof value !== 'object' || Array.isArray(value)) return checkedTransferObservation(value, hash);
-            const projected = {};
-            for (const key of ['status', 'txHash', 'payer', 'payee', 'amountOs', 'blockNumber', 'includedAt', 'sourceDisposition', 'reason']) {
-              const field = value[key];
-              if (field === undefined) continue;
-              if ((!['string', 'number', 'boolean'].includes(typeof field) && field !== null)
-                || (typeof field === 'string' && field.length > (key === 'reason' ? 240 : 1024))) {
-                return { status: 'malformed', reason: 'host observation field exceeds its bounded primitive contract' };
-              }
-              projected[key] = field;
+        observation = await observeWithDeadline(async options => {
+          await assertBoundDomain(operation, options);
+          options.signal.throwIfAborted();
+          const value = await (usesNativeAgreementPayment(operation) && chain.observePassiveTransfer
+            ? chain.observePassiveTransfer(hash, options) : chain.observeTransfer(hash, options));
+          options.signal.throwIfAborted();
+          // Retain only bounded primitive contract fields. Never traverse or
+          // serialize arbitrary host extension objects or collections.
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return checkedTransferObservation(value, hash);
+          const projected = {};
+          for (const key of ['status', 'txHash', 'payer', 'payee', 'amountOs', 'blockNumber', 'includedAt', 'sourceDisposition', 'reason']) {
+            const field = value[key];
+            if (field === undefined) continue;
+            if ((!['string', 'number', 'boolean'].includes(typeof field) && field !== null)
+              || (typeof field === 'string' && field.length > (key === 'reason' ? 240 : 1024))) {
+              return { status: 'malformed', reason: 'host observation field exceeds its bounded primitive contract' };
             }
-            return checkedTransferObservation(projected, hash);
-          })(),
-        ]);
+            projected[key] = field;
+          }
+          return checkedTransferObservation(projected, hash);
+        }, { timeoutMs: chainReadTimeoutMs, signal });
       } catch (error) {
         observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240),
-          ...(typeof error?.kind === 'string' && error.kind.length <= 64 ? { kind: error.kind } : {}) };
-      } finally { clearTimeout(timer); }
+          ...(typeof error?.kind === 'string' && error.kind.length <= 64 ? { kind: error.kind } : {}),
+          ...(typeof error?.code === 'string' && error.code.length <= 64 ? { code: error.code } : {}) };
+      }
     }
     return { operation: diagnosticOperation(operation), verification: { outcome: 'readback_only', authority: 'unqualified_host',
       observation, termsMatch: observation?.status === 'included'
@@ -1234,14 +1226,14 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // verify_deal: owner-scoped independent re-check; an optional hash is a pointer.
   // attachOnly: see attachHashAndVerify. Replacing a recorded pointer stays
   // the explicit verify_deal correction.
-  async function verifyDeal({ accountId, operationId, token, txHash, attachOnly = false }) {
+  async function verifyDeal({ accountId, operationId, token, txHash, attachOnly = false, signal }) {
     const found = ownedPurchase(accountId, operationId, token);
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);}
     catch(error){
       if(error?.code!=='buyer_access_closed'||error?.details?.buyerAccessMissing)throw error;
       const coords=coordinates.get(found.id);
       if(!coords?.reportedTxHash||(txHash&&canonicalHash(txHash)!==coords.reportedTxHash))throw error;
-      if(diagnosticOnly)return diagnosticReadback(found,txHash);
+      if(diagnosticOnly)return diagnosticReadback(found,txHash,signal);
       const native=await protocol?.readIssuedPayment?.(found,coords.reportedTxHash);
       if(native)return {operation:found,verification:{outcome:'readback_only',...native,...OBSERVATION_LIMITS}};
       if(usesNativeAgreementPayment(found))throw error;
@@ -1251,7 +1243,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       observation=checkedTransferObservation(observation,coords.reportedTxHash);
       return {operation:found,verification:{outcome:'readback_only',observation,...OBSERVATION_LIMITS}};
     }
-    if (diagnosticOnly) return diagnosticReadback(found, txHash);
+    if (diagnosticOnly) return diagnosticReadback(found, txHash, signal);
     const operation = expireIfNeeded(found);
     if (txHash) {
       assertAgreementPaymentHeld(operation);

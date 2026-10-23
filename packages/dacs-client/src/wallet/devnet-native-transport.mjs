@@ -164,30 +164,33 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (c?.network !== pinned?.network || c?.endpoint !== pinned?.endpoint || c?.transportAuthority !== pinned?.transportAuthority) fail('transport_mismatch', 'actual egress differs from the supplied trusted binding');
     return c;
   };
-  const raw = async (body, headers = {}) => {
+  const raw = async (body, headers = {}, { signal } = {}) => {
+    signal?.throwIfAborted();
     await context();
     return fetchBoundedJson(pinned.endpoint, { method:'POST', body, headers, fetchImpl,
-      timeoutMs, maxBytes:4*1024*1024, expectedOrigin:new URL(pinned.endpoint).origin });
+      timeoutMs, signal, maxBytes:4*1024*1024, expectedOrigin:new URL(pinned.endpoint).origin });
   };
   // The pinned observer reads transaction and block facts concurrently.
   // Serialize their actual connection fences; this creates no write permit.
-  const observe = async (path,body) => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>fenced(async()=>{
-    await binder.bind();
+  const observe = async (path,body,{signal}={}) => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>fenced(async()=>{
+    signal?.throwIfAborted();
+    await makeBinder(false,signal).bind();
     if(path !== '/' && !/^\/storage-program\/stor-[0-9a-f]{40}$/.test(path)) fail('readonly_only','only bounded native storage reads are supported');
     if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
-    return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,maxBytes:4*1024*1024,expectedOrigin:new URL(pinned.endpoint).origin});
+    return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,signal,maxBytes:4*1024*1024,expectedOrigin:new URL(pinned.endpoint).origin});
   }));
   const node = async (message, data) => {
     const answer = await raw({ method:'nodeCall', params:[{ message, data }] });
     if (answer?.result !== 200) fail('upstream_unavailable', 'the pinned node did not return a usable observation');
     return answer.response;
   };
-  const makeBinder = (strictEnvelope=false) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs, maxAgeMs:60000, reader:{
+  const makeBinder = (strictEnvelope=false,signal) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs, maxAgeMs:60000, reader:{
     getContext:context,
     async getBlockByNumber(height, policy) {
       if (policy.cache !== 'no-store' || policy.redirect !== 'error') fail('invalid_policy','fresh bounded identity observation is required');
+      signal?.throwIfAborted();
       const c = await context();
-      const answer = await raw({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:height } }] });
+      const answer = await raw({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:height } }] }, {}, {signal});
       // The binder owns the reviewed block-one predecessor policy and accepts
       // only its literal `error` marker. Legacy admissions retain their exact
       // two-field representation. A separately recorded/reviewed envelope
@@ -212,7 +215,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         if (first?.number !== 1 || first?.id !== 2 || first?.status !== 'confirmed' || !HASH.test(first?.hash ?? '') || !HASH.test(firstIdentity ?? '') || first.hash === firstIdentity
           || (Object.hasOwn(first,'previousHash') && first.previousHash !== firstIdentity)
           || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(first,key)&&first[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-one layout differs');
-        const secondAnswer = await raw({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:2 } }] });
+        const secondAnswer = await raw({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:2 } }] }, {}, {signal});
         if(strictEnvelope && !storageWriteIdentityMatches(secondAnswer?.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
         const second = rpcEnvelope(secondAnswer,200,'') ? secondAnswer.response : null;
         const secondPrevious = second?.content?.previousHash;
@@ -1003,11 +1006,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       // An expired lease with no running confirm/broadcast can issue nothing (claimLease); fenced() frees it.
       isWalletIdle:(address)=>{ const l=byAddress.get(address); return ADDRESS.test(address??'') && !closed && (!l || (l.expiresAt<=now() && l.busy===0)) && inFlight.size===0; },
       observeBinding:()=>tracked(()=>journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>binder.bind()))),
-      readRpc:(path,body)=>tracked(()=>observe(path,body)),
+      readRpc:(path,body,options)=>tracked(()=>observe(path,body,options)),
       chainReader:()=>{
-        const reader=createDemosChainReader({rpcUrl:pinned.endpoint,network:pinned.network,pinnedIdentity:pinned.chainIdentity,fetchImpl:async(url,options={})=>new Response(JSON.stringify(await capability.readRpc(new URL(url).pathname,options.body?JSON.parse(options.body):undefined)),{status:200,headers:{'content-type':'application/json'}})});
-        async function observeTransfer(hash,purchase=false){
-          const result=await reader.observeTransfer(hash);
+        const reader=createDemosChainReader({rpcUrl:pinned.endpoint,network:pinned.network,pinnedIdentity:pinned.chainIdentity,fetchImpl:async(url,options={})=>new Response(JSON.stringify(await capability.readRpc(new URL(url).pathname,options.body?JSON.parse(options.body):undefined,{signal:options.signal})),{status:200,headers:{'content-type':'application/json'}})});
+        async function observeTransfer(hash,purchase=false,options){
+          const result=await reader.observeTransfer(hash,options);
+          options?.signal?.throwIfAborted();
           if(result.status==='included'){
             const issued=await journal.get(intent(hash));
             if(issued?.signedTransaction?.content?.type==='native'){
@@ -1018,9 +1022,25 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           }
           return result;
         }
+        // Passive diagnostics authenticate retained facts without recovery,
+        // journal retention, claim pruning or a cached execution verdict.
+        // Returns the fresh observation/disposition; rejects aborted reads or
+        // retained-byte/binding mismatches. options.signal cancels source RPCs.
+        async function observePassiveTransfer(hash,options={}) {
+          const result=await reader.observeTransfer(hash,options);
+          if(result.status!=='included')return result;
+          const issued=await journal.get(intent(hash));
+          if(issued?.signedTransaction?.content?.type!=='native')return result;
+          await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>makeBinder(false,options.signal).recover(issued.networkBinding)));
+          const tx=await reader.getTransaction(hash,options);
+          options.signal?.throwIfAborted();
+          if(issued.hash!==hash || tx?.hash!==hash || tx.blockNumber!==result.blockNumber || !['confirmed','failed'].includes(tx.status)
+            || !executedMatches(tx.content,issued.signedTransaction.content,hash))fail('readback_unverified','the included native transfer differs from the retained original signed transaction');
+          return {...result,sourceDisposition:tx.status==='failed'?'failed':'included'};
+        }
         // Only buyer verification may inspect a failed execution's included slot;
         // it carries the source verdict so a later body read cannot outrank it.
-        return {...reader,observeTransfer:hash=>observeTransfer(hash),observePurchaseTransfer:hash=>observeTransfer(hash,true)};
+        return {...reader,observeTransfer:(hash,options)=>observeTransfer(hash,false,options),observePurchaseTransfer:(hash,options)=>observeTransfer(hash,true,options),observePassiveTransfer};
       }}:{}),
     onPurchaseStep(listener) { if(typeof listener!=='function')throw new TypeError('timeline listener required');stepListeners.add(listener);return()=>stepListeners.delete(listener); },
     profile:implementation.profile,
