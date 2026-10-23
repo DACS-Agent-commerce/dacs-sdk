@@ -11,7 +11,7 @@ test('direct provider starts, recovery, resume and release refuse malformed jobs
  for(const jobId of [undefined,null,7,'job-0',JOBS[0].toLowerCase(),JOBS[0].slice(1),'8'+JOBS[0].slice(1)]){
   const input=w.input(jobId);input.scope.jobId=jobId;
   for(const method of ['resolveBuyer','recoverBuyer','resumableBuyer'])await assert.rejects(p[method](input),{code:'job_invalid'});
-  await assert.rejects(p.resolveSeller({jobId,listingPin:w.listing.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt}),{code:'job_invalid'});
+  await assert.rejects(p.resolveSeller({jobId,listingPin:w.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt}),{code:'job_invalid'});
   assert.throws(()=>p.release({jobId}),{code:'job_invalid'});
  }
  assert.equal(w.records.size,0);assert.equal(w.seen.length,0);assert.equal(p.invocations.length,0);assert.equal(p.contexts.size,0);
@@ -61,7 +61,7 @@ test('missing buyer verifier refuses before any CVR signature or native effect',
 test('an existing context is suspended when fresh receipt readback loses authority',async()=>{
  const w=fixture(),p=w.provider(),input=w.input();await p.resolveBuyer(input);w.controls.receiptState='reorged';
  await assert.rejects(p.resolveBuyer(input),{code:'party_vet_unavailable'});
- assert.equal((await p.resolveSeller({jobId:input.scope.jobId,listingPin:w.listing.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt})).disposition,'indeterminate');
+ assert.equal((await p.resolveSeller({jobId:input.scope.jobId,listingPin:w.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt})).disposition,'indeterminate');
 });
 test('native publisher separates seller writer from buyer CVR verifier with real signatures',async()=>{
  const {anchorFixture}=await import('./helpers/anchor-isolated-fixture.mjs');const w=fixture(),native=await anchorFixture({writer:w.seller}),input={jobId:JOBS[0],identityBundle:w.listing.seller.identity,requirement:w.listing.buyerRequirement};
@@ -82,16 +82,16 @@ for(const state of ['unknown','dropped','replaced','reorged'])test(`seller-only 
  faulty=true;await assert.rejects(w.provider().resolveBuyer(input),{code:'seller_vet_receipt_invalid'});
  faulty=false;const p=w.provider();assert.equal((await p.resolveBuyer(input)).disposition,'present');
  faulty=true;assert.equal(await w.provider().recoverBuyer(input),null);
- const request={jobId:JOBS[0],listingPin:w.listing.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt};
+ const request={jobId:JOBS[0],listingPin:w.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt};
  assert.equal((await p.resolveSeller(request)).disposition,'indeterminate');
  assert.equal((await w.provider().resolveSeller(request)).disposition,'indeterminate');
 });
-test('included seller CVR receipt is accepted while the buyer CVR remains finalized',async()=>{
+test('included seller CVR receipt is held while the buyer CVR remains finalized',async()=>{
  const w=fixture(),address=compositeVerificationAddress(JOBS[0],w.seller.claim),read=w.anchor.readRetained,publish=w.anchor.publish;
  const patch=(row,key)=>key===address&&row.receipt?{...row,receipt:{...row.receipt,state:'included'}}:row;
  w.anchor.readRetained=async i=>patch(await read(i),i.logicalAddress);w.anchor.publish=async i=>patch(await publish(i),i.logicalAddress);
- const input=w.input();assert.equal((await w.provider().resolveBuyer(input)).disposition,'present');
- assert.equal((await w.provider().recoverBuyer(input)).disposition,'present');
+ const input=w.input();await assert.rejects(w.provider().resolveBuyer(input),{code:'seller_vet_receipt_invalid'});
+ assert.equal(await w.provider().recoverBuyer(input),null);
 });
 test('ended jobs free challenge capacity across many sessions and provider restarts',async()=>{
  const w=fixture({maxJobs:1});
@@ -104,7 +104,7 @@ test('ended jobs free challenge capacity across many sessions and provider resta
 });
 test('transient readback remains indeterminate after restart and recovers once the RPC returns',async()=>{
  const w=fixture(),p=w.provider(),input=w.input();await p.resolveBuyer(input);
- const request={jobId:JOBS[0],listingPin:w.listing.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt};
+ const request={jobId:JOBS[0],listingPin:w.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt};
  const read=w.anchor.readRetained;w.anchor.readRetained=async()=>({status:'indeterminate',reason:'RPC unavailable'});
  assert.equal((await p.resolveSeller(request)).disposition,'indeterminate');
  const restarted=w.provider();assert.equal((await restarted.resolveSeller(request)).disposition,'indeterminate');
@@ -121,4 +121,29 @@ test('concurrent providers cannot claim the same buyer-issued seller challenge f
  const results=await Promise.allSettled(JOBS.map(id=>w.provider().resolveBuyer(w.input(id))));
  assert.equal(results.filter(r=>r.status==='fulfilled'&&r.value.disposition==='present').length,1);
  assert.equal(results.find(r=>r.status==='rejected').reason.code,'seller_challenge_reused');
+});
+
+const request=(w,input)=>({jobId:input.scope.jobId,listingPin:w.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt});
+const gate=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
+test('release fences a late context completion before durable retention',async()=>{
+ const w=fixture(),p=w.provider(),a=w.input(),b=structuredClone(a);b.scope.generatedAt++;
+ await p.resolveBuyer(a);const read=w.anchor.readRetained,entered=gate(),resume=gate();let wait=true;
+ w.anchor.readRetained=async input=>{if(wait&&input.fresh){wait=false;entered.resolve();await resume.promise;}return read(input);};
+ const slow=p.resolveBuyer(a);await entered.promise;await p.resolveBuyer(b);p.release({jobId:a.scope.jobId,generatedAt:b.scope.generatedAt});resume.resolve();
+ await assert.rejects(slow,e=>e.code==='context_released');const row=(await w.store.entries()).find(([key])=>key.startsWith('party-vet/'))[1];
+ assert.deepEqual(row.seller.generatedAts,[b.scope.generatedAt]);assert.equal(p.contexts.size,1);assert.equal((await p.resolveSeller(request(w,a))).disposition,'rejected');w.store.close();
+});
+test('sweep evicts contexts and Vet jobs and cannot resurrect an ended job',async()=>{
+ const w=fixture(),p=w.provider(),input=w.input();await p.resolveBuyer(input);assert.equal((await p.sweep(()=>true)).deleted,1);assert.equal(p.contexts.size,0);assert.equal(w.store.usage().jobs,0);
+ assert.notEqual((await p.resolveSeller(request(w,input))).disposition,'present');const replay=await p.resolveBuyer(input);assert.notEqual(replay.disposition,'present');assert.equal(w.seen.length,1);w.store.close();
+});
+for(const reverse of [false,true])test(`retained timestamps recover after restart in ${reverse?'reverse':'forward'} order`,async()=>{
+ const w=fixture(),p=w.provider(),a=w.input(),b=structuredClone(a);b.scope.generatedAt++;await p.resolveBuyer(a);await p.resolveBuyer(b);const fresh=w.provider();
+ for(const input of reverse?[b,a]:[a,b])assert.equal((await fresh.resolveSeller(request(w,input))).disposition,'present');w.store.close();
+});
+test('restart refuses a saved context whose Vet ref changed under valid replacement proof',async()=>{
+ const w=fixture(),input=w.input();await w.provider().resolveBuyer(input);const address=compositeVerificationAddress(input.scope.jobId,w.buyer.claim),row=w.records.get(address);
+ const {signComponentArtifact,ARTIFACT_SEPARATORS}=await import('@kynesyslabs/dacs');const {fixtureRecord}=await import('./helpers/protocol-fixture.mjs');
+ const {signature,...unsigned}=row.artifact;const replacement=await signComponentArtifact({...unsigned,generatedAt:unsigned.generatedAt-1},ARTIFACT_SEPARATORS.CompositeVerificationRecord,{signer:w.seller.claim,algorithm:'ed25519',sign:w.seller.signBytes});
+ w.records.set(address,fixtureRecord(address,replacement,w.seller));assert.equal((await w.provider().resolveSeller(request(w,input))).disposition,'indeterminate');w.store.close();
 });
