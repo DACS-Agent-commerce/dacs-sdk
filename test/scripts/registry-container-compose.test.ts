@@ -43,3 +43,22 @@ it("supplies every required generated Compose variable with inert run-local inpu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+it("invokes only Compose config and writes the rendered artifact", () => {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const start = source.indexOf("\nenv \\\n");
+  const output = '    > "$artifact_stage/compose.rendered.yaml"';
+  const render = source.slice(start, source.indexOf(output, start) + output.length);
+  const setup = source.slice(source.indexOf("# Inert Compose inputs"), start);
+  const root = mkdtempSync(join(tmpdir(), "dacs-compose-command-"));
+  try {
+    const bin = join(root, "bin"); mkdirSync(bin);
+    writeFileSync(join(bin, "docker"), '#!/bin/sh\n[ "$#" = 4 ] && [ "$1" = compose ] && [ "$2" = --file ] && [ "$3" = "$project/compose.yaml" ] && [ "$4" = config ] || exit 91\nprintf "rendered config\\n"\n', { mode: 0o700 });
+    const env = { acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: `${bin}:/usr/bin:/bin` };
+    const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], { encoding: "utf8", env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(root, "compose.rendered.yaml"), "utf8")).toBe("rendered config\n");
+    const unsafe = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render.replace(" config ", " up ")], { encoding: "utf8", env });
+    expect(unsafe.status).toBe(91);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
