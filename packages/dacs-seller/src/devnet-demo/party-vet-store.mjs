@@ -14,8 +14,8 @@
 // journal-integrity, journal-invalid). No key or secret is ever stored.
 import DatabaseSync from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, lstatSync, openSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdtempSync, openSync, rmSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
 
 export const PARTY_VET_STORE_FORMAT = 'dacs-party-vet-store';
 export const PARTY_VET_STORE_VERSION = 1;
@@ -36,7 +36,9 @@ const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const bounded = (name, value, min, max) => { if (!Number.isSafeInteger(value) || value < min || value > max) fail('journal-invalid', `${name} must be an integer from ${min} to ${max}`); return value; };
 const checkKey = (key) => { if (typeof key !== 'string' || !key || Buffer.byteLength(key) > 512 || key.includes('\0')) fail('journal-invalid', 'party Vet store keys are non-empty strings of at most 512 bytes'); return key; };
 const encode = (value) => {
-  const text = JSON.stringify(value);
+  let text;
+  try { text = JSON.stringify(value); }
+  catch (cause) { fail('journal-invalid', 'party Vet store rows must serialize to JSON objects', { cause }); }
   if (typeof text !== 'string' || text[0] !== '{') fail('journal-invalid', 'party Vet store rows are JSON objects');
   return text;
 };
@@ -84,16 +86,43 @@ function storeOver(backend, limits) {
   };
 }
 
-// path: absolute. A missing file is a fresh store (created mode 0600); an
-// existing one must be this format and intact.
+const syncPath = (target, flags) => {
+  const fd = openSync(target, flags);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+};
+
+// Publish a complete private database without replacing a concurrent winner.
+function initializePartyVetStore(path) {
+  const temporary = mkdtempSync(path + '.init-'), candidate = join(temporary, 'store.sqlite');
+  let db;
+  try {
+    closeSync(openSync(candidate, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600));
+    db = new DatabaseSync(candidate);
+    db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; BEGIN IMMEDIATE');
+    for (const sql of Object.values(STORE_TABLES)) db.exec(sql);
+    const id = randomBytes(16).toString('hex'), insert = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
+    for (const [key, value] of [['format', PARTY_VET_STORE_FORMAT], ['version', String(PARTY_VET_STORE_VERSION)], ['store_id', id]]) insert.run(key, value);
+    db.exec('COMMIT'); db.close(); db = null;
+    syncPath(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { linkSync(candidate, path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    syncPath(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY);
+  } finally {
+    try { db?.close(); } finally { rmSync(temporary, { recursive: true, force: true }); }
+  }
+}
+
+// path: absolute. A missing target is published only after initialization;
+// an existing file must be this format and intact.
 export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {}) {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || path.startsWith('file:')) fail('journal-invalid', 'an explicit absolute party Vet store path is required');
   bounded('busyTimeoutMs', busyTimeoutMs, 0, 10_000);
   const limits = limitsFor(options);
-  let created = false;
-  try { closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)); created = true; }
-  catch (error) { if (error.code !== 'EEXIST') throw error; }
-  const file = lstatSync(path);
+  let file;
+  try { file = lstatSync(path); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    initializePartyVetStore(path); file = lstatSync(path);
+  }
   if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || (process.getuid && file.uid !== process.getuid())) fail('journal-invalid', 'the party Vet store must be a private regular file owned by this process user');
   let db;
   const translate = (error) => {
@@ -119,10 +148,10 @@ export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {
     db.exec('PRAGMA synchronous = FULL');
     if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') fail('journal-integrity', 'the party Vet store failed its integrity check');
     storeId = tx('BEGIN IMMEDIATE', () => {
-      if (created) {
-        for (const sql of Object.values(STORE_TABLES)) db.exec(sql);
-        const id = randomBytes(16).toString('hex'), insert = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
-        for (const [key, value] of [['format', PARTY_VET_STORE_FORMAT], ['version', String(PARTY_VET_STORE_VERSION)], ['store_id', id]]) insert.run(key, value);
+      const schema = db.prepare('SELECT type, name, tbl_name, sql FROM sqlite_schema').all();
+      if (schema.some(row => !(row.type === 'table' && Object.hasOwn(STORE_TABLES, row.name) && row.sql === STORE_TABLES[row.name]) &&
+          !(row.type === 'index' && Object.hasOwn(STORE_TABLES, row.tbl_name) && row.sql === null && row.name === `sqlite_autoindex_${row.tbl_name}_1`))) {
+        fail('journal-integrity', 'the party Vet store contains unexpected schema objects');
       }
       for (const [name, sql] of Object.entries(STORE_TABLES)) {
         if (db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name)?.sql !== sql) fail('journal-integrity', 'the party Vet store schema is absent or changed');
