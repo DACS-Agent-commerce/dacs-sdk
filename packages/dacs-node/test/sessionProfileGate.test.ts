@@ -82,9 +82,21 @@ describe("session profile admission gate", () => {
       status: "operator-action", reasonCode: "session-profile-admission-unconfigured",
     });
 
-    const admitted = { ...context, authenticateSessionProfile: () => undefined };
+    const independentAuthority = vi.fn((jobId: string) => ({
+      status: "valid", releasePin: DACS_STANDARD_PIN, profileStatus: "released",
+      moduleVersions: { ...COMPLETED_SESSION_MODULE_VERSIONS },
+      roles: [{ jobId, participant: BUYER, role: "buyer" },
+        { jobId, participant: SELLER, role: "seller" }],
+    }));
+    const admitted = { ...context, authenticateSessionProfile: independentAuthority };
     await expect(graph(admitted as never)).resolves.toBe(live);
     expect(build).toHaveBeenCalledWith(admitted);
+    expect(admitted.authenticateSessionProfile(JOB_ID)).toMatchObject({
+      status: "valid", roles: [
+        { jobId: JOB_ID, participant: BUYER, role: "buyer" },
+        { jobId: JOB_ID, participant: SELLER, role: "seller" },
+      ],
+    });
   });
 
   for (const role of ["buyer", "seller"] as const) {
@@ -144,7 +156,40 @@ describe("session profile admission gate", () => {
     }
   }
 
-  it("after release requires an operator restart when admission was unreadable at startup", async () => {
+  it.each(["buyer", "seller"] as const)("keeps %s file-only admission blocked after release without authenticated peer/session evidence", async (role) => {
+    vi.resetModules();
+    vi.doMock("@kynesyslabs/dacs/commerce", async (original) => ({
+      ...await original<Record<string, unknown>>(), DACS_STANDARD_PROFILE_STATUS: "released",
+    }));
+    const gate = await import("../src/sessionProfileGate.js");
+    const filePath = join(root(), "admission.json");
+    writeFileSync(filePath, JSON.stringify({ releasePin: DACS_STANDARD_PIN,
+      profileStatus: "released", moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS }));
+    const admit = gate.createDacsFileSessionProfileAdmissionV1({ filePath,
+      buyerAuthority: BUYER, sellerAuthority: SELLER });
+    expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toEqual({
+      status: "blocked", reasonCode: "session-profile-peer-evidence-unconfigured",
+    });
+    for (const jobId of [JOB_ID, "01J8ME0SXKQ4T9V2RC5HJ6WX7E"]) {
+      expect(() => admit(jobId)).toThrow(/authenticated peer.*session evidence/);
+    }
+    const build = vi.fn();
+    const graph = await gate.createDacsSessionProfileGatedCommerceGraphV1(build)({
+      role, authenticateSessionProfile: admit,
+      config: { rail: { enabledProfiles: ["pay-dem", "x402"] } },
+    } as never);
+    expect(build).not.toHaveBeenCalled();
+    expect(graph.availability).toEqual({
+      status: "blocked", reasonCode: "session-profile-peer-evidence-unconfigured",
+    });
+    for (const operations of [graph.operations, graph.payDemOperations]) {
+      await expect(operations!.agreement!({} as never)).resolves.toMatchObject({
+        status: "operator-action", reasonCode: "session-profile-peer-evidence-unconfigured",
+      });
+    }
+  });
+
+  it("after release keeps restored local statements blocked until a verifier is configured", async () => {
     vi.resetModules();
     vi.doMock("@kynesyslabs/dacs/commerce", async (original) => ({
       ...await original<Record<string, unknown>>(), DACS_STANDARD_PROFILE_STATUS: "released",
@@ -170,8 +215,9 @@ describe("session profile admission gate", () => {
       status: "operator-action", reasonCode: "session-profile-admission-unavailable" });
     writeFileSync(filePath, JSON.stringify({ releasePin: DACS_STANDARD_PIN,
       profileStatus: "released", moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS }));
-    expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toEqual({ status: "configured" });
-    expect(admit(JOB_ID)).toMatchObject({ status: "valid" });
+    expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toEqual({
+      status: "blocked", reasonCode: "session-profile-peer-evidence-unconfigured" });
+    expect(() => admit(JOB_ID)).toThrow(/authenticated peer.*session evidence/);
     await expect(graph.payDemOperations!.payment!({} as never)).resolves.toMatchObject({
       status: "operator-action", reasonCode: "session-profile-admission-unavailable" });
     create.mockReturnValue(graph);
@@ -179,7 +225,7 @@ describe("session profile admission gate", () => {
       role: "buyer", authenticateSessionProfile: admit,
       config: { rail: { enabledProfiles: ["pay-dem"] } },
     } as never);
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
     writeFileSync(filePath, "{");
     expect(gate.dacsLiveSessionProfileAvailabilityV1(admit)).toEqual({
       status: "blocked", reasonCode: "session-profile-admission-invalid" });
@@ -210,7 +256,7 @@ describe("session profile admission gate", () => {
       .toThrow(TypeError);
   });
 
-  it("re-reads the operator statement on every action and binds the configured roles", async () => {
+  it("re-reads local statements without promoting them to peer or session authority", async () => {
     const filePath = join(root(), "admission.json");
     const statement = {
       releasePin: DACS_STANDARD_PIN,
@@ -221,16 +267,9 @@ describe("session profile admission gate", () => {
     const admit = createDacsFileSessionProfileAdmissionV1({
       filePath, buyerAuthority: BUYER, sellerAuthority: SELLER,
     });
-    expect(admit(JOB_ID)).toEqual({
-      status: "valid",
-      ...statement,
-      roles: [
-        { jobId: JOB_ID, participant: BUYER, role: "buyer" },
-        { jobId: JOB_ID, participant: SELLER, role: "seller" },
-      ],
-    });
+    expect(() => admit(JOB_ID)).toThrow(/authenticated peer.*session evidence/);
     writeFileSync(filePath, JSON.stringify({ ...statement, profileStatus: "withdrawn" }));
-    expect(admit(JOB_ID).profileStatus).toBe("withdrawn");
+    expect(() => admit(JOB_ID)).toThrow(/authenticated peer.*session evidence/);
     rmSync(filePath);
     expect(() => admit(JOB_ID)).toThrow("session profile admission file is absent");
   });

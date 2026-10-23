@@ -1,4 +1,9 @@
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { readDacsPublicJsonV1 } from "./publicJson.js";
+
+/** Resource bound; exhaustion is an unanswered surface, never absence. */
+export const DACS_BUNDLE_BINDING_INDEX_MAX_RECORDS = 4_096;
+export const DACS_BUNDLE_BINDING_DISCOVERY_TIMEOUT_MS = 5_000;
 
 /**
  * One surface a consumer consults to discover signed DACS-5 BundleBindings
@@ -15,7 +20,31 @@ export interface DacsBundleBindingDiscoverySurfaceV1 {
   }>): Promise<readonly unknown[]>;
 }
 
+/** Custom readers must bound response bytes before decoding and enforce a deadline. */
 export type DacsReadJsonV1 = (url: string) => Promise<unknown>;
+
+function boundedReader(custom: DacsReadJsonV1 | undefined): DacsReadJsonV1 {
+  const readJson = custom === undefined ? readDacsPublicJsonV1 : custom;
+  if (typeof readJson !== "function") throw new TypeError("readJson is required");
+  return async (url) => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => custom === undefined
+          ? readDacsPublicJsonV1(url, { signal: controller.signal }) : readJson(url)),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error("BundleBinding discovery read timed out"));
+          }, DACS_BUNDLE_BINDING_DISCOVERY_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+}
 
 function plainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -34,6 +63,9 @@ function bindingsOf(document: unknown): readonly unknown[] {
   if (!plainRecord(document) || !Array.isArray(document.bindings)) {
     throw new TypeError("BundleBinding index is malformed");
   }
+  if (document.bindings.length > DACS_BUNDLE_BINDING_INDEX_MAX_RECORDS) {
+    throw new TypeError("BundleBinding index exceeds its record limit");
+  }
   return document.bindings;
 }
 
@@ -47,11 +79,10 @@ function bindingsOf(document: unknown): readonly unknown[] {
  */
 export function createWellKnownBundleBindingSurfaceV1(options: Readonly<{
   endpoint: string;
-  readJson: DacsReadJsonV1;
+  readJson?: DacsReadJsonV1;
 }>): Readonly<DacsBundleBindingDiscoverySurfaceV1> {
   const endpoint = httpsUrl(options.endpoint);
-  const readJson = options.readJson;
-  if (typeof readJson !== "function") throw new TypeError("readJson is required");
+  const readJson = boundedReader(options.readJson);
   return Object.freeze({
     kind: "well-known" as const,
     async discover() {
@@ -67,15 +98,13 @@ export function createWellKnownBundleBindingSurfaceV1(options: Readonly<{
         throw new TypeError("agent card bundleBindings block is malformed");
       }
       const indexUrl = httpsUrl(block.indexUrl);
-      if (indexUrl.origin !== endpoint.origin) {
-        throw new TypeError("bundleBindings index is served from another origin");
-      }
       const index = await readJson(indexUrl.toString());
+      const bindings = bindingsOf(index);
       // A stale or substituted index is not an answer.
       if (`sha256-${sha256Hex(canonicalize(index))}` !== block.indexHash) {
         throw new TypeError("bundleBindings index does not match its indexHash");
       }
-      return bindingsOf(index);
+      return bindings;
     },
   });
 }
@@ -87,15 +116,14 @@ export function createWellKnownBundleBindingSurfaceV1(options: Readonly<{
  */
 export function createCatalogBundleBindingSurfaceV1(options: Readonly<{
   catalogUrl: string;
-  readJson: DacsReadJsonV1;
+  readJson?: DacsReadJsonV1;
 }>): Readonly<DacsBundleBindingDiscoverySurfaceV1> {
   const base = httpsUrl(options.catalogUrl);
   if (base.pathname !== "/" || base.search !== "" || base.hash !== "") {
     throw new TypeError(
       "catalogUrl must be an origin without a path, query or fragment, not the catalog's listings URL");
   }
-  const readJson = options.readJson;
-  if (typeof readJson !== "function") throw new TypeError("readJson is required");
+  const readJson = boundedReader(options.readJson);
   return Object.freeze({
     kind: "catalog" as const,
     async discover({ jobId }: Readonly<{ jobId: string }>) {

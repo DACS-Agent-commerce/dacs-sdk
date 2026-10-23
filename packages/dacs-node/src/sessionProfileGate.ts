@@ -42,6 +42,11 @@ export function dacsLiveSessionProfileAvailabilityV1(
       error instanceof DacsError && !(error instanceof IndeterminateSubstrateError)
         ? "session-profile-admission-invalid" : "session-profile-admission-unavailable" });
   }
+  if (fileAdmissionChecks.has(authenticateSessionProfile)) {
+    return Object.freeze({
+      status: "blocked", reasonCode: "session-profile-peer-evidence-unconfigured",
+    });
+  }
   return Object.freeze({ status: "configured" });
 }
 
@@ -82,7 +87,7 @@ export function createDacsSessionProfileGatedCommerceGraphV1(
 }
 
 export interface DacsFileSessionProfileAdmissionOptionsV1 {
-  /** Operator-owned statement of the admitted Standard release. */
+  /** Operator-owned local release statement; this format supplies no peer/session evidence. */
   filePath: string;
   /** The deployment's configured role authorities, never peer artifacts. */
   buyerAuthority: string;
@@ -90,11 +95,11 @@ export interface DacsFileSessionProfileAdmissionOptionsV1 {
 }
 
 /**
- * Deployment admission read from an operator-owned file:
- * `{ "releasePin", "profileStatus", "moduleVersions" }`. The roles are the
- * configured buyer and seller authorities. The file is read again for every
- * action, so a saved success is never authority, and the SDK still checks the
- * statement against its own pin, status and module tuple.
+ * Local deployment statement: `{ "releasePin", "profileStatus", "moduleVersions" }`.
+ * This format cannot authenticate a peer's pin or bind evidence to a session
+ * (PROFILE, Unreleased JID-1 corrective candidate). It therefore admits no
+ * session, even after release. Supply a verifier-owned admission provider to
+ * enable commerce. Re-reading the file preserves configuration diagnostics.
  */
 export function createDacsFileSessionProfileAdmissionV1(
   options: Readonly<DacsFileSessionProfileAdmissionOptionsV1>,
@@ -106,20 +111,11 @@ export function createDacsFileSessionProfileAdmissionV1(
     throw new TypeError("file session profile admission options are invalid");
   }
   const filePath = resolve(options.filePath);
-  const buyer = options.buyerAuthority;
-  const seller = options.sellerAuthority;
-  const authenticate = (jobId: string) => {
-    const statement = readAdmissionStatement(filePath);
-    return Object.freeze({
-      status: "valid",
-      releasePin: statement.releasePin,
-      profileStatus: statement.profileStatus,
-      moduleVersions: statement.moduleVersions,
-      roles: Object.freeze([
-        Object.freeze({ jobId, participant: buyer, role: "buyer" }),
-        Object.freeze({ jobId, participant: seller, role: "seller" }),
-      ]),
-    });
+  const authenticate = (_jobId: string): never => {
+    readAdmissionStatement(filePath);
+    throw new DacsError(
+      "session profile admission file lacks authenticated peer and session evidence",
+    );
   };
   fileAdmissionChecks.set(authenticate, () => { readAdmissionStatement(filePath); });
   return authenticate;

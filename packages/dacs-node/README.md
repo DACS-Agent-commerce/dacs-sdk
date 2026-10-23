@@ -61,6 +61,11 @@ The BundleBinding well-known index uses `sha256-` followed by SHA-256 of the
 RFC 8785 canonical JSON index document for `indexHash`. The pinned Standard
 does not define that computation; deployments must agree on this SDK convention
 until the Standard specifies an interoperable index digest.
+The index may be hosted on another HTTPS origin. Discovery uses the bounded,
+DNS-pinned public JSON reader by default, with a 5-second deadline per read and
+a limit of 4,096 binding records per index. Custom `readJson` implementations
+must bound response bytes before decoding. A timeout or oversized index leaves
+the surface unanswered; it never proves absence.
 
 `createDacsSessionProfileGatedCommerceGraphV1` builds a live graph only when
 `dacsLiveSessionProfileAvailabilityV1` reports admission is possible. Otherwise
@@ -70,17 +75,18 @@ the role service starts with `commerce: blocked` and names the reason:
 or `session-profile-admission-invalid` when its content is malformed.
 Generated projects use it with `createDacsFileSessionProfileAdmissionV1`, which
 re-reads the operator's statement in `DACS_SESSION_PROFILE_ADMISSION_FILE`
-(`releasePin`, `profileStatus`, `moduleVersions`) for every action and binds it
-to the configured buyer and seller authorities. Docker projects mount
+(`releasePin`, `profileStatus`, `moduleVersions`) for configuration diagnostics.
+This local statement cannot authenticate the peer's pin or bind evidence to an
+exact session, so this source admits no session even after release. A readable
+file reports `session-profile-peer-evidence-unconfigured`. Configure a
+verifier-owned `authenticateSessionProfile` provider with authenticated evidence
+for every participant and exact session before enabling commerce, then restart.
+Docker projects mount
 `DACS_SESSION_PROFILE_ADMISSION_DIRECTORY` read-only and read its `admission.json`
 at `/run/dacs/session-profile/admission.json`. Local projects use the file path
-directly. Once a live graph is running, missing or unreadable files remain retryable at action time. After
-the profile is released, if the file is unavailable when the gated graph starts,
-the blocked graph returns operator action; restore the file and restart the
-service to build the live graph. The file statement attests both configured
-participants locally; it does not independently discover a remote deployment's
-Standard pin. Cross-organisation operators must authenticate that pin through
-their own admission authority.
+directly. Restoring a missing file updates its diagnostic but does not enable
+commerce. The blocked graph returns operator action until a verifier is
+configured and the service restarts.
 When the release is cut, the
 pin and that status move to it together. Orders and
 databases bound to the historical
@@ -392,9 +398,9 @@ diagnostic is a follow-up; repairTrack does not resolve a phase conflict.
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
 tracks. The generated profile's built-in Vet producer is deliberately limited
-to an empty `BundleRequirement`. A requirement-specific provider can authenticate
-non-empty Vet failures, but passing non-empty requirements remain unsupported
-by the built-in audit lifecycle. Complementary seller requirement
+to an empty `BundleRequirement`. The bootstrap refuses all non-empty requirements
+before transport or Vet effects, including with a custom Vet provider.
+Complementary seller requirement
 provenance remains a non-normative policy seam pending Standard issue #331.
 
 `startDacsHttpMessageServerV1()` serves only

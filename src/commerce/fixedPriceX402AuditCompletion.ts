@@ -906,9 +906,9 @@ async function verifyCopy(
  * A read nobody answered is `IndeterminateSubstrateError`, so retry it: a
  * host read that throws anything but a `DacsError`, a host read that throws a
  * `SubstrateError`, an `indeterminate` or `error` verifier disposition, a
- * bundle copy not yet readable at its native address, and a seller bundle its
- * name index does not show yet. A BundleBinding lookup may select an equal
- * signed copy at another authenticated native publication (BB-6); unresolved
+ * bundle copy not yet readable at its native address, and a seller bundle whose
+ * signed binding has not been discovered yet. A BundleBinding lookup may select
+ * an equal signed copy at another authenticated native publication (BB-6); unresolved
  * candidate sets remain indeterminate. The copy also carries its own binding
  * (ST-11, BB-2). Any
  * other `DacsError` is an answer against the session and needs an operator.
@@ -1033,10 +1033,9 @@ async function verifyCompletedTwoSidedSessionWithin(
  * Standard `next` 81ded2b49851d8fa17399e3fdade9e36e33a4ff7; the profile pins
  * `FIXED_PRICE_X402_STANDARD_REVISION`. ST-11 steps 1-3, including the signed
  * Listing, agreement and four-way dispatch the pinned revision adds, are the
- * seller closure's (`verifyFinalizedSellerBundleReadOnly`). The pinned
- * revision's BB-5 current-profile admission, that role authority does not
- * come from caller input or `parties[]`, is not yet re-checked here: this
- * gate takes `buyer` and `seller` from its caller.
+ * seller closure's (`verifyFinalizedSellerBundleReadOnly`). Both completion
+ * gates independently require BB-5 current-profile admission from trusted
+ * context before using the requested buyer and seller identities.
  *
  * The synchronous combiner is intentionally operational and can never return
  * `audit-complete`. This function first re-authenticates the exact durable

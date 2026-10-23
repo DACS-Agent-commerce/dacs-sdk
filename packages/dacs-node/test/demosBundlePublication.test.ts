@@ -25,12 +25,17 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../../../src/discovery/standardProfileRelease.js", () => ({ DACS_STANDARD_PROFILE_STATUS: "released" }));
 
 import {
+  DACS_BUNDLE_BINDING_DISCOVERY_TIMEOUT_MS,
+  DACS_BUNDLE_BINDING_INDEX_MAX_RECORDS,
   createCatalogBundleBindingSurfaceV1,
   createWellKnownBundleBindingSurfaceV1,
   type DacsBundleBindingDiscoverySurfaceV1,
 } from "../src/bundleBindingDiscovery.js";
+import { readDacsPublicJsonV1 } from "../src/publicJson.js";
 import { createDacsDemosBundlePublicationV1 } from "../src/demosBundlePublication.js";
 import type { DacsLiveRoleOperationContextV1 } from "../src/roleRuntime.js";
+
+vi.mock("../src/publicJson.js", () => ({ readDacsPublicJsonV1: vi.fn() }));
 
 // The fee-budget grant lives in the role database; these tests stub the
 // adapter and need only the write's options to pass through.
@@ -584,7 +589,7 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
     }
   });
 
-  it("reads the well-known bundleBindings index and checks its indexHash and origin", async () => {
+  it("reads the well-known bundleBindings index and checks its indexHash", async () => {
     const ok = reader({
       "https://seller.example/.well-known/agent.json": card(goodBlock),
       [goodBlock.indexUrl]: index,
@@ -604,9 +609,19 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
 
     const foreign = createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example",
       readJson: reader({ "https://seller.example/.well-known/agent.json": card({
-        ...goodBlock, indexUrl: "https://elsewhere.example/index.json" }) }) });
+        ...goodBlock, indexUrl: "https://elsewhere.example/index.json" }),
+        "https://elsewhere.example/index.json": index }) });
     await expect(foreign.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
-      .rejects.toThrow(/another origin/);
+      .resolves.toEqual([sellerBinding]);
+
+    for (const indexUrl of ["http://elsewhere.example/index.json",
+      "https://user@elsewhere.example/index.json", "https://:password@elsewhere.example/index.json"]) {
+      const unsafe = createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example",
+        readJson: reader({ "https://seller.example/.well-known/agent.json": card({
+          ...goodBlock, indexUrl }) }) });
+      await expect(unsafe.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
+        .rejects.toThrow(/credential-free https URL/);
+    }
 
     const none = createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example",
       readJson: reader({ "https://seller.example/.well-known/agent.json": card(undefined) }) });
@@ -624,6 +639,72 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
     for (const endpoint of ["http://seller.example", "https://a@seller.example", "https://:b@seller.example"]) {
       expect(() => createWellKnownBundleBindingSurfaceV1({ endpoint, readJson: ok }))
         .toThrow(/credential-free https URL/);
+    }
+  });
+
+  it.each(["well-known", "catalog"] as const)("bounds decoded %s index lists", async (kind) => {
+    const oversized = { bindings: Array(DACS_BUNDLE_BINDING_INDEX_MAX_RECORDS + 1).fill(sellerBinding) };
+    const readJson = reader({
+      "https://seller.example/.well-known/agent.json": card({ ...goodBlock,
+        indexHash: `sha256-${sha256Hex(canonicalize(oversized))}` }),
+      [goodBlock.indexUrl]: oversized,
+      [`https://seller.example/api/dacs/bundles/${JOB_ID}`]: oversized,
+    });
+    const surface = kind === "well-known"
+      ? createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example", readJson })
+      : createCatalogBundleBindingSurfaceV1({ catalogUrl: "https://seller.example", readJson });
+    await expect(surface.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
+      .rejects.toThrow(/record limit/);
+  });
+
+  it.each(["well-known", "catalog"] as const)("uses the bounded public HTTPS reader by default for %s", async (kind) => {
+    const readJson = vi.mocked(readDacsPublicJsonV1);
+    readJson.mockReset();
+    readJson.mockImplementation(reader({
+      "https://seller.example/.well-known/agent.json": card(goodBlock),
+      [goodBlock.indexUrl]: index,
+      [`https://seller.example/api/dacs/bundles/${JOB_ID}`]: index,
+    }));
+    const surface = kind === "well-known"
+      ? createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example" })
+      : createCatalogBundleBindingSurfaceV1({ catalogUrl: "https://seller.example" });
+    await expect(surface.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
+      .resolves.toEqual([sellerBinding]);
+    expect(readJson).toHaveBeenCalled();
+  });
+
+  it.each(["well-known", "catalog"] as const)("gives an unanswered %s read a deadline", async (kind) => {
+    vi.useFakeTimers();
+    try {
+      const readJson = vi.fn(() => new Promise<never>(() => {}));
+      const surface = kind === "well-known"
+        ? createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example", readJson })
+        : createCatalogBundleBindingSurfaceV1({ catalogUrl: "https://seller.example", readJson });
+      const result = expect(surface.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
+        .rejects.toThrow(/timed out/);
+      await vi.advanceTimersByTimeAsync(DACS_BUNDLE_BINDING_DISCOVERY_TIMEOUT_MS);
+      await result;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a default network read at its discovery deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      vi.mocked(readDacsPublicJsonV1).mockImplementation((_url, options) => {
+        signal = options?.signal;
+        return new Promise<never>(() => {});
+      });
+      const surface = createCatalogBundleBindingSurfaceV1({ catalogUrl: "https://seller.example" });
+      const result = expect(surface.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
+        .rejects.toThrow(/timed out/);
+      await vi.advanceTimersByTimeAsync(DACS_BUNDLE_BINDING_DISCOVERY_TIMEOUT_MS);
+      await result;
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

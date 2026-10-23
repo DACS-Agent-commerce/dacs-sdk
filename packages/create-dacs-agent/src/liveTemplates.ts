@@ -224,7 +224,7 @@ export function configuredRailStewardAuthority(): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
-/** Operator-owned session profile admission statement; unset admits nothing. */
+/** Local profile statement for diagnostics; peer/session admission needs a verifier. */
 export function configuredSessionProfileAdmissionFile(): string | undefined {
   const value = process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
   return value === undefined || value.trim() === "" ? undefined : resolve(value);
@@ -4721,8 +4721,8 @@ DACS_DEMOS_RPC_URL=https://node2.demos.sh
 DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
 # Operator-owned session profile admission statement (releasePin, profileStatus,
-# moduleVersions). Unset, or while the pinned Standard profile is unreleased,
-# the role services start with commerce blocked and report the reason.
+# moduleVersions). This file cannot authenticate peers or sessions; services
+# remain blocked until a verifier-owned admission provider is configured.
 DACS_SESSION_PROFILE_ADMISSION_FILE=
 # Local deployment uses the file path above.
 # Docker uses this host directory mounted read-only; place admission.json in it.
@@ -4897,8 +4897,10 @@ statement. For Docker, put \`admission.json\` inside
 \`DACS_SESSION_PROFILE_ADMISSION_DIRECTORY\` (default \`./session-profile\`);
 Compose mounts that directory read-only for both roles at
 \`/run/dacs/session-profile\`. The services remain blocked until the pinned
-profile is released and readable admission authority is configured. Never
-bypass that gate.
+profile is released and a verifier-owned admission provider authenticates every
+participant's exact pin for the exact session. The local statement alone cannot
+enable commerce, including after release. Configure that provider in the role
+runtime and restart the service.
 
 Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
 signed sibling Listings for the same offer. Setup and purchase select one exact
