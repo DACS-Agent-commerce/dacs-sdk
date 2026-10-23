@@ -168,7 +168,7 @@ export function scanLockEngines(lock, versions) {
 // `missing`. An unreadable inventory or entry leaves the scan incomplete.
 export function runtimeImageInventoryFindings(inventory, lock) {
   const packages = isPlainObject(lock?.packages) ? lock.packages : null;
-  if (packages === null) {
+  if (packages === null || !isPlainObject(packages[""])) {
     return { scanComplete: false, errors: ["the generated lock has no packages"], unexpected: [], missing: [] };
   }
   if (inventory?.schema !== RUNTIME_IMAGE_INVENTORY_SCHEMA || !Array.isArray(inventory.packages)) {

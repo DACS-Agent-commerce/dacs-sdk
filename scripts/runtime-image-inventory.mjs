@@ -16,12 +16,18 @@ export function runtimeImageInventory(root) {
   const packages = [];
   const visit = (directory, prefix, scope) => {
     let names;
-    try { names = readdirSync(directory).sort(); } catch (error) {
+    try {
+      if (lstatSync(directory).isSymbolicLink()) {
+        packages.push({ location: prefix, name: null, version: null, link: true });
+        return;
+      }
+      names = readdirSync(directory).sort();
+    } catch (error) {
       if (error?.code === "ENOENT") return;
       throw error;
     }
     for (const name of names) {
-      if (name.startsWith(".")) continue;
+      if (!scope && (name === ".bin" || name === ".package-lock.json")) continue;
       const path = join(directory, name);
       const location = `${prefix}/${name}`;
       const stat = lstatSync(path);
