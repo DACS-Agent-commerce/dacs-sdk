@@ -188,6 +188,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     try{if(proposal)access.assertWallet(addressForClaim(buyer));else access.assertSellerWallet(addressForClaim(buyer),jobId);}
     catch(error){if(error.code==='buyer_access_closed')throw new SellerAgentError(error.code,error.message,409);throw error;}
   };
+  // Recovery uses the same job-scoped paid-order authority as ordinary work.
+  // Only unpaid outsiders fall back to inspecting issued unknown writes.
+  const buyerAccessClosed=(session,jobId)=>{
+    try{assertBuyer(session.buyerBundle.presentedBy,jobId);return false;}
+    catch(error){if(error.code==='buyer_access_closed')return true;throw error;}
+  };
   const claim = signer.claim;
   const nativeEvidence = nativePaymentEvidenceConfig(nativePaymentEvidence);
   const deliveryContext = demDeliveryContextConfig(demDeliveryContext);
@@ -1970,7 +1976,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // it absent (submitNativePaymentEvidence, DACS-4 PC-7(b)).
   async function resume({ jobId }) {
     const session = sessionFor(jobId);
-    if(access&&!access.allowsWallet(addressForClaim(session.buyerBundle.presentedBy))&&readIssued){
+    if(access&&readIssued&&buyerAccessClosed(session,jobId)){
       const unknown=await readIssued(jobId,{unknownOnly:true});
       if(unknown)return unknown;
     }
@@ -2027,8 +2033,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     reconcile: durable ? async({ jobId }) => {
       const session=durable.loadSession(jobId);
-      // Only an issued unknown CREATE earns a read; otherwise refuse with no chain access.
-      if(access&&session&&!access.allowsWallet(addressForClaim(session.buyerBundle.presentedBy))){
+      // An unpaid outside buyer may only read back an issued unknown CREATE.
+      if(access&&session&&buyerAccessClosed(session,jobId)){
         const unknown=await readIssued?.(jobId,{unknownOnly:true});
         if(unknown)return unknown;
         throw new SellerAgentError('buyer_access_closed','this operator accepts only its configured custody buyer while openBuyerAccess is off; no unknown issued write remains to read back',409);
@@ -2038,7 +2044,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     resume: durable ? recoveryCall(resume) : undefined,
     reconcileTransport: durable ? async(input) => {
       const session=durable.loadSession(input.request?.jobId);
-      if(access&&session&&!access.allowsWallet(addressForClaim(session.buyerBundle.presentedBy))){
+      if(access&&session&&buyerAccessClosed(session,input.request.jobId)){
         const unknown=await readIssued?.(input.request.jobId,{unknownOnly:true});
         return {disposition:'indeterminate',reason:unknown?'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged':'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged'};
       }

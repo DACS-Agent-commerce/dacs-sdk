@@ -179,7 +179,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false } = {}) {
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -384,7 +384,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const hosts = [];
   t.after(async () => { for (const host of hosts) await host.close(); });
   const capabilities = () => ({ signer: sellerSigner, listing,
-    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
+    buyerAccess: seller.createOperatorBuyerAccess(buyerAccessOptions), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: rails.authority,
@@ -445,9 +445,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // startSellerHost over these capabilities with `changes` (for refusals).
   const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
   // The host stopped and its agent composed over the same state (the caller closes it).
-  const agentFor = async ({ stopHost = true } = {}) => {
+  const agentFor = async ({ stopHost = true, readIssued = null } = {}) => {
     if (stopHost) { await host.close(); hosts.splice(hosts.indexOf(host), 1); }
-    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
+    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, readIssued });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.
@@ -652,6 +652,87 @@ test('a payment claim a crash left reserved and unfinished is not stranded: the 
     assert.equal(new Set(w.effects.broadcast).size, 1, `${label}: every broadcast is the same signed bytes`);
     assert.equal((await p.claim(tx)).status, 'payment-evidenced', `${label}: the delivered order answers again`);
     assert.equal(w.createsAt(address), 1);
+  }
+});
+
+test('a paid outside buyer recovers an uncertain payment after access closes and restart, with one signed evidence CREATE', async (t) => {
+  const paidJobs = new Set();
+  const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId) };
+  const w = await world(t, { buyerAccessOptions: access });
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  const retained = await w.retainedSession(p.jobId);
+  assert.equal(retained.nativeEvidenceWork.txHash, tx, 'the seller verified this payment before closure');
+  paidJobs.add(p.jobId); // The operator's trusted job-scoped paid observation.
+  access.openBuyerAccess = false;
+  w.restartWallet();
+  await w.crashMidClaim(p, tx);
+  assert.equal(w.capabilities().buyerAccess.allowsWallet(w.buyerKey.address), false);
+  const signed = await w.signedClaim(p, tx);
+  const response = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
+    headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
+  const pending = await response.json();
+  assert.equal(response.status, 200, shown(pending));
+  assert.equal(pending.status, 'held', 'the rebroadcast is read back on the next retry');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  const again = await p.claim(tx);
+  assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
+  assert.equal(again.evidenceHash, answer.evidenceHash);
+  assert.deepEqual(w.effects.signCreate, [address], 'one signature, including before the crash');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'all broadcasts use the retained signed bytes');
+});
+
+test('closed-access recovery uses paid-job authority for reconcile and resume; unpaid outsiders only inspect issued unknown writes', async (t) => {
+  for (const paid of [true, false]) {
+    const paidJobs = new Set();
+    const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId) };
+    const w = await world(t, { buyerAccessOptions: access });
+    const p = await w.purchase(), tx = paid ? p.pay() : core.sha256Hex('TEST-unpaid-claim'), address = paymentAddress(p);
+    if (paid) {
+      w.faults.signCreate.push('throw');
+      assert.equal((await p.claim(tx)).status, 'held');
+      paidJobs.add(p.jobId);
+    }
+    access.openBuyerAccess = false;
+    let reads = 0;
+    const unknown = { status: 'TEST-issued-unknown-readback' };
+    let issued = unknown;
+    const recovery = await w.agentFor({ readIssued: async (jobId, options) => {
+      assert.equal(jobId, p.jobId); assert.deepEqual(options, { unknownOnly: true }); reads++; return issued;
+    } });
+    try {
+      const result = await recovery.reconcile({ jobId: p.jobId });
+      if (paid) {
+        assert.notDeepEqual(result, unknown);
+        const resumed = await recovery.resume({ jobId: p.jobId });
+        assert.equal(resumed.delivery?.status, 'delivery-ready', shown(resumed));
+        assert.equal(reads, 0, 'paid recovery bypasses the unpaid read-only exception');
+        assert.deepEqual(w.effects.signCreate, [address, address], 'the first call threw before signing');
+        assert.equal(w.effects.signed.length, 1);
+        assert.equal(w.createsAt(address), 1);
+      } else {
+        const before = clone(w.effects), searches = [...w.node.searches];
+        assert.deepEqual(result, unknown);
+        assert.deepEqual(await recovery.resume({ jobId: p.jobId }), unknown);
+        assert.equal((await recovery.reconcileTransport(await w.signedClaim(p, tx))).disposition, 'indeterminate');
+        assert.equal(reads, 3, 'only issued unknown writes are inspected');
+        issued = null;
+        await assert.rejects(recovery.reconcile({ jobId: p.jobId }), { code: 'buyer_access_closed' });
+        await assert.rejects(recovery.resume({ jobId: p.jobId }), { code: 'buyer_access_closed' });
+        const held = await recovery.reconcileTransport(await w.signedClaim(p, tx));
+        assert.equal(held.disposition, 'indeterminate');
+        assert.match(held.reason, /buyer_access_closed; no unknown issued write/);
+        assert.equal(reads, 6);
+        assert.deepEqual(w.node.searches, searches, 'no native read outside the issued-write exception');
+        assert.deepEqual(w.effects, before, 'no new seller effects for an unpaid outside buyer');
+        assert.equal(w.effects.signed.length, 0);
+        assert.equal(w.createsAt(address), 0);
+      }
+    } finally { recovery.close(); }
   }
 });
 
