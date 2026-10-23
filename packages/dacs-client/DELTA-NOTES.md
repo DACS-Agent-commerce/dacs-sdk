@@ -225,7 +225,7 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 ## D11 buyer state and readback contracts
 
 - Export the required buyer-state DDL, use it in the offline state harness, and construct all buyer factories from paired packed artifacts. The consumer checks shared unverified hash pointers, unique verified hashes, and one approval per operation/challenge.
-- Nested SQLite transactions use savepoints. A caught inner error or refused promise rolls back its own writes; successful nested work remains part of the outer commit.
+- Nested SQLite transactions use savepoints. A caught synchronous inner error rolls back its own writes; successful nested work remains part of the outer commit. A returned promise retires the connection and rolls back the whole transaction before its continuation can run.
 - Host transfer observations have a documented JSON contract. Malformed data stays retryable without a terminal terms mismatch, and the recorded observer identifies the injected reader. Alternate signing-key projections remain supported.
 - Native source reconciliation reports unavailable when the host has no native capability. Wallet-access readback codes and the separate deadline-watch invocation are documented.
 - Wallet journal lock callbacks preserve every rejection value, including falsy values, and release their lane before propagating it. The statically served wallet provider retains its local payload helpers, with equivalence and independent-loading tests.
@@ -255,3 +255,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - Connection-local SQLite triggers guard existing ordinary tables with a transactional marker, including statements prepared before entry. Automatic rollback prevents subsequent DML writes; marker checks precede savepoint release and outer commit. File-backed tests cover both callback depths, conflict/trigger rollback, all statement result methods, sibling/TEMP/attached tables, fresh-handle retry and recoverable constraint errors.
 - Public diagnostic reads share the expiry projection, including the recorded-hash exception for closed buyer access. Retained domain-reader failures keep bounded, null-safe causes.
 - Directory revocation discovery projects the bounded seven-field binding and copies its native anchor. Local deadline and operator-hold records identify host-supplied input. The serializer test verifies the resolved demosdk version, and the README states historical testnet availability and the synchronous DML boundary.
+
+## D11 passive diagnostics and connection lifecycle
+
+- Public diagnostics retain historical identifiers, hashes and nonces while omitting payment payloads and planned, identity and bundle signing messages and unsigned session-delegation payloads. The existing CORE §11.1.2 action hold remains in effect.
+- SQLite guards stay installed per connection, refresh for schema changes and cover ordinary host tables while excluding virtual and shadow tables. Arming and transactional marker updates distinguish package calls from host writes. All successful-call guard work precedes commit. Returned thenables retire the connection at either depth; an already completed outer automatic rollback permits the host to reuse its handle.
+- Deadline observations accept the full JavaScript Date range and render malformed historical times as unavailable. Directory summaries omit rail identifiers longer than 256 characters without changing shorter identifiers or artifact validation.
+- The README specifies hydrated operation fields, synchronous host contracts and connection recovery. Tests exercise active SELECT iterators, FTS5/R*Tree databases, prepared statements, deferred host callbacks, schema refresh, a 400-table host, timestamp boundaries and all public diagnostic projections.

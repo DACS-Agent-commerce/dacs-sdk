@@ -54,8 +54,7 @@ test('concrete adapter commits nested writes and rolls back the original thrown 
   assert.equal(store.transaction(db, () => { write('TEST-first'); return store.transaction(db, () => { write('TEST-second'); return 'TEST-result'; }); }), 'TEST-result');
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
 });
-for (const kind of ['throw', 'resolved-promise', 'rejected-promise']) {
-  test(`caught nested ${kind} rolls back only that call and leaves the outer transaction usable`, async t => {
+test('caught nested synchronous error rolls back only that call and leaves the outer transaction usable', t => {
     const { db } = database(t), store = createSqlitePurchaseStore(), cause = new Error('TEST-inner');
     const write = id => db.prepare('INSERT INTO records VALUES (?)').run(id);
     store.transaction(db, () => {
@@ -63,13 +62,32 @@ for (const kind of ['throw', 'resolved-promise', 'rejected-promise']) {
       assert.throws(() => store.transaction(db, () => {
         write('TEST-refused');
         store.transaction(db, () => write('TEST-refused-child'));
-        if (kind === 'throw') throw cause;
-        return kind === 'resolved-promise' ? Promise.resolve() : Promise.reject(cause);
-      }), error => kind === 'throw' ? error === cause : error.code === 'client_not_wired');
+        throw cause;
+      }), error => error === cause);
       store.transaction(db, () => write('TEST-after'));
     });
-    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(db.prepare('SELECT id FROM records ORDER BY id').all().map(row => row.id), ['TEST-after', 'TEST-outer']);
+});
+for (const rejected of [false, true]) {
+  test(`caught nested thenable retires the entire transaction, rejected=${rejected}`, async t => {
+    const { db, path } = database(t), store = createSqlitePurchaseStore();
+    let called = false;
+    const insert = db.prepare('INSERT INTO records VALUES (?)');
+    assert.throws(() => store.transaction(db, () => {
+      insert.run('TEST-outer');
+      assert.throws(() => store.transaction(db, () => {
+        insert.run('TEST-inner');
+        store.transaction(db, () => insert.run('TEST-inner-child'));
+        return rejected ? Promise.reject(new Error('TEST-refused')) : Promise.resolve();
+      }), { code: 'client_not_wired' });
+      assert.throws(() => insert.run('TEST-after'), /closed|not open|finalized/i);
+      assert.throws(() => store.transaction(db, () => { called = true; }), { code: 'client_not_wired' });
+    }), { code: 'client_not_wired' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(called, false);
+    const reopened = new DatabaseSync(path);
+    try { assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 0); }
+    finally { reopened.close(); }
   });
 }
 for (const kind of ['conflict', 'trigger']) {
@@ -116,15 +134,19 @@ for (const kind of ['conflict', 'trigger']) {
   });
 }
 for (const rejected of [false, true]) {
-  test(`callback-then-thenable rolls back before rejecting, rejected=${rejected}`, async t => {
-    const { db } = database(t), store = createSqlitePurchaseStore();
+  test(`callback-then-thenable rolls back and retires its handle, rejected=${rejected}`, async t => {
+    const { db, path } = database(t), store = createSqlitePurchaseStore();
     assert.throws(() => store.transaction(db, () => {
       db.prepare('INSERT INTO records VALUES (?)').run('TEST-thenable');
       return rejected ? Promise.reject(new Error('TEST-refused')) : Promise.resolve();
     }), { code: 'client_not_wired' });
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
-    assert.equal(store.transaction(db, () => 'TEST-retry'), 'TEST-retry');
+    assert.throws(() => store.transaction(db, () => 'TEST-retry'), { code: 'client_not_wired' });
+    const reopened = new DatabaseSync(path);
+    try {
+      assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 0);
+      assert.equal(store.transaction(reopened, () => 'TEST-retry'), 'TEST-retry');
+    } finally { reopened.close(); }
   });
 }
 
@@ -162,14 +184,18 @@ for (const depth of ['outer', 'nested']) for (const kind of ['conflict', 'trigge
       return 'TEST-caught';
     };
     assert.throws(() => store.transaction(db, () => depth === 'nested' ? store.transaction(db, body) : body()));
-    assert.throws(() => db.prepare('SELECT 1'), /closed|not open/i);
+    if (depth === 'nested') assert.throws(() => db.prepare('SELECT 1'), /closed|not open/i);
+    else {
+      assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
+      assert.equal(store.transaction(db, () => 'TEST-retry'), 'TEST-retry');
+    }
     const reopened = new DatabaseSync(path);
     try {
       assert.deepEqual(reopened.prepare('SELECT id FROM records').all().map(row => row.id), ['TEST-existing']);
       assert.deepEqual(reopened.prepare('SELECT id FROM sibling').all(), []);
       store.transaction(reopened, () => reopened.prepare('INSERT INTO records VALUES (?)').run('TEST-retry'));
       assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 2);
-      // Guards are local to the outer call, not a new restriction on host writes.
+      // Unarmed connection guards permit host writes outside package calls.
       reopened.exec("INSERT INTO sibling VALUES ('TEST-outside')");
     } finally { reopened.close(); }
   });
@@ -186,7 +212,8 @@ test('a caught recoverable statement error still permits a complete commit', t =
   const reopened = new DatabaseSync(path);
   try { assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 3); }
   finally { reopened.close(); }
-  assert.deepEqual(db.prepare("SELECT name FROM sqlite_temp_master WHERE name LIKE 'dacs_purchase_%'").all(), []);
+  assert.ok(db.prepare("SELECT count(*) n FROM sqlite_temp_master WHERE type='trigger'").get().n >= 3);
+  db.exec("INSERT INTO records VALUES ('TEST-outside')");
 });
 
 test('automatic rollback guards TEMP and attached tables, including quoted host identifiers', t => {

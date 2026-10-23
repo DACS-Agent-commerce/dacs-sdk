@@ -383,6 +383,26 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     : purchaseNext(operation, chainMode);
   const protocolFor = operation => (diagnosticOnly ? diagnosticProtocolView : protocolView)(operation,
     { now, enabled: config.deliveryDeadlineWatch === 'on' });
+  const diagnosticOperation = operation => {
+    const p = operation.state?.protocol;
+    if (!p) return operation;
+    // CORE §11.1.2(3–4): held diagnostics must not hand out material for
+    // current signatures. Preserve historical records without mutating them.
+    const { planned: _planned, ...protocol } = p;
+    if (protocol.bundle) {
+      const { message: _message, ...bundle } = protocol.bundle;
+      protocol.bundle = bundle;
+    }
+    if (protocol.identity) {
+      const { message: _message, ...identity } = protocol.identity;
+      protocol.identity = identity;
+    }
+    if (protocol.sessionDelegation) {
+      const { payload: _payload, ...sessionDelegation } = protocol.sessionDelegation;
+      protocol.sessionDelegation = sessionDelegation;
+    }
+    return { ...operation, state: { ...operation.state, protocol } };
+  };
 
   // Read-only: an elapsed approval window is reported as expired without
   // persisting the transition (mutating paths persist it).
@@ -392,9 +412,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     const coords = coordinates.get(operation.id);
     const approval = approvalFor.get(operation.id);
     return {
-      operation,
+      operation: diagnosticOnly ? diagnosticOperation(operation) : operation,
       approval: approval ? { signer: approval.signer_address, approvedAt: approval.approved_at, termsHash: approval.terms_hash } : null,
-      coordinates: coords,
+      coordinates: diagnosticOnly && coords ? (({ payload: _payload, ...record }) => record)(coords) : coords,
       history: ops.history(operation.id),
       approvalUrl: !diagnosticOnly && linkable(operation) ? portalUrl(operation, ops.handoffTokenFor(operation.id)) : null,
       next: nextFor(operation, coords?.observation?.chainMode),
@@ -408,7 +428,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     const found = ops.getByHandoff(operationId, token);
     if (!found || found.kind !== 'purchase' || found.id !== operationId) throw new OperationError('not_found', 'unknown or invalid approval link');
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
-    return diagnosticOnly ? projectExpiry(found) : expireIfNeeded(found);
+    return diagnosticOnly ? diagnosticOperation(projectExpiry(found)) : expireIfNeeded(found);
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
@@ -892,7 +912,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240) };
       }
     }
-    return { operation, verification: { outcome: 'readback_only', authority: 'unqualified_host',
+    return { operation: diagnosticOperation(operation), verification: { outcome: 'readback_only', authority: 'unqualified_host',
       observation, termsMatch: observation?.status === 'included'
         && (!Object.hasOwn(observation, 'sourceDisposition') || observation.sourceDisposition === 'included')
         ? same(observation.payer, operation.terms.buyer.wallet) && same(observation.payee, operation.terms.seller.payee) && observation.amountOs === operation.terms.price.amountOs

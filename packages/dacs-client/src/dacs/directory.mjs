@@ -61,7 +61,7 @@ export function projectSummary(raw) {
     description: str(raw.offering?.description, 2000),
     category: str(raw.offering?.category, 64),
     tags: Array.isArray(raw.offering?.tags) ? raw.offering.tags.filter((t) => typeof t === 'string').slice(0, 16).map((t) => t.slice(0, 32)) : [],
-    rails: Array.isArray(raw.offering?.rails) ? raw.offering.rails.filter((t) => typeof t === 'string').slice(0, 8) : [],
+    rails: Array.isArray(raw.offering?.rails) ? raw.offering.rails.filter((t) => typeof t === 'string' && t.length <= 256).slice(0, 8) : [],
     pricingHint: {
       kind: str(pricing.kind, 32),
       priceHint: str(pricing.priceHint, 64),

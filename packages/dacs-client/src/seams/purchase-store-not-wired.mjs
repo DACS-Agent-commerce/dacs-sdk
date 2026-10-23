@@ -5,9 +5,11 @@ import { NotWiredError } from '../client-errors.mjs';
 const require = createRequire(import.meta.url);
 const active = new WeakMap();
 const fenced = new WeakSet();
+const guards = new WeakMap();
 const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
-function synchronousResult(result) {
+function synchronousResult(result, refuse = () => {}) {
   if (result && typeof result.then === 'function') {
+    refuse();
     Promise.resolve(result).catch(() => {});
     throw new NotWiredError('purchase-store-not-wired');
   }
@@ -22,52 +24,69 @@ function fence(db) {
   try { db.close(); } catch { /* Preserve the original failure. */ }
 }
 function recover(db, sql) {
+  if (fenced.has(db)) return;
   try { db.exec(sql); } catch { fence(db); }
+}
+
+function transactionResult(db, result) {
+  return synchronousResult(result, () => {
+    // A continuation may retain prepared statements. Retire the whole handle
+    // before returning, even when the promise came from a nested body.
+    recover(db, 'ROLLBACK');
+    fence(db);
+  });
 }
 
 const identifier = name => `"${name.replaceAll('"', '""')}"`;
 function writeGuard(db) {
-  // Install outside BEGIN: automatic rollback must remove the marker row,
-  // but leave the triggers protecting statements prepared by the host too.
+  const existing = guards.get(db);
+  if (existing) { existing.refresh(); return existing; }
+  // Install once, outside BEGIN. Arming survives automatic rollback, while
+  // the in-transaction update does not. Unarmed guards allow host DML.
   const name = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
-  const marker = `temp.${identifier(name)}`, triggers = [];
-  const clear = () => {
-    if (fenced.has(db)) return;
-    for (const trigger of triggers) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(trigger)}`);
-    db.exec(`DROP TABLE IF EXISTS ${marker}`);
-  };
-  db.exec(`CREATE TEMP TABLE ${identifier(name)} (present INTEGER)`);
-  try {
-    for (const { name: schema } of db.prepare('PRAGMA database_list').all()) {
-      const tables = db.prepare(`SELECT name FROM ${identifier(schema)}.sqlite_master
-        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all();
-      for (const table of tables) {
-        if (schema === 'temp' && table.name === name) continue;
+  const marker = `temp.${identifier(name)}`, tables = new Map();
+  let serial = 0, versions;
+  db.exec(`CREATE TEMP TABLE ${identifier(name)} (armed INTEGER, present INTEGER);
+    INSERT INTO ${marker} VALUES (0, 0)`);
+  const schemaVersions = () => db.prepare('PRAGMA database_list').all().map(({ name: schema, file }) =>
+    [schema, file, db.prepare(`PRAGMA ${identifier(schema)}.schema_version`).get().schema_version]);
+  const guard = {
+    refresh() {
+      const current = JSON.stringify(schemaVersions());
+      if (current === versions) return;
+      const installed = new Set(db.prepare("SELECT name FROM temp.sqlite_master WHERE type='trigger'").all().map(row => row.name));
+      for (const { schema, name: table, type } of db.prepare('PRAGMA table_list').all()) {
+        if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
+        const key = JSON.stringify([schema, table]);
+        const triggers = (tables.get(key) ?? []).filter(trigger => installed.has(trigger.name));
+        tables.set(key, triggers);
         for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
-          const trigger = `${name}_${triggers.length}`;
+          if (triggers.some(trigger => trigger.action === action && installed.has(trigger.name))) continue;
+          const trigger = `${name}_${serial++}`;
           db.exec(`CREATE TEMP TRIGGER ${identifier(trigger)} BEFORE ${action}
-            ON ${identifier(schema)}.${identifier(table.name)}
-            WHEN NOT EXISTS (SELECT 1 FROM ${marker})
+            ON ${identifier(schema)}.${identifier(table)}
+            WHEN EXISTS (SELECT 1 FROM ${marker} WHERE armed = 1 AND present = 0)
             BEGIN SELECT RAISE(ABORT, 'purchase transaction ended'); END`);
-          triggers.push(trigger);
+          triggers.push({ action, name: trigger });
         }
       }
-    }
-  } catch (error) {
-    clear();
-    throw error;
-  }
-  return {
-    start() { db.exec(`INSERT INTO ${marker} VALUES (1)`); },
+      versions = JSON.stringify(schemaVersions());
+    },
+    arm() { db.exec(`UPDATE ${marker} SET armed = 1, present = 0`); },
+    start() { db.exec(`UPDATE ${marker} SET present = 1`); },
+    present() { return !fenced.has(db) && db.isTransaction !== false && Boolean(db.prepare(`SELECT 1 FROM ${marker} WHERE present = 1`).get()); },
     check() {
       // isTransaction is unavailable on the minimum supported Node versions;
       // the transactional marker supplies the same check on those versions.
-      if (fenced.has(db) || db.isTransaction === false || !db.prepare(`SELECT 1 FROM ${marker}`).get()) {
+      if (!guard.present()) {
         throw new NotWiredError('purchase-store-not-wired');
       }
     },
-    clear,
+    disarm() { if (!fenced.has(db)) db.exec(`UPDATE ${marker} SET armed = 0`); },
   };
+  guards.set(db, guard);
+  guard.refresh();
+  return guard;
 }
 
 // The package owns the transaction boundary. Host wrappers cannot commit a
@@ -81,7 +100,7 @@ function sqliteTransaction(db, fn) {
     try {
       state.guard.check();
       db.exec(`SAVEPOINT ${savepoint}`);
-      const result = synchronousResult(fn());
+      const result = transactionResult(db, fn());
       state.guard.check();
       db.exec(`RELEASE ${savepoint}`);
       return result;
@@ -95,20 +114,27 @@ function sqliteTransaction(db, fn) {
   const guard = writeGuard(db);
   let begun = false;
   try {
+    guard.arm();
     db.exec('BEGIN IMMEDIATE');
     begun = true;
     guard.start();
     active.set(db, { depth: 0, guard });
-    const result = synchronousResult(fn());
+    const result = transactionResult(db, fn());
     guard.check();
+    // All fallible guard cleanup precedes COMMIT. It is DML, so an active
+    // host SELECT iterator does not require a schema lock.
+    guard.disarm();
     db.exec('COMMIT');
+    begun = false;
     return result;
   } catch (error) {
-    if (begun) recover(db, 'ROLLBACK');
+    // At outer depth SQLite may already have rolled back everything. There
+    // is no savepoint to recover and no reason to retire that host handle.
+    try { if (begun && guard.present()) recover(db, 'ROLLBACK'); } catch { fence(db); }
+    try { guard.disarm(); } catch { fence(db); }
     throw error;
   } finally {
     active.delete(db);
-    guard.clear();
   }
 }
 function sqliteUniqueViolation(error) {

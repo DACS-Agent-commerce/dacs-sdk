@@ -1795,6 +1795,47 @@
           "after": "7e50ae142d79dc0e244fe143b0d151f3d458c2be"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 make diagnostics passive and preserve transaction outcomes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "04b6618fe3d5a5e6450e52759e98c08163a3c2ab",
+          "after": "5c4b400d71dc6c89903e3533ca99b64f2f98cd6b"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "7848ec38a093fbd36993aa3ce6782224c4c48d86",
+          "after": "57735129dcc0ef6e024dde68082933b3f8fa9b11"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "d4c59725d479e429657f000f7638e899c0c51b94",
+          "after": "8a08a79ef38ce5593a6447714e82068f4da698ac"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "2fb90ca5361cb8894fea31ba068e195a75472f38",
+          "after": "6326c1528d3734f9db46a310ea02740b66de71d8"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "bf39c769581827691f7851f2f007ba5f90c80a71",
+          "after": "14e78e4e35c41e153f34bf5cbda5e12c12a65aad"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": null,
+          "after": "22eeab29c92ded184522e70d2ebd095ea4322a94"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "7e50ae142d79dc0e244fe143b0d151f3d458c2be",
+          "after": "8560f9547739573a5f2c8c32c27a085fbd59370d"
+        }
+      ]
     }
   ]
 }

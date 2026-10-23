@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "97143f545d58bcc17dc7376ef356e559f6e8db0e"
+        "blob": "91c175777b74394d9f69828e42ae5a26c3c010e5"
       },
       "DELTA-LEDGER.json": {
-        "blob": "b0d381bd50fb683b551f7c486a9915b92795f693"
+        "blob": "5a9c91159cde279b1238663523f71f4d82707806"
       },
       "DELTA-MAP.md": {
-        "blob": "60a75c0e46afd479e5437fa4c63122df1c179688"
+        "blob": "4039bb4be6a9cf7f10962e74c9c2856a66482a1a"
       },
       "DELTA-NOTES.md": {
-        "blob": "40a1f0231f78290c65613a864f88e47ad10746b1"
+        "blob": "0201496f53a1597b64b2e30845879abb0f945448"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "ea7133266156e7aa07a5ccd1229263667ce93c01"
+        "blob": "cc1651f20a41716f7fdb9f49a3f031ab3914ec6e"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "b7172618d3f26195724de8a9065a2166d1213adf"
+        "blob": "25478624131961fc2a099894ac069610829c8583"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6bbbc70aa61fa68b8f161949c7b7d9018de2cbdc"
@@ -1109,7 +1109,7 @@
         "blob": "56c7e6150b5db9b61730373385d9a5214e4518f1"
       },
       "src/dacs/delivery-deadline-watch.mjs": {
-        "blob": "04b6618fe3d5a5e6450e52759e98c08163a3c2ab"
+        "blob": "5c4b400d71dc6c89903e3533ca99b64f2f98cd6b"
       },
       "src/dacs/delivery-evidence.mjs": {
         "blob": "e5bd883b4b7fc16842bc6425c8952139c6e36a16"
@@ -1127,7 +1127,7 @@
         "blob": "aae9cc8e17848ff796c10b1c2289b7da798eefa0"
       },
       "src/dacs/directory.mjs": {
-        "blob": "7848ec38a093fbd36993aa3ce6782224c4c48d86"
+        "blob": "57735129dcc0ef6e024dde68082933b3f8fa9b11"
       },
       "src/dacs/listing.mjs": {
         "blob": "40f44cef846981dd2d87bd4654e8192b8e784ac6"
@@ -1145,7 +1145,7 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "d4c59725d479e429657f000f7638e899c0c51b94"
+        "blob": "8a08a79ef38ce5593a6447714e82068f4da698ac"
       },
       "src/dacs/purchase-protocol.mjs": {
         "blob": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
@@ -1226,13 +1226,13 @@
         "blob": "251b9d4c6f691d7f355c5818406cd6175f0a42d6"
       },
       "src/purchases.mjs": {
-        "blob": "2fb90ca5361cb8894fea31ba068e195a75472f38"
+        "blob": "6326c1528d3734f9db46a310ea02740b66de71d8"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "bf39c769581827691f7851f2f007ba5f90c80a71"
+        "blob": "14e78e4e35c41e153f34bf5cbda5e12c12a65aad"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
@@ -1287,6 +1287,9 @@
       },
       "test/delivery-evidence-gate.test.mjs": {
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
+      },
+      "test/diagnostic-store-regressions.test.mjs": {
+        "blob": "22eeab29c92ded184522e70d2ebd095ea4322a94"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ce11cbefbf4a92ef6f4b4d0a4797dc1ca26734c6"
@@ -1646,7 +1649,7 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/store-atomicity.test.mjs": {
-        "blob": "7e50ae142d79dc0e244fe143b0d151f3d458c2be"
+        "blob": "8560f9547739573a5f2c8c32c27a085fbd59370d"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
