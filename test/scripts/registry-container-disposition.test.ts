@@ -469,6 +469,9 @@ async function runToConsumerStage() {
 }
 
 const CANDIDATE_VERSION = "0.1.0-test";
+// A summary the producer composed for CANDIDATE_VERSION, judged as that release.
+const candidateDisposition = (summary: unknown, baseline?: unknown, options: Record<string, unknown> = {}) =>
+  registryContainerDisposition(summary, baseline, { packageVersion: CANDIDATE_VERSION, ...options });
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 
@@ -535,11 +538,10 @@ function writeSummary(overrides: Record<string, string> = {}) {
     "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: true,
       violations: [] }),
     "audit-policy.json": JSON.stringify({ schema: "dacs-registry-audit-policy/v1",
-      observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }),
+      observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [], directAdvisories: [] }),
     "runtime-image-policy.json": JSON.stringify({ schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
       productionDependencyPolicyPassed: true }),
-    "policy-findings.json": JSON.stringify({ schema: "dacs-registry-policy-findings/v1", gitDependencies: [],
-      productionImageInventory: completeInventory }),
+    "policy-findings.json": JSON.stringify(baselineOnlySummary().securityGate.findings),
     "release-provenance.json": JSON.stringify({ version: CANDIDATE_VERSION }),
     "engine-strict.exit-code": "0\n",
     "npm-audit.exit-code": "1\n",
@@ -547,6 +549,7 @@ function writeSummary(overrides: Record<string, string> = {}) {
     "consumer-physical-sbom.exit-code": "0\n",
     "generated-tests.exit-code": "0\n",
     "doctor.exit-code": "5\n",
+    "doctor.json": readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"),
     ...overrides,
   };
   for (const [name, body] of Object.entries(files)) writeFileSync(join(stage, name), body);
