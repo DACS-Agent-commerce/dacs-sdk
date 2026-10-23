@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "40d479e4e9e54141d9129d84dcad4c343dbca0d9"
+        "blob": "e02e357cef298d4af2cb674a641174959ba5f176"
       },
       "DELTA-LEDGER.json": {
-        "blob": "3a8554d2526322ce65cf1c6b46df24faa2bb64f9"
+        "blob": "56b06512b599b1f72dd8c6a17973b8088f057661"
       },
       "DELTA-MAP.md": {
-        "blob": "2f194118098ce7353923799449d9f92cace1bc47"
+        "blob": "42cc6c26c12b4d6bd8837d9f4aea9c862e3ea60c"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "3fbb8445957c2f6d5c39a2c9833344c50cfe5a50"
+        "blob": "d4829e26ec3b48c8695a76deba0f9b4ff815cbc0"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1220,7 +1220,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "4dcf3fff5fa6f16aaac8a9d87df51d1a72cc0e14"
+        "blob": "9d6a339ad2226afeea539b3e06277fac0e64c8f6"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1289,7 +1289,7 @@
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
       },
       "test/diagnostic-reader.test.mjs": {
-        "blob": "4d6125730c234a34f8ae969c9d7299e55621e3a3"
+        "blob": "99154dd18992f65e0a498a9e2be1064fffa08a14"
       },
       "test/diagnostic-store-regressions.test.mjs": {
         "blob": "ef6723b2e7509c38a37fee121912cfc7c197895a"
@@ -1613,7 +1613,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "038451763d3b32832380d800fd814d0cb21939b7"
+        "blob": "bd7f7cc507a40c8d76ad523382073fb1ccd95d29"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
