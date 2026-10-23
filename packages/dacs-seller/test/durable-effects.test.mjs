@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 import { contentHash, privateKeyFromSeed } from '@kynesyslabs/dacs';
 import { signAnchorWrite } from '../src/dacs/fixture-anchors.mjs';
 import { durableFixture } from './helpers/durable-state-fixture.mjs';
