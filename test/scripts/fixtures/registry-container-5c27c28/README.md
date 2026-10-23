@@ -6,11 +6,14 @@ merge commit `5c27c28fd9225cff3e7653a5a013fd5f3168398c`
 (`ded30d5` into `3904d70`), fixture artifact
 [dacs-registry-container-fixtures-5c27c28fd9225cff3e7653a5a013fd5f3168398c](https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/38706155424/artifacts/11959340907).
 
-The committed snapshot preserves the original failing summary and diagnostic
-files, plus 23 selected observed image entries. Each retained entry is unchanged.
-No generated lock is included at this stage. The focused test asserts the recorded disposition
-(exit 3, with blocked image and physical-SBOM checks); it does not re-extract
-findings or establish the complete image closure from this snapshot.
+All files are copied verbatim except the filtered lock and image inventory.
+Those retain 28 lock entries and 23 observed image entries covering the original
+b7b180f locations and the demosdk → pqcrypto and MultiversX → bip39 paths.
+Each retained entry is unchanged. Tests re-extract findings from these files;
+only the engine scan's evaluated-package count differs from the complete run.
+The original summary keeps its recorded failing disposition (exit 3).
+Reconstructed replays explicitly supply completion metadata for the current
+validator and use the recorded package version; the original legacy JSON stays unchanged.
 `engine-strict.log.txt` preserves the uploaded engine log under a tracked filename.
 
 The two findings outside the previous #191 baseline were a pqcrypto registry /
