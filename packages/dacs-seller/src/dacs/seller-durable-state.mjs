@@ -194,27 +194,34 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || realpathSync(dir) !== dir) fail('seller_state_directory_unsafe');
   const path = join(dir, 'seller-state.sqlite');
+  let created = false;
   try {
     lstatSync(path);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     if (readdirSync(dir).length) fail('seller_state_missing_database');
     const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    closeSync(fd);
+    closeSync(fd); created = true;
   }
   const file = lstatSync(path);
   if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid?.() || (file.mode & 0o077)) fail('seller_state_file_unsafe');
+  if (!created && file.size === 0) fail('seller_state_corrupt');
   takeLease(dir);
   const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(signer.claim.slice(16), 'hex')]), format: 'der', type: 'spki' });
   const db = new DatabaseSync(path);
   const owned = new Map(); // jobId -> { owner, revision } for this store's held locks
   const pin = clone(listingPin);
   db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000');
-  db.exec(`CREATE TABLE IF NOT EXISTS seller_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_jobs (job TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_effects (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_settlements (id TEXT PRIMARY KEY, job TEXT NOT NULL, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`);
+  const schema = [
+    'CREATE TABLE seller_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    'CREATE TABLE seller_jobs (job TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL)',
+    'CREATE TABLE seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL)',
+  ];
+  try {
+    if (created) db.exec(schema.join(';'));
+    const actual = db.prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.sql);
+    if (!same(actual, [...schema].sort((a,b) => a.split(' ')[2].localeCompare(b.split(' ')[2])))) fail('seller_state_corrupt');
+  } catch (error) { db.close(); throw error; }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
   function transaction(fn) {
@@ -241,7 +248,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   try {
     const config = get('SELECT value FROM seller_meta WHERE key=?', 'context');
     if (config) verified(config.value, 'context', 'context');
-    else if (get('SELECT COUNT(*) AS n FROM seller_jobs').n || get('SELECT COUNT(*) AS n FROM seller_effects').n || get('SELECT COUNT(*) AS n FROM seller_settlements').n) fail('seller_state_corrupt');
+    else if (!created) fail('seller_state_corrupt');
     const fencedStore = await createFsFencedSessionStore({ dir: join(dir, 'sdk-agreements') });
     const receiptStore = await createFsSellerReceiptStore({ dir: join(dir, 'sdk-receipts') });
     function load(jobId) {
@@ -251,11 +258,6 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       if (stored.revision !== row.revision || stored.session.jobId !== jobId || !isCanonicalJobId(jobId)) fail('seller_state_corrupt');
       return stored;
     }
-    function effect(id) {
-      const row = get('SELECT value FROM seller_effects WHERE id=?', id);
-      return row ? verified(row.value, 'effect', id) : null;
-    }
-    function putEffect(id, value) { run('INSERT INTO seller_effects VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value', id, authenticated('effect', id, value)); }
     // Called inside each job-scoped write transaction (an effect's intent and
     // its completion record alike) and as the last check before each effect:
     // the caller must be running this store's acquisition of `jobId`, and the
@@ -267,7 +269,6 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       if (get('SELECT owner FROM seller_locks WHERE job=?', jobId)?.owner !== held.owner) fail('seller_state_fenced');
       return held;
     }
-    const scopedJob = () => { const scope = running.getStore(); return scope?.api === api ? scope.jobId : fail('seller_state_fenced'); };
     // One line per row and interval when withJob() stays busy on a row that
     // nothing here proves alive or gone; it names the job and the reason only.
     const noticed = new Map(); // `<job> <owner>` -> last notice (ms)
@@ -302,6 +303,15 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         }
       });
     }
+    const pendingReleases = new Map();
+    function release(jobId, owner) {
+      run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, owner);
+      if (owned.get(jobId)?.owner === owner) owned.delete(jobId);
+      pendingReleases.delete(jobId);
+    }
+    function releasePending() {
+      for (const [jobId, owner] of pendingReleases) release(jobId, owner);
+    }
     const api = {
       fencedStore,
       receiptStore,
@@ -326,7 +336,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       loadSession: (jobId) => load(jobId)?.session ?? null,
       saveSession(session) {
         const jobId = session.jobId;
-        transaction(() => {
+        const committed = transaction(() => {
           const held = fence(jobId);
           const previous = load(jobId);
           if ((previous?.revision ?? 0) !== held.revision) fail('seller_state_fenced');
@@ -334,11 +344,13 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           const revision = held.revision + 1;
           const value = authenticated('session', jobId, { revision, session });
           run('INSERT INTO seller_jobs VALUES (?,?,?) ON CONFLICT(job) DO UPDATE SET revision=excluded.revision,value=excluded.value', jobId, revision, value);
-          held.revision = revision;
+          return { held, revision };
         });
+        committed.held.revision = committed.revision;
       },
       async withJob(jobId, action) {
         if (!isCanonicalJobId(jobId)) fail('seller_state_job_invalid');
+        releasePending();
         // One acquisition per job per store, even after its row was released.
         if (owned.has(jobId)) fail('seller_state_busy');
         const owner = `${process.pid}:${PROCESS}:${Date.now()}:${randomUUID()}${NAMESPACE ? `:${NAMESPACE.ns}.${NAMESPACE.boot}.${NAMESPACE.start}` : ''}`;
@@ -375,9 +387,12 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         });
         owned.set(jobId, { owner, revision });
         if (reclaimed) process.stderr.write(`seller-state: reclaimed the lock on job ${jobId} left by a process that has exited\n`);
-        try { return await running.run({ api, jobId, owner }, () => action(load(jobId)?.session ?? null)); } finally {
-          run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, owner);
-          owned.delete(jobId);
+        let actionError;
+        try { return await running.run({ api, jobId, owner }, () => action(load(jobId)?.session ?? null)); }
+        catch (error) { actionError = error; throw error; }
+        finally {
+          try { release(jobId, owner); }
+          catch (error) { pendingReleases.set(jobId, owner); if (!actionError) throw error; }
         }
       },
       inspectLocks: () => db.prepare('SELECT job,owner,pid FROM seller_locks ORDER BY job').all().map((row) => {
@@ -409,7 +424,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           return { released: true, recordsChanged: 0 };
         });
       },
-      close: () => { if (owned.size) fail('seller_state_busy'); db.close(); },
+      close: () => { releasePending(); if (owned.size) fail('seller_state_busy'); db.close(); },
     };
     try { pruneLeases(); } catch { /* the database is busy: a later open prunes */ }
     if (!NAMESPACE && !identityWarned) {
