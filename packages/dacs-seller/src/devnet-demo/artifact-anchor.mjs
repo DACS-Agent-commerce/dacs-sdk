@@ -13,7 +13,7 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // wallet; an accepted, absent operator CREATE may resend its original bytes.
 import { isNativeDeliveryEvidence } from '../dacs/delivery-evidence.mjs';
 import { provenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
-import { storageWriteRpcSigner } from './storage-write-recovery.mjs';
+import { rpcEnvelope, storageWriteAccountNonce, storageWriteRpcSigner } from './storage-write-recovery.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OPERATOR_CLOSING } from './operator-approval.mjs';
 import {
@@ -292,8 +292,8 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       await reconcilePriorSourceLane();
       await reconcilePriorWalletLane();
       const response=await sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]});
-      const current=response?.response;
-      if(response?.result!==200 || !Number.isSafeInteger(current) || current<0) fail('indeterminate','seller nonce is unavailable');
+      const current=storageWriteAccountNonce(response?.response);
+      if(!rpcEnvelope(response,200,null) || current===null) fail('indeterminate','seller nonce is unavailable');
       // Retained signed or reserved bytes fence this nonce even after inclusion.
       // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
       const priorRows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
