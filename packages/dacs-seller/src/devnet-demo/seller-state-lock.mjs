@@ -42,7 +42,7 @@ export function currentSellerStateHolder(at=Date.now()){
 const exactHolder=(value)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===FIELDS.length&&FIELDS.every(key=>Object.hasOwn(value,key))
   &&value.format===FORMAT&&Number.isSafeInteger(value.pid)&&value.pid>0&&Number.isSafeInteger(value.acquiredAt)
   &&['host','machineId','bootId','pidNamespace'].every(key=>value[key]===null||typeof value[key]==='string')
-  &&(value.processStart===null||/^\d{1,20}$/.test(value.processStart));
+  &&(value.processStart===null||(typeof value.processStart==='string'&&/^\d{1,20}$/.test(value.processStart)));
 
 // 'gone' only on proof; a live holder (this process included) is 'live';
 // anything that cannot be decided is 'doubt'.
@@ -55,9 +55,10 @@ export function sellerStateHolderState(holder,self=currentSellerStateHolder(),{r
   if(holder.bootId!==self.bootId)return 'doubt';
   if(!holder.pidNamespace||holder.pidNamespace!==self.pidNamespace||!holder.processStart)return 'doubt';
   let start;
-  try{if(readPidMapping()!==true)return 'doubt';start=readStart(holder.pid);}
+  try{if(readPidMapping()!==true)return 'doubt';}catch{return 'doubt';}
+  try{start=readStart(holder.pid);}
   catch(error){return error?.code==='ENOENT'?'gone':'doubt';}
-  if(!/^\d{1,20}$/.test(start??''))return 'doubt';
+  if(typeof start!=='string'||!/^\d{1,20}$/.test(start))return 'doubt';
   // The pid now names a later process: the holder is gone.
   return start===holder.processStart?'live':'gone';
 }
