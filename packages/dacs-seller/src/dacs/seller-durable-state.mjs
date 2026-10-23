@@ -296,7 +296,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           try {
             const stat = lstatSync(holderFile(dir, id));
             if (!privateEntry(stat, 'isFile') || stat.mtimeMs >= performance.timeOrigin - PRUNE_MIN_AGE_MS) continue;
-            probe = new DatabaseSync(holderFile(dir, id), { readOnly: true });
+            probe = new DatabaseSync(holderFile(dir, id), { readonly: true });
             probe.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE');
             unlinkSync(holderFile(dir, id));
           } catch { /* held, unreadable or gone: kept */ } finally { try { probe?.close(); } catch { /* removed or kept either way */ } }
