@@ -448,6 +448,83 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   // ---- DACS-3: proposal -> seller contribution ----
+  async function receiveProposal({ proposal, transportIdentity, buyerIdentityBundle }) {
+    const jobId = transportIdentity?.jobId;
+    if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+    assertVetContext();
+    assertSessionAdmission();
+    const existing = sessions.get(jobId);
+    // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
+    // signed definition pinned before the Agreement is signed. The pin is in
+    // flight only from a successful retained seller signature: until then
+    // every attempt, a retry after a rejection or a crash
+    // included, selects again under the current authority as a new session.
+    // The Agreement names only the rail id and version, so a new pin never
+    // changes what is signed. The rail is the seller's own state, read before
+    // the presentation is looked at: a `rail_unavailable` refusal consumes no
+    // challenge.
+    const inFlight = Boolean(existing?.sellerContribution || (existing?.agreementSignatureKey &&
+      durable?.signature(existing.agreementSignatureKey).disposition === 'present'));
+    // DACS-1 §6.3.4 step 3 is a current read-time gate, independent of the
+    // historical admission retained for payment intake. Both endpoints count.
+    const assertListingCurrent = () => {
+      const at = now();
+      if (at < listing.validity?.notBefore || (listing.validity?.notAfter !== undefined && at > listing.validity.notAfter)) {
+        throw new SellerAgentError('session_not_admitted', 'the Listing is outside its validity interval', 409);
+      }
+    };
+    if (!inFlight) assertListingCurrent();
+    const railPin = nativeProfile ? (inFlight ? existing.railPin : rail.pin()) : undefined;
+    assertRailPin(railPin, inFlight ? 'in-flight' : 'new');
+    // CORE SN-4: a presentation attempt for a new session (not yet signed
+    // under its pin) consumes the challenge its bundle carries, durably and
+    // before the attempt is validated (its signature, buyer and job binding
+    // included), a refused attempt too; only that exact presentation, once
+    // admitted, continues. A session in flight continues without one.
+    const newSession = nativeProfile && !inFlight;
+    const nonce = buyerIdentityBundle?.sessionNonce;
+    let presentationHash = null;
+    try { presentationHash = sha256Hex(canonicalize(buyerIdentityBundle)); } catch { /* a malformed attempt still consumes its challenge */ }
+    // DACS-1 §6.3.2: a presentation for a new session that carries no session
+    // nonce is refused. It names no challenge, so it consumes none.
+    if (newSession && (typeof nonce !== 'string' || nonce === '')) throw new SellerAgentError('session_not_admitted', 'the presentation carries no session nonce (DACS-1 §6.3.2)', 409);
+    const issued = newSession ? challenges.attemptChallenge(nonce, { jobId, presentationHash, attemptedAt: now(), admitted: false }) : null;
+    if (!isIdentityBundle(buyerIdentityBundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
+    assertBuyer(buyerIdentityBundle.presentedBy,jobId,{proposal:true});
+    const bundleHash = identityBundleHash(buyerIdentityBundle);
+    if (nativeProfile && existing && canonicalize(existing.buyerBundle) !== canonicalize(buyerIdentityBundle)) throw new SellerAgentError('session_not_admitted', 'the presentation differs from the retained accepted presentation', 409);
+    authenticateBuyerBundle(buyerIdentityBundle);
+    if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
+    if (existing && existing.buyerBundleHash !== bundleHash) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
+    // A new session is admitted before anything of it is kept, read, signed or sent.
+    if (newSession) {
+      // CORE SN-1..SN-3: the bundle's sessionNonce must be a challenge this
+      // seller issued for this job and buyer (issueSessionChallenge), not expired
+      // on first admission. DACS-1 §6.3.2 reverifies the retained accepted
+      // presentation on retry; it does not accept its consumed nonce anew.
+      const challengeProblem = !issued ? 'the presentation nonce is not a challenge this seller issued'
+        : issued.jobId !== jobId || issued.buyer !== buyerIdentityBundle.presentedBy ? 'the presentation nonce is a challenge issued for another job or buyer'
+          : issued.attempt !== null && !(issued.attempt.presentationHash === presentationHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
+            : issued.attempt === null && !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
+      if (challengeProblem) throw new SellerAgentError('session_not_admitted', challengeProblem, 409);
+      // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
+      // checkListingRevocation) over the operator's readings; only `absent` opens.
+      const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
+      if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
+      const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: bundleHash, sessionNonce: nonce,
+        seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
+      let answer;
+      try { answer = await admission.admit(structuredClone(query)); }
+      catch (error) { throw new SellerAgentError('session_admission_unavailable', `the seller's session admission is unavailable: ${String(error?.message ?? error).slice(0, 180)}`, 503); }
+      const problem = sessionAdmissionProblem(answer, query);
+      if (problem) throw new SellerAgentError('session_not_admitted', problem, 409);
+      challenges.admitChallenge(nonce, presentationHash);
+    }
+    if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
+    else if (railPin && !inFlight) existing.railPin = railPin;
+    const session = sessions.get(jobId);
+    throw new SellerAgentError("proposal_not_assembled", "proposal signing is not assembled", 503);
+  }
   return {
     assertSettlementCredit,
     claim,
