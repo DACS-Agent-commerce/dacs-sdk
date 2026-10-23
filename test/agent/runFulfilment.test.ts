@@ -43,6 +43,7 @@ import {
 } from "../../src/seller/fulfilmentAuditSource.js";
 
 import { isSellerFulfilmentVetInvocationMismatch } from "../../src/seller/index.js";
+import * as fulfilmentAuditSource from "../../src/seller/fulfilmentAuditSource.js";
 
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
@@ -1274,6 +1275,19 @@ describe("runFulfilmentCore", () => {
         code: "session-record-mismatch",
       });
       expect(f.store.consumed).toBe(false);
+    }
+  });
+
+  test("documents only guards present in the audit-source module", () => {
+    const source = readFileSync(new URL(
+      "../../src/seller/fulfilmentAuditSource.ts", import.meta.url,
+    ), "utf8");
+    const functionStart = source.indexOf("export function isSellerFulfilmentVetInvocationMismatch(");
+    const comment = source.slice(source.lastIndexOf("/**", functionStart), functionStart);
+    for (const [, name] of comment.matchAll(/`([A-Za-z]\w+)`/g)) {
+      if (name === undefined) throw new Error("TEST missing documented guard name");
+      expect(typeof Object.getOwnPropertyDescriptor(fulfilmentAuditSource, name)?.value,
+        `documented guard ${name} must exist at this head`).toBe("function");
     }
   });
 
