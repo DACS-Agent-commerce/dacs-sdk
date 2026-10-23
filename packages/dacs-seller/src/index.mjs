@@ -1,3 +1,4 @@
+export { createSellerAgent, SellerAgentError } from './dacs/seller-agent.mjs';
 export { createSellerHttpHandler, createSellerAgentClient } from './dacs/seller-http.mjs';
 export { createSellerTransportStore, createSellerTransportServerAuth, createSellerTransportClientAuth } from './dacs/seller-transport-auth.mjs';
 export { buildUnsignedIdentityBundle, attachIdentityPresentation, buildListingDraft, listingSigningMessage, attachListingSignature } from './dacs/listing.mjs';
