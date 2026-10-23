@@ -21,7 +21,9 @@ function diagnostic(t, chain, { native = false, chainReadTimeoutMs = 8000 } = {}
   coordinates.save({ operationId: op.id, kind: 'native-dem-transfer', network: 'testnet', from: PAYER, nonceFence: 6, expectedNonce: 7, target: PAYEE, amountOs: '1000000000', payload: {} });
   coordinates.reportHash(op.id,HASH);
   const purchases = createPublicPurchaseService({ db, ops, coordinates, chain, chainReadTimeoutMs, now: () => NOW, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
-  return { verify: options => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id, token: ops.handoffTokenFor(op.id), ...options }),
+  return { status: () => purchases.status(op.accountId,op.id,ops.handoffTokenFor(op.id)),
+    saveObservation: value => coordinates.recordObservation(op.id,value,false,HASH),
+    verify: options => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id, token: ops.handoffTokenFor(op.id), ...options }),
     snapshot: () => ({ operation: ops.get(op.accountId,op.id), events: ops.history(op.id), coordinates: coordinates.get(op.id) }) };
 }
 for (const code of ['network_identity_mismatch', 'not_found', 'refused', 'timeout']) {
@@ -33,9 +35,9 @@ for (const code of ['network_identity_mismatch', 'not_found', 'refused', 'timeou
     assert.equal(result.verification.observation.reason, 'TEST refused');
   });
 }
-test('public factory uses the actual passive native reader across included repeats', async t => {
+for (const marked of [false,true]) test(`public factory uses the actual passive native reader across included repeats, native=${marked}`, async t => {
   const native = passiveNativeWorld(); t.after(() => native.source.close()); await native.seed();
-  const w = diagnostic(t,native.source.chainReader(),{ native: true });
+  const w = diagnostic(t,native.source.chainReader(),{ native: marked });
   const journal = await native.journal.entries(), state = w.snapshot();
   for (let repeat = 0; repeat < 2; repeat++) {
     const result = await w.verify();
@@ -43,11 +45,11 @@ test('public factory uses the actual passive native reader across included repea
     assert.deepEqual(await native.journal.entries(),journal); assert.deepEqual(native.writes,[]); assert.deepEqual(w.snapshot(),state);
   }
 });
-test('caller abort through the public factory stops a real native reader and leaves journals unchanged', async t => {
+for (const marked of [false,true]) test(`caller abort leaves actual native reader journals unchanged, native=${marked}`, async t => {
   const controller = new AbortController(); let abort = false, forwarded;
   const native = passiveNativeWorld({ onFetch: (_message, signal) => { if (abort) { forwarded = signal; controller.abort(); signal.throwIfAborted(); } } });
   t.after(() => native.source.close()); await native.seed(); abort = true;
-  const w = diagnostic(t,native.source.chainReader(),{ native: true });
+  const w = diagnostic(t,native.source.chainReader(),{ native: marked });
   const journal = await native.journal.entries(), state = w.snapshot(), calls = native.calls.length;
   const result = await w.verify({ signal: controller.signal });
   assert.equal(result.verification.observation.status,'unavailable'); assert.equal(forwarded.aborted,true);
@@ -61,4 +63,22 @@ test('pre-aborted public diagnostic invokes no host reader', async t => {
   const w = diagnostic(t,{ networkIdentity: async () => { calls++; throw new Error('TEST-unexpected'); } });
   assert.equal((await w.verify({ signal: AbortSignal.abort() })).verification.observation.status,'unavailable');
   assert.equal(calls,0);
+});
+
+test('native diagnostics refuse an absent passive reader without falling back to recovery', async t=>{
+  const native=passiveNativeWorld();t.after(()=>native.source.close());await native.seed();
+  const chain=native.source.chainReader();delete chain.observePassiveTransfer;
+  const w=diagnostic(t,chain,{native:true}),before=await native.journal.entries();
+  const result=await w.verify();
+  assert.equal(result.verification.observation.status,'unavailable');
+  assert.deepEqual(await native.journal.entries(),before);assert.deepEqual(native.writes,[]);
+});
+test('status projects saved coordinate and nested observation extensions', t=>{
+  const w=diagnostic(t,{});
+  w.saveObservation({status:'pending',payload:{signThis:'TEST-unsigned-payment'},extra:{payload:'TEST-secret'},
+    observation:{status:'pending',payload:{signThis:'TEST-nested-payment'}}});
+  const result=w.status();
+  assert.equal(result.coordinates.observation.status,'pending');
+  assert.equal(result.coordinates.observation.observation.status,'pending');
+  assert.doesNotMatch(JSON.stringify(result.coordinates),/payload"|signThis|TEST-unsigned-payment|TEST-nested-payment|TEST-secret/);
 });
