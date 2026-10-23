@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "b23a04521da09bcb585fed14e9330aea6680911a"
+        "blob": "e8c3dbdcd7ce04952c74e3c31cc2ade7ee07bec1"
       },
       "DELTA-LEDGER.json": {
-        "blob": "3d483f662388569ecd2130cfa4c86bb363e55a56"
+        "blob": "f008af41695fc0e6f91e75c522bc9de0b35ceb9b"
       },
       "DELTA-MAP.md": {
-        "blob": "e3c955c9aae39e437e4bc0e9f07bf8da30cea853"
+        "blob": "4d56c668a76908a03f1661757c376a4b42b51231"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "095c892d2906d72b409ba48d917995e8a5f34c1d"
+        "blob": "a7e888eede30607b61b3456ced87b38162998d16"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1097,7 +1097,7 @@
         "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
-        "blob": "ba97147f77c17de62b3a769c61f830a793f1a449"
+        "blob": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
@@ -1142,7 +1142,7 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "d523e721e629c2f2e3164fed45065d24f87aee3f"
+        "blob": "fe7f09a4177ea24fb5161ba2983755df49b09901"
       },
       "src/dacs/purchase-protocol.mjs": {
         "blob": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
@@ -1217,7 +1217,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9"
+        "blob": "427f897f08c2e6eba7f14290c899b56cdbab7cb5"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1280,10 +1280,13 @@
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
       },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "c8a2fd31115b3af715df4b9cb589c188280dbe4a"
+        "blob": "19be8559b54d902e57fd1056dab758c48d052dbe"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
+      },
+      "test/domain-store-crash.test.mjs": {
+        "blob": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
       },
       "test/fixtures/authorization-server.pre-dcr-logout.mjs": {
         "blob": "2821bf43b14367810b3b5b651fdac6e57a0778ef"
@@ -1401,6 +1404,12 @@
       },
       "test/helpers/devnet-operator-sequential-node2.mjs": {
         "blob": "3cb86961d2aeef100160bbf222175ae6c0b552b4"
+      },
+      "test/helpers/domain-store-crash-worker.mjs": {
+        "blob": "c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9"
+      },
+      "test/helpers/domain-store-crash-world.mjs": {
+        "blob": "a91f8018335cd08180669ba04b8312608b046d8a"
       },
       "test/helpers/durable-wallet-journal-broker.mjs": {
         "blob": "e4c756c43fd64a7d0d654e1ad2372fd0da4ab046"
@@ -1585,6 +1594,9 @@
       "test/helpers/wallet-write-batch-child.mjs": {
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
+      "test/host-observations.test.mjs": {
+        "blob": "05af633db6d7e5bd8d18a40f23e9afef0dae01ef"
+      },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
       },
@@ -1601,7 +1613,7 @@
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
       },
       "test/purchase-executed-only.test.mjs": {
-        "blob": "498f20be5b423d6328ffb0031d71d4e3d8233c43"
+        "blob": "36cf0c10d71208afda5d52f6aef02adc0121da62"
       },
       "test/purchase-integrity.test.mjs": {
         "blob": "174d67c16132706497904b28250c6135e97d1497"

@@ -1367,6 +1367,57 @@
           "after": "3955731dbff3f936b239e42a7a4aa8f13c69091f"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 05 validate retained host transfer observations",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "ba97147f77c17de62b3a769c61f830a793f1a449",
+          "after": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "d523e721e629c2f2e3164fed45065d24f87aee3f",
+          "after": "fe7f09a4177ea24fb5161ba2983755df49b09901"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9",
+          "after": "427f897f08c2e6eba7f14290c899b56cdbab7cb5"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "c8a2fd31115b3af715df4b9cb589c188280dbe4a",
+          "after": "19be8559b54d902e57fd1056dab758c48d052dbe"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": null,
+          "after": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+          "before": null,
+          "after": "c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+          "before": null,
+          "after": "a91f8018335cd08180669ba04b8312608b046d8a"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": null,
+          "after": "05af633db6d7e5bd8d18a40f23e9afef0dae01ef"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "498f20be5b423d6328ffb0031d71d4e3d8233c43",
+          "after": "36cf0c10d71208afda5d52f6aef02adc0121da62"
+        }
+      ]
     }
   ]
 }

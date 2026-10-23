@@ -688,5 +688,25 @@
       "packages/dacs-client/test/readback-review-decisions.test.mjs",
       "packages/dacs-client/test/sweep-contracts.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 05 validate retained host transfer observations",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/chain.mjs",
+      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/domain-store-crash.test.mjs",
+      "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+      "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs",
+      "packages/dacs-client/test/purchase-executed-only.test.mjs"
+    ]
   }
 ]
