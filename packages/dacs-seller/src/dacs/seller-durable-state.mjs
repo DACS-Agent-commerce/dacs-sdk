@@ -530,11 +530,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           return prior;
         });
       },
-      admitChallenge(nonce, presentationHash) {
+      admitChallenge(nonce, presentationHash, accepted) {
         transaction(() => {
           const prior = effect(`session-challenge:${nonce}`);
           if (prior?.kind !== 'session-challenge' || prior.attempt?.presentationHash !== presentationHash) fail('seller_state_corrupt');
-          putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true } });
+          putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true, ...accepted===undefined?{}:{accepted:clone(accepted)} } });
         });
       },
       // A signature leaves signOnce only after its completion record, written
