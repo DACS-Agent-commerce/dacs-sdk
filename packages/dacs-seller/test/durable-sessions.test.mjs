@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { durableFixture } from './helpers/durable-state-fixture.mjs';
 import { JOB, buyer } from './helpers/protocol-fixture.mjs';
