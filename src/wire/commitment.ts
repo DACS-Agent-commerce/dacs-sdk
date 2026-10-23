@@ -289,7 +289,7 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreeme
  */
 export async function commitmentReceiptTime(value: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: CommitmentScope): Promise<number> {
   if (typeof reader !== "function" || types.isProxy(reader)) fail("commitment_reader_required", 500);
-  assertTp1Binding(scope.binding, scope.binding?.local);
+  await assertTp1Binding(scope.binding, scope.binding?.local);
   const chainIdentity = scope.binding.profile.chainIdentity;
   const readerChain = Object.getOwnPropertyDescriptor(reader, "chainIdentity");
   if (!readerChain || !("value" in readerChain) || readerChain.value !== chainIdentity) fail("commitment_reader_chain_mismatch", 500);
