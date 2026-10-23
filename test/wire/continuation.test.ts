@@ -797,3 +797,356 @@ describe("no package file can vouch for a commitment", () => {
     }
   });
 });
+
+describe("an effect is reserved only in the SDK's durable journal", { timeout: 60_000 }, () => {
+  it("refuses any journal openWireRequestJournal did not return, a host's own durable or shared one included, before anything is reserved", () => {
+    const x = world();
+    const held = new Set<string>();
+    const reserve = (r: { key: string }) => (held.has(r.key) ? false : (held.add(r.key), true));
+    const directory = journalDirectory();
+    const opened = wire.openWireRequestJournal(directory);
+    for (const journal of [{ durable: true, reserve }, { qualified: true }, { directory }, { ...opened }, Object.freeze({ directory }), () => true, null, undefined]) {
+      for (const path of [P.proposals, ...CONTINUING]) {
+        expect(() => wire.checkWireRequest(x.direct(x.request(path)), { ...x.check(path), requestJournal: journal as never }))
+          .toThrowError(expect.objectContaining({ code: "seller_replay_guard_required", status: 500 }));
+      }
+    }
+    expect(held.size).toBe(0);
+    expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: opened }).effect).toMatchObject({ state: "new", attempt: 0 });
+    expect("qualifyWireRequestJournal" in wire).toBe(false);
+  });
+
+  it("opens only an absolute directory this user owns and no one else can write, not through a link", () => {
+    const refused = (directory: unknown, detail: string) => expect(() => wire.openWireRequestJournal(directory as string))
+      .toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid", status: 500, detail }));
+    refused("relative/journal", "DIRECTORY-NOT-ABSOLUTE");
+    refused(7, "DIRECTORY-NOT-ABSOLUTE");
+    const parent = journalDirectory();
+    refused(join(parent, "missing"), "DIRECTORY-MISSING");
+    const shared = join(parent, "shared");
+    mkdirSync(shared);
+    chmodSync(shared, 0o777);
+    refused(shared, "DIRECTORY-UNSAFE");
+    chmodSync(shared, 0o770);
+    refused(shared, "DIRECTORY-UNSAFE");
+    const real = join(parent, "real"), link = join(parent, "link");
+    mkdirSync(real, { mode: 0o700 });
+    symlinkSync(real, link);
+    refused(link, "DIRECTORY-MISSING");
+    expect(wire.openWireRequestJournal(real).directory).toBe(real);
+    for (const options of [{ leaseMs: 999 }, { leaseMs: 600_001 }, { leaseMs: "60000" }, { clock: 7 }]) {
+      expect(() => wire.openWireRequestJournal(real, options as never)).toThrowError(expect.objectContaining({ code: "seller_configuration_invalid", status: 500 }));
+    }
+  });
+
+  it("gives each job and route one operation, whatever the nonce or the body", () => {
+    const x = world();
+    const journals = testJournals();
+    const journal = journals.open();
+    const at = (path: string, body: string) => wire.checkWireRequest(x.direct(x.request(path, body)), { ...x.check(path, body), requestJournal: journal });
+    const payload = x.request(P.payments);
+    const { seller, jobId, path } = payload;
+    // Only the seller, job and route: no body, nonce, Agreement hash, buyer or tuple.
+    expect(wire.wireOperationId(payload)).toBe(sha256Hex(canonicalize({ seller, jobId, path })));
+    expect(wire.wireOperationId({ ...payload, agreementHash: "b".repeat(64), buyer: party().claim, bodyHash: "d".repeat(64) } as never)).toBe(wire.wireOperationId(payload));
+    for (const route of [P.proposals, ...CONTINUING]) {
+      const first = at(route, '{"amount":"1","note":"x"}');
+      expect(first.effect).toMatchObject({ state: "new", attempt: 0, operationId: wire.wireOperationId({ ...payload, path: route }) });
+      // Another nonce, another encoding, other incidental fields: the same operation, still held by the first attempt.
+      for (const repeat of ['{"amount":"1","note":"x"}', '{ "note": "x", "amount": "1" }', '{"amount":"1","note":"y"}']) {
+        expect(() => at(route, repeat), `${route} ${repeat}`).toThrowError(expect.objectContaining({ code: "seller_effect_pending", status: 503 }));
+      }
+    }
+    // The same signed request again is a replay.
+    const once = x.request(P.payments);
+    const opened = () => x.direct(once);
+    expect(() => wire.checkWireRequest(opened(), { ...x.check(P.payments), requestJournal: journal })).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+    expect(() => wire.checkWireRequest(opened(), { ...x.check(P.payments), requestJournal: journal })).toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
+    expect(new Set(journals.reservations().map((r) => r.operationId)).size).toBe(4);
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
+
+  it("never gives a job and route a second effect when the retained Agreement changes: before and after completion, and across a reopen", () => {
+    const x = world();
+    const directory = journalDirectory();
+    const another = signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: PIN, generatedAt: NOW - 30_000 });
+    expect(another.agreementHash).not.toBe(x.agreementHash);
+    /** The same job and route under the Agreement the host retained first, or under another one it retained later. */
+    const at = (path: string, journal: wire.WireRequestJournal, changed: boolean) => wire.checkWireRequest(
+      x.direct({ ...x.request(path), ...(changed ? { agreementHash: another.agreementHash } : {}) }),
+      { ...x.check(path), requestJournal: journal, ...(changed ? {
+        retained: { ...x.retained, agreementHash: another.agreementHash }, agreement: received(another.agreement),
+        commitment: received(x.commitment({ agreementHash: another.agreementHash })),
+      } : {}) });
+    const mismatch = expect.objectContaining({ code: "peer_operation_mismatch", status: 409 });
+    for (const path of [P.proposals, ...CONTINUING]) {
+      const journal = wire.openWireRequestJournal(directory);
+      const first = at(path, journal, false).effect!;
+      expect(first.state, path).toBe("new");
+      // Held by the first attempt: another Agreement is refused, not told to wait or given its own operation.
+      expect(() => at(path, journal, true), path).toThrowError(mismatch);
+      wire.completeWireEffect(journal, first, { status: 200, text: `{"path":"${path}"}` });
+      expect(() => at(path, journal, true), path).toThrowError(mismatch);
+      // A restarted worker reads the same binding from the directory.
+      const reopened = wire.openWireRequestJournal(directory);
+      expect(() => at(path, reopened, true), path).toThrowError(mismatch);
+      expect(at(path, reopened, false).effect, path).toMatchObject({ state: "completed", operationId: first.operationId, outcome: { status: 200, text: `{"path":"${path}"}` } });
+    }
+    // Each refused request spent its nonce and nothing else: four operations, one attempt each.
+    expect(readdirSync(directory).filter((name) => /^o-[0-9a-f]{64}-0$/.test(name))).toHaveLength(4);
+    expect(readdirSync(directory).filter((name) => /^o-[0-9a-f]{64}-[1-9]/.test(name))).toEqual([]);
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
+
+  it("refuses an attempt record the journal did not write as a corrupt store, never as a lapsed lease", () => {
+    const x = world();
+    const directory = journalDirectory();
+    const journal = wire.openWireRequestJournal(directory);
+    const at = () => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal });
+    const first = at().effect!;
+    const file = join(directory, `o-${first.operationId}-0`);
+    const kept = JSON.parse(readFileSync(file, "utf8"));
+    expect(Object.keys(kept).sort()).toEqual(["attempt", "binding", "leaseUntil", "operationId", "requestHash"]);
+    for (const contents of ["not json", "{}", JSON.stringify({ ...kept, leaseUntil: "later" }), JSON.stringify({ ...kept, attempt: 1 }), JSON.stringify({ ...kept, binding: undefined })]) {
+      writeFileSync(file, contents);
+      expect(() => at(), contents).toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid", status: 500, detail: "STORE-ATTEMPT-INVALID" }));
+    }
+    writeFileSync(file, JSON.stringify(kept));
+    expect(() => at()).toThrowError(expect.objectContaining({ code: "seller_effect_pending", status: 503 }));
+  });
+
+  it("answers a repeat of a completed operation with its outcome and runs no second effect", () => {
+    const x = world();
+    const journal = testJournal();
+    const at = (body: string) => wire.checkWireRequest(x.direct(x.request(P.payments, body)), { ...x.check(P.payments, body), requestJournal: journal });
+    const first = at('{"tx":"1"}');
+    expect(first.effect?.state).toBe("new");
+    const outcome = { status: 200, text: '{"paid":true}' };
+    wire.completeWireEffect(journal, first.effect!, outcome);
+    // Completing again with the same outcome is a no-op; another outcome is refused.
+    wire.completeWireEffect(journal, first.effect!, { ...outcome });
+    expect(() => wire.completeWireEffect(journal, first.effect!, { status: 200, text: '{"paid":false}' })).toThrowError(expect.objectContaining({ code: "seller_effect_conflict" }));
+    expect(() => wire.completeWireEffect(journal, first.effect!, null)).toThrowError(expect.objectContaining({ code: "seller_effect_conflict" }));
+    for (const body of ['{"tx":"1"}', '{"tx":"2"}']) expect(at(body).effect).toEqual({ state: "completed", operationId: first.effect!.operationId, outcome });
+  });
+
+  it("keeps an outcome's text byte for byte, whatever canonical JSON would rewrite: a repeat, a restart and the same text again return exactly what the handler signed", () => {
+    const x = world();
+    const directory = journalDirectory();
+    const journal = wire.openWireRequestJournal(directory);
+    const at = (j: wire.WireRequestJournal, body: string) => wire.checkWireRequest(x.direct(x.request(P.payments, body)), { ...x.check(P.payments, body), requestJournal: j });
+    // Text the wire can sign (an NFC object) that canonical JSON would still rewrite: members out of order, spacing, an escape and an astral character.
+    const text = '{"réport": "linéx \\u00e9 \u{1F600}",  "a":[1, 2]}';
+    expect(text).toBe(text.normalize("NFC"));
+    expect(canonicalize(JSON.parse(text))).not.toBe(text);
+    expect(() => admitOutgoingBody(text, 512 * 1024)).not.toThrow();
+    const outcome = { status: 200, text };
+    const first = at(journal, '{"tx":"1"}');
+    wire.completeWireEffect(journal, first.effect!, outcome);
+    const done = { state: "completed", operationId: first.effect!.operationId, outcome };
+    expect(at(journal, '{"tx":"2"}').effect).toEqual(done);
+    // Completing again with the same text is a no-op; a restart (another handle on the directory) reads it back unchanged.
+    wire.completeWireEffect(journal, first.effect!, { ...outcome });
+    const restarted = at(wire.openWireRequestJournal(directory), '{"tx":"3"}').effect as { outcome: { text: string } };
+    expect(restarted).toEqual(done);
+    expect(Buffer.from(restarted.outcome.text, "utf8").equals(Buffer.from(text, "utf8"))).toBe(true);
+    // Another spelling of the same JSON is another text: it conflicts with the stored one.
+    expect(() => wire.completeWireEffect(journal, first.effect!, { status: 200, text: canonicalize(JSON.parse(text)) })).toThrowError(expect.objectContaining({ code: "seller_effect_conflict" }));
+  });
+
+  it("refuses an outcome whose text is not well-formed UTF-8 (a lone surrogate would be stored as another character) before anything is published", () => {
+    const x = world();
+    const journal = testJournal();
+    const { effect } = wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal });
+    for (const text of ["\ud800", '{"a":"\udc00"}', "ok\ud83d"]) {
+      expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text }), text).toThrowError(expect.objectContaining({ code: "wire_input_invalid", detail: "OUTCOME-INVALID" }));
+    }
+    expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text: '{"smile":"\u{1F600}"}' })).not.toThrow();
+  });
+
+  it("refuses an outcome whose text the wire could never sign (CF-5 admission of a response body), before anything is published: no answer is left unanswerable", () => {
+    const x = world();
+    const journal = testJournal();
+    const at = (body: string) => wire.checkWireRequest(x.direct(x.request(P.payments, body)), { ...x.check(P.payments, body), requestJournal: journal });
+    const { effect } = at('{"tx":"1"}');
+    const refused = expect.objectContaining({ code: "wire_input_invalid", status: 500, detail: "OUTCOME-INVALID" });
+    const unsignable: Array<[string, string]> = [
+      ["a decomposed accent in a value", '{"a":"café"}'],
+      ["a combining mark written as an escape", '{"a":"e\\u0301"}'],
+      ["a duplicate member", '{"a":1,"a":2}'],
+      ["a body that is not an object", "0"],
+      ["an array", "[]"],
+      ["null", "null"],
+      ["text that is not JSON", "paid"],
+      ["the empty text", ""],
+    ];
+    for (const [name, text] of unsignable) {
+      // The refusal is the wire's own rule: signing the same text is refused by CF-5 admission.
+      expect(() => admitOutgoingBody(text, 512 * 1024), name).toThrowError(expect.objectContaining({ code: "outgoing_body_rejected" }));
+      expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text }), name).toThrowError(refused);
+    }
+    // No refusal published anything: the attempt is still open, and a text the wire signs completes it.
+    expect(() => at('{"tx":"2"}')).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+    const signable = '{"paid":true,"note":"NFC cafeé \u{1F600}"}';
+    expect(() => admitOutgoingBody(signable, 512 * 1024)).not.toThrow();
+    wire.completeWireEffect(journal, effect!, { status: 200, text: signable });
+    expect(at('{"tx":"3"}').effect).toMatchObject({ state: "completed", outcome: { status: 200, text: signable } });
+  });
+
+  it("refuses to complete an effect it did not issue, on another journal, or with a malformed outcome", () => {
+    const x = world();
+    const journal = testJournal(), other = testJournal();
+    const { effect } = wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal });
+    const code = (f: () => void) => { try { f(); return "ok"; } catch (error) { return (error as wire.WireError).detail ?? (error as wire.WireError).code; } };
+    expect(code(() => wire.completeWireEffect(journal, { ...effect! }, null))).toBe("EFFECT-NOT-ISSUED");
+    expect(code(() => wire.completeWireEffect(other, effect!, null))).toBe("EFFECT-NOT-ISSUED");
+    expect(code(() => wire.completeWireEffect({ directory: journal.directory }, effect!, null))).toBe("seller_replay_guard_required");
+    for (const outcome of [{ status: 199, text: "{}" }, { status: 600, text: "{}" }, { status: 200 }, { status: 200, text: 7 }, { status: 200, text: "x".repeat(512 * 1024 + 1) }]) {
+      expect(code(() => wire.completeWireEffect(journal, effect!, outcome as never))).toBe("OUTCOME-INVALID");
+    }
+    expect(code(() => wire.completeWireEffect(journal, effect!, { status: 200, text: "{}" }))).toBe("ok");
+  });
+
+  it("recovers an attempt whose lease ended with no outcome: exactly one worker holds the recovery, and the outcome is kept once", () => {
+    const x = world();
+    let clock = NOW;
+    const directory = journalDirectory();
+    const worker = () => wire.openWireRequestJournal(directory, { leaseMs: 1000, clock: () => clock });
+    const a = worker(), b = worker();
+    const at = (journal: wire.WireRequestJournal, body = "{}") => wire.checkWireRequest(x.direct(x.request(P.bundleRequest, body)), { ...x.check(P.bundleRequest, body), requestJournal: journal });
+    const first = at(a).effect!;
+    expect(first).toMatchObject({ state: "new", attempt: 0, leaseUntil: NOW + 1000 });
+    clock = NOW + 999;
+    expect(() => at(b)).toThrowError(expect.objectContaining({ code: "seller_effect_pending", status: 503 }));
+    // The first worker died without an outcome; its lease ends.
+    clock = NOW + 1000;
+    const recovered = at(b, '{"retry":true}').effect!;
+    expect(recovered).toMatchObject({ state: "recover", attempt: 1, operationId: first.operationId });
+    expect(() => at(a)).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+    // The first attempt, superseded, cannot record anything; the recovering one does.
+    expect(() => wire.completeWireEffect(a, first, { status: 200, text: "{}" })).toThrowError(expect.objectContaining({ code: "seller_effect_superseded" }));
+    wire.completeWireEffect(b, recovered, { status: 200, text: '{"delivered":1}' });
+    expect(at(a).effect).toMatchObject({ state: "completed", outcome: { status: 200, text: '{"delivered":1}' } });
+  });
+
+  it("more than 16 clean null ends still recover and retain a later payment outcome after restart", () => {
+    const x = world();
+    const directory = journalDirectory();
+    const open = () => wire.openWireRequestJournal(directory, { leaseMs: 600_000 });
+    const at = (journal: wire.WireRequestJournal) => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal }).effect!;
+    for (let attempt = 0; attempt < wire.MAX_EFFECT_ATTEMPTS + 4; attempt++) {
+      const journal = open();
+      const effect = at(journal);
+      expect(effect).toMatchObject({ state: attempt === 0 ? "new" : "recover", attempt });
+      expect(() => at(journal)).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+      wire.completeWireEffect(journal, effect, null);
+    }
+    const journal = open();
+    const effect = at(journal);
+    wire.completeWireEffect(journal, effect, { status: 200, text: '{"paid":true}' });
+    expect(at(open())).toMatchObject({ state: "completed", outcome: { status: 200, text: '{"paid":true}' } });
+  });
+
+  it.each([0, 2])("16 superseded attempts stop recovery with %i clean null ends between crashes", (cleanRetries) => {
+    const x = world();
+    let clock = NOW;
+    const directory = journalDirectory();
+    const open = () => wire.openWireRequestJournal(directory, { leaseMs: 1000, clock: () => clock });
+    const at = (journal: wire.WireRequestJournal) => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal }).effect!;
+    let attempt = 0;
+    for (let crashes = 0; crashes < wire.MAX_EFFECT_ATTEMPTS; crashes++) {
+      // Interleave clean retries, advancing the fencing token without consuming the crash budget.
+      for (let clean = 0; clean < cleanRetries; clean++) {
+        const journal = open();
+        const effect = at(journal);
+        expect(effect).toMatchObject({ attempt: attempt++ });
+        wire.completeWireEffect(journal, effect, null);
+      }
+      const journal = open();
+      const effect = at(journal);
+      expect(effect).toMatchObject({ attempt: attempt++ });
+      clock += 1000;
+      if (crashes === wire.MAX_EFFECT_ATTEMPTS - 1) {
+        expect(() => at(open())).toThrowError(expect.objectContaining({ code: "seller_effect_unresolved", status: 500 }));
+        expect(() => wire.completeWireEffect(journal, effect, { status: 200, text: "{}" }))
+          .toThrowError(expect.objectContaining({ code: "seller_effect_superseded" }));
+      }
+    }
+    expect(() => at(open())).toThrowError(expect.objectContaining({ code: "seller_effect_unresolved" }));
+  }, 60_000); // about 48 fsync-heavy journal opens: load-sensitive under the 5 s default
+});
+
+describe("a response is opened only against its principal", () => {
+  it("refuses to open a response without the seller it must be signed by", async () => {
+    const x = world();
+    const request = x.request(P.payments);
+    const answer = await wire.signWireResponse(request, 200, "{}", { ...x.context, signer: x.seller, now: NOW });
+    for (const principal of [undefined, null, "", "seller"]) {
+      expect(() => wire.openWireEnvelope(answer, "response", { ...x.context, purchaseProfile: request.profile, ...(principal === undefined ? {} : { principal }) } as wire.OpenEnvelopeOptions))
+        .toThrowError(expect.objectContaining({ code: "wire_input_invalid", status: 500 }));
+    }
+    // An impostor's answer naming itself the seller: refused against the principal, and unopenable without one.
+    const impostor = party();
+    const forged = await wire.signWireResponse({ ...request, seller: impostor.claim }, 200, "{}", { ...x.context, signer: impostor, now: NOW });
+    expect(() => wire.openWireEnvelope(forged, "response", { ...x.context, purchaseProfile: request.profile } as wire.OpenEnvelopeOptions))
+      .toThrowError(expect.objectContaining({ code: "wire_input_invalid" }));
+    expect(() => wire.openWireEnvelope(forged, "response", { ...x.context, purchaseProfile: request.profile, principal: x.seller.claim }))
+      .toThrowError(expect.objectContaining({ code: "peer_signer_wrong" }));
+    expect(wire.openWireEnvelope(answer, "response", { ...x.context, purchaseProfile: request.profile, principal: x.seller.claim }).payload.seller).toBe(x.seller.claim);
+  });
+});
+
+it("signed Agreement job, buyer and signature algorithm are independent of the recomputed hash; party order is unrestricted", () => {
+  const x = world(), other = party();
+  const make = (patch: Record<string, unknown>) => signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: PIN, patch });
+  const reversed = make({ parties: [...x.agreement.parties].reverse() });
+  const anotherBuyer = signedAgreement({ buyer: other, seller: x.seller, jobId: JOB, listingPin: PIN });
+  const algorithm = { ...x.agreement, signatures: x.agreement.signatures.map((s) => ({ ...s, algorithm: "ecdsa-secp256k1" })) };
+  expect(isPayeeBoundAgreementDocument(algorithm)).toBe(true);
+  const cases = [
+    [make({ jobId: OTHER_JOB }), false], [anotherBuyer, false],
+    [{ agreement: algorithm, agreementHash: x.agreementHash }, false], [reversed, true],
+  ] as const;
+  for (const [a, allowed] of cases) for (const path of CONTINUING) {
+    let reads = 0;
+    const journals = testJournals();
+    const request = { ...x.request(path), agreementHash: a.agreementHash };
+    const invoke = () => wire.checkWireRequest(x.direct(request), { ...x.check(path),
+      retained: { ...x.retained, agreementHash: a.agreementHash }, agreement: received(a.agreement),
+      commitment: received(x.commitment({ agreementHash: a.agreementHash })),
+      readCommitmentReceipt: () => { reads++; return "valid"; }, requestJournal: journals.open() });
+    if (allowed) { expect(invoke().effect).toMatchObject({ state: "new" }); expect(reads).toBe(1); }
+    else { expect(invoke).toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid" })); expect(reads).toBe(0); expect(journals.reservations()).toEqual([]); }
+  }
+});
+it("non-DEM payment phase fails PAY-PHASE with otherwise coherent signed terms", () => {
+  const l = tp1Listing({ seller: SELLER, patch: { pipeline: [
+    { kind: "negotiate-fixed-price" }, { kind: "commit-payee-bound-agreement" },
+    { kind: "pay-x402", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" },
+  ] } });
+  const x = world(l);
+  for (const path of CONTINUING) expect(() => wire.checkWireRequest(x.direct(x.request(path)), { ...x.check(path), requestJournal: testJournal() }))
+    .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported", detail: "PAY-PHASE" }));
+});
+it("a fully signed open-ended Listing continues at seller and buyer", async () => {
+  const l = tp1Listing({ seller: SELLER, validity: { notBefore: NOW - 600_000 } }), x = world(l);
+  const discovery = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: x.binding.profile,
+    seller: SELLER.claim, publicEndpoint: ENDPOINT, transport: ["dacs-seller-http/v1"], listings: [l.pin], capabilities: wire.TP1_CAPABILITIES,
+    ready: false, issuedAt: NOW, expiresAt: NOW + 60_000 }, SELLER, x.binding, LOCAL);
+  const proof = wire.verifyEndpointProof(discovery, { ...x.context, now: NOW, listing: { seller: SELLER.claim, publicEndpoint: ENDPOINT, listingPin: l.pin },
+    readListingEligibility: readFixtureListingEligibility, readCommitmentReceipt: validReceipt,
+    commitment: received(x.commitment()), agreement: received(x.agreement), signedListing: received(l.listing) });
+  for (const path of CONTINUING) {
+    const signed = await wire.signWireRequest({ ...x.context, signer: x.buyer, endpointProof: proof, publicEndpoint: ENDPOINT, path,
+      jobId: JOB, text: "{}", seller: SELLER.claim, now: NOW, job: { listingPin: l.pin, agreementHash: x.agreementHash, profile: x.binding.profile },
+      commitment: received(x.commitment()), agreement: received(x.agreement), signedListing: received(l.listing) });
+    expect(wire.checkWireRequest(wire.openWireEnvelope(signed.header, "request", x.context), { ...x.check(path), requestJournal: testJournal() }).effect).toMatchObject({ state: "new" });
+  }
+});
+it("a structurally complete indeterminate finalized receipt never authorizes continuation", () => {
+  const x = world();
+  const c = x.commitment({ receipt: { observationDisposition: "indeterminate", preservedReceiptHash: "e".repeat(64) } });
+  expect(isReadableAnchorReceipt(c.anchorReceipt)).toBe(true);
+  const journals = testJournals();
+  for (const path of CONTINUING) expect(() => wire.checkWireRequest(x.direct(x.request(path)), { ...x.check(path), commitment: received(c), requestJournal: journals.open() }))
+    .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid" }));
+  expect(journals.reservations()).toEqual([]);
+});
