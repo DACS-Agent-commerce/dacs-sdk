@@ -897,5 +897,30 @@
       "packages/dacs-client/src/util/guarded-sqlite.mjs",
       "packages/dacs-client/test/guarded-sqlite.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 fence retained native SQL execution functions",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/guarded-sqlite.mjs",
+      "packages/dacs-client/test/guarded-sqlite.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 cover retained native exec rollback on reopen",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs"
+    ]
   }
 ]
