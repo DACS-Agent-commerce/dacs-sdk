@@ -22,3 +22,14 @@ describe("npm engine range boundary regressions", () => {
     expect(scanLockEngines(lock, versions).scanComplete).toBe(false);
   });
 });
+
+describe("expanded semver numeric limits", () => {
+  it.each([
+    "<=9007199254740991", "^9007199254740991", ">9007199254740991",
+    "<=20.9007199254740991", "~20.9007199254740991", "^0.9007199254740991.0",
+    "^0.0.9007199254740991", "0.0.0 - 20.19.9007199254740991",
+    "0 - 9007199254740991", ">=20 || <=9007199254740991",
+  ])("rejects an overflowing expanded comparator in %s", range => {
+    expect(scan(range)).toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/range|bound/)] });
+  });
+});
