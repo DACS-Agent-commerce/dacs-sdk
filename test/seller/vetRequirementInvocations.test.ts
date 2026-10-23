@@ -33,7 +33,8 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     vetRecordRef: structuredClone(party.vetRecordRef), evaluatedParty: party.primaryClaim,
     requirement: structuredClone(requirement), verifier, freshness: [], dealSpecific: [],
   });
-  const valid = [invocation(buyer, sellerClaim), invocation(seller, buyerClaim)];
+  const valid: [SellerFulfilmentVetRequirementInvocation, SellerFulfilmentVetRequirementInvocation] =
+    [invocation(buyer, sellerClaim), invocation(seller, buyerClaim)];
   const check = (vetRequirements: unknown, requirement: unknown = buyerRequirement) =>
     sellerFulfilmentVetRequirementsViolation(vetRequirements, {
       jobId, buyer, seller, buyerRequirement: requirement,
@@ -80,6 +81,25 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     ["a required claim no result covers", [valid[0], invocation(seller, buyerClaim, { ...buyerRequirement, required: [{ scheme: "test-claim", verificationRequired: true }] })], /differs from its party/],
   ])("refuses %s", (_label, vetRequirements, reason) => {
     expect(check(vetRequirements)).toMatch(reason);
+  });
+
+  test.each([
+    ["a sparse invocation list", (entries: typeof valid) => { Reflect.deleteProperty(entries, "1"); }],
+    ["an extra array property", (entries: typeof valid) => { Object.defineProperty(entries, "extra", { value: true, enumerable: true }); }],
+    ["a non-NFC seller requirement", (entries: typeof valid) => { Object.defineProperty(entries[1].requirement, "extension", { value: "e\u0301", enumerable: true }); }],
+    ["a bigint seller requirement", (entries: typeof valid) => { Object.defineProperty(entries[1].requirement, "extension", { value: 1n, enumerable: true }); }],
+    ["an overly deep seller requirement", (entries: typeof valid) => {
+      let value: Record<string, unknown> = {};
+      for (let depth = 0; depth < 129; depth += 1) value = { child: value };
+      Object.defineProperty(entries[1].requirement, "extension", { value, enumerable: true });
+    }],
+    ["a throwing accessor", (entries: typeof valid) => {
+      Object.defineProperty(entries[1], "evaluatedParty", { enumerable: true, get() { throw new Error("TEST accessor must not run"); } });
+    }],
+  ] as const)("refuses %s before structural traversal", (_label, mutate) => {
+    const entries = structuredClone(valid);
+    mutate(entries);
+    expect(check(entries)).toMatch(/.+/);
   });
 
   test("answers a refusal for a shape it does not take, and never throws", () => {
@@ -268,10 +288,9 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     const canonicalRequirement = { ...buyerRequirement, extension: 1 };
     expect(check([invocation(buyer, sellerClaim, canonicalRequirement), valid[1]], canonicalRequirement)).toBeNull();
     const requirement = { ...buyerRequirement, extension: 1n };
-    // The same body is supplied on both sides, so only a failed canonical
-    // comparison prevents acceptance; the structural shape gate admits it.
+    // Exact JSON admission refuses the body before comparing the parties.
     expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement))
-      .toMatch(/differs from its party/);
+      .toMatch(/strict audit-source shape/);
   });
 
   test("returns a nonempty refusal without throwing for an unpaired surrogate in a party locator", () => {
@@ -279,7 +298,7 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     party.vetRecordRef.anchor.locator += "\ud800";
     expect(sellerFulfilmentVetRequirementsViolation([invocation(party, sellerClaim), valid[1]], {
       jobId, buyer: party, seller, buyerRequirement,
-    })).toBe("the Vet requirement invocations are not canonicalizable");
+    })).toBe("the Vet requirement invocations are not the strict audit-source shape");
   });
 
   test("returns a mismatch without throwing when the binding map has no entry", () => {
