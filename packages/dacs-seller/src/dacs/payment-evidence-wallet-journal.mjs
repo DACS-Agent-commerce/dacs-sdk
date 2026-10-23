@@ -65,13 +65,15 @@
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
+import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
-import { deriveStorageAddress } from './wallet-transactions.mjs';
+import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
 // Bounds on what signCreate answers before it is kept.
 const MAX_SIGNED_TRANSACTION = 1024 * 1024;
+const LOCK_POLL_MS = 5;
 const TX_HASH = /^[0-9a-f]{64}$/;
 // demosdk 4.0.16 (demosclass.js sign): Ed25519 is 0x and lower-case hex.
 const SIGNATURE = /^0x[0-9a-f]{128}$/;
@@ -119,6 +121,13 @@ function signedCreateProblem(answer, input) {
       || !SIGNATURE.test(signed.signature.data) || !verifyDemosSignature({ address: from, message: answer.txHash, signature: signed.signature.data })) return 'is not signed by the writer';
   const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
   if (content.to !== storageAddress || op.storageAddress !== storageAddress) return `is not at the storage address its writer, name and nonce derive (${storageAddress})`;
+  if (nonceOf(content.timestamp, 0) === null) return 'has no valid timestamp';
+  const { content: expected } = buildStorageProgramCreatePayload({ from, storageAddress, programName,
+    logicalAddress: input.logicalAddress, signedListing: input.artifact, nonce: answer.nonce, timestamp: content.timestamp });
+  expected.from_ed25519_address = from;
+  expected.data[1].metadata = { logicalAddress: input.logicalAddress, artifactKind: input.artifactKind,
+    contentHash: input.receiptContentHash, envelopeHash: sha256Hex(canonicalize(input.artifact)) };
+  if (canonicalize(content) !== canonicalize(expected)) return 'is not the exact public zero-value, zero-fee on-chain CREATE';
   return null;
 }
 
@@ -145,12 +154,39 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     CREATE TABLE IF NOT EXISTS journal_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   db.prepare("INSERT OR IGNORE INTO journal_meta VALUES ('journal-id', ?)").run(randomBytes(16).toString('hex'));
   const journalId = db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get().value;
+  // SQLite's writer lock is the signing lease across handles and processes.
+  // A crash releases it. Commit the signed bytes before any broadcast.
+  db.exec('PRAGMA busy_timeout=0');
+  let queue = Promise.resolve();
+  async function locked(change) {
+    const previous = queue;
+    let release;
+    queue = new Promise((resolve) => { release = resolve; });
+    await previous;
+    let begun = false;
+    const deadline = performance.now() + readTimeoutMs;
+    try {
+      while (!begun) {
+        try { db.exec('BEGIN IMMEDIATE'); begun = true; }
+        catch (cause) {
+          if (cause.code !== 'SQLITE_BUSY') throw cause;
+          if (performance.now() >= deadline) throw Object.assign(new Error('the wallet journal is busy', { cause }), { code: 'wallet_journal_busy' });
+          await delay(LOCK_POLL_MS);
+        }
+      }
+      const answer = await change();
+      db.exec('COMMIT'); begun = false;
+      return answer;
+    } catch (error) { if (begun) db.exec('ROLLBACK'); throw error; }
+    finally { release(); }
+  }
+
   const rows =(logicalAddress) => db.prepare('SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM evidence_creates WHERE logical_address = ? ORDER BY nonce').all(logicalAddress);
   // One evidence per address: a question about other bytes at a kept address is refused.
   const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
     const kept = rows(input.logicalAddress);
-    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash)) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
+    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
     return { live: live ? { signedTransaction: live.signed_transaction, txHash: live.tx_hash, nonce: Number(live.nonce) } : null, highestNonce: kept.length ? Number(kept.at(-1).nonce) : 0 };
   };
@@ -196,7 +232,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     return { live: null, highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
 
-  async function anchorEvidence(input) {
+  async function prepareAnchor(input) {
     let { live: signed, highestNonce } = await liveFor(input);
     if (!signed) {
       const answer = await signCreate(structuredClone(input));
@@ -211,6 +247,10 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       db.prepare('INSERT INTO evidence_creates (logical_address, receipt_content_hash, tx_hash, nonce, signed_transaction, signed_at) VALUES (?, ?, ?, ?, ?, ?)')
         .run(input.logicalAddress, input.receiptContentHash, signed.txHash, signed.nonce, signed.signedTransaction, now());
     }
+    return signed;
+  }
+  async function anchorEvidence(input) {
+    const signed = await locked(() => prepareAnchor(input));
     await broadcast({ signedTransaction: signed.signedTransaction, txHash: signed.txHash });
     return { status: 'submitted', txHash: signed.txHash };
   }
@@ -220,10 +260,13 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
     const named = input?.attempt?.answer?.txHash;
-    if (typeof named === 'string' && !db.prepare('SELECT 1 AS found FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named)) {
-      throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${named.slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
-    }
-    const { live: signed, superseded, reason: unread } = await liveFor(input);
+    const sent = input?.attempt?.outcome === 'sent' || input?.attempt?.answer?.status === 'submitted';
+    const { live: signed, superseded, reason: unread } = await locked(async () => {
+      if ((sent && (typeof named !== 'string' || !TX_HASH.test(named))) || (typeof named === 'string' && !db.prepare('SELECT 1 AS found FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named))) {
+        throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${String(named).slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
+      }
+      return liveFor(input);
+    });
     if (!signed) {
       // Replay the transaction-bound decision after a crash between this
       // journal's supersession and the agent's checkpoint of that answer.
