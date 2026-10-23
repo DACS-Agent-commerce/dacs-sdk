@@ -187,7 +187,16 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     access?.assertWallet(addressForClaim(buyer));
   };
   const state=partyVetState(store,wallet.claim);
-  const contexts=new Map(),invocations=[],vets=new Map(),running=new Set(),drops=new Set();
+  const contexts=new Map(),invocations=[],vets=new Map(),running=new Set(),drops=new Set(),selections=new Map();
+  const contextAllowed=(lifecycle,time)=>lifecycle.selected===undefined||(lifecycle.selected!==null&&lifecycle.selected===time);
+  const assertContext=(lifecycle,time)=>{if(!contextAllowed(lifecycle,time))fail('context_released','the context request was released');};
+  const withContext=work=>async(input,options={})=>{
+    const jobId=input?.scope?.jobId??input?.jobId;requireJobId(jobId);
+    const lifecycle=selections.get(jobId)??{selected:undefined,users:0};
+    selections.set(jobId,lifecycle);lifecycle.users++;
+    try{return await work(input,{...options,lifecycle});}
+    finally{if(--lifecycle.users===0&&lifecycle.selected==null&&!drops.has(jobId)&&selections.get(jobId)===lifecycle)selections.delete(jobId);}
+  };
   const verifier={isSignerAuthorized:(_artifact,signature)=>signature.signer===wallet.claim,resolvePublicKey:(signature)=>signature.signer===wallet.claim?signature.signer:null,verify:({signedBytes,signature})=>verifyComponent({signedBytes,signature})};
   // This profile admits a parsed single-claim bundle before Vet and invokes no
   // credential parser. No valid CVR here can have the solely counterparty-
@@ -480,9 +489,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // was saved, after a restart too: each context is kept in the job's row
   // (the derive input without its generatedAt, the Vet requirements and the
   // request times) before it is answered.
-  async function retain(job,input,vetRequirements) {
+  async function retain(job,input,vetRequirements,authorize=()=>{}) {
     const {generatedAt,...base}=input;
     await state.update(job.jobId,(current)=>{
+      authorize();
       if(!current?.binding||!same(current.binding,job.binding))fail('binding-changed','the job\'s party Vet binding changed; no context was kept');
       const kept=current.seller;
       if(kept&&(!same(kept.input,base)||!same(kept.vetRequirements,vetRequirements)))fail('conflict','the job\'s retained Agreement context differs');
@@ -494,8 +504,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // writable: the caller's purchase check, run again right before each Vet
   // signature and each anchor intent; synchronous, true or the reason no new
   // write may start.
-  async function resolveBuyer({scope,buyerIdentityBundle},{writable=()=>true}={}) {
+  async function resolveBuyerContext({scope,buyerIdentityBundle},{writable=()=>true,lifecycle}) {
     requireJobId(scope?.jobId);
+    if(!contextAllowed(lifecycle,scope.generatedAt))return{disposition:'rejected',code:'context_released',reason:'the context request was released'};
     assertAccess(buyerIdentityBundle.presentedBy);
     if(!counterpartyReady())return {disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
     // Upgrade cleanup: earlier versions retained a second fence row after the
@@ -510,7 +521,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const input={jobId:scope.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:{identityBundle:buyerIdentityBundle,vetRecordRef:buyerVet.recordRef},seller:{identityBundle:sellerVet.identityBundle,vetRecordRef:sellerVet.recordRef},selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:scope.generatedAt};
     const vetRequirements=[buyerVet,sellerVet].map((vet,index)=>({vetRecordRef:clone(vet.recordRef),evaluatedParty:vet.record.evaluatedParty,requirement:clone(index===0?listing.buyerRequirement:SELLER_REQUIREMENT),verifier:index===0?wallet.claim:buyerIdentityBundle.presentedBy,freshness:[],dealSpecific:[]}));
     if(!await contextAuthentic(input))fail('party_vet_unavailable','party Vet receipts no longer authenticate');
-    await retain(job,clone(input),vetRequirements);
+    await retain(job,clone(input),vetRequirements,()=>assertContext(lifecycle,scope.generatedAt));
+    assertContext(lifecycle,scope.generatedAt);
     // One context per exact scope: a later plan request carries a new
     // generatedAt and reuses the job's Vet refs.
     contexts.set(canonicalize(scope),{scope:clone(scope),input:clone(input),vetRequirements});return{disposition:'present',value:{scope:clone(scope),input:clone(input)}};
@@ -522,8 +534,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // Nothing is written and no Vet is produced again; neither is the job's party
   // Vet row. The recovered context is kept in this process under its exact
   // scope, unless the job already has a context with another scope.
-  async function recoverBuyer({scope,buyerIdentityBundle}) {
+  async function recoverBuyerContext({scope,buyerIdentityBundle},{lifecycle}) {
     requireJobId(scope?.jobId);
+    if(!contextAllowed(lifecycle,scope.generatedAt))return null;
     assertAccess(buyerIdentityBundle.presentedBy);
     const retained=await state.read(scope.jobId);
     const sellerIdentity=retained?.presentation?.bundle;
@@ -535,14 +548,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(read.status!=='present')return null;
       const authority=bundle.presentedBy===wallet.claim?buyerIdentityBundle.presentedBy:wallet.claim;
       const strict=await strictRecord(read.artifact,{jobId:scope.jobId,bundle,requirement:bundle.presentedBy===wallet.claim?SELLER_REQUIREMENT:listing.buyerRequirement,authority});
-      if(strict.status!=='valid'||read.artifact.signature?.signer!==authority||!await validReceipt(read,logicalAddress,read.artifact,authority))return null;
+      if(strict.status!=='valid'||!sameCanonicalClaimIdentity(read.artifact.signature?.signer,authority)||!await validReceipt(read,logicalAddress,read.artifact,authority))return null;
       if(read.artifact.overallDecision!=='pass')return nonPass(read.artifact);
       records.push({recordRef:{anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(read.artifact),signer:authority},record:read.artifact,identityBundle:bundle});
     }
     const [buyerVet,sellerVet]=records;
     const input={jobId:scope.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:{identityBundle:buyerIdentityBundle,vetRecordRef:buyerVet.recordRef},seller:{identityBundle:sellerVet.identityBundle,vetRecordRef:sellerVet.recordRef},selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:scope.generatedAt};
     const vetRequirements=records.map((vet,index)=>({vetRecordRef:clone(vet.recordRef),evaluatedParty:vet.record.evaluatedParty,requirement:clone(index===0?listing.buyerRequirement:SELLER_REQUIREMENT),verifier:index===0?wallet.claim:buyerIdentityBundle.presentedBy,freshness:[],dealSpecific:[]}));
-    if([...contexts.values()].some((entry)=>entry.input.jobId===scope.jobId&&!same(entry.scope,scope)))return null;
+    if(!contextAllowed(lifecycle,scope.generatedAt))return null;
+    if([...contexts.values()].some((entry)=>{const {generatedAt,...kept}=entry.scope;return entry.input.jobId===scope.jobId&&(!same(kept,terms)||!same(entry.input.buyer.identityBundle,buyerIdentityBundle));}))return null;
     const key=canonicalize(scope);
     if(!contexts.has(key))contexts.set(key,{scope:clone(scope),input:clone(input),vetRequirements});
     return{disposition:'present',value:{scope:clone(scope),input:clone(input)}};
@@ -586,18 +600,19 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // The seller is answered only from a context that matches its request
   // exactly: this process's, or the one kept in the job's row, or
   // (seller context route only) a completed route step's (recoverSeller).
-  async function resolveSeller({jobId,listingPin:pin,buyerIdentityBundle,generatedAt}) {
+  async function resolveSellerContext({jobId,listingPin:pin,buyerIdentityBundle,generatedAt},{lifecycle}) {
     requireJobId(jobId);
+    if(!contextAllowed(lifecycle,generatedAt))return{disposition:'rejected',reason:'the context request was released'};
     assertAccess(buyerIdentityBundle.presentedBy);
     const matches=(input)=>same(input.verifiedListing.pin,pin)&&same(input.buyer.identityBundle,buyerIdentityBundle)&&input.generatedAt===generatedAt;
     const answer=(found)=>({disposition:'present',value:{input:clone(found.input),vetRequirements:clone(found.vetRequirements)}});
     const forJob=[...contexts.values()].filter((entry)=>entry.input.jobId===jobId),found=forJob.find((entry)=>matches(entry.input));
-    if(found)return await contextAuthentic(found.input)?answer(found):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
+    if(found)return await contextAuthentic(found.input)&&contextAllowed(lifecycle,generatedAt)?answer(found):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
     const kept=(await state.read(jobId))?.seller ?? null;
     const durable=kept?.generatedAts.includes(generatedAt)?{input:{...kept.input,generatedAt},vetRequirements:kept.vetRequirements}:null;
     if(durable&&matches(durable.input)){
       const recovered=await recoverBuyer({scope:{...((await state.read(jobId)).binding.scope),generatedAt},buyerIdentityBundle});
-      return recovered?.disposition==='present'?answer(durable):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
+      return recovered?.disposition==='present'&&await contextAuthentic(durable.input)&&contextAllowed(lifecycle,generatedAt)?answer(durable):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
     }
     const recovered=retainedScope?await recoverSeller({jobId,pin,buyerIdentityBundle,generatedAt}):null;
     if(recovered&&matches(recovered.input))return answer(recovered);
@@ -612,23 +627,29 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // refused before the provider is reached.
   async function drop(jobId) {
     requireJobId(jobId);
+    evict(jobId,null);
     drops.add(jobId);
     if(running.has(jobId))return false;
     await state.update(jobId,()=>null);
     for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/') && row.jobId===jobId)
       await store.update(key,current=>current?.jobId===jobId?null:undefined);
     drops.delete(jobId);
+    if(!selections.get(jobId)?.users)selections.delete(jobId);
     return true;
   }
   // Once a job's plan is saved (generatedAt names its request), only that
   // request's context stays, in memory and in the job's row. Once its
   // purchase ended (no generatedAt), its in-memory entries go and its row is
   // deleted.
-  function release({jobId,generatedAt=null}) {
-    requireJobId(jobId);
+  function evict(jobId,generatedAt) {
+    const lifecycle=selections.get(jobId)??{users:0};lifecycle.selected=generatedAt;selections.set(jobId,lifecycle);
     const job=vets.get(jobId);
     if(job){job.evicted=true;if(!job.running||job.finished)forget(job);}
     for(const [key,entry] of contexts)if(entry.input.jobId===jobId&&entry.input.generatedAt!==generatedAt)contexts.delete(key);
+  }
+  function release({jobId,generatedAt=null}) {
+    requireJobId(jobId);
+    evict(jobId,generatedAt);
     if(generatedAt===null){drop(jobId).catch(logged('deletion',jobId));return;}
     state.update(jobId,(current)=>current?.seller?.generatedAts.includes(generatedAt)&&current.seller.generatedAts.length>1?{...current,seller:{...current.seller,generatedAts:[generatedAt]}}:undefined).catch(logged('context pruning',jobId));
   }
@@ -644,6 +665,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
     return{deleted,usage:store.usage?.() ?? null};
   }
+  const resolveBuyer=withContext(resolveBuyerContext),recoverBuyer=withContext(recoverBuyerContext),resolveSeller=withContext(resolveSellerContext);
   return{resolveBuyer,recoverBuyer,resumableBuyer,resolveSeller,release,sweep,usage:()=>store.usage?.() ?? null,
     // The seller context route admits a request with this same guard before any write.
     assertBuyerAccess:assertAccess,contexts,invocations};
