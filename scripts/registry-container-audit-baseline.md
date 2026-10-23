@@ -125,8 +125,10 @@ A run whose failing checks match only these entries is baseline-only (exit 4).
 Each entry keeps the version and integrity its source run observed, as
 evidence, but matches by rule: the lock location, the dependency field and
 spec, the package name and required engine range, and the `npm sbom` line with
-installed versions elided. The generated consumer installs without a lockfile,
-so a patch release of a listed package that keeps the same rule (for example
+installed versions elided. The pqcrypto image finding additionally requires the
+exact recorded manifest version `1.0.01`; another manifest version is unlisted
+even at the same package name and location. The generated consumer installs
+without a lockfile, so a patch release of another listed package that keeps the same rule (for example
 `@npmcli/agent@5.0.3` under make-fetch-happen's `^5.0.0`) stays baseline-only
 instead of failing every pull request, the drift job and prereleases. Any other
 non-registry dependency, engine violation, SBOM problem or production
