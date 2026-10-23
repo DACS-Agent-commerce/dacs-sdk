@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -466,9 +467,6 @@ async function runToConsumerStage() {
 }
 
 const CANDIDATE_VERSION = "0.1.0-test";
-// A summary the producer composed for CANDIDATE_VERSION, judged as that release.
-const candidateDisposition = (summary: unknown, baseline?: unknown, options: Record<string, unknown> = {}) =>
-  registryContainerDisposition(summary, baseline, { packageVersion: CANDIDATE_VERSION, ...options });
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 
@@ -503,7 +501,7 @@ function dependencyPolicyHarness() {
   // The package.json installed at each candidate lock location: by default
   // the lock entry's own name and version; `null` installs none.
   const installed: Record<string, Record<string, unknown> | null> = {};
-  const run = () => {
+  const run = (afterInstall: (project: string) => void = () => undefined) => {
     rmSync(join(project, "node_modules"), { recursive: true, force: true });
     for (const [location, entry] of Object.entries(packages)) {
       const name = typeof entry.name === "string" ? entry.name : location.replace(/^.*node_modules\//, "");
@@ -513,15 +511,15 @@ function dependencyPolicyHarness() {
       mkdirSync(join(project, location), { recursive: true });
       writeFileSync(join(project, location, "package.json"), JSON.stringify(installedManifest));
     }
+    afterInstall(project);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
-    writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
+    writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages: { "": {}, ...packages } }));
     writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
-    rmSync(report, { force: true });
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
       project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION], { cwd: repoRoot, encoding: "utf8" });
     return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
-  return { packages, manifest, provenance, installed, run };
+  return { packages, manifest, provenance, installed, run, report };
 }
 
 // Executes the script's own summary program over a stage holding the evidence
@@ -600,6 +598,44 @@ describe("registry/container evidence", () => {
     expect(result.status).toBe(17);
     expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
     expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
+  });
+
+  it.each(["dacs", "dacs-node"])("rejects an untracked installed nested or aliased %s", name => {
+    for (const location of [`node_modules/plugin/node_modules/@kynesyslabs/${name}`, "node_modules/untracked-alias"]) {
+      const fixture = dependencyPolicyHarness();
+      const result = fixture.run(project => {
+        mkdirSync(join(project, location), { recursive: true });
+        writeFileSync(join(project, location, "package.json"), JSON.stringify({ name: `@kynesyslabs/${name}`, version: "0.0.0-wrong" }));
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("installed candidate has no lock entry: " + location);
+    }
+  });
+  it.each(["dacs", "dacs-node"])("requires the top-level %s even with valid nested and aliased copies", name => {
+    const { packages, run } = dependencyPolicyHarness();
+    const top = `node_modules/@kynesyslabs/${name}`;
+    const entry = packages[top];
+    expect(entry).toBeDefined();
+    packages[`node_modules/plugin/node_modules/@kynesyslabs/${name}`] = { ...entry };
+    packages["node_modules/alias"] = { ...entry, name: `@kynesyslabs/${name}` };
+    delete packages[top];
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("candidate package is not installed at the top level: @kynesyslabs/" + name);
+  });
+  it("invalidates a previous success report before a rejected repeat", () => {
+    const fixture = dependencyPolicyHarness();
+    expect(fixture.run().status).toBe(0);
+    expect(JSON.parse(readFileSync(fixture.report, "utf8")).passed).toBe(true);
+    const entry = fixture.packages["node_modules/@kynesyslabs/dacs"];
+    if (!entry) throw new Error("missing fixture candidate");
+    entry.integrity = "sha512-wrong";
+    expect(fixture.run().status).not.toBe(0);
+    expect(existsSync(fixture.report)).toBe(false);
+  });
+  it("rejects an unknown policy mode", () => {
+    expect(spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-polciy"],
+      { cwd: repoRoot }).status).not.toBe(0);
   });
 
   it("rejects a registry lock entry with different tarball bytes and reports both digests", () => {
@@ -691,7 +727,7 @@ describe("registry/container evidence", () => {
       delete installed[location];
       expect(run().status).toBe(0);
     }
-  });
+  }, 30_000);
 
   it("composes only evidence of its producer's schema for the release version", () => {
     const evidence: Array<[string, Record<string, unknown>]> = [
@@ -1747,4 +1783,21 @@ it("pins the recorded pqcrypto image version while accepting its recorded metada
   } });
   expect(classifyPolicyChecks(summary("1.0.01"), baseline).productionImage).toBe("baseline");
   expect(classifyPolicyChecks(summary("9.0.0"), baseline).productionImage).toBe("blocked");
+});
+
+
+describe("canonical installed candidate discovery", () => {
+  it.each(["dacs", "dacs-node"])("rejects untracked %s copies with missing, different or unreadable names", name => {
+    for (const manifest of [{ version: "0.0.0-wrong" }, { name: "other", version: "0.0.0-wrong" }, null]) {
+      const fixture = dependencyPolicyHarness();
+      const location = `node_modules/plugin/node_modules/@kynesyslabs/${name}`;
+      const result = fixture.run(project => {
+        mkdirSync(join(project, location), { recursive: true });
+        if (manifest) writeFileSync(join(project, location, "package.json"), JSON.stringify(manifest));
+        writeFileSync(join(project, location, "index.js"), "module.exports = 'old';");
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("installed candidate has no lock entry: " + location);
+    }
+  });
 });

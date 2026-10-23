@@ -179,20 +179,24 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
 // reads it, in the installed package.json.
-export function candidateIntegrityErrors({ lock, registry, candidates, installedManifest }) {
+export function candidateIntegrityErrors({ lock, registry, candidates, installedManifest, installedInventory = [] }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
-  const errors = [];
+  const errors = installedInventory.filter(item => item.link === true)
+    .map(item => "cannot inspect linked installed packages: " + item.location);
   for (const { name, integrity, version } of candidates) {
     if (typeof version !== "string" || version === "") {
       errors.push("candidate record has no release version: " + name);
       continue;
     }
-    const locations = Object.keys(packages).filter(location => location === "node_modules/" + name ||
-      location.endsWith("/node_modules/" + name) || packages[location]?.name === name);
+    const candidateLocation = location => typeof location === "string" &&
+      (location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
+    const locations = [...new Set([...Object.keys(packages).filter(location => candidateLocation(location) || packages[location]?.name === name),
+      ...installedInventory.filter(item => item.name === name || candidateLocation(item.location)).map(item => item.location)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
       const entry = packages[location];
+      if (!entry) { errors.push("installed candidate has no lock entry: " + location); continue; }
       let url = null;
       try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
       if (url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
@@ -218,9 +222,6 @@ export function candidateIntegrityErrors({ lock, registry, candidates, installed
   return errors;
 }
 
-// Why a run failed: an unreachable registry or audit endpoint (a timeout, or
-// 5xx/408/429 after retries), a security-policy result, or the rehearsal itself.
-export const FAILURE_CLASSES = ["network", "policy", "functional"];
 // npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
 // `Response timeout while trying to fetch` for a body timeout.
 const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
@@ -715,6 +716,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.stdout.write(JSON.stringify(counts) + "\n");
   } else if (mode === "--dependency-policy") {
     const [project, registry, report, releaseSet, version] = process.argv.slice(3);
+    if (report) rmSync(report, { force: true });
     if (!project || !registry || !report || !releaseSet || !version) {
       throw new Error("usage: --dependency-policy <project> <registry> <report> <release-set> <version>");
     }
@@ -737,7 +739,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
       return { name, integrity, version };
     });
-    const errors = candidateIntegrityErrors({ lock, registry, candidates,
+    const errors = candidateIntegrityErrors({ lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
     const violations = registryDependencyViolations({ manifest, lock, registry });
