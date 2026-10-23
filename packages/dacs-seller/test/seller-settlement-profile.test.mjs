@@ -7,7 +7,7 @@
 // call and refuses, so a refused step is shown to have reached nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
+import { createHash, sign, verify } from 'node:crypto';
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,12 +23,8 @@ import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
-function key() {
-  const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
-  return { privateKey: pair.privateKey, address: `0x${raw.toString('hex')}`, claim: `did:demos:agent:${raw.toString('hex')}`,
-    sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey),
-    signWallet: (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}` };
-}
+let nextWallet=90;
+function key(){const tag=nextWallet++,privateKey=core.privateKeyFromSeed(new Uint8Array(32).fill(tag)),raw=Buffer.from(core.rawPublicKey(core.publicKeyFromSeed(new Uint8Array(32).fill(tag))));return{privateKey,address:'0x'+raw.toString('hex'),claim:'did:demos:agent:'+raw.toString('hex'),sign:bytes=>Buffer.from(core.ed25519Sign(bytes,privateKey)),signWallet:message=>'0x'+Buffer.from(core.ed25519Sign(Buffer.from(message),privateKey)).toString('hex')};}
 const identityFor = (party, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
@@ -47,7 +43,7 @@ const presentWithout = (party, presentedAt) => {
 };
 
 async function world(t, { listingChanges = () => {} } = {}) {
-  const sellerKey = key(), buyerKey = key(), now = Date.now(), reached = [], steward = railSteward();
+  const sellerKey = key(), buyerKey = key(), now = 1780000000000, reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'settlement-profile', listingVersion: 1, title: 'Settlement profile report', description: 'Settlement profile vectors.',
@@ -322,7 +318,6 @@ function nativeChain(w) {
   };
   return { seen, options, anchorAgreement };
 }
-const nativeClaim = (w) => ({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
 
 test('a proposal the seller did not sign leaves no in-flight pin: its retry selects again under the current rail authority', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
