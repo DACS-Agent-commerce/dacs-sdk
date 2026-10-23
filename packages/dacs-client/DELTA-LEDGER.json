@@ -1607,6 +1607,27 @@
           "after": "03e4731889a75769c2f2b429d2a99fbb89f10baf"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep diagnostic readers passive and preserve error codes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "101829cfc9443886330fb9cfd9c60798e9e5533f",
+          "after": "29247a830041995bed6ab28c39de18ff986d021c"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-reader.test.mjs",
+          "before": null,
+          "after": "4d6125730c234a34f8ae969c9d7299e55621e3a3"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "2a76678b52961a67d4ebdd8b276ebbee6354e465",
+          "after": "2ed8e9cf194d953890836e04ed79a5a219fccd2b"
+        }
+      ]
     }
   ]
 }

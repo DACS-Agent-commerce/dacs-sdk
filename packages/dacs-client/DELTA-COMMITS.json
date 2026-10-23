@@ -858,5 +858,19 @@
       "packages/dacs-client/src/util/http.mjs",
       "packages/dacs-client/test/passive-observation.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 keep diagnostic readers passive and preserve error codes",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/test/diagnostic-reader.test.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs"
+    ]
   }
 ]
