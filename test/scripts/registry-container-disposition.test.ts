@@ -45,6 +45,11 @@ function baselineOnlySummary() {
   };
 }
 
+function requiredFixtureEntry<T>(entry: T | undefined, location: string): T {
+  if (entry === undefined) throw new Error("missing fixture entry: " + location);
+  return entry;
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -917,13 +922,13 @@ describe("#191 policy-finding baseline", () => {
     ["a new engine violation", "engineStrict", { "generated-package-lock.json": withLock(p => {
       p["node_modules/new-pkg"] = { version: "1.0.0", integrity: "sha512-new", engines: { node: ">=22" } }; }) }],
     ["a new violation of a package's npm engine", "engineStrict", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/minipass"]!.engines = { node: ">=16", npm: ">=12" }; }) }],
+      requiredFixtureEntry(p["node_modules/minipass"], "node_modules/minipass").engines = { node: ">=16", npm: ">=12" }; }) }],
     ["a baselined package with a changed range", "engineStrict", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/@npmcli/agent"]!.engines = { node: ">=24" }; }) }],
+      requiredFixtureEntry(p["node_modules/@npmcli/agent"], "node_modules/@npmcli/agent").engines = { node: ">=24" }; }) }],
     ["a strict failure not explained by the scan", "engineStrict", { "engine-strict.log":
       strictLog.replaceAll("@npmcli/agent@5.0.2", "other@1.0.0") }],
     ["an engine range the scan cannot read", "engineStrict", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/minipass"]!.engines = { node: "please-use-yarn" }; }) }],
+      requiredFixtureEntry(p["node_modules/minipass"], "node_modules/minipass").engines = { node: "please-use-yarn" }; }) }],
     ["an engine scan without the container's versions", "engineStrict", { "engine-versions.json": undefined }],
     ["an engine scan without the container's npm version", "engineStrict", { "engine-versions.json":
       JSON.stringify({ node: "v20.19.1" }) }],
@@ -951,7 +956,8 @@ describe("#191 policy-finding baseline", () => {
   // release under the same rule (make-fetch-happen takes @npmcli/agent ^5.0.0)
   // must not turn every PR, the drift job and prereleases red.
   const release = (location: string, version: string) => (p: Record<string, Record<string, unknown>>) => {
-    p[location]!.version = version; p[location]!.integrity = `sha512-${version}-next-release`;
+    const entry = requiredFixtureEntry(p[location], location);
+    entry.version = version; entry.integrity = `sha512-${version}-next-release`;
   };
   it.each([
     ["@npmcli/agent 5.0.3 with the same engine range", "engineStrict", {
@@ -1007,9 +1013,9 @@ describe("runtime-image package inventory", () => {
     ["a nested esbuild", add("node_modules/sigstore/node_modules/esbuild", "esbuild", "0.25.5")],
     ["a scoped package", add("node_modules/@types/node", "@types/node", "20.19.1")],
     ["a closure package at another version", inventory(packages => {
-      packages.find(item => item.location === "node_modules/semver")!.version = "7.7.1"; })],
+      requiredFixtureEntry(packages.find(item => item.location === "node_modules/semver"), "node_modules/semver").version = "7.7.1"; })],
     ["a closure location holding another package", inventory(packages => {
-      packages.find(item => item.location === "node_modules/ssri")!.name = "evil-ssri"; })],
+      requiredFixtureEntry(packages.find(item => item.location === "node_modules/ssri"), "node_modules/ssri").name = "evil-ssri"; })],
     ["an optional entry the image keeps at another version", add("node_modules/verror", "verror", "1.10.1")],
   ])("blocks %s in the image (exit 3)", (_label, observed) => {
     const summary = b7b180fSimulation({ "runtime-image-inventory.json": observed });
@@ -1558,4 +1564,9 @@ describe("candidate executable and nested alias lookup", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(location);
   });
+});
+
+it("reports the missing historical fixture location before editing", () => {
+  expect(() => requiredFixtureEntry(undefined, "node_modules/semver"))
+    .toThrow("missing fixture entry: node_modules/semver");
 });
