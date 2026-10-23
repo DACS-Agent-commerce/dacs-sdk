@@ -1,0 +1,166 @@
+import { readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import npa from "npm-package-arg";
+import semver from "semver";
+import { validateReleaseIdentity } from "./release-identity.mjs";
+
+const policy = JSON.parse(readFileSync(new URL("./release-policy.json", import.meta.url)));
+export const { packages, plannedVersion } = policy;
+const sections = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "overrides", "resolutions"];
+function registrySpec(value) {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = npa.resolve("dependency", value);
+    const spec = parsed.type === "alias" ? parsed.subSpec : parsed;
+    return ["version", "range", "tag"].includes(spec.type) &&
+      !(parsed.type === "alias" && packages.some(p => p.name === spec.name));
+  } catch { return false; }
+}
+const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const targets = value => typeof value === "string" ? [value] :
+  value && typeof value === "object" ? Object.values(value).flatMap(targets) : [];
+const fail = message => { throw new Error(message); };
+
+function exportMap(value) {
+  if (typeof value === "string" || Array.isArray(value) || value === null) return { ".": value };
+  if (value && Object.keys(value).length && Object.keys(value).every(key => !key.startsWith("."))) return { ".": value };
+  return value ?? {};
+}
+
+function dependencyTargets(value, path = "") {
+  return typeof value === "string" ? [[path, value]] : value && typeof value === "object" ?
+    Object.entries(value).flatMap(([key, child]) => dependencyTargets(child, path ? `${path}/${key}` : key)) : [];
+}
+
+function collectProblems(checks) {
+  const errors = [];
+  for (const check of checks) try { check(); } catch (error) { errors.push(...error.message.split("\n")); }
+  return errors;
+}
+
+function validateDependencies(p) {
+  const errors = [];
+  for (const section of sections) for (let [path, value] of dependencyTargets(p[section])) {
+    if (section === "overrides" && value.startsWith("$")) {
+      const name = value.slice(1);
+      value = p.dependencies?.[name] ?? p.devDependencies?.[name] ?? p.optionalDependencies?.[name];
+    }
+    if (!registrySpec(value)) errors.push(`non-registry dependency in ${section}: ${value} (${path})`);
+  }
+  if (errors.length) fail(errors.join("\n"));
+}
+
+function validateInternalPins(p, version) {
+  const errors = [];
+  for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+    for (const name of packages.map(d => d.name)) if (p[section]?.[name] && p[section][name] !== version) errors.push(`internal dependency must use exact release version: ${name}`);
+  }
+  if (errors.length) fail(errors.join("\n"));
+}
+
+export function validateArtifactSet(artifacts, planned = false) {
+  if (planned) {
+    if (artifacts.length !== packages.length || packages.some(definition =>
+      artifacts.filter(a => a.manifest.name === definition.name && a.releasable).length !== 1))
+      fail("strict release requires all five publicly releasable package identities");
+    for (const { manifest } of artifacts) validateManifest(manifest, packages.find(p => p.name === manifest.name));
+  }
+  const version = planned ? plannedVersion : artifacts[0]?.manifest.version;
+  for (const { manifest: p } of artifacts) {
+    if (p.version !== version) fail(`release versions differ: ${p.version} vs ${version}`);
+    validateDependencies(p);
+    validateInternalPins(p, version);
+  }
+}
+
+function manifestProblems(p, definition) {
+  return collectProblems([
+    () => validateDependencies(p),
+    () => { if (p.private === true) fail("private package is not releasable"); },
+    () => validateReleaseIdentity(p, definition.name),
+    () => {
+      const version = typeof p.version === "string" && semver.parse(p.version);
+      if (!version || version.version + (version.build.length ? `+${version.build.join(".")}` : "") !== p.version) fail("invalid package version");
+    },
+    ...definition.requiredExports.map(key => () => { if (!exportMap(p.exports)[key]) fail(`missing public export ${key}`); }),
+  ]);
+}
+
+export function validateManifest(p, definition) {
+  const errors = manifestProblems(p, definition);
+  if (errors.length) fail(errors.join("\n"));
+}
+
+function pattern(glob) {
+  // Only * and **/ are supported; everything else is a literal path character.
+  return new RegExp("^" + glob.split(/(\*\*\/|\*)/).map(part =>
+    part === "**/" ? "(?:.*/)?" : part === "*" ? "[^/]*" : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("") + "$");
+}
+
+export function publicEntries(p, files) {
+  const map = exportMap(p.exports), entries = new Map();
+  const keys = Object.keys(map);
+  if (keys.some(key => !key.startsWith("."))) fail("unsupported mixed export map");
+  const matchKey = (key, subpath) => {
+    if (!key.includes("*")) return key === subpath;
+    const [prefix, suffix] = key.split("*");
+    return subpath.startsWith(prefix) && subpath.endsWith(suffix) && subpath.length > prefix.length + suffix.length;
+  };
+  const effectiveKey = subpath => keys.includes(subpath) ? subpath : keys.filter(key => key.includes("*") && matchKey(key, subpath))
+    .sort((a, b) => b.indexOf("*") - a.indexOf("*") || b.length - a.length)[0];
+  for (const [key, value] of Object.entries(map)) {
+    if (value === null) continue;
+    const paths = targets(value);
+    if (!paths.length) fail(`missing export target ${key}`);
+    const captures = new Set();
+    if (key.includes("*")) {
+      if (key.split("*").length !== 2) fail(`unsupported export pattern ${key}`);
+      for (const target of paths.filter(t => t.includes("*"))) {
+        const matcher = new RegExp("^" + target.slice(2).split("*").map((part, i) =>
+          (i === 0 ? "" : i === 1 ? "(.+)" : "\\1") + escapePattern(part)).join("") + "$");
+        for (const file of files) { const match = matcher.exec(file); if (match) captures.add(match[1]); }
+      }
+      if (!captures.size) fail(`export ${key} has no packed matches`);
+    } else captures.add("");
+    for (const capture of captures) {
+      const subpath = key.replace("*", capture);
+      if (effectiveKey(subpath) !== key) continue;
+      const concrete = paths.map(target => target.replaceAll("*", capture));
+      for (const target of concrete) if (!files.includes(target.slice(2))) fail(`missing packed target: ${target} (${subpath})`);
+      entries.set(subpath, { subpath, json: concrete.some(t => t.endsWith(".json")) });
+    }
+  }
+  return [...entries.values()];
+}
+
+export function validateFiles(definition, p, files) {
+  for (const file of files) {
+    if (isAbsolute(file) || file.split("/").some(s => s === ".." || s === ".") || file.includes("\\")) fail(`invalid packed path: ${file}`);
+    if (!definition.allow.some(glob => pattern(glob).test(file))) fail(`outside allow-list: ${file}`);
+  }
+  const required = ["./package.json", ...targets(p.exports), ...targets(p.bin), ...targets(p.main), ...targets(p.types)];
+  for (const target of required) {
+    const path = target.startsWith("./") ? target.slice(2) : target;
+    if (path.split("/").some(s => s === ".." || s === ".") || isAbsolute(path) || path.includes("\\")) fail(`invalid export target: ${target}`);
+    // Wildcard exports are checked per concrete capture by publicEntries below.
+    if (!path.includes("*") && !files.includes(path)) fail(`missing packed target: ${target}`);
+  }
+  publicEntries(p, files);
+}
+
+export function validateLock(lock, tarballs, consumer = ".", omitOptional = false) {
+  const allowed = new Set(tarballs.map(path => resolve(path)));
+  for (const [name, value] of Object.entries(lock.packages ?? {})) {
+    const artifact = value.resolved?.startsWith("file:") && allowed.has(resolve(consumer, value.resolved.slice(5)));
+    const internal = packages.some(p => value.name === p.name || name === `node_modules/${p.name}` || name.endsWith(`/node_modules/${p.name}`));
+    if (internal && !artifact) fail(`internal package must resolve to supplied tarball: ${name}`);
+    // External install resolutions must be registry tarballs, never links or git/path specs.
+    let registry = false;
+    try { registry = new URL(value.resolved).origin === "https://registry.npmjs.org"; } catch {}
+    // npm records optional dependency metadata even with --omit=optional.
+    // It is not installed; internal identities above must still use our tarballs.
+    const omitted = omitOptional && value.optional === true;
+    if (value.link || (!omitted && name && value.resolved && !artifact && !registry)) fail(`installed local link or non-registry resolution: ${name}`);
+  }
+}
+

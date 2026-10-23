@@ -1,0 +1,177 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, writeFile, rm, readFile, readdir, cp, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import {
+  packages, plannedVersion, validateManifest, validateFiles, publicEntries,
+  validateLock, validateArtifactSet,
+} from "../../scripts/release-checks.mjs";
+
+const core = packages[0];
+const manifest = (definition = core) => ({
+  name: definition.name, version: "0.1.0-alpha.0", type: "module",
+  license: "MIT", repository: { url: "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git" },
+  publishConfig: { access: "public", provenance: true },
+  exports: Object.fromEntries(definition.requiredExports.map((key, i) =>
+    [key, definition.directory.match(/dacs-(client|seller)$/) ? `./src/entry${i}.mjs` :
+      { types: `./dist/entry${i}.d.ts`, import: `./dist/entry${i}.js` }])),
+});
+const members = (p) => ["package.json", ...Object.values(p.exports).flatMap(v =>
+  typeof v === "string" ? [v.slice(2)] : Object.values(v).map(s => s.slice(2)))];
+
+// These assertions exercise the gate with independently damaged package inputs.
+test("the release inventory names all five packages and the next planned version", () => {
+  assert.deepEqual(packages.map(p => p.name), [
+    "@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/dacs-client",
+    "@kynesyslabs/dacs-seller", "create-dacs-agent",
+  ]);
+  assert.equal(plannedVersion, "0.1.0-alpha.1");
+});
+
+test("private packages, empty exports and removed public paths fail closed", () => {
+  assert.throws(() => validateManifest({ ...manifest(), private: true }, core), /private/);
+  assert.throws(() => validateManifest({ ...manifest(), exports: {} }, core), /export/);
+  const p = manifest(); delete p.exports["./rails"];
+  assert.throws(() => validateManifest(p, core), /rails/);
+});
+
+test("all dependency sections allow only registry specs, including aliases and nested overrides", () => {
+  for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "overrides", "resolutions"]) {
+    for (const spec of ["file:../core", "git+file:///tmp/core", "workspace:*", "link:../core", "../core", "/tmp/core",
+      ".", "..", "~/core", "portal:../core", "github:org/core", "org/core",
+      "git+ssh://git@example.invalid/core", "git://example.invalid/core", "https://example.invalid/core.tgz",
+      "npm:core@file:../core", "npm:core@github:org/core", "not a spec"]) {
+      assert.throws(() => validateManifest({ ...manifest(), [section]: { core: spec } }, core), /non-registry dependency/g);
+    }
+  }
+  assert.throws(() => validateManifest({ ...manifest(), overrides: { outer: { inner: "file:../core" } } }, core), /non-registry dependency/g);
+  for (const spec of ["1.2.3", "^1.0.0", ">=1 <3", "*", "next", "npm:external@^1.0.0", "npm:@scope/external@next"]) {
+    assert.doesNotThrow(() => validateManifest({ ...manifest(), dependencies: { external: spec } }, core));
+  }
+  assert.throws(() => validateManifest({ ...manifest(), overrides: { outer: { inner: "github:org/core" } } }, core), /non-registry/);
+});
+
+test("file policy rejects extra files and requires every export, type and binary target", () => {
+  const p = manifest(); const files = members(p);
+  assert.doesNotThrow(() => validateFiles(core, p, files));
+  for (const extra of [".env", "src/internal.ts", "test/fixture.json", "../outside.js", "dist/../../outside.js", "dist/fixture.txt"]) {
+    assert.throws(() => validateFiles(core, p, [...files, extra]), /allow-list|path/);
+  }
+  assert.throws(() => validateFiles(core, p, files.filter(f => f !== "dist/entry0.js")), /missing/);
+  assert.throws(() => validateFiles(core, p, files.filter(f => f !== "dist/entry0.d.ts")), /missing/);
+  assert.throws(() => validateFiles(core, { ...p, bin: { dacs: "./dist/bin.js" } }, files), /missing/);
+  assert.throws(() => validateFiles(core, { ...p, exports: { ...p.exports, "./bad": "../outside.js" } }, files), /target/);
+});
+
+test("wildcard exports enumerate packed files, JSON exports carry their type, empty patterns fail", () => {
+  const p = { exports: { ".": "./src/index.mjs", "./src/*": "./src/*", "./package.json": "./package.json" } };
+  const files = ["src/index.mjs", "src/nested/helper.mjs", "src/schema.json", "package.json"];
+  const entries = publicEntries(p, files);
+  assert.deepEqual(entries.map(e => e.subpath), [".", "./src/index.mjs", "./src/nested/helper.mjs", "./src/schema.json", "./package.json"]);
+  assert.equal(entries.find(e => e.subpath === "./src/schema.json").json, true);
+  assert.throws(() => publicEntries({ exports: { "./empty/*": "./empty/*.js" } }, files), /no packed/);
+});
+
+test("consumer lock refuses links and directory dependencies but admits the input tarballs", () => {
+  const allowed = ["/tmp/core.tgz"];
+  assert.doesNotThrow(() => validateLock({ packages: { "node_modules/core": { resolved: "file:/tmp/core.tgz" } } }, allowed));
+  assert.doesNotThrow(() => validateLock({ packages: { "node_modules/core": { resolved: "file:../core.tgz" } } }, allowed, "/tmp/consumer"));
+  for (const value of [{ link: true }, { resolved: "file:../core" }, { resolved: "workspace:*" }]) {
+    assert.throws(() => validateLock({ packages: { "node_modules/core": value } }, allowed), /link|local/);
+  }
+});
+
+test("all five packages enforce the existing release identity and publish policy", () => {
+  for (const definition of packages) {
+    for (const damage of [
+      { name: "wrong-name" }, { license: "UNLICENSED" }, { repository: { url: "https://example.invalid/repo" } },
+      { publishConfig: { access: "restricted", provenance: true } }, { publishConfig: { access: "public" } },
+      { publishConfig: { access: "public", provenance: false } },
+    ]) assert.throws(() => validateManifest({ ...manifest(definition), ...damage }, definition), error =>
+      error.message.includes(definition.name) && /identity|publish policy/.test(error.message));
+  }
+});
+
+test("release versions use strict semver", () => {
+  for (const version of ["1.0.0-pre_release", "01.2.3", "1.2.3-01", "v1.2.3"]) {
+    assert.throws(() => validateManifest({ ...manifest(), version }, core), /version/);
+  }
+  assert.doesNotThrow(() => validateManifest({ ...manifest(), version: "1.2.3-rc.1+build.5" }, core));
+});
+
+test("wildcard exports pair every condition with the same concrete subpath", () => {
+  const p = { exports: { "./feature/*": { types: "./dist/*.d.ts", import: "./dist/*.js" } } };
+  assert.throws(() => validateFiles(core, p, ["package.json", "dist/a.js", "dist/b.d.ts"]), /missing.*target/);
+  assert.throws(() => validateFiles(core, p, ["package.json", "dist/a.js", "dist/a.d.ts", "dist/b.js"]), /missing.*target/);
+  assert.doesNotThrow(() => validateFiles(core, p, ["package.json", "dist/a.js", "dist/a.d.ts", "dist/nested/b.js", "dist/nested/b.d.ts"]));
+  assert.throws(() => validateFiles(core, p, ["package.json", "dist/a.d.ts"]), /missing|no packed/);
+});
+
+test("nested internal lock entries must resolve to supplied tarballs", () => {
+  const name = `node_modules/${packages[1].name}/node_modules/${core.name}`;
+  for (const resolved of ["https://registry.npmjs.org/@kynesyslabs/dacs/-/dacs-0.1.0-alpha.0.tgz", undefined, "file:/tmp/other.tgz"]) {
+    assert.throws(() => validateLock({ packages: { [name]: { resolved } } }, ["/tmp/core.tgz"]), /internal.*tarball/);
+  }
+  assert.doesNotThrow(() => validateLock({ packages: { [name]: { resolved: "file:/tmp/core.tgz" } } }, ["/tmp/core.tgz"]));
+});
+
+test("lock checks distinguish omitted optional metadata from installed dependencies", () => {
+  const lock = { packages: { "node_modules/external": {
+    optional: true, resolved: "git+ssh://example.invalid/external.git#commit",
+  } } };
+  assert.doesNotThrow(() => validateLock(lock, [], ".", true));
+  assert.throws(() => validateLock(lock, []), /non-registry/);
+  lock.packages["node_modules/external"].optional = false;
+  assert.throws(() => validateLock(lock, [], ".", true), /non-registry/);
+  assert.throws(() => validateLock({ packages: {
+    [`node_modules/${core.name}`]: { optional: true, resolved: "https://registry.npmjs.org/core.tgz" },
+  } }, [], ".", true), /internal.*tarball/);
+});
+
+test("internal aliases are refused in every dependency section and aliased lock identity", () => {
+  for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "overrides", "resolutions"]) {
+    assert.throws(() => validateManifest({ ...manifest(), [section]: { compat: `npm:${core.name}@0.1.0-alpha.0` } }, core), /non-registry/);
+    assert.doesNotThrow(() => validateManifest({ ...manifest(), [section]: { compat: "npm:external@1.0.0" } }, core));
+  }
+  for (const path of ["node_modules/compat", "node_modules/external/node_modules/compat"]) {
+    assert.throws(() => validateLock({ packages: { [path]: { name: core.name, resolved: "https://registry.npmjs.org/core.tgz" } } }, []), /internal.*tarball/);
+    assert.doesNotThrow(() => validateLock({ packages: { [path]: { name: "external", resolved: "https://registry.npmjs.org/external.tgz" } } }, []));
+  }
+});
+
+test("registry override references and root export shorthand remain supported", () => {
+  const def = packages[4];
+  for (const exports of ["./dist/index.js", { types: "./dist/index.d.ts", import: "./dist/index.js" }]) {
+    const p = { ...manifest(def), exports, dependencies: { external: "1.0.0" }, overrides: { external: "$external" } };
+    assert.doesNotThrow(() => validateManifest(p, def));
+    assert.deepEqual(publicEntries(p, ["dist/index.js", "dist/index.d.ts"]), [{ subpath: ".", json: false }]);
+  }
+  assert.throws(() => validateManifest({ ...manifest(), overrides: { other: "$missing" } }, core), /non-registry/);
+});
+
+test("null exclusions and more specific export overrides follow Node resolution", () => {
+  const exports = { "./feature/*": { import: "./dist/*.js", types: "./dist/*.d.ts" },
+    "./feature/private/*": null, "./feature/private/public": "./dist/special.js", "./disabled": null };
+  const files = ["package.json", "dist/a.js", "dist/a.d.ts", "dist/private/hidden.js", "dist/special.js", "dist/special.d.ts"];
+  assert.doesNotThrow(() => validateFiles(core, { exports }, files));
+  const paths = publicEntries({ exports }, files).map(e => e.subpath);
+  assert.ok(paths.includes("./feature/a"));
+  assert.ok(paths.includes("./feature/private/public"));
+  assert.ok(!paths.includes("./feature/private/hidden"));
+});
+test("strict artifact inventory admits exactly the five public identities", () => {
+  const artifacts = packages.map(definition => ({ manifest: { ...manifest(definition), version: plannedVersion }, releasable: true }));
+  assert.doesNotThrow(() => validateArtifactSet(artifacts, true));
+  for (const damaged of [
+    artifacts.slice(1),
+    [...artifacts, { ...artifacts[0], manifest: { ...artifacts[0].manifest, name: "other" } }],
+    [...artifacts.slice(0, -1), artifacts[0]],
+    [...artifacts.slice(0, -1), { ...artifacts[4], manifest: { ...artifacts[4].manifest, name: "other" } }],
+    artifacts.map((a, i) => i === 2 ? { ...a, releasable: false } : a),
+  ]) assert.throws(() => validateArtifactSet(damaged, true), /all five/);
+  assert.throws(() => validateArtifactSet(artifacts.map((a, i) => i === 2 ?
+    { ...a, manifest: { ...a.manifest, private: true } } : a), true), /private package/);
+});
