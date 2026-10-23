@@ -1491,7 +1491,6 @@ describe("runtime-image package inventory", () => {
 // EBADENGINE and then failed npm's lock sync check on the nested Git `avsc`
 // (EUSAGE), so the scan never completed and the job exited 3.
 describe("lock engine scan", () => {
-  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
   const lock = () => JSON.parse(readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8"));
   const container = { node: "v20.19.1", npm: "11.19.0" };
   const byLocation = (items: { location: string }[]) => [...items].sort((a, b) => a.location.localeCompare(b.location));
