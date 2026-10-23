@@ -71,6 +71,7 @@ export {
 } from "./x402Spine.js";
 export {
   createPayDemSellerObserver,
+  demosExecutedTransferNetworkFeeOs,
   observePayDemTransferCore,
   type PayDemObservationClient,
   type PayDemSellerObserver,
@@ -79,6 +80,7 @@ export {
 export {
   verifySellerPaymentIntake,
   canonicalSellerSettlementId,
+  isDemosExecutedTransferObservation,
   createInMemorySellerReceiptStore,
   isSellerFulfilmentHandoff,
   sellerFulfilmentCandidateHash,
@@ -107,6 +109,8 @@ export {
   type AddressResolution,
   type DestinationBindingResolution,
   type DemosTransferObservation,
+  type DemosExecutedTransferObservation,
+  type DemosIncludedTransferObservation,
   type X402SessionBinding,
   type X402TransferObservation,
   type SellerReceiptClaim,

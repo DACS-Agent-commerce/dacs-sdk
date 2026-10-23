@@ -385,6 +385,7 @@ export {
   payDemSettle,
   payDemSettleCore,
   payDemRecordVerifiedTransfer,
+  readPayDemTransferRecord,
   type PayDemRail,
   type PayDemRailResult,
   type PayDemRecordVerifiedTransfer,

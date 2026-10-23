@@ -16,8 +16,11 @@ import {
 import { createDacsFixedPricePayDemSellerPaymentEvidenceV1 } from
   "../src/fixedPriceX402SellerPaymentEvidence.js";
 import { createDacsFixedPricePayDemRoleOrderV1 } from "../src/liveOrder.js";
+import { sdkExecutedObservation } from "./helpers/demosObservation.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+// A whole-second block time, as a node's confirmed block serves it.
+const INCLUDED_AT = 100_000;
 const BUYER_KEY = "11".repeat(32);
 const SELLER_KEY = "22".repeat(32);
 const BUYER = `did:demos:agent:${BUYER_KEY}`;
@@ -82,14 +85,14 @@ const authorization = {
   commitment: {
     ref: `dacs3:commit:${JOB_ID}`,
     contentHash: "a".repeat(64),
-    finalizedAt: 90,
+    finalizedAt: 90_000,
     signer: SELLER,
   },
   settlementIdentity: {
     kind: "demos",
     txHash: TX_HASH,
     blockNumber: 123,
-    includedAt: 100,
+    includedAt: INCLUDED_AT,
   },
   settlementId: `demos:${TX_HASH}`,
   evidenceHash: "b".repeat(64),
@@ -100,8 +103,8 @@ const authorization = {
     outcome: "success",
     paymentTxRefs: [{ kind: "demos", txHash: TX_HASH, blockNumber: 123 }],
     paymentAmount: { amount: "1.25", currency: "DEM" },
-    settlementFinality: { model: "bft-final", finalityObservedAt: 100 },
-    observedAt: 100,
+    settlementFinality: { model: "bft-final", finalityObservedAt: INCLUDED_AT },
+    observedAt: INCLUDED_AT,
   },
   payoutBindingTier: 1,
 } as const;
@@ -116,14 +119,14 @@ describe("native DEM seller payment evidence composition", () => {
   });
 
   it("re-observes and binds the exact finalized Demos transfer", async () => {
-    const observeDemosTransfer = vi.fn(async () => ({
-      status: "included" as const,
+    const observeDemosTransfer = vi.fn(() => sdkExecutedObservation({
+      nonce: 7,
       txHash: TX_HASH,
       payer: BUYER_KEY,
       payee: SELLER_KEY,
       amountOs: "1250000000",
       blockNumber: 123,
-      includedAt: 100,
+      includedAt: INCLUDED_AT,
     }));
     const composed = createDacsFixedPricePayDemSellerPaymentEvidenceV1({
       context: {
@@ -147,7 +150,7 @@ describe("native DEM seller payment evidence composition", () => {
         phase: "pay-dem",
         network: "demos",
         event: { txHash: TX_HASH, blockNumber: 123 },
-        settlementFinality: { model: "bft-final", finalityObservedAt: 100 },
+        settlementFinality: { model: "bft-final", finalityObservedAt: INCLUDED_AT },
       },
       proof: {
         kind: "authenticated-demos-transfer",
@@ -166,20 +169,53 @@ describe("native DEM seller payment evidence composition", () => {
     expect(observeDemosTransfer).toHaveBeenCalledWith(TX_HASH);
   });
 
+  it.each([
+    ...[undefined, "confirmed", "failed", true, null].map((execution) => ({
+      status: "included", execution, nonce: undefined as unknown,
+    })),
+    // The execution marker without the record's signed nonce is no attestation.
+    ...[undefined, null, -1, -0, 7.5, "7"].map((nonce) => ({
+      status: "included", execution: "executed", nonce: nonce as unknown,
+    })),
+    { status: "pending", execution: "executed", nonce: 7 as unknown },
+    // #338: a well-shaped attestation the SDK observer did not return is the
+    // provider's statement, so no payment evidence is published on it.
+    { status: "included", execution: "executed", nonce: 7 as unknown },
+  ])("does not issue native proof with status $status, execution $execution and nonce $nonce", async ({ status, execution, nonce }) => {
+    const observation = { status, txHash: TX_HASH, payer: BUYER_KEY,
+      payee: SELLER_KEY, amountOs: "1250000000", blockNumber: 123, includedAt: INCLUDED_AT,
+      ...(execution === undefined ? {} : { execution }),
+      ...(nonce === undefined ? {} : { nonce }) };
+    const composed = createDacsFixedPricePayDemSellerPaymentEvidenceV1({
+      context: { role: "seller", authority: SELLER, peerAuthority: BUYER,
+        demos: { adapter: {} } } as never,
+      observeDemosTransfer: async () => observation as never,
+    });
+    const resolved = await composed.settlement.resolvePublication({
+      operation: operation as never, retained: {} as never,
+    });
+    const result = await resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: authorization as never,
+    });
+    expect(result).toMatchObject({ disposition: "indeterminate" });
+    expect(result).not.toHaveProperty("proof");
+    expect(result).not.toHaveProperty("binding");
+  });
+
   it("fails closed when the re-observed payer differs", async () => {
     const composed = createDacsFixedPricePayDemSellerPaymentEvidenceV1({
       context: {
         role: "seller", authority: SELLER, peerAuthority: BUYER,
         demos: { adapter: {} },
       } as never,
-      observeDemosTransfer: async () => ({
-        status: "included",
+      observeDemosTransfer: () => sdkExecutedObservation({
+        nonce: 7,
         txHash: TX_HASH,
         payer: "ff".repeat(32),
         payee: SELLER_KEY,
         amountOs: "1250000000",
         blockNumber: 123,
-        includedAt: 100,
+        includedAt: INCLUDED_AT,
       }),
     });
     const resolved = await composed.settlement.resolvePublication({

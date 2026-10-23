@@ -3,9 +3,11 @@
     "node": "https://node2.demos.sh",
     "reportedVersion": "0.9.9 RC",
     "reportedCommit": "kynesyslabs/node stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+    "history": "Historical envelopes: the testnet reset on or after 2026-10-20; these hashes and blocks are no longer available from node2. Later node2 reported 11e7c8207732e25035de5a04cab25c5346046493, also a dirty build.",
     "sourcePin": "none: node2 reports a dirty build (nodeVersion.dirty is true), so the reported commit is the nearest source, not the deployed source; the tests use only these recorded envelopes",
     "read": "2026-10-15, read-only nodeCall; raw JSON-RPC envelopes as served",
     "failedStatusRead": "2026-10-20, read-only nodeCall: getTransactionStatus for the failed record 85b8fc...; the node reports a stored failed transaction as included",
+    "blockRead": "2026-10-19, read-only nodeCall; getBlockByNumber envelopes as served",
     "note": "demosdk's getTxByHash resolves the envelope's response member (nodeCall unwraps response.data.response).",
     "buildMetadataRead": "versionEnvelope and networkInfoEnvelope: read-only, 2026-10-18 by 15:33Z, when node2 ran the dirty build with builtAt 2026-10-14T16:45:24Z; node2 was rebuilt from the same dirty commit at 2026-10-18T15:59:30Z (seen 2026-10-20) and the envelopes are kept as recorded; reported commit is not an exact deployed-source pin because nodeVersion.dirty is true",
     "versionNote": "GET /version reports 0.9.9 RC and getNetworkInfo nodeVersion reports 0.9.8 for the same dirty build; these are recorded responses, not a source pin",
@@ -214,6 +216,109 @@
       },
       "extra": "",
       "require_reply": false
+    }
+  },
+  "getBlockByNumber": {
+    "480877": {
+      "result": 200,
+      "response": {
+        "id": 480878,
+        "number": 480877,
+        "hash": "37b3bc71e0f51976202817c415eef766a42085017a11d2d0e2ffa8975ea7abce",
+        "content": {
+          "ordered_transactions": [
+            "85b8fcdcee48822742a39e1b9877f5e2f8dde36430e8e486e3a8b0c9a7744cbd",
+            "0c917716ffb21eeb1f1aa0c87ed5489083e3cb7cd01e05099ad43b22dfe03c4d"
+          ],
+          "encrypted_transactions_hashes": {},
+          "per_address_transactions": {},
+          "web2data": {},
+          "previousHash": "c073a440664ea1966930c9aa0c90d6d262b7c2308792e79a669c36cb0a155a85",
+          "timestamp": 1791472486,
+          "peerlist": [
+            "0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156",
+            "0x62f54cefb244538498b18687dbbb7faeb607b9ea51e8d9bcb952fd038b89ece9",
+            "0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82",
+            "0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab"
+          ],
+          "l2ps_partecipating_nodes": {},
+          "l2ps_banned_nodes": {},
+          "native_tables_hashes": {
+            "native_subnets_txs": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "native_tlsnotary": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          }
+        },
+        "status": "confirmed",
+        "proposer": "cc83cbba15600188b038bd35182dc217fa2bef6a4f86a11cfcae1bce0ad06f33",
+        "next_proposer": "c01bb331424f8dc75c7661a69ccc9f5f5554b4d697b38bca1ebcc28e10c27c9a",
+        "validation_data": {
+          "signatures": {
+            "0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82": "0x50a9136c759a14eff464e25173df9c54326ea05f3b0c36462c52753e737304b2963fcd2416f16186eec337f7487b793cf5d4c23e17fc06892498f71f0fbcc005",
+            "0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156": "0xecb8f1cf8f6ff5291ed6a0b462b4188a00205f1152cd3a7f04d9108b049ffc55b58c7119b579412aafa1b0931d7df0138d187136fdf1b881d001ac276e4c1e0e",
+            "0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab": "0x6b6583909a3f836fff58c32b0fed91943a65bdb9f084ed7b4dfb52af66234d647a23807166c4c65428e66cae174895ebbba73323f752baf0e2505c6836d09007",
+            "0x62f54cefb244538498b18687dbbb7faeb607b9ea51e8d9bcb952fd038b89ece9": "0xc498c1e6703c55e6bc0fb4a9f5f09636aa2090067d118e6c072a9dbe820868dad359c29d15fc97d3d5b4f861204a0094c72d802bfcb4ac00805e2966b3d9690e"
+          }
+        },
+        "attrs": {
+          "gcrAppliedTxs": [
+            "0c917716ffb21eeb1f1aa0c87ed5489083e3cb7cd01e05099ad43b22dfe03c4d"
+          ],
+          "gcrAppliedTxCount": 1,
+          "gcrAppliedTxsHash": "c1911913a7a368fe0292bf0e9d65f456b160abda08329328d027b077895552fd"
+        }
+      },
+      "require_reply": false,
+      "extra": ""
+    },
+    "498447": {
+      "result": 200,
+      "response": {
+        "id": 498448,
+        "number": 498447,
+        "hash": "88f6cc4813dbe522a11b72be7180c73ba382aa849962d47b07840b2f61978c8a",
+        "content": {
+          "ordered_transactions": [
+            "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918"
+          ],
+          "encrypted_transactions_hashes": {},
+          "per_address_transactions": {},
+          "web2data": {},
+          "previousHash": "481fec1286c0a61a5772c975166d43b2e770daf72ad945849c36edba855d0e9b",
+          "timestamp": 1791649645,
+          "peerlist": [
+            "0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156",
+            "0x62f54cefb244538498b18687dbbb7faeb607b9ea51e8d9bcb952fd038b89ece9",
+            "0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82",
+            "0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab"
+          ],
+          "l2ps_partecipating_nodes": {},
+          "l2ps_banned_nodes": {},
+          "native_tables_hashes": {
+            "native_subnets_txs": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "native_tlsnotary": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          }
+        },
+        "status": "confirmed",
+        "proposer": "33e371728e825c4dbc382b65b72581fd778caa2d48a6f3000ce2ec8592e8a786",
+        "next_proposer": "132a0aa1bf7bca296ee263014cb0561f439d109f885476684fe3a3f0181e6328",
+        "validation_data": {
+          "signatures": {
+            "0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82": "0x9cbebf432ffa1499ea52f1138fc05df8c496d0896c78039ff89b44cd77d17b7cbf51c67566e27648c6e11f1223eb20a9c08930fc06ac57befe226a03d00d2103",
+            "0x62f54cefb244538498b18687dbbb7faeb607b9ea51e8d9bcb952fd038b89ece9": "0x0edd6cd95f8adfc4adf5a17a2b8dcf445dd1457171c36727f75b51d8ce41412cfcc545536862c0a62a73829c8358e4528cc32b44692a5d6a629841c51bdfa506",
+            "0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab": "0x51f684f0b27a4d29665f12a5925ce104b5e9e7376e9ae8faa2653483597cf6ac3af5f3286d0a09754c3a8bfbcb87b1d6ce46e30ec091b09d898ce251eaad4300",
+            "0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156": "0xede2c62ddf9f075d97a66fd8e4e9835b37e960d0081655f97e664779e54226d701eafdd3ffce6d0c62afef2a91dd2265713c3db169a7d21e5da87e49005cfb06"
+          }
+        },
+        "attrs": {
+          "gcrAppliedTxs": [
+            "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918"
+          ],
+          "gcrAppliedTxCount": 1,
+          "gcrAppliedTxsHash": "cef497a5ca7fdd69f9a466378e40fdc8ac0a6b8552f6e0d39e52beef84f6ab02"
+        }
+      },
+      "require_reply": false,
+      "extra": ""
     }
   }
 }

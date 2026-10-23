@@ -11,6 +11,7 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { confirmedTransactionFeeOs, recordTransactionFeeOs } from "../internal/payDemFees.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
@@ -88,6 +89,13 @@ export interface PayDemRecordVerifiedTransfer {
   readonly network: string;
   /** The recovery context's settlement key, when the settle carried one. */
   readonly settlementKey?: string;
+  /**
+   * The declared `transaction_fee` sum in OS of the executed record the SDK
+   * read, when present. The result's `networkFeeOs` is the confirmation's
+   * quoted fee; a host compares the two before accounting. Neither field
+   * independently establishes the applied balance debit.
+   */
+  readonly recordNetworkFeeOs?: string;
 }
 
 /**
@@ -128,6 +136,39 @@ type SdkRecordReader = (expected: Readonly<{
  * payment is `sdkRecordReadingSettles`, below.)
  */
 const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
+
+/**
+ * Read a retained native transfer through the connection createPayDemRail
+ * opened, without signing or broadcasting. The SDK binds the record's hash,
+ * native-send body, parties and amount; callers must also bind its returned
+ * nonce and block to their retained checkpoint and proposed settlement.
+ * A caller-built rail has no SDK reader and cannot establish execution.
+ * Read-only: it adds to none of the sets or maps above, and its answer is a
+ * new plain object that no check here accepts, so it reports a record and is
+ * never a verdict. Exported for `@kynesyslabs/dacs-node`'s recovery re-read.
+ */
+export async function readPayDemTransferRecord(
+  rail: Readonly<PayDemRail>,
+  expected: Readonly<Pick<PayDemPreparedTransfer,
+    "txHash" | "payer" | "payee" | "amountOs" | "network">>,
+): Promise<SdkRecordRead> {
+  const captured = snapshotCanonicalJsonRead(expected, "pay-dem retained transfer") as
+    typeof expected;
+  const txHash = canonicalDemosTxHash(captured.txHash);
+  const payer = normalizedDemosAccount(captured.payer);
+  const payee = normalizedDemosAccount(captured.payee);
+  if (txHash === null || payer === null || payee === null ||
+      captured.network !== "demos" || typeof captured.amountOs !== "string" ||
+      !/^[1-9][0-9]*$/.test(captured.amountOs)) {
+    return { state: "indeterminate", reason: "retained transfer is invalid" };
+  }
+  const settle = stableMethodTarget(rail, "settle", "pay-dem rail settle");
+  const reader = sdkRailRecordReaders.get(settle);
+  if (reader === undefined) {
+    return { state: "indeterminate", reason: "rail has no SDK transaction record reader" };
+  }
+  return reader(Object.freeze({ txHash, payer, payee, amountOs: BigInt(captured.amountOs) }));
+}
 
 /**
  * The functions `payDemSettle` returned. Private like the sets above: SDK code
@@ -957,7 +998,7 @@ export async function payDemSettleCore(
     // Debit accounting from the node's confirmation, checked above against
     // the amount and the debit ceiling. The record's fee must also be readable
     // before success, so a saved payment can be authenticated again.
-    // `payDemSettle` reports the executed record's fee instead
+    // `payDemSettle` reports the executed record's declared fee instead
     // (`sdkRecordFees`), the one a restart reads back.
     ...(totalDebitOs === undefined
       ? {}
@@ -978,6 +1019,7 @@ export async function payDemSettleCore(
       amountOs: amountOs.toString(),
       network: chainId,
       ...(recovery === undefined ? {} : { settlementKey: recovery.settlementKey }),
+      ...(recordFee?.feeOs === undefined ? {} : { recordNetworkFeeOs: recordFee.feeOs }),
     }));
   }
   return executed;
@@ -1051,7 +1093,9 @@ export interface PayDemPreparedTransfer {
   denomination?: "os" | "dem";
   network: string;
   maxTotalDebitOs?: string;
-  /** Confirmed transfer amount plus network fee, retained before broadcast. */
+  /** Declared transaction_fee sum in OS, retained from the confirmed body. */
+  declaredNetworkFeeOs?: string;
+  /** Confirmed transfer amount plus quoted fee, retained before broadcast. */
   confirmedTotalDebitOs?: string;
   /** Exact PC-7 session/phase identity when invoked through payDemSettle. */
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
@@ -1114,66 +1158,6 @@ export class PayDemIncludedNonceVisibilityError extends DacsError {
 }
 
 const OS_PER_DEM = 1_000_000_000n;
-
-function confirmedFeeComponentOs(value: unknown, postFork: boolean): bigint | null {
-  if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) {
-    return BigInt(value);
-  }
-  if (!postFork && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
-    // Pre-denomination-fork fee numbers are DEM. Post-fork fee numbers are
-    // ambiguous (the transaction query surface has projected other numeric
-    // fields in OS), so a capped write accepts only the normative decimal-
-    // string OS form after the fork.
-    return BigInt(value) * OS_PER_DEM;
-  }
-  return null;
-}
-
-/**
- * A fee component of a stored record as the transaction query serves it. After
- * the fork that projection serves a safe value as an OS number and a larger
- * one as a decimal string (`fromEntityToWireNumber`, as for `content.amount`;
- * node2's recorded envelopes carry `network_fee: 1000000000`). Only the
- * recovery read of a record the SDK already holds accepts it; the confirmation
- * before broadcast keeps the strict form above.
- */
-function recordFeeComponentOs(value: unknown, postFork: boolean): bigint | null {
-  if (postFork && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
-    return BigInt(value);
-  }
-  return confirmedFeeComponentOs(value, postFork);
-}
-
-function confirmedTransactionFeeOs(
-  value: unknown,
-  postFork: boolean,
-  component: (value: unknown, postFork: boolean) => bigint | null = confirmedFeeComponentOs,
-): bigint | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const fee = value as Record<string, unknown>;
-  const network = component(fee.network_fee, postFork);
-  const rpc = component(fee.rpc_fee, postFork);
-  const additional = component(fee.additional_fee, postFork);
-  if (network === null || rpc === null || additional === null) return null;
-  return network + rpc + additional;
-}
-
-/**
- * The fee a stored native record carries: its `transaction_fee` in the
- * query's projection (see `recordFeeComponentOs`), read in the denomination
- * the record was signed in. `undefined` when the record carries none, `null`
- * when it carries one in any other form. A fresh success and a recovery read
- * of the same record take its fee from here, so they agree.
- */
-function recordTransactionFeeOs(
-  content: Record<string, unknown>,
-  postFork: boolean,
-): bigint | null | undefined {
-  const served = content.transaction_fee;
-  return served === undefined
-    ? undefined
-    : confirmedTransactionFeeOs(served, postFork, recordFeeComponentOs);
-}
 
 function confirmedWireAmountOs(value: unknown, postFork: boolean): bigint | null {
   if (postFork) {
@@ -2114,6 +2098,13 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       const txHash = signedHash;
       const canonicalPayer = normalizedDemosAccount(address)!;
       const canonicalPayee = normalizedDemosAccount(to)!;
+      // The transaction record retains this declaration even when a separate
+      // gas_operation quote differs. Funded hosts can check compatibility in
+      // their journal hook before the irreversible broadcast.
+      const declaredFeeOs = confirmedTransactionFeeOs(
+        (confirmedTransaction.content as Record<string, unknown>).transaction_fee,
+        postFork,
+      );
       const prepared = Object.freeze({
         txHash,
         nonce: signedNonce,
@@ -2125,6 +2116,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(effectiveMaxTotalDebitOs === undefined
           ? {}
           : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
+        ...(declaredFeeOs === null
+          ? {}
+          : { declaredNetworkFeeOs: declaredFeeOs.toString() }),
         ...(confirmedDebitOs === null
           ? {}
           : { confirmedTotalDebitOs: confirmedDebitOs.toString() }),
@@ -2547,6 +2541,7 @@ const PAY_DEM_PREPARED_TRANSFER_KEYS = new Set([
   "network",
   "maxTotalDebitOs",
   "confirmedTotalDebitOs",
+  "declaredNetworkFeeOs",
   "recovery",
 ]);
 
@@ -2599,6 +2594,9 @@ function assertPreparedTransferBinds(
     prepared.network !== context.network ||
     (prepared.denomination !== undefined && prepared.denomination !== "os" &&
       prepared.denomination !== "dem") ||
+    (prepared.declaredNetworkFeeOs !== undefined &&
+      (typeof prepared.declaredNetworkFeeOs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(prepared.declaredNetworkFeeOs))) ||
     !debitBound(prepared.maxTotalDebitOs) ||
     !debitBound(prepared.confirmedTotalDebitOs) ||
     (prepared.maxTotalDebitOs !== undefined && prepared.confirmedTotalDebitOs !== undefined &&

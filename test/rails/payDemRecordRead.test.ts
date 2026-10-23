@@ -12,11 +12,17 @@ import {
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import {
+  isPayDemRecordVerifyingRail,
+  isPayDemSettleAdapter,
+  isRecordVerifiedSource,
+  payDemRecordVerifiedTransfer,
   payDemSettle,
+  readPayDemTransferRecord,
   type PayDemRail,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
 import { demosNode, nodeRecord, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
+import { readPayDemTransferRecord as publicReadPayDemTransferRecord } from "../../src/rails/index.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
   (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
@@ -651,5 +657,88 @@ describe("a payment signed before the denomination fork is read in DEM after it 
     expect(demosNode.networkInfoReads).toEqual([true]);
     expect(submit).not.toHaveBeenCalled();
     expect(demosNode.broadcasts).toBe(2);
+  });
+});
+
+// `readPayDemTransferRecord` is exported for @kynesyslabs/dacs-node's recovery
+// re-read. It reports the record the SDK rail's own connection read; neither
+// that answer nor a success assembled from it is a record-verified verdict.
+describe("the exported record read reports a record and vouches for no verdict", () => {
+  test("the public rails entry point exports the SDK record reader", () => {
+    expect(publicReadPayDemTransferRecord).toBe(readPayDemTransferRecord);
+  });
+
+  const retained = { txHash, payer, payee, amountOs: "1000000000", network: "demos" };
+  const vouches = (value: unknown) => [
+    payDemRecordVerifiedTransfer(value),
+    isRecordVerifiedSource(value),
+    isPayDemSettleAdapter(value),
+    isPayDemRecordVerifyingRail(value),
+  ];
+
+  test.each([
+    ["another network", { network: "other" }],
+    ["a numeric amount", { amountOs: 1000000000 }],
+    ["a leading-zero amount", { amountOs: "01000000000" }],
+    ["an amount with trailing whitespace", { amountOs: "1000000000 " }],
+  ])("refuses %s before any node read", async (_label, invalid) => {
+    nodeSays("confirmed");
+    // Exercise untyped callers with otherwise matching executed transfer facts.
+    const input = { ...retained, ...invalid } as Parameters<typeof readPayDemTransferRecord>[1];
+    await expect(readPayDemTransferRecord(rail, input)).resolves.toEqual({
+      state: "indeterminate", reason: "retained transfer is invalid",
+    });
+    expect(demosNode.reads).toEqual([]);
+    expect(demosNode.networkInfoReads).toEqual([]);
+    expect(demosNode.transfers).toBe(0);
+    expect(demosNode.broadcasts).toBe(0);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  test("an executed read through the SDK rail passes no check and settles through no rail", async () => {
+    nodeSays("confirmed");
+    const read = await readPayDemTransferRecord(rail, retained);
+    expect(read).toEqual({ state: "executed", blockNumber: 42, nonce: 9, networkFeeOs: "0" });
+    if (read.state !== "executed") throw new Error("expected an executed read");
+    // It only reads: one record read, nothing signed or broadcast.
+    expect(demosNode.reads).toEqual([txHash]);
+    expect(demosNode.transfers).toBe(0);
+    expect(demosNode.broadcasts).toBe(0);
+    // Every read is a new object, never a result the SDK registered.
+    expect(await readPayDemTransferRecord(rail, retained)).not.toBe(read);
+    const success = Object.freeze({
+      ok: true as const, execution: "executed" as const, txHash, chainId: "demos", payer, payee,
+      finality: Object.freeze({ model: "bft-final" as const }), blockNumber: read.blockNumber,
+      txRefKind: "demos", networkFeeOs: read.networkFeeOs, nonce: read.nonce,
+    });
+    for (const value of [read, { ...read }, success, { ...success, ...retained }]) {
+      expect(vouches(value)).toEqual([undefined, false, false, false]);
+    }
+    // A rail relaying that success is refused before it runs.
+    const relay = { address: payer, settle: vi.fn(async () => success) };
+    const { priorAttempts: _history, ...fresh } = request();
+    await expect(payDemSettle(relay, {}, { store: createIdempotencyStore() })(fresh))
+      .rejects.toThrow(/createPayDemRail returned.*refusing/);
+    expect(relay.settle).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  test("a rail createPayDemRail did not build gets no read, even one wrapping the SDK rail", async () => {
+    nodeSays("confirmed");
+    const customs = [
+      { address: payer, settle: vi.fn(async () => ({ ok: false as const, txHash, payer, payee, chainId: "demos" })) },
+      { address: payer, settle: vi.fn((...args: Parameters<PayDemRail["settle"]>) => rail.settle(...args)) },
+      // The SDK's own payDemSettle adapter is not the rail's settle either.
+      { address: payer, settle: payDemSettle(rail, {}) as unknown as PayDemRail["settle"] },
+    ];
+    for (const custom of customs) {
+      await expect(readPayDemTransferRecord(custom, retained)).resolves.toEqual({
+        state: "indeterminate", reason: "rail has no SDK transaction record reader",
+      });
+    }
+    expect(customs[0]!.settle).not.toHaveBeenCalled();
+    expect(customs[1]!.settle).not.toHaveBeenCalled();
+    expect(demosNode.reads).toEqual([]);
+    expect(submit).not.toHaveBeenCalled();
   });
 });

@@ -1,8 +1,55 @@
 import { types as nodeTypes } from "node:util";
 
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
+import { recordTransactionFeeOs } from "../internal/payDemFees.js";
 import { normalizeDemosNativeAddress } from "../rails/payDem.js";
-import type { DemosTransferObservation } from "./paymentIntake.js";
+import type {
+  DemosExecutedTransferObservation,
+  DemosTransferObservation,
+} from "./paymentIntake.js";
+
+/**
+ * Execution attestations {@link observePayDemTransferCore} built itself, each
+ * frozen, after reading a `confirmed` transaction record bound to the hash,
+ * block, parties and amount. Only observePayDemTransferCore adds entries, using
+ * the client supplied to it. A copy or a caller-built object with the same
+ * fields is not in it. Client authenticity remains the host's responsibility.
+ */
+const sdkExecutedObservations = new WeakMap<object, string | undefined>();
+
+/**
+ * The one rule for an execution attestation (#338): an observation the SDK's
+ * own observer returned, {@link observePayDemTransferCore} (which
+ * {@link createPayDemSellerObserver} uses), after it read a `confirmed`
+ * transaction record bound to this hash, block, payer, payee and amount, with
+ * the record's signed `nonce`. An observation a host builds itself is its
+ * statement, however well shaped, and so is a copy of a genuine one. Every
+ * consumer that delivers, issues payment evidence or accounts a payment
+ * requires this; any other `included` observation is held. Read-only: the
+ * answer depends only on the object's identity. This proves that the SDK parser
+ * checked the supplied responses, not that an injected client told the truth.
+ * Use an authenticated node client; the default observer uses its configured RPC.
+ */
+export function isDemosExecutedTransferObservation(
+  observation: Readonly<DemosTransferObservation>,
+): observation is DemosExecutedTransferObservation {
+  // WeakMap#has answers false for any value it cannot hold.
+  return sdkExecutedObservations.has(observation as object);
+}
+
+/**
+ * The executed record's declared `transaction_fee` sum in OS, captured by the SDK observer
+ * and bound to the original immutable observation. Copies and caller-built
+ * observations carry no evidence. A missing or malformed record fee returns
+ * `undefined`, never zero; execution alone cannot authenticate wallet fees.
+ * This declaration can differ from the applied balance debit when the node's
+ * gasFeeSeparation fork is inactive.
+ */
+export function demosExecutedTransferNetworkFeeOs(
+  observation: Readonly<DemosTransferObservation>,
+): string | undefined {
+  return sdkExecutedObservations.get(observation as object);
+}
 
 const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
@@ -10,10 +57,15 @@ const OS_PER_DEM = 1_000_000_000n;
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const INCLUDED_STATE = "included";
 // `getTransactionStatus` exposes the normative Demos inclusion state. The
-// transaction projection returned by `getTxByHash` can label that same
-// included transaction `confirmed` (and future clients may use `finalized`).
+// transaction projection returned by `getTxByHash` labels an executed record
+// `confirmed`; the historical node (61b8e75) writes only `confirmed`, `failed` and
+// `pending`, so `included` and `finalized` come only from other clients.
+// These recorded testnet envelopes predate its reset on or after 2026-10-20;
+// the reported dirty build is not an exact pin of deployed source.
 // These labels are accepted only while the independent status and confirmed
 // block checks below establish inclusion; the body label is never sufficient.
+// Inclusion is not execution: only a literal `confirmed` record with a valid
+// signed nonce yields `execution: "executed"`.
 const INCLUDED_TRANSACTION_BODY_STATES = new Set([
   "included",
   "confirmed",
@@ -130,6 +182,14 @@ function safeUint(value: unknown): number | null {
     : null;
 }
 
+function recordNonce(value: unknown): number | null {
+  if (typeof value === "string" && INTEGER_RE.test(value)) {
+    const parsed = Number(value);
+    return safeUint(parsed);
+  }
+  return safeUint(value);
+}
+
 function positiveIntegerString(value: string): string | null {
   if (!INTEGER_RE.test(value)) return null;
   try {
@@ -192,7 +252,9 @@ function blockTimestampToMilliseconds(value: unknown): number | null {
 
 /**
  * Read-only Demos facts required by the DACS-4 §9.5.9 seller payment gate.
- * Implementations MUST return authenticated node responses or fail closed.
+ * Implementations MUST return authenticated node responses or fail closed:
+ * the SDK reads and binds the transaction record in them itself, and an
+ * execution attestation built from them is final for delivery.
  */
 export interface PayDemObservationClient {
   getTransactionStatus(txHash: string): Promise<unknown>;
@@ -226,6 +288,10 @@ function invalid(reason: string): DemosTransferObservation {
  * The transaction status, transaction body, and confirmed block must agree on
  * one hash and block height. The consensus block timestamp is authoritative;
  * the transaction's caller-selected timestamp is never used for deadlines.
+ * The result attests execution, with the record nonce, only for a literal
+ * `confirmed` transaction record; other inclusion labels are inclusion-only.
+ * That attestation is frozen, and only the object returned here (not a copy)
+ * passes {@link isDemosExecutedTransferObservation}.
  */
 export async function observePayDemTransferCore(
   txHash: string,
@@ -399,8 +465,8 @@ export async function observePayDemTransferCore(
     return invalid("confirmed block timestamp is malformed");
   }
 
-  return {
-    status: "included",
+  const included = {
+    status: "included" as const,
     txHash: requestedHash,
     payer,
     payee,
@@ -408,6 +474,30 @@ export async function observePayDemTransferCore(
     blockNumber: statusBlockNumber,
     includedAt,
   };
+  // Only the literal confirmed transaction record proves execution. The other
+  // accepted inclusion labels yield an inclusion-only observation, which every
+  // consumer holds as unsettled.
+  if (transaction.status !== "confirmed") return included;
+  const nonce = recordNonce(content.nonce);
+  if (nonce === null) {
+    // The record says the transfer executed, so this is not proof of an
+    // invalid transfer; it stays retryable without an execution attestation.
+    return {
+      status: "unavailable",
+      reason: "confirmed transaction record has no valid signed nonce",
+    };
+  }
+  const executed: DemosExecutedTransferObservation = Object.freeze({
+    ...included,
+    execution: "executed" as const,
+    nonce,
+  });
+  // The signed payload disambiguates denomination, just as in the record
+  // reader. Keep fee evidence private so serialized or copied observations
+  // cannot manufacture it, and use the same parser as fresh/recovered rails.
+  const feeOs = recordTransactionFeeOs(content, typeof native.args[1] === "string");
+  sdkExecutedObservations.set(executed, feeOs == null ? undefined : feeOs.toString());
+  return executed;
 }
 
 function validTimeout(value: number | undefined): number {

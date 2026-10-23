@@ -325,7 +325,11 @@ The exports are five read-only checks: the ones the settlement store and
 `payDemRecordVerifiedTransfer`, which gives the exact transfer terms (payer,
 payee, `amountOs`, network and recovery settlement key) of a frozen success
 `payDemSettleCore` returned from the SDK's own record read, and `undefined`
-for anything else, including a copy of that success.
+for anything else, including a copy of that success. The one other export
+that consults them, `readPayDemTransferRecord`, only reads a retained
+transfer's record through the SDK rail's connection: it adds to none of them
+and returns a new plain object that none of the checks accepts, so its answer
+is never a verdict.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail
@@ -353,21 +357,63 @@ the SDK can make final: the default runtime rail, a rail
 `isPayDemRecordVerifyingRail` accepts, or the runtime's wrapper around such a
 rail. With any other rail a fresh payment stops for operator action
 (`pay-dem-rail-not-record-verifying`) before any wallet reservation. The track
-is still built around such a rail, so a payment it made before reconciles
-through the operator reconciler without calling it. The track settles the
+can still be built around such a rail, but recovery stays held unless its
+connection has an SDK-owned record reader. Recovery never calls `settle`. The track settles the
 wallet authority and publishes a payment notice for a fresh rail result only
 when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee,
 amount, network and settlement key, and its hash is the one this invocation
 journaled. Any other success,
 including an injected rail's `execution: "executed"`, a copy of the SDK
 rail's result, or the SDK rail's result for another transfer or settlement
-key, leaves the payment indeterminate with the wallet reservation retained. A
+key, leaves the payment indeterminate with the wallet reservation retained. So
+does a success whose executed record, as the SDK read it, carries no fee or a
+declared `transaction_fee` other than the confirmed fee used for wallet accounting
+(`recordNetworkFeeOs` in those terms). A
 rail that relays the SDK's own result object unchanged, such as the default
 runtime rail, keeps it. That default rail also reports success only after the
 SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
-Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
-no attestation, so an operator reconciler must return `completed` only after
-reading a bound `confirmed` record.
+Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, proposes
+`completed` with `execution: "executed"` and the record's signed `nonce`.
+The track checks those fields against the prepared checkpoint, then independently
+calls `readPayDemTransferRecord` through the connection `createPayDemRail` opened.
+The runtime wrapper retains that connection for recovery. The read binds the
+exact hash, native-send payload, payer, payee, amount and network; the track also
+requires the prepared signed nonce, the proposed inclusion block and the
+checkpoint's confirmed fee as the proposed fee, and the record's declared
+`transaction_fee` must be that same fee. A record whose fee differs needs an operator
+(`pay-dem-chain-observation-conflict`), and so does one without a fee
+(`pay-dem-network-fee-accounting-missing`); neither debits the wallet or
+publishes a notice. A pending, missing or unavailable record stays
+indeterminate, a failed or conflicting record cannot complete, and a custom
+rail without this SDK reader stays held. Every recovery retry repeats the read
+before wallet reconciliation or notice publication, including a retry after
+notice queueing failed. It never signs or broadcasts.
+
+Before a funded broadcast, the prepared-transfer journal requires
+`declaredNetworkFeeOs` (the confirmed body's `transaction_fee` sum) to equal
+`confirmedTotalDebitOs` minus `amountOs`.
+A missing or mismatched declaration gives `pay-dem-prepared-fee-conflict` and
+operator action before a checkpoint or broadcast. Core sessions without this
+funded accounting contract can still use a different gas-operation quote.
+
+The fee fields above are declarations, not independently established balance
+debits. `demosExecutedTransferNetworkFeeOs` (root and `/seller`) returns the
+record's declared `transaction_fee` sum in OS only for the original frozen SDK
+observation; missing/malformed fees and copies return `undefined`. With the
+node's `gasFeeSeparation` fork inactive, applied balance edits can charge a
+different fee: the historical confirmed fixture declares 2 DEM but removes
+1 DEM for gas. Wallet accounting still uses the confirmed declaration. It does
+not derive actual debits from balance edits or authenticate the fork's apply
+rules.
+
+Object identity establishes that `observePayDemTransferCore` parsed and bound
+the supplied node responses. An injected `PayDemObservationClient` must provide
+authenticated responses; identity does not independently prove their origin.
+The default observer uses the configured RPC as its trust root.
+
+This unreleased V1 reconciliation contract requires the execution/nonce fields
+and an SDK-owned record read. Integrators must use `createPayDemRail` or the
+runtime's wrapper around it when upgrading.
 
 Direct `createPayDemRail().settle()` use without a fence that implements
 `recordAttempt` is supported at the low level, but records no durable payment
@@ -419,11 +465,12 @@ DACS-4 §9.5.9 treats Demos inclusion as BFT-final, and the rail stamps
 `bft-final` at the inclusion block of the confirmed record. It does not watch
 for reorganisation afterwards.
 
-The pinned Standard (`d45c0a29`) says to return success when the transaction
-reaches the terminal `included` state. The rail is stricter: it also requires
-the bound `confirmed` record, because the status index reports `included` for
-failed records. No Standard conformance vector covers an included but failed
-transaction yet.
+The pinned Standard (DACS-4 §9.5.9 step 5 at `d45c0a29`) returns success when
+the transaction reaches the terminal `included` state. The SDK is deliberately
+stricter: the rail, seller intake, seller payment evidence, buyer audit and
+buyer and wallet recovery all require the bound `confirmed` (executed) record
+as well, because the status index reports `included` for failed records. No
+Standard conformance vector covers an included but failed transaction yet.
 
 ## Node semantics
 

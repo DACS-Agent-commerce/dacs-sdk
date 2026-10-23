@@ -39,6 +39,8 @@ interface ForgeryReport {
   reconciler: { fresh: unknown; audit: unknown; calls: number };
   readerFactories: string[];
   readerClient: { core: unknown; bridge: unknown; transfers: number };
+  recordRead: { shipped: boolean; reads: unknown[]; vouches: string[] };
+  executionAttestation: Record<string, boolean>;
 }
 
 describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
@@ -84,14 +86,29 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     expect(report.importErrors.map(({ file }) => file)
       .filter((file) => /^dist\/(?:index|agent\/|rails\/)/.test(file))).toEqual([]);
     expect(report.vouchExports).toEqual([]);
-    // Exactly the four read-only checks, whatever the export syntax.
+    // Exactly the four read-only checks and the read-only record read,
+    // whatever the export syntax.
     expect(report.brandExports.filter((entry) => entry.startsWith("dist/rails/payDem.js#")).sort())
       .toEqual([
         "dist/rails/payDem.js#isPayDemRecordVerifyingRail",
         "dist/rails/payDem.js#isPayDemSettleAdapter",
         "dist/rails/payDem.js#isRecordVerifiedSource",
         "dist/rails/payDem.js#payDemRecordVerifiedTransfer",
+        // Not a check and not a vouch: it reads the node record of a retained
+        // hash through the reader createPayDemRail registered for its own
+        // settle, never signs or broadcasts, and adds to none of the private
+        // sets or maps. Its answer is a new plain object the checks above refuse, so
+        // it cannot mint, copy or launder a verdict. @kynesyslabs/dacs-node's
+        // recovery re-read imports it, so the package must export it.
+        "dist/rails/payDem.js#readPayDemTransferRecord",
       ]);
+  });
+
+  it("ships a record read that reads no custom rail and whose answers no check accepts", () => {
+    expect(report.recordRead.shipped).toBe(true);
+    const unread = { state: "indeterminate", reason: "rail has no SDK transaction record reader" };
+    expect(report.recordRead.reads).toEqual([unread, unread]);
+    expect(report.recordRead.vouches).toEqual([]);
   });
 
   it("refuses a custom rail before it runs, so its failure proof is never kept", () => {
@@ -134,6 +151,20 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     // The rail log binds the hash, so only the missing node read holds it.
     expect(report.reconciler.audit).toEqual(HELD);
     expect(report.reconciler.calls).toBe(1);
+  });
+
+  // A seller delivers, and a host accounts a native payment, only on the
+  // execution attestation the shipped observer built from the node record.
+  it("accepts only the shipped observer's own execution attestation, not a provider's or a copy", () => {
+    expect(report.executionAttestation).toEqual({
+      sameRule: true,
+      sameFields: true,
+      frozen: true,
+      genuine: true,
+      forged: false,
+      copied: false,
+      cloned: false,
+    });
   });
 
   it("ships no record reader or client rail and refuses a reader-carrying client before its transfer", () => {

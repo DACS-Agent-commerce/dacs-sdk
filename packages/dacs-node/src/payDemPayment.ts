@@ -2,8 +2,11 @@ import { types as nodeTypes } from "node:util";
 
 import {
   combineWalletSpendEffectFenceV1,
+  demosExecutedTransferNetworkFeeOs,
+  isDemosExecutedTransferObservation,
   isPayDemRecordVerifyingRail,
   payDemRecordVerifiedTransfer,
+  readPayDemTransferRecord,
   settlementKey,
   type PayDemPreparedTransfer,
   type PayDemRail,
@@ -38,6 +41,7 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import {
+  dacsPayDemRecordReadingRailV1,
   isDacsRecordVerifyingPayDemRailV1,
   isDacsSdkPreparedPayDemRailV1,
 } from "./payDemRailCapabilities.js";
@@ -156,7 +160,8 @@ export interface DacsPayDemPaymentNoticeV1 {
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
-      settlement: Readonly<Omit<PayDemReconciledSettlement, "execution">>;
+      /** `nonce` is the confirmed record's signed nonce. */
+      settlement: Readonly<PayDemReconciledSettlement & { nonce: number }>;
     }
   | { status: "absent"; absenceProofHash: string }
   | { status: "indeterminate"; reasonCode: string; retryAt?: number }
@@ -174,6 +179,23 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
     retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
   }>): Promise<Readonly<DacsPayDemBuyerPaymentAuthorityV1>> |
     Readonly<DacsPayDemBuyerPaymentAuthorityV1>;
+  /**
+   * Return `completed` only when the node's transaction record for the
+   * prepared hash shows the transfer executed. A status-index `included`
+   * alone is not execution: a node reports it for a transaction whose record
+   * `failed` (#338). Every completed settlement must attest
+   * `execution: "executed"` with the record's signed `nonce` after checking a
+   * bound confirmed record, and the prepared checkpoint's confirmed fee as
+   * `networkFeeOs`. The track independently re-reads that record through the
+   * SDK rail's connection, binds its nonce, block and fee (a record without a
+   * fee needs an operator), and removes `execution` and `nonce` before
+   * storing the settlement or publishing its notice.
+   * A rail without an SDK reader cannot finalize recovery. Missing or other execution
+   * evidence stays indeterminate without changing wallet accounting or
+   * publishing a notice. An executed settlement without a prepared checkpoint,
+   * or whose hash or nonce differs from the prepared transfer's, needs an
+   * operator.
+   */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
     prepared?: Readonly<PayDemPreparedTransfer>;
@@ -195,7 +217,7 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
 export interface DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1 {
   /** Integrity-checked generated buyer effect/checkpoint store. */
   database: DacsNodeSqliteDatabase;
-  /** Finalized Demos transfer observer for the exact prepared transaction hash. */
+  /** SDK observer binding the prepared hash, nonce and executed record's declared fee. */
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
 }
 
@@ -415,7 +437,8 @@ function generatedBuyerPaymentEffectId(
 
 /**
  * Authenticate generated native-DEM wallet recovery against both finalized
- * chain facts and the pre-broadcast checkpoint's exact confirmed fee debit.
+ * chain facts, including the executed record's declared fee, and the pre-broadcast
+ * checkpoint's exact confirmed accounting fee.
  * Missing checkpoints never authenticate absence because actor-local backups
  * can roll back independently of the wallet authority and the Demos chain.
  */
@@ -470,7 +493,8 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
         return false;
       }
       const chain = await observeDemosTransfer(prepared.txHash);
-      if (chain.status !== "included" || chain.txHash !== prepared.txHash ||
+      if (!isDemosExecutedTransferObservation(chain) || chain.nonce !== prepared.nonce ||
+          chain.txHash !== prepared.txHash ||
           chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
           chain.amountOs !== payment.amountOs) {
         return false;
@@ -478,6 +502,7 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
       const networkFeeOs = (
         BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
       ).toString();
+      if (demosExecutedTransferNetworkFeeOs(chain) !== networkFeeOs) return false;
       const expected: WalletSpendSettlementObservationV1 = Object.freeze({
         disposition: "settled",
         evidenceHash: prepared.txHash,
@@ -524,7 +549,8 @@ function capturePrepared(
   if (!plainObject(value) || !exactKeys(value, [
     "txHash", "nonce", "payer", "payee", "amountOs", "network",
     "maxTotalDebitOs", "recovery",
-  ], ["denomination", "confirmedTotalDebitOs"]) || typeof value.txHash !== "string" ||
+  ], ["denomination", "confirmedTotalDebitOs", "declaredNetworkFeeOs"]) ||
+      typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) ||
       !Number.isSafeInteger(value.nonce) || (value.nonce as number) < 0 ||
       value.payer !== payment.payer || value.payee !== payment.payee ||
@@ -533,6 +559,9 @@ function capturePrepared(
         value.denomination !== "dem") ||
       value.network !== payment.network ||
       value.maxTotalDebitOs !== payment.maxTotalDebitOs ||
+      (value.declaredNetworkFeeOs !== undefined &&
+        (typeof value.declaredNetworkFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.declaredNetworkFeeOs))) ||
       (value.confirmedTotalDebitOs !== undefined &&
         (typeof value.confirmedTotalDebitOs !== "string" ||
           !INTEGER_RE.test(value.confirmedTotalDebitOs) ||
@@ -713,6 +742,7 @@ export function loadDacsPayDemBuyerPaymentForOrderV1(
 function captureChainReconciliation(
   value: unknown,
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  prepared: Readonly<PayDemPreparedTransfer> | undefined,
 ): Readonly<DacsLiveEffectReconciliationV1<DacsPayDemBuyerPaymentResultV1>> {
   if (!plainObject(value) || typeof value.status !== "string") {
     throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
@@ -722,8 +752,25 @@ function captureChainReconciliation(
     if (!plainObject(raw) || raw.amountOs !== payment.amountOs) {
       throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
     }
+    if (raw.execution !== "executed") {
+      return Object.freeze({ status: "indeterminate",
+        reasonCode: "pay-dem-chain-execution-unconfirmed" });
+    }
+    // The attestation accounts only the exact transfer signed before
+    // broadcast, whoever supplied the reconcile callback. The prepared nonce
+    // is a canonical safe integer, so Object.is also refuses -0 and non-numbers.
+    if (prepared === undefined) {
+      return Object.freeze({ status: "operator-action",
+        reasonCode: "pay-dem-prepared-transfer-checkpoint-missing" });
+    }
+    if (raw.txHash !== prepared.txHash || !Object.is(raw.nonce, prepared.nonce)) {
+      return Object.freeze({ status: "operator-action",
+        reasonCode: "pay-dem-chain-observation-conflict" });
+    }
     const settlement = { ...raw };
     delete settlement.amountOs;
+    delete settlement.execution;
+    delete settlement.nonce;
     return Object.freeze({
       status: "completed",
       result: result(captureSettlement(settlement, payment)),
@@ -757,7 +804,8 @@ function captureChainReconciliation(
  * A fresh payment runs only on a rail whose success the SDK can make final:
  * the default runtime rail, a rail `isPayDemRecordVerifyingRail` accepts, or
  * the runtime's wrapper around one. Any other rail is refused before any
- * wallet reservation, but still reconciles a payment it already made.
+ * wallet reservation. Recovery requires the SDK reader behind the rail; a
+ * callback alone cannot settle the wallet or publish a payment notice.
  */
 export function createDacsPayDemBuyerPaymentTrackV1(
   options: Readonly<DacsPayDemBuyerPaymentTrackOptionsV1>,
@@ -779,8 +827,8 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   const rail = options.rail;
   // Decide before the effect: a rail whose success the SDK could never make
   // final must not reserve the wallet or debit the buyer first (#338), so
-  // `execute` refuses it. `reconcile` never calls the rail, so a payment it
-  // already made still recovers. Only the settle checked here is called below.
+  // `execute` refuses it. Recovery never calls settle and requires the SDK
+  // reader behind this rail. Only the settle checked here is called below.
   const settle = rail.settle;
   const freshSettleRail = isPayDemRecordVerifyingRail(rail) ||
     isDacsRecordVerifyingPayDemRailV1(rail) || isDacsSdkPreparedPayDemRailV1(rail);
@@ -851,6 +899,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           }
         }
         let settlement: Readonly<SettleResult>;
+        let feePreflightFailed = false;
         try {
           let preparedCheckpointed = false;
           let preparedTxHash: string | undefined;
@@ -899,6 +948,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             recovery: recoveryContext(payment),
             journalPreparedTransfer: async (rawPrepared) => {
               const captured = capturePrepared(rawPrepared, payment);
+              if (captured.declaredNetworkFeeOs === undefined ||
+                  captured.confirmedTotalDebitOs === undefined ||
+                  BigInt(payment.amountOs) + BigInt(captured.declaredNetworkFeeOs) !==
+                    BigInt(captured.confirmedTotalDebitOs)) {
+                feePreflightFailed = true;
+                throw new DacsPayDemBuyerPaymentError("pay-dem-prepared-fee-conflict");
+              }
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
               preparedTxHash = captured.txHash;
               preparedCheckpointed = true;
@@ -917,13 +973,17 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           // #338: success needs the executed record the SDK rail read itself,
           // for this payment's exact transfer and the hash journaled above. A
           // rail's own `execution: "executed"` is its statement and stays held.
+          // The wallet is debited the confirmed fee only when that record
+          // carries the same fee, as a restart's re-read below requires.
           const verified = payDemRecordVerifiedTransfer(raw);
           if (verified === undefined || !plainObject(raw) ||
               raw.execution !== "executed" || raw.txHash !== preparedTxHash ||
               verified.payer !== payment.payer || verified.payee !== payment.payee ||
               verified.amountOs !== payment.amountOs ||
               verified.network !== payment.network ||
-              verified.settlementKey !== payment.settlementKey) {
+              verified.settlementKey !== payment.settlementKey ||
+              verified.recordNetworkFeeOs === undefined ||
+              verified.recordNetworkFeeOs !== raw.networkFeeOs) {
             throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
           }
           const { execution: _execution, ...settlementData } = raw;
@@ -935,6 +995,11 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           });
         } catch {
           if (claimFailure !== undefined) return claimFailure;
+          if (feePreflightFailed) return Object.freeze({
+            effectControlVersion: "1" as const,
+            status: "operator-action" as const,
+            reasonCode: "pay-dem-prepared-fee-conflict",
+          });
           return control("pay-dem-settlement-ambiguous");
         }
         return result(settlement);
@@ -955,9 +1020,45 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           ...(prepared === undefined ? {} : { prepared }),
           fence,
         });
-        const captured = captureChainReconciliation(reconciled, payment);
+        const captured = captureChainReconciliation(reconciled, payment, prepared);
         const reservation = walletReservation(payment);
         if (captured.status === "completed") {
+          // PC-4 / §9.5.9: the callback's fields are only a proposed verdict.
+          // Reauthenticate current-code checkpoints on every restart, including
+          // retries after wallet accounting succeeded but notice queueing failed.
+          let record: Awaited<ReturnType<typeof readPayDemTransferRecord>>;
+          try {
+            record = await readPayDemTransferRecord(
+              dacsPayDemRecordReadingRailV1(rail),
+              prepared!,
+            );
+            await fence.assertCurrent();
+          } catch {
+            return Object.freeze({ status: "indeterminate" as const,
+              reasonCode: "pay-dem-chain-observation-unavailable" });
+          }
+          if (record.state === "indeterminate") {
+            return Object.freeze({ status: "indeterminate" as const,
+              reasonCode: "pay-dem-chain-execution-unconfirmed" });
+          }
+          // The proposed fee is the checkpoint's confirmed debit, and the
+          // executed record's declared fee must be that same fee: one the record
+          // contradicts or omits is never accounted to the wallet.
+          const proposed = captured.result.settlement;
+          if (record.state !== "executed" || record.nonce !== prepared!.nonce ||
+              record.blockNumber !== proposed.blockNumber ||
+              prepared!.confirmedTotalDebitOs === undefined ||
+              BigInt(prepared!.confirmedTotalDebitOs) - BigInt(payment.amountOs) !==
+                BigInt(proposed.networkFeeOs!) ||
+              (record.networkFeeOs !== undefined &&
+                record.networkFeeOs !== proposed.networkFeeOs)) {
+            return Object.freeze({ status: "operator-action" as const,
+              reasonCode: "pay-dem-chain-observation-conflict" });
+          }
+          if (record.networkFeeOs === undefined) {
+            return Object.freeze({ status: "operator-action" as const,
+              reasonCode: "pay-dem-network-fee-accounting-missing" });
+          }
           try {
             await walletSpendAuthority.reconcile(
               reservation,

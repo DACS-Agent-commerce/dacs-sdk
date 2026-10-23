@@ -1,6 +1,8 @@
 import {
+  demosExecutedTransferNetworkFeeOs,
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
+  isDemosExecutedTransferObservation,
   type AuthenticatedRailDefinition,
   type DemosTransferObservation,
 } from "@kynesyslabs/dacs";
@@ -216,6 +218,10 @@ export function createDacsFixedPricePayDemBuyerPaymentV1(
  * Reconcile only the exact signed hash retained before broadcast. A missing
  * prepared checkpoint requires operator recovery because actor-local backups
  * can roll back independently of the wallet authority and the Demos chain.
+ * An included observation that conflicts with the payment needs an operator.
+ * A matching one must attest `execution: "executed"` after checking the bound
+ * confirmed transaction record, including the retained signed nonce; otherwise
+ * the payment stays held.
  */
 export function createDacsFixedPricePayDemBuyerReconciliationV1(
   observeDemosTransfer: (txHash: string) => Promise<DemosTransferObservation>,
@@ -242,6 +248,7 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
         reasonCode: "pay-dem-chain-observation-unavailable" });
     }
     if (observation.status === "included") {
+      // A conflicting transfer needs an operator whether or not it executed.
       if (observation.txHash !== prepared.txHash ||
           observation.payer !== payment.payer || observation.payee !== payment.payee ||
           observation.amountOs !== payment.amountOs ||
@@ -252,9 +259,31 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
         return Object.freeze({ status: "operator-action" as const,
           reasonCode: "pay-dem-chain-observation-conflict" });
       }
+      if (observation.execution !== "executed") {
+        return Object.freeze({ status: "indeterminate" as const,
+          reasonCode: "pay-dem-chain-execution-unconfirmed" });
+      }
+      if (!isDemosExecutedTransferObservation(observation) ||
+          observation.nonce !== prepared.nonce) {
+        return Object.freeze({ status: "operator-action" as const,
+          reasonCode: "pay-dem-chain-observation-conflict" });
+      }
+      const networkFeeOs = demosExecutedTransferNetworkFeeOs(observation);
+      if (networkFeeOs === undefined) {
+        return Object.freeze({ status: "operator-action" as const,
+          reasonCode: "pay-dem-network-fee-accounting-missing" });
+      }
+      if (networkFeeOs !== (
+        BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
+      ).toString()) {
+        return Object.freeze({ status: "operator-action" as const,
+          reasonCode: "pay-dem-chain-observation-conflict" });
+      }
       return Object.freeze({
         status: "completed" as const,
         settlement: Object.freeze({
+          execution: "executed" as const,
+          nonce: observation.nonce,
           ok: true,
           txHash: observation.txHash,
           chainId: "demos",
@@ -264,9 +293,7 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
           blockNumber: observation.blockNumber,
           txRefKind: "demos" as const,
           amountOs: observation.amountOs,
-          networkFeeOs: (
-            BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
-          ).toString(),
+          networkFeeOs,
         }),
       });
     }

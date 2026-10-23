@@ -6,6 +6,7 @@ import {
   canonicalSellerSettlementId,
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
+  isDemosExecutedTransferObservation,
   sellerFulfilmentId,
   validateFixedPriceAgreementBinding,
   x402Eip3009Nonce,
@@ -744,6 +745,12 @@ export function createDacsFixedPriceBuyerAuditV1(
         const sellerReceivingKey = sellerKey === null
           ? undefined : Buffer.from(sellerKey).toString("hex");
         const expectedAmountOs = baseUnits(agreement.terms.price.amount, 9);
+        if (observation.status === "pending" || observation.status === "not-found" ||
+            observation.status === "unavailable") {
+          throw new DacsFixedPriceX402BuyerAuditError(
+            "buyer-audit-native-observation-unavailable",
+          );
+        }
         if (observation.status !== "included" || buyerPayingKey === undefined ||
             sellerReceivingKey === undefined || observation.txHash !== event.txHash ||
             observation.blockNumber !== event.blockNumber ||
@@ -756,6 +763,14 @@ export function createDacsFixedPriceBuyerAuditV1(
             observation.amountOs !== expectedAmountOs) {
           throw new DacsFixedPriceX402BuyerAuditError(
             "buyer-audit-native-finality-invalid",
+          );
+        }
+        // A matching inclusion without an execution attestation does not prove
+        // the request invalid. This reason is not a terminal rejection, so the
+        // inbox keeps the request pending and retries it.
+        if (!isDemosExecutedTransferObservation(observation)) {
+          throw new DacsFixedPriceX402BuyerAuditError(
+            "buyer-audit-native-execution-unconfirmed",
           );
         }
         if (payout.payeeAddress !== sellerReceivingKey) {
@@ -839,6 +854,7 @@ export function createDacsFixedPriceBuyerAuditV1(
               : { disposition: "indeterminate" as const,
                   reason: "buyer-audit-native-revalidation-unavailable" };
           }
+          // A conflicting transfer fails whether or not it executed.
           if (fresh.txHash !== event.txHash || fresh.blockNumber !== event.blockNumber ||
               fresh.includedAt !== paymentEvidence.observedAt ||
               fresh.includedAt < committedAt ||
@@ -847,6 +863,10 @@ export function createDacsFixedPriceBuyerAuditV1(
               fresh.amountOs !== expectedAmountOs) {
             return { disposition: "fail" as const,
               reason: "buyer-audit-native-settlement-conflict" };
+          }
+          if (!isDemosExecutedTransferObservation(fresh)) {
+            return { disposition: "indeterminate" as const,
+              reason: "buyer-audit-native-revalidation-unavailable" };
           }
           return {
             disposition: "pass" as const,

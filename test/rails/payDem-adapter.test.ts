@@ -468,6 +468,7 @@ describe("createPayDemRail nonce coordination", () => {
         payee: "cd".repeat(32),
         amountOs: "1000000000",
         confirmedTotalDebitOs: "2000000000",
+        declaredNetworkFeeOs: "1000000000",
         denomination: "os",
         network: "demos",
         maxTotalDebitOs: "2000000000",

@@ -10,6 +10,7 @@ import {
   isSettlementEvidence,
   prepareCompletedSellerBundleCounterSignatureRequest,
   verifyCompletedSellerBundleCounterSignatureRequest,
+  verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
 } from "@kynesyslabs/dacs";
 import type {
@@ -112,6 +113,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { sdkExecutedObservation } from "./helpers/demosObservation.js";
 
 const NOW = 1_786_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -896,7 +898,22 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     })).toThrow(TypeError);
   });
 
-  it("independently re-observes native DEM before accepting the audit request", async () => {
+  it.each([
+    { stage: "valid", execution: "executed", nonce: 7, status: "included" },
+    ...["initial", "revalidation"].flatMap((stage) => [
+      ...[undefined, "confirmed", "failed", true, null].map((execution) =>
+        ({ stage, execution, nonce: undefined, status: "included" })),
+      // The execution marker without the record's signed nonce is no attestation.
+      ...[undefined, -1, 7.5, "7"].map((nonce) =>
+        ({ stage, execution: "executed", nonce, status: "included" })),
+      // #338: nor is a well-shaped copy the SDK observer did not return.
+      { stage, execution: "executed", nonce: 7, status: "included" },
+    ]),
+    ...["initial", "revalidation"].map((stage) =>
+      ({ stage, execution: "executed", nonce: 7, status: "pending" })),
+    ...["unavailable", "not-found", "failed", "invalid"].map((status) =>
+      ({ stage: "initial", execution: undefined, nonce: undefined, status })),
+  ])("requires executed native DEM at $stage with status $status, attestation $execution and nonce $nonce", async ({ stage, execution, nonce, status }) => {
     const f = await payDemFixture();
     const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
     roots.push(root);
@@ -955,15 +972,15 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       agreementHash: f.agreementHash,
       artifact: f.agreement,
     });
-    const observation = {
-      status: "included" as const,
+    const observation = await sdkExecutedObservation({
+      nonce: 7,
       txHash: f.event.txHash,
       blockNumber: f.event.blockNumber,
       payer: Buffer.from(BUYER_KEY).toString("hex"),
       payee: Buffer.from(SELLER_KEY).toString("hex"),
       amountOs: "1000000000",
       includedAt: NOW - 3_000,
-    };
+    });
     const observeDemosTransfer = vi.fn(async () => observation);
     const adapter = {
       resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
@@ -997,6 +1014,45 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     const authenticated = {
       envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
     } as never;
+    const { execution: _execution, nonce: _nonce, ...includedOnly } = observation;
+    const unexecuted = { ...includedOnly, status,
+      ...(execution === undefined ? {} : { execution }),
+      ...(nonce === undefined ? {} : { nonce }) };
+    if (stage === "initial") {
+      // A matching inclusion without an attestation is not proof that the
+      // request is invalid. Its reason is not a terminal inbox rejection (see
+      // bundleTransportRuntime.test.ts), so the seller's request is retried.
+      observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
+      await expect(audit.bundleTransport.resolveVerification({
+        authenticated, request: f.preliminaryRequest as never,
+      })).rejects.toMatchObject({ reasonCode: status === "included"
+        ? "buyer-audit-native-execution-unconfirmed"
+        : ["pending", "not-found", "unavailable"].includes(status)
+          ? "buyer-audit-native-observation-unavailable"
+          : "buyer-audit-native-finality-invalid" });
+      if (["pending", "not-found", "unavailable"].includes(status)) {
+        await expect(audit.bundleTransport.resolveVerification({
+          authenticated, request: f.preliminaryRequest as never,
+        })).resolves.toHaveProperty("input");
+      }
+      if (status === "included") {
+        // A conflicting transfer still rejects whether or not it executed.
+        observeDemosTransfer.mockResolvedValueOnce(
+          { ...unexecuted, payee: "0".repeat(64) } as never,
+        );
+        await expect(audit.bundleTransport.resolveVerification({
+          authenticated, request: f.preliminaryRequest as never,
+        })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+        // The retried request verifies once the attestation arrives.
+        await expect(audit.bundleTransport.resolveVerification({
+          authenticated, request: f.preliminaryRequest as never,
+        })).resolves.toHaveProperty("input");
+      }
+      expect(adapter.sign).not.toHaveBeenCalled();
+      expect(context.demos.signComponent).not.toHaveBeenCalled();
+      expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
+      return;
+    }
     const preliminary = await audit.bundleTransport.resolveVerification({
       authenticated,
       request: f.preliminaryRequest as never,
@@ -1012,6 +1068,40 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       authenticated,
       request: exactRequest,
     });
+    if (stage === "revalidation") {
+      mocks.bundleRequest.mockResolvedValue(exactRequest);
+      const material = await audit.audit.resolveMaterial({
+        operation: { order: pair.buyer },
+        retained: { application: f.application },
+      } as never);
+      const provider = material.durability.settlementVerification;
+      await expect(verifyFinalizedSessionSettlement(
+        material.input.settlementContext, material.input.settlement, provider,
+      )).resolves.toMatchObject({ disposition: "verified" });
+      for (const mode of ["initial", "recovery"] as const) {
+        observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
+        const result = await verifyFinalizedSessionSettlement(
+          material.input.settlementContext, material.input.settlement, provider, mode,
+        );
+        expect(result).toEqual({ disposition: "indeterminate",
+          reason: "native settlement: buyer-audit-native-revalidation-unavailable" });
+        expect(result).not.toHaveProperty("value");
+      }
+      if (status === "included") {
+        // A conflicting transfer fails whether or not it attests execution.
+        observeDemosTransfer.mockResolvedValueOnce(
+          { ...unexecuted, payee: "0".repeat(64) } as never,
+        );
+        await expect(verifyFinalizedSessionSettlement(
+          material.input.settlementContext, material.input.settlement, provider, "recovery",
+        )).resolves.toEqual({ disposition: "rejected",
+          reason: "native settlement: buyer-audit-native-settlement-conflict" });
+      }
+      expect(adapter.sign).not.toHaveBeenCalled();
+      expect(context.demos.signComponent).not.toHaveBeenCalled();
+      expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
+      return;
+    }
     await expect(verifyCompletedSellerBundleCounterSignatureRequest(
       exact.input,
       exactRequest,

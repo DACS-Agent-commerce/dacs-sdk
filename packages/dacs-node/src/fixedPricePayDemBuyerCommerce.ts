@@ -1,5 +1,6 @@
 import {
   baseUnits,
+  isDemosExecutedTransferObservation,
   verifySettlementEvidence,
   type AuthenticatedRailDefinition,
   type DemosTransferObservation,
@@ -159,7 +160,8 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
         }
         if (request.evidence.phase !== "pay-dem" ||
             request.evidence.outcome !== "success" || txRef?.kind !== "demos" ||
-            finality?.model !== "bft-final" || observed.status !== "included" ||
+            finality?.model !== "bft-final" ||
+            !isDemosExecutedTransferObservation(observed) ||
             txRef.txHash !== settlement.txHash ||
             txRef.blockNumber !== settlement.blockNumber ||
             observed.txHash !== settlement.txHash ||

@@ -50,6 +50,7 @@ vi.mock("../src/payDemPayment.js", async (importOriginal) => ({
 
 import { createDacsFixedPricePayDemBuyerCommerceV1 } from
   "../src/fixedPricePayDemBuyerCommerce.js";
+import { observedBySdk } from "./helpers/demosObservation.js";
 
 const NOW = 1_786_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -249,6 +250,8 @@ async function fixture() {
     receiptVerified: true,
     observed: {
       status: "included",
+      execution: "executed",
+      nonce: 7,
       txHash: TX_HASH,
       blockNumber: BLOCK_NUMBER,
       payer: BUYER_HEX,
@@ -262,7 +265,9 @@ async function fixture() {
     payment: { railId: RAIL_ID, phaseIndex: 2, payer: BUYER_HEX, payee: SELLER_HEX },
     result: { settlement: { txHash: TX_HASH, blockNumber: BLOCK_NUMBER } },
   });
-  const observeDemosTransfer = vi.fn(async () => ({ ...state.observed }));
+  // The SDK's own observer over a node serving `state.observed`; facts no
+  // record can carry are returned as the provider's own statement.
+  const observeDemosTransfer = vi.fn(async () => observedBySdk({ ...state.observed }));
   const context = {
     role: "buyer",
     authority: BUYER,
@@ -509,6 +514,36 @@ describe("fixed-price native DEM buyer payment-evidence verification", () => {
     await expect(onlyVerifierOutcome()).resolves.toEqual({ decision: "pass", reasons: [] });
   });
 
+  // #338: the provider's own well-shaped attestation is not the SDK's record read.
+  it("holds seller evidence against an executed observation the SDK observer did not return", async () => {
+    const f = await fixture();
+    f.observeDemosTransfer.mockImplementationOnce(async () =>
+      ({ ...f.state.observed }) as never);
+    await expect(f.verify()).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "payment evidence settlement binding invalid",
+    });
+    expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "confirmed", "failed", true, null])("holds seller evidence without literal execution (%s)", async (execution) => {
+    const f = await fixture();
+    if (execution === undefined) delete f.state.observed.execution;
+    else f.state.observed.execution = execution;
+    await expect(f.verify()).resolves.toMatchObject({ disposition: "indeterminate" });
+    expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1, "7"])(
+    "holds seller evidence whose execution attestation has nonce %s", async (nonce) => {
+      const f = await fixture();
+      if (nonce === undefined) delete f.state.observed.nonce;
+      else f.state.observed.nonce = nonce;
+      await expect(f.verify()).resolves.toMatchObject({ disposition: "indeterminate" });
+      expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects payment evidence authored by the buyer before observing settlement", async () => {
     const f = await fixture();
     const buyerAuthored = signComponent(
@@ -565,6 +600,24 @@ describe("fixed-price native DEM buyer payment-evidence verification", () => {
       disposition,
       reason: "payment evidence settlement binding invalid",
     });
+    expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { model: "block-depth", finalityBlocks: 1 },
+    { model: "provider-receipt" },
+  ] as const)("holds correctly signed native evidence with $model finality", async (finality) => {
+    const f = await fixture();
+    const evidence = signComponent(paymentEvidenceInput({
+      settlementFinality: { ...finality, finalityObservedAt: INCLUDED_AT },
+    }), ARTIFACT_SEPARATORS.SettlementEvidence, SELLER);
+    expect(isSettlementEvidence(evidence)).toBe(true);
+
+    await expect(f.verify({ evidence, evidenceHash: contentHash(evidence) })).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "payment evidence settlement binding invalid",
+    });
+    expect(f.observeDemosTransfer).toHaveBeenCalledWith(TX_HASH);
     expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
   });
 

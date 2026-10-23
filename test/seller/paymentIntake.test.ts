@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
@@ -8,6 +8,7 @@ import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
+  isDemosExecutedTransferObservation,
   isValidSellerReceiptClaim,
   isSellerFulfilmentHandoff,
   sellerFulfilmentCandidateHash,
@@ -15,6 +16,8 @@ import {
   verifySellerPaymentIntake,
   x402Eip3009Nonce,
   type CommittedAgreementResolution,
+  type DemosExecutedTransferObservation,
+  type DemosIncludedTransferObservation,
   type DemosTransferObservation,
   type SellerFulfilmentHandoff,
   type SellerFulfilmentHandoffV2,
@@ -28,6 +31,7 @@ import {
   type SellerSupportedRailDefinition,
   type X402TransferObservation,
 } from "../../src/seller/index.js";
+import { observedBySdk } from "../fixtures/sdkDemosObservation.js";
 
 const BUYER_DEMOS = `did:demos:agent:${"aa".repeat(32)}`;
 const SELLER_DEMOS = `did:demos:agent:${"bb".repeat(32)}`;
@@ -327,6 +331,8 @@ function makeContext(
       };
   const demosObservation: DemosTransferObservation = {
     status: "included",
+    execution: "executed",
+    nonce: 7,
     txHash: DEMOS_TX,
     payer: "aa".repeat(32),
     payee: "bb".repeat(32),
@@ -385,7 +391,9 @@ function makeContext(
       address: PAYEE,
       tier: 3,
     }),
-    observeDemosTransfer: async () => ctx.demosObservation,
+    // The SDK's own observer over a node serving the fixture's facts; a
+    // fixture no record can carry is returned as the host's own statement.
+    observeDemosTransfer: async () => observedBySdk(ctx.demosObservation),
     observeX402Transfer: async () => ctx.x402Observation,
     verifyX402ReceiptExtensions: async () => ({ disposition: "pass" }),
     classifyX402SettlementChain: async () => ({ disposition: "l2" }),
@@ -729,6 +737,55 @@ function fulfilmentHandoff(
   };
 }
 
+describe("isDemosExecutedTransferObservation", () => {
+  const facts = {
+    status: "included" as const, txHash: "ab".repeat(32), payer: "aa".repeat(32),
+    payee: "bb".repeat(32), amountOs: "1", blockNumber: 42, includedAt: 1_000,
+  };
+
+  it.each([0, 7, Number.MAX_SAFE_INTEGER])("accepts the SDK observer's attestation with nonce %d", async (nonce) => {
+    const observed = await observedBySdk({ ...facts, execution: "executed", nonce });
+    expect(observed).toEqual({ ...facts, execution: "executed", nonce });
+    expect(Object.isFrozen(observed)).toBe(true);
+    expect(isDemosExecutedTransferObservation(observed)).toBe(true);
+  });
+
+  // #338: the attestation is the SDK's own record read, not a shape. The same
+  // fields built elsewhere, or copied off a genuine attestation, are refused.
+  it("refuses a well-shaped attestation the SDK observer did not return", async () => {
+    const genuine = await observedBySdk({ ...facts, execution: "executed", nonce: 7 });
+    expect(isDemosExecutedTransferObservation(genuine)).toBe(true);
+    for (const fabricated of [
+      { ...facts, execution: "executed" as const, nonce: 7 },
+      { ...genuine },
+      structuredClone(genuine),
+      JSON.parse(JSON.stringify(genuine)) as DemosTransferObservation,
+      Object.freeze({ ...genuine }),
+    ]) {
+      expect(fabricated).toEqual(genuine);
+      expect(isDemosExecutedTransferObservation(fabricated)).toBe(false);
+    }
+  });
+
+  it.each([
+    ["inclusion only", { ...facts }],
+    ["missing nonce", { ...facts, execution: "executed" }],
+    ["negative zero nonce", { ...facts, execution: "executed", nonce: -0 }],
+    ["negative nonce", { ...facts, execution: "executed", nonce: -1 }],
+    ["fractional nonce", { ...facts, execution: "executed", nonce: 7.5 }],
+    ["unsafe nonce", { ...facts, execution: "executed", nonce: Number.MAX_SAFE_INTEGER + 1 }],
+    ["NaN nonce", { ...facts, execution: "executed", nonce: NaN }],
+    ["string nonce", { ...facts, execution: "executed", nonce: "7" }],
+    ["bigint nonce", { ...facts, execution: "executed", nonce: 7n }],
+    ["record label", { ...facts, execution: "confirmed", nonce: 7 }],
+    ["pending status", { status: "pending", execution: "executed", nonce: 7 }],
+    ["null", null],
+    ["array", [{ ...facts, execution: "executed", nonce: 7 }]],
+  ])("refuses %s", (_label, value) => {
+    expect(isDemosExecutedTransferObservation(value as never)).toBe(false);
+  });
+});
+
 describe("SellerFulfilmentHandoff runtime guard", () => {
   it.each([
     "paymentPhaseIndex",
@@ -803,6 +860,137 @@ describe("SellerFulfilmentHandoff runtime guard", () => {
 });
 
 describe("verifySellerPaymentIntake", () => {
+  it("accepts the default observer's successful execution attestation", async () => {
+    const ctx = makeContext("pay-dem");
+    const observeDemosTransfer = vi.fn(ctx.deps.observeDemosTransfer);
+    ctx.deps.observeDemosTransfer = observeDemosTransfer;
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+    });
+    const observed = await observeDemosTransfer.mock.results[0]!.value;
+    expect(observed).toMatchObject({ execution: "executed", nonce: 7 });
+    expect(isDemosExecutedTransferObservation(observed)).toBe(true);
+  });
+
+  // #338: delivery needs the SDK's own record read. A provider's well-shaped
+  // `execution: "executed"`, or a copy of the SDK's attestation, is its
+  // statement: no fulfilment claim, no receipt and no payment evidence.
+  it.each([
+    ["built by the provider", async (ctx: Context) => ({ ...ctx.demosObservation })],
+    ["copied off the SDK's attestation", async (ctx: Context) =>
+      ({ ...await observedBySdk(ctx.demosObservation) })],
+  ] as const)("refuses a well-shaped executed observation %s before claiming delivery", async (
+    _label, observe,
+  ) => {
+    const ctx = makeContext("pay-dem");
+    const store = ctx.deps.receiptStore;
+    const claim = vi.fn(store.claim.bind(store));
+    ctx.deps.receiptStore = { ...store, claim };
+    expect(ctx.demosObservation).toMatchObject({ execution: "executed", nonce: 7 });
+    ctx.deps.observeDemosTransfer = () => observe(ctx);
+
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+    expect(result).toEqual({
+      disposition: "error", reason: "demos-execution-unattested", fulfilment: "none",
+    });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, "7", -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects a malformed supplied record nonce %j before fulfilment", async (nonce) => {
+      const ctx = makeContext("pay-dem");
+      ctx.demosObservation = { ...ctx.demosObservation, nonce } as never;
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "error", reason: "demos-observation-invalid-result", fulfilment: "none",
+      });
+    },
+  );
+
+  it.each([undefined, "failed", "unknown", null, true, "confirmed"])(
+    "rejects an included observation with execution %s before fulfilment",
+    async (execution) => {
+      const ctx = makeContext("pay-dem");
+      ctx.demosObservation = { ...ctx.demosObservation, execution } as never;
+
+      const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+      expect(result).toMatchObject({
+        disposition: "error",
+        reason: "demos-observation-invalid-result",
+        fulfilment: "none",
+      });
+      expect(result.evidenceInput).toBeUndefined();
+    },
+  );
+
+  it.each(["finalized", "settled", "confirmed"])(
+    "rejects an attested observation with unknown status %s before claiming delivery",
+    async (status) => {
+      const ctx = makeContext("pay-dem");
+      const store = ctx.deps.receiptStore;
+      const claim = vi.fn(store.claim.bind(store));
+      ctx.deps.receiptStore = { ...store, claim };
+      ctx.demosObservation = { ...ctx.demosObservation, status } as never;
+      const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+      expect(result).toMatchObject({
+        disposition: "error", reason: "demos-observation-invalid-result", fulfilment: "none",
+      });
+      expect(claim).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["execution", "nonce"])(
+    "refuses a partial attestation without %s before claiming delivery", async (key) => {
+      const ctx = makeContext("pay-dem");
+      const store = ctx.deps.receiptStore;
+      const claim = vi.fn(store.claim.bind(store));
+      ctx.deps.receiptStore = { ...store, claim };
+      delete (ctx.demosObservation as unknown as Record<string, unknown>)[key];
+      const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+      expect(result).toMatchObject({
+        disposition: "error", reason: "demos-observation-invalid-result", fulfilment: "none",
+      });
+      expect(result.evidenceInput).toBeUndefined();
+      expect(claim).not.toHaveBeenCalled();
+    },
+  );
+
+  it("holds an inclusion-only observation as unsettled before claiming delivery", async () => {
+    const ctx = makeContext("pay-dem");
+    const store = ctx.deps.receiptStore;
+    const claim = vi.fn(store.claim.bind(store));
+    ctx.deps.receiptStore = { ...store, claim };
+    const { execution: _execution, nonce: _nonce, ...includedOnly } =
+      ctx.demosObservation as DemosExecutedTransferObservation;
+    ctx.demosObservation = includedOnly satisfies DemosIncludedTransferObservation;
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+    expect(result).toEqual({
+      disposition: "indeterminate", reason: "demos-execution-unconfirmed", fulfilment: "none",
+    });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["payer", { payer: "cc".repeat(32) }, "demos-transfer-party-or-identity-mismatch"],
+    ["amount", { amountOs: "1" }, "payment-amount-mismatch"],
+  ] as const)(
+    "rejects an inclusion-only observation with a conflicting %s",
+    async (_label, conflict, reason) => {
+      const ctx = makeContext("pay-dem");
+      const store = ctx.deps.receiptStore;
+      const claim = vi.fn(store.claim.bind(store));
+      ctx.deps.receiptStore = { ...store, claim };
+      const { execution: _execution, nonce: _nonce, ...includedOnly } =
+        ctx.demosObservation as DemosExecutedTransferObservation;
+      ctx.demosObservation = { ...includedOnly, ...conflict };
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toEqual({
+        disposition: "rejected", reason, fulfilment: "none",
+      });
+      expect(claim).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     {
       name: "an explicitly undefined optional field",
@@ -848,9 +1036,10 @@ describe("verifySellerPaymentIntake", () => {
       },
     });
     expect(result.evidenceInput).not.toHaveProperty("phaseIndex");
+    // The observer reports the node's canonical hash.
     expect(result.evidenceInput?.paymentTxRefs[0]).toEqual({
       kind: "demos",
-      txHash: DEMOS_TX,
+      txHash: "ab".repeat(32),
       blockNumber: 88,
     });
     expect(result.payloadVerificationProducerAdmission).toMatchObject({
@@ -2132,7 +2321,7 @@ describe("verifySellerPaymentIntake", () => {
     if (substitutedRetry.demosObservation.status !== "included") {
       throw new Error("fixture");
     }
-    substitutedRetry.demosObservation.includedAt = 5_500;
+    substitutedRetry.demosObservation.includedAt = 7_000;
     substitutedRetry.demosObservation.blockNumber = 89;
     const substituted = await verifySellerPaymentIntake(
       substitutedRetry.input,
@@ -2149,7 +2338,7 @@ describe("verifySellerPaymentIntake", () => {
 
     const retry = makeContext("pay-dem", store);
     if (retry.demosObservation.status !== "included") throw new Error("fixture");
-    retry.demosObservation.includedAt = 5_500;
+    retry.demosObservation.includedAt = 7_000;
     const recovered = await verifySellerPaymentIntake(retry.input, retry.deps);
     expect(recovered).toMatchObject({
       disposition: "verified",

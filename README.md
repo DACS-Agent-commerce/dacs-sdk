@@ -552,19 +552,72 @@ const deps = {
 The observer enforces DACS-4 §9.5.9 against one mutually-consistent transaction
 status, native-transfer body, and confirmed block. It derives finality time from
 the block rather than the transaction timestamp. The status API's `included`
-state remains the finality authority; an `included`, `confirmed`, or `finalized`
-transaction-body label is accepted only when that status and confirmed-block
-membership agree. RPC time and decoded JSON size are bounded (15 seconds and
-64 MiB by default, both configurable), including the potentially larger
-confirmed-block response. The native-send payload disambiguates the denomination
-fork:
+state and confirmed-block membership establish inclusion only: a Demos node
+reports `included` for every stored transaction, including one whose record
+`failed`. Execution needs the transaction record's literal `confirmed` label
+and a valid signed nonce; only then does the observer return
+`execution: "executed"` with that `nonce`. An `included` or `finalized` record
+label (the cited node source writes only `confirmed`, `failed` and `pending`
+records) yields an inclusion-only observation (no `execution`). The seller
+intake, seller payment evidence, buyer payment recovery, wallet accounting and
+buyer audit all apply one rule, `isDemosExecutedTransferObservation`: only the
+frozen `execution: "executed"` observation the SDK's own observer returned
+(`observePayDemTransferCore`, which `createPayDemSellerObserver` uses) counts
+as settled, and anything else is held. A copy of that object, or one with the
+same fields built elsewhere, does not count. A `confirmed` record without a valid nonce
+is reported as `unavailable` and retried. A `failed` record, or a status,
+record and block that disagree on the hash, the block number or the block's
+transaction list, is `invalid`. The record label is the only execution
+evidence read: the observer does not read the block's applied-transaction
+list (`attrs.gcrAppliedTxs`). RPC time and decoded JSON size are bounded (15
+seconds and 64 MiB by default, both configurable), including the potentially
+larger confirmed-block response. The native-send payload disambiguates the
+denomination fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
 ed25519 owner address (the account whose nonce and balance are mutated), not an
 alternate active signing key in `content.from`. It trusts the configured Demos
-RPC's confirmed-block view; applications requiring an independent
-validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
+RPC's confirmed-block view. An application that needs a stronger view, such as
+an independent validator-quorum proof, passes its own `PayDemObservationClient`
+to `observePayDemTransferCore`, which must return the node's authenticated
+responses: the SDK still reads and binds the record itself, so its result can
+attest execution. An `observeDemosTransfer` provider that builds its own
+observations can report `pending`, `not-found`, `unavailable`, `failed`,
+`invalid` or the inclusion-only shape (both `execution` and `nonce` omitted; a
+present key set to `undefined` is malformed), but it cannot attest execution.
+Its well-shaped `execution: "executed"` observation never permits delivery: the
+seller intake returns the verifier error `demos-execution-unattested` without
+claiming fulfilment, and seller payment evidence is not issued. The seller
+intake treats any other `included` shape as a malformed result. During the
+buyer audit, a matching observation without the SDK's attestation leaves the
+seller's countersignature request pending to be retried, while a conflicting
+one rejects it. The buyer's `reconcile` option for pay-DEM recovery
+(`createDacsFixedPricePayDemBuyerReconciliationV1` builds one from an
+observer) follows the same rule: an observation whose hash, parties or amount
+conflict with the prepared transfer needs an operator, whether or not it
+attests execution; a matching one without `execution: "executed"` keeps wallet
+accounting and the payment notice held; and an executed one completes only
+when it is the SDK observer's attestation and its `nonce` equals the prepared
+signed nonce (otherwise it needs an operator). A custom `reconcile` callback's completed settlement carries
+`execution: "executed"` and that `nonce`. The payment track checks it against
+the prepared checkpoint and independently re-reads the exact native record
+through the SDK rail's connection (`readPayDemTransferRecord`), including when
+using the runtime wrapper. A callback alone cannot finalize recovery: a pending,
+missing or unavailable record stays held; a failed or conflicting record cannot
+complete. The read binds the hash, parties, amount and network, and the track
+checks the signed nonce, inclusion block and checkpoint's confirmed debit before
+wallet accounting or notice publication. The record's declared `transaction_fee`
+must equal the confirmation's fee used for accounting: a record whose fee
+differs, or that carries none, needs an operator and neither debits the wallet
+nor publishes a notice. A fresh payment applies the
+same fee rule before it settles the wallet. The prepared-transfer journal
+checks `declaredNetworkFeeOs` against the confirmed fee before broadcast;
+a missing or mismatched declaration gives `pay-dem-prepared-fee-conflict`.
+The declaration is not an actual balance-debit proof: with `gasFeeSeparation` inactive, applied balance edits can
+charge a different fee. `demosExecutedTransferNetworkFeeOs` returns this declared
+fee only for the original SDK observation; copies return `undefined`.
+A rail without an SDK-owned record reader stays held. Recovery never signs or broadcasts.
 
 The funded boundary test is disabled by default. It requires two independent
 Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), an
