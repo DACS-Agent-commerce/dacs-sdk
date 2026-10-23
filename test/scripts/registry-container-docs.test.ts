@@ -37,3 +37,11 @@ describe("acceptance runbook contracts", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+
+it("scopes byte limits to HTTP responses and deadlines to wrapped commands", () => {
+  const readme = readFileSync("README.md", "utf8").replace(/\s+/g, " ");
+  expect(readme).toContain("npm HTTP responses have byte and time limits.");
+  expect(readme).toContain("Commands wrapped with `run_bounded` have deadlines.");
+  expect(readme).not.toContain("responses and command execution have byte and time limits");
+});
