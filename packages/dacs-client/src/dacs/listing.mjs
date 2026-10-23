@@ -28,7 +28,7 @@ export const DEM_DECIMALS = 9;
 export const SDK_PROVENANCE = Object.freeze({
   package: '@kynesyslabs/dacs',
   version: DACS_SDK_VERSION,
-  source: 'dacs-sdk workspace implementation (package-lock workspace link)',
+  source: '@kynesyslabs/dacs package implementation',
   standardPin: DACS_STANDARD_PIN,
 });
 
