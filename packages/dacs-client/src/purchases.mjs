@@ -921,7 +921,27 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   function checkedTransferObservation(value, hash) {
     const invalid = reason => ({ status: 'malformed', reason });
     try {
-      const bytes = JSON.stringify(value);
+      let used = 0;
+      const containers = new WeakMap();
+      const charge = amount => { used += amount; if (used > MAX_TRANSFER_OBSERVATION_BYTES) throw new RangeError('observation byte limit'); };
+      const stringBytes = text => {
+        if (text.length > MAX_TRANSFER_OBSERVATION_BYTES - used) throw new RangeError('observation byte limit');
+        return Buffer.byteLength(JSON.stringify(text));
+      };
+      const bytes = JSON.stringify(value, function (key, field) {
+        const parent = containers.get(this), array = Array.isArray(field);
+        const omitted = field === undefined || ['function', 'symbol'].includes(typeof field);
+        if (omitted && !parent?.array) return field;
+        if (parent) { charge(parent.count++ ? 1 : 0); if (!parent.array) charge(stringBytes(key) + 1); }
+        if (field && typeof field === 'object') {
+          // Bound native JSON's key/index enumeration before it allocates it.
+          if (array && field.length > MAX_TRANSFER_OBSERVATION_BYTES) throw new RangeError('observation list limit');
+          let count = 0;
+          for (const name in field) if (Object.hasOwn(field, name) && (++count > MAX_TRANSFER_OBSERVATION_BYTES || name.length > MAX_TRANSFER_OBSERVATION_BYTES)) throw new RangeError('observation key limit');
+          charge(2); containers.set(field, { array, count: 0 });
+        } else charge(typeof field === 'string' ? stringBytes(field) : (JSON.stringify(omitted ? null : field)?.length ?? 0));
+        return field;
+      });
       if (typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TRANSFER_OBSERVATION_BYTES) return invalid('chain observation exceeds its byte limit');
       value = JSON.parse(bytes);
     } catch { return invalid('chain observation must be JSON serializable'); }
