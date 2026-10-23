@@ -18,10 +18,8 @@ const CREATE_KEY = ["rk", "test", "CreateCredential123"].join("_");
 const STATUS_KEY = ["rk", "test", "StatusCredential456"].join("_");
 
 const INTENT: Ap2SettlementIntent = {
-  intentVersion: "2",
+  intentVersion: "1",
   bindingHash: "a".repeat(64),
-  operationJson: "{}",
-  operationHash: sha256Hex("{}"),
   transactionId: "transaction-id",
   jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   phaseIndex: 3,
@@ -36,16 +34,14 @@ const INTENT: Ap2SettlementIntent = {
 };
 
 function fence(): Ap2EffectFence {
-  const effectFence: Ap2EffectFence = {
+  return {
     transactionId: INTENT.transactionId,
     bindingHash: INTENT.bindingHash,
     owner: "worker-a",
     generation: 1,
     idempotencyKey: INTENT.idempotencyKey,
     assertCurrent: vi.fn(async () => undefined),
-    async assertSubmissionAllowed() { await effectFence.assertCurrent(); },
   };
-  return effectFence;
 }
 
 function statusBody(overrides: Record<string, unknown> = {}): string {
@@ -76,16 +72,6 @@ function options(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Stripe AP2 reference adapter", () => {
-  test("rechecks submission permission immediately before fetch", async () => {
-    const fetchImpl = vi.fn<typeof fetch>();
-    const { provider } = createStripeAp2Integration(options({ fetchImpl }));
-    const effectFence = fence();
-    effectFence.assertSubmissionAllowed = vi.fn(async () => { throw new Error("ap2-provider-replay-window-expired"); });
-    await expect(provider.submit({ intent: INTENT, checkoutMandate: {}, paymentMandate: {},
-      metadata: {}, idempotencyKey: INTENT.idempotencyKey, fence: effectFence,
-    })).resolves.toEqual({ disposition: "indeterminate", reason: "ap2-provider-replay-window-expired" });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
   test("submits exact AP2 terms with only the create credential and generation fence", async () => {
     const fetchImpl = vi.fn(async (
       _input: string | URL | Request,

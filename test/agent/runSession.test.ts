@@ -166,7 +166,7 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
       payer: "0xbob",
       payee: "0xalice",
     }),
-    newJobId: () => "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    newJobId: () => "job-1",
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
     // These fixtures exercise ORCHESTRATION, not listing signatures — the #41
@@ -176,50 +176,6 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     ...overrides,
   };
 }
-
-// CORE JID-3: a session's job id passes JID-1 before the Listing read, buyer
-// identity authentication, any jobId-derived anchor name or settlement.
-describe("runSessionCore admits only a canonical JID-1 jobId", () => {
-  function counting(newJobId: () => string) {
-    const calls = { readListing: 0, authenticate: 0, anchor: 0, settle: 0 };
-    const deps = makeDeps({
-      newJobId,
-      readListing: async () => { calls.readListing += 1; return LISTING; },
-      authenticateBuyerIdentityBundle: () => { calls.authenticate += 1; return true; },
-      anchor: async (name) => { calls.anchor += 1; return `stor-${name}`; },
-      settle: async () => {
-        calls.settle += 1;
-        return { ok: true, txHash: "0xabc", chainId: "eip155:11155111", payer: "0xbob", payee: "0xalice" };
-      },
-    });
-    return { calls, deps };
-  }
-
-  test.each(["job-1", "01arz3ndektsv4rrffq69g5fav", " 01ARZ3NDEKTSV4RRFFQ69G5FAV", "81ARZ3NDEKTSV4RRFFQ69G5FAV"])(
-    "a resume id %j is refused before the Listing is read",
-    async (resumeJobId) => {
-      const h = counting(() => { throw new Error("resume must not mint a job id"); });
-      // Whitespace already fails the protocol-string check; both refuse first.
-      await expect(runSessionCore("stor-listing", TERMS, h.deps, resumeJobId))
-        .rejects.toThrow(/resume jobId must be a (canonical uppercase ULID|non-empty)/);
-      expect(h.calls).toEqual({ readListing: 0, authenticate: 0, anchor: 0, settle: 0 });
-    },
-  );
-
-  test("a minted id that fails JID-1 is refused before identity authentication or any anchor", async () => {
-    const h = counting(() => "job-1");
-    await expect(runSessionCore("stor-listing", TERMS, h.deps))
-      .rejects.toThrow(/new session jobId must be a canonical uppercase ULID/);
-    expect(h.calls).toEqual({ readListing: 1, authenticate: 0, anchor: 0, settle: 0 });
-  });
-
-  test("a canonical minted id runs the session under the byte-exact id", async () => {
-    const h = counting(() => "01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    await expect(runSessionCore("stor-listing", TERMS, h.deps))
-      .resolves.toMatchObject({ outcome: "completed", jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" });
-    expect(h.calls).toMatchObject({ readListing: 1, authenticate: 1, settle: 1 });
-  });
-});
 
 function normativeDpaListing(): Listing {
   return {
@@ -320,10 +276,10 @@ describe("runSession orchestration (T4)", () => {
     expect(res.profile).toBe("legacy-mvp-settlement-only");
     expect(res.commerceComplete).toBe(false);
     expect(res.outcome).toBe("completed");
-    expect(res.jobId).toBe("01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    expect(res.agreementRef).toBe("stor-dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    expect(res.settlementRef).toBe("stor-dacs4:evidence:01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    expect(res.bundleRef).toBe("stor-dacs5:bundle:01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    expect(res.jobId).toBe("job-1");
+    expect(res.agreementRef).toBe("stor-dacs3:agreement:job-1");
+    expect(res.settlementRef).toBe("stor-dacs4:evidence:job-1");
+    expect(res.bundleRef).toBe("stor-dacs5:bundle:job-1");
   });
 
   test("binds the exact authenticated buyer IdentityBundle hash before payment", async () => {
@@ -360,7 +316,7 @@ describe("runSession orchestration (T4)", () => {
     expect(settleCalls).toBe(1);
     expect(authenticatedInput).toMatchObject({
       buyerId: BUYER_ID,
-      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      jobId: "job-1",
       bundleHash: BUYER_IDENTITY_HASH,
       bundle: BUYER_IDENTITY,
     });
@@ -369,9 +325,9 @@ describe("runSession orchestration (T4)", () => {
         signedBytes("dacs-bundle-presentation:v1:", BUYER_IDENTITY_HASH),
       ),
     );
-    const agreement = anchored.get("dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FAV")!;
+    const agreement = anchored.get("dacs3:agreement:job-1")!;
     expect(agreement.dacsSdkBuyerIdentityBundleHash).toBe(BUYER_IDENTITY_HASH);
-    const bundle = anchored.get("dacs5:bundle:01ARZ3NDEKTSV4RRFFQ69G5FAV")! as {
+    const bundle = anchored.get("dacs5:bundle:job-1")! as {
       parties: Array<{ role: string; bundleHash: string; primaryClaim: string }>;
     };
     expect(bundle.parties.find((party) => party.role === "buyer")).toEqual({
@@ -780,7 +736,7 @@ describe("runSession orchestration (T4)", () => {
             throw new Error("must not settle");
           },
         }),
-        "01ARZ3NDEKTSV4RRFFQ69G5FD6",
+        "job-FUTURE",
       ),
     ).rejects.toThrow(/outside.*validity window/i);
     expect(effects).toBe(0);
@@ -1522,7 +1478,7 @@ describe("runSession orchestration (T4)", () => {
             return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "q" };
           },
         }),
-        "01ARZ3NDEKTSV4RRFFQ69G5FD7",
+        "job-LEGACY-VET",
       ),
     ).rejects.toThrow(/exact finalized record\/ref\/receipt binding/);
     expect(settleCalls).toBe(0);
@@ -1831,18 +1787,18 @@ describe("runSession orchestration (T4)", () => {
       },
     });
 
-    const first = await runSessionCore("stor-listing", TERMS, deps, "01ARZ3NDEKTSV4RRFFQ69G5FE0");
+    const first = await runSessionCore("stor-listing", TERMS, deps, "job-RESUME");
     expect(first.outcome).toBe("completed");
     expect(settleCalls).toBe(1);
 
     // Re-drive the same jobId (as after a crash) — everything is already anchored.
-    const second = await runSessionCore("stor-listing", TERMS, deps, "01ARZ3NDEKTSV4RRFFQ69G5FE0");
+    const second = await runSessionCore("stor-listing", TERMS, deps, "job-RESUME");
     expect(second).toEqual(first); // identical refs
     expect(settleCalls).toBe(1); // settlement NOT executed again
 
     deps.expectedSettlementPayee = "0xattacker";
     await expect(
-      runSessionCore("stor-listing", TERMS, deps, "01ARZ3NDEKTSV4RRFFQ69G5FE0"),
+      runSessionCore("stor-listing", TERMS, deps, "job-RESUME"),
     ).rejects.toThrow(/signed settlement destination/);
     expect(settleCalls).toBe(1);
   });
@@ -1882,7 +1838,7 @@ describe("runSession orchestration (T4)", () => {
       nowMs: () => now,
       anchor: async (name, value) => {
         anchorCalls += 1;
-        if (name === "dacs5:bundle:01ARZ3NDEKTSV4RRFFQ69G5FD5" && failBundleOnce) {
+        if (name === "dacs5:bundle:job-EXPIRES" && failBundleOnce) {
           failBundleOnce = false;
           throw new Error("simulated crash before bundle publication");
         }
@@ -1914,22 +1870,22 @@ describe("runSession orchestration (T4)", () => {
     };
 
     await expect(
-      runSessionCore("stor-expiring-listing", terms, deps, "01ARZ3NDEKTSV4RRFFQ69G5FD5"),
+      runSessionCore("stor-expiring-listing", terms, deps, "job-EXPIRES"),
     ).rejects.toThrow(/simulated crash/);
     expect(settleCalls).toBe(1);
 
     now = expiry + 1;
     observeRecoveryOrder = true;
     await expect(
-      runSessionCore("stor-expiring-listing", terms, deps, "01ARZ3NDEKTSV4RRFFQ69G5FD5"),
-    ).resolves.toMatchObject({ outcome: "completed", jobId: "01ARZ3NDEKTSV4RRFFQ69G5FD5" });
+      runSessionCore("stor-expiring-listing", terms, deps, "job-EXPIRES"),
+    ).resolves.toMatchObject({ outcome: "completed", jobId: "job-EXPIRES" });
     expect(settleCalls).toBe(1);
     expect(recoveryOrder).toEqual(["agreement", "evidence", "listing"]);
 
     const callsBeforeRejectedResume = anchorCalls;
     recoveryOrder.length = 0;
     await expect(
-      runSessionCore("stor-expiring-listing", terms, deps, "01ARZ3NDEKTSV4RRFFQ69G5FD9"),
+      runSessionCore("stor-expiring-listing", terms, deps, "job-NOT-ADMITTED"),
     ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
     expect(settleCalls).toBe(1);
     expect(anchorCalls).toBe(callsBeforeRejectedResume);
@@ -1940,15 +1896,15 @@ describe("runSession orchestration (T4)", () => {
       runSessionCore(
         "stor-expiring-listing",
         terms,
-        { ...deps, newJobId: () => `01ARZ3NDEKTSV4RRFFQ69G5FC${++freshIds}` },
+        { ...deps, newJobId: () => `fresh-${++freshIds}` },
       ),
     ).rejects.toThrow(/outside.*validity window/i);
     expect(freshIds).toBe(0);
     expect(settleCalls).toBe(1);
     expect(anchorCalls).toBe(callsBeforeRejectedResume);
 
-    store.set("stor-dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FD0", {
-      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FD0",
+    store.set("stor-dacs3:agreement:job-AGREEMENT-ONLY", {
+      jobId: "job-AGREEMENT-ONLY",
       pattern: "negotiate-fixed-price",
       buyer: "did:demos:bob",
       seller: "did:demos:alice",
@@ -1966,7 +1922,7 @@ describe("runSession orchestration (T4)", () => {
         "stor-expiring-listing",
         terms,
         deps,
-        "01ARZ3NDEKTSV4RRFFQ69G5FD0",
+        "job-AGREEMENT-ONLY",
       ),
     ).rejects.toThrow(/no prior SettlementEvidence/i);
     expect(settleCalls).toBe(1);
@@ -1988,7 +1944,7 @@ describe("runSession orchestration (T4)", () => {
     let failBundleOnce = true;
     let settleCalls = 0;
     let listingAuthentications = 0;
-    const jobId = "01ARZ3NDEKTSV4RRFFQ69G5FD4";
+    const jobId = "job-EVIDENCE-SNAPSHOT";
     const evidenceRef = `stor-dacs4:evidence:${jobId}`;
     const deps = makeDeps({
       readListing: async () => listing,
@@ -2078,7 +2034,7 @@ describe("runSession orchestration (T4)", () => {
     let failBundleOnce = true;
     let swapAuthenticator = false;
     let settleCalls = 0;
-    const jobId = "01ARZ3NDEKTSV4RRFFQ69G5FD1";
+    const jobId = "job-AUTH-SWAP";
     const deps = makeDeps({
       readListing: async () => listing,
       nowMs: () => now,
@@ -2148,7 +2104,7 @@ describe("runSession orchestration (T4)", () => {
     let failBundleOnce = true;
     let mutateListing = false;
     let settleCalls = 0;
-    const jobId = "01ARZ3NDEKTSV4RRFFQ69G5FD8";
+    const jobId = "job-LISTING-SNAPSHOT";
     const deps = makeDeps({
       readListing: async () => listing,
       nowMs: () => now,
@@ -2217,14 +2173,14 @@ describe("runSession orchestration (T4)", () => {
     const legacy = structuredClone(LISTING);
 
     for (const direction of [
-      { name: "normative-to-legacy", jobId: "01ARZ3NDEKTSV4RRFFQ69G5FE4", first: normative, replacement: legacy },
-      { name: "legacy-to-normative", jobId: "01ARZ3NDEKTSV4RRFFQ69G5FE5", first: legacy, replacement: normative },
+      { name: "normative-to-legacy", first: normative, replacement: legacy },
+      { name: "legacy-to-normative", first: legacy, replacement: normative },
     ]) {
       let current = structuredClone(direction.first) as Record<string, unknown>;
       const store = new Map<string, Record<string, unknown>>();
       let failBundleOnce = true;
       let settleCalls = 0;
-      const jobId = direction.jobId;
+      const jobId = `job-${direction.name}`;
       const deps = makeDeps({
         readListing: async () => current,
         verifyListing: () => true,
@@ -2315,7 +2271,7 @@ describe("runSession orchestration (T4)", () => {
       "stor-normative-v7",
       terms,
       deps,
-      "01ARZ3NDEKTSV4RRFFQ69G5FE1",
+      "job-STALE-BUNDLE-PIN",
     );
     expect(settleCalls).toBe(1);
 
@@ -2331,7 +2287,7 @@ describe("runSession orchestration (T4)", () => {
         "stor-normative-v7",
         terms,
         deps,
-        "01ARZ3NDEKTSV4RRFFQ69G5FE1",
+        "job-STALE-BUNDLE-PIN",
       ),
     ).rejects.toThrow(/listing pin .* ≠/);
     expect(settleCalls).toBe(1);
@@ -2342,8 +2298,8 @@ describe("runSession orchestration (T4)", () => {
     let settleCalls = 0;
     // The compatibility agreement cannot carry an LR-1 tuple, but its native
     // Listing binding must still be exact on resume.
-    store.set("stor-dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FE3", {
-      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FE3",
+    store.set("stor-dacs3:agreement:job-WRONG", {
+      jobId: "job-WRONG",
       pattern: "negotiate-fixed-price",
       buyer: "did:demos:bob",
       seller: "did:demos:alice",
@@ -2372,7 +2328,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-listing", TERMS, deps, "01ARZ3NDEKTSV4RRFFQ69G5FE3"),
+      runSessionCore("stor-listing", TERMS, deps, "job-WRONG"),
     ).rejects.toThrow(/does not match the requested deal/);
     expect(settleCalls).toBe(0); // never paid against a mismatched session
   });
@@ -2553,7 +2509,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-listing", mutableTerms, deps, "01ARZ3NDEKTSV4RRFFQ69G5FE2"),
+      runSessionCore("stor-listing", mutableTerms, deps, "job-TERMS-SNAPSHOT"),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(settledRequest).toMatchObject({
       rail: TERMS.price.rail,
@@ -2596,7 +2552,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-listing", TERMS, deps, "01ARZ3NDEKTSV4RRFFQ69G5FD8"),
+      runSessionCore("stor-listing", TERMS, deps, "job-LISTING-SNAPSHOT"),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(settledPayee).toBe(LISTING.agentId);
   });
@@ -2632,7 +2588,7 @@ describe("runSession orchestration (T4)", () => {
       "stor-listing",
       TERMS,
       deps,
-      "01ARZ3NDEKTSV4RRFFQ69G5FD2",
+      "job-DEPS-SNAPSHOT",
     );
     expect(result.outcome).toBe("completed");
     expect(originalSettleCalls).toBe(1);
@@ -2659,7 +2615,7 @@ describe("runSession orchestration (T4)", () => {
     // comes back INDETERMINATE (a substrate hiccup). Treating that as "absent"
     // would re-settle → double-pay. The session must fail closed instead.
     const agreement = {
-      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FD3",
+      jobId: "job-DP",
       pattern: "negotiate-fixed-price",
       buyer: "did:demos:bob",
       seller: "did:demos:alice",
@@ -2674,9 +2630,9 @@ describe("runSession orchestration (T4)", () => {
     const deps = makeDeps({
       authenticateRecoveredArtifact: () => true,
       resolveAnchor: async (name) => {
-        if (name === "dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FD3")
+        if (name === "dacs3:agreement:job-DP")
           return { status: "present" as const, ref: "stor-a", value: agreement };
-        if (name === "dacs4:evidence:01ARZ3NDEKTSV4RRFFQ69G5FD3")
+        if (name === "dacs4:evidence:job-DP")
           return { status: "indeterminate" as const, reason: "rpc timeout" };
         return { status: "absent" as const };
       },
@@ -2686,7 +2642,7 @@ describe("runSession orchestration (T4)", () => {
       },
     });
 
-    await expect(runSessionCore("stor-listing", TERMS, deps, "01ARZ3NDEKTSV4RRFFQ69G5FD3")).rejects.toThrow(
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-DP")).rejects.toThrow(
       /could not determine/,
     );
     expect(settleCalls).toBe(0); // a transient evidence-lookup failure must NOT re-settle

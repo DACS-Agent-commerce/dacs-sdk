@@ -24,7 +24,6 @@ describe("pinned public HTTPS connection isolation", () => {
     httpsRequest.mockImplementation(() => failingRequest());
   });
 
-  // The first dynamic import loads the complete SDK graph on a cold worker.
   test("x402 public fetch disables shared-agent socket reuse", async () => {
     const { createDacsPublicHttpsFetchV1 } = await import("../src/publicFetch.js");
     const fetchImpl = createDacsPublicHttpsFetchV1();
@@ -32,7 +31,7 @@ describe("pinned public HTTPS connection isolation", () => {
       .rejects.toThrow("stop");
     expect(httpsRequest).toHaveBeenCalledOnce();
     expect(httpsRequest.mock.calls[0]![0]).toMatchObject({ agent: false });
-  }, 15_000);
+  });
 
   test("public JSON reader disables shared-agent socket reuse", async () => {
     const { readDacsPublicJsonV1 } = await import("../src/publicJson.js");

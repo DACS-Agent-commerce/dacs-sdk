@@ -31,7 +31,7 @@ import {
   createFsX402PaywallSettlementStore,
 } from "../../src/rails/x402PaywallSettlementFs.js";
 
-const JOB_ID = "01K0SE11ERST0RE0000000000C";
+const JOB_ID = "seller-job-cafe\u0301";
 const PHASE_INDEX = 4;
 const PAYER = `0x${"11".repeat(20)}`;
 const NETWORK = "eip155:84532";
@@ -273,7 +273,7 @@ describe("filesystem x402 paywall settlement store", () => {
         name: "path/key mismatch",
         content: JSON.stringify({
           storeVersion: X402_PAYWALL_SETTLEMENT_STORE_VERSION,
-          intent: intentFor("https://seller.example/different-binding", "01K0SE11ERST0RE00000000TH2"),
+          intent: intentFor("https://seller.example/different-binding", "other-job"),
         }),
       },
     ];
@@ -299,27 +299,6 @@ describe("filesystem x402 paywall settlement store", () => {
     await symlink(outside, recordFile(directory, intent.settlementKey));
     await expect(store.load(intent.settlementKey)).rejects.toThrow(/unsafe/);
   });
-
-  // CORE JID-3: an intent whose key and binding hash are self-consistent but
-  // whose job id fails JID-1 is refused before any lock or record is written.
-  test.each(["job-1", "café-job", JOB_ID.toLowerCase()])(
-    "refuses an intent for the non-canonical job id %j before writing",
-    async (jobId) => {
-      const directory = await temporaryStoreDirectory();
-      const store = await createFsX402PaywallSettlementStore({ dir: directory });
-      const valid = intentFor() as unknown as Record<string, unknown>;
-      const core: Record<string, unknown> = { ...valid, jobId };
-      delete core.bindingHash;
-      const intent = {
-        ...core,
-        bindingHash: sha256Hex(canonicalize(core)),
-      } as unknown as X402PaywallSettlementIntent;
-      await expect(store.claim(intent)).rejects.toThrow(/settlement intent shape is invalid/);
-      const written = await Promise.all(["records", "locks"].map(async (name) =>
-        readdir(join(directory, name)).catch(() => [])));
-      expect(written.flat()).toEqual([]);
-    },
-  );
 
   test("rejects non-canonical inputs without invoking accessors", async () => {
     const directory = await temporaryStoreDirectory();

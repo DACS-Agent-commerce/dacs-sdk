@@ -1,4 +1,3 @@
-import { ap2ProfileScope } from "../fixtures/ap2Profile.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -103,7 +102,6 @@ integrationDescribe("official AP2 runtime reference", () => {
     if (checkout.disposition !== "verified" || payment.disposition !== "verified") return;
 
     const admission = admitAp2MandateChain({
-      ...await ap2ProfileScope(),
       checkoutMandatePresent: true,
       checkoutMandateVerified: true,
       paymentMandatePresent: true,

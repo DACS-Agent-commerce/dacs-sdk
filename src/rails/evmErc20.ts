@@ -1,6 +1,5 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
-import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -276,8 +275,6 @@ export function evmErc20Settle(
         `evm-erc20 destination mismatch: request binds ${expectedPayee}, configured rail pays ${recipientEvm}`,
       );
     }
-    // CORE JID-3: refuse a non-canonical job id before any key or transfer.
-    requireCanonicalJobId(jobId, "evm-erc20 settlement jobId");
     const binding = Object.freeze({
       bindingVersion: "1",
       railId,

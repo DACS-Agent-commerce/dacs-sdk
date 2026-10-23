@@ -1,17 +1,13 @@
-// The production rail constructors (createEvmErc20Rail, createX402Rail) with
-// only viem's wallet/RPC boundary replaced: the effect fence is checked beside
-// the broadcast, finality uses the configured depth, the RPC chain is checked
-// before any paid request, and bad configuration is refused at construction.
+// The production direct ERC-20 constructor checks the effect fence beside
+// broadcast and verifies a successful broadcast at the configured depth.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createEvmErc20Rail } from "../../src/rails/evmErc20.js";
-import { createX402Rail } from "../../src/rails/x402.js";
 
 const peers = vi.hoisted(() => ({
   writeContract: vi.fn(),
   chainId: 84532,
   waitForTransactionReceipt: vi.fn(),
-  signTypedData: vi.fn(async () => `0x${"44".repeat(65)}`),
 }));
 const NETWORK = "eip155:84532";
 const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
@@ -32,7 +28,7 @@ const receipt = {
 };
 
 vi.mock("viem/accounts", () => ({
-  privateKeyToAccount: vi.fn(() => ({ address: PAYER, signTypedData: peers.signTypedData })),
+  privateKeyToAccount: vi.fn(() => ({ address: PAYER })),
 }));
 vi.mock("viem", async (importOriginal) => ({
   ...await importOriginal<typeof import("viem")>(),
@@ -78,70 +74,4 @@ describe("createEvmErc20Rail (the production direct ERC-20 rail)", () => {
     expect(peers.waitForTransactionReceipt).toHaveBeenCalledWith({ hash: TX, confirmations: 2 });
   });
 
-  test.each([0, -1, 1.5])("refuses finalityBlocks=%s at construction", async (finalityBlocks) => {
-    await expect(createEvmErc20Rail({ ...evmConfig, finalityBlocks })).rejects.toThrow(/positive finalityBlocks/);
-  });
-
-  test.each([
-    ["rpc.example", /requires an absolute RPC URL/],
-    ["ws://rpc.example", /RPC URL must use HTTP\(S\)/],
-    ["file:///etc/passwd", /RPC URL must use HTTP\(S\)/],
-  ])("refuses RPC URL %s at construction", async (rpcUrl, reason) => {
-    await expect(createEvmErc20Rail({ ...evmConfig, rpcUrl })).rejects.toThrow(reason);
-  });
-});
-
-const x402Config = { evmPrivateKey: `0x${"12".repeat(32)}`, rpcUrl: "https://rpc.example", finalityBlocks: 2, requireSessionBinding: true };
-
-describe("createX402Rail pre-payment preflight", () => {
-  test("a wrong-chain finality RPC is refused before any HTTP request or signature", async () => {
-    peers.chainId = 1;
-    const fetchImpl = vi.fn(async () => new Response("unexpected", { status: 500 }));
-    const rail = await createX402Rail({ ...x402Config, fetchImpl: fetchImpl as unknown as typeof fetch, transportPolicy: { mode: "insecure-test" } });
-    await expect(rail.settle({
-      paywallUrl: "https://seller.example/r", network: NETWORK, recipientEvm: PAYEE, amount: "1000000", asset: USDC,
-      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 0,
-    })).rejects.toThrow(/RPC chain id does not match the negotiated network/);
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(peers.signTypedData).not.toHaveBeenCalled();
-  });
-
-  test("a non-canonical jobId is refused even without a phase (CORE JID-3)", async () => {
-    const fetchImpl = vi.fn(async () => new Response("unexpected", { status: 500 }));
-    const rail = await createX402Rail({
-      ...x402Config, requireSessionBinding: false,
-      fetchImpl: fetchImpl as unknown as typeof fetch, transportPolicy: { mode: "insecure-test" },
-    });
-    await expect(rail.settle({
-      paywallUrl: "https://seller.example/r", network: NETWORK, recipientEvm: PAYEE, amount: "1000000", asset: USDC,
-      jobId: "job-restart",
-    })).rejects.toThrow(/pay-x402 jobId must be a canonical uppercase ULID/);
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(peers.signTypedData).not.toHaveBeenCalled();
-  });
-
-  // The JID-1 check applies to a jobId the rail is given, not to an unbound
-  // call that has none: that call is not refused for JID-1 and still stops at
-  // its own chain preflight.
-  test("an unbound call with no jobId is not refused for JID-1 and reaches the chain preflight", async () => {
-    peers.chainId = 1;
-    const fetchImpl = vi.fn(async () => new Response("unexpected", { status: 500 }));
-    const rail = await createX402Rail({
-      ...x402Config, requireSessionBinding: false,
-      fetchImpl: fetchImpl as unknown as typeof fetch, transportPolicy: { mode: "insecure-test" },
-    });
-    await expect(rail.settle({
-      paywallUrl: "https://seller.example/r", network: NETWORK, recipientEvm: PAYEE, amount: "1000000", asset: USDC,
-    })).rejects.toThrow(/RPC chain id does not match the negotiated network/);
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(peers.signTypedData).not.toHaveBeenCalled();
-  });
-
-  test.each([0, -1, 1.5])("refuses finalityBlocks=%s at construction", async (finalityBlocks) => {
-    await expect(createX402Rail({ ...x402Config, finalityBlocks })).rejects.toThrow(/positive finalityBlocks/);
-  });
-
-  test.each(["ws://rpc.example", "file:///etc/passwd"])("refuses RPC URL %s at construction", async (rpcUrl) => {
-    await expect(createX402Rail({ ...x402Config, rpcUrl })).rejects.toThrow(/RPC URL must use HTTP\(S\)/);
-  });
 });

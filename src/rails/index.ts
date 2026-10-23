@@ -391,5 +391,3 @@ export {
   type DemosNativeClient,
   type DemosTransferResult,
 } from "./payDem.js";
-
-export { AP2_IMPLEMENTED_MODULE_VERSIONS, authenticateAp2ProfileAdmission, type Ap2CorrectiveProfile, type Ap2ParticipantProfile, type Ap2ProfileAdmission } from "./ap2Admission.js";

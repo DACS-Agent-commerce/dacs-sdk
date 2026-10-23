@@ -1,4 +1,3 @@
-import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import {
   assertPositiveAmount,
   baseUnits,
@@ -6,7 +5,6 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
-import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const DEFAULT_LEASE_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -358,9 +356,6 @@ export function solanaSplSettlementKey(input: {
   if (!Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0) {
     throw new DacsError("pay-solana-spl: phaseIndex must be a non-negative safe integer");
   }
-  // CORE JID-3: the job id passes JID-1 before it is hashed.
-  requireCanonicalJobId(input.jobId, "pay-solana-spl: jobId");
-  requireReleasedCorrectiveProfile();
   return sha256Hex(`dacs-solana-spl-settlement:v1:${canonicalize({
     jobId: requireString(input.jobId, "jobId").normalize("NFC"),
     phaseIndex: input.phaseIndex,
@@ -646,7 +641,6 @@ function settlementFrom(
 export async function advanceSolanaSplSettlement(
   input: Readonly<AdvanceSolanaSplSettlementInput>,
 ): Promise<SolanaSplProgress> {
-  requireReleasedCorrectiveProfile();
   let intent: Readonly<SolanaSplSettlementIntent>;
   try {
     intent = createSolanaSplSettlementIntent({ ...input.authority });

@@ -28,10 +28,6 @@ import {
   type SellerSupportedRailDefinition,
   type X402TransferObservation,
 } from "../../src/seller/index.js";
-import {
-  dacsX402AuthorizationNonce, legacyDacsX402AuthorizationNonce, verifyDacsX402AuthorizationNonce,
-} from "../../src/rails/x402.js";
-import { isCanonicalJobId } from "../../src/negotiate/jobId.js";
 
 const BUYER_DEMOS = `did:demos:agent:${"aa".repeat(32)}`;
 const SELLER_DEMOS = `did:demos:agent:${"bb".repeat(32)}`;
@@ -2262,95 +2258,29 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
-  it("replays the Standard SB-3 EIP-3009 nonce vectors by op, want and expected", async () => {
+  it("replays the Standard SB-3 EIP-3009 nonce derivation vectors", () => {
     const set = JSON.parse(readFileSync(new URL(
       "../../vendor/DACS-Standard/conformance/vectors/security/sb3-eip3009-nonce-v0.1.json",
       import.meta.url,
     ), "utf8")) as {
       vectors: Array<{
         name: string;
-        op: string;
-        expected: string;
         jobId: string;
         phaseIndex: number | string;
-        presentedNonce?: string;
-        derivedNonce?: string;
         expectedNonce?: string;
-        priorAuthorization?: { state: string; sameTransferParameters: boolean };
-        validationScope: string;
-        want: {
-          derivedNonce?: string;
-          binding?: string;
-          fallback?: boolean;
-          action?: string;
-          mustGenerateFreshNonce?: boolean;
-        };
       }>;
     };
-    const ops = { derive: 0, "verify-binding": 0, retry: 0 } as Record<string, number>;
-    const scopes = { "derivation-only": 0, "full-input": 0 } as Record<string, number>;
     for (const vector of set.vectors) {
-      expect(Object.keys(ops), vector.name).toContain(vector.op);
-      ops[vector.op]! += 1;
-      expect(Object.keys(scopes), vector.name).toContain(vector.validationScope);
-      scopes[vector.validationScope]! += 1;
-      // Legacy job ids are derivation-only; a full-input vector also passes JID-1.
-      if (vector.validationScope === "full-input") expect(isCanonicalJobId(vector.jobId), vector.name).toBe(true);
-      const input = { jobId: vector.jobId, phaseIndex: vector.phaseIndex as number };
-      // CONFORMANCE-PLAN's pre-JID-1 boundary: a derivation-only vector
-      // reproduces only through the named legacy helper; the buyer's and the
-      // seller's payment-path helpers refuse its job id before hashing (CORE JID-3).
-      const legacy = vector.validationScope === "derivation-only";
-      const buyerNonce = legacy ? legacyDacsX402AuthorizationNonce : dacsX402AuthorizationNonce;
-      if (legacy) {
-        await expect(dacsX402AuthorizationNonce(input), vector.name).rejects.toThrow(/canonical uppercase ULID/);
-        expect(() => x402Eip3009Nonce(input.jobId, input.phaseIndex), vector.name).toThrow(/canonical uppercase ULID/);
-      }
-      if (vector.op === "derive") {
-        expect([vector.expected, vector.want.binding], vector.name).toEqual(["error", "malformed-input"]);
-        expect(() => x402Eip3009Nonce(input.jobId, input.phaseIndex), vector.name).toThrow();
-        await expect(buyerNonce(input), vector.name).rejects.toThrow();
-        continue;
-      }
-      // Seller verification and the buyer's signing rail derive the same bytes
-      // for a full-input vector; a legacy vector's bytes come from the legacy helper.
-      const derived = legacy ? await buyerNonce(input) : x402Eip3009Nonce(input.jobId, input.phaseIndex);
-      if (!legacy) expect(await buyerNonce(input), vector.name).toBe(derived);
-      if (vector.expectedNonce) expect(derived, vector.name).toBe(vector.expectedNonce);
-      if (vector.want.derivedNonce) expect(derived, vector.name).toBe(vector.want.derivedNonce);
-      if (vector.op === "verify-binding") {
-        const presented = vector.presentedNonce!;
-        const binding = legacy
-          ? !/^0x[0-9a-f]{64}$/.test(presented) ? "malformed"
-            : presented === derived ? "present-and-matches" : "present-and-mismatches"
-          : await verifyDacsX402AuthorizationNonce(input, presented);
-        expect(binding, vector.name).toBe(vector.want.binding);
-        const verdict = binding === "present-and-matches" ? "pass" : binding === "malformed" ? "error" : "fail";
-        expect(verdict, vector.name).toBe(vector.expected);
-        if (vector.want.fallback === false) {
-          // A well-formed mismatching nonce is a hard rejection at seller intake,
-          // never the SB-1/SB-2 "not-established" fallback.
-          const ctx = makeContext("pay-x402");
-          if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
-          ctx.x402Observation.sessionBinding = { kind: "eip3009", nonce: vector.presentedNonce! };
-          await expect(verifySellerPaymentIntake(ctx.input, ctx.deps), vector.name).resolves.toEqual({
-            disposition: "rejected", fulfilment: "none", reason: "x402-session-binding-mismatch",
-          });
-        }
-      } else {
-        // The retry identity is the derived nonce itself; the authorization-state
-        // actions run across a real restart in idempotencyProcessRestart.test.ts.
-        expect(derived, vector.name).toBe(vector.derivedNonce);
-        expect(vector.want.mustGenerateFreshNonce, vector.name).toBe(false);
-        const resumes = vector.priorAuthorization?.state === "used" &&
-          vector.priorAuthorization.sameTransferParameters;
-        expect([vector.want.action, vector.expected], vector.name)
-          .toEqual(resumes ? ["resume-existing", "pass"] : ["refuse", "fail"]);
+      if (typeof vector.phaseIndex !== "number" || vector.phaseIndex < 0) {
+        expect(
+          () => x402Eip3009Nonce(vector.jobId, vector.phaseIndex as number),
+          vector.name,
+        ).toThrow();
+      } else if (vector.expectedNonce) {
+        expect(x402Eip3009Nonce(vector.jobId, vector.phaseIndex), vector.name)
+          .toBe(vector.expectedNonce);
       }
     }
-    expect(Object.values(ops).every((count) => count > 0)).toBe(true);
-    expect(scopes["full-input"]).toBeGreaterThan(0);
-    expect(set.vectors.filter((vector) => vector.want.fallback === false)).toHaveLength(2);
   });
 
   it("reconciles an ambiguous observation before claiming without rebroadcast", async () => {

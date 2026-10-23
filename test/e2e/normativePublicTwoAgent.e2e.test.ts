@@ -3630,7 +3630,7 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
   const intent = await prepareSettlementIntent(fixture);
   const store = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
   // Process A performs the same inline durable seller work as settleAndRecover.
-  // Keep the operation deadline below the worker's own 20-second test budget.
+  // Keep its fixture deadline below the whole-process stage's 25-second budget.
   const transport = createX402BuyerPaidRequestTransport({
     transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
     fetchImpl: async (_url, init) => {
@@ -3806,11 +3806,10 @@ async function spawnWholeProcessStage(
   child.stdout.on("data", (chunk) => { output += String(chunk); });
   child.stderr.on("data", (chunk) => { output += String(chunk); });
   return await new Promise((resolve, reject) => {
-    // Include Vitest startup and teardown around the worker's 20-second test.
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error(`whole-process stage ${stage} timed out\n${output}`));
-    }, 45_000);
+    }, 25_000);
     child.once("error", (error) => {
       clearTimeout(timeout);
       reject(error);
@@ -3910,7 +3909,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
         paidRequestResubmissions: 0,
       },
     });
-  }, 100_000);
+  }, 40_000);
 
   test("rejects a wrong-network x402 challenge before the buyer signer", async () => {
     let signerCalls = 0;

@@ -1,12 +1,5 @@
 # dacs-sdk
 
-The pinned JID-1 corrective profile is an unreleased candidate. Its newly
-profile-dependent session and settlement entry points refuse live protocol
-action until the Standard records a coordinated release and trusted participant
-admission is implemented. Offline conformance and restart tests exercise the
-candidate through test-only policy substitution; they do not establish live
-profile availability. See [AP2 profile availability](docs/pay-ap2.md#authenticated-profile-and-retained-operation).
-
 TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
 
 > **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** for the v0.1 MVP build plan.

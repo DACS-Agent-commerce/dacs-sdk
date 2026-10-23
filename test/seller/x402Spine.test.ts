@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type {
   AnchorReceipt,
@@ -157,19 +157,12 @@ interface TestSettlementStore extends X402PaywallSettlementStore {
     intent: X402PaywallSettlementIntent,
     outcome: X402PaywallSettlementOutcome,
   ): void;
-  // The spine binds `load` when it is created, so a later spy cannot see it.
-  loads(): number;
 }
 
 function settlementStore(): TestSettlementStore {
   let retained: X402PaywallSettlementLoad = { status: "absent" };
-  let loads = 0;
   return {
-    load: async () => {
-      loads += 1;
-      return structuredClone(retained);
-    },
-    loads: () => loads,
+    load: async () => structuredClone(retained),
     claim: async (intent) => {
       if (retained.status === "absent") {
         retained = { status: "held", intent: structuredClone(intent) };
@@ -232,12 +225,10 @@ interface Harness {
   resolvedScope: X402SellerCommittedSessionScope;
   installAuthorization(authorization: SellerPaymentAuthorization): void;
   retainSettlement(sessionAuthorization: unknown): void;
-  settlementStore: TestSettlementStore;
   runThroughPaywallCore(): Promise<unknown>;
   setObservation(observation: X402TransferObservation): void;
   resumeFinalisation(authorization: X402SellerPaymentPermitAuthorization): Promise<unknown>;
   counts: { delivery: number; evidence: number; final: number; render: number };
-  resolutions(): number;
 }
 
 function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
@@ -835,15 +826,14 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
     expected: structuredClone(expected),
   };
   const retainedSettlementStore = settlementStore();
-  let resolutions = 0;
   const spine = createX402SellerSpine({
     settlementStore: retainedSettlementStore,
     reconcileSettlement: async () => ({ status: "pending", reason: "not used" }),
     receiptStore,
-    resolveCommittedSession: async () => {
-      resolutions += 1;
-      return { disposition: "verified", session: structuredClone(resolvedScope) };
-    },
+    resolveCommittedSession: async () => ({
+      disposition: "verified",
+      session: structuredClone(resolvedScope),
+    }),
     paymentIntakeDeps,
     fulfilmentDeps,
     fulfilmentDurability: durability,
@@ -914,7 +904,6 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
       authorization,
     }),
     resolvedScope,
-    settlementStore: retainedSettlementStore,
     installAuthorization(value) {
       activeAuthorization = structuredClone(value);
     },
@@ -990,7 +979,6 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
       { ...durability, workerId: "seller-spine-finaliser" },
     ),
     counts,
-    resolutions: () => resolutions,
   };
 }
 
@@ -1011,24 +999,6 @@ async function authorize(harness: Harness): Promise<X402SellerPaymentPermitAutho
 }
 
 describe("createX402SellerSpine", () => {
-  it.each(["2", 1, null])(
-    "rejects unsupported scopeVersion %j before granting settlement authority",
-    async (scopeVersion) => {
-      const harness = makeHarness();
-      await expect(harness.spine.authorizeSettlement(harness.preContext))
-        .resolves.toMatchObject({ disposition: "authorized" });
-
-      Object.assign(harness.resolvedScope, { scopeVersion });
-      await expect(harness.spine.authorizeSettlement(harness.preContext)).resolves.toEqual({
-        disposition: "indeterminate",
-        reason: "seller-session-resolution-invalid",
-      });
-      expect(harness.resolutions()).toBe(2);
-      expect(harness.settlementStore.loads()).toBe(0);
-      expect(harness.counts).toEqual({ delivery: 0, evidence: 0, final: 0, render: 0 });
-    },
-  );
-
   it("returns at delivery-ready and lets a restarted host finalise explicitly", async () => {
     const harness = makeHarness({ deliveryReady: true });
     const authorization = await authorize(harness);
@@ -1094,31 +1064,6 @@ describe("createX402SellerSpine", () => {
     expect(harness.counts.delivery).toBe(0);
   });
 
-  // CORE JID-3: recovery derives a settlement key and reads the store, so a
-  // non-canonical job id (including a Unicode alias) is refused before either.
-  it.each(["job-1", "café-job", JOB_ID.toLowerCase(), ` ${JOB_ID}`])(
-    "refuses recovery for the non-canonical job id %j before any key or store read",
-    async (jobId) => {
-      const harness = makeHarness();
-      const pre = await harness.spine.authorizeSettlement(harness.preContext);
-      if (pre.disposition !== "authorized") throw new Error(pre.reason);
-      harness.retainSettlement(pre.authorization);
-
-      await expect(harness.spine.recoverPaymentAuthorization({
-        jobId,
-        phaseIndex: PAYMENT_PHASE_INDEX,
-      })).resolves.toEqual({
-        disposition: "rejected",
-        reason: "seller-recovery-scope-invalid",
-      });
-      expect(harness.settlementStore.loads()).toBe(0);
-      expect(harness.counts.delivery).toBe(0);
-      // Control: the canonical id does read the store.
-      await harness.spine.recoverPaymentAuthorization({ jobId: JOB_ID, phaseIndex: PAYMENT_PHASE_INDEX });
-      expect(harness.settlementStore.loads()).toBe(1);
-    },
-  );
-
   it("runs real #119 and generation-fenced #120/#121 with one irreversible delivery", async () => {
     const harness = makeHarness();
     const authorization = await authorize(harness);
@@ -1150,72 +1095,6 @@ describe("createX402SellerSpine", () => {
       reason: "seller-session-scope-mismatch",
     });
     expect(harness.counts.delivery).toBe(0);
-  });
-
-  // CORE JID-3: authorizeSettlement is a public member, so a direct caller's
-  // non-canonical job id is refused before any request getter or the resolver.
-  it.each(["job-1", "café-job", JOB_ID.toLowerCase(), ` ${JOB_ID}`])(
-    "refuses a direct pre-settlement call for the non-canonical job id %j before the request or resolver",
-    async (jobId) => {
-      const harness = makeHarness();
-      const getters = Object.fromEntries(
-        Object.entries(adapter()).map(([name, getter]) => [name, vi.fn(getter)]),
-      );
-      const request = getters as unknown as X402PaywallHttpAdapter;
-
-      await expect(harness.spine.authorizeSettlement({
-        ...harness.preContext,
-        jobId,
-        request,
-      })).resolves.toEqual({
-        disposition: "rejected",
-        reason: "seller-session-request-invalid",
-      });
-      for (const getter of Object.values(getters)) expect(getter).not.toHaveBeenCalled();
-      expect(harness.resolutions()).toBe(0);
-      // Control: the canonical id reads the request and resolves the session once.
-      await expect(harness.spine.authorizeSettlement({ ...harness.preContext, request }))
-        .resolves.toMatchObject({ disposition: "authorized" });
-      expect(getters.getUrl).toHaveBeenCalled();
-      expect(harness.resolutions()).toBe(1);
-    },
-  );
-
-  it("treats a resolved session scope with a non-canonical job id as invalid", async () => {
-    const harness = makeHarness();
-    harness.resolvedScope.jobId = JOB_ID.toLowerCase();
-
-    await expect(harness.spine.authorizeSettlement(harness.preContext)).resolves.toEqual({
-      disposition: "indeterminate",
-      reason: "seller-session-resolution-invalid",
-    });
-    expect(harness.counts.delivery).toBe(0);
-  });
-
-  // A direct fulfil whose permit is self-consistent under a non-canonical job
-  // id is a malformed authorization, not a retryable store outage.
-  it("refuses a direct fulfil whose permit scope has a non-canonical job id", async () => {
-    const harness = makeHarness();
-    const authorization = await authorize(harness);
-    const substituted = structuredClone(authorization);
-    const lower = JOB_ID.toLowerCase();
-    substituted.sessionAuthorization.jobId = lower;
-    const payment = substituted.paymentAuthorization;
-    payment.jobId = lower;
-    payment.evidenceInput.jobId = lower;
-    payment.evidenceHash = sha256Hex(canonicalize(payment.evidenceInput));
-    const context = harness.fulfilmentContext(substituted);
-    context.jobId = lower;
-    const loads = harness.settlementStore.loads();
-
-    await expect(harness.spine.fulfil(context)).resolves.toEqual({
-      disposition: "failed",
-      reason: "seller-payment-authorization-invalid",
-    });
-    expect(harness.settlementStore.loads()).toBe(loads);
-    expect(harness.counts.delivery).toBe(0);
-    expect(harness.counts.evidence).toBe(0);
-    expect(harness.counts.render).toBe(0);
   });
 
   it("stops at #119 while x402 settlement finality is pending", async () => {

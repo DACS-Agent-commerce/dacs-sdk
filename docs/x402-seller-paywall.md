@@ -1,29 +1,12 @@
 # Seller x402 paywall
 
-The SDK's pinned JID-1 corrective profile is unreleased, so the current
-production paywall and seller-spine entry points refuse action before payment or
-delivery dependencies. The flow below describes the candidate mechanics tested
-with explicit offline fixtures. See [profile availability](pay-ap2.md#authenticated-profile-and-retained-operation).
-
 Historical normative source audit: DACS Standard `next` at
-`662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.7), the historical
+`662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.6), the historical
 revision pinned by the fixed-price coordinator.
 
 `createX402Paywall` is the thin HTTP-protocol adapter for the transport-
 independent seller lifecycle. It does not start a server or select a framework.
 Applications provide the framework adapter and host the route themselves.
-
-The `jobId` must be a canonical CORE JID-1 ULID: 26 uppercase Crockford
-Base32 characters whose first character is `0`–`7`, so the value fits in
-128 bits. Any other value, including a Unicode or lowercase spelling, is
-rejected as `invalid-jobId` before the request is read or any key, nonce,
-store or facilitator call sees it (CORE JID-3).
-`x402PaywallSettlementKey`, `x402PaywallFulfilmentKey` and
-`x402Eip3009Nonce` derive nothing from such a value: they throw a
-`TypeError`. Called directly, the seller spine's `authorizeSettlement`
-rejects it as `seller-session-request-invalid` before it reads the request
-or queries `resolveCommittedSession`, and `recoverPaymentAuthorization`
-rejects it as `seller-recovery-scope-invalid` before any key or store read.
 
 The callback sequence is deliberately:
 

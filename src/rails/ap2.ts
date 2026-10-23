@@ -1,8 +1,4 @@
-import { requireReleasedCorrectiveProfile } from "../negotiate/correctiveProfileRelease.js";
 import { createHash } from "node:crypto";
-import { types as nodeTypes } from "node:util";
-import { snapshotWireJsonRead } from "../canonical/snapshot.js";
-import { hasAp2ProfileAdmission, readAp2ProfileAdmission, type Ap2ProfileAdmission } from "./ap2Admission.js";
 
 import {
   assertPositiveAmount,
@@ -11,7 +7,6 @@ import {
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import type { AttestationRef } from "../artifacts/types.js";
-import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BASE64URL_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
@@ -37,10 +32,6 @@ export interface Ap2RegistrationCapabilities {
 }
 
 export interface Ap2MandateAdmissionInput extends Ap2CheckoutSignaturePolicyInput {
-  jobId: string;
-  phaseIndex: number;
-  peerIdentity: string;
-  profileAdmission: Ap2ProfileAdmission;
   checkoutMandatePresent: boolean;
   checkoutMandateVerified: boolean;
   paymentMandatePresent: boolean;
@@ -65,48 +56,39 @@ export type Ap2MandateAdmission =
       submitProviderPayment: false;
     };
 
-export type Ap2BindingState = "in-flight" | "settled" | "recovery-pending";
+export type Ap2BindingState = "in-flight" | "settled" | "failed";
 
 export interface Ap2TransactionBinding {
   transactionId: string;
   jobId: string;
   phaseIndex: number;
   state: Ap2BindingState;
-  idempotencyKey: string;
-  operationFingerprint: string;
-  operationPayload: Readonly<{
-    transactionId: string; jobId: string; phaseIndex: number;
-    providerRequest: Readonly<Record<string, unknown>>;
-  }>;
-  providerRecoveryReference?: string;
-  settlement?: Readonly<{ status: "captured"; transactionId: string; operationFingerprint: string }>;
 }
 
 export type Ap2TransactionBindingDecision =
   | { decision: "pass"; action: "bind-new"; submitNewPayment: true }
   | {
       decision: "pass";
-      action: "resubmit-same-key" | "reconcile-reference" | "resume-settlement";
+      action: "resume-existing" | "resume-settlement";
       submitNewPayment: false;
     }
   | { decision: "fail"; action: "reject-replay"; submitNewPayment: false }
   | { decision: "error"; action: "refuse-conflict"; submitNewPayment: false };
 
-/**
- * AP2-6 byte-exact provider idempotency key. AP2-6 / CORE JID-3: the job id
- * must pass JID-1 before it is hashed.
- */
+/** AP2-6 byte-exact provider idempotency key. */
 export function deriveAp2IdempotencyKey(
   jobId: string,
   phaseIndex: number,
 ): string {
-  requireCanonicalJobId(jobId, "pay-ap2: jobId");
+  if (typeof jobId !== "string" || jobId.length === 0) {
+    throw new DacsError("pay-ap2: jobId must be a non-empty string");
+  }
   if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0) {
     throw new DacsError("pay-ap2: phaseIndex must be a non-negative safe integer");
   }
-  requireReleasedCorrectiveProfile();
-  // A JID-1 id is ASCII, so it is already in NFC.
-  return sha256Hex(`dacs-ap2-idem:v1:${jobId}:${phaseIndex}`);
+  return sha256Hex(
+    `dacs-ap2-idem:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
+  );
 }
 
 /**
@@ -184,20 +166,6 @@ export function admitAp2MandateChain(
     submitProviderPayment: false,
   });
 
-  try {
-    if (!input || typeof input !== "object" || nodeTypes.isProxy(input)) throw new DacsError("pay-ap2: invalid scope");
-    const job = Object.getOwnPropertyDescriptor(input, "jobId");
-    const phase = Object.getOwnPropertyDescriptor(input, "phaseIndex");
-    if (!job || !("value" in job) || !phase || !("value" in phase)) throw new DacsError("pay-ap2: scope must be stable own data");
-    requireCanonicalJobId(job.value, "pay-ap2: jobId");
-    if (!Number.isSafeInteger(phase.value) || phase.value < 0 || Object.is(phase.value, -0)) {
-      throw new DacsError("pay-ap2: phaseIndex must be a non-negative safe integer");
-    }
-  } catch (error) {
-    return reject("error", error instanceof Error ? error.message : "ap2-scope-invalid");
-  }
-  if (!hasAp2ProfileAdmission(input)) return reject("fail", "ap2-profile-admission-refused");
-
   if (!input.checkoutMandatePresent || !input.checkoutMandateVerified) {
     return reject("fail", "checkout-mandate-absent-or-unverified");
   }
@@ -232,74 +200,46 @@ export function admitAp2MandateChain(
   };
 }
 
-/** Sorted wire JSON preserves provider strings, including distinct Unicode spellings. */
-function sortedWireJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(sortedWireJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${JSON.stringify(key)}:${sortedWireJson((value as Record<string, unknown>)[key])}`,
-    ).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** AP2-7 replay decision over an authenticated atomic-store snapshot. */
 export function evaluateAp2TransactionBinding(input: {
   transactionId: string;
   jobId: string;
   phaseIndex: number;
-  providerRequest: Readonly<Record<string, unknown>>;
   priorBindings: readonly Ap2TransactionBinding[];
 }): Ap2TransactionBindingDecision {
-  const corrupt: Ap2TransactionBindingDecision = {
-    decision: "error", action: "refuse-conflict", submitNewPayment: false,
-  };
-  try {
-    const captured = snapshotWireJsonRead(input, "AP2 binding decision");
-    const { transactionId, jobId, phaseIndex, providerRequest, priorBindings } = captured;
-    requireCanonicalJobId(jobId, "pay-ap2: jobId");
-    requireReleasedCorrectiveProfile();
-    if (typeof transactionId !== "string" || !transactionId ||
-        !Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
-        !providerRequest || typeof providerRequest !== "object" || Array.isArray(providerRequest) ||
-        !Array.isArray(priorBindings) || priorBindings.length > 1) return corrupt;
-    const required = ["transactionId", "jobId", "phaseIndex", "state", "idempotencyKey", "operationFingerprint", "operationPayload"];
-    const allowed = [...required, "providerRecoveryReference", "settlement"];
-    for (const prior of priorBindings) {
-      if (!prior || typeof prior !== "object" || Array.isArray(prior) ||
-          required.some((key) => !Object.hasOwn(prior, key)) || Object.keys(prior).some((key) => !allowed.includes(key)) ||
-          typeof prior.transactionId !== "string" || !prior.transactionId ||
-          !Number.isSafeInteger(prior.phaseIndex) || prior.phaseIndex < 0 ||
-          !["in-flight", "settled", "recovery-pending"].includes(prior.state)) return corrupt;
-      const retained = prior.operationPayload;
-      if (!retained || typeof retained !== "object" || Array.isArray(retained) ||
-          Object.keys(retained).length !== 4 ||
-          !["transactionId", "jobId", "phaseIndex", "providerRequest"].every((key) => Object.hasOwn(retained, key)) ||
-          retained.transactionId !== prior.transactionId || retained.jobId !== prior.jobId || retained.phaseIndex !== prior.phaseIndex ||
-          !retained.providerRequest || typeof retained.providerRequest !== "object" || Array.isArray(retained.providerRequest) ||
-          prior.idempotencyKey !== deriveAp2IdempotencyKey(prior.jobId, prior.phaseIndex) ||
-          prior.operationFingerprint !== sha256Hex(sortedWireJson(retained)) ||
-          (prior.providerRecoveryReference !== undefined && (typeof prior.providerRecoveryReference !== "string" || !prior.providerRecoveryReference))) return corrupt;
-      if (prior.state === "settled") {
-        const settlement = prior.settlement;
-        if (!settlement || Object.keys(settlement).length !== 3 || settlement.status !== "captured" ||
-            settlement.transactionId !== prior.transactionId || settlement.operationFingerprint !== prior.operationFingerprint) return corrupt;
-      } else if (prior.settlement !== undefined) return corrupt;
-    }
-    if (priorBindings.length === 0) return { decision: "pass", action: "bind-new", submitNewPayment: true };
-    const prior = priorBindings[0]!;
-    if (prior.transactionId !== transactionId || prior.jobId !== jobId || prior.phaseIndex !== phaseIndex) {
-      return { decision: "fail", action: "reject-replay", submitNewPayment: false };
-    }
-    const requested = { transactionId, jobId, phaseIndex, providerRequest };
-    if (prior.operationFingerprint !== sha256Hex(sortedWireJson(requested)) ||
-        sortedWireJson(prior.operationPayload) !== sortedWireJson(requested)) return corrupt;
+  if (input.priorBindings.length === 0) {
+    return { decision: "pass", action: "bind-new", submitNewPayment: true };
+  }
+  if (input.priorBindings.length !== 1) {
     return {
-      decision: "pass",
-      action: prior.state === "settled" ? "resume-settlement" : prior.providerRecoveryReference ? "reconcile-reference" : "resubmit-same-key",
+      decision: "error",
+      action: "refuse-conflict",
       submitNewPayment: false,
     };
-  } catch { return corrupt; }
+  }
+  const prior = input.priorBindings[0]!;
+  if (
+    prior.transactionId !== input.transactionId ||
+    prior.jobId !== input.jobId ||
+    prior.phaseIndex !== input.phaseIndex
+  ) {
+    return {
+      decision: "fail",
+      action: "reject-replay",
+      submitNewPayment: false,
+    };
+  }
+  return prior.state === "settled"
+    ? {
+        decision: "pass",
+        action: "resume-settlement",
+        submitNewPayment: false,
+      }
+    : {
+        decision: "pass",
+        action: "resume-existing",
+        submitNewPayment: false,
+      };
 }
 
 export interface Ap2VerifiedCheckoutMandate {
@@ -338,10 +278,7 @@ export interface Ap2MandateVerifier<TCheckout = unknown, TPayment = unknown> {
 }
 
 export interface Ap2SettlementIntent {
-  intentVersion: "2";
-  /** Sorted-key wire JSON; strings are retained exactly, without Unicode normalization. */
-  operationJson: string;
-  operationHash: string;
+  intentVersion: "1";
   bindingHash: string;
   transactionId: string;
   jobId: string;
@@ -382,8 +319,8 @@ export interface Ap2BindingLease {
 }
 
 export type Ap2BindingClaim =
-  | { status: "acquired"; intent: Readonly<Ap2SettlementIntent>; lease: Ap2BindingLease; createdAt: number; replayDeadline?: number; providerRef?: string }
-  | { status: "waiting"; intent: Readonly<Ap2SettlementIntent>; lease: Ap2BindingLease; createdAt: number; replayDeadline?: number; providerRef?: string }
+  | { status: "acquired"; intent: Readonly<Ap2SettlementIntent>; lease: Ap2BindingLease; providerRef?: string }
+  | { status: "waiting"; intent: Readonly<Ap2SettlementIntent>; lease: Ap2BindingLease; providerRef?: string }
   | { status: "settled"; intent: Readonly<Ap2SettlementIntent>; settlement: Readonly<Ap2CapturedSettlement> }
   | { status: "failed"; intent: Readonly<Ap2SettlementIntent>; reason: string }
   | { status: "conflict" | "corrupt"; reason: string };
@@ -392,45 +329,13 @@ export type Ap2BindingWrite =
   | { status: "recorded" | "existing" }
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
-/**
- * AP2-7 claim refusal for a second transaction_id presented for a
- * (jobId, phaseIndex) whose AP2-6 key is already bound to another one.
- * @internal shared with the bundled filesystem store.
- */
-export const AP2_PHASE_BOUND_ELSEWHERE = "ap2-phase-bound-to-another-transaction";
-
-/**
- * AP2-7 claim refusal for a transaction_id already bound to a different
- * request. The same (jobId, phaseIndex) with a different retained operation
- * is an operation conflict, not a cross-session replay.
- * @internal shared with the bundled filesystem store.
- */
-export function ap2BindingConflictReason(
-  stored: Readonly<Pick<Ap2SettlementIntent, "jobId" | "phaseIndex">>,
-  presented: Readonly<Pick<Ap2SettlementIntent, "jobId" | "phaseIndex">>,
-): string {
-  return stored.jobId === presented.jobId && stored.phaseIndex === presented.phaseIndex
-    ? "ap2-retained-operation-conflict"
-    : "ap2-transaction-id-replay";
-}
-
 /** Atomic durable store. Production implementations must persist this state. */
 export interface Ap2BindingStore {
-  /**
-   * Reserve or resolve the binding for `intent.transactionId`. The first
-   * claim must also atomically bind the phase (`intent.idempotencyKey`, the
-   * AP2-6 key of `(jobId, phaseIndex)`) to that transaction_id: a claim for a
-   * different transaction_id on an occupied phase returns `conflict` with
-   * reason `"ap2-phase-bound-to-another-transaction"`, creating no record and
-   * no replay deadline, whatever state the first binding is in.
-   */
   claim(input: {
     intent: Readonly<Ap2SettlementIntent>;
     owner: string;
     now: number;
     leaseDurationMs: number;
-    /** Persist now + this window on FIRST claim only; never refresh it on takeover. */
-    noReferenceReplayWindowMs?: number;
   }): Promise<Ap2BindingClaim>;
   isCurrent(input: {
     transactionId: string;
@@ -469,8 +374,6 @@ export interface Ap2EffectFence {
   generation: number;
   idempotencyKey: string;
   assertCurrent(): Promise<void>;
-  /** Recheck the fence and retained provider replay deadline immediately before create. */
-  assertSubmissionAllowed(): Promise<void>;
 }
 
 export type Ap2ProviderSubmission =
@@ -500,10 +403,6 @@ export type Ap2AttestedProviderStatus =
  * the selected SR-3 binding and return only authenticated status material.
  */
 export interface Ap2ProviderAdapter {
-  /** Required guaranteed deduplication window, reduced by a clock/network safety margin and bound into the retained operation. */
-  readonly noReferenceReplayWindowMs: number;
-  /** Stable destination/account namespace and every effect-bearing adapter option. No credentials. */
-  operation: Readonly<{ destination: string; idempotencyNamespace: string; parameters: Readonly<Record<string, unknown>> }>;
   capabilities: Readonly<Ap2RegistrationCapabilities>;
   submit(input: {
     intent: Readonly<Ap2SettlementIntent>;
@@ -523,8 +422,6 @@ export interface Ap2ProviderAdapter {
 export interface AdvanceAp2SettlementInput<TCheckout = unknown, TPayment = unknown> {
   jobId: string;
   phaseIndex: number;
-  peerIdentity: string;
-  profileAdmission: Ap2ProfileAdmission;
   agreementHash: string;
   protocolVersion: string;
   expected: Readonly<{ payee: string; amount: string; currency: string }>;
@@ -569,7 +466,6 @@ function intentFrom(input: {
   phaseIndex: number;
   agreementHash: string;
   protocolVersion: string;
-  operationJson: string;
   verifiedPayment: Readonly<Ap2VerifiedPaymentMandate>;
 }): Ap2SettlementIntent {
   const amount = assertPositiveAmount(input.verifiedPayment.amount);
@@ -577,9 +473,7 @@ function intentFrom(input: {
     throw new DacsError("pay-ap2: agreementHash must be 32-byte lower-case hex");
   }
   const unsigned = {
-    intentVersion: "2" as const,
-    operationJson: input.operationJson,
-    operationHash: sha256Hex(input.operationJson),
+    intentVersion: "1" as const,
     transactionId: requireString(input.verifiedPayment.transactionId, "transactionId"),
     jobId: requireString(input.jobId, "jobId").normalize("NFC"),
     phaseIndex: input.phaseIndex,
@@ -657,28 +551,18 @@ function settlementMatchesIntent(
 
 /**
  * Restart-safe AP2 settlement. Ambiguous submission never authorizes a fresh
- * charge: recovery reuses the AP2-6 key within the provider's retained replay
- * deadline. Outside that deadline, a missing reference requires operator action.
+ * charge: recovery reuses the AP2-6 key, while the provider must deduplicate it.
  */
 export async function advanceAp2Settlement<TCheckout, TPayment>(
   input: AdvanceAp2SettlementInput<TCheckout, TPayment>,
 ): Promise<Ap2SettlementProgress> {
-  const admittedScope = readAp2ProfileAdmission(input);
-  if (!admittedScope) return { status: "failed", reason: "ap2-profile-admission-refused" };
-  // Capture the admitted scope before any callback can mutate the caller input.
-  const admittedJobId = admittedScope.jobId;
-  const admittedPhaseIndex = admittedScope.phaseIndex;
   const provider = input.provider;
   const verifier = input.verifier;
   const store = input.store;
   const now = input.now ?? Date.now;
   let leaseDurationMs: number;
   let owner: string;
-  let noReferenceReplayWindowMs: number;
   try {
-    noReferenceReplayWindowMs = requirePositiveSafeInteger(
-      provider.noReferenceReplayWindowMs, "noReferenceReplayWindowMs",
-    );
     leaseDurationMs = requirePositiveSafeInteger(
       input.leaseDurationMs ?? DEFAULT_LEASE_MS,
       "leaseDurationMs",
@@ -702,8 +586,8 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
   const capabilities = Object.freeze({ ...provider.capabilities });
   const readNow = (): number => requireClockValue(now());
   const authority = Object.freeze({
-    jobId: admittedJobId,
-    phaseIndex: admittedPhaseIndex,
+    jobId: input.jobId,
+    phaseIndex: input.phaseIndex,
     agreementHash: input.agreementHash,
     protocolVersion: input.protocolVersion,
     expected: Object.freeze({ ...input.expected }),
@@ -714,22 +598,13 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     return { status: "failed", reason: "ap2-provider-registration-ineligible" };
   }
 
-  let operationJson: string;
-  let providerOperation: Ap2ProviderAdapter["operation"];
   let checkoutArtifact: Readonly<TCheckout>;
   let paymentArtifact: Readonly<TPayment>;
   let checkout: Ap2MandateVerification<Ap2VerifiedCheckoutMandate>;
   let payment: Ap2MandateVerification<Ap2VerifiedPaymentMandate>;
   try {
-    const operation = snapshotWireJsonRead(provider.operation, "AP2 provider operation") as Ap2ProviderAdapter["operation"];
-    requireString(operation.destination, "provider destination");
-    requireString(operation.idempotencyNamespace, "provider idempotency namespace");
-    if (!operation.parameters || typeof operation.parameters !== "object" || Array.isArray(operation.parameters)) throw new DacsError("invalid provider parameters");
-    checkoutArtifact = snapshotWireJsonRead(input.checkoutMandate, "CheckoutMandate") as Readonly<TCheckout>;
-    paymentArtifact = snapshotWireJsonRead(input.paymentMandate, "PaymentMandate") as Readonly<TPayment>;
-    providerOperation = operation;
-    deepFreeze(checkoutArtifact);
-    deepFreeze(paymentArtifact);
+    checkoutArtifact = snapshotArtifact(input.checkoutMandate, "CheckoutMandate");
+    paymentArtifact = snapshotArtifact(input.paymentMandate, "PaymentMandate");
     [checkout, payment] = await Promise.all([
       verifyCheckoutMandate(checkoutArtifact),
       verifyPaymentMandate(paymentArtifact),
@@ -745,7 +620,6 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
   }
 
   const admission = admitAp2MandateChain({
-    ...admittedScope,
     checkoutMandatePresent: true,
     checkoutMandateVerified: true,
     paymentMandatePresent: true,
@@ -762,21 +636,11 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
 
   let intent: Ap2SettlementIntent;
   try {
-    // Key order is not part of the operation: a retry that presents the same
-    // mandates in another order must compare equal, with exact string bytes.
-    operationJson = sortedWireJson({
-      provider: providerOperation,
-      noReferenceReplayWindowMs,
-      checkoutMandate: checkoutArtifact,
-      paymentMandate: paymentArtifact,
-      metadata: { dacs_job_id: authority.jobId, dacs_agreement_hash: authority.agreementHash },
-    });
     intent = intentFrom({
       jobId: authority.jobId,
       phaseIndex: authority.phaseIndex,
       agreementHash: authority.agreementHash,
       protocolVersion: authority.protocolVersion,
-      operationJson,
       verifiedPayment: payment.mandate,
     });
     if (
@@ -797,17 +661,13 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
   let claimNow: number;
   try {
     claimNow = readNow();
-    claimed = await claimBinding({ intent, owner: authority.owner, now: claimNow, leaseDurationMs,
-      noReferenceReplayWindowMs,
-    });
+    claimed = await claimBinding({ intent, owner: authority.owner, now: claimNow, leaseDurationMs });
   } catch {
     return { status: "indeterminate", reason: "ap2-binding-store-unavailable" };
   }
   if ("intent" in claimed) {
     try {
-      if (claimed.intent.intentVersion !== "2" || claimed.intent.operationJson !== intent.operationJson ||
-          claimed.intent.operationHash !== sha256Hex(claimed.intent.operationJson) ||
-          canonicalize(claimed.intent) !== canonicalize(intent)) {
+      if (canonicalize(claimed.intent) !== canonicalize(intent)) {
         return { status: "failed", reason: "ap2-binding-store-intent-mismatch" };
       }
     } catch {
@@ -856,38 +716,25 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
         throw new DacsError("pay-ap2: stale effect fence");
       }
     },
-    assertSubmissionAllowed: async () => {
-      await fence.assertCurrent();
-      const currentTime = readNow();
-      if (!Number.isSafeInteger(claimed.createdAt) || claimed.createdAt < 0 ||
-          currentTime < claimed.createdAt ||
-          !Number.isSafeInteger(claimed.replayDeadline) ||
-          claimed.replayDeadline! <= claimed.createdAt ||
-          claimed.replayDeadline! - claimed.createdAt > noReferenceReplayWindowMs ||
-          currentTime >= claimed.replayDeadline!) {
-        throw new DacsError("ap2-provider-replay-window-expired");
-      }
-    },
   });
 
-  // Recovery consumes the store-retained operation itself, after exact comparison.
-  const retained = JSON.parse(claimed.intent.operationJson) as { checkoutMandate: unknown; paymentMandate: unknown; metadata: Record<string, string> };
-  intent = snapshotArtifact(claimed.intent, "retained intent");
   let providerRef = claimed.providerRef;
   if (!providerRef) {
     try {
-      await fence.assertSubmissionAllowed();
-    } catch (error) {
-      return { status: "indeterminate", reason: error instanceof Error && error.message === "ap2-provider-replay-window-expired"
-        ? error.message : "ap2-effect-fence-stale" };
+      await fence.assertCurrent();
+    } catch {
+      return { status: "indeterminate", reason: "ap2-effect-fence-stale" };
     }
     let submitted: Ap2ProviderSubmission;
     try {
       submitted = await submitProviderPayment({
         intent,
-        checkoutMandate: deepFreeze(retained.checkoutMandate),
-        paymentMandate: deepFreeze(retained.paymentMandate),
-        metadata: deepFreeze(retained.metadata),
+        checkoutMandate: checkoutArtifact,
+        paymentMandate: paymentArtifact,
+        metadata: Object.freeze({
+          dacs_job_id: intent.jobId,
+          dacs_agreement_hash: intent.agreementHash,
+        }),
         idempotencyKey: intent.idempotencyKey,
         fence,
       });
@@ -1045,8 +892,6 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
 interface MemoryAp2Record {
   intent: Ap2SettlementIntent;
   lease: Ap2BindingLease;
-  createdAt: number;
-  replayDeadline?: number;
   providerRef?: string;
   settlement?: Ap2CapturedSettlement;
   failure?: string;
@@ -1055,8 +900,6 @@ interface MemoryAp2Record {
 /** Test/development store; production callers must provide durable storage. */
 export function createInMemoryAp2BindingStore(): Ap2BindingStore {
   const records = new Map<string, MemoryAp2Record>();
-  // AP2-6 key, i.e. (jobId, phaseIndex), -> the first transaction_id bound to it.
-  const phases = new Map<string, string>();
   const current = (
     record: MemoryAp2Record | undefined,
     input: { bindingHash: string; owner: string; generation: number },
@@ -1070,9 +913,8 @@ export function createInMemoryAp2BindingStore(): Ap2BindingStore {
     async claim(input) {
       const existing = records.get(input.intent.transactionId);
       if (existing) {
-        if (existing.intent.intentVersion !== "2" || existing.intent.operationHash !== sha256Hex(existing.intent.operationJson) ||
-            existing.intent.bindingHash !== input.intent.bindingHash) {
-          return { status: "conflict", reason: ap2BindingConflictReason(existing.intent, input.intent) };
+        if (existing.intent.bindingHash !== input.intent.bindingHash) {
+          return { status: "conflict", reason: "ap2-transaction-id-replay" };
         }
         if (existing.settlement) {
           return { status: "settled", intent: existing.intent, settlement: existing.settlement };
@@ -1085,8 +927,6 @@ export function createInMemoryAp2BindingStore(): Ap2BindingStore {
             status: "waiting",
             intent: existing.intent,
             lease: { ...existing.lease },
-            createdAt: existing.createdAt,
-            ...(existing.replayDeadline === undefined ? {} : { replayDeadline: existing.replayDeadline }),
             ...(existing.providerRef ? { providerRef: existing.providerRef } : {}),
           };
         }
@@ -1099,29 +939,11 @@ export function createInMemoryAp2BindingStore(): Ap2BindingStore {
           status: "acquired",
           intent: existing.intent,
           lease: { ...existing.lease },
-          createdAt: existing.createdAt,
-          ...(existing.replayDeadline === undefined ? {} : { replayDeadline: existing.replayDeadline }),
           ...(existing.providerRef ? { providerRef: existing.providerRef } : {}),
         };
       }
-      let phase: string;
-      try {
-        phase = deriveAp2IdempotencyKey(input.intent.jobId, input.intent.phaseIndex);
-      } catch {
-        return { status: "corrupt", reason: "ap2-binding-claim-input-invalid" };
-      }
-      if (input.intent.idempotencyKey !== phase) {
-        return { status: "corrupt", reason: "ap2-binding-claim-input-invalid" };
-      }
-      const bound = phases.get(phase);
-      if (bound !== undefined && bound !== input.intent.transactionId) {
-        return { status: "conflict", reason: AP2_PHASE_BOUND_ELSEWHERE };
-      }
-      phases.set(phase, input.intent.transactionId);
       const record: MemoryAp2Record = {
         intent: Object.freeze({ ...input.intent }),
-        createdAt: input.now,
-        ...(input.noReferenceReplayWindowMs === undefined ? {} : { replayDeadline: input.now + input.noReferenceReplayWindowMs }),
         lease: {
           owner: input.owner,
           generation: 1,
@@ -1133,8 +955,6 @@ export function createInMemoryAp2BindingStore(): Ap2BindingStore {
         status: "acquired",
         intent: record.intent,
         lease: { ...record.lease },
-        createdAt: record.createdAt,
-        ...(record.replayDeadline === undefined ? {} : { replayDeadline: record.replayDeadline }),
       };
     },
     async isCurrent(input) {

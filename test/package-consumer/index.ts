@@ -1,27 +1,4 @@
 import {
-  authenticateAp2ProfileAdmission as rootAuthenticateAp2ProfileAdmission,
-  AP2_IMPLEMENTED_MODULE_VERSIONS as rootAp2ModuleVersions,
-  type Ap2CorrectiveProfile as RootAp2CorrectiveProfile,
-  type Ap2ParticipantProfile as RootAp2ParticipantProfile,
-  type Ap2ProfileAdmission as RootAp2ProfileAdmission,
-} from "@kynesyslabs/dacs";
-import {
-  authenticateAp2ProfileAdmission,
-  AP2_IMPLEMENTED_MODULE_VERSIONS,
-  type Ap2CorrectiveProfile,
-  type Ap2ParticipantProfile,
-  type Ap2ProfileAdmission,
-} from "@kynesyslabs/dacs/rails";
-
-// F11: emitted declarations from both supported package entry points agree.
-const admissionFunction: typeof authenticateAp2ProfileAdmission = rootAuthenticateAp2ProfileAdmission;
-const moduleVersions: typeof AP2_IMPLEMENTED_MODULE_VERSIONS = rootAp2ModuleVersions;
-const profile: Ap2CorrectiveProfile = {} as RootAp2CorrectiveProfile;
-const participant: Ap2ParticipantProfile = {} as RootAp2ParticipantProfile;
-const capability: Ap2ProfileAdmission = {} as RootAp2ProfileAdmission;
-void [admissionFunction, moduleVersions, profile, participant, capability];
-
-import {
   type BundleVerification,
   type DemosAdapterConfig,
   type DemosWriteJournal,
@@ -148,7 +125,7 @@ declare const ratingEffectStore: RatingPublicationEffectStore;
 const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
-const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("01ARZ3NDEKTSV4RRFFQ69G5FAV", 0);
+const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
