@@ -1418,6 +1418,27 @@
           "after": "36cf0c10d71208afda5d52f6aef02adc0121da62"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share wallet payload identity and test import isolation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "b7183e63a75b68cda34c2b30a4d532963794b13f",
+          "after": "59a2fd307756d036f813edd17dec2fa8be23e68f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": "32c65aec6b18cde12321600f9eb1c6ba4e439cae",
+          "after": "e9ec2d2e168a27c87ac04b1df345cf6bd8de0242"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": null,
+          "after": "e1085f274e14f20b87335189155f76284fd3b92a"
+        }
+      ]
     }
   ]
 }
