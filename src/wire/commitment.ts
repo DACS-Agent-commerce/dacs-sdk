@@ -20,15 +20,18 @@ import { types } from "node:util";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { AgreementArtifact, Listing } from "../artifacts/types.js";
-import { isPayeeBoundAgreementDocument, isChainTxRef, isListing, isReadableAnchorReceipt } from "../artifacts/validators.js";
+import { isPayeeBoundAgreementDocument, isChainTxRef, isListing, isReadableAnchorReceipt, isReadableFinalityCommitmentRecord } from "../artifacts/validators.js";
 import { contentHash } from "../canonical/hash.js";
 import { DacsError } from "../errors.js";
-import { validateFixedPriceAgreementBinding } from "../negotiate/commitment.js";
+import { canonicalDemosAgentPublicKey } from "../identity/demos.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
+import { validateFixedPriceAgreementBinding, type AnchoredFinalityCommitment } from "../negotiate/commitment.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { assertTp1Binding, type Tp1Binding } from "./profile.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   admitWireJson, cloneJson, deepFreeze, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,
-  sameCanonical, sealAdmitted, verifyEd25519, claimKey, type JsonRecord, type ListingPin,
+  sameCanonical, verifyEd25519, claimKey, type JsonRecord, type ListingPin,
 } from "./validate.js";
 
 /** The most bytes one commitment or Agreement document may have (the response body bound). */
@@ -43,7 +46,7 @@ export const MAX_WIRE_ARTIFACT_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBy
  */
 export function admitWireArtifact(bytes: Uint8Array): unknown {
   const owned = ownedBytes(bytes, "wire_input_invalid", 500, { maxBytes: MAX_WIRE_ARTIFACT_BYTES, code: "wire_artifact_rejected", status: 500 });
-  return sealAdmitted(admitWireJson(owned, MAX_WIRE_ARTIFACT_BYTES, "wire_artifact_rejected", 500));
+  return admitWireJson(owned, MAX_WIRE_ARTIFACT_BYTES, "wire_artifact_rejected", 500);
 }
 
 /** The admitted value of a continuation input: exact bytes, admitted now, or a value the wire admitted. Anything else is refused as `code`. */
@@ -61,37 +64,40 @@ export const TP1_COMMIT_PHASE = "commit-payee-bound-agreement";
 export const FINALITY_COMMITMENT_DOMAIN = "dacs-finality-commitment:v1:";
 
 /** The anchored commitment a receipt reader authenticates (the gate's AnchoredFinalityCommitment). */
-export interface WireAnchoredCommitment {
-  readonly record: JsonRecord;
-  readonly nativeAddress: string;
-  readonly anchorTxRef: JsonRecord;
-  readonly anchorReceipt: JsonRecord;
-}
+export type WireAnchoredCommitment = AnchoredFinalityCommitment;
+
+/** The SDK Demos receipt substrate; its network is authenticated by the approved chain identity. */
+export const TP1_RECEIPT_SUBSTRATE = "demos";
 
 /**
  * Trusted integration, the SR-2 boundary (the gate's
- * FinalityCommitmentReader.verifyAnchorReceipt, answered synchronously):
+ * FinalityCommitmentReader.verifyAnchorReceipt, synchronous or asynchronous):
  * authenticate the receipt's evidence and its transaction, writer and nonce
- * bindings against the chain. Return "valid", "invalid", "indeterminate" or
+ * bindings against the supplied approved chain. `chainIdentity` must be an own
+ * data property naming the reader's independently authenticated chain. Bound
+ * every network reply and list and apply a deadline. Return "valid", "invalid", "indeterminate" or
  * "error"; throw to keep a lookup's real cause. The commitment checks do no
  * I/O of their own and call it for every request they check, so the answer
  * must come from evidence the host verified itself; a cached "valid" is
  * never authoritative. Without one, a continuation is refused.
  */
-export type CommitmentReceiptReader = (anchored: Readonly<WireAnchoredCommitment>) => unknown;
+export interface CommitmentReceiptReader {
+  readonly chainIdentity: string;
+  (anchored: Readonly<WireAnchoredCommitment>, chain: Readonly<{ chainIdentity: string; substrate: typeof TP1_RECEIPT_SUBSTRATE }>): unknown;
+}
 
-/** What a continuation is checked against; the request's own facts, when there is one. */
+/** The approved local binding and authenticated request facts every continuation requires. */
 export interface CommitmentScope {
   seller: string;
   listingPin: ListingPin;
   now: number;
-  /** The job, Agreement hash and buyer a request names; omitted, the record's own are taken and checked at signing. */
-  request?: { jobId: string; agreementHash: string; buyer: string };
+  binding: Tp1Binding;
+  /** The job, Agreement hash and buyer from the authenticated request, never derived from the record. */
+  request: { jobId: string; agreementHash: string; buyer: string };
 }
 
 const ANCHORED = ["record", "nativeAddress", "anchorTxRef", "anchorReceipt"];
 const RESULT = [...ANCHORED, "recordKind", "logicalAddress", "agreementHash", "committedAt", "resumed"];
-const RECORD = ["finalityCommitmentVersion", "jobId", "agreementHash", "listingRef", "parties", "pattern", "createdAt", "signature"];
 const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 /** The Agreement discriminators other than the payee-bound one the commit phase selects (DACS-3 §8.5). */
 const OTHER_DISCRIMINATORS = ["agreementVersion", "identityBoundAgreementVersion", "identityBoundPayeeAgreementVersion"];
@@ -130,11 +136,12 @@ const TP1_RECEIPT_SUBSTRATE = "demos:testnet";
  */
 function assertListingSignature(listing: Listing): void {
   const signature = listing.signature as unknown as JsonRecord;
-  if (signature.algorithm !== "ed25519" || !isClaim(signature.signer) ||
-      !listing.seller.identity.claims.some((claim) => claim.ref === signature.signer) || typeof signature.value !== "string" || !SIGNATURE.test(signature.value) ||
+  const key = canonicalDemosAgentPublicKey(signature.signer);
+  if (signature.algorithm !== "ed25519" || key === null ||
+      !listing.seller.identity.claims.some((claim) => sameCanonicalClaimIdentity(claim.ref, signature.signer)) || typeof signature.value !== "string" || !SIGNATURE.test(signature.value) ||
       Buffer.from(signature.value, "base64url").toString("base64url") !== signature.value) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
   const signed = Buffer.from(`${ARTIFACT_SEPARATORS.Listing}${contentHash(listing as unknown as JsonRecord)}`, "utf8");
-  if (!verifyEd25519(signed, Buffer.from(signature.value, "base64url"), claimKey(signature.signer))) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
+  if (!verifyEd25519(signed, Buffer.from(signature.value, "base64url"), Buffer.from(key).toString("hex"))) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
 }
 
 /**
@@ -279,10 +286,16 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreeme
  * Listing's (DACS-3 §8.5.2 checks 1-4, assertListingTerms: detail
  * `LISTING-TERMS`). The reader runs last, on an owned frozen copy: "invalid" is refused the same
  * way; "indeterminate" or "error" is `commitment_unverified` (503: never
- * final); any other answer, a promise included, is `commitment_reader_invalid`.
+ * final); any other resolved answer is `commitment_reader_invalid`. Thrown or
+ * rejected reader errors retain their original cause. Reader and receipt must
+ * match the approved TP-1 chain; no request identity is inferred from evidence.
  */
-export function commitmentReceiptTime(value: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: CommitmentScope): number {
-  if (typeof reader !== "function") fail("commitment_reader_required", 500);
+export async function commitmentReceiptTime(value: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: CommitmentScope): Promise<number> {
+  if (typeof reader !== "function" || types.isProxy(reader)) fail("commitment_reader_required", 500);
+  assertTp1Binding(scope.binding, scope.binding?.local);
+  const chainIdentity = scope.binding.profile.chainIdentity;
+  const readerChain = Object.getOwnPropertyDescriptor(reader, "chainIdentity");
+  if (!readerChain || !("value" in readerChain) || readerChain.value !== chainIdentity) fail("commitment_reader_chain_mismatch", 500);
   // DACS-3 §8.5.2 check 9 and CA-5/CA-7: the pinned Listing's own phase selects the Agreement type before any
   // signature is read. TP-1 continues only `commit-payee-bound-agreement`; another phase, or none, is refused.
   const terms = committedListing(listing, scope);
@@ -290,12 +303,13 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, listin
   const stated = hasKeys(c, RESULT);
   if (!stated && !hasKeys(c, ANCHORED)) invalid();
   const record = c.record as JsonRecord;
-  if (!hasKeys(record, RECORD) || record.finalityCommitmentVersion !== "1" || record.pattern !== "fixed-price" || !isUint(record.createdAt) ||
+  if (!isReadableFinalityCommitmentRecord(record) || record.pattern !== "fixed-price" || !isUint(record.createdAt) ||
       !isCanonicalJobId(record.jobId) || !isHash(record.agreementHash) || !isListingPin(record.listingRef) ||
       !Array.isArray(record.parties) || record.parties.length !== 2 || !isClaim(record.parties[0])) invalid();
   const jobId = record.jobId as string;
-  const want = scope.request ?? { jobId, agreementHash: record.agreementHash as string, buyer: (record.parties as string[])[0]! };
-  if (jobId !== want.jobId || record.agreementHash !== want.agreementHash || !sameCanonical(record.listingRef, scope.listingPin) ||
+  const want = scope.request;
+  if (!want || !isCanonicalJobId(want.jobId) || !isHash(want.agreementHash) || !isClaim(want.buyer) ||
+      jobId !== want.jobId || record.agreementHash !== want.agreementHash || !sameCanonical(record.listingRef, scope.listingPin) ||
       (record.parties as unknown[])[0] !== want.buyer || (record.parties as unknown[])[1] !== scope.seller) invalid();
   // TP-1's orchestrator is the seller (G3): only its key signs the job's commitment.
   const signature = record.signature as JsonRecord;
@@ -310,11 +324,11 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, listin
   const blockRef = isRecord(receipt) ? receipt.blockRef : undefined;
   const logicalAddress = `dacs3:commit:${jobId}`;
   // The commitment gate's own structural checks (CORE §5.1 receipt, DACS-4 §9.3 transaction reference) come first.
-  if (!isReadableAnchorReceipt(receipt) || !isChainTxRef(c.anchorTxRef)) invalid();
+  if (!isReadableAnchorReceipt(receipt) || !isChainTxRef(c.anchorTxRef)) return invalid();
   if (!isRecord(c.anchorTxRef) || typeof c.nativeAddress !== "string" || c.nativeAddress.length === 0 || !isRecord(receipt) ||
       receipt.substrate !== TP1_RECEIPT_SUBSTRATE || receipt.state !== "finalized" || receipt.observationDisposition !== "established" || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== c.nativeAddress || receipt.contentHash !== contentHash(record) ||
-      !isRecord(blockRef) || !isUint(blockRef.timestamp)) invalid();
+      !isRecord(blockRef) || !isUint(blockRef.timestamp)) return invalid();
   const committedAt = (blockRef as JsonRecord).timestamp as number;
   // A stated result is the gate's own: its derived members must be what the evidence gives. A party never supplies the time.
   if (stated && (c.recordKind !== "finality" || c.logicalAddress !== logicalAddress || c.agreementHash !== record.agreementHash ||
@@ -329,8 +343,8 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, listin
       !isUint(deadline) || !Number.isSafeInteger(limit) || deadline > limit || committedAt > deadline) invalid();
   // DACS-3 §8.5.2 checks 1-9: the terms both parties signed must be the pinned Listing's, by the SDK's own verifier.
   assertListingTerms(committed, terms.listing, committedAt);
-  const anchored = deepFreeze(cloneJson({ record, nativeAddress: c.nativeAddress, anchorTxRef: c.anchorTxRef, anchorReceipt: receipt })) as WireAnchoredCommitment;
-  const verdict = (reader as CommitmentReceiptReader)(anchored);
+  const anchored: WireAnchoredCommitment = deepFreeze(cloneJson({ record, nativeAddress: c.nativeAddress, anchorTxRef: c.anchorTxRef, anchorReceipt: receipt }));
+  const verdict = await (reader as CommitmentReceiptReader)(anchored, Object.freeze({ chainIdentity, substrate: TP1_RECEIPT_SUBSTRATE }));
   if (verdict === "valid") return committedAt;
   if (verdict === "invalid") invalid();
   if (verdict === "indeterminate" || verdict === "error") fail("commitment_unverified", 503);
