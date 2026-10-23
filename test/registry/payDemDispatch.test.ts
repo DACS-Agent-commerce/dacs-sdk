@@ -356,6 +356,12 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     mocks.payDemSettle.mockReturnValue(vi.fn());
     class ReceiverStore implements SettlementIdempotencyStore {
       readonly calls: string[] = [];
+      #lookupCalls: string[] = [];
+      async readOutcome(key: string) {
+        this.#lookupCalls.push(key);
+        return null;
+      }
+      get lookupCalls() { return this.#lookupCalls; }
       async once(
         key: string,
         _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
@@ -396,6 +402,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       payee: "aa".repeat(32),
       settlementFinality: "bft-final" as const,
     }));
+    firstStore.readOutcome = vi.fn(async () => { throw new Error("mutated lookup"); });
     options.payDem!.maxTotalDebitOs = 20n;
     options.payDem!.journalPreparedTransfer = secondJournal;
     options.payDem!.settlementStore = secondStore;
@@ -450,6 +457,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     )).resolves.toEqual(submitted);
     expect(firstStore.calls).toEqual(["demos-native:DEM:job-1:4"]);
     expect(secondStore.once).not.toHaveBeenCalled();
+    await expect(capturedRecovery.store!.readOutcome!(
+      "demos-native:DEM:job-1:4", storeBinding("demos-native:DEM", "job-1", 4),
+    )).resolves.toBeNull();
+    expect(firstStore.lookupCalls).toEqual(["demos-native:DEM:job-1:4"]);
+    expect(firstStore.readOutcome).not.toHaveBeenCalled();
     await capturedRecovery.reconcile!({} as never);
     expect(firstReconcile).toHaveBeenCalledTimes(1);
     expect(secondReconcile).not.toHaveBeenCalled();
