@@ -80,7 +80,7 @@ function fakeRegistry(packument: (published: { manifest: { name: string; version
 }
 const onlyCandidate = ({ manifest, tarball }: { manifest: { name: string; version: string }; tarball: Buffer }) =>
   ({ name: manifest.name, _id: manifest.name, "dist-tags": { acceptance: manifest.version },
-    versions: { [manifest.version]: { ...manifest, dist: { integrity: sri(tarball), tarball: `${REGISTRY}/candidate.tgz` } } } });
+    versions: { [manifest.version]: { ...manifest, dist: { integrity: sri(tarball), shasum: createHash("sha1").update(tarball).digest("hex"), tarball: `${REGISTRY}/candidate.tgz` } } } });
 
 describe("exact local registry publisher", () => {
   it("publishes the exact archive bytes under the acceptance dist-tag without provenance", async () => {
@@ -546,6 +546,56 @@ describe("exact local registry publisher", () => {
       }
       expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
     });
+
+  it("rejects a prefix alias with nonstandard ustar version bytes", () => {
+    const first = gunzipSync(packTarball({ "package/package.json": '{"name":"first","version":"1.0.0"}' }));
+    const second = gunzipSync(packTarball({ "package/package.json": '{"name":"other","version":"9.9.9"}' }));
+    second.write("XX", 263);
+    second.write("package/hidden", 345);
+    second.fill(32, 148, 156);
+    const sum = second.subarray(0, 512).reduce((total, byte) => total + byte, 0);
+    second.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+    expect(() => readPackedManifest(gzipSync(Buffer.concat([first.subarray(0, -1024), second]))))
+      .toThrow(/packed tarball/);
+  });
+
+  it.each(["duplicate payload", "file then directory", "directory then file", "file then child", "child then file"])(
+    "rejects ambiguous archive paths: %s", kind => {
+      const manifest = gunzipSync(packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}' }));
+      const entry = (name: string, body: string, directory = false) => {
+        const tar = gunzipSync(packTarball({ [name]: body }));
+        if (directory) {
+          tar.write("5", 156); tar.fill(32, 148, 156);
+          const sum = tar.subarray(0, 512).reduce((total, byte) => total + byte, 0);
+          tar.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+        }
+        return tar.subarray(0, -1024);
+      };
+      const file = entry("package/index.js", "module.exports = 1;");
+      const paths = kind === "duplicate payload" ? [file, entry("package/index.js", "module.exports = 2;")]
+        : kind === "file then directory" ? [file, entry("package/index.js/", "", true)]
+        : kind === "directory then file" ? [entry("package/index.js/", "", true), file]
+        : kind === "file then child" ? [file, entry("package/index.js/child.js", "code")]
+        : [entry("package/index.js/child.js", "code"), file];
+      expect(() => readPackedManifest(gzipSync(Buffer.concat([
+        manifest.subarray(0, -1024), ...paths, Buffer.alloc(1024),
+      ])))).toThrow(/packed tarball/);
+    });
+
+  it.each([false, true])("rejects a wrong registry SHA-1 (conflict recovery: %s)", async conflict => {
+    const { archivePath } = candidate();
+    const registry = fakeRegistry(published => {
+      const packument = onlyCandidate(published);
+      packument.versions[published.manifest.version]!.dist.shasum = "0".repeat(40);
+      return packument;
+    });
+    const publish = async (...args: Parameters<typeof registry.publish>) => {
+      await registry.publish(...args);
+      if (conflict) throw Object.assign(new Error("already exists"), { statusCode: 409 });
+    };
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry, publish }))
+      .rejects.toThrow(/shasum/);
+  });
 
   it("bounds decompression before scanning the tar archive", () => {
     const compressed = gzipSync(Buffer.alloc(64 * 1024 * 1024 + 1));
