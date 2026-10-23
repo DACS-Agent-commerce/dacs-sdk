@@ -24,6 +24,7 @@ for name in buyer-demos seller-demos buyer-evm seller-evm wallet-token listing-x
 done
 
 env \
+  -i PATH="$PATH" HOME="$compose_inputs" \
   DACS_WALLET_AUTHORITY_URL=http://127.0.0.1:1 \
   DACS_WALLET_AUTHORITY_ID=acceptance-placeholder \
   DACS_WALLET_AUTHORITY_EPOCH=acceptance-placeholder \
@@ -195,7 +196,31 @@ runtimeImagePolicy.productionDependencyPolicyPassed = runtimeImagePolicy.product
   Array.isArray(policyFindings.productionImageDependencies) && policyFindings.productionImageDependencies.length === 0;
 fs.writeFileSync(path.join(root, "runtime-image-policy.json"), JSON.stringify(runtimeImagePolicy, null, 2) + "\n");
 const generatedTestsPassed = generatedTestsExitCode === 0;
-const doctorBlockedWithoutCredentials = doctorExitCode === 5;
+const doctorReport = JSON.parse(fs.readFileSync(path.join(root, "doctor.json"), "utf8"));
+const doctorChecks = Array.isArray(doctorReport?.checks) ? doctorReport.checks : [];
+const requiredDoctorChecks = doctorChecks.filter(check => check?.required === true);
+const credentialBlocks = new Map([
+  ["local.secrets", "role-secret-file-missing"],
+  ["local.sqlite", "actor-authority-missing"],
+  ["local.authority-separation", "actor-authority-missing"],
+  ...["local.transport-identities", "demos.rpc-chain", "demos.storage-read", "demos.binding-resolution",
+    "demos.wallet-identity", "x402.rail-authority", "x402.endpoints", "x402.token-domain", "pay-dem.rail-authority"]
+    .map(id => [id, "role-demos-runtime-unavailable"]),
+]);
+const requiredDoctorPasses = ["local.node-version", "local.package-integrity", "local.version-bindings",
+  "local.configuration", "local.data-directory", "local.disk-space", "local.deployment-runtime"];
+const blockedDoctorChecks = requiredDoctorChecks.filter(check => check.status === "blocked");
+const doctorBlockedWithoutCredentials = doctorExitCode === 5 && doctorReport?.exitCode === 5 &&
+  doctorReport.schema === "dacs-live-doctor-report/v1" && doctorReport.phase === "pre-start" && doctorReport.scope === "start" &&
+  doctorReport.gate?.status === "blocked" && doctorReport.gate.required === requiredDoctorChecks.length &&
+  doctorReport.gate.failed === 0 && doctorReport.gate.blocked === blockedDoctorChecks.length &&
+  doctorReport.gate.passed === requiredDoctorChecks.length - blockedDoctorChecks.length &&
+  doctorChecks.every(check => typeof check?.required === "boolean" && typeof check.id === "string") &&
+  new Set(doctorChecks.map(check => check.id)).size === doctorChecks.length &&
+  requiredDoctorPasses.every(id => requiredDoctorChecks.some(check => check.id === id && check.status === "pass")) &&
+  blockedDoctorChecks.some(check => check.id === "local.secrets" && check.reasonCode === "role-secret-file-missing") &&
+  requiredDoctorChecks.every(check => check.status === "pass" ||
+    (check.status === "blocked" && credentialBlocks.has(check.id) && credentialBlocks.get(check.id) === check.reasonCode));
 const summary = {
   schema: "dacs-registry-container-acceptance/v1",
   complete: true,

@@ -26,11 +26,15 @@ it("supplies every required generated Compose variable with inert run-local inpu
     // No rc files: Debian bash sources /etc/bash.bashrc when stdin is a socket.
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], {
       encoding: "utf8",
-      env: { acceptance_root: root, PATH: [bin, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter) },
+      env: { acceptance_root: root, DACS_EVM_RPC_URL: "https://rpc.invalid/private-marker",
+        DACS_PRIVATE_TEST: "private-marker", PATH: [bin, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter) },
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe("");
     const values = JSON.parse(result.stdout) as Record<string, string>;
+    expect(values.DACS_EVM_RPC_URL).toBeUndefined();
+    expect(values.DACS_PRIVATE_TEST).toBeUndefined();
+    expect(result.stdout).not.toContain("private-marker");
     for (const name of required) expect(values[name]).toBeTruthy();
     for (const name of required.filter(n => n.endsWith("_FILE") || n.endsWith("_DIRECTORY"))) {
       expect(values[name]!.startsWith(root + "/")).toBe(true);
@@ -52,7 +56,7 @@ it("invokes only Compose config and writes the rendered artifact", () => {
   const root = mkdtempSync(join(tmpdir(), "dacs-compose-command-"));
   try {
     const bin = join(root, "bin"); mkdirSync(bin);
-    writeFileSync(join(bin, "docker"), '#!/bin/sh\n[ "$#" = 4 ] && [ "$1" = compose ] && [ "$2" = --file ] && [ "$3" = "$project/compose.yaml" ] && [ "$4" = config ] || exit 91\nprintf "rendered config\\n"\n', { mode: 0o700 });
+    writeFileSync(join(bin, "docker"), '#!/bin/sh\n[ "$#" = 4 ] && [ "$1" = compose ] && [ "$2" = --file ] && [ "$3" = "$(dirname "$(dirname "$0")")/project with spaces/compose.yaml" ] && [ "$4" = config ] || exit 91\nprintf "rendered config\\n"\n', { mode: 0o700 });
     const env = { acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: `${bin}:/usr/bin:/bin` };
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], { encoding: "utf8", env });
     expect(result.status, result.stderr).toBe(0);

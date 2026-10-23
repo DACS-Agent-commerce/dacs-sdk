@@ -23,7 +23,8 @@ function compose(overrides: Record<string, string> = {}) {
       engine: { exitCode: 0, code: null, scanComplete: true, violations: [] }, lockSbom: { exitCode: 0, code: null, problems: [] }, physicalSbom: { exitCode: 0, code: null, problems: [] } }),
     "release-provenance.json": JSON.stringify({ version: "0.1.0-test" }),
     "engine-strict.exit-code": "0\n", "npm-audit.exit-code": "0\n", "consumer-lock-sbom.exit-code": "0\n", "consumer-physical-sbom.exit-code": "0\n",
-    "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n", ...overrides,
+    "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n",
+    "doctor.json": readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"), ...overrides,
   };
   for (const [name, value] of Object.entries(files)) writeFileSync(join(stage, name), value);
   const script = heredoc('node - "$artifact_stage" "$version" "$runtime_image"');
@@ -85,5 +86,32 @@ describe("shell evidence validation", () => {
       "dependency-policy.json": read("dependency-policy.json"), "engine-strict.exit-code": "1\n", "consumer-lock-sbom.exit-code": "1\n", "consumer-physical-sbom.exit-code": "1\n" });
     expect(result.status, result.stderr).toBe(0);
     expect(registryContainerDisposition({ ...result.summary, complete: true }, undefined, { packageVersion: "0.1.0-test" })).toMatchObject({ exitCode: 4, checks: { productionImage: "baseline" } });
+  });
+});
+
+
+describe("doctor credential-only admission", () => {
+  it("accepts the expected missing-secret block with every other required check passing", () => {
+    expect(compose().summary.functionalPassed).toBe(true);
+  });
+  it.each(["docker-runtime-timeout", "docker-runtime-unavailable"])("blocks an unrelated doctor result: %s", reasonCode => {
+    const report = JSON.parse(readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
+    const deployment = report.checks.find((item: { id: string }) => item.id === "local.deployment-runtime");
+    Object.assign(deployment, { status: "blocked", reasonCode });
+    report.gate.passed--; report.gate.blocked++;
+    expect(compose({ "doctor.json": JSON.stringify(report) }).summary).toMatchObject({
+      functionalPassed: false, doctor: { disposition: "unexpected" },
+    });
+  });
+  it("rejects an unknown required block without a reason code", () => {
+    const report = JSON.parse(readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
+    report.checks.push({ id: "unknown", required: true, status: "blocked" });
+    report.gate.required++; report.gate.blocked++;
+    expect(compose({ "doctor.json": JSON.stringify(report) }).summary.functionalPassed).toBe(false);
+  });
+  it("requires a report matching the expected phase and scope", () => {
+    const report = JSON.parse(readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
+    report.scope = "buy";
+    expect(compose({ "doctor.json": JSON.stringify(report) }).summary.functionalPassed).toBe(false);
   });
 });
