@@ -15,7 +15,8 @@ import { execFileSync } from "node:child_process";
 // list records it. Nothing here permits production publication while #191
 // remains blocked.
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence } from "./acceptance-evidence-io.mjs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
@@ -65,12 +66,56 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
     directAdvisories: [...directAdvisories].sort() };
 }
 
+const MAX_AUDIT_PACKAGES = 100_000, MAX_ADVISORY_EDGES = 1000;
+const auditSeverities = ["info", "low", "moderate", "high", "critical"];
+function validateAuditCounts(counts) {
+  if (!counts || ![...auditSeverities, "total"].every(key => Number.isSafeInteger(counts[key]) && counts[key] >= 0) ||
+      auditSeverities.reduce((sum, key) => sum + counts[key], 0) !== counts.total) {
+    throw new Error("inconsistent npm audit vulnerability counts");
+  }
+}
+
+// Check every package count and every inherited advisory edge before policy admission.
+function validateAuditGraph(audit) {
+  const counts = audit.metadata?.vulnerabilities;
+  validateAuditCounts(counts);
+  if (!isPlainObject(audit.vulnerabilities)) throw new Error("npm audit vulnerability graph missing");
+  const entries = Object.entries(audit.vulnerabilities);
+  if (entries.length > MAX_AUDIT_PACKAGES || entries.length !== counts.total || auditSeverities.some(severity =>
+      entries.filter(([, value]) => value?.severity === severity).length !== counts[severity])) {
+    throw new Error("npm audit graph disagrees with vulnerability counts");
+  }
+  const reached = new Set();
+  const dependents = new Map();
+  for (const [name, value] of entries) {
+    if (!Array.isArray(value.via) || value.via.length === 0 || value.via.length > MAX_ADVISORY_EDGES) {
+      throw new Error("incomplete npm audit advisory graph");
+    }
+    for (const via of value.via) {
+      if (typeof via === "string" && Object.hasOwn(audit.vulnerabilities, via)) {
+        const parents = dependents.get(via) ?? [];
+        parents.push(name); dependents.set(via, parents);
+      } else if (isPlainObject(via) && auditSeverities.includes(via.severity)) reached.add(name);
+      else throw new Error("incomplete npm audit advisory graph");
+    }
+  }
+  const queue = [...reached];
+  for (let index = 0; index < queue.length; index++) {
+    for (const parent of dependents.get(queue[index]) ?? []) {
+      if (!reached.has(parent)) { reached.add(parent); queue.push(parent); }
+    }
+  }
+  if (reached.size !== entries.length) throw new Error("incomplete npm audit advisory graph");
+}
+
 function summaryAudit(summary, baseline) {
   if (!validIds(summary.audit?.directAdvisories)) throw new Error("summary has no valid direct-advisory evidence");
   const policy = classifyRegistryAudit(summary.audit?.observedAdvisories, baseline, summary.audit?.directAdvisories ?? []);
   if (JSON.stringify(policy.unlistedAdvisories) !== JSON.stringify(summary.audit?.unlistedAdvisories)) {
     throw new Error("summary advisory classification does not match baseline");
   }
+  validateAuditCounts(summary.audit);
+  if ((summary.audit.total === 0) !== (policy.observedAdvisories.length === 0)) throw new Error("audit totals disagree with advisory evidence");
   return policy;
 }
 
@@ -83,6 +128,7 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
     return { exitCode: 1, evaluated: false, failureClass, message: "Advisory-ID drift was not evaluated: acceptance stopped " +
       `at stage ${String(summary.failedStage)} (${failureClass} failure${failureClass === "network" ? "; rerun the workflow" : ""})` };
   }
+  if (summary.complete !== true) return { exitCode: 3, message: "acceptance is not complete" };
   try {
     const policy = summaryAudit(summary, baseline);
     return { exitCode: policy.unlistedAdvisories.length ? 3 : 0,
@@ -254,7 +300,7 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
 // npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
 // `Response timeout while trying to fetch` for a body timeout.
 export const FAILURE_CLASSES = ["network", "policy", "functional"];
-const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
+const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)|dial tcp: lookup .+: (?:no such host|server misbehaving|temporary failure)|Could not resolve (?:host|proxy):|Failed to connect to .+ port \d+|Connection (?:timed out|refused)|ETIMEDOUT command deadline/;
 
 // A report-shaped `npm audit --json` document: a result for the audit policy.
 const isAuditReport = value => typeof value === "object" && value !== null &&
@@ -293,7 +339,13 @@ const stageEvidence = {
 };
 const policyStages = new Set(["dependency-policy", "audit-policy"]);
 
+/** Classifies bounded stage evidence; oversized or unreadable diagnostics fail functionally. */
 export function classifyAcceptanceFailure({ stage, read }) {
+  try { return classifyBoundedFailure({ stage, read: name => boundedEvidenceText(read(name)) }); }
+  catch (error) { return { failureClass: "functional", evidence: ["evidence classification failed: " + String(error.message).slice(0, 300)] }; }
+}
+
+function classifyBoundedFailure({ stage, read }) {
   if (stage === "audit-policy") {
     const text = read("npm-audit.json");
     const endpoint = auditEndpointError(text);
@@ -309,8 +361,8 @@ export function classifyAcceptanceFailure({ stage, read }) {
   }
   const evidence = [];
   for (const [name, relevant] of stageEvidence[stage] ?? []) {
-    for (const line of (read(name) ?? "").split("\n")) {
-      if (relevant(line) && networkSignature.test(line)) evidence.push(`${name}: ${line.trim()}`);
+    for (const line of evidenceLines(read(name))) {
+      if (evidence.length < 5 && relevant(line) && networkSignature.test(line)) evidence.push(`${name}: ${line.trim()}`);
     }
   }
   if (evidence.length > 0) return { failureClass: "network", evidence: evidence.slice(0, 5) };
@@ -509,7 +561,8 @@ export function runtimeImageInventoryFindings(inventory, lock) {
 // Records each security-gate finding with its observed identity (lock path,
 // version, integrity, engine range, npm problem line); the baseline compares
 // them by rule (see gitIdentity below).
-export function extractPolicyFindings(read) {
+export function extractPolicyFindings(readInput) {
+  const read = name => boundedEvidenceText(readInput(name));
   const json = name => JSON.parse(read(name) ?? "null");
   const exitCode = name => {
     const text = read(name)?.trim();
@@ -520,12 +573,12 @@ export function extractPolicyFindings(read) {
   const identity = location => ({ version: packages[location]?.version ?? null, integrity: packages[location]?.integrity ?? null });
   const gitDependencies = json("dependency-policy.json")?.violations?.map(violation =>
     ({ location: violation.location, field: violation.field ?? null, value: violation.value, ...identity(violation.location) })) ?? null;
-  const strictLog = read("engine-strict.log") ?? "";
+  const strictLog = [...evidenceLines(read("engine-strict.log"))].join("\n");
   let versions = null;
   try { versions = json("engine-versions.json"); } catch { /* unreadable: the scan is incomplete */ }
   const { scanComplete, violations, ...scan } = scanLockEngines(lock, versions);
   const sbom = name => {
-    const errors = read(`${name}.err`) ?? "";
+    const errors = [...evidenceLines(read(`${name}.err`))].join("\n");
     return { exitCode: exitCode(`${name}.exit-code`), code: npmErrorCode(errors),
       problems: [...errors.matchAll(/^npm error ((?:missing|invalid|extraneous): .+)$/gm)].map(match => match[1]) };
   };
@@ -590,18 +643,18 @@ export function classifyPolicyChecks(summary, baseline) {
     inventory.missing.length === 0 && Array.isArray(inventory.errors) && inventory.errors.length === 0;
   const sbom = (exitCode, observed, knownProblems) => exitCode === 0
     ? (observed?.exitCode === 0 && observed.code === null && Array.isArray(observed.problems) && observed.problems.length === 0 ? "passed" : "blocked") :
-    observed?.exitCode === exitCode && observed.code === "ESBOMPROBLEMS" &&
+    exitCode === 1 && observed?.exitCode === exitCode && observed.code === "ESBOMPROBLEMS" &&
       allListed(observed.problems, knownProblems, sbomIdentity) ? "baseline" : "blocked";
   return {
     registryDependency: gate.registryDependencyPolicyPassed === true
       ? (Array.isArray(findings.gitDependencies) && findings.gitDependencies.length === 0 ? "passed" : "blocked")
-      : allListed(findings.gitDependencies, known.gitDependencies, gitIdentity) ? "baseline" : "blocked",
+      : gate.registryDependencyPolicyPassed === false && allListed(findings.gitDependencies, known.gitDependencies, gitIdentity) ? "baseline" : "blocked",
     productionImage: !inventoryRead ? "blocked" : gate.productionImageDependencyPolicyPassed === true
       ? (Array.isArray(findings.productionImageDependencies) && findings.productionImageDependencies.length === 0 ? "passed" : "blocked")
-      : allListed(findings.productionImageDependencies, known.productionImageDependencies, imageIdentity) ? "baseline" : "blocked",
+      : gate.productionImageDependencyPolicyPassed === false && allListed(findings.productionImageDependencies, known.productionImageDependencies, imageIdentity) ? "baseline" : "blocked",
     engineStrict: gate.engineStrictExitCode === 0
       ? (engine?.exitCode === 0 && engine.code === null && engine.scanComplete === true && Array.isArray(engine.violations) && engine.violations.length === 0 ? "passed" : "blocked") :
-      engine?.exitCode === gate.engineStrictExitCode && engine.code === "EBADENGINE" && engine.scanComplete === true &&
+      gate.engineStrictExitCode === 1 && engine?.exitCode === gate.engineStrictExitCode && engine.code === "EBADENGINE" && engine.scanComplete === true &&
         Array.isArray(engine.violations) && engine.violations.some(violation => violation.package === engine.reportedPackage) &&
         allListed(engine.violations, known.engineViolations, engineIdentity) ? "baseline" : "blocked",
     lockSbom: sbom(gate.lockSbomExitCode, findings.lockSbom, known.lockSbomProblems),
@@ -682,7 +735,7 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   // high or critical on a direct dependency blocks, so a baseline-only exit 4
   // (which lets a prerelease publish) never covers one.
   const baselineDirect = policy.directAdvisories.filter(id => baseline.advisoryIds.includes(id));
-  const audit = ![0, 1].includes(gate?.auditExitCode) || (gate.auditExitCode === 1 && observed === 0) ||
+  const audit = ![0, 1].includes(gate?.auditExitCode) || (gate.auditExitCode !== (summary.audit.total > 0 ? 1 : 0)) ||
       assessedDirect.length > 0 || unlistedDirect.length > 0 || baselineDirect.length > 0 ? "blocked"
     : policy.unlistedAdvisories.length > 0 ? (unlistedAdvisories === "warn" ? "unlisted" : "blocked")
     : observed > policy.assessedAdvisories.length ? "baseline" : "passed";
@@ -724,11 +777,10 @@ function annotate(result) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [mode, input, output] = process.argv.slice(2);
   if (mode === "--audit-policy" && input && output) {
-    const audit = JSON.parse(readFileSync(input, "utf8"));
+    rmSync(output, { force: true });
+    const audit = JSON.parse(readEvidence(input));
     const counts = audit.metadata?.vulnerabilities;
-    if (!counts || !Number.isInteger(counts.total) || !Number.isInteger(counts.critical) || !audit.vulnerabilities) {
-      throw new Error("npm audit did not produce vulnerability metadata");
-    }
+    validateAuditGraph(audit);
     const ids = new Set();
     const direct = new Set();
     for (const vulnerability of Object.values(audit.vulnerabilities)) {
@@ -748,8 +800,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // summary also requires npm audit's exit status to be 0 or 1.
     const passed = policy.assessedAdvisories.length === policy.observedAdvisories.length &&
       policy.assessedAdvisories.every(id => !direct.has(id));
-    writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy, passed },
-      null, 2) + "\n");
+    atomicWriteJson(output, { schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy, passed });
     process.stdout.write(JSON.stringify(counts) + "\n");
   } else if (mode === "--dependency-policy") {
     const [project, registry, report, releaseSet, version] = process.argv.slice(3);
@@ -783,14 +834,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
       violations }, null, 2) + "\n");
   } else if (mode === "--policy-findings" && input && output) {
-    const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
-    writeFileSync(output, JSON.stringify(extractPolicyFindings(read), null, 2) + "\n");
+    rmSync(output, { force: true });
+    const read = name => readEvidence(join(input, name));
+    atomicWriteJson(output, extractPolicyFindings(read));
   } else if (mode === "--failure-summary" && input && output) {
     // <stage-dir> <stage> <exit-code>: the run stopped before its summary.
+    rmSync(join(input, "acceptance-summary.json"), { force: true });
     const exitCode = process.argv[5];
-    const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
+    const read = name => readEvidence(join(input, name));
     const summary = failureSummary({ stage: output, exitCode: Number(exitCode), read });
-    writeFileSync(join(input, "acceptance-summary.json"), JSON.stringify(summary, null, 2) + "\n");
+    atomicWriteJson(join(input, "acceptance-summary.json"), summary);
     const evidence = summary.failureEvidence.length ? `; ${summary.failureEvidence[0]}` : "";
     annotate({ exitCode: summary.exitCode, failureClass: summary.failureClass,
       message: `stopped at stage ${output} with exit ${exitCode}${evidence}`.replace(/[\r\n%]/g, " ") });
@@ -798,15 +851,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const drift = mode === "--audit-drift";
     const record = mode === "--record";
     const summaryPath = drift || record ? input : mode;
-    const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+    const summary = JSON.parse(readEvidence(summaryPath));
     // Unset means fail closed; only the pull_request acceptance job sets warn.
     const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
     const result = drift ? registryAuditDriftDisposition(summary)
       : registryContainerDisposition(summary, undefined, { unlistedAdvisories });
     if (record) {
       const { exitCode, failureClass, message, checks } = result;
-      writeFileSync(summaryPath, JSON.stringify({ ...summary, failureClass,
-        disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } }, null, 2) + "\n");
+      atomicWriteJson(summaryPath, { ...summary, failureClass,
+        disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } });
     }
     // The pull-request re-check of exit 4 turns unlisted IDs into a warning and
     // a step-summary line; failing acceptance names them in its error.
