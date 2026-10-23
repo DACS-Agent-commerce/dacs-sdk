@@ -194,7 +194,7 @@ test('an uncoordinated source journal change after the first scan refuses before
 // retained anywhere was never signed; every other absence stays plain.
 test('a read of an address that was never asked of the wallet proves the absence; one with a retained signed CREATE or an unknown outcome does not',async()=>{
  const w=await anchorFixture(),anchor=w.open(),jobId=JOBS[0],logicalAddress=core.finalityCommitmentAddress(jobId);
- const read=()=>anchor.read({logicalAddress,artifact:{jobId,signature:{signer:w.seller}},artifactKind:'FinalityCommitmentRecord'});
+ const read=async()=>anchor.read({logicalAddress,artifact:await w.artifact(jobId),artifactKind:'FinalityCommitmentRecord'});
  const signedFor={stage:'signed',hash:'a'.repeat(64),signedTransaction:{content:{from:w.owner,nonce:1,data:['storageProgram',{metadata:{logicalAddress}}]}}};
  const never=await read();
  assert.equal(never.status,'absent');assert.equal(never.provenUnsigned,true,'no intent, no signed CREATE retained: proven unsigned');
@@ -221,7 +221,7 @@ test('a read of an address that was never asked of the wallet proves the absence
 // and publish never asked again).
 const unsignedFixture=async()=>{
  const w=await anchorFixture(),anchor=w.open(),jobId=JOBS[0],logicalAddress=core.finalityCommitmentAddress(jobId);
- const input={logicalAddress,artifact:{jobId,signature:{signer:w.seller}},artifactKind:'FinalityCommitmentRecord'};
+ const input={logicalAddress,artifact:await w.artifact(jobId),artifactKind:'FinalityCommitmentRecord'};
  const rows=()=>[...w.journal.rows].filter(([key])=>key.startsWith('demo/artifact/')).map(([,row])=>row);
  return {w,anchor,jobId,logicalAddress,input,rows};
 };
