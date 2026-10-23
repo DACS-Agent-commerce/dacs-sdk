@@ -60,7 +60,72 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
     directAdvisories: [...directAdvisories].sort() };
 }
 
+
+// The consumer installs registry packages only. This is an allowlist: every
+// installed (non-root) lock entry resolves to a tarball under the configured
+// registry's origin and path and carries an integrity, and every dependency
+// spec in the manifest and the lock is a registry spec (a version, range or
+// tag, or an npm: alias of one) in a plain-object dependency map. Anything else
+// is a violation: dependency maps that are arrays, strings or null, Git URLs and
+// GitHub/GitLab shorthands with or without a ref, tarballs on any other host
+// (codeload.github.com included), file:, link:, paths, entries without
+// `resolved` or `integrity`, and `overrides`.
+const registryRange = "[\\w.*^~<>=|+ -]*";
+const registrySpec = new RegExp(`^(?:${registryRange}|npm:(?:@[\\w.-]+/)?[\\w.-]+(?:@${registryRange})?)$`);
+const tarballFile = /\.(?:tgz|tar|tar\.gz)$/i;
+const sri = /^(?:sha512|sha384|sha256|sha1)-[A-Za-z0-9+/]+={0,2}$/;
+const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
+
+// The run's own registry: HTTPS, or the loopback Verdaccio the acceptance
+// script starts (reached as host.docker.internal from a non-Linux container).
+export function consumerRegistry(value) {
+  const registry = new URL(value);
+  if (!(registry.protocol === "https:" || (registry.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "host.docker.internal"].includes(registry.hostname)))) {
+    throw new Error(`registry dependency policy needs an HTTPS or loopback registry, not ${value}`);
+  }
+  return { origin: registry.origin, path: registry.pathname.endsWith("/") ? registry.pathname : registry.pathname + "/" };
+}
+
+export function registryDependencyViolations({ manifest, lock, registry }) {
+  const { origin, path } = consumerRegistry(registry);
+  const violations = [];
+  const specs = (location, owner) => {
+    for (const field of specFields) {
+      // A present map that is not a plain object (an array, a string, null)
+      // has no specs to check, so it is a violation itself.
+      if (owner?.[field] !== undefined && !isPlainObject(owner[field])) {
+        violations.push({ location, field, value: JSON.stringify(owner[field]) });
+        continue;
+      }
+      for (const [name, value] of Object.entries(owner?.[field] ?? {})) {
+        if (typeof value !== "string" || !registrySpec.test(value) || tarballFile.test(value)) {
+          violations.push({ location, field: `${field}.${name}`, value });
+        }
+      }
+    }
+  };
+  specs("package.json", manifest);
+  for (const [location, owner] of [["package.json", manifest], ["", lock?.packages?.[""]]]) {
+    if (owner?.overrides !== undefined) violations.push({ location, field: "overrides", value: JSON.stringify(owner.overrides) });
+  }
+  if (!isPlainObject(lock?.packages)) return [...violations, { location: "package-lock.json", field: "packages", value: null }];
+  for (const [location, entry] of Object.entries(lock.packages)) {
+    if (!isPlainObject(entry)) { violations.push({ location, field: "entry", value: JSON.stringify(entry) }); continue; }
+    specs(location, entry);
+    if (location === "") continue;
+    let url = null;
+    try { url = typeof entry.resolved === "string" ? new URL(entry.resolved) : null; } catch { /* not a URL */ }
+    if (entry.link === true || url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+      violations.push({ location, field: entry.link === true ? "link" : "resolved", value: entry.resolved ?? null });
+    }
+    if (typeof entry.integrity !== "string" || !sri.test(entry.integrity)) {
+      violations.push({ location, field: "integrity", value: entry.integrity ?? null });
+    }
+  }
+  return violations;
+}
 
 // npm's EBADENGINE check (npm-install-checks) tests each non-optional package's
 // engines.node and engines.npm with semver.satisfies(current, range,
