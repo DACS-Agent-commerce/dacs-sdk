@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -158,4 +158,8 @@ describe("pinned npm loader", () => {
     expect(() => loadPinnedLibnpmpublish({ npm: npm() })).toThrow(`requires the pinned npm ${PINNED_ACCEPTANCE_NPM_VERSION}`);
   });
 
+  it("pins the same npm version the acceptance workflow installs", () => {
+    const workflow = readFileSync(".github/workflows/registry-container-acceptance.yml", "utf8");
+    expect(workflow).toContain(`npm install --global --ignore-scripts npm@${PINNED_ACCEPTANCE_NPM_VERSION}`);
+  });
 });
