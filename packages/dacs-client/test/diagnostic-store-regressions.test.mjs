@@ -191,3 +191,11 @@ test('Directory search drops oversized rails without truncating or losing bounde
   assert.deepEqual(result.listings[0].rails, ['demos-native:DEM', 'x'.repeat(256)]);
   assert.ok(JSON.stringify(result).length < 4000);
 });
+
+test('public deadline guidance distinguishes payment readback from held delivery checks', () => {
+  const operation = { state: { protocol: { agreement: { artifact: { terms: { deadline: 0 } } } } } };
+  const result = deliveryDeadlineView(operation, { now: () => 1000, enabled: true });
+  assert.match(result.message, /payment transfer only/);
+  assert.match(result.message, /delivery checking remains held/);
+  assert.doesNotMatch(result.message, /verify_deal checks the chain again/);
+});

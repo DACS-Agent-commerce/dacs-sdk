@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS operations (
      terms_hash TEXT NOT NULL,
      state TEXT NOT NULL DEFAULT '{}',
      handoff_token_hash TEXT NOT NULL UNIQUE,
+     handoff_expires_at TEXT,
      expires_at TEXT NOT NULL,
      created_at TEXT NOT NULL,
      updated_at TEXT NOT NULL,

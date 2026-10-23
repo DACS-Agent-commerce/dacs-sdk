@@ -104,3 +104,29 @@ function assertCommitted(s, kind) {
     assert.equal(s.consumptions.length, 0);
   }
 }
+
+for (const kind of ['settlement', 'delivery']) {
+  test(`${kind} callback COMMIT cannot split the domain decision, including after reopen`, async t => {
+    const dir = mkdtempSync(join(tmpdir(), 'dacs-domain-host-commit-')), path = join(dir, 'state.sqlite');
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    let world = openWorld(path);
+    world.seed(kind);
+    const before = world.snapshot(kind), transition = world.ops.transition;
+    world.ops.transition = (...args) => {
+      const result = transition(...args);
+      // The host adapter attempts to finish the package's outer transaction.
+      world.db.exec('COMMIT');
+      return result;
+    };
+    if (kind === 'delivery') assert.throws(() => world.observe(), /statements in progress/);
+    else await assert.rejects(world.verify(), /statements in progress/);
+    assert.deepEqual(world.snapshot(kind), before);
+    world.db.close();
+    world = openWorld(path);
+    try {
+      assert.deepEqual(world.snapshot(kind), before, 'no partial observation, event, status or nonce survived');
+      if (kind === 'delivery') world.observe(); else await world.verify();
+      assertCommitted(world.snapshot(kind), kind);
+    } finally { world.db.close(); }
+  });
+}

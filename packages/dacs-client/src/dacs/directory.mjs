@@ -32,6 +32,8 @@ function projectRevocationBinding(value) {
   for (const [field, max] of Object.entries(bounds)) {
     if (typeof value[field] !== 'string' || !value[field].length || value[field].length > max) return undefined;
   }
+  if (!HEX64.test(value.listingContentHash) || !HEX64.test(value.markerContentHash)
+    || !value.logicalAddress.startsWith('dacs1-revoked:')) return undefined;
   if (!Number.isSafeInteger(value.listingVersion) || value.listingVersion < 1
     || !value.markerAnchor || Array.isArray(value.markerAnchor)
     || typeof value.markerAnchor.kind !== 'string' || !value.markerAnchor.kind.length || value.markerAnchor.kind.length > 64
@@ -44,12 +46,17 @@ function projectRevocationBinding(value) {
 // DACS-1 §6.3.6 calls this field revocation; the pinned Community wire
 // contract calls it revocationBinding. Conflicting hints remain unavailable.
 function summaryRevocation(raw) {
+  // DACS-1 RB-3: active discovery records MUST NOT carry a binding.
+  if (raw.status !== 'revoked') return undefined;
   const standard = projectRevocationBinding(raw.revocation);
   const community = projectRevocationBinding(raw.revocationBinding);
   if (raw.revocation !== undefined && raw.revocationBinding !== undefined) {
-    return standard && community && JSON.stringify(standard) === JSON.stringify(community) ? standard : undefined;
+    if (!standard || !community || JSON.stringify(standard) !== JSON.stringify(community)) return undefined;
   }
-  return standard ?? community;
+  const binding = standard ?? community;
+  return binding && binding.sellerPrimaryClaim === raw.seller.primaryClaim
+    && binding.listingId === raw.listingId && binding.listingVersion === raw.version
+    && binding.listingContentHash === raw.contentHash ? binding : undefined;
 }
 
 // Whitelist projection: only these fields ever reach the model, with lengths
@@ -63,6 +70,7 @@ export function projectSummary(raw) {
   if (!['active', 'revoked'].includes(raw.status)) return null;
   const pricing = raw.pricing ?? {};
   return {
+    verified: false,
     listingId: raw.listingId,
     version: raw.version,
     contentHash: raw.contentHash,
@@ -120,17 +128,17 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
     };
   }
 
-  // Find the summary (anchor locator, catalog status) for one exact listing.
+  // The pinned search route includes active listings only. The seller route
+  // retains revoked summaries too; exact lookup must use that route.
   async function findSummary({ listingId, version, seller }) {
-    let cursor;
-    for (let page = 0; page < 5; page += 1) {
-      const result = await search({ primaryClaim: seller, limit: 50, cursor });
-      const match = result.listings.find((l) => l.listingId === listingId && l.version === version && l.seller.primaryClaim === seller);
-      if (match) return match;
-      if (!result.cursor) return null;
-      cursor = result.cursor;
+    if (!LISTING_ID.test(listingId) || !Number.isSafeInteger(version) || version < 1 || !CLAIM.test(seller)) {
+      throw new OutboundError('invalid', 'listing coordinates are malformed');
     }
-    return null;
+    const body = await get(`/api/dacs/sellers/${encodeURIComponent(seller)}`);
+    if (!body || !Array.isArray(body.listings) || body.listings.length > 200) throw new OutboundError('invalid', 'directory seller listings response is malformed or exceeds 200 records');
+    const matches = body.listings.map(projectSummary).filter(l => l && l.listingId === listingId && l.version === version && l.seller.primaryClaim === seller);
+    if (matches.length > 1) throw new OutboundError('invalid', 'directory listing coordinates are ambiguous');
+    return matches[0] ?? null;
   }
 
   async function getListingDetail({ listingId, version, seller }) {

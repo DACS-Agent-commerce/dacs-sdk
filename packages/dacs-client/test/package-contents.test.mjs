@@ -117,11 +117,13 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       // Deliberately mis-scoped host seam: the installed client must check ownership.
       let secondaryReads = 0;
       const ops = { get: (_account, id) => id === 'first' ? saved : null,
-        getByHandoff: (id, token) => id === 'first' && token === 'TEST-token' ? saved : null,
+        getByHandoff: (id, _token) => id === 'first' ? saved : null,
         history: () => { secondaryReads++; return []; }, handoffTokenFor: forbidden,
         transition: forbidden, record: forbidden };
       const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store,
         diagnosticOnly: false, settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }, false);
+      db.prepare('UPDATE operations SET handoff_token_hash=?, handoff_expires_at=? WHERE id=?')
+        .run((await import('node:crypto')).createHash('sha256').update('dacs-handoff-hash:TEST-token').digest('hex'), new Date(Date.now() + 3600000).toISOString(), 'first');
       const snapshot = coordinates.get('first');
       const result = await service.verifyDeal({ accountId: 'buyer', operationId: 'first', txHash: hash });
       assert.equal(result.verification.outcome, 'readback_only');

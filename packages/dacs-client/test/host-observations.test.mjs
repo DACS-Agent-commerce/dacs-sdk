@@ -8,7 +8,7 @@ import { createOperationStore } from './helpers/purchase-integrity-operations.mj
 
 const HASH = '1'.repeat(64), CHAIN = 'f'.repeat(64), WALLET = '0x' + 'a'.repeat(64), PAYEE = '0x' + '7'.repeat(64);
 const INCLUDED = { status: 'included', txHash: HASH, payer: WALLET, payee: PAYEE, amountOs: '2500000000', blockNumber: 10 };
-function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false } = {}) {
+function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false, chainReadTimeoutMs = 8000 } = {}) {
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) }), coordinates = createCoordinateStore({ db });
@@ -30,7 +30,7 @@ function world(t, observation, { native = false, observer = 'TEST-host-reader', 
   coordinates.reportHash(op.id, HASH);
   const protocol = native || buyerRefusal || buyerAccess ? createProtocolPurchases({ db, ops, coordinates, store,
     buyerAccess: buyerRefusal ? { assertWallet() { throw buyerRefusal; } } : buyerAccess }) : null;
-  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
+  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, chainReadTimeoutMs, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
   return { db, chain, protocol, coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
     consumed: () => db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n,
     verify: () => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id }) };
@@ -271,7 +271,7 @@ for (const sourceDisposition of [undefined, 'included', 'failed', 'pending', 'no
 test('handoff lookup rejects an operation with another id before buyer or coordinate reads', t => {
   const w = world(t, INCLUDED, { publicApi: true });
   w.ops.getByHandoff = () => ({ ...w.op, id: 'TEST-other-operation' });
-  assert.throws(() => w.purchases.portalOperation(w.op.id, 'TEST-token'), { code: 'not_found' });
+  assert.throws(() => w.purchases.portalOperation(w.op.id, w.ops.handoffTokenFor(w.op.id)), { code: 'not_found' });
 });
 
 test('public nested protocol guidance remains historical and held', t => {
@@ -439,7 +439,7 @@ for (const method of ['portalOperation', 'portalEvidence']) {
       const calls = [];
       w.ops.getByHandoff = () => ({ ...w.op, [mismatch]: 'TEST-other' });
       w.coordinates.get = () => { calls.push('coordinates'); throw new Error('TEST-private-read'); };
-      assert.throws(() => w.purchases[method](w.op.id, 'TEST-token'), { code: 'not_found' });
+      assert.throws(() => w.purchases[method](w.op.id, w.ops.handoffTokenFor(w.op.id)), { code: 'not_found' });
       assert.deepEqual(calls, []);
     });
   }
@@ -528,3 +528,94 @@ for (const bookkeeping of ['overdue', 'operator-hold']) {
     assert.equal(w.consumed(), 0);
   });
 }
+
+for (const method of ['portalOperation', 'portalEvidence']) {
+  test(`${method} verifies the saved capability even when the host accepts every token`, t => {
+    const w = world(t, INCLUDED, { publicApi: true });
+    const token = w.ops.handoffTokenFor(w.op.id);
+    w.ops.getByHandoff = () => w.ops.get(w.op.accountId, w.op.id);
+    const get = w.coordinates.get, calls = [];
+    w.coordinates.get = (...args) => { calls.push('coordinates'); return get(...args); };
+    assert.throws(() => w.purchases[method](w.op.id, 'TEST-wrong-token'), { code: 'not_found' });
+    assert.deepEqual(calls, []);
+    assert.ok(w.purchases[method](w.op.id, token));
+  });
+}
+
+for (const method of ['portalOperation', 'portalEvidence']) {
+  for (const expiry of [null, '', 'TEST-malformed-time', new Date(0).toISOString()]) {
+    test(`${method} rejects missing, malformed or expired stored handoff expiry ${expiry}`, t => {
+      const w = world(t, INCLUDED, { publicApi: true });
+      const token = w.ops.handoffTokenFor(w.op.id);
+      w.ops.getByHandoff = () => w.op;
+      w.db.prepare('UPDATE operations SET handoff_expires_at=? WHERE id=?').run(expiry, w.op.id);
+      w.coordinates.get = () => assert.fail('private coordinates read before authentication');
+      assert.throws(() => w.purchases[method](w.op.id, token), { code: 'not_found' });
+    });
+  }
+  test(`${method} checks fresh stored token rotation and owner despite a permissive lookup`, t => {
+    const w = world(t, INCLUDED, { publicApi: true });
+    const token = w.ops.handoffTokenFor(w.op.id);
+    w.ops.getByHandoff = () => w.op;
+    assert.ok(w.purchases[method](w.op.id, token));
+    w.db.prepare('UPDATE operations SET handoff_token_hash=? WHERE id=?').run('0'.repeat(64), w.op.id);
+    assert.throws(() => w.purchases[method](w.op.id, token), { code: 'not_found' });
+  });
+  test(`${method} rejects a host owner mismatch for a valid capability`, t => {
+    const w = world(t, INCLUDED, { publicApi: true });
+    w.ops.getByHandoff = () => ({ ...w.op, accountId: 'TEST-other-owner' });
+    assert.throws(() => w.purchases[method](w.op.id, w.ops.handoffTokenFor(w.op.id)), { code: 'not_found' });
+  });
+}
+
+for (const stage of ['identity', 'transfer']) {
+  test(`public diagnostic deadline bounds a never-settling ${stage} reader`, async t => {
+    const w = world(t, INCLUDED, { publicApi: true, chainReadTimeoutMs: 20 });
+    let signal;
+    if (stage === 'identity') w.chain.networkIdentity = options => { signal = options.signal; return new Promise(() => {}); };
+    else w.chain.observeTransfer = (_hash, options) => { signal = options.signal; return new Promise(() => {}); };
+    const before = w.coordinates.get(w.op.id);
+    const result = await w.verify();
+    assert.equal(result.verification.observation.status, 'unavailable');
+    assert.equal(result.verification.observation.kind, 'timeout');
+    assert.equal(signal.aborted, true);
+    assert.deepEqual(w.coordinates.get(w.op.id), before);
+    assert.equal(w.consumed(), 0);
+  });
+}
+test('public diagnostics project bounded contract fields without serializing host extensions', async t => {
+  const observation = { ...INCLUDED, extensions: Array(100000).fill('TEST') };
+  observation.toJSON = () => assert.fail('unbounded host result was serialized');
+  const w = world(t, observation, { publicApi: true });
+  const result = await w.verify();
+  assert.deepEqual(result.verification.observation, INCLUDED);
+  assert.equal(result.verification.termsMatch, true);
+  w.chain.observeTransfer = async () => ({ ...INCLUDED, amountOs: '1'.repeat(1000000) });
+  assert.equal((await w.verify()).verification.observation.status, 'malformed');
+  w.chain.observeTransfer = async () => ({ status: 'pending', reason: Array(10000).fill('TEST') });
+  assert.equal((await w.verify()).verification.observation.status, 'malformed');
+});
+
+test('a late network identity reply cannot start another read after the diagnostic deadline', async t => {
+  const w = world(t, INCLUDED, { publicApi: true, chainReadTimeoutMs: 20 });
+  let finishIdentity, transfers = 0;
+  w.chain.networkIdentity = () => new Promise(resolve => { finishIdentity = resolve; });
+  w.chain.observeTransfer = async () => { transfers++; return INCLUDED; };
+  assert.equal((await w.verify()).verification.observation.kind, 'timeout');
+  finishIdentity({ identity: CHAIN, mode: 'public-chain-read' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(transfers, 0);
+});
+
+test('retained protocol readback authenticates its closed-access shortcut with the same saved capability', async t => {
+  const refusal = Object.assign(new Error('TEST-closed'), { code: 'buyer_access_closed' });
+  const w = world(t, INCLUDED, { native: true, buyerRefusal: refusal });
+  w.ops.getByHandoff = () => w.op;
+  let reads = 0;
+  w.protocol.readIssued = async () => { reads++; return true; };
+  await assert.rejects(w.purchases.protocolRecheck({ operationId: w.op.id, token: 'TEST-wrong-token' }), { code: 'not_found' });
+  assert.equal(reads, 0);
+  const result = await w.purchases.protocolRecheck({ operationId: w.op.id, token: w.ops.handoffTokenFor(w.op.id) });
+  assert.equal(result.verification.outcome, 'readback_only');
+  assert.equal(reads, 1);
+});

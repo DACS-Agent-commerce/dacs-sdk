@@ -29,7 +29,7 @@
 // claim, DACS-4 evidence, delivery and DACS-5 copies (operation.state.protocol).
 // All approval and payment handoffs, including legacy purchases without
 // terms.protocol, remain held by the package's purchase-action admission.
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
@@ -175,13 +175,17 @@ export function createPublicPurchaseService(options) {
 }
 
 // Retained source integration; not exported by the package entry point.
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }, diagnosticOnly = false) {
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000 }, diagnosticOnly = false) {
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
+  if (!Number.isSafeInteger(chainReadTimeoutMs) || chainReadTimeoutMs < 1 || chainReadTimeoutMs > 60000) {
+    throw new OperationError('invalid_configuration', 'chainReadTimeoutMs must be an integer from 1 to 60000');
+  }
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
   const insertApproval = db.prepare(`INSERT INTO approvals (id, operation_id, challenge_id, signer_address, terms_hash, signature, approved_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   const approvalFor = db.prepare('SELECT * FROM approvals WHERE operation_id = ?');
+  const portalCapability = db.prepare('SELECT account_id, kind, handoff_token_hash, handoff_expires_at FROM operations WHERE id = ?');
   const limits = config.purchaseLimits ?? PURCHASE_LIMITS;
   // Only pre-payment open states (ACTIONABLE) hold an unpaid slot; any other
   // status, including one added later, frees it. payment_mismatch frees the
@@ -261,10 +265,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // (no real chain identity), or a chain reporting the source-pinned genesis
   // identity. Unpinned or mismatched chains are refused; an unreachable RPC
   // propagates as unavailable.
-  async function currentDomain() {
+  async function currentDomain(options) {
     let observed;
     try {
-      observed = await chain.networkIdentity();
+      observed = await chain.networkIdentity(options);
     } catch (error) {
       if (error instanceof OutboundError && error.kind === 'invalid') {
         throw new OperationError('network_identity_unverified', 'the configured Demos RPC did not report a chain identity; nothing was prepared, signed or sent');
@@ -282,8 +286,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   // The configured RPC must still be the domain this purchase was bound to.
-  async function assertBoundDomain(operation) {
-    const current = await currentDomain();
+  async function assertBoundDomain(operation, options) {
+    const current = await currentDomain(options);
     if (!sameDomain(operation.terms.domain, current)) {
       throw new OperationError('network_identity_mismatch', 'the configured Demos RPC is not the network this purchase is bound to; nothing was signed or sent', { bound: operation.terms.domain ?? null, current });
     }
@@ -424,12 +428,28 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // ---- portal (browser) side; every call carries the handoff token ----
 
-  function portalOperation(operationId, token) {
-    if (typeof operationId !== 'string' || !operationId || typeof token !== 'string' || !token) {
+  function handoffPurchase(operationId, token) {
+    if (typeof operationId !== 'string' || !operationId || operationId.length > 256 || typeof token !== 'string' || !token || token.length > 1024) {
+      throw new OperationError('not_found', 'unknown or invalid approval link');
+    }
+    // Portal access is an application capability, independent of DACS action
+    // admission and of the operation's approval window. Authenticate stored
+    // bytes on every read; a permissive host lookup cannot grant access.
+    const capability = portalCapability.get(operationId);
+    const expiry = typeof capability?.handoff_expires_at === 'string' ? Date.parse(capability.handoff_expires_at) : NaN;
+    const suppliedHash = createHash('sha256').update(`dacs-handoff-hash:${token}`).digest();
+    if (!capability || capability.kind !== 'purchase' || !Number.isFinite(expiry) || expiry <= now()
+      || !/^[0-9a-f]{64}$/.test(capability.handoff_token_hash ?? '')
+      || !timingSafeEqual(suppliedHash, Buffer.from(capability.handoff_token_hash, 'hex'))) {
       throw new OperationError('not_found', 'unknown or invalid approval link');
     }
     const found = ops.getByHandoff(operationId, token);
-    if (!found || found.kind !== 'purchase' || found.id !== operationId) throw new OperationError('not_found', 'unknown or invalid approval link');
+    if (!found || found.kind !== 'purchase' || found.id !== operationId || found.accountId !== capability.account_id) throw new OperationError('not_found', 'unknown or invalid approval link');
+    return found;
+  }
+
+  function portalOperation(operationId, token) {
+    const found = handoffPurchase(operationId, token);
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
     return diagnosticOnly ? diagnosticOperation(projectExpiry(found)) : expireIfNeeded(found);
   }
@@ -907,14 +927,42 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (rawHash != null && canonicalHash(rawHash) !== hash) throw new OperationError('invalid_state', 'diagnostic readback only accepts the recorded transaction hash');
     let observation = null;
     if (hash) {
+      const controller = new AbortController();
+      let timer;
       try {
-        await assertBoundDomain(operation);
-        const value = await (usesNativeAgreementPayment(operation) && chain.observePurchaseTransfer
-          ? chain.observePurchaseTransfer(hash) : chain.observeTransfer(hash));
-        observation = checkedTransferObservation(value, hash);
+        observation = await Promise.race([
+          new Promise((_, reject) => { timer = setTimeout(() => {
+            const error = new OutboundError('timeout', 'host chain read timed out');
+            controller.abort(error);
+            reject(error);
+          }, chainReadTimeoutMs); }),
+          (async () => {
+            const options = { signal: controller.signal };
+            await assertBoundDomain(operation, options);
+            controller.signal.throwIfAborted();
+            const value = await (usesNativeAgreementPayment(operation) && chain.observePurchaseTransfer
+              ? chain.observePurchaseTransfer(hash, options) : chain.observeTransfer(hash, options));
+            controller.signal.throwIfAborted();
+            // Retain only bounded primitive contract fields. Never traverse or
+            // serialize arbitrary host extension objects or collections.
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return checkedTransferObservation(value, hash);
+            const projected = {};
+            for (const key of ['status', 'txHash', 'payer', 'payee', 'amountOs', 'blockNumber', 'includedAt', 'sourceDisposition', 'reason']) {
+              const field = value[key];
+              if (field === undefined) continue;
+              if ((!['string', 'number', 'boolean'].includes(typeof field) && field !== null)
+                || (typeof field === 'string' && field.length > (key === 'reason' ? 240 : 1024))) {
+                return { status: 'malformed', reason: 'host observation field exceeds its bounded primitive contract' };
+              }
+              projected[key] = field;
+            }
+            return checkedTransferObservation(projected, hash);
+          })(),
+        ]);
       } catch (error) {
-        observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240) };
-      }
+        observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240),
+          ...(typeof error?.kind === 'string' && error.kind.length <= 64 ? { kind: error.kind } : {}) };
+      } finally { clearTimeout(timer); }
     }
     return { operation: diagnosticOperation(operation), verification: { outcome: 'readback_only', authority: 'unqualified_host',
       observation, termsMatch: observation?.status === 'included'
@@ -1282,8 +1330,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   async function protocolRecheck({ operationId, token }) {
     if (diagnosticOnly) assertPurchaseActionsAdmitted();
-    const found=ops.getByHandoff(operationId,token);
-    if(!found||found.kind!=='purchase'||found.id!==operationId)throw new OperationError('not_found','unknown or invalid approval link');
+    const found = handoffPurchase(operationId, token);
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet,found);}
     catch(error){
       if(error.code==='buyer_access_closed'&&!error.details?.buyerAccessMissing&&found.terms.protocol&&await protocol?.readIssued?.(found))return {operation:found,verification:{outcome:'readback_only'}};

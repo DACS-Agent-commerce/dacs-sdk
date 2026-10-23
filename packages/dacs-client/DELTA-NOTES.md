@@ -268,3 +268,14 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - Portal operation and evidence reads each resolve an operation id and handoff token through the host's authenticated lookup. Evidence projections use the fresh stored record. Scalar lookup arguments, purchase kind and requested id are checked before private coordinate reads; original lookup and buyer-access refusals propagate.
 - Summary hints accept both the Standard's `revocation` and Community's `revocationBinding` through the same bounded projection. Equal aliases remain available; conflicting hints remain unavailable. This supplies no revocation or artifact-verification authority.
 - Host regressions cover invalid and cross-operation tokens, caller-supplied operation objects, repeated fresh authenticated reads, held actions after local overdue/operator-hold bookkeeping, and paired packed-consumer portal reads. Documentation specifies raw Directory detail data and the prohibition on host transaction control inside store calls.
+
+
+## D11 host boundary and diagnostic contracts
+
+The SQLite adapter holds a package-private write statement across callbacks, so SQLite refuses callback COMMIT/END, including pre-prepared statements. Package savepoint control temporarily finishes and recreates that statement without running host code. Pre-existing host transactions are refused before guard installation; missing markers are rebuilt, and nested entry recovers only a savepoint it actually opened. Host DML outside package calls remains available.
+
+Portal reads authenticate the stored capability hash, independent handoff expiry and owner before the host lookup or secondary reads. `operations.handoff_expires_at` is a new nullable TEXT column; hosts must migrate and provision an explicit lifetime, separate from approval expiry. A null lifetime denies portal access. Valid diagnostic links remain usable after their approval window.
+
+Public transfer diagnostics have a service-level deadline, an abort signal and a bounded primitive projection. Discovery summaries explicitly carry `verified: false`; exact lookup uses the pinned Community seller route to retain revoked records. Revocation hints obey RB-3 and match their summary tuple without imposing a substrate-specific marker anchor. Journal reads recheck the format version, and deadline guidance describes payment-only public readback. Purchase and artifact-verification actions remain held.
+
+The retained protocol readback shortcut shares the stored portal capability check before its closed-wallet-access exception. Id/kind mismatch tests supply a valid capability so they continue to exercise the returned-operation checks.

@@ -1872,6 +1872,87 @@
           "after": "6bc784e3f999fcebbdc8f28c361f594ab0d6f644"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 enforce host transaction and portal capability boundaries",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "5c4b400d71dc6c89903e3533ca99b64f2f98cd6b",
+          "after": "8c7c654c791025fd50aed4e339abcf5445732037"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/directory.mjs",
+          "before": "04293a54ce00029c33754e8bce1f0945d1c22c11",
+          "after": "58a689b3fd8ba4e6333b6b4660bc1bb7601bbe60"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": "251b9d4c6f691d7f355c5818406cd6175f0a42d6",
+          "after": "557ea59e906125decb9c56d5b2322a1d30af3321"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f532121b0c11fe1db2b33170cb756e82d1348b4c",
+          "after": "df2eb1e54ed4af2e454e574cbcf0ee1bfd1f5b08"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "14e78e4e35c41e153f34bf5cbda5e12c12a65aad",
+          "after": "9b3c78ed8b64b9113170ca6796196f49957881c2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "0dfea61273c7142ebe5517515ba1fbd7bb28454e",
+          "after": "27b7c86877470b5de99ef0f9e8f30d218469fd16"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "e8df9e160ed00b2ef9174161da9dd68bea795249",
+          "after": "49d49fdf4c3eec90c35156b102d36c34f0e0111e"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": "c7f0e0a27f870ab8a5560186b5f2a655ad2d8d65",
+          "after": "26fb08cd50c7de8fdb85fc1366a21dc4820f4011"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": "85a1e20d8b277d37db3c38f93b8ef191e86e147d",
+          "after": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal.test.mjs",
+          "before": "104a6ae7dcfd20ca84c7cfa98b7783843935c030",
+          "after": "6f1b09c2849407627707cce2969e19f2a00490c5"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": "6e9b5e8a34479e881392588612cc264be7e1e87b",
+          "after": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "3e81e6c396c79999e349672610070370fab51cbd",
+          "after": "e26159ff36e0fb287d57e747dbfb7eff4ea46115"
+        },
+        {
+          "path": "packages/dacs-client/test/ingress-admission.test.mjs",
+          "before": "bc5df5a139d39697b81a2363c3e2554c0220551e",
+          "after": "d30d15034babe88428fd7c634243cb810e98e826"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "6bc784e3f999fcebbdc8f28c361f594ab0d6f644",
+          "after": "73b84bb84b931459b40a6ca8416085aa1706fbc2"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": null,
+          "after": "5694739e566066e19b72622ebf7249be6c3c3a1a"
+        }
+      ]
     }
   ]
 }

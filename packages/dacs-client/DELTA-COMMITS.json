@@ -927,5 +927,33 @@
       "packages/dacs-client/test/host-observations.test.mjs",
       "packages/dacs-client/test/package-contents.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 enforce host transaction and portal capability boundaries",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+      "packages/dacs-client/src/dacs/directory.mjs",
+      "packages/dacs-client/src/purchase-state-schema.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/src/wallet/durable-journal.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/directory-byte-budget.test.mjs",
+      "packages/dacs-client/test/domain-store-crash.test.mjs",
+      "packages/dacs-client/test/durable-journal.test.mjs",
+      "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs",
+      "packages/dacs-client/test/ingress-admission.test.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/store-host-boundary.test.mjs"
+    ]
   }
 ]

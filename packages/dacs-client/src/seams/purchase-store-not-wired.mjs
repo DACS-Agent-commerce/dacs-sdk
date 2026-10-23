@@ -40,7 +40,11 @@ function transactionResult(db, result) {
 const identifier = name => `"${name.replaceAll('"', '""')}"`;
 function writeGuard(db) {
   const existing = guards.get(db);
-  if (existing) { existing.refresh(); return existing; }
+  if (existing) {
+    if (!existing.exists()) existing.rebuild();
+    existing.refresh();
+    return existing;
+  }
   // Install once, outside BEGIN. Arming survives automatic rollback, while
   // the in-transaction update does not. Unarmed guards allow host DML.
   const name = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
@@ -51,6 +55,12 @@ function writeGuard(db) {
   const schemaVersions = () => db.prepare('PRAGMA database_list').all().map(({ name: schema, file }) =>
     [schema, file, db.prepare(`PRAGMA ${identifier(schema)}.schema_version`).get().schema_version]);
   const guard = {
+    exists() { return Boolean(db.prepare("SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name=?").get(name)); },
+    rebuild() {
+      db.exec(`CREATE TEMP TABLE ${identifier(name)} (armed INTEGER, present INTEGER);
+        INSERT INTO ${marker} VALUES (0, 0)`);
+      versions = undefined;
+    },
     refresh() {
       const current = JSON.stringify(schemaVersions());
       if (current === versions) return;
@@ -74,6 +84,14 @@ function writeGuard(db) {
     },
     arm() { db.exec(`UPDATE ${marker} SET armed = 1, present = 0`); },
     start() { db.exec(`UPDATE ${marker} SET present = 1`); },
+    blockCommit() {
+      // SQLite refuses COMMIT/END while a write statement is in progress.
+      // Keep the iterator private; only package code may finish this statement.
+      // This also covers control statements prepared before guard installation.
+      const iterator = db.prepare(`UPDATE ${marker} SET present = present RETURNING present`).iterate();
+      if (iterator.next().done) throw new NotWiredError('purchase-store-not-wired');
+      return iterator;
+    },
     present() { return !fenced.has(db) && db.isTransaction !== false && Boolean(db.prepare(`SELECT 1 FROM ${marker} WHERE present = 1`).get()); },
     check() {
       // isTransaction is unavailable on the minimum supported Node versions;
@@ -97,30 +115,50 @@ function sqliteTransaction(db, fn) {
   if (active.has(db)) {
     const state = active.get(db), depth = ++state.depth;
     const savepoint = `dacs_purchase_${depth}`;
+    let opened = false;
     try {
       state.guard.check();
+      state.barrier.return();
+      state.barrier = null;
       db.exec(`SAVEPOINT ${savepoint}`);
+      opened = true;
+      state.barrier = state.guard.blockCommit();
       const result = transactionResult(db, fn());
       state.guard.check();
+      state.barrier.return();
+      state.barrier = null;
       db.exec(`RELEASE ${savepoint}`);
+      opened = false;
       return result;
     } catch (error) {
-      recover(db, `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
+      if (opened) {
+        try { state.barrier?.return(); } catch { /* Preserve the callback error. */ }
+        state.barrier = null;
+        recover(db, `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
+      }
       throw error;
     } finally {
       state.depth--;
+      if (!state.barrier && !fenced.has(db) && state.guard.present()) state.barrier = state.guard.blockCommit();
     }
   }
+  // Probe with BEGIN before creating any TEMP objects. A host transaction
+  // must be refused without installing guards that its ROLLBACK would erase.
+  db.exec('BEGIN IMMEDIATE');
+  db.exec('ROLLBACK');
   const guard = writeGuard(db);
-  let begun = false;
+  let begun = false, state;
   try {
     guard.arm();
     db.exec('BEGIN IMMEDIATE');
     begun = true;
     guard.start();
-    active.set(db, { depth: 0, guard });
+    state = { depth: 0, guard, barrier: guard.blockCommit() };
+    active.set(db, state);
     const result = transactionResult(db, fn());
     guard.check();
+    state.barrier.return();
+    state.barrier = null;
     // All fallible guard cleanup precedes COMMIT. It is DML, so an active
     // host SELECT iterator does not require a schema lock.
     guard.disarm();
@@ -128,6 +166,7 @@ function sqliteTransaction(db, fn) {
     begun = false;
     return result;
   } catch (error) {
+    try { state?.barrier?.return(); } catch { /* Preserve the callback error. */ }
     // At outer depth SQLite may already have rolled back everything. There
     // is no savepoint to recover and no reason to retire that host handle.
     try { if (begun && guard.present()) recover(db, 'ROLLBACK'); } catch { fence(db); }
