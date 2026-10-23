@@ -2134,12 +2134,21 @@ function transportFrom<TSignature>(
   }
 
   /** A packet's place in its job: turns by sequence, then proposal, then contribution. */
-  function packetRank(packet: Readonly<RfqLifecyclePacket<TSignature>>): number {
+  function packetStage(packet: Readonly<RfqLifecyclePacket<TSignature>>): number {
     return packet.kind === "turn"
-      ? packet.message.sequence
+      ? 0
       : packet.kind === "agreement-proposal"
-        ? Number.MAX_SAFE_INTEGER - 1
-        : Number.MAX_SAFE_INTEGER;
+        ? 1
+        : 2;
+  }
+
+  function comparePacketRank(
+    left: Readonly<RfqLifecyclePacket<TSignature>>,
+    right: Readonly<RfqLifecyclePacket<TSignature>>,
+  ): number {
+    return packetStage(left) - packetStage(right) ||
+      (left.kind === "turn" && right.kind === "turn"
+        ? left.message.sequence - right.message.sequence : 0);
   }
 
   function packetOrder(
@@ -2149,7 +2158,7 @@ function transportFrom<TSignature>(
     const binding = exactOrder(left.jobId, right.jobId) ||
       exactOrder(left.channelId, right.channelId);
     if (binding !== 0) return binding;
-    return packetRank(left) - packetRank(right) || exactOrder(left.packetId, right.packetId);
+    return comparePacketRank(left, right) || exactOrder(left.packetId, right.packetId);
   }
 
   async function resumeInbound(
@@ -2313,12 +2322,13 @@ function transportFrom<TSignature>(
     // back only the packets after it in its own job. One of the same rank is
     // still offered, and once one is accepted the job goes on.
     let held: DemosL2psRfqInboundSkip | undefined;
-    let heldRank = 0;
+    let heldPacket: Readonly<RfqLifecyclePacket<TSignature>> | undefined;
+    let accepted: Readonly<RfqLifecyclePacket<TSignature>> | undefined;
     for (const packet of [...packets.values()].sort(packetOrder)) {
       if (
         held?.jobId === packet.jobId &&
         held.channelId === packet.channelId &&
-        packetRank(packet) > heldRank
+        heldPacket !== undefined && comparePacketRank(packet, heldPacket) > 0
       ) {
         held.packets += 1;
         continue;
@@ -2333,6 +2343,7 @@ function transportFrom<TSignature>(
         if (result.status === "ready" || result.status === "duplicate") {
           delivered += 1;
           held = undefined;
+          accepted = packet;
           continue;
         }
         refusal = "reason" in result ? result.reason : "unknown result";
@@ -2358,15 +2369,19 @@ function transportFrom<TSignature>(
         refusal = "Demos L2PS recovered packet handler failed";
         uncertainReason = refusal;
       }
-      held = {
+      const refused = {
         jobId: packet.jobId,
         channelId: packet.channelId,
         packetId: packet.packetId,
         packets: 1,
         reason: refusal,
       };
-      heldRank = packetRank(packet);
-      skipped.push(held);
+      skipped.push(refused);
+      if (accepted?.jobId !== packet.jobId || accepted.channelId !== packet.channelId ||
+          comparePacketRank(accepted, packet) !== 0) {
+        held = refused;
+        heldPacket = packet;
+      }
     }
     return uncertainReason === undefined
       ? { status: "complete", delivered, skipped, ignored }

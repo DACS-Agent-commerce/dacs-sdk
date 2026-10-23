@@ -1001,7 +1001,9 @@ describe("durable RFQ receive keeps local failures retryable", () => {
       reason: "remote agreement signer offline",
     });
     const status = await seller.client.getStatus(JOB_ID);
-    expect(status.status === "ok" && status.record.agreement).toBeUndefined();
+    expect(status).toMatchObject({ status: "ok", record: {
+      agreement: { plan: proposal.plan, contributions: [proposal.buyerContribution] },
+    } });
     expect(network.pending(BUYER)).toBe(0);
     seller.faults.sign = false;
     await expect(seller.client.receive(proposal)).resolves.toMatchObject({ status: "ready" });
@@ -1010,14 +1012,15 @@ describe("durable RFQ receive keeps local failures retryable", () => {
 
   test("an agreement signer using a stale key leaves a proposal indeterminate, and it is received later", async () => {
     const { network, seller, proposal } = await proposed();
-    const before = await seller.client.getStatus(JOB_ID);
     seller.faults.staleKey = true;
     // The signature is well formed; only verifying our own contribution finds the wrong key.
     await expect(seller.client.receive(proposal)).resolves.toMatchObject({
       status: "indeterminate",
       reason: "seller agreement contribution is not cryptographically valid (invalid)",
     });
-    await expect(seller.client.getStatus(JOB_ID)).resolves.toEqual(before);
+    await expect(seller.client.getStatus(JOB_ID)).resolves.toMatchObject({ status: "ok", record: {
+      agreement: { plan: proposal.plan, contributions: [proposal.buyerContribution] },
+    } });
     expect(network.pending(BUYER)).toBe(0);
     seller.faults.staleKey = false;
     await expect(seller.client.receive(proposal)).resolves.toMatchObject({ status: "ready" });
@@ -1810,7 +1813,8 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     });
     const failed = await record(sellerClient);
     expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: CONTRIBUTION_DEADLINE + 1 });
-    expect(failed.agreement).toBeUndefined();
+    expect(failed.agreement?.contributions).toEqual([proposal.buyerContribution]);
+    expect(failed.agreement?.finalized).toBeUndefined();
     expect(failed.inboxPacketIds).not.toContain(proposal.packetId);
     expect(network.pending(BUYER)).toBe(0);
     // The timeout is terminal: a faster signer does not revive the job.
@@ -1838,7 +1842,7 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     expect(verify).toHaveBeenCalled();
     const failed = await record(sellerClient);
     expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: CONTRIBUTION_DEADLINE + 1 });
-    expect(failed.agreement).toBeUndefined();
+    expect(failed.agreement?.finalized).toBeUndefined();
     expect(network.pending(BUYER)).toBe(0);
   });
 
@@ -1884,11 +1888,11 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     });
     const failed = await record(sellerClient);
     expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: NOW + 8_001 });
-    expect(failed.agreement).toBeUndefined();
+    expect(failed.agreement?.finalized).toBeUndefined();
     expect(network.pending(BUYER)).toBe(0);
   });
 
-  test("a clock fault after the seller signs stores nothing, and the same proposal finalizes once the clock answers", async () => {
+  test("a clock fault after the seller signs preserves the verified proposal for retry", async () => {
     const { clock, network, buyerClient, sellerClient, proposal } = await slowSeller({});
     const before = await record(sellerClient);
     // The receipt reading is in the window; the reading after signing fails.
@@ -1897,7 +1901,9 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
       status: "indeterminate", reason: "trusted clock unavailable",
     });
     expect(clock.script).toEqual([]);
-    expect(await record(sellerClient)).toEqual(before);
+    const staged = await record(sellerClient);
+    expect(staged.agreement).toMatchObject({ plan: proposal.plan, contributions: [proposal.buyerContribution] });
+    expect(staged.inboxPacketIds).toEqual(before.inboxPacketIds);
     expect(network.pending(BUYER)).toBe(0);
     clock.now = NOW + 9_500;
     await expect(sellerClient.receive(proposal)).resolves.toMatchObject({ status: "ready" });
@@ -2122,7 +2128,9 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     const key = `seller:${JOB_ID}`;
     const accepted = records.get(key)!;
     expect(accepted.session.awaitingSince).toBe(NOW + 4_000);
-    records.set(key, { ...accepted, session: { ...accepted.session, awaitingSince: NOW + 1_000 } });
+    const legacy = { ...accepted, session: { ...accepted.session, awaitingSince: NOW + 1_000 } };
+    delete legacy.agreementTimeout;
+    records.set(key, legacy);
 
     clock.now = NOW + 14_000;
     await expect(sellerClient.sendAbort(JOB_ID)).resolves.toMatchObject({ status: "rejected", reason: TERMINAL });
@@ -2132,5 +2140,145 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
       status: "rejected", reason: AGREEMENT_TIMEOUT,
     });
     expect(records.get(key)!.failure).toMatchObject({ class: "timeout", recordedAt: NOW + 14_001 });
+  });
+});
+
+
+describe("cold review: durable agreement steps", () => {
+  async function pair(sign: (bytes: Uint8Array) => Uint8Array | Promise<Uint8Array>) {
+    const clock = { now: NOW };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const reserve = durableReservation();
+    const { buyerClient } = clients(network.transport, reserve, () => clock.now);
+    const options = {
+      role: "seller" as const, store: createInMemoryDurableRfqLifecycleStore<string>(),
+      transport: network.transport, reserveChannelId: reserve,
+      signChannelMessage: channelSigner(sellerKeys.privateKey), verifyChannelMessage: verifyChannel,
+      agreementSigner: { ...agreementSigner(SELLER, sellerKeys.privateKey), sign },
+      verifyAgreementContribution: verifyAgreement, nowMs: () => clock.now,
+    };
+    const sellerClient = createDurableRfqLifecycleClient(options);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } });
+    await deliver(network, SELLER, sellerClient);
+    await sellerClient.sendAccept(JOB_ID);
+    await deliver(network, BUYER, buyerClient);
+    clock.now = NOW + 9_000;
+    await buyerClient.startAgreement(JOB_ID);
+    const proposal = network.take(SELLER)!;
+    return { clock, network, buyerClient, sellerClient, options, proposal };
+  }
+
+  test("a verified proposal survives signer outage and restart past its arrival deadline", async () => {
+    let offline = true;
+    const f = await pair((bytes) => {
+      if (offline) throw new Error("signer offline");
+      return ed25519Sign(null, bytes, sellerKeys.privateKey);
+    });
+    await expect(f.sellerClient.receive(f.proposal)).resolves.toMatchObject({ status: "indeterminate" });
+    const staged = await f.sellerClient.getStatus(JOB_ID);
+    expect(staged).toMatchObject({ status: "ok", record: { agreement: { contributions: [{ role: "buyer" }] } } });
+    if (f.proposal.kind !== "agreement-proposal") throw new Error("not a proposal");
+    const plan = createFixedPriceAgreementSigningPlan({ ...structuredClone(f.proposal.plan.draft), generatedAt: NOW + 9_001 });
+    const buyerContribution = await createFixedPriceAgreementSignatureContribution(
+      plan, "buyer", agreementSigner(BUYER, buyerKeys.privateKey));
+    const { packetId: _, ...replacement } = { ...f.proposal, plan, buyerContribution };
+    await expect(f.sellerClient.receive({ ...replacement, packetId: rfqLifecyclePacketId(replacement) })).resolves.toMatchObject({
+      status: "rejected", reason: "buyer replaced the stored RFQ agreement proposal",
+    });
+    expect(await f.sellerClient.getStatus(JOB_ID)).toEqual(staged);
+    f.clock.now = NOW + 10_001;
+    offline = false;
+    const restarted = createDurableRfqLifecycleClient(f.options);
+    await expect(restarted.receive(f.proposal)).resolves.toMatchObject({ status: "ready" });
+    await deliver(f.network, BUYER, f.buyerClient);
+    const seller = await restarted.getStatus(JOB_ID);
+    const buyer = await f.buyerClient.getStatus(JOB_ID);
+    expect(seller.status === "ok" && seller.record.agreement?.finalized).toEqual(
+      buyer.status === "ok" && buyer.record.agreement?.finalized);
+    expect(seller.status === "ok" && seller.record.failure).toBeUndefined();
+  });
+
+  test("a concurrent timeout driver respects the staged contribution window", async () => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = await pair(async (bytes) => {
+      enter();
+      await gate;
+      return ed25519Sign(null, bytes, sellerKeys.privateKey);
+    });
+    const receiving = f.sellerClient.receive(f.proposal);
+    await entered;
+    f.clock.now = NOW + 10_001;
+    try {
+      await expect(f.sellerClient.sendAbort(JOB_ID)).resolves.toMatchObject({
+        status: "rejected", reason: "RFQ session is already terminal",
+      });
+    } finally { release(); }
+    await expect(receiving).resolves.toMatchObject({ status: "ready" });
+  });
+
+  test("a staged proposal still expires at its contribution deadline", async () => {
+    const sign = vi.fn(() => { throw new Error("offline"); });
+    const f = await pair(sign);
+    await expect(f.sellerClient.receive(f.proposal)).resolves.toMatchObject({ status: "indeterminate" });
+    f.clock.now = NOW + 19_001;
+    await expect(f.sellerClient.receive(f.proposal)).resolves.toMatchObject({
+      status: "rejected", reason: "RFQ agreement timeout elapsed (RFQ-4)",
+    });
+    expect(sign).toHaveBeenCalledTimes(1);
+  });
+
+  test("an invalid buyer signature is refused before staging or calling the seller signer", async () => {
+    const sign = vi.fn((bytes: Uint8Array) => ed25519Sign(null, bytes, sellerKeys.privateKey));
+    const f = await pair(sign);
+    if (f.proposal.kind !== "agreement-proposal") throw new Error("not a proposal");
+    const wrong = generateKeyPairSync("ed25519");
+    const buyerContribution = await createFixedPriceAgreementSignatureContribution(
+      f.proposal.plan, "buyer", agreementSigner(BUYER, wrong.privateKey));
+    const { packetId: _, ...material } = { ...f.proposal, buyerContribution };
+    const invalid = { ...material, packetId: rfqLifecyclePacketId(material) };
+    const before = await f.sellerClient.getStatus(JOB_ID);
+    await expect(f.sellerClient.receive(invalid)).resolves.toMatchObject({ status: "rejected" });
+    expect(sign).not.toHaveBeenCalled();
+    expect(await f.sellerClient.getStatus(JOB_ID)).toEqual(before);
+    await expect(f.sellerClient.receive(f.proposal)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  test("a legacy receiver acceptance gets a stable local timeout window on upgrade", async () => {
+    const f = await pair((bytes) => ed25519Sign(null, bytes, sellerKeys.privateKey));
+    const accepted = await f.buyerClient.getStatus(JOB_ID);
+    if (accepted.status !== "ok") throw new Error("no record");
+    // Recreate the old stored checkpoint: acceptance was received at 9.001s,
+    // but awaitingSince still contains the offer time and no timeout marker exists.
+    const legacy = structuredClone(accepted.record) as DurableRfqLifecycleRecord<string>;
+    delete legacy.agreementTimeout;
+    delete legacy.agreement;
+    legacy.outbox = legacy.outbox.filter((entry) => entry.packet.kind === "turn");
+    legacy.session.awaitingSince = NOW;
+    legacy.updatedAt = NOW + 9_001;
+    const store = createInMemoryDurableRfqLifecycleStore<string>();
+    expect(await store.create(legacy)).toMatchObject({ status: "created" });
+    const options = {
+      ...f.options, role: "buyer" as const, store,
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+    };
+    f.clock.now = NOW + 10_001;
+    const upgraded = createDurableRfqLifecycleClient(options);
+    await expect(upgraded.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(await upgraded.getStatus(JOB_ID)).toMatchObject({ status: "ok", record: {
+      agreementTimeout: { version: "1", acceptedAt: NOW + 9_001 },
+    } });
+    f.clock.now = NOW + 20_002;
+    await expect(createDurableRfqLifecycleClient(options).sendAbort(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: "RFQ agreement timeout elapsed (RFQ-4)",
+    });
+    expect(await upgraded.getStatus(JOB_ID)).toMatchObject({ status: "ok", record: {
+      agreementTimeout: { version: "1", acceptedAt: NOW + 9_001 },
+    } });
   });
 });

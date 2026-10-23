@@ -28,11 +28,14 @@ import {
   createDemosL2psRfqAesGcmCodec,
   createUnverifiedDemosL2psRfqTransport,
   createDurableRfqLifecycleClient,
+  createFixedPriceAgreementSignatureContribution,
+  createFixedPriceAgreementSigningPlan,
   createInMemoryDurableRfqLifecycleStore,
   DacsError,
   DemosL2psRfqDeploymentError,
   DemosL2psRfqPeerChannelError,
   openDemosL2psRfqTransport,
+  prepareChannelMessageSigningInput,
   rfqLifecyclePacketId,
   TransientError,
   type AttestationRef,
@@ -3679,7 +3682,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
       reason: `Demos L2PS recovered packet was not accepted: ${reason}`,
     });
     const held = await sellerClient.getStatus(JOB_ID);
-    expect(held.status === "ok" && held.record.agreement).toBeUndefined();
+    expect(held).toMatchObject({ status: "ok", record: { agreement: { contributions: [{ role: "buyer" }] } } });
     stale = false;
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete", delivered: 2, ignored: 0, skipped: [],
@@ -5763,4 +5766,90 @@ describe("Demos L2PS RFQ checked transport", () => {
     expect(nodeB.sends).toBe(0);
     expect(nodeB.messages).toEqual([]);
   });
+});
+
+
+describe("cold review: L2PS recovery ordering", () => {
+  test.each(["ready", "duplicate"] as const)("a %s candidate keeps its rank satisfied after a later refusal", async (status) => {
+    const f = await inboundReceiver();
+    const one = await storeBuyerPacket(f, offerVariant(f.packet, { jobId: OTHER_JOB_ID }), 1);
+    if (f.packet.kind !== "turn") throw new Error("not a turn");
+    const alternative = { ...offerVariant(f.packet, { jobId: OTHER_JOB_ID }),
+      message: { ...f.packet.message, signature: "alternative" } };
+    const two = await storeBuyerPacket(f, alternative, 2);
+    const next = await storeBuyerPacket(f, offerVariant(f.packet, { jobId: OTHER_JOB_ID, sequence: 3 }), 3);
+    const [accepted, refused] = [one, two].sort((a, b) => a.packetId < b.packetId ? -1 : 1);
+    f.transport.stop();
+    const calls: string[] = [];
+    f.transport.start(async (packet) => {
+      calls.push(packet.packetId);
+      return packet.packetId === refused!.packetId
+        ? { status: "rejected", reason: "invalid alternative" }
+        : { status, record: {} as never };
+    });
+    try {
+      for (let retry = 0; retry < 2; retry++) {
+        calls.length = 0;
+        await expect(f.transport.resumeInbound(BUYER)).resolves.toMatchObject({ status: "complete", delivered: 3 });
+        expect(calls).toEqual([accepted!.packetId, refused!.packetId, next.packetId, f.packet.packetId]);
+      }
+    } finally { f.transport.stop(); }
+  });
+
+  test.each([3, Number.MAX_SAFE_INTEGER - 1, Number.MAX_SAFE_INTEGER])(
+    "an acceptance at sequence %s recovers before the agreement proposal", async (sequence) => {
+      const f = await inboundReceiver();
+      f.transport.stop();
+      const transport: DurableRfqLifecycleTransport<string> = {
+        publish: async () => ({ disposition: "acknowledged" }),
+        reconcile: async () => ({ disposition: "acknowledged" }),
+      };
+      const buyerClient = createDurableRfqLifecycleClient(clientOptions("buyer", transport, durableReservation()));
+      await buyerClient.open(openInput());
+      await buyerClient.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } });
+      await expect(f.client.receive(f.packet)).resolves.toMatchObject({ status: "ready" });
+      await expect(f.client.sendCounter(JOB_ID, {
+        rfqProposalVersion: "1", price: { amount: "10", currency: "USDC" },
+      })).resolves.toMatchObject({ status: "ready" });
+      const counter = await f.client.getStatus(JOB_ID);
+      if (counter.status !== "ok") throw new Error("no counter");
+      await expect(buyerClient.receive(counter.record.outbox.at(-1)!.packet)).resolves.toMatchObject({ status: "ready" });
+      await buyerClient.sendAccept(JOB_ID);
+      const accepted = await buyerClient.getStatus(JOB_ID);
+      if (accepted.status !== "ok") throw new Error("no acceptance");
+      const accept = accepted.record.outbox.at(-1)!.packet;
+      if (accept.kind !== "turn") throw new Error("not a turn");
+      const { signature: _, ...unsigned } = accept.message;
+      const signing = prepareChannelMessageSigningInput({ ...structuredClone(unsigned), sequence });
+      const { packetId: __, ...material } = accept;
+      const signedAccept = { ...material,
+        message: { ...signing.unsignedEnvelope, signature: `buyer:${signing.envelopeHash}` } };
+      const recoveredAccept = await storeBuyerPacket(f, signedAccept, 10);
+      await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      const proposed = await buyerClient.getStatus(JOB_ID);
+      if (proposed.status !== "ok") throw new Error("no proposal");
+      const { packetId: ___, ...proposal } = proposed.record.outbox.at(-1)!.packet;
+      if (proposal.kind !== "agreement-proposal") throw new Error("not a proposal");
+      const plan = createFixedPriceAgreementSigningPlan({
+        ...structuredClone(proposal.plan.draft),
+        derivedFromChannel: { subnet: CHANNEL_ID, lastMessageHash: signing.envelopeHash },
+      });
+      const buyerContribution = await createFixedPriceAgreementSignatureContribution(plan, "buyer",
+        clientOptions("buyer", transport, durableReservation()).agreementSigner);
+      await storeBuyerPacket(f, { ...proposal, plan, buyerContribution } as Omit<BuyerPacket, "packetId">, 11);
+      f.transport.start((packet) => f.client.receive(packet));
+      try {
+        for (let retry = 0; retry < 2; retry++) {
+          await expect(f.transport.resumeInbound(BUYER)).resolves.toMatchObject({
+            status: "complete", delivered: 3, skipped: [],
+          });
+        }
+        const seller = await f.client.getStatus(JOB_ID);
+        expect(seller).toMatchObject({ status: "ok", record: {
+          session: { status: "accepted", lastSequence: sequence },
+          inboxPacketIds: expect.arrayContaining([recoveredAccept.packetId]),
+          agreement: { finalized: { signatures: expect.any(Array) } },
+        } });
+      } finally { f.transport.stop(); }
+    });
 });

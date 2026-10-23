@@ -137,6 +137,8 @@ export interface DurableRfqLifecycleRecord<TSignature = unknown> {
   transcript: ChannelMessage<RfqTurnBody, TSignature>[];
   inboxPacketIds: string[];
   outbox: DurableRfqOutboxEntry<TSignature>[];
+  /** Absent on legacy records; migrated on the next write using saved local time. */
+  agreementTimeout?: { version: "1"; acceptedAt: number };
   agreement?: DurableRfqAgreementState;
   failure?: DurableRfqLifecycleFailure;
   createdAt: number;
@@ -288,12 +290,13 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
    * or verifier settles after its contribution deadline, `timeoutMs` after
    * the verified plan's generatedAt, which is checked before finalizing); or
    * the turn, plan or counterparty contribution is refused.
-   * It gives "indeterminate" instead, stores nothing, and the same packet may
+   * It gives "indeterminate" instead, and the same packet may
    * be received again, when the store load fails; the clock, a verifier or
    * the agreement signer fails, cannot decide or answers malformed; the stored
    * session does not validate or the receipt time is before its
    * `awaitingSince`; or our own agreement contribution fails verification (a
-   * stale or wrong signer key). So
+   * stale or wrong signer key). A verified buyer proposal is preserved before
+   * the seller signer runs, so a retry resumes the contribution step. So
    * a verifier should answer "fail" or "invalid" for bad counterparty input
    * and throw only for its own faults.
    */
@@ -636,11 +639,22 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
     "createdAt",
     "updatedAt",
     ...(record.agreement === undefined ? [] : ["agreement"]),
+    ...(record.agreementTimeout === undefined ? [] : ["agreementTimeout"]),
     ...(record.failure === undefined ? [] : ["failure"]),
   ];
   if (!exactKeys(record, recordKeys)) return "record fields are malformed";
   if (record.storeVersion !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION) {
     return "unsupported store version";
+  }
+  if (record.agreementTimeout !== undefined &&
+      (!isRecord(record.agreementTimeout) ||
+       !exactKeys(record.agreementTimeout, ["version", "acceptedAt"]) ||
+       record.agreementTimeout.version !== "1" ||
+       record.session.status !== "accepted" ||
+       !Number.isSafeInteger(record.agreementTimeout.acceptedAt) ||
+       record.agreementTimeout.acceptedAt < record.session.awaitingSince ||
+       record.agreementTimeout.acceptedAt > record.updatedAt)) {
+    return "agreement timeout state is malformed";
   }
   if (
     !Number.isSafeInteger(record.revision) ||
@@ -914,6 +928,11 @@ export function durableRfqLifecycleTransitionViolation<TSignature = unknown>(
     canonicalize(next.failure) !== canonicalize(prior.failure)
   ) {
     return "terminal lifecycle failure was removed or replaced";
+  }
+  if (prior.agreementTimeout !== undefined &&
+      (next.agreementTimeout === undefined ||
+       canonicalize(next.agreementTimeout) !== canonicalize(prior.agreementTimeout))) {
+    return "agreement timeout state was removed or replaced";
   }
   if (prior.agreement !== undefined) {
     if (
@@ -1313,6 +1332,15 @@ function nextRecord<TSignature>(
   return {
     ...structuredClone(record),
     ...structuredClone(patch),
+    ...((patch.session ?? record.session).status === "accepted" &&
+        record.agreementTimeout === undefined
+      ? { agreementTimeout: {
+          version: "1" as const,
+          acceptedAt: record.session.status === "accepted"
+            ? Math.max(record.session.awaitingSince, record.updatedAt)
+            : now,
+        } }
+      : {}),
     revision: record.revision + 1,
     updatedAt: Math.max(record.updatedAt, now),
   };
@@ -1703,8 +1731,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
    * contribution `timeoutMs` after the buyer generated that proposal's plan.
    * This is the deadline of the step the stored record waits on: the
    * proposal's until an agreement is stored, then the contribution's. The
-   * seller stores no agreement before it finalizes, so for its own
-   * contribution it uses contributionDeadline() instead. Undefined once the
+   * seller stores the verified buyer proposal before signing. Undefined once the
    * agreement is finalized, before acceptance, or when the deadline is past
    * every unix-ms value (no reading can pass it).
    */
@@ -1715,14 +1742,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     if (session.status !== "accepted" || agreement?.finalized !== undefined) {
       return undefined;
     }
-    // Our own accept's sentAt is our trusted acceptance time. A record
-    // accepted by an earlier SDK kept the last proposal's receipt time in
-    // awaitingSince, so the later of the two keeps its full window.
-    const accept = record.transcript[record.transcript.length - 1];
-    const acceptedAt =
-      accept?.type === "accept" && accept.sender === roleClaim(record, role)
-        ? Math.max(session.awaitingSince, accept.sentAt)
-        : session.awaitingSince;
+    // Legacy accepted records retained the prior turn's awaitingSince.
+    // Their authenticated updatedAt is a conservative local acceptance time;
+    // nextRecord freezes it before any subsequent mutation can move it.
+    const acceptedAt = record.agreementTimeout?.acceptedAt ??
+      Math.max(session.awaitingSince, record.updatedAt);
     const since =
       agreement === undefined ? acceptedAt : agreement.plan.draft.generatedAt;
     const deadline = since + session.timeoutMs;
@@ -2002,6 +2026,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     if (role !== "seller" || record.session.status !== "accepted") {
       return { status: "rejected", reason: "agreement proposal is not expected", record };
     }
+    if (record.agreement !== undefined &&
+        (canonicalize(record.agreement.plan) !== canonicalize(packet.plan) ||
+         canonicalize(record.agreement.contributions[0]) !== canonicalize(packet.buyerContribution))) {
+      return { status: "rejected", reason: "buyer replaced the stored RFQ agreement proposal", record };
+    }
     // A proposal after the deadline is refused like a late turn, before the
     // seller signs anything, so both members end in the timeout.
     const deadline = agreementDeadline(record);
@@ -2031,8 +2060,37 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     // date is the buyer's clock, not ours: it refuses the packet and stores
     // nothing. Only our own trusted clock records the timeout, so a buyer
     // clock running ahead cannot end the job before our deadline.
-    if (deadline !== undefined && packet.plan.draft.generatedAt > deadline) {
+    if (record.agreement === undefined && deadline !== undefined && packet.plan.draft.generatedAt > deadline) {
       return { status: "rejected", reason: FUTURE_PLAN_REASON, record };
+    }
+    if (record.agreement === undefined) {
+      let disposition: string;
+      try {
+        disposition = await verifyAgreementContribution(Object.freeze({
+          role: "buyer",
+          party: packet.buyerContribution.party,
+          algorithm: packet.buyerContribution.signature.algorithm,
+          value: packet.buyerContribution.signature.value,
+          signedBytes: Uint8Array.from(expectedPlan.signedBytes),
+        }));
+      } catch {
+        disposition = "error";
+      }
+      if (!["valid", "invalid", "indeterminate", "error"].includes(disposition)) {
+        disposition = "error";
+      }
+      if (disposition !== "valid") {
+        return {
+          status: disposition === "invalid" ? "rejected" : "indeterminate",
+          reason: `buyer agreement contribution is not cryptographically valid (${disposition})`,
+          record,
+        };
+      }
+      const staged = await write(record, nextRecord(record, receivedAt, {
+        agreement: { plan: expectedPlan, contributions: [packet.buyerContribution] },
+      }));
+      if (staged.status !== "ready") return staged;
+      record = staged.record;
     }
     try {
       sellerContribution = await createFixedPriceAgreementSignatureContribution(
@@ -2060,8 +2118,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     // trusted clock again. Our contribution is due `timeoutMs` after the
     // buyer dated the plan, the date its now-verified contribution signs and
     // the deadline the buyer waits on: we never finalize after it (RFQ-4),
-    // nor give up before it. A clock fault stores nothing, so the same
-    // proposal may be received again.
+    // nor give up before it. A clock fault preserves the staged proposal
+    // so the same proposal may be received again.
     const checked = await agreementClock(record, contributionDeadline(record, expectedPlan));
     if ("timedOut" in checked) return checked.timedOut;
     if ("clockFault" in checked) return checked.clockFault;

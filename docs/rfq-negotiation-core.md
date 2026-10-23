@@ -139,8 +139,10 @@ contribution's deadline: `timeoutMs` after the plan's `generatedAt`, which the
 buyer's contribution has just been verified to sign, and the same deadline
 the buyer waits on. If that has passed, it records the timeout instead of
 finalizing and publishes no contribution; until then it finalizes, even after
-the proposal's deadline. If the clock fails it answers `indeterminate` and
-stores nothing, so the same proposal may be received again. The seller also
+the proposal's deadline. Before calling its signer, the seller verifies and
+durably stores the buyer's proposal. A signer or clock fault answers
+`indeterminate` and preserves that step for retry after restart; timeout
+drivers then use the contribution deadline. The seller also
 never countersigns a plan the buyer dated after the seller's deadline,
 but that date is the buyer's clock: `receive()` answers `rejected` with "buyer
 dated the RFQ agreement plan after the seller's deadline", calls no verifier
@@ -153,11 +155,10 @@ arrives after it. Keep both members' trusted clocks within a small fraction
 of `timeoutMs` of each other.
 
 A record accepted by an SDK before this rule kept the last proposal's time in
-`awaitingSince`. The member that sent the accept counts its window from that
-accept's `sentAt`, its own trusted clock, so its window is unchanged. The
-member that received the accept has no stored receipt time, so its window
-runs from the last proposal and may end up to one `timeoutMs` early: finish an
-in-flight agreement exchange before upgrading. A contribution
+`awaitingSince`. When the versioned `agreementTimeout` marker is absent, the
+saved local `updatedAt` conservatively bounds acceptance time. The next write
+persists that time once, so later writes never extend the proposal window.
+New acceptances persist their exact local acceptance time. A contribution
 the buyer receives late still finalizes while the buyer has recorded no
 timeout, because the seller finalized when it sent it; after the buyer has
 recorded one, it is refused, and the two records disagree, as any timeout
