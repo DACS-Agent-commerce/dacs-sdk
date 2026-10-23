@@ -502,6 +502,8 @@ export function isSellerFulfilmentVetInvocationMismatch(
     });
 }
 
+const MAX_PARTY_VET_INVOCATIONS = 2;
+
 /**
  * Why the Vet requirement invocations a seller would carry into its delivery
  * audit source are not ones the fulfilment core accepts, or null: the strict
@@ -520,11 +522,11 @@ export function sellerFulfilmentVetRequirementsViolation(
   },
 ): string | null {
   try {
-    if (!hasExactJcsView(vetRequirements) || !Array.isArray(vetRequirements) ||
-        !vetRequirements.every(isVetRequirementInvocation)) {
+    if (!Array.isArray(vetRequirements) || vetRequirements.length > MAX_PARTY_VET_INVOCATIONS ||
+        !hasExactJcsView(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
       return "the Vet requirement invocations are not the strict audit-source shape";
     }
-    canonicalize(vetRequirements);
+    canonicalize({ artifacts: { vetRequirements } });
     const bindings = new Map<string, { primaryClaim: string; roles: Set<string> }>();
     for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
       if (!isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
