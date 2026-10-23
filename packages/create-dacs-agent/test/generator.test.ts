@@ -245,7 +245,7 @@ describe("create-dacs-agent", () => {
     expect(packageSource.dependencies).toEqual({
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
-      "@kynesyslabs/demosdk": "4.0.18",
+      "@kynesyslabs/demosdk": "4.0.16",
       "@x402/core": "2.15.0",
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
@@ -455,7 +455,7 @@ describe("create-dacs-agent", () => {
     expect(packageSource.dependencies).toEqual({
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
-      "@kynesyslabs/demosdk": "4.0.18",
+      "@kynesyslabs/demosdk": "4.0.16",
       "better-sqlite3": "12.6.2",
     });
     const config = await readFile(join(target, "dacs.config.ts"), "utf8");

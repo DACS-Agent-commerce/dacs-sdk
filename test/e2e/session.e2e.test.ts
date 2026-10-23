@@ -553,12 +553,6 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       },
       deps,
     );
-    expect(result.outcome).toBe("completed");
-    if (result.outcome !== "completed") {
-      throw new Error(`expected completed session, got ${result.outcome}`);
-    }
-    expect(result.settlementRef).toBeDefined();
-    expect(result.bundleRef).toBeDefined();
     return { sub, listingRef, result };
   }
 
@@ -568,14 +562,12 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(result.outcome).toBe("completed");
     expect(result.agreementRef).toBe("stor:dacs3:agreement:job-e2e");
     expect(result.settlementRef).toBe("stor:dacs4:evidence:job-e2e");
-    expect(result.vetRef).toBeDefined();
-    if (result.vetRef === undefined) throw new Error("expected vet reference");
 
     // The verifier below did not participate in production. Artifacts whose
     // normative schema uses ComponentSignature must authenticate independently.
     // AgreementSignature[] migration is owned by #98.
     const lifecycleArtifacts = [
-      [result.vetRef, ARTIFACT_SEPARATORS.CompositeVerificationRecord],
+      [result.vetRef!, ARTIFACT_SEPARATORS.CompositeVerificationRecord],
       [result.settlementRef, ARTIFACT_SEPARATORS.SettlementEvidence],
     ] as const;
     for (const [ref, separator] of lifecycleArtifacts) {
@@ -608,6 +600,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(v.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
     // Full 5-stage spec bundle: content-addressed listing/agreement refs +
     // vet record + settlement evidence.
+    expect(result.vetRef).toBeDefined();
     expect(v.bundle?.outcome).toBe("completed");
     expect(v.bundle?.vetRecords).toHaveLength(1);
     expect(v.bundle?.settlementEvidence).toHaveLength(1);

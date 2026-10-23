@@ -75,8 +75,6 @@ export interface RailDispatchOptions {
    * the hashes the outcomes the log holds name.
    */
   payDem?: {
-    /** Archival Demos RPC used lazily for retained-record recovery. */
-    recoveryRpc?: string;
     /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
     maxTotalDebitOs?: bigint;
     /** Durable pre-broadcast record of the signed hash and exact phase key. */
@@ -214,7 +212,6 @@ interface CapturedAvailabilityPolicy {
 }
 
 interface CapturedPayDemOptions {
-  recoveryRpc?: string;
   maxTotalDebitOs?: bigint;
   journalPreparedTransfer?: (
     transfer: Readonly<PayDemPreparedTransfer>,
@@ -499,7 +496,6 @@ function captureDispatchOptions(
     const capturedPayDem = payDem === undefined
       ? undefined
       : Object.freeze({
-        recoveryRpc: optionalDispatchValue<string>(payDem, "recoveryRpc", "pay-dem archival recovery RPC"),
         maxTotalDebitOs: optionalDispatchValue<bigint>(
           payDem,
           "maxTotalDebitOs",
@@ -803,7 +799,6 @@ export async function settleFromRail(
         throw new DacsError("pay-dem rail requires opts.demosSecret");
       }
       const payDem = capturedOptions.payDem;
-      const recoveryRpc = payDem?.recoveryRpc;
       const maxTotalDebitOs = payDem?.maxTotalDebitOs;
       const journalPreparedTransfer = payDem?.journalPreparedTransfer;
       const settlementStore = payDem?.settlementStore;
@@ -824,7 +819,6 @@ export async function settleFromRail(
         rpc: capturedOptions.demosRpc,
         secret: capturedOptions.demosSecret,
         network: demNetwork,
-        ...(recoveryRpc === undefined ? {} : { recoveryRpc }),
         ...(maxTotalDebitOs === undefined
           ? {}
           : { maxTotalDebitOs }),

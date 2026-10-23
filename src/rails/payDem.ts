@@ -11,7 +11,6 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { payDemRecoveryRpc } from "./payDemRecoveryRpc.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
@@ -22,16 +21,12 @@ import {
   isStoreLookupPair,
   settlementBindingHash,
   settlementKey,
-  SettlementNotInvokedError,
   type SettlementBinding,
   type SettlementEffectFence,
   type SettlementIdempotencyStore,
   type SettlementNotInvokedResult,
   type SettlementReconcile,
 } from "./idempotency.js";
-
-/** Recovery could not observe a record; it has not contradicted a saved payment. */
-export class PayDemRecoveryPendingError extends DacsError {}
 
 const payDemPreflights = new WeakMap<object, (req: SettleRequest) => unknown>();
 
@@ -991,20 +986,6 @@ export async function payDemSettleCore(
 export interface PayDemRailConfig {
   /** Demos node RPC URL. */
   rpc: string;
-  /**
-   * Optional trusted archival Demos RPC for recovery after the primary prunes
-   * a record. Recovery binds its chain ID and fork schedule to the primary,
-   * and its confirmed inclusion block to the primary's confirmed history,
-   * with the same wallet, transfer, status, block and fee checks. Read-only
-   * RPC requests have byte limits and cancellation deadlines; no wallet is
-   * connected to the archive and it is never used to sign or broadcast.
-   * The operator authenticates this endpoint just like the primary RPC.
-   * It reads lazily only if the primary has no bound terminal record;
-   * archive downtime cannot stop fresh settlement or a definitive primary read.
-   * Configure the settlement reconciler to use the archive too: its refusal
-   * or proof of absence still stops recovery before this record read.
-   */
-  recoveryRpc?: string;
   /** Buyer wallet secret — mnemonic or private key — used to sign the transfer. */
   secret: string;
   /** Network label recorded on the evidence (default "demos"). */
@@ -1758,8 +1739,8 @@ function recordSignedDenomination(transaction: Record<string, unknown>): "os" | 
  * `recordFeeComponentOs`); a record without one binds no fee. Anything else, a
  * malformed fee, a timeout or a failed read included, is indeterminate with
  * its reason. This makes one `getTxByHash` call within `timeoutMs` and never
- * polls or broadcasts. Both primary and archive recovery use the bounded,
- * cancellable HTTP transport, with no transport retries.
+ * polls or broadcasts. Recovery uses the existing SDK node client; the
+ * underlying transport may remain open after the bounded wait ends.
  */
 async function readDemosRecordByHash(
   txHash: string,
@@ -1793,8 +1774,8 @@ async function readDemosRecordByHash(
   if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
     return { state: "indeterminate", reason: "transaction record is missing or malformed" };
   }
-  // The transport bounds bytes before decoding; bound the canonical record
-  // again before the checks below. A native transfer record is a few KiB.
+  // Bound the canonical record before the checks below. A native transfer
+  // record is a few KiB.
   if (canonicalize(snapshot).length > MAX_RECOVERY_RECORD_JSON_CHARS) {
     return { state: "indeterminate", reason: "transaction record exceeds the size limit" };
   }
@@ -1860,7 +1841,6 @@ async function readDemosRecordByHash(
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
   const rpc = requiredStableString(config, "rpc", "pay-dem rail rpc");
-  const recoveryRpc = optionalStableString(config, "recoveryRpc", "pay-dem archival recovery rpc");
   const secret = requiredStableString(config, "secret", "pay-dem rail secret");
   const network = optionalStableString(config, "network", "pay-dem rail network");
   const maxTotalDebitProperty = stableDataProperty(
@@ -2024,15 +2004,6 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       }
       const effectiveMaxTotalDebitOs = invocationMaxTotalDebitOs ??
         configuredMaxTotalDebitOs;
-      if (recoveryRpc !== undefined) {
-        // Do not create a payment under an archive configuration whose primary
-        // cannot identify its own chain/schedule on a later recovery. The
-        // archive itself stays lazy: its outage must not block a fresh payment.
-        const identity = recoveryNetworkIdentity(await primaryHistoryCall("getNetworkInfo", {}));
-        if (identity === null) {
-          throw new DacsError("pay-dem archive recovery requires primary chain identity and forkScheduleDigest before signing");
-        }
-      }
       // The transaction is already signed. Demos nodes compare GCR edits via
       // order-sensitive JSON bytes, so JCS key sorting here would invalidate
       // an otherwise valid signature/confirmation payload.
@@ -2297,99 +2268,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   // Neither object is reachable outside this function except `settle` itself.
   sdkRecordReadingClients.add(client);
   sdkRecordReadingSettles.add(settle);
-  // Recovery reads the retained hash through this node. Any archive verdict
-  // must be tied to this node's confirmed history before it can be final.
-  // Recovery must cancel the underlying HTTP request at its deadline, not
-  // merely stop awaiting demosdk's unbounded transport.
-  const primaryHistoryCall = payDemRecoveryRpc(rpc, statusRequestTimeoutMs);
-  const primaryReader = sdkRecoveryReader(address, primaryHistoryCall,
-    (hash) => primaryHistoryCall("getTxByHash", { hash }), statusRequestTimeoutMs);
-  const archiveCall = recoveryRpc === undefined ? undefined : payDemRecoveryRpc(recoveryRpc, statusRequestTimeoutMs);
-  sdkRailRecordReaders.set(settle, async (expected) => {
-    const primary = await primaryReader(expected);
-    // A terminal primary result remains authoritative; an archive cannot
-    // override a terminal failed record. Indeterminate reads may use the archive
-    // only after its record and confirmed inclusion history are checked below.
-    if (primary.state !== "indeterminate" || archiveCall === undefined) return primary;
-    // No bound terminal record was established. Read the archive under the
-    // same checks, including for demosdk's not-found and transport envelopes.
-    // Reading is lazy: archive downtime must not stop a fresh payment or
-    // a recovery the primary can already resolve.
-    try {
-      // DACS-4 §9.5.9: BFT inclusion is final on the Demos substrate, not on
-      // another network or a reset history that can replay the same hash.
-      const primaryInfo = recoveryNetworkIdentity(await primaryHistoryCall("getNetworkInfo", {}));
-      const archiveInfo = recoveryNetworkIdentity(await archiveCall("getNetworkInfo", {}));
-      if (primaryInfo === null || archiveInfo === null ||
-          primaryInfo.chainId !== archiveInfo.chainId || primaryInfo.schedule !== archiveInfo.schedule) {
-        return { state: "indeterminate", reason: "archive chain identity or fork schedule is unavailable or does not match the primary" };
-      }
-      const archived = await sdkRecoveryReader(
-        address, async () => archiveInfo.raw,
-        (hash) => archiveCall("getTxByHash", { hash }), statusRequestTimeoutMs,
-      )(expected);
-      if (archived.state === "indeterminate") return archived;
-      if (primaryInfo.height < archived.blockNumber || archiveInfo.height < archived.blockNumber) {
-        return { state: "indeterminate", reason: "archive inclusion block exceeds the observed chain height" };
-      }
-      const primaryBlock = await readRecoveryInclusionBlock(primaryHistoryCall, archived.blockNumber, expected.txHash);
-      const archiveBlock = await readRecoveryInclusionBlock(archiveCall, archived.blockNumber, expected.txHash);
-      if (primaryBlock === null || archiveBlock === null || primaryBlock !== archiveBlock) {
-        return { state: "indeterminate", reason: "archive inclusion block does not match the primary's confirmed history" };
-      }
-      return archived;
-    } catch (cause) {
-      return {
-        state: "indeterminate", reason: "archive chain history read failed", cause,
-      };
-    }
-  });
+  sdkRailRecordReaders.set(settle, sdkRecoveryReader(address, nodeCall, getTxByHash, statusRequestTimeoutMs));
   return {
     address: client.address,
     settle,
   };
-}
-
-function recoveryNetworkIdentity(value: unknown): {
-  chainId: number; schedule: string; height: number; raw: unknown;
-} | null {
-  const info = value as { chainId?: unknown; forkScheduleDigest?: unknown;
-    forks?: { osDenomination?: { currentHeight?: unknown } } } | null;
-  const height = info?.forks?.osDenomination?.currentHeight;
-  if (info === null || typeof info !== "object" || Array.isArray(info) ||
-      typeof info.chainId !== "number" || !Number.isSafeInteger(info.chainId) ||
-      typeof info.forkScheduleDigest !== "string" || !/^[0-9a-f]{64}$/i.test(info.forkScheduleDigest) ||
-      typeof height !== "number" || !Number.isSafeInteger(height) || height < 0) return null;
-  return { chainId: info.chainId, schedule: info.forkScheduleDigest.toLowerCase(), height, raw: value };
-}
-
-async function readRecoveryInclusionBlock(
-  call: ReturnType<typeof payDemRecoveryRpc>, number: number, txHash: string,
-): Promise<string | null> {
-  // The pinned node requires truthy "0" for genesis and returns only its
-  // number/hash there. Resolve that canonical header to the full block.
-  const value = await call("getBlockByNumber", { blockNumber: number === 0 ? "0" : number });
-  if (number !== 0) return recoveryInclusionBlock(value, number, txHash);
-  const header = value as { number?: unknown; hash?: unknown } | null;
-  const hash = header !== null && typeof header === "object" && header.number === 0
-    ? canonicalDemosTxHash(header.hash) : null;
-  if (hash === null) return null;
-  const full = await call("getBlockByHash", { hash });
-  return recoveryInclusionBlock(full, number, txHash) === hash ? hash : null;
-}
-
-/** Both trusted nodes must name the same confirmed block containing this hash. */
-function recoveryInclusionBlock(value: unknown, number: number, txHash: string): string | null {
-  const block = value as { number?: unknown; status?: unknown; hash?: unknown;
-    content?: { ordered_transactions?: unknown } } | null;
-  if (block === null || typeof block !== "object" || Array.isArray(block) ||
-      block.number !== number || block.status !== "confirmed") return null;
-  const hash = canonicalDemosTxHash(block.hash);
-  const transactions = block.content?.ordered_transactions;
-  if (hash === null || !Array.isArray(transactions) || transactions.length > 16_384 ||
-      transactions.some((entry) => canonicalDemosTxHash(entry) === null) ||
-      !transactions.some((entry) => canonicalDemosTxHash(entry) === txHash)) return null;
-  return hash;
 }
 
 /**
@@ -2906,7 +2789,6 @@ const NO_READABLE_ATTEMPT_RECORD =
 function canonicalAttemptFence(
   fence: Readonly<SettlementEffectFence> | undefined,
   onRecorded?: (hash: string) => void,
-  onRecording?: () => void,
 ): Readonly<SettlementEffectFence> | undefined {
   if (fence === undefined) return undefined;
   const property = stableDataProperty(fence, "recordAttempt", "pay-dem effect fence attempt record");
@@ -2918,8 +2800,6 @@ function canonicalAttemptFence(
     recordAttempt: {
       enumerable: true,
       value: async (txHash: unknown) => {
-        // Once the write starts, even a rejected acknowledgement is ambiguous.
-        onRecording?.();
         const hash = canonicalDemosTxHash(txHash);
         if (hash === null) {
           throw new DacsError(
@@ -3027,8 +2907,6 @@ export function payDemSettle(
   opts: {
     store?: SettlementIdempotencyStore;
     reconcile?: PayDemSettlementReconcile;
-    /** Explicit operator recovery of an intact original log with no attempt. */
-    retryUnattempted?: Parameters<NonNullable<SettlementIdempotencyStore["reopenUnattempted"]>>[2];
   } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
   const storeProperty = stableDataProperty(
@@ -3069,20 +2947,6 @@ export function payDemSettle(
   // its log without a claim, so a restart can finish what the transfer did.
   const storeLookupsPaired = readOutcomeProperty.found &&
     isStoreLookupPair(storeReadAttempt, readOutcomeProperty.value);
-  const retryProperty = stableDataProperty(opts, "retryUnattempted", "pay-dem unattempted retry");
-  let retryUnattempted: NonNullable<typeof opts.retryUnattempted> | undefined;
-  let reopenUnattempted: NonNullable<SettlementIdempotencyStore["reopenUnattempted"]> | undefined;
-  if (retryProperty.found && retryProperty.value !== undefined) {
-    const original = stableDataProperty(retryProperty.value, "originalLogRetained", "pay-dem original log confirmation");
-    if (original.value !== true || !storeLookupsPaired) {
-      throw new DacsError("pay-dem unattempted retry requires originalLogRetained and the SDK store's paired lookups");
-    }
-    retryUnattempted = Object.freeze({ originalLogRetained: true, reconcile:
-      stableMethod<NonNullable<typeof opts.retryUnattempted>["reconcile"]>(
-        retryProperty.value, "reconcile", "pay-dem independent absence reconciler") });
-    reopenUnattempted = stableMethod<NonNullable<SettlementIdempotencyStore["reopenUnattempted"]>>(
-      store, "reopenUnattempted", "pay-dem unattempted intent reopening");
-  }
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -3331,7 +3195,7 @@ export function payDemSettle(
         amountOs: BigInt(amountOs),
       }));
       if (read.state === "indeterminate") {
-        throw new PayDemRecoveryPendingError(
+        throw new DacsError(
           `pay-dem recovery could not establish the node record for ${claimed.txHash}: ${read.reason}; ` +
             "the payment stays unresolved and is never resubmitted",
           read.cause === undefined ? undefined : { cause: read.cause },
@@ -3375,23 +3239,7 @@ export function payDemSettle(
       const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash ??
         (recoveryOnly ? (await recordedAttempt() ?? undefined) : undefined);
       if (recoveryOnly && retainedTxHash === undefined) {
-        // An operator may have closed an expired, provably unattempted intent
-        // through the SDK store. Reuse that exact unpaid outcome; never turn
-        // an absent attempt into permission to pay, or trust an injected lookup.
-        if (storeLookupsPaired && storeReadOutcome !== undefined) {
-          const raw = await storeReadOutcome(key, binding);
-          if (raw !== null) {
-            const closed = capturePayDemResult(raw, context, "unattempted native intent closure");
-            if (!closed.ok && closed.txHash === "") return publicPayDemResult(closed, expectedPayee);
-          }
-        }
-        if (!retryUnattempted || !reopenUnattempted) {
-          throw new DacsError("pay-dem recovery has no recorded attempt for this payment; refusing a new transfer (never resubmitted)");
-        }
-        await reopenUnattempted(key, binding, retryUnattempted);
-        // With no retained transaction, once may proceed only if its atomic
-        // claim establishes a fresh rail generation. A held or expired rail
-        // intent still refuses; absence never grants replay authority.
+        throw new DacsError("pay-dem recovery has no recorded attempt for this payment; refusing a new transfer (never resubmitted)");
       }
       if (retainedTxHash !== undefined) {
         // A success the session recorded for this key stays recorded.
@@ -3520,7 +3368,6 @@ export function payDemSettle(
         );
       }
       let refusedWithoutAttemptRecords = false;
-      let notInvoked: { cause: unknown } | undefined;
       const submit = async (
         effectFence?: Readonly<SettlementEffectFence>,
       ): Promise<SettleResult | SettlementNotInvokedResult> => {
@@ -3567,23 +3414,12 @@ export function payDemSettle(
           });
         }
         let recordedBeforeBroadcast: string | undefined;
-        let recordingStarted = false;
-        let submitted: Awaited<ReturnType<PayDemRail["settle"]>>;
-        try {
-          submitted = await railSettle({
-            recipient: payeeAddress,
-            amount: amountOs,
-            network,
-            recovery: context,
-          }, canonicalAttemptFence(effectFence, (hash) => { recordedBeforeBroadcast = hash; },
-            () => { recordingStarted = true; }));
-        } catch (cause) {
-          if (recordingStarted) throw cause;
-          notInvoked = { cause };
-          return { disposition: "not-invoked", result: {
-            ok: false, txHash: "", payer: payerAddress, payee: payeeAddress, chainId: network,
-          } };
-        }
+        const submitted = await railSettle({
+          recipient: payeeAddress,
+          amount: amountOs,
+          network,
+          recovery: context,
+        }, canonicalAttemptFence(effectFence, (hash) => { recordedBeforeBroadcast = hash; }));
         const captured = captureFreshPayDemResult(submitted, context);
         recordReadThisCall = captured.ok || captured.errorClass === "permanent";
         // Keep what the rail reported so a later call cannot contradict it, but
@@ -3661,11 +3497,6 @@ export function payDemSettle(
         binding,
         submit,
         reconcileForStore,
-        { freshOnly: recoveryOnly },
-      );
-      if (notInvoked) throw new SettlementNotInvokedError(
-        `pay-dem rail failed before recording an attempt: ${notInvoked.cause instanceof Error ? notInvoked.cause.message : String(notInvoked.cause)}`,
-        notInvoked,
       );
       if (refusedWithoutAttemptRecords) throw new DacsError(NO_READABLE_ATTEMPT_RECORD);
       let captured = capturePayDemResult(
@@ -3686,18 +3517,6 @@ export function payDemSettle(
         throw new DacsError(NO_READABLE_ATTEMPT_RECORD);
       }
       const known = authenticatedResults.get(key);
-      // A pre-attempt session retry can reach an operator's unpaid closure
-      // through once, rather than the recoveryOnly lookup above. It names no
-      // transaction to reconcile; require the same bound SDK outcome and no attempt.
-      if (storeLookupsPaired && !captured.ok && captured.txHash === "" &&
-          await recordedAttempt() === null) {
-        const raw = await storeReadOutcome!(key, binding);
-        if (raw !== null && samePayDemResult(captured,
-          capturePayDemResult(raw, context, "unattempted native intent closure"))) {
-          assertPayDemSuccessKept(known?.result.ok === true, captured);
-          return publicPayDemResult(captured, expectedPayee);
-        }
-      }
       if (
         known === undefined ||
         !sameRecoveryContext(known.context, context) ||

@@ -19,8 +19,7 @@ import {
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { DEM_DECIMALS, isPayDemSettleAdapter, isPayDemSessionRecoverable,
-  PayDemRecoveryPendingError, preflightPayDemSettlement } from "../rails/payDem.js";
-import { SettlementNotInvokedError } from "../rails/idempotency.js";
+  preflightPayDemSettlement } from "../rails/payDem.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
   isComponentSignature,
@@ -153,7 +152,7 @@ export interface SettleRequest {
    * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
-  /** Audit only, unless an operator explicitly configures fenced unattempted recovery. */
+  /** Read-only recovery; never submits a native transfer. */
   recoveryOnly?: boolean;
 }
 
@@ -322,9 +321,7 @@ export interface SessionDeps {
    * `resumeSettlement`. For native DEM that implementation is the SDK's
    * `payDemSettle` adapter itself, passed as is. When this option is omitted,
    * the registered native DEM `settle` adapter also serves as recovery.
-   * Native recovery requests carry `recoveryOnly: true`, unless a durably
-   * recorded pre-attempt refusal is consumed for one retry. Audit-only calls
-   * never submit without explicit operator-configured unattempted recovery.
+   * Native recovery requests carry `recoveryOnly: true` and never submit.
    * The session recognises the adapter by
    * identity and calls no other `settle` or `resumeSettlement` for native DEM
    * (a wrapper around the adapter included), so no payment is made and the
@@ -469,13 +466,12 @@ export interface SessionDeps {
    *      `resumeSettlement`, never blindly re-paid.
    *   3. The agreement/settlement/bundle receipts + final status are recorded
    *      for restart-safe status/receipt queries without an app-specific job DB.
-   * Without a store, other rails retain their process-local behavior and
-   * cannot return durable evidence-publication catch-up after an outage.
+   * Without a store, other rails retain their process-local behavior.
    */
   sessionStore?: SessionStore;
 }
 
-interface SessionResultCommon {
+export interface SessionResult {
   /**
    * Explicit quarantine marker for the pre-v0.3 buyer-only producer. This path
    * stops after settlement and therefore MUST NOT be interpreted as delivery,
@@ -484,25 +480,16 @@ interface SessionResultCommon {
   profile: "legacy-mvp-settlement-only";
   /** Always false: this producer has no fulfilment or delivery-evidence phase. */
   commerceComplete: false;
+  outcome: "completed" | "failed";
   jobId: string;
   /** Exact DACS-1 §6.3.4 LR-1 Listing tuple used for this session. */
   listingPin: ListingPin;
   /** Set when a Vet step ran — the anchored CompositeVerificationRecord. */
   vetRef?: string;
   agreementRef: string;
+  settlementRef: string;
+  bundleRef: string;
 }
-
-export type SessionResult = SessionResultCommon & (
-  | { outcome: "completed" | "failed"; settlementRef: string; bundleRef: string }
-  | {
-      /** Payment is final; retry evidence while Listing admission permits resume. */
-      outcome: "settlement-pending";
-      payment: Readonly<SettleResult>;
-      pendingEvidenceAddress: string;
-      settlementRef?: never;
-      bundleRef?: never;
-    }
-);
 
 export interface SessionVetRequest {
   jobId: string;
@@ -3410,8 +3397,6 @@ export async function runSessionCore(
    * agreement/evidence (and overwriting evidence could double-pay). Returns the
    * ref + the artifact now at that ref so callers can content-hash it.
    */
-  let paidForPublication: DurableSettlementOutcome | undefined;
-  let failedEvidencePublication = false;
   const anchorOnce = async (
     name: string,
     match: (v: Record<string, unknown>) => Match | Promise<Match>,
@@ -3530,15 +3515,7 @@ export async function runSessionCore(
       snapshotCanonicalJson(built, `publication for "${name}"`),
     );
     const builtCanonical = canonicalize(built);
-    let rawRef: string;
-    try {
-      rawRef = await deps.anchor(name, publication);
-    } catch (cause) {
-      if (name === legacyMvpSessionAnchorName.evidence(jobId) && paidForPublication?.ok) {
-        failedEvidencePublication = true;
-      }
-      throw cause;
-    }
+    const rawRef = await deps.anchor(name, publication);
     const ref = protocolString(rawRef, `anchor result for "${name}"`, {
       allowColon: true,
     });
@@ -4429,23 +4406,6 @@ export async function runSessionCore(
       : result;
   };
 
-  const invokeSettlement = async (seam: SessionDeps["settle"], request: SettleRequest): Promise<SettleResult> => {
-    try {
-      return await seam(request);
-    } catch (cause) {
-      if (cause instanceof SettlementNotInvokedError && store && isNativeSettlement(expectedSettlementBinding)) {
-        const current = await store.load(jobId);
-        assertSessionAgreementBinding(current, jobId, agreementHash, "unattempted settlement load");
-        if (current.status !== "ok") throw cause;
-        const recorded = await store.transition({ jobId, expectedRevision: current.record.revision,
-          checkpoint: { key: "settle:unattempted", stage: "outcome", data: { agreementHash } },
-          now: runtime.nowMs() });
-        if (!recorded.ok) throw new CounterpartyError("could not record unattempted native settlement", { cause });
-      }
-      throw cause;
-    }
-  };
-
   const recoverRailOutcome = async (
     label: string,
     prior?: LegacyDurableSettlementOutcome | DurableSettlementOutcome,
@@ -4463,7 +4423,6 @@ export async function runSessionCore(
     }
     assertNativeAdapter("resumeSettlement", resumeSettlement, label);
     let priorAttempts: SettlementRecoveryAttempt[] = [];
-    let knownUnattempted = false;
     if (store) {
       const durable = await store.load(jobId);
       assertSessionAgreementBinding(
@@ -4479,22 +4438,6 @@ export async function runSessionCore(
         );
       }
       priorAttempts = settlementRecoveryAttempts(durable);
-      if (durable.status === "ok" && !prior && priorAttempts.length === 0) {
-        const unattempted = [...durable.record.checkpoints].reverse().find((cp) => cp.key === "settle:unattempted");
-        if (unattempted?.stage === "outcome" && unattempted.data?.agreementHash === agreementHash) {
-          // This recovery seam is about to initiate payment. Enforce the same
-          // recoverable configuration as a fresh call before consuming permission.
-          assertNativeConfiguration();
-          preflightPayDemSettlement(resumeSettlement, settleRequest);
-          // Consume the retry permission durably BEFORE entering the rail. A
-          // later crash or lost rail log must never reuse an earlier refusal.
-          const consumed = await store.transition({ jobId, expectedRevision: durable.record.revision,
-            checkpoint: { key: "settle:unattempted", stage: "intent", data: { agreementHash } },
-            now: runtime.nowMs() });
-          if (!consumed.ok) throw new CounterpartyError("could not consume unattempted native settlement retry");
-          knownUnattempted = true;
-        }
-      }
     }
     if (priorAttempts.length === 0 && prior && prior.txHash.length > 0) {
       priorAttempts = [
@@ -4504,11 +4447,11 @@ export async function runSessionCore(
     const recoveryRequest: SettleRequest = {
       ...settleRequest,
       ...(isNativeSettlement(expectedSettlementBinding)
-        ? { recoveryOnly: !(knownUnattempted && !prior && priorAttempts.length === 0) } : {}),
+        ? { recoveryOnly: true } : {}),
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
     };
     const recovered = snapshotSettleResult(
-      await invokeSettlement(resumeSettlement,
+      await resumeSettlement(
         deepFreezeJson(
           snapshotCanonicalJson(
             recoveryRequest,
@@ -4643,15 +4586,7 @@ export async function runSessionCore(
       );
     }
     if (outcome.ok && isNativeSettlement(outcome)) {
-      try {
-        return await recoverRailOutcome("saved native success requires execution reconciliation", outcome);
-      } catch (cause) {
-        if (!(cause instanceof PayDemRecoveryPendingError)) throw cause;
-        // PC-7: an unavailable read cannot reverse an already-final payment.
-        // Keep the paid checkpoint and defer evidence until it can be audited.
-        paidForPublication = outcome;
-        throw cause;
-      }
+      return recoverRailOutcome("saved native success requires execution reconciliation", outcome);
     }
     if (outcome.errorClass === "permanent") {
       return recoverRailOutcome("saved native failure requires execution reconciliation", outcome);
@@ -4671,7 +4606,7 @@ export async function runSessionCore(
   // Settle on the chosen rail — but only if evidence isn't already anchored
   // (the no-double-pay guard: a present evidence record means we already paid).
   let settledOk = false;
-  const evidenceAnchor = await anchorOnce(
+  const { ref: settlementRef, value: evidenceValue, existing: evidenceExisting } = await anchorOnce(
     legacyMvpSessionAnchorName.evidence(jobId),
     matchSettlementEvidence,
     async () => {
@@ -4721,7 +4656,7 @@ export async function runSessionCore(
         } else {
           assertNativeConfiguration();
           const pay = snapshotSettleResult(
-            await invokeSettlement(deps.settle,
+            await deps.settle(
               deepFreezeJson(
                 snapshotCanonicalJson(settleRequest, "settlement request"),
               ),
@@ -4747,7 +4682,6 @@ export async function runSessionCore(
         }
       }
       settledOk = settlement.ok;
-      paidForPublication = settlement.ok ? settlement : undefined;
       const observedAt = deps.nowMs();
       // Current rails that return a discriminated ChainTxRef emit normative
       // DACS-4 evidence. Historical/custom rails remain inside the explicit
@@ -4818,34 +4752,7 @@ export async function runSessionCore(
     recoveredEvidence,
     ARTIFACT_SEPARATORS.SettlementEvidence,
     true,
-  ).catch((cause) => {
-    // The immutable paid checkpoint is the durable retry item: resuming this
-    // job audits the original payment and retries the same write-once evidence
-    // address while Listing admission permits resume. An outage never reverses
-    // its rail result.
-    if ((!failedEvidencePublication && !(cause instanceof PayDemRecoveryPendingError)) ||
-        !paidForPublication?.ok || !store) throw cause;
-    return { pending: true as const, settlement: paidForPublication };
-  });
-  if ("pending" in evidenceAnchor) {
-    const paid = evidenceAnchor.settlement;
-    const finality = settlementFinalityFromDurable(paid);
-    const txRef = settlementTxRefFromDurable(paid);
-    return {
-      profile: "legacy-mvp-settlement-only", commerceComplete: false,
-      outcome: "settlement-pending", jobId, listingPin: listingView.pin, vetRef, agreementRef,
-      pendingEvidenceAddress: legacyMvpSessionAnchorName.evidence(jobId),
-      payment: {
-        ok: true, txHash: paid.txHash, chainId: paid.chainId, payer: paid.payer, payee: paid.payee,
-        ...(finality === undefined ? {} : { finality }),
-        ...(txRef === undefined ? {} : { txRef }),
-        ...(paid.blockNumber === undefined ? {} : { blockNumber: paid.blockNumber }),
-        ...(paid.txRefKind === undefined ? {} : { txRefKind: paid.txRefKind }),
-        ...(paid.networkFeeOs === undefined ? {} : { networkFeeOs: paid.networkFeeOs }),
-      },
-    };
-  }
-  const { ref: settlementRef, value: evidenceValue, existing: evidenceExisting } = evidenceAnchor;
+  );
   if (evidenceExisting) {
     // Reused a prior settlement — take the outcome from the anchored evidence.
     const unsignedEvidence = stripSignature(

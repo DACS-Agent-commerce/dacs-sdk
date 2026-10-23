@@ -1286,7 +1286,7 @@ describe("runSession orchestration (T4)", () => {
     expect(settleCalls).toBe(1);
     // Spec bundle: vet record + settlement evidence are content-addressed refs,
     // a buyer party, and a signature.
-    const bundle = store.get(res.bundleRef!)! as Record<string, any>;
+    const bundle = store.get(res.bundleRef)! as Record<string, any>;
     expect(bundle.bundleVersion).toBe("1");
     expect(bundle.outcome).toBe("completed");
     expect(bundle.vetRecords).toHaveLength(1);
@@ -2275,12 +2275,12 @@ describe("runSession orchestration (T4)", () => {
     );
     expect(settleCalls).toBe(1);
 
-    const staleBundle = structuredClone(store.get(first.bundleRef!)!);
+    const staleBundle = structuredClone(store.get(first.bundleRef)!);
     staleBundle.listingRef = {
       ...expectedListingPin,
       contentHash: "0".repeat(64),
     };
-    store.set(first.bundleRef!, staleBundle);
+    store.set(first.bundleRef, staleBundle);
 
     await expect(
       runSessionCore(

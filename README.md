@@ -364,16 +364,11 @@ if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only"
   throw new Error("unexpected legacy session result");
 }
 
-if (session.outcome === "settlement-pending") {
-  // Retain the job and resume it while the Listing remains valid to retry publication.
-  console.log(`Payment ${session.payment.txHash} is final; resume job ${session.jobId}`);
-} else {
-  // anyone — verify the bundle's structure, signatures, referenced artifacts,
-  // and (through the configured callbacks above) every normative vet closure and
-  // SettlementEvidence record
-  const verdict = await buyer.verifyBundle(session.bundleRef);
-  const rep = await buyer.getReputation(primaryClaim, bundleRefs);
-}
+// anyone — verify the bundle's structure, signatures, referenced artifacts,
+// and (through the configured callbacks above) every normative vet closure and
+// SettlementEvidence record
+const verdict = await buyer.verifyBundle(session.bundleRef);
+const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
 
 The public RatingRecord producers own the two permitted DACS-5 directions and
@@ -804,7 +799,7 @@ configured discriminator. The compatibility defaults remain process-local and
 must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
-starts a second SDK broadcast. In demosdk 4.0.18, however, the underlying Axios
+starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
 requests used by broadcast, status, transaction-record and nonce reads have no
 cancellation or request timeout. An open transport socket may therefore keep a Node process
 alive after the rail has returned an unresolved result. Terminating that process
@@ -838,14 +833,6 @@ registered native DEM `settle` adapter serves as the recovery implementation.
 Native recovery requests carry `recoveryOnly: true`, including intent-only
 checkpoints with no saved transaction. The adapter reads the original attempt
 from the rail log. If that record is missing, recovery remains unresolved.
-An SDK-confirmed pre-attempt failure records a single-use retry checkpoint;
-resume consumes it before invoking the original rail key again. The rail's
-atomic claim still refuses any unresolved earlier generation. Deterministic
-recipient checks run before the session claims settlement. For a process that
-died without recording that refusal, operators may configure
-`payDemSettle`'s `retryUnattempted` with `originalLogRetained: true` and an
-independent absence reconciler. This fences the old worker, requires no attempt
-record, and reopens only that exact key; live, paid, and tx-bearing intents refuse.
 Only the SDK's `payDemSettle` adapter
 (directly, from `settleFromRail`, or passed through `Agent.runSession`) is
 called for it, as for every native settlement (see below). With the
@@ -890,17 +877,6 @@ success, a bound failed record included, is refused the same way: the session
 neither completes nor records the payment as failed, and the saved success
 stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
 
-When a retained `SessionStore` has saved a successful payment but evidence
-publication is unavailable, `runSession` returns `outcome: "settlement-pending"`
-with `payment.ok: true` and `pendingEvidenceAddress`. An unavailable native
-record re-read also returns this pending result for a saved rail-final payment,
-without publishing unchecked evidence. Integrator reconciler exceptions propagate
-to the caller; contradictory records still refuse.
-Resume that same job while its Listing remains valid to retry publication;
-the saved payment is never submitted again. The existing expired-Listing
-admission gate can still prevent catch-up after expiry.
-`settlementRef` and `bundleRef` are available only on terminal results.
-
 A recovered native success, and any native permanent failure, is final only
 when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
@@ -915,27 +891,8 @@ with those dependencies restored. Use a durable rail log implementing
 a caller-supplied log persists across process restarts. The adapter's default
 in-memory log remains available for direct, process-local rail calls.
 Every native resume, including a completed-session replay, requires a trusted
-node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
-recoveryRpc })` to use an operator-authenticated archival RPC when the primary
-record is unavailable. When an archive is configured, the primary must expose
-its chain ID and complete `forkScheduleDigest` before a fresh payment is signed.
-This requires the node profile present at `11e7c820`; the older `52e2e569`
-response omits registered forks and cannot authenticate a complete schedule.
-Primary-only payments remain supported on that older node profile. The archive
-itself is read only when recovery needs it. The SDK compares fresh `chainId`
-and `forkScheduleDigest` values from both nodes and requires the archive's
-confirmed inclusion block to match the primary's, with the retained hash in both transaction
-lists. Both nodes must have reached that height. Missing or contradictory chain
-history keeps recovery unresolved, including after a reset. Archive and history
-RPC reads cancel at `statusRequestTimeoutMs`, admit at most 1 MiB before JSON
-decoding, and accept at most 16,384 transaction hashes per block. The SDK also
-applies the same transfer, execution, denomination and fee checks. It never
-connects a wallet to the archive or uses it to sign or broadcast. A terminal
-primary verdict cannot be overridden by the archive. Configure the settlement
-reconciler to resolve the original retained hash against the same archive; its
-refusal or proof of absence still stops recovery before the SDK record read. Without verifiable archival history, pruning, a node reset or an unavailable
-record leaves that replay unresolved; it never reverses the saved payment or
-causes another submission. A fresh success reports that same record
+node to serve the transaction record. A pruned or unavailable
+record leaves replay unresolved without changing the saved payment or submitting again. A fresh success reports that same record
 fee as `networkFeeOs`, which the session saves and signs: the rail's own
 `networkFeeOs` (the confirmation's fee) bounds
 `maxTotalDebitOs` and stays on the rail's result, but the record need not carry

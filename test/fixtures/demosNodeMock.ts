@@ -74,13 +74,6 @@ export function demosSdkModule() {
 
 /** Reset the mocked node: it signs `txHash` at `nonce`, includes it at `blockNumber` and records it as `recordStatus`. */
 export function resetDemosNode(over: Pick<DemosNodeScript, "payer" | "txHash"> & Partial<DemosNodeScript>): void {
-  vi.stubGlobal("fetch", async (_input: unknown, init: RequestInit) => {
-    const { message, data } = JSON.parse(init.body as string).params[0];
-    const response = message === "getNetworkInfo" ? await demosNode.getNetworkInfo()
-      : message === "getTxByHash" ? await demosNode.getTxByHash(data.hash)
-      : await demosNode.nodeCall(message, data);
-    return new Response(JSON.stringify({ result: 200, response }));
-  });
   script = { laterTxHashes: [], nonce: 9, blockNumber: 42, recordStatus: "confirmed", ...over };
   signed = [];
   served = new Map();

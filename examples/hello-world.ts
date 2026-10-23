@@ -217,11 +217,6 @@ async function main(): Promise<void> {
   });
   console.log("session", session.outcome, "→ bundle", session.bundleRef);
 
-  if (session.outcome === "settlement-pending") {
-    console.log("Payment is final; resume job", session.jobId, "while its Listing is valid to retry evidence publication.");
-    return;
-  }
-
   // ── Anyone: independently verify the attestation bundle ──
   const verdict = await buyer.verifyBundle(session.bundleRef);
   console.log("bundle ok:", verdict.ok, "| fully verified:", verdict.fullyVerified);

@@ -290,7 +290,6 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         phaseIndex: 4,
       },
       payDem: {
-        recoveryRpc: "https://archive.example",
         maxTotalDebitOs: 3_000_000_000n,
         journalPreparedTransfer,
         settlementStore,
@@ -309,7 +308,6 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       rpc: "https://demos.example",
       secret: "test-secret",
       network: "demos",
-      recoveryRpc: "https://archive.example",
       maxTotalDebitOs: 3_000_000_000n,
       journalPreparedTransfer: expect.any(Function),
       inclusionTimeoutMs: 61_000,

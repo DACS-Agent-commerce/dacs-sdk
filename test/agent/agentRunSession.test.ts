@@ -737,7 +737,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
 
     await expect(
       verifyComponentSignature(
-        store.get(res.settlementRef!)!,
+        store.get(res.settlementRef)!,
         ARTIFACT_SEPARATORS.SettlementEvidence,
         {
           isSignerAuthorized: (_artifact, signature) =>
@@ -789,12 +789,12 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     ).resolves.toEqual(first);
     expect(settleCalls).toBe(1);
 
-    const bundle = structuredClone(store.get(first.bundleRef!)!);
+    const bundle = structuredClone(store.get(first.bundleRef)!);
     const signature = (bundle.signatures as Array<{ value: string }>)[0]!;
     // Padding is a decodable alias in permissive codecs, but is not canonical
     // Base64URL and therefore must not authenticate on resume.
     signature.value += "=";
-    store.set(first.bundleRef!, bundle);
+    store.set(first.bundleRef, bundle);
     await expect(
       agent.runSession(ref, {
         jobId: "completed-bundle-retry",

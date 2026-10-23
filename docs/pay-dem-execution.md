@@ -270,16 +270,6 @@ below).
   `settle` adapter serves as the recovery implementation.
   Native recovery requests carry `recoveryOnly: true`, even when a crash left
   only the session intent. Without an attempt record, it refuses recovery.
-  An SDK-confirmed pre-attempt failure instead records a single-use retry
-  checkpoint, consumed durably before retrying the original rail key. The
-  rail's atomic claim still refuses an unresolved earlier generation.
-  Deterministic recipient checks run before the session claims settlement.
-  If the process died without recording its refusal, operators may configure
-  `payDemSettle`'s `retryUnattempted` with `originalLogRetained: true` and an
-  independent absence reconciler. It fences the old worker, verifies the intact
-  original log has no attempt, and reopens the exact key for one fresh payment.
-  Live, completed, tx-bearing, conflicting, and independently observed payments
-  refuse. `reopenUnattempted` exposes the same fenced operation on the store.
   Before claiming or paying, a fresh native session requires a
   caller-supplied settlement store and reconciler on its recovery adapter,
   plus a caller-supplied store on its paying adapter. A supplied
@@ -319,31 +309,7 @@ intent prevents a lost rail log from authorizing another payment. The SDK
 checks that both stores were supplied and support the required operations;
 callers must ensure their stores are durable.
 Every native resume, including a completed-session replay, requires a trusted
-node to serve the transaction record. Set `createPayDemRail({ rpc, secret,
-recoveryRpc })` to use an operator-authenticated archival RPC when the primary
-record is unavailable. Both `rpc` and `recoveryRpc` accept HTTP Basic credentials
-in URL userinfo. Recovery and the deployment probe percent-decode each username
-and password field, retaining that field literally if its percent escapes are
-malformed, matching the payment transport. They send the resulting UTF-8 bytes
-in the Authorization header and remove userinfo from the request URL while
-preserving its path and query. Both refuse redirects.
-When an archive is configured, the primary must expose
-its chain ID and complete `forkScheduleDigest` before a fresh payment is signed.
-This requires the node profile present at `11e7c820`; the older `52e2e569`
-response omits registered forks and cannot authenticate a complete schedule.
-Primary-only payments remain supported on that older node profile. The archive
-itself is read only when recovery needs it. The SDK compares fresh `chainId`
-and `forkScheduleDigest` values from both nodes and requires the archive's
-confirmed inclusion block to match the primary's, with the retained hash in both transaction
-lists. Both nodes must have reached that height. Missing or contradictory chain
-history keeps recovery unresolved, including after a reset. Archive and history
-RPC reads cancel at `statusRequestTimeoutMs`, admit at most 1 MiB before JSON
-decoding, and accept at most 16,384 transaction hashes per block. The SDK also
-applies the same transfer, execution, denomination and fee checks. It never
-connects a wallet to the archive or uses it to sign or broadcast. A terminal
-primary verdict cannot be overridden by the archive. Configure the settlement
-reconciler to resolve the original retained hash against the same archive; its
-refusal or proof of absence still stops recovery before the SDK record read. Without verifiable archival history, a pruned record, node reset or outage
+node to serve the transaction record. A pruned record, node reset or outage
 keeps replay unresolved without changing the saved payment or submitting again.
 A `SessionStore` alone cannot recover a payment
 whose rail records were discarded. Restore the original rail log and attempt
@@ -492,74 +458,3 @@ fixture is therefore a historical set of envelopes node2 served on the dates it
 records, not a pin of a deployment, and cannot be re-read today. The rail does
 not depend on that build: a record without the fields listed above, or with
 any of them different, is indeterminate.
-
-## Closing an unattempted native intent
-
-An operator may close an unpaid phase with:
-
-```ts
-await store.abandonUnattempted(key, originalBinding, {
-  originalLogRetained: true,
-  // Resolve this exact key and binding using an independent, complete
-  // prepared-transfer journal or authoritative reconciliation service.
-  // Return null only when it proves no transfer was prepared or submitted;
-  // return a found payment, and throw on unavailable or incomplete history.
-  reconcile: (key, binding) => reconcileOriginalPayment(key, binding),
-});
-```
-
-The store must be opened over the intact original rail log. The confirmation
-and independent absence check are required on every call, including expired
-intents and crashes before an intent was written. The key and complete
-`SettlementBinding` must be the original values. Never confirm a replaced,
-lost or incompletely restored log. A trusted backup may recover a known hash,
-but local absence in a lagging backup cannot prove a payment was never made.
-The reconciler must consult evidence independent of that log; a missing or
-pruned node record alone is not proof of absence.
-
-The method fences the old worker, refuses live, completed, changed-binding or
-tx-bearing intents, and writes an immutable empty-hash unpaid outcome only
-when the independent check returns null. A found payment, unavailable journal
-or failed reconciliation leaves the outcome unresolved under its recovery lease.
-`payDemSettle` returns an established unpaid outcome on the next recovery-only
-resume so the original session can end failed. This operation never submits or
-authorizes a replacement payment.
-A malformed record fee also stays indeterminate; an archive must provide a
-well-formed record rather than treating an unparseable fee as zero.
-
-## Rail-final payment while evidence publication is unavailable
-
-With a retained `SessionStore`, an evidence-anchor outage after a successful
-payment returns `outcome: "settlement-pending"`, `payment.ok: true`, the confirmed
-transaction metadata, and `pendingEvidenceAddress`. There is no `settlementRef`
-or `bundleRef` yet. The session stays non-terminal. Its immutable `settle:0`
-outcome is the durable retry item: an operator or worker resumes the same job,
-which audits the original payment and retries that same write-once evidence
-address before publishing the bundle, while the Listing remains valid. The
-existing expired-Listing admission gate can still prevent catch-up after expiry.
-An unavailable SDK native record re-read returns the saved `payment.ok: true` in
-`settlement-pending`, without publishing unchecked evidence; contradictions
-still refuse. Integrator reconciler exceptions propagate to the caller.
-Never start a new payment from this result.
-Failed payments and failures before the paid checkpoint is durable retain their
-existing error behavior. Direct sessions without a durable store cannot offer
-durable evidence catch-up; fresh native sessions require that store.
-
-
-## Read-only deployment record probe
-
-The scheduled record probe requires repository variables
-`DACS_RECORD_PROBE_CONFIRMED_JSON` (a current, complete operator-held transfer
-tuple) and `DACS_RECORD_PROBE_NODE_COMMIT` (the approved 40-character node
-source commit). It skips the job until both are configured. There is no default
-transaction after a network reset; replace the whole tuple together.
-The CLI also refuses missing configuration before reading the network.
-An optional `DACS_RECORD_PROBE_FAILED_JSON` supplies a known failed transfer.
-
-A passing probe requires `/version` and `getNetworkInfo.nodeVersion` to name
-the approved commit, and the latter must explicitly report `dirty: false`.
-Unknown or dirty deployments cannot establish a passing provenance check.
-Version responses are limited to 64 KiB and six seconds; RPC responses use
-the recovery transport's byte limit and one-second deadline, without a wallet
-or a demosdk connection. The complete archive identity is available on node `11e7c820`. Older nodes
-without the complete digest or a chain ID cannot establish archive chain identity.

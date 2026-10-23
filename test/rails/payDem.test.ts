@@ -69,13 +69,6 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
 // broadcast transaction with the status `recordStatus` sets (default confirmed).
 let recordStatus = "confirmed";
 beforeEach(async () => {
-  vi.stubGlobal("fetch", async (_input: unknown, init: RequestInit) => {
-    const { message, data } = JSON.parse(init.body as string).params[0];
-    const response = message === "getNetworkInfo" ? await sdk.getNetworkInfo()
-      : message === "getTxByHash" ? await sdk.getTxByHash(data.hash)
-      : await sdk.nodeCall(message, data);
-    return new Response(JSON.stringify({ result: 200, response }));
-  });
   for (const method of Object.values(sdk)) method.mockReset();
   recordStatus = "confirmed";
   sdk.connect.mockResolvedValue(undefined);

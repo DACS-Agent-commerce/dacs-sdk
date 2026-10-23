@@ -45,7 +45,6 @@ export const demosNode = {
   /** Every uncached `nodeCall("getNetworkInfo")`, as the fork state it served. */
   networkInfoReads: [] as boolean[],
   networkInfoReply: undefined as ((rpc: string | undefined) => unknown) | undefined,
-  blockReply: undefined as ((blockNumber: number, rpc: string | undefined) => unknown) | undefined,
   /** `getTxByHash` replies by hash; a missing hash is not found (`null`). */
   records: new Map<string, unknown>(),
   /**
@@ -61,7 +60,6 @@ export const demosNode = {
   /** The node each `getTxByHash` read went to, in order. */
   readNodes: [] as (string | undefined)[],
   reset(): void {
-    vi.stubGlobal("fetch", demosRpcFetch);
     this.address = "ab".repeat(32);
     this.nextHash = "cd".repeat(32);
     this.nonce = 9;
@@ -74,7 +72,6 @@ export const demosNode = {
     this.postFork = true;
     this.networkInfoReads = [];
     this.networkInfoReply = undefined;
-    this.blockReply = undefined;
     this.records = new Map();
     this.reply = undefined;
     this.onTransfer = undefined;
@@ -229,7 +226,6 @@ class MockDemos {
       demosNode.networkInfoReads.push(demosNode.postFork);
       return networkInfo(this.rpc);
     }
-    if (message === "getBlockByNumber") return inclusionBlock(args.blockNumber!, this.rpc);
     // The next nonce of the paying account.
     if (message === "getAddressNonce") return demosNode.accountNonce;
     if (message !== "getTransactionStatus") throw new Error(`unexpected nodeCall ${message}`);
@@ -254,43 +250,6 @@ function networkInfo(rpc: string | undefined): unknown {
     forks: { osDenomination: { activated: demosNode.postFork, currentHeight: demosNode.blockNumber } },
   };
 }
-
-function inclusionBlock(number: number, rpc: string | undefined): unknown {
-  return demosNode.blockReply !== undefined ? demosNode.blockReply(number, rpc) : {
-    number, hash: "78".repeat(32), status: "confirmed",
-    content: { ordered_transactions: [...demosNode.records.keys()] },
-  };
-}
-
-/** The same scripted node over the read-only, bounded recovery HTTP transport. */
-export const demosRpcFetch: typeof fetch = async (input, init) => {
-  const rpc = String(input);
-  const request = JSON.parse(init!.body as string);
-  const { message, data } = request.params[0];
-  let response: unknown;
-  if (message === "getNetworkInfo") {
-    demosNode.networkInfoReads.push(demosNode.postFork);
-    response = await networkInfo(rpc);
-  }
-  else if (message === "getBlockByNumber") {
-    const number = Number(data.blockNumber);
-    if (number === 0) {
-      if (data.blockNumber !== "0") throw new Error("the node requires a truthy block-zero argument");
-      const block = inclusionBlock(0, rpc) as { hash?: unknown } | null;
-      response = block === null ? null : { number: 0, hash: block.hash };
-    } else response = inclusionBlock(number, rpc);
-  }
-  else if (message === "getBlockByHash") response = inclusionBlock(0, rpc);
-  else if (message === "getTxByHash") {
-    demosNode.reads.push(data.hash);
-    demosNode.readNodes.push(rpc);
-    response = demosNode.reply === undefined ? demosNode.records.get(data.hash) ?? null
-      : await demosNode.reply(data.hash, rpc);
-  } else throw new Error(`unexpected recovery RPC ${message}`);
-  return new Response(JSON.stringify({ result: 200, response }), {
-    headers: { "Content-Type": "application/json" },
-  });
-};
 
 /** The SDK's own rail over the scripted node, with test-sized timeouts. */
 export function sdkPayDemRail(

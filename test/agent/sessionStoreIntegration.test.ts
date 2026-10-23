@@ -229,147 +229,6 @@ async function demAudit(
   } });
 }
 
-describe("cold review native restart regressions", () => {
-  const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
-  async function fixture() {
-    const store = createInMemorySessionStore();
-    const log = createInMemorySettlementLog();
-    const kv = new Map<string, Record<string, unknown>>();
-    kv.set("stor:listing", await buildSignedArtifact({ ...listing, supportedPaymentRails: ["pay-dem"] },
-      ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
-    const journal: PayDemPreparedTransfer[] = [];
-    const reconcile: PayDemSettlementReconcile = async () => ({ ok: true, execution: "executed",
-      txHash: demosNode.nextHash, chainId: "demos", payer: demosNode.address,
-      payee: sellerDid.split(":").at(-1)!, amountOs: "1000000000", blockNumber: 42,
-      txRefKind: "demos", finality: { model: "bft-final" },
-      ...(demosNode.feeOs === undefined ? {} : { networkFeeOs: demosNode.feeOs }),
-      ...(journal.length ? { preparedTransfer: journal[0] } : {}) });
-    const adapter = async (recipient?: string) => payDemSettle(await sdkPayDemRail(undefined, {
-      journalPreparedTransfer: async (entry) => { journal.push(entry); },
-    }), { recipient }, { store: createIdempotencyStore(log), reconcile });
-    return { store, log, kv, adapter, reconcile };
-  }
-
-  test.each([["0", "2000000000"], ["12", "6"], ["6", "6"]])(
-    "pending evidence and completed replay accept record fee %s with confirmation fee %s", async (feeOs, confirmFeeOs) => {
-      Object.assign(demosNode, { feeOs, confirmFeeOs });
-      const f = await fixture();
-      const first = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter(),
-        anchor: async (name, value) => {
-          if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor outage");
-          f.kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
-        } });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({
-        outcome: "settlement-pending", payment: { ok: true, networkFeeOs: feeOs } });
-      for (let replay = 0; replay < 2; replay++) {
-        const resumed = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
-        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-          .resolves.toMatchObject({ outcome: "completed" });
-      }
-      expect(demosNode.broadcasts).toBe(1);
-    },
-  );
-
-  test.each(["missing", "outage", "failed"])(
-    "paid evidence catch-up handles a %s record without a second payment", async (state) => {
-      const f = await fixture();
-      const first = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter(),
-        anchor: async (name, value) => {
-          if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor outage");
-          f.kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
-        } });
-      const paid = await runSessionCore(first.listingRef, demTerms, first.deps);
-      expect(paid.outcome).toBe("settlement-pending");
-      const before = await f.store.load("job-1");
-      const anchors = [...f.kv];
-      demosNode.reply = () => {
-        if (state === "outage") throw new Error("RPC outage");
-        return state === "missing" ? null : { ...demosNode.records.get(demosNode.nextHash) as object, status: "failed" };
-      };
-      const resumed = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
-      const resume = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
-      if (state === "failed") await expect(resume).rejects.toThrow(/contradicts/);
-      else await expect(resume).resolves.toEqual(paid);
-      expect(await f.store.load("job-1")).toEqual(before);
-      expect([...f.kv]).toEqual(anchors);
-      demosNode.reply = undefined;
-      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-        .resolves.toMatchObject({ outcome: "completed" });
-      expect(demosNode.broadcasts).toBe(1);
-    },
-  );
-
-  test.each(["claim", "recipient", "before attempt"])(
-    "a corrected %s failure resumes and pays exactly once", async (fault) => {
-      const f = await fixture();
-      if (fault === "claim") vi.spyOn(f.log, "claimIntent").mockRejectedValueOnce(new Error("DB outage"));
-      if (fault === "before attempt") demosNode.onTransfer = () => { throw new Error("signer unavailable"); };
-      const first = await makeDeps(f.store, { kv: f.kv,
-        settle: await f.adapter(fault === "recipient" ? "ef".repeat(32) : undefined) });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(
-        fault === "recipient" ? /destination mismatch/ : /before/);
-      expect(demosNode.broadcasts).toBe(0);
-      demosNode.onTransfer = undefined;
-      const resumed = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
-      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-        .resolves.toMatchObject({ outcome: "completed" });
-      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-        .resolves.toMatchObject({ outcome: "completed" });
-      expect(demosNode.broadcasts).toBe(1);
-    },
-  );
-
-  test("a crash between claims can be reopened only with explicit independent proof", async () => {
-    const f = await fixture();
-    const interrupted = { ...f.store, claimCheckpoint: async (...args: Parameters<typeof f.store.claimCheckpoint>) => {
-      await f.store.claimCheckpoint(...args);
-      throw new Error("process died between claims");
-    } };
-    const first = await makeDeps(interrupted, { kv: f.kv, settle: await f.adapter() });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/between claims/);
-    const held = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
-    await expect(runSessionCore(held.listingRef, demTerms, held.deps, "job-1"))
-      .rejects.toThrow(/no recorded attempt/);
-    expect(demosNode.broadcasts).toBe(0);
-    const absence = vi.fn(async () => null);
-    const reopened = await makeDeps(f.store, { kv: f.kv, settle: payDemSettle(await sdkPayDemRail(), {}, {
-      store: createIdempotencyStore(f.log), reconcile: f.reconcile,
-      retryUnattempted: { originalLogRetained: true, reconcile: absence },
-    }) });
-    await expect(runSessionCore(reopened.listingRef, demTerms, reopened.deps, "job-1"))
-      .resolves.toMatchObject({ outcome: "completed" });
-    await expect(runSessionCore(reopened.listingRef, demTerms, reopened.deps, "job-1"))
-      .resolves.toMatchObject({ outcome: "completed" });
-    expect(absence).toHaveBeenCalledOnce();
-    expect(demosNode.broadcasts).toBe(1);
-  });
-
-  test("a consumed pre-attempt refusal cannot pay again after the rail log is lost", async () => {
-    const f = await fixture();
-    vi.spyOn(f.log, "claimIntent").mockRejectedValueOnce(new Error("DB outage"));
-    const first = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/before invoking/);
-    const crashAtBinding = { ...f.store, bindHash: async (input: Parameters<typeof f.store.bindHash>[0]) => {
-      if (input.kind === "transaction") throw new Error("process died after payment");
-      return f.store.bindHash(input);
-    } };
-    const second = await makeDeps(crashAtBinding, { kv: f.kv, settle: await f.adapter() });
-    await expect(runSessionCore(second.listingRef, demTerms, second.deps, "job-1"))
-      .rejects.toThrow(/died after payment/);
-    expect(demosNode.broadcasts).toBe(1);
-    const lostLog = await makeDeps(f.store, { kv: f.kv, settle: payDemSettle(await sdkPayDemRail(), {}, {
-      store: createIdempotencyStore(), reconcile: f.reconcile,
-    }) });
-    await expect(runSessionCore(lostLog.listingRef, demTerms, lostLog.deps, "job-1"))
-      .rejects.toThrow(/no recorded attempt/);
-    expect(demosNode.broadcasts).toBe(1);
-    const restored = await makeDeps(f.store, { kv: f.kv, settle: await f.adapter() });
-    await expect(runSessionCore(restored.listingRef, demTerms, restored.deps, "job-1"))
-      .resolves.toMatchObject({ outcome: "completed" });
-    expect(demosNode.broadcasts).toBe(1);
-  });
-});
-
 describe("runSessionCore records to the durable SessionStore (#55 integration)", () => {
   test("a completed session is recorded with receipts, status, and an anti-replay binding", async () => {
     const store = createInMemorySessionStore();
@@ -412,7 +271,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         return `stor:${name}`;
       },
     });
-    await expect(runSessionCore(boom.listingRef, terms, boom.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(boom.listingRef, terms, boom.deps)).rejects.toThrow();
     expect(boom.settleCalls.n).toBe(1); // paid exactly once
     // The write-ahead outcome checkpoint recorded the payment before the crash.
     const mid = await store.load("job-1");
@@ -489,7 +348,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       interrupted.listingRef,
       terms,
       interrupted.deps,
-    )).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    )).rejects.toThrow();
     expect(payments).toBe(1);
 
     const resumed = await makeDeps(store, { kv, settle });
@@ -615,7 +474,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    ).rejects.toThrow();
 
     const resumed = await makeDeps(store, { kv, settle });
     await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
@@ -664,7 +523,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       });
       await expect(
         runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-      ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      ).rejects.toThrow();
 
       const resumed = await makeDeps(store, { kv, settle });
       await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
@@ -705,7 +564,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    ).rejects.toThrow();
 
     const malformedStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...store,
@@ -1445,7 +1304,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           kv.set(ref, value as Record<string, unknown>); return ref;
         },
       });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
       const resumeStore = saved === "anchor only" ? undefined : saved === "anchored evidence"
         ? createInMemorySessionStore() : store;
       const legacyStore = saved === "legacy checkpoint" ? { ...store, load: async (jobId: string) => {
@@ -1551,7 +1410,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         const ref = `stor:${name}`; kv.set(ref, value as Record<string, unknown>); return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     const railStore = createIdempotencyStore();
     await railStore.once("pay-dem:job-1:0", {
       bindingVersion: "1", railId: "pay-dem", jobId: "job-1", phaseIndex: 0, phase: "pay-dem",
@@ -1603,7 +1462,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         kv.set(ref, value as Record<string, unknown>); return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     const before = await store.load("job-1");
     let reconciliations = 0;
     // A saved record that lost a chain fact cannot be completed from it.
@@ -1701,9 +1560,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       "missing reconciler": /requires authenticated rail reconciliation/,
     };
     const recovery = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
-    if (saved === "checkpoint" && ["absent", "indeterminate", "timeout"].includes(reply)) {
-      await expect(recovery).resolves.toMatchObject({ outcome: "settlement-pending", payment: success });
-    } else await expect(recovery).rejects.toThrow(expected[reply]);
+    await expect(recovery).rejects.toThrow(expected[reply]);
     expect(custom).not.toHaveBeenCalled();
     expect(demosNode.transfers).toBe(0);
     expect(reconciliations)
@@ -1777,7 +1634,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     // No rail checkpoint reaches the resume: only the signed evidence is saved.
     const store = saved === "anchor only" ? undefined : createInMemorySessionStore();
     let reads = 0;
@@ -1838,7 +1695,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     // No rail checkpoint reaches the resume: only the signed evidence binds the payer and fee.
     const store = saved === "anchor only" ? undefined : createInMemorySessionStore();
     let reads = 0;
@@ -1902,7 +1759,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           return ref;
         },
       });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
       if (saved.startsWith("evidence")) {
         // Evidence as signed before the payer and fee were bound into it.
         const { signature: _signature, dacsSdkSettlementPayer: _payer, dacsSdkNetworkFeeOs: _fee, ...unsigned } =
@@ -1967,7 +1824,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     // Evidence as signed before the payer and fee were bound into it.
     const { signature: _signature, dacsSdkSettlementPayer: _payer, dacsSdkNetworkFeeOs: _fee, ...unsigned } =
       kv.get(evidenceRef)!;
@@ -2036,7 +1893,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         kv.set(ref, value as Record<string, unknown>); return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     const before = store ? await store.load("job-1") : undefined;
     const minted = structuredClone([...kv]);
     let reads = 0;
@@ -2147,7 +2004,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence ack lost");
           return ref;
         } });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
       const before = await store.load("job-1");
       const evidence = structuredClone([...kv]);
       // A new process: a new bridge over the same log, or over an empty one.
@@ -2206,7 +2063,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     const { signature: _signature, ...unsigned } = kv.get(evidenceRef)!;
     // JSON drops an `undefined` member, which removes the payer.
     const forged = JSON.parse(JSON.stringify({ ...unsigned, ...tamper }));
@@ -2240,7 +2097,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           return ref;
         },
       });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
       const { signature: _signature, dacsSdkSettlementPayer: _payer, dacsSdkNetworkFeeOs: _fee, ...unsigned } =
         kv.get(evidenceRef)!;
       kv.set(evidenceRef, await signComponentArtifact(JSON.parse(JSON.stringify(unsigned)),
@@ -2390,7 +2247,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       kv.set(`stor:${name}`, value as Record<string, unknown>);
       return `stor:${name}`;
     } });
-    await expect(runSessionCore(first.listingRef, selectedTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, selectedTerms, first.deps)).rejects.toThrow();
     expect(settle).toHaveBeenCalledOnce();
     const changed: typeof store = { ...store, load: async (jobId) => {
       const loaded = await store.load(jobId);
@@ -2420,7 +2277,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       first.kv.set(`stor:${name}`, value as Record<string, unknown>);
       return `stor:${name}`;
     };
-    await expect(runSessionCore(first.listingRef, terms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow();
     const changed: typeof store = { ...store, load: async (jobId) => {
       const loaded = await store.load(jobId);
       if (loaded.status !== "ok") return loaded;
@@ -2601,7 +2458,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         kv.set(ref, value as Record<string, unknown>);
         return ref;
       } });
-      if (ok) await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      if (ok) await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
       else await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("sweep evidence boundary");
       reconcile.mockClear();
       demosNode.reads = [];
@@ -3067,7 +2924,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           kv.set(ref, value as Record<string, unknown>);
           return ref;
         } });
-        if (ok) await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+        if (ok) await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
         else await expect(runSessionCore(first.listingRef, demTerms, first.deps))
           .rejects.toThrow("evidence acknowledgment lost");
         const original = structuredClone(demosNode.records.get(txHash)) as Record<string, unknown>;
@@ -3105,7 +2962,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           kv.set(`stor:${name}`, value as Record<string, unknown>);
           return `stor:${name}`;
         } });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
       const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executedClaim(txHash));
       const restarted = await makeDeps(store, { kv,
         settle: payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log), reconcile }) });
@@ -3223,7 +3080,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const store = createInMemorySessionStore();
       const first = await makeDeps(store, { kv, settle: await adapter(), anchor: crashAtEvidence });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps))
-        .resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+        .rejects.toThrow();
       const saved = await lastOutcome(store);
       expect(saved).toMatchObject({ ok: true, txHash: hash });
       feeOf(saved);
@@ -3338,13 +3195,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         reconcile: async () => null,
       }) });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("transfer response lost");
-      // Model a killed process: it could not persist the not-invoked response.
-      const crashedStore = { ...store, load: async (jobId: string) => {
-        const loaded = await store.load(jobId);
-        if (loaded.status === "ok") loaded.record.checkpoints = loaded.record.checkpoints
-          .filter((cp) => cp.key !== "settle:unattempted");
-        return loaded;
-      } };
+      // The crashed process left an unresolved intent, with no recorded hash.
+      const crashedStore = store;
       const otherJob = "ef".repeat(32);
       demosNode.records.set(otherJob, nodeRecord({ txHash: otherJob, payer, payee, amountOs: "1000000000",
         status: "failed" }));
@@ -3404,7 +3256,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         return ref;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     // Only the signed evidence reaches the resume; no rail checkpoint can refuse first.
     const store = saved === "anchor only" ? undefined : createInMemorySessionStore();
     const evidence = structuredClone([...kv]);
@@ -3453,7 +3305,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence crash");
         const ref = `stor:${name}`; kv.set(ref, value as Record<string, unknown>); return ref;
       } });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
       const saved = await store.load("job-1");
       expect(saved.status === "ok" && saved.record.checkpoints.at(-1)?.data)
         .toMatchObject({ ok: true, networkFeeOs: "5" });
@@ -3508,7 +3360,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence crash");
         const ref = `stor:${name}`; kv.set(ref, value as Record<string, unknown>); return ref;
       } });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     expect((demosNode.records.get(txHash) as { content: Record<string, unknown> }).content)
       .toMatchObject({ amount: 1, data: ["native", { nativeOperation: "send", args: [payee, 1] }] });
     const saved = await store.load("job-1");
@@ -3551,7 +3403,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(runSessionCore(first.listingRef, demTerms, first.deps))
-      .resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+      .rejects.toThrow();
     const loaded = await store.load("job-1");
     if (loaded.status !== "ok") throw new Error("missing session");
     const checkpoint = loaded.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
@@ -3640,7 +3492,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");
       kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
     } });
-    await expect(runSessionCore(first.listingRef, terms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow();
     const withFee = await makeDeps({ ...saved, load: async (jobId) => {
       const value = await saved.load(jobId);
       if (value.status === "ok") {
@@ -3708,7 +3560,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
       },
     });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow();
     // A self-consistent failure record appended by a store writer is the newest entry.
     const loaded = await store.load("job-1");
     if (loaded.status !== "ok") throw new Error("missing session");
@@ -4080,7 +3932,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    ).rejects.toThrow();
 
     const wrongPayeeStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,
@@ -4129,7 +3981,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    ).rejects.toThrow();
 
     const wrongPhaseStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,
@@ -4187,7 +4039,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     await expect(
       runSessionCore(interrupted.listingRef, sessionTerms, interrupted.deps),
-    ).resolves.toMatchObject({ outcome: "settlement-pending", payment: { ok: true } });
+    ).rejects.toThrow();
 
     const conflictingHistoryStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...base,

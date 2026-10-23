@@ -12,15 +12,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
-import { DacsError, faultCategory } from "../errors.js";
-
-/** This invocation never reached a rail effect; an existing intent still needs its fence. */
-export class SettlementNotInvokedError extends DacsError {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, { ...options, category: faultCategory(options?.cause) });
-    this.name = "SettlementNotInvokedError";
-  }
-}
+import { DacsError } from "../errors.js";
 
 /**
  * Settlement idempotency (issue #43).
@@ -242,31 +234,6 @@ export interface SettlementReplayAuthorization {
 }
 
 export interface SettlementIdempotencyStore {
-  /** Fence an unattempted native intent, independently prove absence, then reopen it. */
-  reopenUnattempted?(
-    key: string,
-    binding: Readonly<SettlementBinding>,
-    options: Readonly<{
-      originalLogRetained: true;
-      reconcile: (key: string, binding: Readonly<SettlementBinding>) => Promise<SettleResult | null>;
-    }>,
-  ): Promise<void>;
-  /**
-   * Operator action: close an expired native intent as unpaid only after
-   * fencing its old worker and proving its original log has no attempt.
-   * Requires explicit confirmation of the intact original log and an
-   * independent reconciler returning null for this key and binding (not a
-   * lookup in the potentially restored log). Refuses live,
-   * completed or tx-bearing intents. Never submits or grants a replacement.
-   */
-  abandonUnattempted?(
-    key: string,
-    binding: Readonly<SettlementBinding>,
-    options: Readonly<{
-      originalLogRetained: true;
-      reconcile: (key: string, binding: Readonly<SettlementBinding>) => Promise<SettleResult | null>;
-    }>,
-  ): Promise<SettleResult>;
   /**
    * Read and validate a recorded outcome under these exact terms, without
    * claiming an intent. Required for native retained-transaction audits:
@@ -310,8 +277,6 @@ export interface SettlementIdempotencyStore {
       fence?: Readonly<SettlementEffectFence>,
     ) => Promise<SettleResult | SettlementNotInvokedResult>,
     reconcile?: SettlementReconcile,
-    /** Refuse an unresolved older rail generation; only an unused/released key may submit. */
-    options?: Readonly<{ freshOnly?: boolean }>,
   ): Promise<SettleResult>;
 }
 
@@ -1102,73 +1067,10 @@ function buildIdempotencyStore(
       "settlement read-only outcome") as SettleResult;
   };
 
-  const fenceUnattempted = async (
-    key: string, binding: Readonly<SettlementBinding>,
-    options: Parameters<NonNullable<SettlementIdempotencyStore["abandonUnattempted"]>>[2],
-  ) => {
-    const captured = frozenClone(binding, "unattempted settlement binding");
-    if (options === null || typeof options !== "object" || nodeTypes.isProxy(options)) {
-      throw new DacsError("abandon requires originalLogRetained confirmation and independent absence reconciliation");
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(options);
-    const originalLogRetained = descriptors.originalLogRetained?.value === true;
-    const rawReconcile = descriptors.reconcile?.value;
-    if (!originalLogRetained || typeof rawReconcile !== "function" || nodeTypes.isProxy(rawReconcile)) {
-      throw new DacsError("abandon requires originalLogRetained confirmation and independent absence reconciliation");
-    }
-    const reconcile = Function.prototype.bind.call(rawReconcile, options) as typeof options.reconcile;
-    const bindingHash = settlementBindingHash(captured);
-    if (captured.phase !== "pay-dem" || captured.agreementAsset !== "DEM" ||
-        captured.settlementAsset !== "DEM" || captured.finality.model !== "bft-final" ||
-        settlementKey(captured.railId, captured.jobId, captured.phaseIndex) !== key ||
-        readAttempt === undefined || durable.readOutcome === undefined) {
-      throw new DacsError("abandon requires the original native settlement log and exact binding");
-    }
-    // claimIntent atomically advances the generation before we inspect the
-    // attempt. An old worker cannot record its first hash after this fence;
-    // the native rail awaits that write before every broadcast.
-    const claim = captureIntentClaim(await durable.claimIntent({
-      key, bindingHash, owner: policy.owner, now: now(), leaseDurationMs: policy.leaseDurationMs,
-    }));
-    if (claim.status !== "acquired" || claim.bindingHash !== bindingHash ||
-        claim.lease.owner !== policy.owner) {
-      throw new DacsError("cannot abandon a live, completed or conflicting settlement intent");
-    }
-    const attempt = await readAttempt(key);
-    if (attempt !== null) {
-      throw new DacsError("cannot abandon a recorded transaction; reconcile it without resubmitting");
-    }
-    // A lagging backup can have an intent but omit its later attempt. Local
-    // absence alone cannot establish that this payment was never submitted.
-    if (await reconcile(key, captured) !== null) {
-      throw new DacsError("cannot abandon without independent proof that the payment is absent");
-    }
-    return { captured, bindingHash, claim };
-  };
   return {
     ...attemptLookup,
     readOutcome,
-    async reopenUnattempted(key, binding, options) {
-      const { bindingHash, claim } = await fenceUnattempted(key, binding, options);
-      const released = await durable.releaseIntent({ key, bindingHash, lease: claim.lease, now: now() });
-      if (released !== "released") throw new DacsError(`unattempted settlement reopening is ${released}`);
-    },
-    async abandonUnattempted(key, binding, options) {
-      const { captured, bindingHash, claim } = await fenceUnattempted(key, binding, options);
-      const result = captureBoundResult({
-        ok: false, txHash: "", chainId: captured.network, payer: captured.payer, payee: captured.payee,
-      }, captured, "unattempted settlement outcome");
-      const write = captureOutcomeWrite(await durable.putOutcome({
-        key, bindingHash, lease: claim.lease, result, now: now(),
-      }));
-      if ((write.status !== "recorded" && write.status !== "existing") ||
-          write.outcome.bindingHash !== bindingHash ||
-          canonicalize(write.outcome.result) !== canonicalize(result)) {
-        throw new DacsError("unattempted settlement closure lost its generation or conflicts");
-      }
-      return result as SettleResult;
-    },
-    async once(key, binding, submit, reconcile, options) {
+    async once(key, binding, submit, reconcile) {
       const capturedBinding = frozenClone(
         binding,
         "settlement idempotency binding",
@@ -1194,16 +1096,13 @@ function buildIdempotencyStore(
       }
 
       const operation = (async (): Promise<SettleResult> => {
-        let rawClaim;
-        const claimTime = now();
-        try {
-          rawClaim = await durable.claimIntent({
-            key, bindingHash, owner: policy.owner, now: claimTime, leaseDurationMs: policy.leaseDurationMs,
-          });
-        } catch (cause) {
-          throw new SettlementNotInvokedError("settlement claim failed before invoking the rail", { cause });
-        }
-        const claim = captureIntentClaim(rawClaim);
+        const claim = captureIntentClaim(await durable.claimIntent({
+          key,
+          bindingHash,
+          owner: policy.owner,
+          now: now(),
+          leaseDurationMs: policy.leaseDurationMs,
+        }));
         if (claim.status === "conflict") {
           throw new DacsError(
             `settlement ${key} is retained under different terms; refusing reuse or resubmission`,
@@ -1231,9 +1130,6 @@ function buildIdempotencyStore(
         if (claim.bindingHash !== bindingHash || claim.lease.owner !== policy.owner ||
             (claim.lease.stage !== "fresh" && claim.lease.stage !== "reconcile")) {
           throw new DacsError(`settlement ${key} returned an invalid acquired generation`);
-        }
-        if (options?.freshOnly && claim.lease.stage !== "fresh") {
-          throw new DacsError(`settlement ${key} has no recorded attempt in an unresolved rail intent; operator action required (never resubmitted)`);
         }
 
         let lease = claim.lease;
