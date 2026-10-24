@@ -20,7 +20,7 @@ const REGISTRY_TIMEOUT_MS = 15_000;
 const TAR_BLOCK_BYTES = 512;
 const MAX_PACKAGE_NAME_LENGTH = 214;
 const MAX_VERSION_LENGTH = 256;
-// libnpmpublish adds these fields; Verdaccio also records the publishing user.
+// Metadata fields npm registries may add without changing the packed manifest.
 const NPM_ADDED_FIELDS = new Set(["_id", "_nodeVersion", "_npmVersion", "_npmUser"]);
 const NPM_ADDED_DIST_FIELDS = ["integrity", "shasum", "tarball"];
 
@@ -61,7 +61,8 @@ export function readPackedManifest(tarball) {
     const end = body + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
     if (!Number.isSafeInteger(size) || end > archive.length) throw new Error("packed tarball has a truncated entry");
     // Reject links and path-override extensions instead of guessing extraction semantics.
-    if (!["0", "", "5"].includes(type) || name.includes("\\") ||
+    if (header.subarray(157, 257).some(byte => byte !== 0) ||
+        !["0", "", "5"].includes(type) || name.includes("\\") ||
         !(name.startsWith("package/") || (name === "package" && type === "5")) ||
         (type === "5" ? size !== 0 : name.endsWith("/")) ||
         name.replace(/\/$/, "").split("/").some(part => !part || part === "." || part === "..")) {
@@ -253,6 +254,8 @@ function verifyManifestMetadata(packument, manifest) {
   else delete served.dist;
   // Never disregard a packed field, even when npm normally adds that field.
   for (const field of NPM_ADDED_FIELDS) if (!Object.hasOwn(manifest, field)) delete served[field];
+  // Verdaccio adds an empty contributors list when none was packed.
+  if (!Object.hasOwn(manifest, "contributors") && isDeepStrictEqual(served.contributors, [])) delete served.contributors;
   if (packument.name !== manifest.name || (packument._id !== undefined && packument._id !== manifest.name) ||
       (publishedId !== undefined && publishedId !== `${manifest.name}@${manifest.version}`) ||
       !isDeepStrictEqual(served, manifest)) {
