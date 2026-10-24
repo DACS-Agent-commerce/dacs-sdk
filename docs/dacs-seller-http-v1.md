@@ -385,7 +385,8 @@ binding, so a wallet with no approved identity is never asked to sign.
 ## Discovery document and endpoint proof (new)
 
 The seller serves `GET /.well-known/dacs-seller.json`: the canonical JSON
-`{payload, signature}` with the payload signed by the seller's Listing key
+`{payload, signature}` with the payload signed by the
+key of the seller claim named by `payload.seller` (the Listing signer can differ)
 under `dacs-seller-http:v1:discovery:`.
 
 | Field | Value |
@@ -444,7 +445,7 @@ body `verifyWireResponse` or `checkWireRequest` admitted (frozen, and recorded
 as admitted). A caller's object, a decoded string or a re-serialized copy is
 refused (`ARTIFACT-NOT-ADMITTED`), and bytes admission refuses (duplicate
 members, ill-formed UTF-8, an out-of-profile number, nesting past 128, a
-non-NFC value) keep admission's own detail. The wire checks the evidence
+unsupported numeric value) keep admission's own detail. Non-NFC string values are preserved at admission. The wire checks the evidence
 itself, every time. First, the signed Listing the purchase pins, passed as
 `signedListing` with the commitment and admitted the same way. It must be a
 DACS-1 §6.3.4 Listing whose recomputed content hash, id and version are the
@@ -458,9 +459,9 @@ verify under that named key over `dacs-listing:v1:` and the content hash
 Agreement both parties signed and the record the seller signed over it. It must be presented
 by the seller, carry a positive `deadlineSecAfterCommit`, not be auto-accept,
 and select one fixed-price commitment: exactly one `negotiate-fixed-price`
-phase, directly followed by the only commit phase. Otherwise it is
-`continuation_listing_invalid`. That commit phase must be `commit-payee-bound-agreement`,
-before any signature is read (`continuation_phase_unsupported`; DACS-3 §8.5.2
+phase, directly followed by `commit-payee-bound-agreement`; otherwise it is
+`continuation_phase_unsupported`. The Listing signature is verified first; phase selection
+then occurs before Agreement or commitment signature interpretation (DACS-3 §8.5.2
 check 9, CA-5). The rest of the Listing must be TP-1's too: exactly one pay
 phase, `pay-dem` (`continuation_phase_unsupported`, detail `PAY-PHASE`), and
 exactly one delivery phase, `deliver-storage-program` (detail
@@ -470,7 +471,7 @@ exactly one delivery phase, `deliver-storage-program` (detail
 `storage-program` DeliverableSpec (`continuation_listing_invalid`, detail
 `DELIVERABLE-KIND`). Its pricing must be `fixed`, in DEM (detail
 `TP1-PRICING`). No other pipeline phase kind is supported (detail
-`PIPELINE-PHASE`). A Listing whose delivery step must fail never reaches a
+`PIPELINE`). A Listing whose delivery step must fail never reaches a
 payment. The eligibility decision's `commitPhase` gates new purchases
 only; no phase a host states selects a continuation's Agreement type. It
 checks the record's members
@@ -479,7 +480,7 @@ checks the record's members
 `[buyer, seller]`. It checks the record's Ed25519 signature under
 `dacs-finality-commitment:v1:` by the seller. It checks that the receipt is a
 CORE §5.1 AnchorReceipt and the transaction reference a DACS-4 §9.3 ChainTxRef
-(the commitment gate's own validators), on substrate `demos:testnet`,
+(the commitment gate's own validators), on substrate `demos`,
 `finalized` and `established`, at
 `dacs3:commit:{jobId}`, with the record's
 native address and content hash, and takes `committedAt` from its
@@ -490,7 +491,7 @@ fixed-price PayeeBoundAgreementDocument whose recomputed content hash is the rec
 and with an Ed25519 signature by each party under `dacs-payee-bound-agreement:v1:`. A
 seller-signed record for an Agreement the buyer never signed is therefore
 refused (`continuation_agreement_invalid`), at both buyer signers and on
-every seller route. Last, it asks `readCommitmentReceipt` (the buyer's own
+every seller payment and delivery continuation route. Last, it asks `readCommitmentReceipt` (the buyer's own
 SR-2 reader, given to `verifyEndpointProof` and kept with the proof) to
 authenticate the receipt against the chain. A legacy record, a pending
 receipt, another signer, a stated time the receipt does not give, or a
@@ -499,8 +500,8 @@ reader answer of `"invalid"` is refused
 `commitment_unverified` (503): never final. With no reader, nothing
 continues (`commitment_reader_required`). At signing it must name the
 request's job, Agreement hash, buyer, seller and Listing pin
-(`verifyEndpointProof`, which has no request, compares the seller and pin;
-signing compares the rest). Then the payment, delivery and
+(`verifyEndpointProof` requires an authenticated `request` scope when commitment
+evidence is supplied; both proof creation and signing compare the full request identity). Then the payment, delivery and
 readback routes (`payments`, `bundles/request`, `bundles/countersignature`,
 `agreements/state`, `bundles/buyer-copy`) are signed while the document says
 `ready: false`, and the Listing's window must hold the commitment's receipt
@@ -527,7 +528,7 @@ signed, and the seller anchored, whose terms are not the Listing's (2 DEM
 under a 1 DEM Listing, another rail, another deliverable) is refused
 (`continuation_agreement_invalid`, detail `LISTING-TERMS`, with the
 verifier's error as its `cause`): a finalized record does not show that the
-commitment gate ran. This holds on every seller route and at both buyer
+commitment gate ran. This holds on every seller payment and delivery continuation route and at both buyer
 signers, so a record the gate anchored and then refused after finality, read
 back later, continues nothing.
 A proposal, commitment or context request is always a new purchase. A reader therefore returns an ended
@@ -540,7 +541,8 @@ requires `ready` (whether it accepts new purchases now) on the proposal,
 commitment, commitment-signature and context routes and refuses each while it
 is `false` (`seller_not_ready`, 503). On the payment and delivery routes it
 requires the job's finalized commitment instead, checked the same way with
-the seller's own receipt reader.
+the seller's own receipt reader. Read routes enforce retained request scope
+without repeating CA-7; successful readback authentication does not attest an Agreement.
 
 `capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
 `pay-dem`; `did:demos:agent` claims; delivery through Demos storage at

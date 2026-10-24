@@ -29,3 +29,11 @@ describe("TP-1 documentation available on this stack prefix", () => {
     expect(readFileSync(resolve(docs, "testnet-profile-tp1.md"), "utf8")).not.toContain("Every gap below carries a label wherever a user meets it");
   });
 });
+
+it("scopes the discovery and CA-7 contract to its actual keys and routes", () => {
+  const text = readFileSync(resolve(docs, "dacs-seller-http-v1.md"), "utf8");
+  expect(text).toContain("key of the seller claim named by `payload.seller`");
+  expect(text).not.toMatch(/(?:on|On|every) every seller route|on\s+every seller route/);
+  expect(text).toContain("before Agreement or commitment signature interpretation");
+  expect(text).toContain("Read routes enforce retained request scope");
+});
