@@ -1,3 +1,4 @@
+import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -186,6 +187,22 @@ async function settle(payDem: PayDemRail) {
 }
 
 describe("pay-dem reports ok only for an executed transfer (#338)", () => {
+  it("refuses an unregistered retained-audit rail before reading the log or reconciling", async () => {
+    const store = createIdempotencyStore();
+    const read = vi.spyOn(store, "readOutcome");
+    const reconcile = vi.fn();
+    const submit = vi.fn();
+    const settle = payDemSettle({ address: WALLET, settle: submit }, {}, { store, reconcile });
+    await expect(settle({ rail: "pay-dem", phase: "pay-dem", amount: "9.5", asset: "DEM",
+      payee: `did:demos:agent:${PAYEE_HEX}`, expectedPayee: RECIPIENT,
+      jobId: "unregistered-audit", phaseIndex: 0,
+      priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }],
+    })).rejects.toThrow(/SDK-owned record-verifying capability/);
+    expect(read).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it("settles through the bridge with the real factory execution authority", async () => {
     const payDem = await rail();
     const pending = payDemSettle(payDem)({

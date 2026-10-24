@@ -109,6 +109,42 @@ describe("pay-dem retained identity conflict quarantine", () => {
     },
   );
 
+  test.each([false, true])("rejects a success block change with a restarted bridge=%s", async (restart) => {
+    const log = createInMemorySettlementLog();
+    const store = createIdempotencyStore(log);
+    const submit = vi.fn(async () => freshSuccess());
+    const reconcile = vi.fn(async () => ({ ...executed(), blockNumber: 43 }));
+    const rail = { address: payer, settle: submit };
+    const first = payDemSettle(rail, {}, { store, reconcile });
+    await first(request);
+    const once = vi.spyOn(store, "once");
+    const after = restart ? payDemSettle(rail, {}, { store, reconcile }) : first;
+    await expect(after(history(hashA))).rejects.toThrow(/block conflicts/);
+    expect(once).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  test("lets another key complete while a first key is waiting on submission", async () => {
+    let release: () => void = () => { throw new Error("gate not initialized"); };
+    let started: () => void = () => { throw new Error("signal not initialized"); };
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const submitting = new Promise<void>((resolve) => { started = resolve; });
+    const submit: PayDemRail["settle"] = vi.fn(async (input) => {
+      if (input.recovery?.phaseIndex === 0) { started(); await gate; }
+      return freshSuccess();
+    });
+    const settle = payDemSettle({ address: payer, settle: submit });
+    const first = settle(request);
+    await submitting;
+    try {
+      await expect(settle({ ...request, phaseIndex: 1 })).resolves.toMatchObject({ ok: true });
+    } finally {
+      release();
+      await first;
+    }
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
   test("checks a durable binding even when all retained hashes agree", async () => {
     const log = createInMemorySettlementLog();
     const store = createIdempotencyStore(log);
