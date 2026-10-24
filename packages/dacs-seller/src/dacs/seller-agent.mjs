@@ -1,88 +1,20 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
-// Seller agent for one verified fixed-price DEM Listing, acting as phase
-// orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
-// method takes and returns plain JSON; seller-http.mjs is a narrow adapter.
-//
-// The seller identity is supplied by the operator as a signing callback over
-// raw bytes (never the plugin buyer's key; the agent never sees a buyer key).
-// Protocol steps use the pinned SDK seller surface:
-//  - respondToFixedPriceAgreementProposalDurable re-derives the Agreement from
-//    seller-local authenticated context before signing its contribution;
-//  - commitFixedPriceAgreement signs and anchors the FinalityCommitmentRecord
-//    after Agreement readback by default, or on exact signatures when enabled;
-//  - verifySellerPaymentIntake verifies the pay-dem claim (payer, payee,
-//    amount, inclusion after the finalized commitment, deadline, SB-1 identity,
-//    SB-2 one-transaction-one-session receipt store) and derives the exact
-//    unsigned payment SettlementEvidence.
-// The explicit DEM delivery profile additionally consumes that same permit in
-// runDurableFulfilmentToDeliveryReady using a seller-retained V2 SessionRecord,
-// genuine partyVetCore provenance and independent delivery receipt readback.
-// Evidence publication/final bundle closure stay behind an explicit later SDK
-// finaliser call. Not deployed anywhere; tests run it on owned loopback only.
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
-import {
-  canonicalize,
-  commitFixedPriceAgreement,
-  contentHash,
-  createFsFencedSessionStore,
-  createInMemoryFencedSessionStore,
-  createInMemorySellerReceiptStore,
-  fixedPriceAgreementLogicalAddress,
-  finalizeFixedPriceAgreementContributions,
-  finalityCommitmentAddress,
-  identityBundleHash,
-  isCanonicalJobId,
-  isVerifiedListingAdmission,
-  sameCanonicalClaimIdentity,
-  canonicalDemosAgentPublicKey,
-  isIdentityBundle,
-  paymentEvidenceAddress,
-  respondToFixedPriceAgreementProposalDurable,
-  runDurableFulfilmentToDeliveryReady,
-  sellerFulfilmentVetRequirementsViolation,
-  sha256Hex,
-  signComponentArtifact,
-  verifySellerPaymentIntake,
-  verifySettlementEvidence,
-  ARTIFACT_SEPARATORS,
-} from '@kynesyslabs/dacs';
-import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
+import { canonicalize, commitFixedPriceAgreement, contentHash, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, paymentEvidenceAddress, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, verifySellerPaymentIntake, verifySettlementEvidence, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
-import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
-import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
+import { fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
-import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
-import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
+import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
+import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
-import { nativeDemDeliveryConfig, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
-import {
-  agreementInput,
-  agreementTerms,
-  assembleBundleCopies,
-  bundleAddress,
-  bundleSession,
-  bundleSigningPlan,
-  commitmentReader,
-  commitmentSession,
-  commitmentVerifier,
-  contributionVerifier,
-  deliverableAddress,
-  deliveryEvidenceAddress,
-  DEM_RAIL_DEFINITION,
-  ed25519Deps,
-  listingPin,
-  protocolSupport,
-  RAIL_REGISTRY_VERSION,
-  verifyAnchoredCopy,
-  verifyDelivery,
-  verifyPaymentEvidence,
-} from './purchase-protocol.mjs';
+import { nativeDemDeliveryConfig, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
+import { agreementInput, agreementTerms, bundleAddress, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_DEFINITION, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyAnchoredCopy, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
 
 export class SellerAgentError extends Error {
   constructor(code, message, status = 422, options = {}) {
@@ -91,28 +23,10 @@ export class SellerAgentError extends Error {
     this.status = status;
   }
 }
-
-// What the native profile reads and writes instead of a fixture substrate.
-const fixtureDisabled = async () => { throw new SellerAgentError('fixture_substrate_disabled', 'the native seller profile has no fixture substrate', 503); };
-const NATIVE_PROFILE_FIXTURE = Object.freeze({ read: fixtureDisabled, write: fixtureDisabled });
-
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
-export { proposalTimeProblem } from './seller-proposal-time.mjs';
-const FINALISED_SKEW_MS = 5 * 60 * 1000;
-// Payment-evidence anchor outcomes after which no attempt can land: it never
-// reached the wallet (the agent's own record), or the wallet's journal
-// answered that nothing it signed for the address can be included. No wallet
-// answer to the anchor itself is one: any answer is 'sent'.
-const UNSENT_ANCHOR_OUTCOMES = Object.freeze(['not-sent', 'unsigned']);
-// Readback failures of retained native evidence work (the commitment and
-// Agreement readback): a retry answers them as held, with the cause.
-const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
 // A claimed pay-dem transaction hash as core payment intake reads it
 // (lower case, without `0x`): the transport admits either form.
 const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
-// What is kept of a wallet answer: its status, transaction hash and reason, bounded.
-const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ? answer.status.slice(0, 32) : 'missing',
-  ...(typeof answer?.txHash === 'string' ? { txHash: answer.txHash.slice(0, 128) } : {}), ...(typeof answer?.reason === 'string' ? { reason: answer.reason.slice(0, 240) } : {}) });
 
 // The deterministic test report this agent delivers: derived only from the
 // Agreement and the verified payment, so every replay is byte-identical.
@@ -135,36 +49,8 @@ export function buildReport({ agreement, listing, settlementId }) {
   };
 }
 
-// The substrate is chosen once, never by fallback. `agreementAnchor` and
-// `nativeArtifactAnchor` (programmatic operator capabilities) together select
-// the native profile: commit reads the buyer's Agreement as its native Demos
-// SR-2 storage CREATE and publishes the FinalityCommitmentRecord natively. Any
-// other native capability needs both, and that profile takes no `anchors`: a
-// remaining fixture read or write refuses (fixture_substrate_disabled). The
-// simulated fixture substrate is used only when it is passed as `anchors` with
-// no native capability and `simulatedFixture: true`: that profile signs over
-// the not-performed Vet references and the unsigned in-code rail, so it is
-// never chosen by default.
-// The native profile signs an Agreement only with the operator's authenticated
-// Vet context (`demDeliveryContext`), never the synthetic not-performed Vet
-// references, and only over a rail its steward-signed `railAuthority` makes
-// selectable, pinned into the session first (rail-authority.mjs). It commits
-// or takes payment only with the whole chain to delivery
-// (`nativePaymentEvidence`, `demDeliveryContext`, `nativeDemDelivery`) and the
-// pinned rail: a commitment it could not settle would make the buyer pay for
-// nothing. No profile signs a completed DACS-5 bundle (the ST-11 finalizer is
-// not wired; bundle_finalization_unavailable).
-// The native profile opens a new session only for a presentation of a
-// challenge this seller issued for its job and buyer (issueSessionChallenge;
-// the first attempt consumes it, durably), on a Listing its own revocation
-// check (core checkListingRevocation over the operator's readings) finds not
-// revoked, and under the operator's `sessionAdmission` (session-admission.mjs):
-// the exact profile of both parties and the Vet records the references name,
-// checked strictly against the requirement invocations the delivery runner
-// checks, for a retained context too.
-// `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
-// seller-context-route.mjs createSellerContextRecords exactRequest) is true only
-// when the seller durably admitted exactly that context request for the job.
+// Internal seller proposal, commitment and fixture payment profile.
+// Native payment remains gated until its handler is present.
 const MAX_CHALLENGES_PER_JOB=16;
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
@@ -231,7 +117,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (nativeProfile && !rail) throw new TypeError(`the native seller profile needs railAuthority: it selects ${DEM_RAIL.railId} only from its steward-signed definition`);
   const admission = sessionAdmissionConfig(sessionAdmission);
   if (admission && !nativeProfile) throw new TypeError('the simulated fixture profile takes no sessionAdmission');
-  if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
   const settlementChain = nativeEvidence !== null && deliveryContext !== null && nativeDelivery !== null;
   // DACS-4 PC-7(b) catch-up: a profile that takes payment needs the wallet's
   // journal question, so an anchor whose outcome is unknown (a throw, a crash
@@ -246,11 +131,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (settlementChain && !isPaymentEvidenceWalletJournalPair(nativeEvidence.anchorEvidence, reconcilePaymentEvidence)) {
     throw new TypeError('the native settlement profile takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
   }
-  // That journal also keeps the exact signed CREATE, whose public projection
-  // the evidence readback needs (the name index alone cannot authenticate
-  // it): the agent reads it from the journal, read only, so a consumer
-  // composed without a reader of its own still reads its evidence back.
-  const walletJournal = settlementChain ? paymentEvidenceWalletJournalOf(nativeEvidence.anchorEvidence) : null;
   // Checked before any session, signature, read or write. These profile gates
   // (and native_evidence_required, bundle_finalization_unavailable) are
   // seller-http.mjs SELLER_PRE_EFFECT_REFUSALS: definite no-effect refusals.
@@ -304,7 +184,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   durable?.retainContext({ admittedAt, validation });
   const sellerBundle = listing.seller.identity;
   const store = durable?.fencedStore ?? createInMemoryFencedSessionStore();
-  const fulfilmentStore = deliveryContext ? await createFsFencedSessionStore({ dir: join(durableDirectory, 'sdk-fulfilment') }) : null;
   const sessions = new Map(); // jobId -> session
   // CORE SN-1..SN-4: the challenges this seller issued, by nonce, each bound to
   // one job and buyer (kept with the durable seller state, else in memory).
@@ -375,9 +254,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if(report?.jobId!==session.jobId || report.agreementHash!==contentHash(session.agreement) || report.settlementId!==settlementId) throw new SellerAgentError('deliverable_producer_invalid','the application deliverable is not bound to this Agreement and settlement',503);
     return report;
   };
-  const nativeDeliverySubstrate=nativeArtifactAnchor
-    ? 'source-native-one-node-delivery; signed native Listing/Vet/commitment and genuine producer'
-    : 'source-native-one-node-delivery; fixture Vet/Listing/commitment remain';
   const persist = (session) => durable?.saveSession(session);
   // The seller-state lock, checked last before an effect that leaves through
   // another journal: as the native publisher's authorize hook (called under its
@@ -916,10 +792,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   const signEvidence = (unsigned) => signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) });
 
-  function signedFixtureRef(logicalAddress, hash) {
-    return { ...fixtureRef(logicalAddress, hash), signer: claim };
-  }
-
   function sameNativeCommitmentReceipt(left, right) {
     if (!left || !right || !Number.isSafeInteger(left.blockRef?.timestamp) || !Number.isSafeInteger(right.blockRef?.timestamp)) return false;
     const stable = ['receiptVersion','substrate','finalityProfile','logicalAddress','nativeAddress','contentHash','writer','nonce','state','observationDisposition'];
@@ -1049,9 +921,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   async function reconcileTransport({ request, body, rawBody, readOnly = false }) {
-    const held = (reason) => ({ disposition: 'indeterminate', reason });
+    const held=(reason,cause)=>{const out={disposition:'indeterminate',reason};if(cause){out.causeCode=cause?.cause?.name==='TimeoutError'?'timeout':'reader';Object.defineProperty(out,'cause',{value:cause});}return out;};
     const same = (a, b) => canonicalize(a) === canonicalize(b);
     const session = sessions.get(request.jobId);
+    const readAnchors={read:address=>readAdmissionCapability(anchors,'read',address)};
     // A proposal interrupted at any persistence boundary resumes through the
     // durable responder, whose authenticated checkpoints and signOnce govern
     // every signature/publication. The HTTP cache cannot seal an unfinished
@@ -1064,8 +937,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           sha256Hex(rawBody) !== request.bodyHash || !same(JSON.parse(Buffer.from(rawBody).toString('utf8')), body)) return held('seller_transport_context_mismatch');
       try {
         const answer = await receiveProposal(body);
-        return { disposition: answer.disposition === 'complete' ? 'present' : 'retry', value: answer };
-      } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate'); }
+        if(answer.disposition==='complete')return{disposition:'present',value:answer};
+        if(['waiting','indeterminate'].includes(answer.disposition))return{disposition:'retry',value:answer};
+        const retained=durable?.loadSession(request.jobId)??sessions.get(request.jobId);
+        if(answer.disposition==='rejected'&&!retained?.agreementSignatureKey&&!retained?.sellerContribution&&!retained?.commitment)return{disposition:'no-effect',value:answer};
+        return held('seller_proposal_work_retained');
+      } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate',error); }
     }
     if (!session?.transportIdentity || request.method !== 'POST' || request.jobId !== (body.transportIdentity?.jobId ?? body.jobId) ||
         request.seller !== claim || request.buyer !== session.buyerBundle.presentedBy || !same(request.listingPin, pin) ||
@@ -1078,21 +955,19 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const address = fixedPriceAgreementLogicalAddress(request.jobId);
       let agreementRecord, agreementRef = fixtureRef(address, request.agreementHash), native = null;
       if (agreementAnchor) {
-        const projection = body.signedProjection ?? session.agreementSignedProjection;
-        const read = await agreementAnchor.readAgreement({ logicalAddress: address, writer: request.buyer, agreementHash: request.agreementHash, ...(projection === undefined ? {} : { signedProjection: projection }) });
-        if (read.disposition !== 'present' || contentHash(read.artifact) !== request.agreementHash) throw new SellerAgentError('seller_agreement_readback_required', 'exact authenticated native Agreement is unavailable', 503);
-        agreementRecord = { artifact: read.artifact };
-        agreementRef = read.ref;
-        native = read.native;
+        const projection=body.signedProjection??session.agreementSignedProjection;
+        const read=await readBuyerAgreement(address,request.buyer,request.agreementHash,projection);
+        if(contentHash(read.agreement)!==request.agreementHash)throw new SellerAgentError('agreement_substituted','authenticated Agreement differs',422,{cause:read});
+        agreementRecord={artifact:read.agreement};agreementRef=read.ref;native=read.native;
       } else {
-        agreementRecord = await anchors.read(address);
+        agreementRecord = await readAnchors.read(address);
         if (verifyFixtureRecord(agreementRecord, { logicalAddress: address, expectedWriter: request.buyer }) !== 'valid' ||
             contentHash(agreementRecord.artifact) !== request.agreementHash) throw new SellerAgentError('seller_agreement_readback_required', 'exact authenticated Agreement is unavailable', 503);
       }
       const logicalAddress=finalityCommitmentAddress(request.jobId);
       const record = nativeArtifactAnchor
         ? await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true})
-        : await durable.readAnchor({ jobId: request.jobId, logicalAddress, anchors });
+        : await durable.readAnchor({ jobId: request.jobId, logicalAddress, anchors:readAnchors });
       if(nativeArtifactAnchor && record.status!=='present') refuse();
       const reader = commitmentReader(anchors, claim);
       const finalized = await commitFixedPriceAgreement({
@@ -1103,7 +978,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: refuse },
       }, {
         resolve: () => ({ disposition: 'present', anchored: { record: record.artifact, nativeAddress: record.receipt.nativeAddress, anchorTxRef: nativeArtifactAnchor?record.txRef:fixtureTxRef(record.receipt), anchorReceipt: record.receipt } }),
-        verifyAnchorReceipt: nativeArtifactAnchor ? async(anchored)=>nativeArtifactAnchor.verifyReceipt({logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:record.signedProjection}) : reader.verifyAnchorReceipt,
+        verifyAnchorReceipt: nativeArtifactAnchor ? async(anchored)=>readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:record.signedProjection,fresh:true}) : reader.verifyAnchorReceipt,
         submit: refuse,
       }, commitmentVerifier);
       if (!finalized.resumed || finalized.recordKind !== 'finality') refuse();
@@ -1138,9 +1013,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           permit.status !== 'available' || !same(permit.claim.authorization, authorization) ||
           permit.claim.jobId !== request.jobId || durable.settlementJob(intake.settlementId) !== request.jobId) refuse();
       const terms = agreementTerms(session.agreement);
-      const paymentRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: paymentEvidenceAddress(request.jobId, terms.rail, terms.paymentPhaseIndex), anchors });
-      const deliverable = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliverableAddress(request.jobId), anchors });
-      const deliveryRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliveryEvidenceAddress(request.jobId), anchors });
+      const paymentRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: paymentEvidenceAddress(request.jobId, terms.rail, terms.paymentPhaseIndex), anchors:readAnchors });
+      const deliverable = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliverableAddress(request.jobId), anchors:readAnchors });
+      const deliveryRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliveryEvidenceAddress(request.jobId), anchors:readAnchors });
+      const freshIntake=await verifySellerPaymentIntake({jobId:request.jobId,phaseIndex:terms.paymentPhaseIndex,railId:terms.rail,payerPayingKey:body.payerPayingKey,receipt:{kind:'pay-dem',txHash:body.txHash}},intakeDepsFor(request.jobId));
+      if(freshIntake.disposition!=='verified'||freshIntake.settlementId!==intake.settlementId)refuse();
       const observed = { txHash: intake.settlementIdentity.txHash, blockNumber: intake.settlementIdentity.blockNumber };
       const evidence = await verifyPaymentEvidence({ agreement: session.agreement, record: paymentRecord, observed });
       const delivery = await verifyDelivery({ agreement: session.agreement, deliverable, evidenceRecord: deliveryRecord });
@@ -1152,29 +1029,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (session.payment && !same(session.payment, recovered)) refuse();
       if (!session.payment) { session.payment = recovered; session.stage = 'delivered'; persist(session); }
       return publicPayment(session);
-    }
-    async function bundle() {
-      await payment();
-      if (!Number.isSafeInteger(session.finalisedAt)) refuse();
-      const facts = sessionFacts(session);
-      const plan = await bundleSigningPlan(facts);
-      const retained = durable.signature(`signature:${sha256Hex(plan.payload)}`);
-      const signature = session.sellerBundleSignature ?? (retained.disposition === 'present' ? retained.value : null);
-      if (!signature || (session.bundleHash && session.bundleHash !== plan.bundleHash) ||
-          !verifyComponent({ signedBytes: Buffer.from(plan.payload), signature: { algorithm: 'ed25519', signer: claim, value: signature } })) refuse();
-      if (!session.sellerBundleSignature) { session.bundleHash = plan.bundleHash; session.sellerBundleSignature = signature; persist(session); }
-      return { jobId: request.jobId, finalisedAt: session.finalisedAt, bundleHash: plan.bundleHash, sellerSignature: signature };
-    }
-    async function sellerCopy(buyerSignature) {
-      await bundle();
-      if (!session.countersignatureWork || session.countersignatureWork.buyerSignature !== canonicalSignature(buyerSignature)) refuse();
-      const { copies, problems } = await assembleBundleCopies(sessionFacts(session), { buyer: buyerSignature, seller: session.sellerBundleSignature });
-      if (problems.length) refuse();
-      const address = bundleAddress(request.jobId, 'seller');
-      const record = await durable.readAnchor({ jobId: request.jobId, logicalAddress: address, anchors });
-      if (!same(record.artifact, copies.sellerCopy)) refuse();
-      if (!session.sellerCopy) { session.sellerCopy = json(copies.sellerCopy); session.stage = 'seller-copy-anchored'; persist(session); }
-      return { status: 'seller-copy-anchored', address, bundleHash: session.bundleHash };
     }
     try {
       switch (request.path) {
@@ -1223,6 +1077,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             // so a corrected claim reaches payment intake.
             // Either run can sign and send: never under an expired delegation.
             if (readOnly) return held('peer_delegation_expired: a payment claim runs again only under a live session delegation');
+            assertNativePaymentHandler();
             const answer = work
               ? await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence })
               : await submitPayment({ jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, nativePaymentEvidence: body.nativePaymentEvidence });
@@ -1237,17 +1092,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         case '/dacs/v1/bundles/request':
         case '/dacs/v1/bundles/countersignature':
           return held('bundle_finalization_unavailable');
-        case '/dacs/v1/bundles/buyer-copy': {
-          await sellerCopy(session.countersignatureWork?.buyerSignature);
-          const record = await anchors.read(bundleAddress(request.jobId, 'buyer'));
-          const check = await verifyAnchoredCopy({ record, role: 'buyer', jobId: request.jobId, writer: request.buyer, expectedHash: session.bundleHash, ownCopy: session.sellerCopy });
-          if (check.status !== 'verified') return held('seller_buyer_copy_readback_required');
-          if (session.stage !== 'copies-exchanged') { session.stage = 'copies-exchanged'; persist(session); }
-          return present(check);
-        }
+        case '/dacs/v1/bundles/buyer-copy': return held('bundle_finalization_unavailable');
         default: return held('seller_transport_reconciliation_unsupported');
       }
-    } catch (error) { return held(error.code ?? 'seller_readback_indeterminate'); }
+    } catch (error) { return held(error.code ?? 'seller_readback_indeterminate',error); }
   }
 
   // Seller-owned recovery seam, deliberately not an HTTP route. It resumes
