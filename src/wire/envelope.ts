@@ -123,7 +123,8 @@ export interface EnvelopeSigningContext extends SigningContext {
  * current TP-1 binding and the tuple kept for the purchase. The payload and
  * delegation are copied once: the profile check, the signed bytes and the
  * header all come from those copies. A delegation is verified for the
- * request's buyer, seller, Listing and job at `now` before the signer is called.
+ * request's buyer, seller, Listing and job at `now` before the signer is called
+ * (expiry is not checked here: the receiver decides which routes an expired one serves).
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
   const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing"]) as EnvelopeSigningContext;
@@ -142,9 +143,11 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   // the complete encoded header, including a supplied delegation, before signing.
   const encode = (signature: string) => Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
-  // A delegation is verified against this request's scope and clock before a request signature is spent on it.
+  // A delegation is verified against this request's scope and clock before a request signature is spent on it. Expiry is the receiver's call: it
+  // reads back an operation already started under a lapsed delegation, and refuses every effect route.
   if (delegation !== null) await verifySellerSessionDelegation(Buffer.from(canonicalize(delegation)), {
     binding, local, buyer: payload.buyer as string, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin, jobId: payload.jobId as string, time: now,
+    allowExpired: true,
   });
   if (payload.kind === "request") await assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
