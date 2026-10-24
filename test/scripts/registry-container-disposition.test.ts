@@ -1362,6 +1362,25 @@ describe("candidate executable and nested alias lookup", () => {
       symlinkSync("../@kynesyslabs/dacs/cli.js", join(directory, "dacs"));
     })).toMatchObject({ status: 0, report: { passed: true } });
   });
+  // The inventory lists each `.bin` entry without descending into it, yet Node
+  // resolves a candidate from a `node_modules` directory placed inside `.bin`.
+  it.each(["a directory", "a link to a directory"])("rejects a candidate copy hidden in .bin as %s", form => {
+    const fixture = dependencyPolicyHarness();
+    const hiddenCopy = "node_modules/.bin/node_modules/@kynesyslabs/dacs";
+    const result = fixture.run(project => {
+      const holder = form === "a directory" ? join(project, "node_modules/.bin/node_modules") : join(project, "elsewhere");
+      mkdirSync(join(holder, "@kynesyslabs/dacs"), { recursive: true });
+      writeFileSync(join(holder, "@kynesyslabs/dacs/package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+      if (form !== "a directory") {
+        mkdirSync(join(project, "node_modules/.bin"), { recursive: true });
+        symlinkSync(holder, join(project, "node_modules/.bin/node_modules"));
+      }
+      expect(createRequire(join(project, "node_modules/.bin/runner.js")).resolve("@kynesyslabs/dacs/package.json"))
+        .toContain(form === "a directory" ? hiddenCopy : "elsewhere");
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot inspect a .bin entry that is not an executable link: node_modules/.bin/node_modules");
+  });
   it.each([false, true])("rejects a declared dependency alias file shadow, hoisted=%s", hoisted => {
     const fixture = dependencyPolicyHarness();
     fixture.packages["node_modules/plugin"] = { version: "1.0.0", resolved: `${CANDIDATE_REGISTRY}/plugin.tgz`,
