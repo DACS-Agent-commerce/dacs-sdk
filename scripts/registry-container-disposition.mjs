@@ -623,11 +623,11 @@ export function extractPolicyFindings(read) {
     .flatMap(([name, present]) => {
       const copies = (Array.isArray(inventory?.packages) ? inventory.packages : [])
         .filter(item => item?.name === name || item?.location === `node_modules/${name}`);
-      return copies.length ? copies.map(({ location, version }) => ({ name, location, ...identity(location), version }))
+      return copies.length ? copies.map(copy => ({ name: copy.name, location: copy.location, ...identity(copy.location), version: copy.version }))
         : present === true ? [{ name, location: null, version: null, integrity: null }] : [];
     });
-  const productionImageDependencies = [...named,
-    ...unexpected.filter(item => !named.some(known => known.location === item.location))];
+  const productionImageDependencies = [...named, ...unexpected.filter(item =>
+    !named.some(known => known.location === item.location && known.name === item.name))];
   return {
     schema: POLICY_FINDINGS_SCHEMA,
     gitDependencies,
