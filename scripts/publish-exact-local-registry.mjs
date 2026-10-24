@@ -18,6 +18,8 @@ const MAX_TAR_BYTES = 64 * 1024 * 1024;
 const MAX_JSON_BYTES = 1024 * 1024;
 const REGISTRY_TIMEOUT_MS = 15_000;
 const TAR_BLOCK_BYTES = 512;
+// mode, uid, gid, mtime, devmajor, devminor in a ustar header.
+const TAR_METADATA_NUMBER_FIELDS = [[100, 8], [108, 8], [116, 8], [136, 12], [329, 8], [337, 8]];
 const MAX_PACKAGE_NAME_LENGTH = 214;
 const MAX_VERSION_LENGTH = 256;
 // Metadata fields npm registries may add without changing the packed manifest.
@@ -62,6 +64,14 @@ export function readPackedManifest(tarball) {
     if (!/^ *[0-7]+[\0 ]/.test(header.subarray(148, 156).toString("utf8")) ||
         octal(148, 8) !== checksum || !header.subarray(257, 265).equals(Buffer.from("ustar\0" + "00"))) {
       throw new Error("packed tarball has an invalid ustar header or checksum");
+    }
+    // node-tar can skip invalid base256 headers and read their bodies as entries.
+    for (const [start, length] of TAR_METADATA_NUMBER_FIELDS) {
+      const bytes = header.subarray(start, start + length);
+      const octalMetadata = /^ *[0-7]+[\0 ]*$/.exec(bytes.toString("latin1"));
+      if (!bytes.every(byte => byte === 0) && octalMetadata?.[0].length !== length) {
+        throw new Error("packed tarball has an invalid numeric metadata field");
+      }
     }
     const prefix = pathField(345, 155);
     const name = (prefix ? prefix + "/" : "") + pathField(0, 100);

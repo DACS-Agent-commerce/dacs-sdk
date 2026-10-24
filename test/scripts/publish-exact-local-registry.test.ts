@@ -614,6 +614,44 @@ describe("exact local registry publisher", () => {
     expect(registry.calls).toHaveLength(0);
   });
 
+  const numericMetadataFields = [
+    { field: "mode", start: 100, length: 8 }, { field: "uid", start: 108, length: 8 },
+    { field: "gid", start: 116, length: 8 }, { field: "mtime", start: 136, length: 12 },
+    { field: "devmajor", start: 329, length: 8 }, { field: "devminor", start: 337, length: 8 },
+  ];
+  it.each(numericMetadataFields.flatMap(field => [0x81, 0x80, 0xff, 0x39].map(byte => ({ ...field, byte }))))(
+    "rejects a smuggled manifest behind an invalid numeric $field header ($byte) before publishing", async ({ start, byte }) => {
+      const { archivePath } = candidate();
+      const hidden = gunzipSync(packTarball({ "package/package.json": '{"name":"hidden","version":"9.9.9"}' }));
+      const archive = gunzipSync(packTarball({
+        "package/package.json": '{"name":"example","version":"1.0.0"}',
+        "package/payload": hidden.toString("utf8"),
+      }));
+      const header = archive.subarray(1024, 1536);
+      header[start] = byte;
+      header.fill(32, 148, 156);
+      const checksum = header.reduce((sum, value) => sum + value, 0);
+      header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+      writeFileSync(archivePath, gzipSync(archive));
+      const registry = fakeRegistry(onlyCandidate);
+      await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+        .rejects.toThrow(/packed tarball.*numeric/);
+      expect(registry.calls).toHaveLength(0);
+    });
+
+  it.each(["all NUL", "octal", "space-padded octal"])("accepts numeric tar metadata encoded as %s", encoding => {
+    const manifest = { name: "example", version: "1.0.0" };
+    const archive = gunzipSync(packTarball({ "package/package.json": JSON.stringify(manifest) }));
+    for (const { start, length } of numericMetadataFields) {
+      archive.fill(0, start, start + length);
+      if (encoding !== "all NUL") archive.write(encoding === "octal" ? "0000644\0" : " 644\0  ", start);
+    }
+    archive.fill(32, 148, 156);
+    const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
+    archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+    expect(readPackedManifest(gzipSync(archive))).toEqual(manifest);
+  });
+
   it.each([0, 345].flatMap(start => ["\n", "\r", "\u2028", "\u2029", "hidden"].map(suffix => ({ start, suffix }))))(
     "rejects nonzero padding after a NUL in tar path field $start ($suffix)", ({ start, suffix }) => {
       const archive = gunzipSync(packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}' }));
