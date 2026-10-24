@@ -190,7 +190,9 @@ function validateBody(p, body) {
     return;
   }
   const identity = body.transportIdentity;
-  if ((identity?.jobId ?? body.jobId) !== p.jobId) fail('peer_job_mismatch', 409);
+  // A body that names its job twice names the signed one both times, whichever field a consumer reads.
+  const namedJobs = [identity?.jobId, body.jobId].filter((named) => named !== undefined);
+  if (namedJobs.length === 0 || namedJobs.some((named) => named !== p.jobId)) fail('peer_job_mismatch', 409);
   if (p.path === PROPOSAL || p.path === STATE) {
     if (!record(identity) || identity.buyer !== p.buyer || identity.seller !== p.seller || identity.agreementHash !== p.agreementHash) fail('peer_agreement_mismatch', 409);
   }
