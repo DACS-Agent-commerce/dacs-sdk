@@ -11,6 +11,11 @@ import { leaseInternals } from './helpers/lease-internals.mjs';
 const directory = async t => { const path = await mkdtemp(join(tmpdir(), 'TEST-seller-lease-')); t.after(() => rm(path, { recursive: true, force: true })); return path; };
 const sameMapping = { readPidMapping: () => true };
 
+test('private lease inspection resolves the challenge-aware state module', async () => {
+  const lease = await leaseInternals();
+  assert.equal(typeof lease.takeLease, 'function');
+  assert.equal(lease.holderState('.', { owner: 'TEST unknown holder' }, null), 'unrecognised');
+});
 test('current holder captures start time through proc self', async () => {
   const self = currentSellerStateHolder(0), text = await readFile('/proc/self/stat', 'utf8');
   assert.equal(self.processStart, text.slice(text.lastIndexOf(')') + 2).split(' ')[19]);
