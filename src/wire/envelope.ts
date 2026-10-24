@@ -219,7 +219,8 @@ export async function openWireEnvelope<K extends WireKind>(header: unknown, kind
   const payload = p as unknown as Extract<WirePayload, { kind: K }>;
   const actor = kind === "request" ? payload.buyer : payload.seller;
   if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");
-  const delegation = delegated ? await verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin, jobId: payload.jobId }) : null;
+  // The opener has no clock: whether the delegation is still live is the admitting caller's decision.
+  const delegation = delegated ? await verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin, jobId: payload.jobId, allowExpired: true }) : null;
   const key = delegation?.sessionPublicKey ?? claimKey(actor);
   if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
   // The trusted reader is asked about these participants and this job only once a signature authenticates them.
