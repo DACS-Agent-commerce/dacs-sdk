@@ -368,6 +368,7 @@ export function auditEndpointError(text) {
 // The evidence each network-dependent stage leaves behind. Consumer output
 // also holds generated-test logs, so only npm and Docker errors count there.
 const stageEvidence = {
+  "release-set": [["release-set.log", () => true]],
   "registry-start": [["registry.log", () => true]],
   "registry-auth": [["registry.log", () => true]],
   publish: [["registry.log", () => true]],

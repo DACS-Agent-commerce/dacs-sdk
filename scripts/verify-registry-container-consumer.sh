@@ -1,6 +1,362 @@
 #!/usr/bin/env bash
 set -euo pipefail
-acceptance_main() {
+
+usage() {
+  echo "usage: scripts/verify-registry-container-consumer.sh --output-dir <new-directory>" >&2
+  exit 2
+}
+
+if [ "$#" -ne 2 ] || [ "$1" != "--output-dir" ] || [ -z "$2" ]; then
+  usage
+fi
+
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+output_dir=$2
+case "$output_dir" in
+  /*) ;;
+  *) output_dir="$repo_root/$output_dir" ;;
+esac
+if [ -e "$output_dir" ] || [ -L "$output_dir" ]; then
+  echo "output directory already exists: $output_dir" >&2
+  exit 2
+fi
+if [ ! -d "$(dirname "$output_dir")" ]; then
+  echo "output directory parent does not exist" >&2
+  exit 2
+fi
+
+# The stage names the step a failure stopped in; the failure summary written on
+# exit classifies it as network, policy or functional from that stage's evidence.
+stage=preflight
+for command in curl docker npm node; do
+  command -v "$command" >/dev/null
+done
+source "$repo_root/scripts/bounded-http.sh"
+
+source "$repo_root/scripts/bounded-transport.sh"
+# Shell daemon calls, including cleanup, share the command deadline.
+docker() {
+  run_bounded docker "$@" 2> >(tee -a "${registry_log:-/dev/null}" >&2)
+}
+docker compose version >/dev/null
+
+temp_parent=/tmp
+if [ -n "${RUNNER_TEMP-}" ]; then
+  temp_parent=$RUNNER_TEMP
+fi
+acceptance_root=$(mktemp -d "$temp_parent/dacs-registry-acceptance.XXXXXX")
+release_set="$acceptance_root/release-set"
+registry_config="$acceptance_root/verdaccio.yaml"
+consumer_root="$acceptance_root/consumer"
+artifact_stage="$acceptance_root/artifacts"
+mkdir "$consumer_root" "$artifact_stage"
+registry_log="$artifact_stage/registry.log"
+
+run_id=local
+run_attempt=0
+if [ -n "${GITHUB_RUN_ID-}" ]; then
+  run_id=$GITHUB_RUN_ID
+fi
+if [ -n "${GITHUB_RUN_ATTEMPT-}" ]; then
+  run_attempt=$GITHUB_RUN_ATTEMPT
+fi
+suffix=$(printf '%s-%s-%s' "$run_id" "$run_attempt" "$$" | tr -cd 'a-zA-Z0-9_.-')
+registry_container="dacs-registry-$suffix"
+registry_network="dacs-registry-$suffix"
+runtime_image="dacs-one-click-acceptance:$suffix"
+registry_started=0
+network_started=0
+image_started=0
+output_reserved=0
+
+cleanup() {
+  local status=$?
+  local evidence_exported=$output_reserved
+  # A failed evidence write must not skip the Docker cleanup below or replace
+  # the original exit status.
+  set +e
+  # Preserve only collected, secret-free evidence, including on early failure.
+  if [ -d "$artifact_stage" ]; then
+    # These are the same secret-free diagnostics exported on a complete run.
+    for name in generated-tests.exit-code doctor.log doctor.json doctor.exit-code npm-audit.json \
+      npm-audit.exit-code consumer-lock.cdx.json \
+      consumer-lock-sbom.err consumer-lock-sbom.exit-code consumer-physical.cdx.json \
+      consumer-physical-sbom.err consumer-physical-sbom.exit-code engine-strict.log \
+      engine-strict.exit-code engine-versions.json; do
+      if [ -f "$consumer_root/$name" ]; then
+        cp "$consumer_root/$name" "$artifact_stage/" || evidence_exported=0
+      fi
+    done
+    for name in package.json package-lock.json; do
+      if [ -f "$consumer_root/one-click-agent/$name" ]; then
+        cp "$consumer_root/one-click-agent/$name" "$artifact_stage/generated-$name" || evidence_exported=0
+      fi
+    done
+    for name in release-provenance.json SHA256SUMS; do
+      if [ -f "$release_set/$name" ]; then
+        cp "$release_set/$name" "$artifact_stage/" || evidence_exported=0
+      fi
+    done
+    printf '%s\n' "$status" > "$artifact_stage/acceptance.exit-code" || evidence_exported=0
+    # A run that stopped before its summary records why: network, policy or
+    # functional, with the same classification as a log annotation.
+    if [ "$status" -ne 0 ] && [ ! -f "$artifact_stage/acceptance-summary.json" ]; then
+      node "$repo_root/scripts/registry-container-disposition.mjs" --failure-summary \
+        "$artifact_stage" "$stage" "$status" || evidence_exported=0
+    fi
+    if [ "$output_reserved" -eq 1 ] && mv -T -- "$artifact_stage" "$output_dir"; then
+      registry_log="$output_dir/registry.log"
+      echo "partial acceptance evidence: $output_dir" >&2
+    else
+      evidence_exported=0
+    fi
+  fi
+  if [ "$evidence_exported" -eq 0 ]; then echo "could not completely export evidence; retained at $acceptance_root" >&2; fi
+  if [ "$registry_started" -eq 1 ]; then
+    docker rm --force "$registry_container" >/dev/null 2>&1 || true
+  fi
+  if [ "$image_started" -eq 1 ]; then
+    docker image rm --force "$runtime_image" >/dev/null 2>&1 || true
+  fi
+  if [ "$network_started" -eq 1 ]; then
+    docker network rm "$registry_network" >/dev/null 2>&1 || true
+  fi
+  if [ "$evidence_exported" -eq 1 ]; then
+    rm -rf -- "$acceptance_root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# mkdir reserves the destination atomically before any run can export to it.
+mkdir -- "$output_dir"
+output_reserved=1
+
+# The runner supplies bash, curl, Docker and Compose; record their versions
+# with the evidence. A query that fails records its error and does not stop
+# the run.
+{
+  printf 'bash %s\n' "$BASH_VERSION"
+  curl --version
+  docker version --format 'docker client {{.Client.Version}}, server {{.Server.Version}}'
+  docker compose version
+} > "$artifact_stage/runner-tools.txt" 2>&1 || true
+
+cat > "$registry_config" <<'YAML'
+storage: /verdaccio/storage
+web:
+  enable: false
+auth:
+  htpasswd:
+    file: /verdaccio/storage/htpasswd
+    max_users: 2
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+packages:
+  '@kynesyslabs/dacs':
+    access: $all
+    publish: $all
+    unpublish: $all
+  '@kynesyslabs/dacs-node':
+    access: $all
+    publish: $all
+    unpublish: $all
+  'create-dacs-agent':
+    access: $all
+    publish: $all
+    unpublish: $all
+  '@kynesyslabs/demosdk':
+    access: $all
+    proxy: npmjs
+  '@kynesyslabs/*':
+    access: $all
+  '**':
+    access: $all
+    publish: $all
+    proxy: npmjs
+log:
+  type: stdout
+  format: pretty
+  level: warn
+listen: 0.0.0.0:4873
+YAML
+# The bind-mounted file is intentionally secret-free and must be readable by
+# Verdaccio's non-root container user on Linux runners. Verdaccio uses the
+# first matching rule. The candidate packages, and every other package in their
+# @kynesyslabs scope, have no uplink: they are served only from what this run
+# publishes, even once a version exists on npmjs. The one exception is the
+# released @kynesyslabs/demosdk the consumer depends on.
+chmod 0644 "$registry_config"
+
+cd "$repo_root"
+stage=release-set
+publish_npm="$acceptance_root/publish-npm"
+run_bounded npm install --global --prefix "$publish_npm" --ignore-scripts --no-audit --no-fund npm@11.19.0 \
+  2>&1 | tee "$artifact_stage/release-set.log"
+export npm_config_prefix="$publish_npm"
+export PATH="$publish_npm/bin:$PATH"
+run_bounded npm run conformance:sync 2>&1 | tee -a "$artifact_stage/release-set.log"
+run_bounded npm run release:set:verify -- --output-dir "$release_set" 2>&1 | tee -a "$artifact_stage/release-set.log"
+
+version=$(node -p "require('./package.json').version")
+node - "$release_set/release-provenance.json" "$version" <<'NODE'
+const fs = require("node:fs");
+const provenance = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (provenance.version !== process.argv[3] || provenance.source.clean !== true) {
+  throw new Error("release-set provenance is not clean or version-aligned");
+}
+NODE
+
+stage=registry-start
+registry_image=verdaccio/verdaccio@sha256:fcb86134563534e2f634752e6c6c3edcdb78242ec16578c73ce39d1dadbaa801
+consumer_image=node:20.19.1-bookworm-slim@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d
+pull_bounded --quiet "$registry_image" 2>&1 | tee -a "$registry_log"
+pull_bounded --quiet "$consumer_image" 2>&1 | tee -a "$registry_log"
+network_started=1
+docker network create "$registry_network" >/dev/null
+registry_started=1
+docker run --detach \
+  --name "$registry_container" \
+  --network "$registry_network" \
+  --publish 127.0.0.1::4873 \
+  --volume "$registry_config:/verdaccio/conf/config.yaml:ro" \
+  "$registry_image" \
+  2>&1 >/dev/null | tee -a "$registry_log" >&2
+host_port=$(docker inspect --format \
+  '{{(index (index .NetworkSettings.Ports "4873/tcp") 0).HostPort}}' \
+  "$registry_container")
+case "$host_port" in
+  ''|*[!0-9]*) echo "Verdaccio host port is invalid" >&2; exit 1 ;;
+esac
+host_registry="http://127.0.0.1:$host_port"
+consumer_registry="http://host.docker.internal:$host_port"
+consumer_network_args=(--add-host host.docker.internal:host-gateway)
+build_network_args=(--add-host host.docker.internal:host-gateway)
+host_uid=$(id -u)
+host_gid=$(id -g)
+case "$host_uid:$host_gid" in
+  *[!0-9:]*) echo "host uid/gid is invalid" >&2; exit 1 ;;
+esac
+if [ "$(uname -s)" = "Linux" ]; then
+  consumer_registry=$host_registry
+  consumer_network_args=(--network host)
+  build_network_args=(--network host)
+fi
+
+stage=registry-ready
+ready=0
+for attempt in $(seq 1 30); do
+  if curl "${http_json_curl[@]}" "$host_registry/-/ping" >/dev/null; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$ready" -ne 1 ]; then
+  docker logs "$registry_container" 2>&1 | tee -a "$registry_log" >&2
+  exit 1
+fi
+
+stage=registry-auth
+auth_response=$(curl "${http_json_curl[@]}" \
+  --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 45 \
+  --request PUT "$host_registry/-/user/org.couchdb.user:dacs-ci" \
+  --header 'content-type: application/json' \
+  --data '{"name":"dacs-ci","password":"local-acceptance-only","email":"ci@example.invalid","type":"user","roles":[]}' \
+  2> >(tee -a "$registry_log" >&2))
+auth_token=$(AUTH_RESPONSE="$auth_response" node -e '
+const value = JSON.parse(process.env.AUTH_RESPONSE);
+const MAX_AUTH_FIELDS = 32, MIN_TOKEN_CHARS = 8, MAX_TOKEN_CHARS = 4096;
+if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > MAX_AUTH_FIELDS ||
+    Object.values(value).some(entry => entry !== null && typeof entry === "object") ||
+    typeof value.token !== "string" || value.token.length < MIN_TOKEN_CHARS || value.token.length > MAX_TOKEN_CHARS) process.exit(1);
+process.stdout.write(value.token);
+')
+
+stage=publish
+for package in \
+  "$release_set/kynesyslabs-dacs-$version.tgz" \
+  "$release_set/kynesyslabs-dacs-node-$version.tgz" \
+  "$release_set/create-dacs-agent-$version.tgz"
+do
+  test -f "$package"
+  # The publisher also proves the registry serves only this candidate version.
+  DACS_LOCAL_REGISTRY_TOKEN="$auth_token" \
+    node scripts/publish-exact-local-registry.mjs "$package" "$host_registry" \
+    2>&1 | tee -a "$registry_log"
+done
+
+stage=consumer
+# The generator arguments are recorded in the summary from these values.
+generated_mode=live-demos
+generated_role=seller
+generated_rails=both
+run_bounded docker run --rm \
+  "${consumer_network_args[@]}" \
+  --volume "$consumer_root:/work" \
+  --volume "$bounded_support:/acceptance-support:ro" \
+  --workdir /work \
+  --env DACS_PACKAGE_VERSION="$version" \
+  --env DACS_GENERATED_MODE="$generated_mode" \
+  --env DACS_GENERATED_ROLE="$generated_role" \
+  --env DACS_GENERATED_RAILS="$generated_rails" \
+  --env DACS_HOST_UID="$host_uid" \
+  --env DACS_HOST_GID="$host_gid" \
+  --env npm_config_registry="$consumer_registry" \
+  --env npm_config_audit=false \
+  --env npm_config_fund=false \
+  --env DACS_BOUNDED_NPM_HTTP=1 \
+  --env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs \
+  --env npm_config_fetch_timeout="$npm_config_fetch_timeout" \
+  --env npm_config_fetch_retries="$npm_config_fetch_retries" \
+  --env npm_config_fetch_retry_mintimeout="$npm_config_fetch_retry_mintimeout" \
+  --env npm_config_fetch_retry_maxtimeout="$npm_config_fetch_retry_maxtimeout" \
+  "$consumer_image" \
+  sh -ceu '
+    restore_host_ownership() {
+      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work || true
+    }
+    trap restore_host_ownership EXIT
+    npm install --global --ignore-scripts npm@11.19.0
+    npm create "dacs-agent@$DACS_PACKAGE_VERSION" one-click-agent -- \
+      --yes \
+      --mode "$DACS_GENERATED_MODE" \
+      --profile dacs-sdk:fixed-price-x402:v1 \
+      --rails "$DACS_GENERATED_RAILS" \
+      --role "$DACS_GENERATED_ROLE" \
+      --deploy docker
+    cd one-click-agent
+    tests_status=0
+    { npm run build && npm test; } || tests_status=$?
+    printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
+    test "$tests_status" -eq 0
+    doctor_status=0
+    DACS_DEPLOYMENT=local DACS_SELLER_PUBLIC_BASE_URL=https://seller.example/engage \
+      npm run --silent dacs:doctor -- --json > /work/doctor.json 2> /work/doctor.log || doctor_status=$?
+    printf "%s\n" "$doctor_status" > /work/doctor.exit-code
+    test "$doctor_status" -eq 5
+    audit_status=0
+    npm audit --registry https://registry.npmjs.org --omit=dev --json > /work/npm-audit.json || audit_status=$?
+    printf "%s\n" "$audit_status" > /work/npm-audit.exit-code
+    physical_status=0
+    npm sbom --sbom-format cyclonedx --omit=dev > /work/consumer-physical.cdx.json 2> /work/consumer-physical-sbom.err || physical_status=$?
+    printf "%s\n" "$physical_status" > /work/consumer-physical-sbom.exit-code
+    mkdir /work/lock-only
+    cp package.json package-lock.json /work/lock-only/
+    cd /work/lock-only
+    lock_status=0
+    npm sbom --package-lock-only --sbom-format cyclonedx --omit=dev > /work/consumer-lock.cdx.json 2> /work/consumer-lock-sbom.err || lock_status=$?
+    printf "%s\n" "$lock_status" > /work/consumer-lock-sbom.exit-code
+    engine_status=0
+    npm ci --package-lock-only --ignore-scripts --omit=optional --engine-strict > /work/engine-strict.log 2>&1 || engine_status=$?
+    printf "%s\n" "$engine_status" > /work/engine-strict.exit-code
+    # --engine-strict stops at the first violation. The disposition lists them
+    # all from the lock against these versions; npm ci without it fails its
+    # lock sync check on the nested Git dependency instead.
+    node -p "JSON.stringify({ node: process.version, npm: process.argv[1] })" "$(npm --version)" > /work/engine-versions.json
+  ' 2>&1 | tee "$artifact_stage/generation.log"
+
 project="$consumer_root/one-click-agent"
 stage=dependency-policy
 # Registry packages only (an allowlist over the manifest and every lock entry),
@@ -40,18 +396,19 @@ env \
   DACS_SELLER_EVM_SECRET_FILE="$compose_inputs/seller-evm" \
   DACS_X402_LISTING_DRAFT_FILE="$compose_inputs/listing-x402.json" \
   DACS_PAY_DEM_LISTING_DRAFT_FILE="$compose_inputs/listing-pay-dem.json" \
-  docker compose --env-file /dev/null --file "$project/compose.yaml" config \
+  node "$bounded_support/bounded-command.mjs" "$COMMAND_TIMEOUT_SECONDS" 1 docker compose --env-file /dev/null --file "$project/compose.yaml" config \
     > "$artifact_stage/compose.rendered.yaml"
 
 stage=image-build
 # BuildKit reports progress and npm errors on stderr; keep both in the log.
-docker build \
+node scripts/bounded-build.mjs "$project"
+image_started=1
+run_bounded docker build \
+  --file "$project/Dockerfile.acceptance" \
   "${build_network_args[@]}" \
   --tag "$runtime_image" \
   "$project" \
   2>&1 | tee "$artifact_stage/docker-build.log"
-image_started=1
-
 stage=image-policy
 
 docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"
@@ -294,16 +651,16 @@ fs.writeFileSync(
 })().catch(error => { console.error(error); process.exitCode = 1; });
 NODE
 
-# Publish evidence without nesting under an earlier completed result.
-if [ -e "$output_dir" ] || [ -L "$output_dir" ]; then
+# Publish evidence only into the directory this run reserved.
+if [ "$output_reserved" -ne 1 ] || [ ! -d "$output_dir" ] || [ -L "$output_dir" ]; then
   echo "output directory already exists: $output_dir" >&2
   exit 2
 fi
 mv -T -- "$artifact_stage" "$output_dir"
+registry_log="$output_dir/registry.log"
 disposition_status=0
 # --record adds the disposition and failure class to the summary.
 node scripts/registry-container-disposition.mjs --record "$output_dir/acceptance-summary.json" \
   || disposition_status=$?
 echo "acceptance evidence: $output_dir"
 exit "$disposition_status"
-}

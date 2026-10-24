@@ -18,7 +18,7 @@ it("supplies every required generated Compose variable with inert run-local inpu
     const setup = source.slice(source.indexOf("# Inert Compose inputs"), source.indexOf("\nenv \\\n"));
     // Run this Node by absolute path; a `node` found through PATH would be the host's.
     const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
-    const render = block.replace(/docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
+    const render = block.replace(/node "\$bounded_support\/bounded-command\.mjs" "\$COMMAND_TIMEOUT_SECONDS" 1 docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
     // A poisoned `node` first on PATH proves no step resolves node through PATH.
     const bin = join(root, "bin");
     mkdirSync(bin);
@@ -47,6 +47,33 @@ it("supplies every required generated Compose variable with inert run-local inpu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+it("serves the candidates' @kynesyslabs scope only from this run's publish", () => {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const config = source.split('cat > "$registry_config"')[1]!.split("\nYAML")[0]!;
+  const block = config.split("\npackages:\n")[1]!.split(/\n(?=\S)/)[0]!;
+  // Verdaccio applies the first rule whose pattern matches the package name.
+  const rules = [...block.matchAll(/^ {2}'([^']+)':\n((?: {4}.+\n?)+)/gm)].map(([, pattern, body]) => ({ pattern: pattern!,
+    proxy: /^ {4}proxy: (\S+)$/m.exec(body!)?.[1] ?? null, publish: /^ {4}publish: /m.test(body!) }));
+  const firstRule = (name: string) => rules.find(({ pattern }) => new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\0").replace(/\*/g, "[^/]*").replace(/\0/g, ".*") + "$").test(name))!;
+  for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "create-dacs-agent"]) {
+    expect(firstRule(name), name).toMatchObject({ pattern: name, proxy: null, publish: true });
+  }
+  // A future candidate in the scope is never proxied either.
+  expect(firstRule("@kynesyslabs/dacs-substrate")).toMatchObject({ pattern: "@kynesyslabs/*", proxy: null });
+  expect(firstRule("@kynesyslabs/demosdk")).toMatchObject({ proxy: "npmjs", publish: false });
+  expect(firstRule("viem")).toMatchObject({ pattern: "**", proxy: "npmjs" });
+});
+
+it("keeps Verdaccio's writable authentication state under its configured storage", () => {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const config = source.split('cat > "$registry_config"')[1]!.split("\nYAML")[0]!;
+  const storage = config.match(/^storage: (.+)$/m)![1]!;
+  const authFile = config.match(/^    file: (.+)$/m)![1]!;
+  expect(authFile.startsWith(storage + "/")).toBe(true);
+  expect(source).toContain('$registry_config:/verdaccio/conf/config.yaml:ro');
+});
+
 it("invokes only Compose config and writes the rendered artifact", () => {
   const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
   const start = source.indexOf("\nenv \\\n");
@@ -68,7 +95,7 @@ const envIndex = args.indexOf("--env-file");
 const envFile = envIndex < 0 ? path.join(path.dirname(file), ".env") : args[envIndex + 1];
 process.stdout.write(fs.readFileSync(envFile, "utf8") || "rendered config\\n");
 `, { mode: 0o700 });
-    const env = { acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: `${bin}:/usr/bin:/bin` };
+    const env = { bounded_support: join(process.cwd(), "scripts"), COMMAND_TIMEOUT_SECONDS: "1800", acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: [bin, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter) };
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], { encoding: "utf8", env });
     expect(result.status, result.stderr).toBe(0);
     const artifact = readFileSync(join(root, "compose.rendered.yaml"), "utf8");

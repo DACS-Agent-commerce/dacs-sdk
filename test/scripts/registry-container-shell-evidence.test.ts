@@ -1,8 +1,11 @@
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import ts from "typescript";
+import { liveProjectTemplates } from "../../packages/create-dacs-agent/src/liveTemplates.js";
+import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const root = resolve(import.meta.dirname, "../..");
 const source = () => readFileSync(join(root, "scripts/verify-registry-container-consumer.sh"), "utf8");
@@ -25,7 +28,7 @@ function encodeDoctor(report: Record<string, unknown>) {
   const { reportHash, ...body } = report;
   return JSON.stringify({ ...body, reportHash: sha256Hex(canonicalize(body)) });
 }
-function compose(overrides: Record<string, string> = {}, rails = "both") {
+function compose(overrides: Record<string, string> = {}, rails = "both", version = "0.1.0-test") {
   const stage = scratch();
   const consumer = scratch();
   const project = join(consumer, "one-click-agent"); mkdirSync(project);
@@ -39,7 +42,7 @@ function compose(overrides: Record<string, string> = {}, rails = "both") {
       typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true }),
     "policy-findings.json": JSON.stringify({ schema: "dacs-registry-policy-findings/v1", gitDependencies: [], productionImageDependencies: [], productionImageInventory: { scanComplete: true, errors: [], missing: [] },
       engine: { exitCode: 0, code: null, scanComplete: true, violations: [] }, lockSbom: { exitCode: 0, code: null, problems: [] }, physicalSbom: { exitCode: 0, code: null, problems: [] } }),
-    "release-provenance.json": JSON.stringify({ version: "0.1.0-test" }),
+    "release-provenance.json": JSON.stringify({ version }),
     "engine-strict.exit-code": "0\n", "npm-audit.exit-code": "0\n", "consumer-lock-sbom.exit-code": "0\n", "consumer-physical-sbom.exit-code": "0\n",
     "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n",
     "doctor.json": readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"), ...overrides,
@@ -62,7 +65,7 @@ function compose(overrides: Record<string, string> = {}, rails = "both") {
   expect(transfer.status, transfer.stderr).toBe(0);
   const script = heredoc('node - "$artifact_stage" "$version" "$runtime_image"');
   expect(script).not.toBe("");
-  const result = spawnSync(process.execPath, ["-", stage, "0.1.0-test", "image", "live-demos", "seller", rails], { cwd: root, input: script, encoding: "utf8" });
+  const result = spawnSync(process.execPath, ["-", stage, version, "image", "live-demos", "seller", rails], { cwd: root, input: script, encoding: "utf8" });
   return { ...result, transferredDoctor: existsSync(join(stage, "doctor.json")), summary: result.status === 0 ? JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8")) : undefined };
 }
 describe("shell evidence validation", () => {
@@ -95,7 +98,7 @@ describe("shell evidence validation", () => {
   it("refuses to nest new evidence under an existing result on repeat", () => {
     const directory = scratch(); const stage = join(directory, "stage"); const output = join(directory, "output"); mkdirSync(stage); mkdirSync(output);
     writeFileSync(join(stage, "acceptance-summary.json"), "new"); writeFileSync(join(output, "acceptance-summary.json"), "old");
-    const text = source(); const marker = text.indexOf("# Publish evidence without nesting");
+    const text = source(); const marker = text.indexOf("# Publish evidence ");
     const block = text.slice(marker < 0 ? text.indexOf('\nmv "$artifact_stage"') : marker, text.indexOf("disposition_status=0"));
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", block], { encoding: "utf8", env: { artifact_stage: stage, output_dir: output } });
     expect(result.status).not.toBe(0); expect(readFileSync(join(output, "acceptance-summary.json"), "utf8")).toBe("old");
@@ -212,3 +215,24 @@ it.each(["x402", "pay-dem"])("requires the shipped doctor flags for generated ra
   expect(compose({ "doctor.json": JSON.stringify(report) }, rail).summary.functionalPassed).toBe(true);
   expect(compose({}, rail).summary.functionalPassed).toBe(false);
 });
+
+
+it("admits the actual generated doctor with the consumer command environment", () => {
+  const project = scratch();
+  const templates = liveProjectTemplates({ packageName: "acceptance", deployment: "docker", role: "seller", rails: "both", runtimeUid: 10001, runtimeGid: 10001 });
+  for (const [name, contents] of Object.entries(templates)) {
+    const original = join(project, name); mkdirSync(dirname(original), { recursive: true, mode: 0o700 }); writeFileSync(original, contents);
+    if (name.endsWith(".ts") && !name.startsWith("test/")) {
+      const output = join(project, "dist", name.replace(/\.ts$/, ".js")); mkdirSync(dirname(output), { recursive: true });
+      writeFileSync(output, ts.transpileModule(contents, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText);
+    }
+  }
+  symlinkSync(join(root, "node_modules"), join(project, "node_modules"));
+  const doctor = source().split("    doctor_status=0\n")[1]?.split('    printf "%s')[0]; expect(doctor).toBeTruthy();
+  const command = doctor?.replace("npm run --silent dacs:doctor -- --json", `'${process.execPath}' --import '${join(root, "packages/dacs-node/dist/demosLoader.js")}' dist/src/cli.js doctor --json`)
+    .replaceAll("/work/doctor.json", join(project, "doctor.json")).replaceAll("/work/doctor.log", join(project, "doctor.log"));
+  const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", `doctor_status=0\n${command}\ntest "$doctor_status" -eq 5`], { cwd: project, encoding: "utf8", env: { PATH: process.env.PATH } });
+  expect(result.status, result.stderr + (existsSync(join(project, "doctor.log")) ? readFileSync(join(project, "doctor.log"), "utf8") : "")).toBe(0);
+  const report = JSON.parse(readFileSync(join(project, "doctor.json"), "utf8"));
+  expect(compose({ "doctor.json": JSON.stringify(report) }, "both", report.sdkVersion).summary, JSON.stringify(report.checks.filter((check: { required: boolean; status: string }) => check.required && check.status !== "pass"))).toMatchObject({ functionalPassed: true, doctor: { disposition: "blocked-without-credentials" } });
+}, 30000);
