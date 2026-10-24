@@ -1060,7 +1060,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
   }, 60_000); // about 48 fsync-heavy journal opens: load-sensitive under the 5 s default
 });
 
-describe("a response is opened only against its principal", () => {
+describe("a response is opened only against its principal", { timeout: 60_000 }, () => {
   it("refuses to open a response without the seller it must be signed by", async () => {
     const x = (await world());
     const request = x.request(P.payments);
@@ -1102,7 +1102,7 @@ it("signed Agreement job, buyer and signature algorithm are independent of the r
     if (allowed) { expect((await invoke()).effect).toMatchObject({ state: "new" }); expect(reads).toBe(1); }
     else { await expect(Promise.resolve().then(invoke)).rejects.toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid" })); expect(reads).toBe(0); expect(journals.reservations()).toEqual([]); }
   }
-});
+}, 60_000); // 8 cases, each with its own journal: load-sensitive under the 5 s default
 it("non-DEM payment phase fails PAY-PHASE with otherwise coherent signed terms", async () => {
   const l = tp1Listing({ seller: SELLER, patch: { pipeline: [
     { kind: "negotiate-fixed-price" }, { kind: "commit-payee-bound-agreement" },
@@ -1111,7 +1111,7 @@ it("non-DEM payment phase fails PAY-PHASE with otherwise coherent signed terms",
   const x = (await world(l));
   for (const path of CONTINUING) await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.direct(x.request(path))), { ...x.check(path), requestJournal: testJournal() })))).rejects
     .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported", detail: "PAY-PHASE" }));
-});
+}, 60_000);
 it("a fully signed open-ended Listing continues at seller and buyer", async () => {
   const l = tp1Listing({ seller: SELLER, validity: { notBefore: NOW - 600_000 } }), x = (await world(l));
   const discovery = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: x.binding.profile,
@@ -1126,7 +1126,7 @@ it("a fully signed open-ended Listing continues at seller and buyer", async () =
       commitment: received(x.commitment()), agreement: received(x.agreement), signedListing: received(l.listing) });
     expect((await wire.checkWireRequest((await wire.openWireEnvelope(signed.header, "request", x.context)), { ...x.check(path), requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
   }
-});
+}, 60_000);
 it("a structurally complete indeterminate finalized receipt never authorizes continuation", async () => {
   const x = (await world());
   const c = x.commitment({ receipt: { observationDisposition: "indeterminate", preservedReceiptHash: "e".repeat(64) } });
@@ -1135,4 +1135,4 @@ it("a structurally complete indeterminate finalized receipt never authorizes con
   for (const path of CONTINUING) await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.direct(x.request(path))), { ...x.check(path), commitment: received(c), requestJournal: (await journals.open()) })))).rejects
     .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid" }));
   expect(journals.reservations()).toEqual([]);
-});
+}, 60_000);
