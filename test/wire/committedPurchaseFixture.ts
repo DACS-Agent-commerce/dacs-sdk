@@ -64,7 +64,7 @@ export async function committedPurchase(changeListing: (listing: Listing) => voi
       transactionRef: { kind: "demos-storage-program", value: "test-write-transaction" }, writer: SELLER, nonce: "17",
       state: "finalized", observationDisposition: "established", observedAt: COMMITTED_AT + 1_000,
       blockRef: { id: "test-block", height: "100", timestamp: COMMITTED_AT }, evidence: { kind: "test-chain-proof", value: "test-proof" } } };
-  const binding = fixtureBinder(wire)({ record: wire.TP1_APPROVED_IDENTITY_RECORD,
+  const binding = await fixtureBinder(wire)({ record: wire.TP1_APPROVED_IDENTITY_RECORD,
     local: { endpoint: "https://rpc.identity.invalid/", transportAuthority: "test-transport", connectionId: "test-connection" } });
   const scope = { seller: SELLER, listingPin: pin, now: COMMITTED_AT, binding,
     request: { jobId: JOB, agreementHash: hash(agreement), buyer: BUYER } };
