@@ -189,6 +189,17 @@ test('payment route accepts a bound paying key and hash and refuses either subst
   }
 });
 
+for (const delegated of [false, true]) test(`payment route refuses a body naming another job than the signed one (delegated=${delegated})`, async () => {
+  const otherJobId = '01J8N4YV7YVYQ4DB7M8T4C7W0B', payment = { payerPayingKey: buyer.claim, txHash: 'a'.repeat(64) };
+  const body = { ...payment, jobId: otherJobId, transportIdentity: { jobId } }, w = world({ delegated, route: '/dacs/v1/payments', requestBody: body });
+  const asked = await w.request();
+  let calls = 0;
+  assert.throws(() => w.validate(asked, { onAuthenticatedBody: () => { calls++; } }), { code: 'peer_job_mismatch' });
+  assert.equal(calls, 0);
+  const own = world({ delegated, route: '/dacs/v1/payments', requestBody: { ...payment, jobId, transportIdentity: { jobId } } });
+  own.validate(await own.request());
+});
+
 test('challenge route authenticates its exact context scope and rejects a changed field', async () => {
   const { buyerBundleHash, ...scope } = world({ context: true }).body.scope;
   const w = world({ route: SELLER_CONTEXT_CHALLENGE_PATH, requestBody: { scope }, bindingHash: sellerContextScopeHash(scope) });
