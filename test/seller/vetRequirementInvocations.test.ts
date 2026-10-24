@@ -280,13 +280,26 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
   });
 
   test("retains the Listing-owned requirement for one record shared by buyer and seller", () => {
-    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim) };
+    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
     const entry = invocation(sharedParty, buyerClaim, {
       ...buyerRequirement, preferredPresentation: "per-claim",
     });
     expect(sellerFulfilmentVetRequirementsViolation([entry], {
       jobId, buyer: sharedParty, seller: sharedParty, buyerRequirement,
     })).toMatch(/differs from its party/);
+  });
+
+  test.each([
+    ["different", "a".repeat(64), "b".repeat(64)],
+    ["missing", undefined, undefined],
+    ["malformed", "not-a-bundle-hash", "not-a-bundle-hash"],
+  ])("refuses %s authenticated bundle hashes for a shared Vet record", (_label, buyerHash, sellerHash) => {
+    const shared = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim) };
+    const entries = [invocation(shared, buyerClaim)];
+    const input = { jobId, buyer: { ...shared, bundleHash: buyerHash },
+      seller: { ...shared, bundleHash: sellerHash }, buyerRequirement };
+    expect(sellerFulfilmentVetRequirementsViolation(entries, input))
+      .toMatch(/one Vet record cannot represent different authenticated party identities/);
   });
 
   test.each(["ipfs", "https"] as const)("refuses a %s composite anchor with an otherwise correct locator", (kind) => {
@@ -386,7 +399,7 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
   });
 
   test("accepts one matching invocation for a record and identity shared by buyer and seller", () => {
-    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim) };
+    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
     expect(sellerFulfilmentVetRequirementsViolation([invocation(sharedParty, buyerClaim)], {
       jobId, buyer: sharedParty, seller: sharedParty, buyerRequirement,
     })).toBeNull();
