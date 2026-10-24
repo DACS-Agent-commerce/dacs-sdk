@@ -2,16 +2,17 @@
 // install both tarballs into a temporary application outside this repository,
 // then import and host it from a clean `node` process with no test hooks.
 import test from 'node:test';
+import {createHash}from'node:crypto';
+import {defaultSellerConsumer,sellerSourceFingerprint}from'../../../scripts/prepare-seller-consumer.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath,pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const packageDirectory = join(root, 'packages', 'dacs-seller');
-const npm = (args, cwd) => execFileSync('npm', args, { cwd, encoding: 'utf8', timeout: 240000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 // Entry modules that could not be imported without test hooks before the run-time port.
 const ENTRY_MODULES = ['src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-context-route.mjs', 'src/dacs/seller-http.mjs', 'src/dacs/seller-agent.mjs',
   'src/dacs/seller-durable-state.mjs', 'src/devnet-demo/artifact-anchor.mjs', 'src/dacs/commit-on-signature.mjs'];
@@ -21,16 +22,19 @@ const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresent
   'contributionVerifier', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgent', 'createSellerAgentClient', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
   'createSellerTransportServerAuth', 'createSellerTransportStore', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 
-test('every executable seller test runs through both supported entry points',()=>{
- const actual=readdirSync(join(root,'packages/dacs-seller/test')).filter(name=>name.endsWith('.test.mjs')).sort();
- const script=JSON.parse(readFileSync(join(root,'package.json'),'utf8')).scripts['seller:test'];
- const cli=[...script.matchAll(/packages\/dacs-seller\/test\/([^ ]+\.test\.mjs)/g)].map(match=>match[1]).sort();
- const wrapper=readFileSync(join(root,'test/seller/standalone.test.ts'),'utf8');
- const list=/const files\s*=\s*\[([\s\S]*?)\];/.exec(wrapper)?.[1];
- assert.ok(list,'the CI wrapper must declare its executable file list');
- const ci=[...list.matchAll(/'([^']+\.test\.mjs)'/g)].map(match=>match[1]).sort();
- assert.deepEqual(cli,actual,'seller:test must execute every test file exactly once');
- assert.deepEqual(ci,actual,'the core CI wrapper must execute the same complete set');
+test('every executable seller test has one complete CLI and CI entry',()=>{
+ const actual=readdirSync(join(packageDirectory,'test')).filter(name=>name.endsWith('.test.mjs')).sort();
+ const listed=JSON.parse(execFileSync(process.execPath,['scripts/run-seller-tests.mjs','--list'],{cwd:root,encoding:'utf8'}));
+ assert.deepEqual(listed,actual);assert.equal(new Set(listed).size,actual.length);assert.ok(listed.includes('seller-transport-auth.test.mjs'));
+ const script=JSON.parse(readFileSync(join(root,'package.json'),'utf8')).scripts['seller:test'];assert.equal(script,'node scripts/run-seller-tests.mjs');
+ const ci=readFileSync(join(root,'.github/workflows/ci.yml'),'utf8');assert.equal((ci.match(/run: npm run seller:test/g)??[]).length,1);assert.doesNotMatch(ci,/run: node[^\n]+packages\/dacs-seller\/test\/\*/);
+ assert.equal(existsSync(join(root,'test/seller/standalone.test.ts')),false);
+});
+test('seller manifest declares its pinned native dependency and all local runtime imports',()=>{
+ const manifest=JSON.parse(readFileSync(join(packageDirectory,'package.json'),'utf8')),lock=JSON.parse(readFileSync(join(root,'package-lock.json'),'utf8'));
+ assert.equal(manifest.dependencies?.['better-sqlite3'],lock.packages['node_modules/better-sqlite3'].version);
+ assert.equal(lock.packages['packages/dacs-seller'].dependencies?.['better-sqlite3'],manifest.dependencies['better-sqlite3']);
+ for(const file of manifest.files.filter(name=>name.endsWith('.mjs'))){const source=readFileSync(join(packageDirectory,file),'utf8');for(const match of source.matchAll(/from ['"](\.[^'"]+\.mjs)['"]/g)){const local=new URL(match[1],pathToFileURL(join(packageDirectory,file)));assert.ok(manifest.files.includes(relative(packageDirectory,fileURLToPath(local))),`${file} dependency ${match[1]} ships`);}}
 });
 
 test('the packed seller installs outside the repository and serves one Listing without test hooks', { timeout: 600000 }, async (t) => {
@@ -43,7 +47,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.equal(manifest.version, core.version);
   assert.equal(manifest.type, 'module');
   assert.deepEqual(manifest.exports, { '.': './src/index.mjs', './src/*': './src/*', './package.json': './package.json', './PROFILE.json': './PROFILE.json' });
-  assert.match(manifest.engines.node, /^>=22\./);
+  assert.equal(manifest.engines.node,core.engines.node);
   assert.equal(manifest.peerDependencies['@kynesyslabs/dacs'], core.version);
   assert.ok(Array.isArray(manifest.files) && manifest.files.every((file) => !file.includes('*')), 'files is an explicit list');
   for (const file of NOT_SHIPPED) assert.ok(!manifest.files.includes(file), `${file} is not part of the package`);
@@ -52,11 +56,15 @@ test('the packed seller installs outside the repository and serves one Listing w
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-installed-')));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   assert.ok(relative(root, work).startsWith('..') && isAbsolute(work), 'the application is outside the repository');
-  const packs = join(work, 'packs'), app = join(work, 'app');
-  mkdirSync(packs); mkdirSync(app);
-  const [corePack] = JSON.parse(npm(['pack', '--json', '--ignore-scripts', '--pack-destination', packs], root));
-  const [sellerPack] = JSON.parse(npm(['pack', '--json', '--ignore-scripts', '--pack-destination', packs, '--workspace', '@kynesyslabs/dacs-seller'], root));
-
+  const preparedPath=process.env.DACS_SELLER_SMOKE_DIR??defaultSellerConsumer;
+  assert.ok(existsSync(join(preparedPath,'prepared.json')),'run npm run seller:prepare before the smoke');
+  const app=realpathSync(preparedPath);
+  assert.ok(relative(root,app).startsWith('..'),'prepared consumer is outside the repository');
+  assert.ok(existsSync(join(app,'prepared.json')),'run npm run seller:prepare before the smoke');
+  const prepared=JSON.parse(readFileSync(join(app,'prepared.json'),'utf8'));
+  assert.equal(prepared.sourceFingerprint,sellerSourceFingerprint(),'setup must provision these exact sources');
+  assert.equal(prepared.lockDigest,createHash('sha256').update(readFileSync(join(app,'package-lock.json'))).digest('hex'));
+  const {sellerPack}=prepared;
   // The governing profile, admission guidance and source references ship with the source.
   for (const file of ['PROFILE.json', 'ADMISSION.md', 'SOURCES.md']) assert.ok(manifest.files.includes(file));
   assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
@@ -67,14 +75,9 @@ test('the packed seller installs outside the repository and serves one Listing w
   for (const path of packed) assert.doesNotMatch(path, /(?:^|\/)(?:wallet|embedded-wallet|test|port-sources)\/|operator-custody|seller-issuance|seller-write-batch/, `${path} is a run-time seller module`);
   for (const file of ENTRY_MODULES) assert.ok(packed.includes(file), `${file} is shipped`);
 
-  writeFileSync(join(app, 'package.json'), `${JSON.stringify({ name: 'installed-seller-app', private: true, type: 'module' })}\n`);
-  npm(['install', '--no-audit', '--no-fund', '--ignore-scripts', '--omit=optional', '--no-package-lock', '--prefer-offline',
-    join(packs, corePack.filename), join(packs, sellerPack.filename)], app);
-  assert.ok(!existsSync(join(app, 'node_modules', '@kynesyslabs', 'dacs-seller', 'test')), 'tests are not installed');
-  copyFileSync(new URL('./helpers/installed-seller-host.mjs', import.meta.url), join(app, 'run.mjs'));
-
+  assert.ok(!existsSync(join(app,'node_modules','@kynesyslabs','dacs-seller','test')),'test files are not shipped');
   // A clean child: no inherited flags, loaders, hooks or NODE_OPTIONS.
-  const env = { PATH: process.env.PATH, HOME: work, TMPDIR: work };
+  const env={PATH:process.env.PATH,TMPDIR:work,NPM_CONFIG_OFFLINE:'true',NPM_CONFIG_CACHE:join(work,'empty-npm-cache')};mkdirSync(env.NPM_CONFIG_CACHE);
   const child = spawnSync(process.execPath, ['run.mjs'], { cwd: app, env, encoding: 'utf8', timeout: 120000, maxBuffer: 8 * 1024 * 1024 });
   assert.equal(child.status, 0, `installed seller run failed\n${child.stdout}\n${child.stderr}`);
   const out = JSON.parse(child.stdout.trim().split('\n').at(-1));

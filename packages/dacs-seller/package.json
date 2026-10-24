@@ -14,7 +14,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=22.13.0"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "exports": {
     ".": "./src/index.mjs",
@@ -45,6 +45,7 @@
     "src/dacs/seller-proposal-time.mjs",
     "src/dacs/seller-transport-auth.mjs",
     "src/dacs/session-admission.mjs",
+    "src/dacs/session-challenge-limits.mjs",
     "src/dacs/wallet-transactions.mjs",
     "src/devnet-demo/agreement-context.mjs",
     "src/devnet-demo/artifact-anchor.mjs",
@@ -74,5 +75,8 @@
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"
   },
-  "private": true
+  "private": true,
+  "dependencies": {
+    "better-sqlite3": "12.6.2"
+  }
 }

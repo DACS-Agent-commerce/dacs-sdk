@@ -1,4 +1,4 @@
-# Seller source kit
+# `@kynesyslabs/dacs-seller`
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
@@ -16,11 +16,10 @@ The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
 Requires Node.js 20.19.x or 22.12+ and a core SDK built from this checkout.
-Run the example from a script in `packages/dacs-seller/`.
+The private package uses a core tarball built from the same checkout.
 
 ```js
-import { startSellerHost } from './src/index.mjs';
-import { createOperatorBuyerAccess } from './src/devnet-demo/buyer-access.mjs';
+import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
 const host = await startSellerHost({
   signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
@@ -461,3 +460,20 @@ The rail availability checks implement DACS-4 RAV-R1 through RAV-R3 and
 RAV-R5. The seller does not emit the RAV-R4 `errorClass: substrate` field.
 The SR-2 fixture's genesis response (numeric block zero and a `confirmed`
 status) is a simulation contract, not the pinned node's genesis RPC shape.
+
+## Package checks
+
+From the repository root, build and provision the locked smoke consumer before testing:
+
+```sh
+npm run build
+npm run seller:prepare
+npm run seller:test
+```
+
+Setup derives the consumer graph from `package-lock.json`, packs this checkout,
+and installs the native SQLite binding. Tests use that prepared environment
+offline and run every executable seller file once. Root `npm test` runs the
+separate TypeScript suite. Existing unresolved stack failures still block a
+complete seller-suite pass. For another setup, pass a new empty directory to
+`seller:prepare -- <path>` and set `DACS_SELLER_SMOKE_DIR` to it for tests.

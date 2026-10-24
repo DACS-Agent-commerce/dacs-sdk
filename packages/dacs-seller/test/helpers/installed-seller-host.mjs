@@ -4,7 +4,7 @@
 // application's node_modules, never through this repository.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { generateKeyPairSync, sign, verify } from 'node:crypto';
+import { sign, verify } from 'node:crypto';
 import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -40,23 +40,17 @@ if (second === null) {
 }
 
 // Wallet-shaped keys: the wallet signs raw UTF-8 messages and answers 0x-hex.
-function key() {
-  const pair = generateKeyPairSync('ed25519');
-  const raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
-  const address = `0x${raw.toString('hex')}`;
-  return { address, claim: `did:demos:agent:${raw.toString('hex')}`, publicKey: pair.publicKey,
-    sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey),
-    signWallet: (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}` };
-}
+function key(tag){const seed=new Uint8Array(32).fill(tag),privateKey=core.privateKeyFromSeed(seed),publicKey=core.publicKeyFromSeed(seed),raw=core.rawPublicKey(publicKey);return{address:'0x'+Buffer.from(raw).toString('hex'),claim:'did:demos:agent:'+Buffer.from(raw).toString('hex'),privateKey,publicKey,sign:bytes=>sign(null,Buffer.from(bytes),privateKey),signWallet:message=>'0x'+sign(null,Buffer.from(message),privateKey).toString('hex')};}
 const identityFor = (party, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'installed-package' });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
 };
 
-const sellerKey = key(), buyerKey = key(), now = Date.now();
+const sellerKey=key(17),buyerKey=key(12),now=1780000000000;
+let nextJob=0;const freshJob=()=>'01J8N4YV7YVYQ4DB7M8T'+String(++nextJob).padStart(6,'0');
 // A TEST rail steward and its signed demos-native:DEM definition (PA-1, in-code):
 // the host selects the rail only from this authority.
-const steward = generateKeyPairSync('ed25519'), stewardPublicKey = steward.publicKey.export({ format: 'jwk' }).x;
+const steward = key(23), stewardPublicKey = steward.publicKey.export({ format: 'jwk' }).x;
 const stewardClaim = `did:demos:agent:${Buffer.from(stewardPublicKey, 'base64url').toString('hex')}`;
 const unsignedRail = { railVersion: 1, railId: 'demos-native:DEM', railType: 'demos-native', asset: { kind: 'native-dem', symbol: 'DEM', decimals: 9 }, network: { kind: 'demos' },
   phaseHandler: 'pay-dem', parameters: {}, availability: 'live', governance: { proposedBy: stewardClaim, acceptedAt: 1, anchoring: 'in-code' } };
@@ -65,6 +59,7 @@ const railAuthority = { rail: { ...unsignedRail, signature: { algorithm: 'ed2551
 const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Installed seller', publicEndpoint: 'https://seller.invalid/agent',
   listingId: 'installed-report', listingVersion: 1, title: 'Installed package report', description: 'A report served by the installed seller package.',
   expectedSizeBytes: 1024, category: 'services.market-report', tags: ['installed'], priceDem: '2.5', notBefore: now - 60000 });
+draft.offering.deliverable.expectedSizeBytes=1024;
 const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft)));
 const pin = seller.listingPin(listing);
 out.sellerClaim = sellerKey.claim;
@@ -79,7 +74,7 @@ const refuse = (name) => async () => { reached.push(name); throw new Error(`${na
 // presents it through the public builder's `sessionNonce`. The replayed job's
 // presentation carries a nonce the host never issued; the bare job's carries
 // no session nonce at all (DACS-1 §6.3.2).
-const jobId = core.generateCanonicalJobId(), unvettedJobId = core.generateCanonicalJobId(), fabricatedJobId = core.generateCanonicalJobId(), replayedJobId = core.generateCanonicalJobId(), bareJobId = core.generateCanonicalJobId();
+const jobId = freshJob(), unvettedJobId = freshJob(), fabricatedJobId = freshJob(), replayedJobId = freshJob(), bareJobId = freshJob();
 const issuedNonces = new Map(), ownBundles = new Map();
 const presentFor = (id, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: buyerKey.address, presentedAt, ...(issuedNonces.has(id) ? { sessionNonce: issuedNonces.get(id) } : { sessionSeed: 'installed-package' }) });
@@ -97,7 +92,7 @@ const bundleFor = (id) => ownBundles.get(id);
 const vetRecords = new Map(), admissionCalls = [];
 const vetReceipt = (ref) => ({ receiptVersion: '1', substrate: 'demos', finalityProfile: 'TEST-installed', logicalAddress: ref.anchor.locator, nativeAddress: `TEST-native-${ref.contentHash.slice(0, 16)}`,
   contentHash: ref.contentHash, transactionRef: { kind: 'demos', value: core.sha256Hex(`installed vet tx ${ref.contentHash}`) }, writer: ref.signer, state: 'finalized', observationDisposition: 'established',
-  observedAt: Date.now(), blockRef: { id: 'TEST-block', height: '1', timestamp: Date.now() }, evidence: { kind: 'TEST', value: 'installed' } });
+  observedAt: now, blockRef: { id: 'TEST-block', height: '1', timestamp: now }, evidence: { kind: 'TEST', value: 'installed' } });
 const verifierOf = (party) => (party === sellerKey.claim ? buyerKey : sellerKey);
 const vetRef = async (jobId, party, bundle) => {
   const verifier = verifierOf(party);
@@ -107,7 +102,7 @@ const vetRef = async (jobId, party, bundle) => {
   return { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: verifier.claim };
 };
 const sessionAdmission = {
-  readRevocationSurfaces: async () => [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: Date.now() }],
+  readRevocationSurfaces: async () => [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: now }],
   readRevocationMarker: refuse('sessionAdmission.readRevocationMarker'),
   admit: async (query) => {
     admissionCalls.push(query.jobId);
@@ -141,6 +136,7 @@ const journalDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wa
 const journal = seller.createPaymentEvidenceWalletJournal({ path: join(journalDirectory, 'wallet-journal.sqlite'), signCreate: refuse('wallet.signCreate'), broadcast: refuse('wallet.broadcast'),
   readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState') });
 const capabilities = () => ({
+  now:()=>now,
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: journal.anchorEvidence, fetchImpl: refuse('nativePaymentEvidence.fetch') }),
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence,
   demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', resolveBuyer: refuse('demDeliveryContext.resolveBuyer'),
@@ -158,7 +154,7 @@ const capabilities = () => ({
 });
 const dataDirectory = second ?? realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-host-')));
 const signer = { claim: sellerKey.claim, sign: sellerKey.sign };
-const start = (extra = {}) => seller.startSellerHost({ signer, listing, dataDirectory, ...capabilities(), ...extra });
+let activeHost=null;const start=async(extra={})=>activeHost=await seller.startSellerHost({signer,listing,dataDirectory,...capabilities(),...extra});
 
 // Refused configurations: each names its cause and starts nothing.
 const refusal = async (options) => { try { const host = await seller.startSellerHost(options); await host.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
@@ -203,7 +199,7 @@ const proposalFor = async (input) => {
 fabricatedJobs.add(fabricatedJobId);
 let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted, fabricated, replayed, bare;
 const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
-  buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin, agreementHash }) }) });
+  buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, now:()=>now,resolveJob: () => ({ listingPin, agreementHash }) }) });
 // Independent of the package: node:crypto against the seller's own key.
 const independentVerifier = ({ party, algorithm, value, signedBytes }) => {
   if (algorithm !== 'ed25519' || party !== sellerKey.claim && party !== buyerKey.claim) return 'invalid';
@@ -227,7 +223,7 @@ unvetted = await proposalFor(seller.agreementInput({ jobId: unvettedJobId, listi
 fabricated = await proposalFor(fabricatedInput(fabricatedJobId));
 replayed = await proposalFor(await vettedInput(replayedJobId));
 bare = await proposalFor(await vettedInput(bareJobId));
-out.issuedChallenge = (({ sessionNonce, issuedAt, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - issuedAt }))(host.issueSessionChallenge({ jobId: core.generateCanonicalJobId(), buyer: buyerKey.claim }));
+out.issuedChallenge = (({ sessionNonce, issuedAt, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - issuedAt }))(host.issueSessionChallenge({ jobId: freshJob(), buyer: buyerKey.claim }));
 const client = clientFor(host.url);
 const first = await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
 out.proposal = { disposition: first.disposition, role: first.contribution?.role ?? null, signer: first.contribution?.party ?? null };
@@ -265,6 +261,7 @@ await host.close();
   out.hostError = { name: error.name, code: error.code ?? null, message: String(error.message).slice(0, 300) };
   process.exitCode = 1;
 }
+await activeHost?.close().catch(()=>{});
 out.reached = reached;
 const label = (id) => id === jobId ? 'vetted' : id === unvettedJobId ? 'unvetted' : id === fabricatedJobId ? 'fabricated' : id === replayedJobId ? 'replayed' : id === bareJobId ? 'bare' : 'other';
 out.vetContextJobs = [...new Set(vetContextCalls)].map(label);
