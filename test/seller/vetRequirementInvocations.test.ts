@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import type { AttestationRef, BundleRequirement, ClaimRequirement } from "../../src/artifacts/index.js";
@@ -12,7 +13,8 @@ import {
 
 // The seller-side pre-signature check runs the delivery runner's own
 // invocation predicate (isSellerFulfilmentVetInvocationMismatch), so an
-// invocation set the runner refuses after payment is refused before signing.
+// invocation mismatch is refused before signing; session roster authentication
+// (including shared bundle hashes and orchestrator bindings) remains separate.
 describe("sellerFulfilmentVetRequirementsViolation", () => {
   const jobId = generateCanonicalJobId({ timestamp: 1_780_000_000_000, entropy: new Uint8Array(10).fill(3) });
   const buyerClaim = `did:demos:agent:${"b1".repeat(32)}`;
@@ -133,6 +135,51 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     expect(check(entries)).toMatch(/.+/);
   });
 
+  test.each(["buyer", "seller"] as const)("refuses a noncanonical %s party reference before normalization", (role) => {
+    const party = structuredClone(role === "buyer" ? buyer : seller);
+    expect(party.vetRecordRef.anchor.locator).toContain("K");
+    party.vetRecordRef.anchor.locator = party.vetRecordRef.anchor.locator.replace("K", "\u212a");
+    expect(sellerFulfilmentVetRequirementsViolation(valid, {
+      jobId, buyer, seller, [role]: party, buyerRequirement,
+    })).toBe(`the ${role} Vet reference or claim is malformed`);
+  });
+
+  test.each(["required", "oneOf alternatives", "oneOf groups", "combined requirements",
+    "freshness", "dealSpecific", "combined results"])("bounds %s before matching", (field) => {
+    for (const count of [64, 65]) {
+      const requirement: BundleRequirement = { ...buyerRequirement, required: [requiredClaim] };
+      const entry = invocation(buyer, sellerClaim, requirement);
+      entry.freshness = [expectedResult(requiredClaim)];
+      if (field === "required") requirement.required = Array.from({ length: count }, () => requiredClaim);
+      if (field === "oneOf alternatives") requirement.oneOf = [Array.from({ length: count - 1 }, () => requiredClaim)];
+      if (field === "oneOf groups") requirement.oneOf = Array.from({ length: count - 1 }, () => [requiredClaim]);
+      if (field === "combined requirements") {
+        requirement.required = Array.from({ length: 32 }, () => requiredClaim);
+        requirement.oneOf = [Array.from({ length: count - 32 }, () => requiredClaim)];
+      }
+      entry.requirement = structuredClone(requirement);
+      if (field.includes("results") || field === "freshness" || field === "dealSpecific") {
+        const results = Array.from({ length: count }, (_, i) => expectedResult(requiredClaim, `test:bounded:${i}`));
+        entry.freshness = field === "dealSpecific" ? [] : results;
+        if (field === "dealSpecific") entry.dealSpecific = results;
+        if (field === "combined results") entry.dealSpecific = entry.freshness.splice(32);
+      }
+      const reason = check([entry, valid[1]], requirement);
+      if (count === 64) expect(reason).toBeNull();
+      else expect(reason).toMatch(/limit/);
+    }
+  });
+
+  test("documents the separate session-roster authentication precondition", () => {
+    const source = readFileSync(new URL("../../src/seller/fulfilmentAuditSource.ts", import.meta.url), "utf8");
+    const start = source.indexOf("export function sellerFulfilmentVetRequirementsViolation(");
+    expect(start).toBeGreaterThan(0);
+    const doc = source.slice(source.lastIndexOf("/**", start), start);
+    expect(doc).toContain("Authenticate the SessionRecord roster separately");
+    expect(doc).toContain("bundle hashes");
+    expect(doc).toContain("orchestrator");
+  });
+
   test("answers a refusal for a shape it does not take, and never throws", () => {
     expect(() => check({ buyer: valid[0] })).not.toThrow();
     expect(() => check(null)).not.toThrow();
@@ -233,13 +280,26 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
   });
 
   test("retains the Listing-owned requirement for one record shared by buyer and seller", () => {
-    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim) };
+    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
     const entry = invocation(sharedParty, buyerClaim, {
       ...buyerRequirement, preferredPresentation: "per-claim",
     });
     expect(sellerFulfilmentVetRequirementsViolation([entry], {
       jobId, buyer: sharedParty, seller: sharedParty, buyerRequirement,
     })).toMatch(/differs from its party/);
+  });
+
+  test.each([
+    ["different", "a".repeat(64), "b".repeat(64)],
+    ["missing", undefined, undefined],
+    ["malformed", "not-a-bundle-hash", "not-a-bundle-hash"],
+  ])("refuses %s authenticated bundle hashes for a shared Vet record", (_label, buyerHash, sellerHash) => {
+    const shared = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim) };
+    const entries = [invocation(shared, buyerClaim)];
+    const input = { jobId, buyer: { ...shared, bundleHash: buyerHash },
+      seller: { ...shared, bundleHash: sellerHash }, buyerRequirement };
+    expect(sellerFulfilmentVetRequirementsViolation(entries, input))
+      .toMatch(/one Vet record cannot represent different authenticated party identities/);
   });
 
   test.each(["ipfs", "https"] as const)("refuses a %s composite anchor with an otherwise correct locator", (kind) => {
@@ -339,7 +399,7 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
   });
 
   test("accepts one matching invocation for a record and identity shared by buyer and seller", () => {
-    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim) };
+    const sharedParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
     expect(sellerFulfilmentVetRequirementsViolation([invocation(sharedParty, buyerClaim)], {
       jobId, buyer: sharedParty, seller: sharedParty, buyerRequirement,
     })).toBeNull();
