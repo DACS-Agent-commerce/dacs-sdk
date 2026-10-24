@@ -77,7 +77,8 @@ for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
     const module = Object.keys(modules).find(path => modules[path].split(' ').includes(name));
     const original = await import(new URL(module, import.meta.resolve('@kynesyslabs/dacs-client')));
     const alias = { createPurchaseService: 'createPublicPurchaseService', purchaseNext: 'diagnosticPurchaseNext', PURCHASE_STATUS_HELP: 'DIAGNOSTIC_PURCHASE_STATUS_HELP', protocolView: 'diagnosticProtocolView' };
-    assert.equal(client[name], original[alias[name] ?? name], 'export retains its defining identity');
+    if (name === 'createProtocolPurchases') assert.notEqual(client[name], original[name], 'public protocol uses a held facade');
+    else assert.equal(client[name], original[alias[name] ?? name], 'export retains its defining identity');
   });
 }
 
@@ -168,4 +169,21 @@ for (const profileAuthority of [undefined, {}, { standardRevision: 'old' }, { st
 test('unqualified node reader and held transport constructors are outside the public candidate', async () => {
   const client = await import('@kynesyslabs/dacs-client');
   for (const name of ['createDemosChainReader', 'createDemosSr2WalletBridge', 'isDevnetAgreementTransport', 'isDevnetNativeTransport']) assert.equal(client[name], undefined);
+});
+
+test('the complete public protocol method set refuses actions before host effects', async () => {
+  const client = await import('@kynesyslabs/dacs-client');
+  const { createProtocolPurchases: internalFactory } = await import('../src/dacs/protocol-purchases.mjs');
+  let effects = 0;
+  const effect = () => { effects++; throw new Error('TEST-host-effect'); };
+  const options = { store: client.createSqlitePurchaseStore(), ops: { transition: effect, record: effect } };
+  const internal = internalFactory(options), publicProtocol = client.createProtocolPurchases(options);
+  const passive = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment']);
+  assert.deepEqual(Object.keys(publicProtocol).sort(), Object.keys(internal).sort());
+  for (const [name, method] of Object.entries(publicProtocol)) {
+    if (typeof method !== 'function' || passive.has(name)) continue;
+    assert.throws(() => method({ terms: { buyer: { wallet: 'TEST-wallet' } }, state: { protocol: {} } }, 'TEST-reason'),
+      error => error instanceof client.OperationError && error.code === 'profile_not_admitted', name);
+  }
+  assert.equal(effects, 0);
 });
