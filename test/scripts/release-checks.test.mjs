@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
   packages, plannedVersion, validateManifest, validateFiles, publicEntries,
-  validateLock, validateArtifactSet,
+  validateLock, prepare, dryRun, validateArtifactSet,
 } from "../../scripts/release-checks.mjs";
 
 const core = packages[0];
@@ -84,6 +84,83 @@ test("consumer lock refuses links and directory dependencies but admits the inpu
   }
 });
 
+async function fixture(fn) {
+  const root = await mkdtemp(join(tmpdir(), "dacs-release-test-"));
+  try { return await fn(root); } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+async function sourceTree(root, version = "0.1.0-alpha.0") {
+  for (const definition of packages) {
+    const dir = join(root, definition.directory); const p = { ...manifest(definition), version };
+    await mkdir(join(dir, "dist"), { recursive: true });
+    p.scripts = { clean: 'node -e "require(\'fs\').rmSync(\'dist\',{recursive:true,force:true})"', build: "node build.mjs" };
+    p.files = ["dist"];
+    if (definition !== core) p.peerDependencies = { [core.name]: p.version };
+    const count = Object.keys(p.exports).length;
+    const direct = definition.directory.match(/dacs-(client|seller)$/);
+    const output = direct ? "src" : "dist";
+    p.files = [output];
+    let build = `import fs from 'node:fs';fs.mkdirSync('${output}',{recursive:true});for(let i=0;i<${count};i++){fs.writeFileSync('${output}/entry'+i+'.${direct ? "mjs" : "js"}','export const ready = true;');${direct ? "" : "fs.writeFileSync('dist/entry'+i+'.d.ts','export declare const ready: boolean;');"}}`;
+    if (definition.name === "create-dacs-agent") {
+      const generator = `import fs from 'node:fs/promises';
+        export const CREATE_DACS_AGENT_VERSION = ${JSON.stringify(version)};
+        export async function createDacsAgentProject({targetDirectory, mode}) {
+          await fs.mkdir(targetDirectory);
+          await fs.writeFile(targetDirectory + '/package.json', JSON.stringify({
+            dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION, '@kynesyslabs/dacs-node': CREATE_DACS_AGENT_VERSION},
+            ...(mode === 'live-demos' ? {dacs: {generatorVersion: CREATE_DACS_AGENT_VERSION}} : {})
+          }));
+        }`;
+      build += `fs.writeFileSync('dist/entry0.js', ${JSON.stringify(generator)});`;
+    }
+    await writeFile(join(dir, "package.json"), JSON.stringify(p));
+    await writeFile(join(dir, "build.mjs"), build);
+    if (definition.name === "@kynesyslabs/dacs-node") {
+      p.exports["./vectors/dacs-http-envelope-v1.json"] = "./vectors/dacs-http-envelope-v1.json";
+      p.files.push("vectors");
+      await mkdir(join(dir, "vectors"), { recursive: true });
+      await writeFile(join(dir, "vectors/dacs-http-envelope-v1.json"), "{}");
+    }
+    if (definition.name === "@kynesyslabs/dacs-seller") {
+      p.exports["./src/*"] = "./src/*";
+      p.exports["./package.json"] = "./package.json";
+      delete p.scripts;
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(join(dir, "src/entry0.mjs"), "export const ready = true;");
+    }
+    await writeFile(join(dir, "package.json"), JSON.stringify(p));
+  }
+}
+
+test("every publish invocation is offline, dry-run only, with lifecycle hooks disabled", async () => {
+  const calls = [];
+  await dryRun(packages.map(definition => ({ manifest: manifest(definition), tarball: `/tmp/${definition.directory.replaceAll("/", "-")}.tgz` })), () => {}, (...args) => { calls.push(args); return "dry-run output"; });
+  assert.equal(calls.length, 5);
+  for (const [command, args, , env] of calls) {
+    assert.equal(command, "npm");
+    assert.equal(args[0], "publish");
+    for (const flag of ["--dry-run", "--ignore-scripts", "--provenance=false"]) assert.ok(args.includes(flag));
+    assert.equal(env.npm_config_offline, "true");
+  }
+});
+
+test("one failed npm dry-run preserves its cause and still attempts the other packages", async () => {
+  let calls = 0;
+  await assert.rejects(dryRun(packages.map(definition => ({ manifest: manifest(definition), tarball: "/tmp/fixture.tgz" })), () => {}, () => {
+    if (++calls === 1) throw new Error("fixture refusal");
+    return "dry-run output";
+  }), /fixture refusal/);
+  assert.equal(calls, 5);
+});
+
+test("missing packages stay not ready while the other packages are packed", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await rm(join(root, packages[3].directory), { recursive: true });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.equal(result.artifacts.length, 4);
+  assert.ok(result.notReady.some(e => e.includes("dacs-seller")));
+}));
+
 test("all five packages enforce the existing release identity and publish policy", () => {
   for (const definition of packages) {
     for (const damage of [
@@ -117,6 +194,58 @@ test("nested internal lock entries must resolve to supplied tarballs", () => {
   }
   assert.doesNotThrow(() => validateLock({ packages: { [name]: { resolved: "file:/tmp/core.tgz" } } }, [{ name: core.name, tarball: "/tmp/core.tgz" }]));
 });
+
+async function changeManifest(root, definition, damage) {
+  const path = join(root, definition.directory, "package.json");
+  await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path)), ...damage }));
+}
+
+test("mixed release versions and ranged internal peers fail preparation", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await changeManifest(root, packages[2], { version: "0.1.0-alpha.9" });
+  await changeManifest(root, packages[3], { peerDependencies: { [core.name]: "^0.1.0-alpha.0" } });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.notReady.some(e => e.includes("release versions differ")));
+  assert.ok(result.notReady.some(e => e.includes("internal dependency must use exact release version")));
+}));
+
+const execute = (command, args, cwd) => execFileSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+test("archive file lists must agree with npm pack metadata", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const result = await prepare(root, join(root, "scratch"), () => {}, (command, args, cwd) => {
+    const output = execute(command, args, cwd);
+    if (command !== "npm" || args[0] !== "pack") return output;
+    const pack = JSON.parse(output); pack[0].files.pop(); return JSON.stringify(pack);
+  });
+  assert.equal(result.artifacts.length, 0);
+  assert.equal(result.errors.length, 5);
+  assert.ok(result.errors.every(e => e.includes("archive members disagree")));
+}));
+
+test("a damaged packed manifest does not poison the following extraction directory", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const result = await prepare(root, join(root, "scratch"), () => {}, (command, args, cwd) => {
+    const output = execute(command, args, cwd);
+    if (command === "tar" && args[0] === "-xzf" && args[1].endsWith("kynesyslabs-dacs-0.1.0-alpha.0.tgz")) {
+      execFileSync(process.execPath, ["-e", "const fs=require('fs');const p=JSON.parse(fs.readFileSync(process.argv[1]));p.name='damaged';fs.writeFileSync(process.argv[1],JSON.stringify(p));", join(args[3], "package/package.json")]);
+    }
+    return output;
+  });
+  assert.equal(result.errors.length, 1, result.errors.join("\n"));
+  assert.equal(result.artifacts.length, 4);
+}));
+
+test("a package whose archive filename repeats another's cannot replace an archive already accepted", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const generator = packages.find(p => p.name === "create-dacs-agent");
+  await changeManifest(root, generator, { name: core.name });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.errors.some(e => e.startsWith("create-dacs-agent: ")), result.errors.join("\n"));
+  const accepted = result.artifacts.find(a => a.definition === core);
+  assert.ok(accepted);
+  assert.deepEqual(execute("tar", ["-tzf", accepted.tarball], root).trim().split("\n").map(path => path.slice(8)).filter(path => path && !path.endsWith("/")).sort(), [...accepted.files].sort());
+}));
 
 test("lock checks distinguish omitted optional metadata from installed dependencies", () => {
   const lock = { packages: { "node_modules/external": {
@@ -162,6 +291,104 @@ test("null exclusions and more specific export overrides follow Node resolution"
   assert.ok(paths.includes("./feature/private/public"));
   assert.ok(!paths.includes("./feature/private/hidden"));
 });
+test("build-time changes to packed versions and internal pins fail preparation", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const def = packages[4], path = join(root, def.directory, "build.mjs");
+  const original = await readFile(path, "utf8");
+  for (const [damage, expected] of [[{ version: "9.9.9" }, /packed version changed/],
+    [{ peerDependencies: { [core.name]: "^0.1.0-alpha.0" } }, /internal dependency must use exact release version/]]) {
+    await changeManifest(root, def, { version: "0.1.0-alpha.0", peerDependencies: { [core.name]: "0.1.0-alpha.0" } });
+    await writeFile(path, original + `const p=JSON.parse(fs.readFileSync('package.json'));Object.assign(p,${JSON.stringify(damage)});fs.writeFileSync('package.json',JSON.stringify(p));`);
+    const result = await prepare(root, await mkdtemp(join(root, "scratch-")), () => {});
+    assert.ok(result.errors.some(e => expected.test(e)), result.errors.join("\n"));
+    assert.equal(result.artifacts.length, 4);
+  }
+}));
+
+test("not-ready manifests still build, pack and enforce the file policy", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await changeManifest(root, packages[1], { devDependencies: { [core.name]: "file:../.." } });
+  await changeManifest(root, packages[2], { private: true });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.equal(result.artifacts.length, 5);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.notReady.length, 2);
+  await changeManifest(root, packages[1], { devDependencies: { [core.name]: "file:../..", extra: "github:org/extra" } });
+  const masked = await prepare(root, join(root, "masked"), () => {});
+  assert.ok(masked.errors.some(e => e.includes("github:org/extra")), "an expected blocker must not hide a second defect");
+  const path = join(root, packages[1].directory, "build.mjs");
+  await writeFile(path, "throw Error('blocked package build still runs');");
+  const broken = await prepare(root, join(root, "broken"), () => {});
+  assert.ok(broken.errors.some(e => e.includes("blocked package build still runs")));
+  await changeManifest(root, core, { dependencies: { external: "github:org/external" }, files: ["dist", "scripts"] });
+  await mkdir(join(root, "scripts")); await writeFile(join(root, "scripts/leak.mjs"), "export {};");
+  const invalid = await prepare(root, join(root, "invalid"), () => {});
+  assert.ok(invalid.errors.some(e => e.includes("non-registry")));
+  assert.ok(invalid.errors.some(e => e.includes("outside allow-list: scripts/leak.mjs")));
+}));
+
+test("the held private snapshot's preparation inventory cannot admit a new packed path", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const dir = join(root, packages[2].directory);
+  await rm(dir, { recursive: true });
+  await cp(new URL("../../packages/dacs-client/", import.meta.url), dir, { recursive: true });
+  const baseline = await prepare(root, join(root, "baseline"), () => {});
+  assert.deepEqual(baseline.errors, []);
+  assert.equal(baseline.artifacts.length, 5);
+  const identityReason = `${packages[2].name}: release identity or publish policy is invalid`;
+  assert.ok(baseline.notReady.includes(identityReason), "held snapshot diagnostics name the package exactly once");
+  const heldManifest = await readFile(join(dir, "package.json"));
+  await changeManifest(root, packages[2], { license: "UNLICENSED" });
+  const damaged = await prepare(root, join(root, "damaged-manifest"), () => {});
+  assert.ok(damaged.errors.some(e => e.includes("identity or publish policy")), "only the exact held manifest gets baseline exceptions");
+  assert.ok(damaged.errors.includes(identityReason), "unexpected source and packed identity defects keep one package prefix");
+  await writeFile(join(dir, "package.json"), heldManifest);
+  await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
+  const changed = await prepare(root, join(root, "changed"), () => {});
+  assert.ok(changed.errors.some(e => e.includes("outside allow-list")));
+  assert.equal(changed.artifacts.length, 4);
+}));
+
+
+test("known blockers do not mask independent source or packed manifest defects", { timeout: 240_000 }, () => fixture(async root => {
+  for (const packed of [false, true]) {
+    for (const [damage, expected] of [
+      [{ license: "UNLICENSED" }, /identity or publish policy/],
+      [{ version: "9.9.9" }, /release versions differ|packed version changed/],
+      [{ version: "not-semver" }, /invalid package version/],
+      [{ exports: {} }, /missing public export/],
+      [{ peerDependencies: { [core.name]: "^0.1.0-alpha.0" } }, /internal dependency must use exact release version/],
+    ]) {
+      await sourceTree(root);
+      for (const [definition, blocker] of [
+        [packages[1], { devDependencies: { [core.name]: "file:../.." } }],
+        [packages[2], { private: true }],
+      ]) {
+        await changeManifest(root, definition, blocker);
+        if (packed) {
+          const path = join(root, definition.directory, "build.mjs");
+          await writeFile(path, (await readFile(path, "utf8")) +
+            `const p=JSON.parse(fs.readFileSync('package.json'));Object.assign(p,${JSON.stringify(damage)});fs.writeFileSync('package.json',JSON.stringify(p));`);
+        } else await changeManifest(root, definition, damage);
+      }
+      const result = await prepare(root, await mkdtemp(join(root, "manifest-case-")), () => {});
+      for (const definition of [packages[1], packages[2]]) {
+        assert.ok(result.errors.some(e => e.includes(definition.name) && expected.test(e)),
+          `${packed ? "packed" : "source"} ${definition.name}: ${JSON.stringify(damage)}: ${result.errors.join("\n")}`);
+        assert.ok(!result.artifacts.some(a => a.manifest.name === definition.name && a.releasable));
+      }
+    }
+  }
+}));
+
+test("a known development link cannot excuse a different dependency with the same spec", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await changeManifest(root, packages[1], { devDependencies: { other: "file:../.." } });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.errors.some(e => e.includes("non-registry") && e.includes("other")));
+}));
+
+
 test("strict artifact inventory admits exactly the five public identities", () => {
   const artifacts = packages.map(definition => ({ manifest: { ...manifest(definition), version: plannedVersion }, releasable: true }));
   assert.doesNotThrow(() => validateArtifactSet(artifacts, true));

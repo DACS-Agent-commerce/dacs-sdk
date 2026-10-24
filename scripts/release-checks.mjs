@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import npa from "npm-package-arg";
 import semver from "semver";
@@ -48,6 +51,16 @@ function exportTargets(value) {
   fail("invalid export target type");
 }
 
+function run(command, args, cwd, extraEnv = {}) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/token|auth|password/i.test(key)));
+  Object.assign(env, { NO_COLOR: "1", NODE_PATH: "", npm_config_userconfig: "/dev/null",
+    npm_config_fetch_timeout: "20000", npm_config_fetch_retries: "2", npm_config_fetch_retry_mintimeout: "1000", npm_config_fetch_retry_maxtimeout: "5000", ...extraEnv });
+  const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 300_000, maxBuffer: 8 * 1024 * 1024 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) fail(`${command === process.execPath ? "node public-entry import" : `${command} ${args.join(" ")}`} failed (${result.status})\n${result.stdout}${result.stderr}`);
+  return result.stdout + (command === "npm" && args[0] === "publish" ? result.stderr : "");
+}
+
 function exportMap(value) {
   if (typeof value === "string" || Array.isArray(value) || value === null) return { ".": value };
   if (value && Object.keys(value).length && Object.keys(value).every(key => !key.startsWith("."))) return { ".": value };
@@ -90,6 +103,12 @@ function collectProblems(checks) {
   const errors = [];
   for (const check of checks) try { check(); } catch (error) { errors.push(...error.message.split("\n")); }
   return errors;
+}
+
+function manifestSnapshot(p) {
+  const json = JSON.stringify(p, (_, value) => value && typeof value === "object" && !Array.isArray(value) ?
+    Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
+  return createHash("sha256").update(json).digest("hex");
 }
 
 function validateDependencies(p) {
@@ -246,5 +265,92 @@ export function validateLock(lock, artifacts, consumer = ".", omitOptional = fal
     if (value.link || (!omitted && name && !(bundled && !resolution) && !artifact && !registry)) fail(`installed local link or non-registry resolution: ${name}`);
   }
   for (const name of allowed.keys()) if (!installed.has(name)) fail(`missing installed artifact in lock: ${name}`);
+}
+
+export async function prepare(root, scratch, log = console.log, execute = run) {
+  await mkdir(scratch, { recursive: true });
+  const artifacts = [], errors = [], notReady = [];
+  let version;
+  log("Dependency graph: all five nodes below; edges are declared manifest dependencies.");
+  for (const definition of packages) {
+    const dir = resolve(root, definition.directory);
+    log(`${definition.name}: planned ${plannedVersion}`);
+    try {
+      let source;
+      try { source = JSON.parse(await readFile(join(dir, "package.json"), "utf8")); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        notReady.push(`${definition.name}: missing package manifest`);
+        if (!definition.preparationBlockers?.includes("missing package manifest")) errors.push(`${definition.name}: missing package manifest`);
+        continue;
+      }
+      log(`  source ${source.version}${source.private ? " (private)" : ""}`);
+      for (const section of sections) for (const [name, spec] of Object.entries(source[section] ?? {})) {
+        if (packages.some(d => d.name === name)) log(`  ${section}: ${source.name} -> ${name} (${spec})`);
+      }
+      version ??= source.version;
+      const recordProblems = (manifest, problems) => {
+        const snapshot = manifestSnapshot(manifest) === definition.preparationManifestSha256;
+        for (const message of new Set(problems)) {
+          const reason = message.startsWith(`${definition.name}: `) ? message : `${definition.name}: ${message}`;
+          if (!notReady.includes(reason)) notReady.push(reason);
+          if (!definition.preparationBlockers?.includes(message) &&
+              !(snapshot && definition.preparationSnapshotBlockers?.includes(message)) && !errors.includes(reason)) errors.push(reason);
+        }
+      };
+      const sourceProblems = [...manifestProblems(source, definition), ...collectProblems([
+        () => { if (source.version !== version) fail(`release versions differ: ${source.version} vs ${version}`); },
+        () => validateInternalPins(source, version),
+      ])];
+      recordProblems(source, sourceProblems);
+      if (source.scripts?.build) {
+        if (source.scripts.clean) execute("npm", ["run", "clean"], dir);
+        log(execute("npm", ["run", "build"], dir));
+      } else log("  direct-source package (no compilation)");
+      // Each package packs into its own folder so equal archive filenames cannot replace an accepted archive.
+      const destination = await mkdtemp(join(scratch, "pack-"));
+      const pack = JSON.parse(execute("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", destination], dir));
+      if (pack.length !== 1) fail("expected one packed artifact");
+      const tarball = join(destination, pack[0].filename);
+      const files = execute("tar", ["-tzf", tarball], root).trim().split("\n").map(path => {
+        if (!path.startsWith("package/")) fail(`invalid archive path ${path}`);
+        return path.slice(8);
+      }).filter(path => path && !path.endsWith("/"));
+      // Pin the held private snapshot's existing inventory for preparation only.
+      const snapshot = createHash("sha256").update(JSON.stringify([...files].sort())).digest("hex");
+      const filePolicy = source.private === true && snapshot === definition.preparationFileListSha256 ?
+        { ...definition, allow: [...definition.allow, ...files] } : definition;
+      validateFiles(filePolicy, source, files);
+      if (JSON.stringify([...files].sort()) !== JSON.stringify(pack[0].files.map(f => f.path).sort())) fail("archive members disagree with npm pack file list");
+      const extracted = await mkdtemp(join(scratch, "extract-")); execute("tar", ["-xzf", tarball, "-C", extracted], root);
+      const manifest = JSON.parse(await readFile(join(extracted, "package", "package.json"), "utf8"));
+      const packedProblems = [...manifestProblems(manifest, definition), ...collectProblems([
+        () => { if (manifest.version !== source.version) fail(`packed version changed: ${source.version} -> ${manifest.version}`); },
+        () => { if (manifest.version !== version) fail(`release versions differ: ${manifest.version} vs ${version}`); },
+        () => validateInternalPins(manifest, version),
+      ])];
+      recordProblems(manifest, packedProblems);
+      validateFiles(filePolicy, manifest, files);
+      const releasable = sourceProblems.length === 0 && packedProblems.length === 0;
+      // Unexpectedly invalid archives are not supplied to dry-runs or consumers.
+      if (errors.some(error => error.startsWith(`${definition.name}:`))) continue;
+      artifacts.push({ definition, manifest, tarball, files, releasable });
+      log(`  packed ${pack[0].filename}: ${files.length} allowed files`);
+    } catch (error) { errors.push(`${definition.name}: ${error.message}`); }
+  }
+  return { artifacts, errors, notReady };
+}
+
+export async function dryRun(artifacts, log = console.log, execute = run) {
+  const errors = [];
+  for (const artifact of artifacts) {
+    log(`${artifact.manifest.name}: npm publish --dry-run (source ${artifact.manifest.version}; planned ${plannedVersion}, not applied)`);
+    try {
+      log(execute("npm", ["publish", artifact.tarball, "--dry-run", "--ignore-scripts", "--provenance=false", "--access=public", "--tag=next"],
+        // Run outside the source package so its .npmrc and lifecycle hooks cannot participate.
+        resolve(artifact.tarball, ".."), { npm_config_offline: "true" }));
+    } catch (error) { errors.push(`${artifact.manifest.name}: ${error.message}`); }
+  }
+  if (errors.length) fail(errors.join("\n"));
 }
 
