@@ -42,6 +42,8 @@ import {
   type SellerFulfilmentAuditSourceV1,
 } from "../../src/seller/fulfilmentAuditSource.js";
 
+import { isSellerFulfilmentVetInvocationMismatch } from "../../src/seller/index.js";
+
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
 const BUYER = "did:demos:buyer";
@@ -1273,6 +1275,69 @@ describe("runFulfilmentCore", () => {
       });
       expect(f.store.consumed).toBe(false);
     }
+  });
+
+  test("the shared Vet predicate accepts authenticated coverage and rejects a substituted verifier", () => {
+    const f = fixture();
+    const invocation = f.auditSource.artifacts.vetRequirements[0];
+    if (!invocation) throw new Error("TEST fixture has no buyer Vet invocation");
+    const context = {
+      jobId: f.authorization.jobId, buyerClaim: BUYER, sellerClaim: SELLER,
+      buyerRequirement: BUYER_REQUIREMENT,
+      bindings: new Map(f.auditSource.artifacts.vetRequirements.map((entry) => [
+        canonicalize(entry.vetRecordRef),
+        { primaryClaim: entry.evaluatedParty, roles: new Set([entry.evaluatedParty === BUYER ? "buyer" : "seller"]) },
+      ])),
+    };
+    expect(isSellerFulfilmentVetInvocationMismatch(invocation, context)).toBe(false);
+    expect(isSellerFulfilmentVetInvocationMismatch({ ...invocation, verifier: BUYER }, context)).toBe(true);
+  });
+
+  test("the public Vet predicate refuses malformed invocations without throwing", () => {
+    const f = fixture();
+    const invocation = f.auditSource.artifacts.vetRequirements[0];
+    if (!invocation) throw new Error("TEST fixture has no buyer Vet invocation");
+    const context = {
+      jobId: f.authorization.jobId, buyerClaim: BUYER, sellerClaim: SELLER,
+      buyerRequirement: BUYER_REQUIREMENT,
+      bindings: new Map([[canonicalize(invocation.vetRecordRef), {
+        primaryClaim: invocation.evaluatedParty, roles: new Set(["buyer"]),
+      }]]),
+    };
+    const missingVersion = structuredClone(invocation);
+    Reflect.deleteProperty(missingVersion.freshness[0]!.ref, "recipeVersion");
+    missingVersion.freshness[0]!.ref.anchor.locator =
+      missingVersion.freshness[0]!.ref.anchor.locator.replace(/:v\d+$/, ":vundefined");
+    const badHash = structuredClone(invocation);
+    badHash.freshness[0]!.ref.contentHash = "invalid";
+    const badJob = structuredClone(invocation);
+    badJob.freshness[0]!.sourceJobId += ":suffix";
+    badJob.freshness[0]!.ref.anchor.locator = badJob.freshness[0]!.ref.anchor.locator
+      .replace(invocation.freshness[0]!.sourceJobId, badJob.freshness[0]!.sourceJobId);
+    const { freshness: _freshness, ...missingFreshness } = invocation;
+    const hostile = new Proxy({}, { getPrototypeOf() { throw new Error("hostile input"); } });
+    for (const malformed of [null, missingFreshness, missingVersion, badHash, badJob,
+      { ...invocation, extra: true }, hostile]) {
+      expect(Reflect.apply(isSellerFulfilmentVetInvocationMismatch, undefined,
+        [malformed, context])).toBe(true);
+    }
+  });
+
+  test("completes delivery with required Vet coverage from this job's deal-specific results", async () => {
+    const f = fixture();
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+    invocation.dealSpecific = invocation.freshness.splice(0);
+    expect(invocation.freshness).toHaveLength(0);
+    expect(invocation.dealSpecific).toHaveLength(1);
+    expect(invocation.dealSpecific[0]!.sourceJobId).toBe(f.authorization.jobId);
+    expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "completed",
+    });
+    expect(f.store.consumed).toBe(true);
+    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
   });
 
   test("requires the authenticated orchestrator as the Vet verifier authority", async () => {

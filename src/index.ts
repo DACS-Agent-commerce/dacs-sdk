@@ -1501,6 +1501,7 @@ export {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
   isSellerFulfilmentAuditSource,
   isSellerFulfilmentSessionRecord,
+  isSellerFulfilmentVetInvocationMismatch,
   isValidSellerReceiptClaim,
   sellerFulfilmentAuditSourceHash,
   x402Eip3009Nonce,

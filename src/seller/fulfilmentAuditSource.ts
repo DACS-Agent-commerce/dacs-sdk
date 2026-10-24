@@ -18,7 +18,7 @@ import {
   isChainTxRef,
   isPhaseStep,
 } from "../artifacts/index.js";
-import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { canonicalize, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
 
 /** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
 export const SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR =
@@ -413,6 +413,97 @@ export function isSellerFulfilmentAuditSource(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** One distinct party Vet reference of the authenticated SessionRecord roster. */
+export interface SellerFulfilmentVetBinding {
+  primaryClaim: string;
+  roles: ReadonlySet<string>;
+}
+
+const sameJcs = (left: unknown, right: unknown): boolean => {
+  try {
+    return canonicalize(left) === canonicalize(right);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * True when one Vet requirement invocation is not the one the fulfilment core
+ * accepts for its party's record: the evaluated party, the counterparty
+ * verifier, the composite address, the Listing-owned buyer requirement, the
+ * coverage of every required/oneOf member, this job's deal-specific results
+ * and each result's address. The fulfilment core runs it over the audit
+ * source at delivery.
+ */
+export function isSellerFulfilmentVetInvocationMismatch(
+  invocation: unknown,
+  context: {
+    jobId: string;
+    buyerClaim: string;
+    sellerClaim: string;
+    buyerRequirement: unknown;
+    bindings: ReadonlyMap<string, SellerFulfilmentVetBinding>;
+  },
+): boolean {
+  try {
+    if (!hasExactJcsView(invocation) || !isVetRequirementInvocation(invocation)) return true;
+    const key = canonicalize(invocation.vetRecordRef);
+    const binding = context.bindings.get(key);
+    const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
+    const requirementCandidates = [
+      ...invocation.requirement.required,
+      ...(invocation.requirement.oneOf ?? []).flat(),
+    ];
+    const seenResultRefs = new Set<string>();
+    const seenResultHashes = new Set<string>();
+    const listingOwned = binding?.roles.has("buyer") === true;
+    const expectedVerifier = listingOwned
+      ? context.sellerClaim
+      : binding?.roles.has("seller") === true
+        ? context.buyerClaim
+        : undefined;
+    const expectedCompositeAddress =
+      `dacs2:composite:${context.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
+    const uncoveredRequired = invocation.requirement.required.some(
+      (required) => !expectedResults.some((result) =>
+        result.scheme === required.scheme && sameJcs(result.requirement, required)),
+    );
+    const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
+      (group) => group.length === 0 || !group.some((alternative) =>
+        expectedResults.some((result) =>
+          result.scheme === alternative.scheme && sameJcs(result.requirement, alternative))),
+    );
+    return !binding || expectedVerifier === undefined ||
+      invocation.evaluatedParty !== binding.primaryClaim ||
+      invocation.verifier !== expectedVerifier ||
+      invocation.vetRecordRef.anchor.kind !== "storage-program" ||
+      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
+      (invocation.vetRecordRef.signer !== undefined &&
+        invocation.vetRecordRef.signer !== invocation.verifier) ||
+      (listingOwned && !sameJcs(invocation.requirement, context.buyerRequirement)) ||
+      invocation.dealSpecific.some((result) => result.sourceJobId !== context.jobId) ||
+      uncoveredRequired || uncoveredOneOf ||
+      expectedResults.some((result) => {
+        const refKey = canonicalize(result.ref);
+        const expectedResultAddress =
+          `dacs2:${result.sourceJobId}:${result.scheme}:` +
+          `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
+        const duplicate = seenResultRefs.has(refKey) ||
+          seenResultHashes.has(result.ref.contentHash);
+        seenResultRefs.add(refKey);
+        seenResultHashes.add(result.ref.contentHash);
+        return duplicate || result.scheme !== result.requirement.scheme ||
+          result.ref.anchor.kind !== "storage-program" ||
+          result.ref.anchor.locator !== expectedResultAddress ||
+          !requirementCandidates.some((candidate) => sameJcs(candidate, result.requirement)) ||
+          (result.requirement.recipeVersion !== undefined &&
+            result.ref.recipeVersion !== result.requirement.recipeVersion);
+      });
+  } catch {
+    return true;
   }
 }
 
