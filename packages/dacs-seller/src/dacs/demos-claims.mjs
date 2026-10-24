@@ -62,7 +62,7 @@ export function decodeSignature(value) {
 export function verifyDemosSignature(input) {
   try {
     const { address, message, signature } = input;
-    if (typeof message !== 'string') return false;
+    if (typeof message !== 'string' || !message.isWellFormed()) return false;
     const key = publicKeyFromRaw(Buffer.from(normalizeDemosAddress(address).slice(2), 'hex'));
     return ed25519Verify(Buffer.from(message, 'utf8'), decodeSignature(signature), key);
   } catch {
