@@ -606,7 +606,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
 export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = MAX_TRANSPORT_LIFETIME_MS, requireDelegation = false }) {
   checkSigner(sellerSigner);
   if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > MAX_TRANSPORT_LIFETIME_MS) throw new Error('seller transport configuration is invalid');
-  if (typeof requireDelegation !== 'boolean' || (requireDelegation && store.journaledOnlyReserve !== true)) throw new Error('seller delegation configuration is invalid');
+  if (typeof requireDelegation !== 'boolean' || store.journaledOnlyReserve !== true) throw new Error('seller delegation configuration is invalid');
   const delegations = new WeakMap();
   const authenticatedRequests = new WeakMap();
   // Expired request or delegation: only read back effects already journaled for the job.
