@@ -741,6 +741,30 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
 });
 
 describe("read-only settlement outcome lookup", () => {
+  test.each(["pending", "released"])("rejects changed terms for a %s intent from another store", async (state) => {
+    const log = createInMemorySettlementLog();
+    const bindingHash = settlementBindingHash(binding());
+    const held = await log.claimIntent({ key: KEY, bindingHash, owner: "original", now: 100, leaseDurationMs: 10 });
+    if (held.status !== "acquired") throw new Error("expected initial intent");
+    if (state === "released") {
+      await log.releaseIntent({ key: KEY, bindingHash, lease: held.lease, now: 101 });
+    }
+    const claim = vi.spyOn(log, "claimIntent");
+    const restarted = createIdempotencyStore(log);
+    if (!restarted.readOutcome) throw new Error("expected read-only lookup");
+    await expect(restarted.readOutcome(KEY, binding())).resolves.toBeNull();
+    await expect(restarted.readOutcome(KEY, binding({ amount: "2000000" }))).rejects.toThrow(/binding conflicts/);
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  test.each(["claimIntent", "isCurrent", "grantRecovery", "putOutcome", "releaseIntent"] as const)(
+    "never treats the required %s capability as optional", (name) => {
+      const log = createInMemorySettlementLog();
+      Object.defineProperty(log, name, { value: undefined });
+      expect(() => createIdempotencyStore(log)).toThrow(/stable callable data/);
+    },
+  );
+
   test("absence and an unresolved intent never acquire, renew, release or write", async () => {
     const log = createInMemorySettlementLog();
     const claim = vi.spyOn(log, "claimIntent");
