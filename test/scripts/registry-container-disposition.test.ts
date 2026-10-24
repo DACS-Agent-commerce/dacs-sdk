@@ -1228,6 +1228,46 @@ describe("candidate executable and nested alias lookup", () => {
     expect(result.stderr).toContain(`cannot inspect node_modules inside an installed candidate: ${host}/${directory}/node_modules`);
   });
 
+  it.each([
+    ["a candidate", "@kynesyslabs/dacs", false],
+    ["a declared alias of a candidate", "candidate-alias", true],
+  ])("rejects %s hidden in dist/node_modules inside a package that is not a candidate", (_form, name, alias) => {
+    const fixture = dependencyPolicyHarness();
+    if (alias) fixture.manifest.dependencies = Object.assign({}, fixture.manifest.dependencies, {
+      [name]: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` });
+    const plugin = "node_modules/plugin";
+    const result = fixture.run(project => {
+      const holder = join(project, plugin, "dist/node_modules", name);
+      mkdirSync(holder, { recursive: true });
+      writeFileSync(join(project, plugin, "package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+      writeFileSync(join(holder, "index.js"), "module.exports = 'shadow';");
+      expect(createRequire(join(project, plugin, "dist/index.js")).resolve(name)).toBe(join(holder, "index.js"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/dist/node_modules`);
+  });
+
+  it("rejects a candidate file shadow in node_modules inside a package that is not a candidate", () => {
+    const fixture = dependencyPolicyHarness();
+    const result = fixture.run(project => {
+      mkdirSync(join(project, "node_modules/plugin/dist/node_modules/@kynesyslabs"), { recursive: true });
+      writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(project, "node_modules/plugin/dist/node_modules/@kynesyslabs/dacs.js"), "module.exports = 'shadow';");
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("node_modules/plugin/dist/node_modules");
+  });
+
+  it("accepts node_modules inside a package that is not a candidate when it holds no candidate", () => {
+    const fixture = dependencyPolicyHarness();
+    expect(fixture.run(project => {
+      mkdirSync(join(project, "node_modules/plugin/cli/node_modules/@kynesyslabs/other"), { recursive: true });
+      writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(project, "node_modules/plugin/cli/node_modules/@kynesyslabs/other/package.json"), JSON.stringify({ name: "@kynesyslabs/other", version: "1.0.0" }));
+    })).toMatchObject({ status: 0, report: { passed: true } });
+  });
+
   it.each(["optional", "dev", "devOptional"])("follows the installed alias past an omitted %s lock entry", flag => {
     const fixture = dependencyPolicyHarness();
     const alias = "node_modules/candidate-alias";
