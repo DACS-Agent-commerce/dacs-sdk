@@ -153,9 +153,10 @@ export interface VerifiedListingEligibility extends VerifiedListingEndpoint {
  * Listing and its content hash before returning its selected terms. A missing,
  * revoked or unavailable Listing must throw its real error or return no
  * decision; an ended window is returned as it is, and the wire compares it.
- * The buyer's checks do no I/O of their own. Called at proof creation and
- * again before each request signature, so a cached success is never
- * authoritative.
+ * It may return the decision or a promise of it; the wire awaits it, and a
+ * rejection keeps its cause. The buyer's checks do no I/O of their own.
+ * Called at proof creation and again before each request signature, so a
+ * cached success is never authoritative.
  */
 export type ListingEligibilityReader = (scope: Readonly<VerifiedListingEndpoint & { now: number }>) => unknown;
 
@@ -191,11 +192,13 @@ export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_P
  * time (DACS-3 §8.5.2 checks 5 and 6) and the Agreement's terms against the
  * Listing (checks 1-4), and asks the buyer's receipt reader to authenticate
  * it, every time (commitment.ts). At signing it must name the request's job,
- * Agreement hash and buyer. At signing, a request on any other route is a new
+ * Agreement hash and buyer. A payment or delivery request without a
+ * commitment is refused. At signing, a request on any other route is a new
  * purchase: undefined.
  */
 async function commitmentTime(commitment: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; now: number; binding: Tp1Binding; request?: ContinuedRequest }): Promise<number | undefined> {
   const { request } = scope;
+  if (commitment === undefined && request && isContinuingRoute(request.path)) fail("continuation_commitment_invalid", 500, "CONTINUATION-EVIDENCE-REQUIRED");
   if (commitment === undefined || (request && !isContinuingRoute(request.path) && !isReadRoute(request.path))) return undefined;
   if (!request) fail("continuation_commitment_invalid", 500, "CONTINUATION-REQUEST-REQUIRED");
   return await commitmentReceiptTime(commitment, agreement, listing, reader, { binding: scope.binding, seller: scope.seller, listingPin: scope.listingPin, now: scope.now,
@@ -208,12 +211,12 @@ async function commitmentTime(commitment: unknown, agreement: unknown, listing: 
  * Its commit phase gates a new purchase; a continuation reads the phase from
  * the Listing it is given (commitment.ts), never from this decision.
  */
-function readListingDecision(reader: unknown, listing: VerifiedListingEndpoint, now: number): VerifiedListingEligibility {
+async function readListingDecision(reader: unknown, listing: VerifiedListingEndpoint, now: number): Promise<VerifiedListingEligibility> {
   if (typeof reader !== "function") fail("listing_eligibility_required", 500);
   const scope = deepFreeze({ ...cloneJson(listing), now });
   // Reader failures retain their cause (for example timeout, not-found or
   // revocation). Only malformed or unsupported decisions get a wire error.
-  const decision = ownedArtifact((reader as ListingEligibilityReader)(scope), "listing_unsupported", 500) as unknown as VerifiedListingEligibility;
+  const decision = ownedArtifact(await (reader as ListingEligibilityReader)(scope), "listing_unsupported", 500) as unknown as VerifiedListingEligibility;
   if (!hasKeys(decision, ["seller", "publicEndpoint", "listingPin", "pricingKind", "negotiation", "commitPhase", "rail", "delivery", "service", "output", "buyerRequestInput", "notBefore", "expiresAt"])) fail("listing_unsupported", 500);
   if (decision.seller !== listing.seller || decision.publicEndpoint !== listing.publicEndpoint ||
       !sameCanonical(decision.listingPin, listing.listingPin)) fail("listing_eligibility_mismatch", 500);
@@ -255,7 +258,7 @@ export async function assertEndpointProof(proof: unknown, scope: { binding: Tp1B
       !sameCanonical(kept.listing.listingPin, scope.listingPin)) fail("endpoint_proof_mismatch", 500);
   // The buyer's own kept proof has lapsed: fetching discovery again clears it (transient), not the seller's fault.
   if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 503);
-  const decision = readListingDecision(kept.readListingEligibility, kept.listing, scope.now);
+  const decision = await readListingDecision(kept.readListingEligibility, kept.listing, scope.now);
   const committedAt = await commitmentTime(scope.commitment, scope.agreement, scope.signedListing, kept.readCommitmentReceipt, scope);
   if (!p.ready && committedAt === undefined) fail("seller_not_ready", 503);
   assertListingWindow(decision, scope.now, committedAt);
@@ -307,7 +310,7 @@ export async function verifyEndpointProof(bytes: Uint8Array, options: {
   if (!p.listings.some((pin) => sameCanonical(pin, listing.listingPin))) fail("discovery_listing_missing", 502);
   if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);
   if (!isUint(now) || p.issuedAt > now + ISSUED_SKEW_MS || p.expiresAt <= now) fail("discovery_expired", 502);
-  const decision = readListingDecision(readListingEligibility, listing, now as number);
+  const decision = await readListingDecision(readListingEligibility, listing, now as number);
   assertListingWindow(decision, now as number,
     await commitmentTime(commitment, agreement, signedListing, readCommitmentReceipt, { binding: binding as Tp1Binding, request, seller: listing.seller, listingPin: listing.listingPin, now: now as number }));
   await assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
