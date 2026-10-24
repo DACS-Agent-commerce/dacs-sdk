@@ -102,7 +102,7 @@ function durableOperationStore(state,job,role,{now,clock}) {
           ops.signing[key]={...identity,generatedAt:at,reservation:owner};return current;
         });
         view=Object.freeze({key,generatedAt:at});
-      }}catch(error){try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet preparation cleanup failed',{cause}),{code:'indeterminate'});}throw error;}
+      }else await state.update(job.jobId,current=>{fenced(own(current));});}catch(error){try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet preparation cleanup failed',{cause}),{code:'indeterminate'});}throw error;}
       const scope=Object.freeze({state,jobId:job.jobId,role,key,owner,clock,view});
       const finish=outcome=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);ops.steps[key]={...identity,...outcome};return current;});
       try{value=clone(await signingContext.run(scope,execute));}
