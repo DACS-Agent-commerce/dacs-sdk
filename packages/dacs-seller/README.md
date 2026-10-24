@@ -258,15 +258,15 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
-  `applied` (successfully executed), `pending`, or `absent` (not executed,
-  including an included-but-failed CREATE); an ordinary unknown/not-found
-  answer never proves absence. Supersession requires an advanced nonce snapshot
-  and `{ state: 'absent', checkedThroughBlock }` from a qualified reader's
-  complete authenticated transaction index, including failed transactions,
-  covering at least that nonce snapshot's block height on the same chain.
-  A bare nonce, lagging index, missing coverage, timeout or unavailable read
-  preserves the same signed CREATE. The pinned node's ordinary `unknown`
-  answer supplies no such proof; this package ships no real-node absence reader.
+  `'applied'`, `'pending'`, or `'absent'`. Applied means successful execution;
+  inclusion alone does not establish execution. An ordinary miss or unknown
+  answer keeps the original signed CREATE alive for rebroadcast. To release a
+  CREATE whose nonce another transaction consumed, a qualified reader must
+  return `{ nonce, blockHeight }` and
+  `{ state: 'absent', checkedThroughBlock }` from a complete authenticated
+  transaction index, including failed transactions, on the same chain.
+  `checkedThroughBlock` must be at least the nonce snapshot's `blockHeight`.
+  A bare nonce or an unfenced absence never authorizes supersession.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
   CREATE per address. Its `readSignedProjection({ logicalAddress })` answers
