@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+export const { TP1_REFUSED_CHAIN_IDENTITIES } = await vi.importActual<typeof import("../../src/wire/approval.js")>("../../src/wire/approval.js");
 // Test-only approval of SYNTHETIC identity records. The SDK's list
 // (src/wire/approval.ts) pins the approval from 2026-10-20 and no shipped module takes another.
 // A test file that needs a synthetic binding replaces that module with this
