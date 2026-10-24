@@ -442,6 +442,29 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 generate pure payload helpers from provider | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | f121637cb5c6f739597a3b9bf7f1253b61c1ec19 |
 | | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e737b5abec7b991fd5401d943998cd3ce60bc1bc |
+| D11 | fix(client): D11 add inert guarded SQLite statement execution | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b69c3e30476cb097d782da1c27d0b936ebf2641e |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 147a5481e0d8783c9d7c929b76b32417839185a8 |
+| D11 | fix(client): D11 preserve native guarded SQL argument errors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b481d335f5d260dafa236b520c0b4c1b21269164 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e38a86a1fabd4f8767da17a18416e73529b2ee55 |
+| D11 | fix(client): D11 fence retained native SQL execution functions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f377b3dd6895e2ad1f02bedddc9eb18177f9eb57 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 8173b4c5b350f1a39a3b6bad62e8343f3e688258 |
+| D11 | fix(client): D11 fence SQLite callbacks and preserve exec semantics | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f68603bd3f057c2bf42c8670dd6cb6d52cf05db4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e547911cd3385e9eed8337be4b655bc424c82aaf |
+| D11 | fix(client): D11 keep rollback guard vectors portable to the Node floor | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ef1915ddcdc37b96297aed4492ed04fd6009b724 |
+| D11 | fix(client): D11 let SQLite identify empty exec remainders | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 4342294acfd3f71ee5c3f348f08ac542b0596392 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | cf66e34a3816d78a633002b462ff99253850a429 |
+| D11 | fix(client): D11 reject SQL callbacks with quoted function names | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
+| D11 | fix(client): D11 refuse unowned statements while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 2d4843812322f511ac816fee299dfde349c90df7 |
 
 ## Complete commit and file inventory
 
@@ -1017,6 +1040,71 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/generate-payload-helpers.mjs:1` |
 | fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
 | fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/package.json:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 

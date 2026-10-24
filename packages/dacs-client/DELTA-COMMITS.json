@@ -698,5 +698,61 @@
       "packages/dacs-client/src/wallet/payload-helpers.mjs",
       "packages/dacs-client/test/d11-import-boundary.test.mjs"
     ]
-  }
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 add inert guarded SQLite statement execution",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/guarded-sqlite.mjs",
+      "packages/dacs-client/test/guarded-sqlite.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 retain guarded SQLite in the package closure",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 preserve native guarded SQL argument errors",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/guarded-sqlite.mjs",
+      "packages/dacs-client/test/guarded-sqlite.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 fence retained native SQL execution functions",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/guarded-sqlite.mjs",
+      "packages/dacs-client/test/guarded-sqlite.test.mjs"
+    ]
+  },
+  {"sha":null,"subject":"fix(client): D11 fence SQLite callbacks and preserve exec semantics","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 keep rollback guard vectors portable to the Node floor","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 let SQLite identify empty exec remainders","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 reject SQL callbacks with quoted function names","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 preserve compact guarded SQLite records","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 refuse unowned statements while application functions exist","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]}
 ]
