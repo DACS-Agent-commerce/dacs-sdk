@@ -273,6 +273,12 @@ export function expectedNode20Rejection(p, subpath, error, node = process.versio
   return node.startsWith("20.") && Boolean(restricted) && error.code === "ERR_UNKNOWN_BUILTIN_MODULE" && error.message === "No such built-in module: node:sqlite";
 }
 
+function requireCompletion(output, accepted, what) {
+  const lines = output.trim().split("\n");
+  if (!accepted.includes(lines.at(-1))) fail(`${what} did not finish importing: a zero exit status without its completion line`);
+  return output.trim();
+}
+
 export async function checkInstalled(consumer, artifacts) {
   const base = await realpath(consumer);
   for (const { manifest: p } of artifacts) {
@@ -396,12 +402,13 @@ export async function consume(artifacts, scratch, log = console.log, options = {
     // package may build; dependency and release-package hooks remain disabled.
     log(execute("npm", ["rebuild", `better-sqlite3@${nativeVersion}`, "--ignore-scripts=false", "--foreground-scripts", "--no-audit", "--no-fund"], consumer,
       { npm_config_devdir: join(scratch, "node-gyp"), npm_config_jobs: "2" }));
-    log(execute(process.execPath, ["--input-type=module", "-e", `
+    const nativeReady = `native sqlite ready: better-sqlite3@${nativeVersion}`;
+    log(requireCompletion(execute(process.execPath, ["--input-type=module", "-e", `
       import Database from 'better-sqlite3';
       const db = new Database(':memory:');
       try { if (db.prepare('SELECT 1 AS ready').get().ready !== 1) throw Error('native sqlite smoke failed'); }
       finally { db.close(); }
-      console.log('native sqlite ready: better-sqlite3@${nativeVersion}');`], consumer).trim());
+      console.log(${JSON.stringify(nativeReady)});`], consumer), [nativeReady], "native sqlite smoke"));
   }
   await consumeImports(consumer, artifacts, log);
   await checkGenerator(consumer, artifacts, log);
@@ -413,6 +420,8 @@ export async function consumeImports(consumer, artifacts, log = console.log, inc
   for (const artifact of artifacts) for (const entry of publicEntries(artifact.manifest, artifact.files)) {
     if (!include(artifact, entry)) continue;
     const spec = artifact.manifest.name + (entry.subpath === "." ? "" : entry.subpath.slice(1));
+    const imported = `imported ${spec}`;
+    const rejected = `not imported (expected Node 20 rejection): ${spec} needs node:sqlite`;
     const code = `import {fileURLToPath} from 'node:url';
       const spec = ${JSON.stringify(spec)};
       const filename = fileURLToPath(import.meta.resolve(spec));
@@ -420,12 +429,12 @@ export async function consumeImports(consumer, artifacts, log = console.log, inc
       const attributes = filename.endsWith('.json') ? {with:{type:'json'}} : {};
       const expectedNode20Rejection = ${expectedNode20Rejection.toString()};
       const manifest = ${JSON.stringify({ name: artifact.manifest.name, engines: artifact.manifest.engines })};
-      try { await import(spec, attributes); console.log('imported ' + spec); }
+      try { await import(spec, attributes); console.log(${JSON.stringify(imported)}); }
       catch (error) {
-        if (expectedNode20Rejection(manifest, ${JSON.stringify(entry.subpath)}, error)) console.log('not imported (expected Node 20 rejection): ' + spec + ' needs node:sqlite');
+        if (expectedNode20Rejection(manifest, ${JSON.stringify(entry.subpath)}, error)) console.log(${JSON.stringify(rejected)});
         else throw error;
       }`;
-    try { log(run(process.execPath, ["--input-type=module", "-e", code], consumer).trim()); }
+    try { log(requireCompletion(run(process.execPath, ["--input-type=module", "-e", code], consumer), [imported, rejected], spec)); }
     catch (error) { errors.push(`${spec}: ${error.message}`); }
   }
   if (errors.length) fail(errors.join("\n"));
