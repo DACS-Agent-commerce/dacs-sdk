@@ -1,14 +1,11 @@
 name: demosdk compatibility
 
-# The demosdk peer and dev range (^4.0.16) admits every later 4.x release, but
-# the committed lockfile resolves 4.0.16, so ordinary CI never compiles against
-# a newer one. 4.0.18 broke `tsc` and the build while CI stayed green (#339).
-# This scheduled job typechecks and builds against the locked version, 4.0.18,
-# and the newest release in range, without changing the lockfile. It also runs
-# on pull requests that touch the dependency range or a source or test file
-# that imports demosdk (`npm run typecheck` compiles `test/` too), because a
-# regression there can pass `tsc` at the locked 4.0.16 and fail only at a newer
-# release.
+# ci.yml already typechecks and tests demosdk 4.0.18 on ordinary PRs.
+# This daily workflow detects new in-range releases before another PR arrives
+# and adds build/declaration emit at 4.0.18 and the newest in-range release.
+# Its PR runs cover changes to this workflow or dependency configuration only;
+# source changes already receive the ci.yml compatibility checks.
+# When bumping ci.yml's pinned demosdk, update the matrix entry here too.
 
 on:
   schedule:
@@ -19,15 +16,6 @@ on:
       - ".github/workflows/demosdk-compat.yml"
       - "package.json"
       - "package-lock.json"
-      - "tsconfig*.json"
-      - "src/substrate/**"
-      - "src/rails/payDem*.ts"
-      - "src/rails/payD402.ts"
-      - "src/agent/Agent.ts"
-      - "src/index.ts"
-      - "test/substrate/demos-adapter.test.ts"
-      - "test/rails/payDem*.test.ts"
-      - "test/agent/agentAuthoritySurface.test.ts"
 
 permissions:
   contents: read
@@ -70,8 +58,8 @@ jobs:
           DEMOSDK: ${{ matrix.demosdk }}
         run: |
           if [ "$DEMOSDK" = "newest-in-range" ]; then
-            # The published contract is the peer range; the dev range must
-            # equal it so the locked leg tests the same floor.
+            # The peer range is the published contract; dev must match it.
+            # version.test.ts separately pins the lockfile to the range floor.
             spec="$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
             dev="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
             if [ "$spec" != "$dev" ]; then
