@@ -4,7 +4,7 @@
 // hashing primitives, with a separate buyer/seller Ed25519 signing callback.
 import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { decodeSignature } from './demos-claims.mjs';
+import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
@@ -108,13 +108,15 @@ function verifiedHeader(header, kind, principal, { requireDelegation = false, on
   const actor = kind === 'request' ? p.buyer : p.seller;
   if (principal && actor !== principal) fail('peer_signer_wrong');
   const delegation = delegated ? verifySellerSessionDelegation(envelope.delegation, { buyer: p.buyer }) : null;
-  const publicKey = publicKeyFor(delegation?.sessionPublicKey ?? actor.slice('did:demos:agent:'.length));
+  const publicKey = publicKeyFor(delegation?.sessionPublicKey ?? actor.slice('did:demos:agent:'.length), 'peer_signature_invalid');
   if (!verify(null, sellerTransportSigningBytes(p), publicKey, signatureBytes(envelope.signature))) fail('peer_signature_invalid');
   if (delegation) onDelegation?.(p, envelope.delegation);
   return p;
 }
 
-function publicKeyFor(raw) {
+// The Ed25519 key of a 64-digit hex public key; a small-order key is refused with `code`.
+function publicKeyFor(raw, code) {
+  if (isSmallOrderPublicKey(Buffer.from(raw, 'hex'))) fail(code);
   return createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(raw, 'hex')]), format: 'der', type: 'spki' });
 }
 
@@ -147,7 +149,7 @@ export function normalizeSellerSessionDelegationSignature(signature) {
 export function verifySellerSessionDelegation(delegation, { buyer, seller, listingPin, jobId, time, deadline, allowExpired = false } = {}) {
   if (!keys(delegation, ['payload', 'signature'])) fail('peer_delegation_invalid');
   const p = delegation.payload, bytes = sellerSessionDelegationSigningBytes(p);
-  if (!verify(null, bytes, publicKeyFor(p.buyer.slice('did:demos:agent:'.length)), delegationSignatureBytes(delegation.signature))) fail('peer_delegation_signature_invalid');
+  if (!verify(null, bytes, publicKeyFor(p.buyer.slice('did:demos:agent:'.length), 'peer_delegation_signature_invalid'), delegationSignatureBytes(delegation.signature))) fail('peer_delegation_signature_invalid');
   if ((buyer !== undefined && p.buyer !== buyer) || (seller !== undefined && p.seller !== seller) ||
       (listingPin !== undefined && !exact(p.listingPin, listingPin)) || (jobId !== undefined && p.jobId !== jobId)) fail('peer_delegation_mismatch', 409);
   if (time !== undefined && (!uint(time) || p.notBefore > time || (!allowExpired && p.expiresAt <= time))) fail('peer_delegation_expired', 408);
