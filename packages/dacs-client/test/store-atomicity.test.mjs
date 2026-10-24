@@ -304,3 +304,31 @@ test('a retained native exec cannot persist schema writes after a caught rollbac
   try { assert.equal(reopened.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n, 0); }
   finally { reopened.close(); }
 });
+
+test('quoted callback names cannot delete FTS rows across rollback and reopen', t => {
+  const { db, path } = database(t), store = createSqlitePurchaseStore();
+  db.exec("CREATE VIRTUAL TABLE search USING fts5(body); INSERT INTO search VALUES ('TEST-retained')");
+  let calls = 0;
+  db.function('expire_and_write(', () => {
+    calls++;
+    nativeExec.call(db, 'ROLLBACK; DELETE FROM search');
+    return 1;
+  });
+  assert.throws(() => store.transaction(db, () => db.prepare('SELECT "expire_and_write("()').get()));
+  assert.equal(calls, 0);
+  const reopened = new DatabaseSync(path);
+  try { assert.equal(reopened.prepare('SELECT count(*) n FROM search').get().n, 1); }
+  finally { reopened.close(); }
+});
+
+test('nested callbacks cannot roll back a guessed package savepoint and return success', t => {
+  const { db } = database(t), store = createSqlitePurchaseStore();
+  store.transaction(db, () => {
+    assert.equal(store.transaction(db, () => {
+      db.exec("INSERT INTO records VALUES ('TEST-kept')");
+      assert.throws(() => db.exec('ROLLBACK TO dacs_purchase_1'), /no such savepoint/);
+      return 'TEST-success';
+    }), 'TEST-success');
+  });
+  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
+});
