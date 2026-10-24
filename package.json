@@ -117,7 +117,7 @@
     "package:verify": "node scripts/verify-package.mjs",
     "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
     "release:set:verify": "node scripts/verify-release-set.mjs",
-    "release:test": "node --test --test-concurrency=1 test/scripts/release-checks.test.mjs test/scripts/release-identity.test.mjs",
+    "release:test": "node --test --test-concurrency=1 test/scripts/release-checks.test.mjs && vitest run test/scripts/release-identity.test.ts",
     "release:set:publish": "node scripts/publish-release-set.mjs"
   },
   "publishConfig": {

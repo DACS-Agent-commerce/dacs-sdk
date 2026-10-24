@@ -458,7 +458,7 @@ test("every runtime dependency section requires exact internal release pins", ()
     for (const definition of packages) {
       const p = { ...manifest(packages[4]), [section]: { [definition.name]: "0.1.0-alpha.0" } };
       assert.doesNotThrow(() => validateArtifactSet([{ manifest: p }]));
-      for (const spec of ["^0.1.0-alpha.0", "*", "next", "9.9.9"]) {
+      for (const spec of ["", "^0.1.0-alpha.0", "*", "next", "9.9.9"]) {
         assert.throws(() => validateArtifactSet([{ manifest: { ...p, [section]: { [definition.name]: spec } } }]), /exact release version/);
       }
     }
@@ -469,7 +469,10 @@ test("internal lock identities must each resolve to their own supplied artifact"
   const artifacts = [{ name: core.name, tarball: "/tmp/core.tgz" }, { name: packages[2].name, tarball: "/tmp/client.tgz" }];
   for (const prefix of ["", "node_modules/outer/"]) {
     const location = `${prefix}node_modules/${core.name}`;
-    assert.doesNotThrow(() => validateLock({ packages: { [location]: { resolved: "file:/tmp/core.tgz" } } }, artifacts));
+    assert.doesNotThrow(() => validateLock({ packages: {
+      [location]: { resolved: "file:/tmp/core.tgz" },
+      [`node_modules/${packages[2].name}`]: { resolved: "file:/tmp/client.tgz" },
+    } }, artifacts));
     assert.throws(() => validateLock({ packages: { [location]: { resolved: "file:/tmp/client.tgz" } } }, artifacts), /internal.*tarball/);
   }
   assert.throws(() => validateLock({ packages: { "node_modules/compat": { name: core.name, resolved: "file:/tmp/client.tgz" } } }, artifacts), /internal.*tarball/);
@@ -492,4 +495,110 @@ test("lock evidence requires package maps and installed resolutions with explici
   assert.doesNotThrow(() => validateLock(bundled, []));
   delete bundled.packages["node_modules/outer"];
   assert.throws(() => validateLock(bundled, []), /resolution/);
+});
+
+test("empty internal runtime pins cannot pass strict five-package admission", () => {
+  for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+    const artifacts = packages.map(definition => ({
+      manifest: { ...manifest(definition), version: plannedVersion }, releasable: true,
+    }));
+    artifacts[4].manifest[section] = { [core.name]: "" };
+    assert.throws(() => validateArtifactSet(artifacts, true), /exact release version/);
+  }
+});
+
+test("URL export syntax in real archives is refused when Node resolves a different filename", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-export-url-"));
+  try {
+    const source = join(root, "source"), installed = join(root, "node_modules", packages[4].name);
+    await mkdir(source, { recursive: true });
+    for (const filename of ["a%20b.js", "index#v1.js", "index?v1.js", "index%25.js"]) {
+      await rm(join(source, "dist"), { recursive: true, force: true });
+      await mkdir(join(source, "dist"));
+      const p = { ...manifest(packages[4]), exports: { ".": `./dist/${filename}` }, files: ["dist"] };
+      await writeFile(join(source, "dist", filename), "export const ready = true;\n");
+      await writeFile(join(source, "package.json"), JSON.stringify(p));
+      const [packed] = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", root],
+        { cwd: source, encoding: "utf8" }));
+      const files = packed.files.map(file => file.path);
+      assert.ok(files.includes(`dist/${filename}`));
+      await rm(installed, { recursive: true, force: true });
+      await mkdir(installed, { recursive: true });
+      execFileSync("tar", ["-xzf", join(root, packed.filename), "--strip-components=1", "-C", installed]);
+      assert.throws(() => execFileSync(process.execPath, ["--input-type=module", "-e", `await import('${p.name}')`],
+        { cwd: root, stdio: "pipe" }), /ERR_MODULE_NOT_FOUND/);
+      assert.throws(() => validateManifest(p, packages[4]), /export target/);
+      assert.throws(() => validateFiles(packages[4], p, files), /export target/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("lock evidence must include every expected installed artifact", () => {
+  const artifacts = [{ name: core.name, tarball: "/tmp/core.tgz" }, { name: packages[2].name, tarball: "/tmp/client.tgz" }];
+  const coreEntry = { [`node_modules/${core.name}`]: { resolved: "file:/tmp/core.tgz" } };
+  for (const entries of [
+    {}, { "": { name: "consumer", version: "1.0.0" } }, coreEntry,
+    { ...coreEntry, [`node_modules/${packages[2].name}`]: { resolved: "file:/tmp/client.tgz", optional: true } },
+    { "": { name: core.name, resolved: "file:/tmp/core.tgz" } },
+    { "node_modules/compat": { name: core.name, resolved: "file:/tmp/core.tgz" } },
+  ]) assert.throws(() => validateLock({ packages: entries }, artifacts, ".", true), /missing.*artifact/);
+  const complete = { ...coreEntry, [`node_modules/${packages[2].name}`]: { resolved: "file:/tmp/client.tgz" } };
+  assert.doesNotThrow(() => validateLock({ packages: complete }, artifacts, ".", true));
+});
+
+test("strict manifests require private to be absent or exactly false", () => {
+  const artifacts = packages.map(definition => ({
+    manifest: { ...manifest(definition), version: plannedVersion }, releasable: true,
+  }));
+  assert.doesNotThrow(() => validateArtifactSet(artifacts, true));
+  artifacts[0].manifest.private = false;
+  assert.doesNotThrow(() => validateArtifactSet(artifacts, true));
+  for (const value of [true, "true", "false", 1, 0, null, [], {}]) {
+    artifacts[0].manifest.private = value;
+    assert.throws(() => validateArtifactSet(artifacts, true), /private/);
+  }
+});
+
+test("manifest and file admission reject malformed public export subpaths", () => {
+  const def = packages[4], files = ["package.json", "dist/index.js"];
+  for (const key of ["..", "./", "./../outside", "./a/./b", "./a/../b", "./node_modules/a",
+    "./a%2fb", "./a%5Cb", "./%2e%2e/outside", "./a\\b", "./a/**", "./a/*/*", "./a//b", "./a/"]) {
+    const p = { ...manifest(def), exports: { ".": "./dist/index.js", [key]: "./dist/index.js" } };
+    assert.throws(() => validateManifest(p, def), /export.*subpath|export.*pattern/);
+    assert.throws(() => validateFiles(def, p, files), /export.*subpath|export.*pattern/);
+  }
+  const p = { ...manifest(def), exports: { ".": "./dist/index.js", "./feature/*.js": "./dist/*.js" } };
+  assert.doesNotThrow(() => validateManifest(p, def));
+  assert.doesNotThrow(() => validateFiles(def, p, files));
+});
+
+test("manifest entry fields reject malformed scalars and every non-string bin leaf", () => {
+  const def = packages[4], files = ["package.json", "dist/entry0.js", "dist/entry0.d.ts"];
+  for (const field of ["bin", "main", "types"]) {
+    const invalid = [false, true, null, 42, [], ["./dist/entry0.js"], ""];
+    if (field !== "bin") invalid.push({ path: "./dist/entry0.js" });
+    for (const value of invalid) {
+      const p = { ...manifest(def), [field]: value };
+      assert.throws(() => validateManifest(p, def), /bin|main|types/);
+      assert.throws(() => validateFiles(def, p, files), /bin|main|types/);
+    }
+  }
+  for (const value of [false, true, null, 42, [], {}, { nested: "./dist/entry0.js" }, ""]) {
+    const p = { ...manifest(def), bin: { valid: "./dist/entry0.js", agent: value } };
+    assert.throws(() => validateManifest(p, def), /bin/);
+    assert.throws(() => validateFiles(def, p, files), /bin/);
+  }
+  for (const bin of ["./dist/entry0.js", { agent: "./dist/entry0.js" }, {}]) {
+    const p = { ...manifest(def), bin, main: "./dist/entry0.js", types: "./dist/entry0.d.ts" };
+    assert.doesNotThrow(() => validateManifest(p, def));
+    assert.doesNotThrow(() => validateFiles(def, p, files));
+  }
+});
+
+test("wildcard captures obey the same URL and subpath rules as literal exports", () => {
+  const def = packages[4];
+  const p = { ...manifest(def), exports: { ".": "./dist/index.js", "./feature/*": "./dist/*.js" } };
+  for (const capture of ["a%20b", "index#v1", "index?v1", "node_modules/internal"]) {
+    assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", `dist/${capture}.js`]), /export target|export subpath/);
+  }
 });
