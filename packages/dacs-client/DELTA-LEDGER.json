@@ -1666,42 +1666,7 @@
     {"delta":"D11","subject":"fix(client): D11 keep all diagnostic readers passive and project retained fields","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"4dcf3fff5fa6f16aaac8a9d87df51d1a72cc0e14","after":"9d6a339ad2226afeea539b3e06277fac0e64c8f6"},{"path":"packages/dacs-client/test/diagnostic-reader.test.mjs","before":"4d6125730c234a34f8ae969c9d7299e55621e3a3","after":"99154dd18992f65e0a498a9e2be1064fffa08a14"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"038451763d3b32832380d800fd814d0cb21939b7","after":"bd7f7cc507a40c8d76ad523382073fb1ccd95d29"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"ef6723b2e7509c38a37fee121912cfc7c197895a","after":"ef6723b2e7509c38a37fee121912cfc7c197895a"}]},
     {"delta":"D11","subject":"fix(client): D11 reconcile the observation-limit diagnostic merge","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"eda3e9fe0b741cf378c61df1fad749965cf9f073","after":"eda3e9fe0b741cf378c61df1fad749965cf9f073"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"718f49eefd6863ed5ae3d6c7124a8dd3cc472a05","after":"718f49eefd6863ed5ae3d6c7124a8dd3cc472a05"}]},
     {"delta":"D11","subject":"fix(client): D11 qualify merged diagnostic source","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"7ac41a6e4f20480403f32993a28954b42217f3e4","after":"7ac41a6e4f20480403f32993a28954b42217f3e4"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"6575800a2095f41ac8f5a350d37f0925be6f5d9d","after":"6575800a2095f41ac8f5a350d37f0925be6f5d9d"}]},
-    {
-      "delta": "D11",
-      "subject": "delta(client): D11 split 07 expose the private buyer package boundary",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/listing.mjs",
-          "before": "1241256345f2f48584566926616d89ec43e7e831",
-          "after": "40f44cef846981dd2d87bd4654e8192b8e784ac6"
-        },
-        {
-          "path": "packages/dacs-client/src/index.mjs",
-          "before": null,
-          "after": "a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4"
-        },
-        {
-          "path": "packages/dacs-client/src/public-verification.mjs",
-          "before": null,
-          "after": "eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"
-        },
-        {
-          "path": "packages/dacs-client/test/package-contents.test.mjs",
-          "before": null,
-          "after": "84b222cd3ec30df147e61cd776534666fd9e75fd"
-        },
-        {
-          "path": "packages/dacs-client/test/public-api.test.mjs",
-          "before": null,
-          "after": "c0d259390c30873269d2a1c9b306b8867dcc63b0"
-        },
-        {
-          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
-          "before": "3955731dbff3f936b239e42a7a4aa8f13c69091f",
-          "after": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
-        }
-      ]
-    },
+    {"delta":"D11","subject":"delta(client): D11 split 07 expose the private buyer package boundary","files":[{"path":"packages/dacs-client/src/dacs/listing.mjs","before":"1241256345f2f48584566926616d89ec43e7e831","after":"40f44cef846981dd2d87bd4654e8192b8e784ac6"},{"path":"packages/dacs-client/src/index.mjs","before":null,"after":"a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4"},{"path":"packages/dacs-client/src/public-verification.mjs","before":null,"after":"eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":null,"after":"84b222cd3ec30df147e61cd776534666fd9e75fd"},{"path":"packages/dacs-client/test/public-api.test.mjs","before":null,"after":"c0d259390c30873269d2a1c9b306b8867dcc63b0"},{"path":"packages/dacs-client/test/sweep-contracts.test.mjs","before":"3955731dbff3f936b239e42a7a4aa8f13c69091f","after":"dac6e6aae63aac269c0a84197ce2b77d3211eb35"}]},
     {
       "delta": "D11",
       "subject": "fix(client): D11 document public contracts and keep packed checks offline",
@@ -1762,56 +1727,6 @@
       ]
     },
     {
-      "commit": "cae1ab7268ee78b76148669c284e80eae7df09af",
-      "parents": [
-        "302d6f9660a2d04e2e76e7fb9340b4f6e510ad43",
-        "e2a7882e3b38cd49ce980869cfe51a819661402b"
-      ],
-      "files": [
-        {
-          "path": "packages/dacs-client/src/purchases.mjs",
-          "parentBlobs": [
-            "eda3e9fe0b741cf378c61df1fad749965cf9f073",
-            "9050fd47c365e95cf63295837070a311a48111da"
-          ],
-          "after": "7ac41a6e4f20480403f32993a28954b42217f3e4"
-        },
-        {
-          "path": "packages/dacs-client/test/host-observations.test.mjs",
-          "parentBlobs": [
-            "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05",
-            "3d124286ec49346c6a72fb0d8e15086ef06d3632"
-          ],
-          "after": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
-        }
-      ]
-    },
-    {
-      "commit": "3ad09a07d7129eeb1007c5f07014818ecfe721d3",
-      "parents": [
-        "1db565d700663d1d23449943002298d6c4eda038",
-        "e2a7882e3b38cd49ce980869cfe51a819661402b"
-      ],
-      "files": [
-        {
-          "path": "packages/dacs-client/src/purchases.mjs",
-          "parentBlobs": [
-            "eda3e9fe0b741cf378c61df1fad749965cf9f073",
-            "9050fd47c365e95cf63295837070a311a48111da"
-          ],
-          "after": "7ac41a6e4f20480403f32993a28954b42217f3e4"
-        },
-        {
-          "path": "packages/dacs-client/test/host-observations.test.mjs",
-          "parentBlobs": [
-            "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05",
-            "3d124286ec49346c6a72fb0d8e15086ef06d3632"
-          ],
-          "after": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
-        }
-      ]
-    },
-    {
       "commit": "9d124121acd0415df51f5dd35c09e98c77e1bf9a",
       "parents": [
         "ba61cf5b840e1e9d4192665f8a3335c23005fdbd",
@@ -1858,40 +1773,6 @@
             "3d124286ec49346c6a72fb0d8e15086ef06d3632"
           ],
           "after": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
-        }
-      ]
-    },
-    {
-      "commit": "302d6f9660a2d04e2e76e7fb9340b4f6e510ad43",
-      "parents": [
-        "ba2e959dea20df00e5271182e152b92a56f0e1bc",
-        "0b03491e50a221730c206d914882ea085e22e79d"
-      ],
-      "files": [
-        {
-          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-          "parentBlobs": [
-            "eb7c37692bdd5da4ac476e6791a35172f404212e",
-            "ea871900d025e7310e2a35b95a626da101ca9edd"
-          ],
-          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
-        }
-      ]
-    },
-    {
-      "commit": "1db565d700663d1d23449943002298d6c4eda038",
-      "parents": [
-        "d05d43d5ca20fbac6a25db822450c75e2db29d9e",
-        "0b03491e50a221730c206d914882ea085e22e79d"
-      ],
-      "files": [
-        {
-          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-          "parentBlobs": [
-            "eb7c37692bdd5da4ac476e6791a35172f404212e",
-            "ea871900d025e7310e2a35b95a626da101ca9edd"
-          ],
-          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
         }
       ]
     },
