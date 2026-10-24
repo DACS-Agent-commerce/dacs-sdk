@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { rmSync, writeFileSync, readFileSync, existsSync, appendFileSync, renameSync } from "node:fs";
+import { rmSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { pathToFileURL } from "node:url";
 import { join, posix, resolve } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence } from "./acceptance-evidence-io.mjs";
+import { createHash } from "node:crypto";
 // Pure classification of observed advisory IDs against the curated baseline.
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
@@ -312,6 +313,81 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
 export const FAILURE_CLASSES = ["network", "policy", "functional"];
 const MAX_FAILURE_EVIDENCE_ENTRIES = 5, MAX_FAILURE_EVIDENCE_BYTES = 8192;
 const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E5\d\d|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)|dial tcp: lookup .+: (?:no such host|server misbehaving|temporary failure)|Could not resolve (?:host|proxy):|Failed to connect to .+ port \d+|Connection (?:timed out|refused)|connect: (?:connection refused|network is unreachable)|\b(?:408|429|5\d\d) [^\r\n]+ - (?:GET|POST) https?:\/\/|invalid json response body at |Invalid response body while trying to fetch |^registry ping did not succeed within 30 attempts$/;
+
+// A report-shaped `npm audit --json` document: a result for the audit policy.
+const isAuditReport = value => typeof value === "object" && value !== null &&
+  ("auditReportVersion" in value || "vulnerabilities" in value || "metadata" in value);
+// npm's fetch errors: a request or body timeout, a refused or reset connection,
+// and a body that is not JSON or was cut off (a proxy's HTML page, a drop).
+const transientAuditMessage = /^(?:network timeout at: |request to \S+ failed, reason: |Response timeout while trying to fetch |invalid json response body at |Invalid response body while trying to fetch )/;
+
+// When the audit endpoint fails, `npm audit --json` writes npm's audit error
+// object (lib/utils/audit-error.js) instead of a report: a string `message`,
+// with the HTTP answer's `statusCode` or, for a fetch error, no status. Every
+// such object is an endpoint error. One with no status, a 5xx/408/429 status
+// or a transient fetch message is network; any other answer means the audit
+// could not be run (functional). Neither is a policy result. Returns null for
+// anything else, a report included.
+export function auditEndpointError(text) {
+  let value;
+  try { value = JSON.parse(text ?? ""); } catch { return null; }
+  if (typeof value !== "object" || value === null || typeof value.message !== "string" || isAuditReport(value)) return null;
+  const status = Number.isInteger(value.statusCode) ? value.statusCode : null;
+  const transient = status === null || (status >= 500 && status <= 599) || status === 408 || status === 429 ||
+    transientAuditMessage.test(value.message);
+  return { transient, statusCode: status, message: value.message.replace(/\s+/g, " ").slice(0, 300) };
+}
+
+// The evidence each network-dependent stage leaves behind. Consumer output
+// also holds generated-test logs, so only npm and Docker errors count there.
+const stageEvidence = {
+  "registry-start": [["registry.log", () => true]],
+  "registry-auth": [["registry.log", () => true]],
+  publish: [["registry.log", () => true]],
+  consumer: [["generation.log", line => /^npm error |Error response from daemon|^docker: /.test(line)]],
+  "audit-policy": [["npm-audit.json", () => true]],
+  "image-build": [["docker-build.log", () => true]],
+};
+const policyStages = new Set(["dependency-policy", "audit-policy"]);
+
+/** Classifies bounded stage evidence; oversized or unreadable diagnostics fail functionally. */
+export function classifyAcceptanceFailure({ stage, read }) {
+  try { return classifyBoundedFailure({ stage, read: name => boundedEvidenceText(read(name)) }); }
+  catch (error) { return { failureClass: "functional", evidence: ["evidence classification failed: " + String(error.message).slice(0, 300)] }; }
+}
+
+function classifyBoundedFailure({ stage, read }) {
+  if (stage === "audit-policy") {
+    const text = read("npm-audit.json");
+    const endpoint = auditEndpointError(text);
+    if (endpoint) {
+      return { failureClass: endpoint.transient ? "network" : "functional",
+        evidence: [`npm-audit.json: audit endpoint error: ${endpoint.message}`] };
+    }
+    // A report the policy rejected is a policy result, whatever text its
+    // advisories carry: the network signature is only for other evidence.
+    let report = null;
+    try { report = JSON.parse(text ?? ""); } catch { /* not JSON */ }
+    if (isAuditReport(report)) return { failureClass: "policy", evidence: [] };
+  }
+  const evidence = [];
+  for (const [name, relevant] of stageEvidence[stage] ?? []) {
+    for (const line of evidenceLines(read(name))) {
+      if (evidence.length < 5 && relevant(line) && networkSignature.test(line)) evidence.push(`${name}: ${line.trim()}`);
+    }
+  }
+  if (evidence.length > 0) return { failureClass: "network", evidence: evidence.slice(0, 5) };
+  // Verdaccio never answered its ping: the registry endpoint was unreachable.
+  if (stage === "registry-ready") return { failureClass: "network", evidence: ["registry ping did not succeed within 30 attempts"] };
+  return { failureClass: policyStages.has(stage) ? "policy" : "functional", evidence: [] };
+}
+
+export function failureSummary({ stage, exitCode, read }) {
+  const { failureClass, evidence } = classifyAcceptanceFailure({ stage, read });
+  return { schema: ACCEPTANCE_SUMMARY_SCHEMA, complete: false, failedStage: stage, exitCode, failureClass,
+    failureEvidence: evidence, functionalPassed: false, generatedTestsPassed: false };
+}
+
 function retryableFailureEvidence(text) {
   const code = npmErrorCode(text);
   try {
@@ -539,7 +615,8 @@ export function runtimeImageInventoryFindings(inventory, lock) {
 }
 
 // Records observed identities for comparison with the baseline rules below.
-export function extractPolicyFindings(read) {
+export function extractPolicyFindings(readInput) {
+  const read = name => boundedEvidenceText(readInput(name));
   const json = name => JSON.parse(read(name) ?? "null");
   const exitCode = name => {
     const text = read(name)?.trim();
@@ -550,12 +627,12 @@ export function extractPolicyFindings(read) {
   const identity = location => ({ version: packages[location]?.version ?? null, integrity: packages[location]?.integrity ?? null });
   const gitDependencies = json("dependency-policy.json")?.violations?.map(violation =>
     ({ location: violation.location, field: violation.field ?? null, value: violation.value, ...identity(violation.location) })) ?? null;
-  const strictLog = read("engine-strict.log") ?? "";
+  const strictLog = [...evidenceLines(read("engine-strict.log"))].join("\n");
   let versions = null;
   try { versions = json("engine-versions.json"); } catch { /* unreadable: the scan is incomplete */ }
   const { scanComplete, violations, ...scan } = scanLockEngines(lock, versions);
   const sbom = name => {
-    const errors = read(`${name}.err`) ?? "";
+    const errors = [...evidenceLines(read(`${name}.err`))].join("\n");
     return { exitCode: exitCode(`${name}.exit-code`), code: npmErrorCode(errors),
       problems: [...errors.matchAll(/^npm error ((?:missing|invalid|extraneous): .+)$/gm)].map(match => match[1]) };
   };
@@ -750,14 +827,6 @@ function invalidateReport(input, output) {
   rmSync(output, { force: true });
 }
 
-function atomicWriteJson(path, value) {
-  const temporary = `${path}.tmp-${randomUUID()}`;
-  try {
-    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
-    renameSync(temporary, path);
-  } finally { rmSync(temporary, { force: true }); }
-}
-
 function annotate(result) {
   if (result.exitCode !== 0 && result.exitCode !== 4) {
     process.stdout.write(`::error title=Registry/container acceptance ${result.failureClass} failure::${result.message}\n`);
@@ -768,7 +837,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [mode, input, output] = process.argv.slice(2);
   if (mode === "--audit-policy" && input && output) {
     invalidateReport(input, output);
-    const audit = JSON.parse(readFileSync(input, "utf8"));
+    const audit = JSON.parse(readEvidence(input));
     const counts = audit.metadata?.vulnerabilities;
     validateAuditGraph(audit);
     const ids = new Set();
@@ -790,8 +859,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // summary also requires npm audit's exit status to be 0 or 1.
     const passed = policy.assessedAdvisories.length === policy.observedAdvisories.length &&
       policy.assessedAdvisories.every(id => !direct.has(id));
-    writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy, passed },
-      null, 2) + "\n");
+    atomicWriteJson(output, { schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy, passed });
     process.stdout.write(JSON.stringify(counts) + "\n");
   } else if (mode === "--dependency-policy") {
     const [project, registry, report, releaseSet, version] = process.argv.slice(3);
@@ -826,13 +894,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       violations }, null, 2) + "\n");
   } else if (mode === "--policy-findings" && input && output) {
     invalidateReport(input, output);
-    const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
-    writeFileSync(output, JSON.stringify(extractPolicyFindings(read), null, 2) + "\n");
+    const read = name => readEvidence(join(input, name));
+    atomicWriteJson(output, extractPolicyFindings(read));
+  } else if (mode === "--failure-summary" && input && output) {
+    // <stage-dir> <stage> <exit-code>: the run stopped before its summary.
+    rmSync(join(input, "acceptance-summary.json"), { force: true });
+    const exitCode = process.argv[5];
+    const read = name => readEvidence(join(input, name));
+    const summary = failureSummary({ stage: output, exitCode: Number(exitCode), read });
+    atomicWriteJson(join(input, "acceptance-summary.json"), summary);
+    const evidence = summary.failureEvidence.length ? `; ${summary.failureEvidence[0]}` : "";
+    annotate({ exitCode: summary.exitCode, failureClass: summary.failureClass,
+      message: `stopped at stage ${output} with exit ${exitCode}${evidence}`.replace(/[\r\n%]/g, " ") });
   } else {
     const drift = mode === "--audit-drift";
     const record = mode === "--record";
     const summaryPath = drift || record ? input : mode;
-    const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+    const summary = JSON.parse(readEvidence(summaryPath));
     // Unset means fail closed; only the pull_request acceptance job sets warn.
     const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
     const result = drift ? registryAuditDriftDisposition(summary)
