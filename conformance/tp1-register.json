@@ -17,7 +17,7 @@
     "rule": "Every discovery document and signed request, response and delegation carries the profile identifier, profile revision and full base commit inside its signed bytes. Each party requires an exact match with the tuple it selected locally and with the tuple kept for that purchase; a missing, unknown or mismatched value is refused before any effect, with no fallback to identifier and base alone.",
     "status": "approved on 2026-10-15 at 21:23Z, as proposed",
     "wire": "profile member {id, revision, base, chainIdentity, pinVersion}; chainIdentity and pinVersion are the approved record's pins",
-    "pinnedBy": ["src/wire/profile.ts", "src/wire/envelope.ts", "src/wire/response.ts", "vectors/dacs-seller-http-v1.json", "test/wire/vectors.test.ts", "test/wire/approvedIdentity.test.ts"]
+    "pinnedBy": ["src/wire/profile.ts", "src/wire/envelope.ts", "src/wire/response.ts", "test/wire/validation.test.ts", "test/wire/networkIdentity.test.ts", "test/wire/approvedIdentity.test.ts"]
   },
   "network": {
     "identity": "the approved immutable testnet identity record",
@@ -54,8 +54,8 @@
       "evidence": [ { "source": "plugin implementation (not public)", "provenance": "prov-09" } ]
     }
   },
-  "nodeObservationEvidence": {"manifest": "conformance/tp1-node-observations/manifest-2026-10-20.json", "sourceCommit": "11e7c8207732e25035de5a04cab25c5346046493", "deploymentQualified": false, "reason": "Reported dirty deployment; the source commit is an inspection baseline only, and the artifact digest and overlay are unavailable. Execution-failure wording is source inference, not a captured failed transaction.", "history": [{"manifest": "conformance/tp1-node-observations/manifest.json", "sourceCommit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578", "chainIdentity": "83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4", "note": "2026-10-18 reads of the previous chain, kept unchanged as history"}]},
-  "wireReaderRestrictions": [{"rule": "DACS-1 DID reader spelling at d45c0a2:170-177", "deviation": "TP-1 wire accepts only canonical lowercase did:demos:agent claims; uppercase DID scheme is refused, not rewritten.", "pinnedBy": ["src/wire/validate.ts", "test/wire/admission.test.ts"]}, {"rule": "CORE CF-1 values-only NFC at d45c0a2:409", "deviation": "TP-1 wire refuses a received string value that is not already NFC (WIRE-NON-NFC-STRING), including in bodies that carry DACS artifacts, where CF-1 has verifiers normalize values before canonicalizing.", "pinnedBy": ["src/wire/validate.ts", "vectors/dacs-seller-http-v1.json"]}],
+  "nodeObservationEvidence": {"manifest": null, "sourceCommit": "11e7c8207732e25035de5a04cab25c5346046493", "deploymentQualified": false, "reason": "Observation captures and manifests are pending a later evidence slice. Reported dirty deployment; the source commit is an inspection baseline only, and the artifact digest and overlay are unavailable. Execution-failure wording is source inference, not a captured failed transaction.", "history": [{"manifest": null, "sourceCommit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578", "chainIdentity": "83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4", "note": "2026-10-18 reads of the previous chain, kept unchanged as history"}]},
+  "wireReaderRestrictions": [{"rule": "DACS-1 DID reader spelling at d45c0a2:170-177", "deviation": "TP-1 wire accepts only canonical lowercase did:demos:agent claims; uppercase DID scheme is refused, not rewritten.", "pinnedBy": ["src/wire/validate.ts", "test/wire/admission.test.ts"]}, {"rule": "CORE CF-1 values-only NFC at d45c0a2:409", "behavior": "Admission preserves received string values, including decomposed Unicode; CF-1 canonicalization normalizes values when computing signed or hashed bytes.", "pinnedBy": ["src/wire/validate.ts", "test/wire/validation.test.ts"]}],
   "sources": [
     { "repo": "dacs-sdk", "commit": "3904d704fb540e6e1d7dd502a0be29f20569c92d" },
     { "source": "plugin implementation (not public)", "provenance": "prov-01" },
@@ -157,7 +157,7 @@
       "id": "G4", "kind": "gap",
       "summary": "The wire requires independent authenticated connection and participant/session module evidence; retained effect-adapter integration remains unqualified.",
       "evidence": [ { "source": "plugin implementation (not public)", "provenance": "prov-03" } ],
-      "pinnedBy": ["src/wire/profile.ts", "test/wire/authority.test.ts", "vectors/dacs-seller-http-v1.json"],
+      "pinnedBy": ["src/wire/profile.ts", "test/wire/authority.test.ts", "test/wire/validation.test.ts"],
       "tp1": "Every signed dacs-seller-http/v1 message carries {id, revision, base, chainIdentity, pinVersion}. A trusted local readAuthority independently authenticates the active connection and every participant profile and complete six-module tuple for the exact job before signing or acceptance; evidence is rechecked on reuse. Wire bytes are unchanged. The retained seller/client effect paths still require integration and composition qualification.",
       "classification": null,
       "label": "declaration only",
@@ -184,7 +184,7 @@
         { "source": "plugin implementation (not public)", "provenance": "prov-05" },
         { "repo": "dacs-sdk", "commit": "3904d70", "path": "src/canonical/rawJson.ts", "lines": "92-95" }
       ],
-      "pinnedBy": ["src/wire/validate.ts", "vectors/dacs-seller-http-v1.json"],
+      "pinnedBy": ["src/wire/validate.ts", "test/wire/validation.test.ts"],
       "tp1": "@kynesyslabs/dacs/wire admits every received envelope header, request body, response body and discovery document with admitRawJson, plus a values-NFC rule, before parsing (D7).",
       "classification": null,
       "label": "declaration only",
