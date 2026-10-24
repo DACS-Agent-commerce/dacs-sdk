@@ -248,7 +248,7 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
       const document = Buffer.from(canonicalize({ payload: { ...discovery, profile }, signature: Buffer.from(seller.sign(Buffer.from(`dacs-seller-http:v1:discovery:${canonicalize({ ...discovery, profile })}`))).toString("base64url") }));
       expect(await refusal(async () => (await openWireEnvelope(header({ ...payload, profile }, "dacs-seller-http:v1:request:", buyer), "request", { binding: sb, local: B, purchaseProfile: sb.profile })))).toBe(expected);
       expect(await refusal(async () => (await verifyWireResponse(payload, { header: header(response, "dacs-seller-http:v1:response:", seller), status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: A })))).toBe(expected);
-      expect(await refusal(async () => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify({ payload: d, signature: Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:delegation:${canonicalize(d)}`))).toString("base64url") })), { binding: sb, local: B })))).toBe(expected);
+      expect(await refusal(async () => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify({ payload: d, signature: Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:delegation:${canonicalize(d)}`))).toString("base64url") })), { binding: sb, local: B, seller: seller.claim, listingPin: PIN, jobId: JOB, time: NOW })))).toBe(expected);
       expect(await refusal(async () => (await verifyEndpointProof(document, { readListingEligibility: readFixtureListingEligibility, listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW })))).toBe(expected);
       // Signers sign only the exact tuple.
       const before = buyer.calls + seller.calls;

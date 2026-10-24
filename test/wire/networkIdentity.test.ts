@@ -375,7 +375,7 @@ describe("TP-1 network identity gate", () => {
     expect([...codes]).toEqual(["peer_delegation_invalid"]);
     expect(session.signer.calls).toBe(0);
     // The genuine delegation, frozen, still verifies and signs.
-    expect((await verifySellerSessionDelegation(Buffer.from(JSON.stringify(Object.freeze(genuine))), { binding: w.sellerBinding, local: RPC_B, time: NOW })).expiresAt).toBe(NOW + 60_000);
+    expect((await verifySellerSessionDelegation(Buffer.from(JSON.stringify(Object.freeze(genuine))), { binding: w.sellerBinding, local: RPC_B, seller: seller.signer.claim, listingPin: PIN, jobId: JOB, time: NOW })).expiresAt).toBe(NOW + 60_000);
     await signWireRequest({ signer: session.signer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text: "{}", seller: seller.signer.claim, job: { listingPin: PIN, agreementHash: "a".repeat(64), profile: w.buyerBinding.profile }, delegation: genuine, now: NOW });
     expect(session.signer.calls).toBe(1);
   });
@@ -412,8 +412,8 @@ describe("TP-1 network identity gate", () => {
       ["checkWireRequest: kept tuple", async (w, c) => (await checkWireRequest((await opened(w)), { ...w.check, purchaseProfile: c(w.sellerBinding.profile, "revision", "TP-1.1"), binding: w.sellerBinding, local: RPC_B })), "tp1_purchase_profile_mismatch"],
       ["sellerSessionDelegationSigningBytes: payload", async (w, c) => (await sellerSessionDelegationSigningBytes(c(w.delegationPayload, "profile", mainnet(w)), w.buyerBinding, RPC_A)), "peer_delegation_invalid"],
       ["signSellerSessionDelegation: payload", (w, c) => signSellerSessionDelegation(c(w.delegationPayload, "profile", mainnet(w)), w.buyer.signer, w.buyerBinding, RPC_A), "peer_delegation_invalid"],
-      ["verifySellerSessionDelegation: scope", async (w, c) => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify(w.delegation)), c({ binding: w.sellerBinding, local: RPC_B, jobId: JOB }, "jobId", OTHER_JOB))), "wire_input_invalid"],
-      ["verifySellerSessionDelegation: Listing pin", async (w, c) => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify(w.delegation)), { binding: w.sellerBinding, local: RPC_B, listingPin: c(PIN, "version", 2) })), "wire_input_invalid"],
+      ["verifySellerSessionDelegation: scope", async (w, c) => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify(w.delegation)), c({ binding: w.sellerBinding, local: RPC_B, seller: w.seller.signer.claim, listingPin: PIN, jobId: JOB, time: NOW }, "jobId", OTHER_JOB))), "wire_input_invalid"],
+      ["verifySellerSessionDelegation: Listing pin", async (w, c) => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify(w.delegation)), { binding: w.sellerBinding, local: RPC_B, seller: w.seller.signer.claim, listingPin: c(PIN, "version", 2), jobId: JOB, time: NOW })), "wire_input_invalid"],
       ["signWireResponse: request", (w, c) => signWireResponse(c(w.payload, "profile", mainnet(w)), 200, "{}", { ...ctx(w, "seller"), now: NOW }), "peer_envelope_invalid"],
       ["signWireResponse: signing context", (w, c) => signWireResponse(w.payload, 200, "{}", c({ ...ctx(w, "seller"), now: NOW }, "now", NOW + 3_600_000)), "wire_input_invalid"],
       ["signWireResponse: kept tuple", (w, c) => signWireResponse(w.payload, 200, "{}", { ...ctx(w, "seller"), now: NOW, purchaseProfile: c(w.sellerBinding.profile, "revision", "TP-1.1") }), "tp1_purchase_profile_mismatch"],

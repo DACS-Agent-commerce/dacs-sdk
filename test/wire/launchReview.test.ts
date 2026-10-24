@@ -198,8 +198,8 @@ describe("exchange and delegation scope bindings", () => {
       profile: x.request.profile }, wallet, wire.DACS_SELLER_HTTP_DOMAINS.delegation);
     const signed = header({ ...x.signed(x.request, session, wire.DACS_SELLER_HTTP_DOMAINS.request), delegation });
     await expect(Promise.resolve().then(async () => (await wire.openWireEnvelope(signed, "request", { ...x.context, requireDelegation: true })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_mismatch" }));
-    await expect(Promise.resolve().then(async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: x.context.binding, local: LOCAL, buyer: x.buyer.claim })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_mismatch" }));
-    expect((await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: x.context.binding, local: LOCAL, buyer: wallet.claim })).buyer).toBe(wallet.claim);
+    await expect(Promise.resolve().then(async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: x.context.binding, local: LOCAL, buyer: x.buyer.claim, seller: x.seller.claim, listingPin: PIN, jobId: x.request.jobId, time: NOW })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_mismatch" }));
+    expect((await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: x.context.binding, local: LOCAL, buyer: wallet.claim, seller: x.seller.claim, listingPin: PIN, jobId: x.request.jobId, time: NOW })).buyer).toBe(wallet.claim);
   });
 });
 
