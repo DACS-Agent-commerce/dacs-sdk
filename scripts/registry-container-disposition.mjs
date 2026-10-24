@@ -210,7 +210,7 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
 // including hoisting. Installed identity cannot identify a substituted alias.
 const moduleFileExtensions = [".js", ".json", ".node"];
 function candidateAliasLocations(manifest, packages, inventory, candidate) {
-  const available = new Set([...Object.keys(packages), ...inventory.map(item => item.location)]);
+  const available = new Set(inventory ? inventory.map(item => item.location) : Object.keys(packages));
   const aliases = new Set();
   for (const [ownerLocation, owner] of [["", manifest], ...Object.entries(packages)]) {
     for (const field of specFields) {
@@ -244,6 +244,8 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
   const inventory = installedInventory ?? [];
   const errors = inventory.filter(item => item.link === true && !/\/\.bin\/[^/]+$/.test(item.location))
     .map(item => "cannot inspect linked installed packages: " + item.location);
+  errors.push(...inventory.filter(item => /(^|\/)node_modules\/@[^/]+\/node_modules$/.test(item.location))
+    .map(item => "cannot inspect node_modules inside a scope directory: " + item.location));
   for (const { name, integrity, version } of candidates) {
     if (typeof version !== "string" || version === "") {
       errors.push("candidate record has no release version: " + name);
@@ -256,7 +258,7 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
         (typeof item.location === "string" && moduleFileExtensions.some(extension =>
           item.location.endsWith(extension) && candidateLocation(item.location.slice(0, -extension.length)))))
         .map(item => item.location),
-      ...candidateAliasLocations(manifest, packages, inventory, name)])];
+      ...candidateAliasLocations(manifest, packages, installedInventory, name)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
       const entry = packages[location];
