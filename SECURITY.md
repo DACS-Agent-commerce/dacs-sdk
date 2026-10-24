@@ -184,6 +184,10 @@ WebSocket transport — an app already running a full chain stack with these dep
   workflow does not publish packages. Publication configuration is documented
   in `docs/npm-prerelease-release.md`. Production publication stays blocked by
   #191 until its baseline findings are resolved.
+  The gated prerelease workflow requires acceptance. A run within the #191
+  baseline (exit 4) passes that prerequisite, so baseline-only findings do not
+  stop a prerelease. A direct high or critical advisory always does, even when
+  the #191 baseline lists it.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.
