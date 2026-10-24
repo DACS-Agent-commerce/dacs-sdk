@@ -2,7 +2,7 @@ import { createDevnetAgreementTransport } from '../../src/wallet/devnet-native-t
 
 export const NOW = 1_900_000_000_000, HASH = 'a'.repeat(64), IDENTITY = 'f'.repeat(64);
 export const PAYER = '0x' + 'b'.repeat(64), PAYEE = '0x' + 'c'.repeat(64);
-export function passiveNativeWorld({ onFetch = () => {}, status = 'confirmed', journal: durableJournal } = {}) {
+export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, status = 'confirmed', journal: durableJournal } = {}) {
   const expected = { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: 'https://rpc.invalid/', transportAuthority: 'TEST-owner' };
   const context = { network: expected.network, endpoint: expected.endpoint, transportAuthority: expected.transportAuthority, connectionId: 'TEST-connection' };
   const records = new Map(), writes = [], calls = [], locks = new Map();
@@ -18,14 +18,15 @@ export function passiveNativeWorld({ onFetch = () => {}, status = 'confirmed', j
   const transaction = { hash: HASH, content, status, blockNumber: 7 };
   let held = false;
   const source = createDevnetAgreementTransport({ expected, journal, now: () => NOW,
-    transportOwner: { getContext: () => ({ ...context }), acquireConnectionFence: () => {
+    transportOwner: { getContext: () => ({ ...context }), acquireConnectionFence: async () => {
+      await onFence();
       if (held) throw new Error('TEST-double-fence'); held = true;
       return { context: { ...context }, release() { held = false; } };
     } },
     fetchImpl: async (_url, options) => {
       const { message, data } = JSON.parse(options.body).params[0];
       calls.push(message);
-      await onFetch(message, options.signal);
+      await onFetch(message, options.signal, data);
       let response;
       if (message === 'getBlockByNumber') response = data.blockNumber === 0 ? { number: 0, status: 'confirmed', hash: IDENTITY }
         : { number: 7, status: 'confirmed', hash: 'd'.repeat(64), content: { ordered_transactions: [HASH], timestamp: NOW / 1000 } };

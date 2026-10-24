@@ -8,7 +8,7 @@ import { classifyStorageWriteSubmission, storageWriteAbsent, storageWriteAccount
 import { storageConfirmationShapeMatches, nativePayloadDigest } from './payload-helpers.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
-import { fetchBoundedJson } from '../util/http.mjs';
+import { fetchBoundedJson, observeWithDeadline } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
@@ -57,6 +57,7 @@ const sameContext = (a,b) => CONTEXT.every((k) => a?.[k] === b?.[k]);
 const AUTH_WINDOW_MS = 120000, AUTH_PER_IDENTITY = 256, AUTH_MEMORY = 4096, AUTH_RESERVED = 4;
 // Refused transfers kept per payer lane (refusedKey).
 const REFUSALS_KEPT = 64;
+const PASSIVE_TRANSFER_TIMEOUT_MS = 10_000;
 // A refused header set is the wallet's to fix, usually its clock. Relays answer
 // these codes with 409 (never a status the SDK resends) and this message only.
 const AUTH_REFUSALS = Object.freeze({
@@ -1026,19 +1027,23 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         // journal retention, claim pruning or a cached execution verdict.
         // Returns the fresh observation/disposition; rejects aborted reads or
         // retained-byte/binding mismatches. options.signal cancels source RPCs.
+        // One deadline also bounds binding locks/fences and canonical-body reads.
         async function observePassiveTransfer(hash,options={}) {
-          const result=await reader.observeTransfer(hash,options);
-          if(result.status!=='included')return result;
-          const issued=await journal.get(intent(hash));
-          if(issued?.signedTransaction?.content?.type!=='native')return result;
-          await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>makeBinder(false,options.signal).recover(issued.networkBinding)));
-          const tx=await reader.getTransaction(hash,options);
-          options.signal?.throwIfAborted();
-          const transfer=transferOf(tx?.content);
-          if(!transfer || transfer.payer!==nativeAddress(result.payer) || transfer.to!==nativeAddress(result.payee) || transfer.amountOs!==result.amountOs
-            || issued.hash!==hash || tx?.hash!==hash || tx.blockNumber!==result.blockNumber || !['confirmed','included','finalized'].includes(tx.status)
-            || !executedMatches(tx.content,issued.signedTransaction.content,hash))fail('readback_unverified','the included native transfer differs from the retained original signed transaction');
-          return {...result,sourceDisposition:'included'};
+          return observeWithDeadline(async ({signal})=>{
+            const readOptions={...options,signal};
+            const result=await reader.observeTransfer(hash,readOptions);
+            if(result.status!=='included')return result;
+            const issued=await journal.get(intent(hash));
+            if(issued?.signedTransaction?.content?.type!=='native')return result;
+            await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>makeBinder(false,signal).recover(issued.networkBinding)));
+            const tx=await reader.getTransaction(hash,readOptions);
+            signal.throwIfAborted();
+            const transfer=transferOf(tx?.content);
+            if(!transfer || transfer.payer!==nativeAddress(result.payer) || transfer.to!==nativeAddress(result.payee) || transfer.amountOs!==result.amountOs
+              || issued.hash!==hash || tx?.hash!==hash || tx.blockNumber!==result.blockNumber || !['confirmed','included','finalized'].includes(tx.status)
+              || !executedMatches(tx.content,issued.signedTransaction.content,hash))fail('readback_unverified','the included native transfer differs from the retained original signed transaction');
+            return {...result,sourceDisposition:'included'};
+          },{timeoutMs:PASSIVE_TRANSFER_TIMEOUT_MS,signal:options.signal});
         }
         // Only buyer verification may inspect a failed execution's included slot;
         // it carries the source verdict so a later body read cannot outrank it.
