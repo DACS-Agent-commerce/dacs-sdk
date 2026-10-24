@@ -1246,7 +1246,37 @@
         }
       ]
     },
-    {"delta":"D11","subject":"delta(client): D11 split 03 add the concrete SQLite transaction adapter","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"944247d4ce8b2622389c79b71de1a21d6b83e239","after":"d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":null,"after":"c202d2b701edc2a536b34d860bdb7317cfed6d77"},{"path":"packages/dacs-client/test/helpers/store-crash-worker.mjs","before":null,"after":"f19662c277f9bcc86145487d72230cdfbdde2d50"},{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":null,"after":"8560f9547739573a5f2c8c32c27a085fbd59370d"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":null,"after":"18c6e3c74c2817a1c38f58676eb2053d76398ebb"}]},
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 03 add the concrete SQLite transaction adapter",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "944247d4ce8b2622389c79b71de1a21d6b83e239",
+          "after": "d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": null,
+          "after": "c202d2b701edc2a536b34d860bdb7317cfed6d77"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/store-crash-worker.mjs",
+          "before": null,
+          "after": "f19662c277f9bcc86145487d72230cdfbdde2d50"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": null,
+          "after": "8560f9547739573a5f2c8c32c27a085fbd59370d"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": null,
+          "after": "18c6e3c74c2817a1c38f58676eb2053d76398ebb"
+        }
+      ]
+    },
     {
       "delta": "D11",
       "subject": "fix(client): D11 share wallet payload identity and test import isolation",
@@ -1348,11 +1378,117 @@
         }
       ]
     },
-    {"delta":"D11","subject":"fix(client): D11 restore standalone provider and strengthen import vectors","files":[{"path":"packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs","before":"59a2fd307756d036f813edd17dec2fa8be23e68f","after":"b7183e63a75b68cda34c2b30a4d532963794b13f"},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"e1085f274e14f20b87335189155f76284fd3b92a","after":"3df4a602a8fba8bcdaba2a75919aeebd53f1a46d"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"3c96ca8c5a47dcb88862af46324df331961d153e","after":"7cbf9eb0efa87e4b197e8d320a9080363465ef61"}]},
-    {"delta":"D11","subject":"fix(client): D11 fence SQLite callbacks and preserve exec semantics","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"f377b3dd6895e2ad1f02bedddc9eb18177f9eb57","after":"f68603bd3f057c2bf42c8670dd6cb6d52cf05db4"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"8173b4c5b350f1a39a3b6bad62e8343f3e688258","after":"e547911cd3385e9eed8337be4b655bc424c82aaf"}]},
-    {"delta":"D11","subject":"fix(client): D11 classify native constraints and rebuild renamed table guards","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"dea888ee7f7906fc011ccb8e69319cf00f036c85","after":"f80619dee3a06bfc04b11247821e8f1d5dd82bad"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"18c6e3c74c2817a1c38f58676eb2053d76398ebb","after":"0cae28f8588f2e4d35350d4f009ddfa58e84abc4"}]},
-    {"delta":"D11","subject":"fix(client): D11 track cached host statements before transactions","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"f80619dee3a06bfc04b11247821e8f1d5dd82bad","after":"14f4c3c17024e108f9196e0f1d68223b542d2f69"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"0cae28f8588f2e4d35350d4f009ddfa58e84abc4","after":"a9892f8cd0a72d7ce09af15c568880d6bb364a8e"}]},
-    {"delta":"D11","subject":"fix(client): D11 keep rollback guard vectors portable to the Node floor","files":[{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"e547911cd3385e9eed8337be4b655bc424c82aaf","after":"ef1915ddcdc37b96297aed4492ed04fd6009b724"}]},
-    {"delta":"D11","subject":"fix(client): D11 let SQLite identify empty exec remainders","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"f68603bd3f057c2bf42c8670dd6cb6d52cf05db4","after":"4342294acfd3f71ee5c3f348f08ac542b0596392"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"ef1915ddcdc37b96297aed4492ed04fd6009b724","after":"cf66e34a3816d78a633002b462ff99253850a429"}]}
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 restore standalone provider and strengthen import vectors",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "59a2fd307756d036f813edd17dec2fa8be23e68f",
+          "after": "b7183e63a75b68cda34c2b30a4d532963794b13f"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "e1085f274e14f20b87335189155f76284fd3b92a",
+          "after": "3df4a602a8fba8bcdaba2a75919aeebd53f1a46d"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "3c96ca8c5a47dcb88862af46324df331961d153e",
+          "after": "7cbf9eb0efa87e4b197e8d320a9080363465ef61"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 fence SQLite callbacks and preserve exec semantics",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "f377b3dd6895e2ad1f02bedddc9eb18177f9eb57",
+          "after": "f68603bd3f057c2bf42c8670dd6cb6d52cf05db4"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "8173b4c5b350f1a39a3b6bad62e8343f3e688258",
+          "after": "e547911cd3385e9eed8337be4b655bc424c82aaf"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 classify native constraints and rebuild renamed table guards",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "dea888ee7f7906fc011ccb8e69319cf00f036c85",
+          "after": "f80619dee3a06bfc04b11247821e8f1d5dd82bad"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": "18c6e3c74c2817a1c38f58676eb2053d76398ebb",
+          "after": "0cae28f8588f2e4d35350d4f009ddfa58e84abc4"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 track cached host statements before transactions",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "f80619dee3a06bfc04b11247821e8f1d5dd82bad",
+          "after": "14f4c3c17024e108f9196e0f1d68223b542d2f69"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": "0cae28f8588f2e4d35350d4f009ddfa58e84abc4",
+          "after": "a9892f8cd0a72d7ce09af15c568880d6bb364a8e"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep rollback guard vectors portable to the Node floor",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "e547911cd3385e9eed8337be4b655bc424c82aaf",
+          "after": "ef1915ddcdc37b96297aed4492ed04fd6009b724"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 let SQLite identify empty exec remainders",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "f68603bd3f057c2bf42c8670dd6cb6d52cf05db4",
+          "after": "4342294acfd3f71ee5c3f348f08ac542b0596392"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "ef1915ddcdc37b96297aed4492ed04fd6009b724",
+          "after": "cf66e34a3816d78a633002b462ff99253850a429"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 generate pure payload helpers from provider",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": "e9ec2d2e168a27c87ac04b1df345cf6bd8de0242",
+          "after": "f121637cb5c6f739597a3b9bf7f1253b61c1ec19"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "3df4a602a8fba8bcdaba2a75919aeebd53f1a46d",
+          "after": "e737b5abec7b991fd5401d943998cd3ce60bc1bc"
+        }
+      ]
+    }
   ]
 }
