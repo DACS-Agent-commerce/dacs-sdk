@@ -1,0 +1,16 @@
+{
+  "name": "network",
+  "time": "2026-10-18T09:07:50.344467+00:00",
+  "request": {
+    "method": "nodeCall",
+    "params": [
+      {
+        "type": "nodeCall",
+        "message": "getNetworkInfo",
+        "data": {}
+      }
+    ]
+  },
+  "http": 200,
+  "body": "{\"result\":200,\"response\":{\"forks\":{\"osDenomination\":{\"activationHeight\":0,\"activated\":true,\"currentHeight\":561182}},\"nodeVersion\":{\"name\":\"demos-node-software\",\"version\":\"0.9.8\",\"commit\":\"61b8e75aa8db5e408c49e1c3a89db4d673f45578\",\"commitShort\":\"61b8e75\",\"commitMessage\":\"verify anchor peer pairing signature\",\"branch\":\"stabilisation\",\"dirty\":true,\"builtAt\":\"2026-10-14T16:45:24Z\"}},\"require_reply\":false,\"extra\":null}"
+}

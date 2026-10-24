@@ -1,0 +1,18 @@
+{
+  "name": "block0",
+  "time": "2026-10-18T09:07:50.280526+00:00",
+  "request": {
+    "method": "nodeCall",
+    "params": [
+      {
+        "type": "nodeCall",
+        "message": "getBlockByNumber",
+        "data": {
+          "blockNumber": 0
+        }
+      }
+    ]
+  },
+  "http": 200,
+  "body": "{\"result\":400,\"response\":\"error\",\"extra\":\"Block number not provided\",\"require_reply\":false}"
+}
