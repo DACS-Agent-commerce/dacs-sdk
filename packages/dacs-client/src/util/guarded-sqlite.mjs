@@ -79,12 +79,17 @@ function install(db) {
     let remaining = sql;
     while (remaining.length) {
       check();
-      remaining = remaining.replace(/^(?:[ \t\n\f\r;]|--[^\n]*(?:\n|$)|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$))*/, '');
-      if (!remaining) break;
       const next = prepare.call(this, remaining);
-      const consumed = next.sourceSQL.length;
-      execute(() => exec.call(this, next.sourceSQL), this, next.sourceSQL);
-      remaining = remaining.slice(consumed);
+      let sourceSQL;
+      try { sourceSQL = next.sourceSQL; }
+      catch (error) {
+        // SQLite returned no statement (comments, BOM, NUL or whitespace).
+        if (error.code !== 'ERR_INVALID_STATE') throw error;
+        break;
+      }
+      if (!sourceSQL) break;
+      execute(() => exec.call(this, sourceSQL), this, sourceSQL);
+      remaining = remaining.slice(sourceSQL.length);
     }
   };
   installed = true;
