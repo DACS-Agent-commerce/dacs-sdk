@@ -730,17 +730,18 @@ function captureChainReconciliation(
     if (!plainObject(raw) || raw.amountOs !== payment.amountOs) {
       throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
     }
-    if (raw.execution !== "executed") {
-      return Object.freeze({ status: "indeterminate",
-        reasonCode: "pay-dem-chain-execution-unconfirmed" });
+    if (raw.execution !== undefined && raw.execution !== "executed") {
+      throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
     }
     const settlement = { ...raw };
     delete settlement.amountOs;
     delete settlement.execution;
-    return Object.freeze({
-      status: "completed",
-      result: result(captureSettlement(settlement, payment)),
-    });
+    const captured = captureSettlement(settlement, payment);
+    if (raw.execution === undefined) {
+      return Object.freeze({ status: "indeterminate",
+        reasonCode: "pay-dem-chain-execution-unconfirmed" });
+    }
+    return Object.freeze({ status: "completed", result: result(captured) });
   }
   if (value.status === "absent" && exactKeys(value, ["status", "absenceProofHash"]) &&
       typeof value.absenceProofHash === "string" && HASH_RE.test(value.absenceProofHash)) {
