@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { Agent, request } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -774,4 +774,8 @@ describe("pinned npm loader", () => {
     expect(() => loadPinnedLibnpmpublish({ npm: npm() })).toThrow(`requires the pinned npm ${PINNED_ACCEPTANCE_NPM_VERSION}`);
   });
 
+  it("pins the same npm version the acceptance workflow installs", () => {
+    const workflow = readFileSync(".github/workflows/registry-container-acceptance.yml", "utf8");
+    expect(workflow).toContain(`run_bounded npm install --global --ignore-scripts --no-audit npm@${PINNED_ACCEPTANCE_NPM_VERSION}`);
+  });
 });

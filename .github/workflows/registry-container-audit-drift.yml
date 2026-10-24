@@ -1,0 +1,12 @@
+name: Registry consumer advisory-ID drift
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit-drift:
+    uses: ./.github/workflows/registry-container-acceptance.yml
+    with:
+      enforce-audit-drift: true
