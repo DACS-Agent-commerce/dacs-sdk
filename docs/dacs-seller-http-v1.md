@@ -854,3 +854,50 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 
 The plugin capture does not contain the codes in the rows above from
 `seller_retained_agreement_required` down; they are new in this SDK.
+
+## Current checks and planned compatibility evidence
+
+Current admission, identity, envelope and response checks are in
+`test/wire/admission.test.ts`, `test/wire/networkIdentity.test.ts`,
+`test/wire/envelope.test.ts` and `test/wire/response.test.ts`.
+Compatibility vectors, original-plugin captures, adaptations, generators and
+hash-pinning comparison tests are planned for later stack slices. This prefix
+contains none of that evidence and makes no verified plugin-parity claim.
+
+### TP-1 reader restriction and purchase gates
+
+TP-1 transport requires the canonical lowercase `did:demos:agent:` spelling.
+Unlike the DACS-1 reader rule at the pinned base (lines 170–177), this wire
+rejects `DID:demos:agent:…` instead of canonicalizing it. This is an explicit
+transport deviation; callers canonicalize verified artifact claims before
+building wire messages. Signed received payloads are never rewritten.
+
+`signWireRequest` and request-kind `signWireEnvelope` require `endpointProof`
+returned by `verifyEndpointProof`, the selected `publicEndpoint`, and `now`. A copied or caller-built proof is refused.
+The proof must still be unexpired, under the buyer's same binding,
+for the selected seller, Listing pin and byte-exact endpoint, with a current
+authenticated eligibility decision from the retained reader; for a new
+purchase it must also be ready and inside the Listing's window (a continuing
+request with the job's finalized `commitment` continues; see the endpoint
+proof section). Signing-byte
+helpers describe transport bytes; purchase preparation uses the gated signers.
+
+Expired session delegations are accepted only on the declared read routes.
+`checkWireRequest` refuses every effect route with `peer_delegation_expired`
+before returning a body to a handler, so a recorded outcome is answered
+again only under a live delegation. After expiry, recovery uses the declared
+read routes.
+
+
+## Host validation requirements
+
+The host supplies its own retained Agreement context and a restart-qualified
+request journal separately from received wire messages.
+These host requirements apply to both direct and delegated effect requests;
+acceptance of a signature alone does not authorize repeating an effect.
+The retained job and Agreement comparison is enforced by `checkWireRequest`
+itself on every request. The only store is the request journal above
+(`openWireRequestJournal`). No host journal, and no process-local set, is
+accepted. Composition qualification must cover what the host
+adds around it: durable local storage, reconciling on `recover`, and
+recording each outcome with `completeWireEffect`.
