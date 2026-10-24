@@ -1716,12 +1716,22 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // durable responder, whose authenticated checkpoints and signOnce govern
     // every signature/publication. The HTTP cache cannot seal an unfinished
     // proposal. Validate the exact authenticated request before resuming it.
-    if (request.path === '/dacs/v1/agreements/proposals' && !readOnly) {
+    if (request.path === '/dacs/v1/agreements/proposals' && (!readOnly || (session && !session.transportIdentity))) {
       const identity = body.transportIdentity;
       if (request.method !== 'POST' || request.jobId !== identity?.jobId || request.seller !== claim ||
           request.buyer !== identity?.buyer || identity?.seller !== claim || request.buyer !== body.buyerIdentityBundle?.presentedBy ||
           request.agreementHash !== identity?.agreementHash || !same(request.listingPin, pin) ||
           sha256Hex(rawBody) !== request.bodyHash || !same(JSON.parse(Buffer.from(rawBody).toString('utf8')), body)) return held('seller_transport_context_mismatch');
+      // Read only (an expired delegation) before the final proposal checkpoint:
+      // a seller contribution already signed for exactly this proposal is
+      // answered without signing or saving anything.
+      if (readOnly) {
+        if (!session.sellerContribution || session.sellerContributionProposalHash !== body.proposal?.proposalHash || session.buyerBundleHash !== identityBundleHash(body.buyerIdentityBundle)) return held('seller_proposal_state_incomplete');
+        try {
+          const agreement = await finalizeFixedPriceAgreementContributions(body.proposal.plan, [body.proposal.buyerContribution, session.sellerContribution], contributionVerifier);
+          return contentHash(agreement) === request.agreementHash ? { disposition: 'present', value: { disposition: 'complete', contribution: session.sellerContribution } } : held('seller_proposal_state_incomplete');
+        } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate', error); }
+      }
       try {
         const answer = await receiveProposal(body);
         if(answer.disposition==='complete')return{disposition:'present',value:answer};
