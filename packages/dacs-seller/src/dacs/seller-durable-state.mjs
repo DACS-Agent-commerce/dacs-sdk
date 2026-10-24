@@ -387,12 +387,12 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         });
         owned.set(jobId, { owner, revision });
         if (reclaimed) process.stderr.write(`seller-state: reclaimed the lock on job ${jobId} left by a process that has exited\n`);
-        let actionError;
+        let actionFailed = false;
         try { return await running.run({ api, jobId, owner }, () => action(load(jobId)?.session ?? null)); }
-        catch (error) { actionError = error; throw error; }
+        catch (error) { actionFailed = true; throw error; }
         finally {
           try { release(jobId, owner); }
-          catch (error) { pendingReleases.set(jobId, owner); if (!actionError) throw error; }
+          catch (error) { pendingReleases.set(jobId, owner); if (!actionFailed) throw error; }
         }
       },
       inspectLocks: () => db.prepare('SELECT job,owner,pid FROM seller_locks ORDER BY job').all().map((row) => {
