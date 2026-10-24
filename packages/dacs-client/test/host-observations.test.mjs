@@ -207,3 +207,12 @@ test('raw included facts cannot settle when their one JSON snapshot is pending',
   assert.equal(w.coordinates.get(w.op.id).observation.observation.status,'pending');
   assert.equal(w.consumed(),0); assert.equal(calls,1);
 });
+
+test('materialization cannot erase an explicitly undefined native source disposition', async t => {
+  const w = world(t, { ...INCLUDED, sourceDisposition: undefined }, { native: true });
+  const result = await w.verify();
+  assert.equal(result.verification.outcome, 'invalid_observation');
+  assert.equal(result.operation.status, 'broadcast_reported');
+  assert.ok(!w.coordinates.get(w.op.id).verifiedAt);
+  assert.equal(w.consumed(), 0);
+});
