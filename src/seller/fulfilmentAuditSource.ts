@@ -517,16 +517,16 @@ const MAX_VET_INVOCATION_RESULTS = 64;
  * invocation shape, exactly one invocation per distinct party Vet record, and
  * `isSellerFulfilmentVetInvocationMismatch` for each. Returns a refusal for
  * malformed or over-limit invocation sets; never throws.
- * Authenticate the SessionRecord roster separately, including bundle hashes
- * for a shared Vet record and the orchestrator role. This checks invocation
+ * Authenticate the SessionRecord roster separately; supply its bundle hashes
+ * when parties share a Vet record, and validate the orchestrator role. This checks invocation
  * coverage before signing, not every delivery precondition.
  */
 export function sellerFulfilmentVetRequirementsViolation(
   vetRequirements: unknown,
   input: {
     jobId: string;
-    buyer: { primaryClaim: string; vetRecordRef: AttestationRef };
-    seller: { primaryClaim: string; vetRecordRef: AttestationRef };
+    buyer: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
+    seller: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
     buyerRequirement: unknown;
   },
 ): string | null {
@@ -545,7 +545,7 @@ export function sellerFulfilmentVetRequirementsViolation(
       }
     }
     canonicalize({ artifacts: { vetRequirements } });
-    const bindings = new Map<string, { primaryClaim: string; roles: Set<string> }>();
+    const bindings = new Map<string, { primaryClaim: string; bundleHash?: string; roles: Set<string> }>();
     for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
       if (!hasExactJcsView(party.vetRecordRef) ||
           !isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
@@ -553,11 +553,13 @@ export function sellerFulfilmentVetRequirementsViolation(
       }
       const key = canonicalize(party.vetRecordRef);
       const existing = bindings.get(key);
-      if (existing && existing.primaryClaim !== party.primaryClaim) {
+      if (existing && (existing.primaryClaim !== party.primaryClaim ||
+          typeof existing.bundleHash !== "string" || !HASH_RE.test(existing.bundleHash) ||
+          existing.bundleHash !== party.bundleHash)) {
         return "one Vet record cannot represent different authenticated party identities";
       }
       if (existing) existing.roles.add(role);
-      else bindings.set(key, { primaryClaim: party.primaryClaim, roles: new Set([role]) });
+      else bindings.set(key, { primaryClaim: party.primaryClaim, bundleHash: party.bundleHash, roles: new Set([role]) });
     }
     const partyRefs = [...new Map([input.buyer, input.seller].map((party) =>
       [canonicalize(party.vetRecordRef), party.vetRecordRef])).values()];
