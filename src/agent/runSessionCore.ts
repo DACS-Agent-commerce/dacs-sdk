@@ -4185,7 +4185,7 @@ async function runSessionCoreWithFence(
     }
   }
 
-  if (runtime.sessionStore && terms.price.rail === "pay-dem" && terms.price.asset === "DEM") {
+  if (runtime.sessionStore && isNativeSettlement(expectedSettlementBinding)) {
     await fence.start(runtime.sessionStore, jobId, runtime.nowMs);
   }
 
