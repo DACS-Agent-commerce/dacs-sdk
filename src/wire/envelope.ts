@@ -13,16 +13,14 @@
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
-import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitment.js";
-import { assertEndpointProof, isContinuingRoute, type EndpointProof } from "./discovery.js";
-import { journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
+import { assertEndpointProof, type EndpointProof } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
-  isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
-  sealAdmitted, uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
+  isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedFields, ownedOrNothing, sameCanonical,
+  uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 export interface WireRequestPayload {
@@ -125,15 +123,15 @@ export interface EnvelopeSigningContext extends SigningContext {
  * header all come from those copies.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
-  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing"]) as Partial<EnvelopeSigningContext>;
-  assertTp1Binding(binding, local);
+  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing"]) as EnvelopeSigningContext;
   const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
+  await assertTp1Binding(binding, local);
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
-  if (purchaseProfile !== null || payload.kind !== "response") assertPurchaseProfile(purchaseProfile, binding, 500);
+  if (purchaseProfile !== null || payload.kind !== "response") await assertPurchaseProfile(purchaseProfile, binding, 500);
   const delegation = suppliedDelegation ? ownedArtifact(suppliedDelegation, "peer_delegation_invalid", 500) : null;
   // Only a request carries a delegation; every receiver refuses a response header that has one.
   if (delegation !== null && payload.kind !== "request") fail("peer_envelope_invalid", 500);
-  assertPeerProfile(payload.profile, binding, 500);
+  await assertPeerProfile(payload.profile, binding, 500);
   // A payload this signer built, such as an answer status outside 200-599, is its own fault.
   if (!payloadShape(payload, payload.kind)) fail("peer_envelope_invalid", 500);
   const signingBytes = wireEnvelopeSigningBytes(payload as unknown as WirePayload);
@@ -141,13 +139,13 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   // the complete encoded header, including a supplied delegation, before signing.
   const encode = (signature: string) => Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
-  if (payload.kind === "request") assertEndpointProof(endpointProof, {
+  if (payload.kind === "request") await assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
     publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement, signedListing,
   });
-  assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
+  await assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
-  assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
+  await assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   return Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
 }
 
@@ -198,10 +196,10 @@ export interface OpenEnvelopeOptions {
  * the tuple kept for the purchase, before the header is read; then the
  * plugin's header decoding.
  */
-export function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, options: OpenEnvelopeOptions): OpenedEnvelope<Extract<WirePayload, { kind: K }>> {
-  const { binding, local, purchaseProfile, principal, requireDelegation = false } = ownedFields(options, ["binding", "local", "purchaseProfile", "principal", "requireDelegation"]) as Partial<OpenEnvelopeOptions>;
-  assertTp1Binding(binding, local);
-  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding, 500);
+export async function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, options: OpenEnvelopeOptions): Promise<OpenedEnvelope<Extract<WirePayload, { kind: K }>>> {
+  const { binding, local, purchaseProfile, principal, requireDelegation = false } = ownedFields(options, ["binding", "local", "purchaseProfile", "principal", "requireDelegation"]) as OpenEnvelopeOptions;
+  await assertTp1Binding(binding, local);
+  if (purchaseProfile !== null || kind !== "request") await assertPurchaseProfile(purchaseProfile, binding, 500);
   // Without its principal, a response signed by anyone who names itself the seller would verify.
   if (kind === "response" && !isClaim(principal)) fail("wire_input_invalid", 500);
   if (typeof header !== "string" || header.length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength || !/^[A-Za-z0-9_-]+$/.test(header)) fail("peer_envelope_invalid");
@@ -213,17 +211,17 @@ export function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, o
   const p = envelope.payload as JsonRecord;
   if (lacksProfile(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) fail("tp1_profile_missing", 409);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
-  if (hasKeys(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) assertPeerProfile(p.profile, binding);
+  if (hasKeys(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) await assertPeerProfile(p.profile, binding);
   if (!payloadShape(p, kind)) fail("peer_envelope_invalid");
   if (requireDelegation && !delegated) fail("peer_delegation_required");
   const payload = p as unknown as Extract<WirePayload, { kind: K }>;
   const actor = kind === "request" ? payload.buyer : payload.seller;
   if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");
-  const delegation = delegated ? verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer }) : null;
+  const delegation = delegated ? await verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin, jobId: payload.jobId }) : null;
   const key = delegation?.sessionPublicKey ?? claimKey(actor);
   if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
   // The trusted reader is asked about these participants and this job only once a signature authenticates them.
-  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
+  await assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const normalizedDelegation = delegated ? {
     payload: (envelope.delegation as SellerSessionDelegation).payload,
     signature: walletSignatureBytes((envelope.delegation as SellerSessionDelegation).signature).toString("base64url"),
@@ -508,7 +506,7 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
 export function admitWireRequestBody(rawBody: Uint8Array): JsonRecord {
   const body = admitWireJson(rawBody, DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes, "bad_json", 400);
   if (body === null || typeof body !== "object" || Array.isArray(body)) fail("bad_request", 400);
-  return sealAdmitted(body as JsonRecord);
+  return body as JsonRecord;
 }
 
 /**
@@ -531,5 +529,5 @@ export function admitOutgoingBody(text: string, maxBytes: number): Buffer {
 export function admitWireResponseBody(bytes: Uint8Array): JsonRecord {
   const body = admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes, "response_json_rejected", 502);
   if (body === null || typeof body !== "object" || Array.isArray(body)) fail("response_json_rejected", 502, "NOT-AN-OBJECT");
-  return sealAdmitted(body as JsonRecord);
+  return body as JsonRecord;
 }
