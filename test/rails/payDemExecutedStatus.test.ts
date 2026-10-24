@@ -186,6 +186,18 @@ async function settle(payDem: PayDemRail) {
 }
 
 describe("pay-dem reports ok only for an executed transfer (#338)", () => {
+  it("settles through the bridge with the real factory execution authority", async () => {
+    const payDem = await rail();
+    const pending = payDemSettle(payDem)({
+      rail: "pay-dem", phase: "pay-dem", amount: "9.5", asset: "DEM",
+      payee: `did:demos:agent:${PAYEE_HEX}`, expectedPayee: RECIPIENT,
+      jobId: "factory-bridge", phaseIndex: 0,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(pending).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("settles an executed record that matches the prepared transfer", async () => {
     const payDem = await rail();
 
