@@ -54,13 +54,15 @@ describe("npm registry grammar and integrity", () => {
     mkdirSync(join(npmDirectory, "node_modules/npm-package-arg"), { recursive: true });
     writeFileSync(join(npmDirectory, "node_modules/npm-package-arg/index.js"),
       "exports.resolve = () => ({ registry: true, type: 'alias', subSpec: { registry: true } });\n");
-    const script = `const { registryDependencyViolations } = await import(${JSON.stringify(resolve(import.meta.dirname, modulePath))});
+    // An unrelated Node warning on the child's stderr must not fail the test.
+    const script = `process.emitWarning("unrelated warning");
+      const { registryDependencyViolations } = await import(${JSON.stringify(resolve(import.meta.dirname, modulePath))});
       const violations = registryDependencyViolations({ manifest: { dependencies: { x: "npm:node_modules" } },
         lock: { packages: { "": {} } }, registry: ${JSON.stringify(registry)} });
       console.log(JSON.stringify(violations));`;
     const run = spawnSync(process.execPath, ["--input-type=module", "-e", script],
       { encoding: "utf8", env: { ...process.env, npm_execpath: join(npmDirectory, "bin/npm-cli.js") } });
-    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
     expect(JSON.parse(run.stdout)).toEqual([{ location: "package.json", field: "dependencies.x", value: "npm:node_modules" }]);
   });
   const hash = (algorithm: string) => algorithm + "-" + createHash(algorithm).update("fixture").digest("base64");
