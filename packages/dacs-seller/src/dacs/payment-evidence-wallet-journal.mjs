@@ -223,14 +223,15 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       const nonce = nonceOf(object(value) ? value.nonce : value, 0);
       return nonce === null ? null : { nonce, blockHeight: object(value) ? nonceOf(value.blockHeight, 0) : null };
     });
-    if (!('value' in account)) return { alive: true, reason: `the account nonce could not be read: ${account.cause}` };
-    if (account.value.nonce < signed.nonce) return { alive: true };
     const state = await read(() => readTransactionState({ txHash: signed.txHash }), (value) => {
       if (TX_STATES.has(value)) return { state: value, checkedThroughBlock: null };
       return object(value) && TX_STATES.has(value.state) ? { state: value.state, checkedThroughBlock: nonceOf(value.checkedThroughBlock, 0) } : null;
     });
+    // Execution is authoritative even if the account nonce is stale or unreadable.
+    if ('value' in state && state.value.state === 'applied') return { alive: true, applied: true };
+    if (!('value' in account)) return { alive: true, reason: `the account nonce could not be read: ${account.cause}` };
     if (!('value' in state)) return { alive: true, reason: `the kept CREATE's state could not be read: ${state.cause}` };
-    if (state.value.state !== 'absent') return { alive: true, applied: state.value.state === 'applied' };
+    if (state.value.state !== 'absent' || account.value.nonce < signed.nonce) return { alive: true };
     if (account.value.blockHeight === null || state.value.checkedThroughBlock === null || state.value.checkedThroughBlock < account.value.blockHeight) {
       return { alive: true, reason: 'the kept CREATE has no complete absence observation through the account nonce snapshot' };
     }
