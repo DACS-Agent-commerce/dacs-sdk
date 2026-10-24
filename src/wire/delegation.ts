@@ -86,10 +86,14 @@ export interface DelegationScope {
   /** The verifier's connection right now; it must be the one the binding was made with. */
   local: unknown;
   buyer?: string;
-  seller?: string;
-  listingPin?: ListingPin;
-  jobId?: string;
-  /** Also require notBefore <= time < expiresAt (only notBefore with allowExpired). */
+  /** The seller, Listing and job the verifier is serving: a delegation for any other is refused. */
+  seller: string;
+  listingPin: ListingPin;
+  jobId: string;
+  /**
+   * The verifier's trusted clock: require notBefore <= time < expiresAt (only
+   * notBefore with allowExpired). Required unless allowExpired is true.
+   */
   time?: number;
   /** The delegation must end by this Agreement deadline. */
   deadline?: number;
@@ -97,16 +101,29 @@ export interface DelegationScope {
   allowExpired?: boolean;
 }
 
+const SCOPE_KEYS = ["binding", "local", "buyer", "seller", "listingPin", "jobId", "time", "deadline", "allowExpired"] as const;
+
+/** Refuses a scope that leaves out a check or sets one to undefined: a skipped check must never read as a pass. */
+function assertCompleteScope(scope: unknown, fields: Partial<DelegationScope>): void {
+  for (const key of SCOPE_KEYS) if (fields[key] === undefined && Object.hasOwn(scope as object, key)) fail("wire_input_invalid", 500);
+  if (typeof fields.seller !== "string" || typeof fields.jobId !== "string" || fields.listingPin === undefined) fail("wire_input_invalid", 500);
+  if (fields.allowExpired !== undefined && typeof fields.allowExpired !== "boolean") fail("wire_input_invalid", 500);
+  if (fields.time === undefined && fields.allowExpired !== true) fail("wire_input_invalid", 500);
+}
+
 /**
  * Verify a delegation and its scope under the verifier's current TP-1 binding;
- * returns a copy of its payload. The scope is read once (ownedFields) and its
+ * returns a copy of its payload. The scope is read once (ownedScope) and its
  * Listing pin copied; the delegation is copied once and every check reads that
  * copy, so the payload returned is the one whose signature verified.
+ * Throws wire_input_invalid (500) for a scope without seller, Listing pin and
+ * job, without a clock (unless allowExpired), or with a member set to undefined.
  */
 export async function verifySellerSessionDelegation(supplied: unknown, scope: DelegationScope): Promise<SellerSessionDelegationPayload> {
-  const { binding, local, buyer, seller, listingPin: suppliedPin, jobId, time, deadline, allowExpired = false } =
-    ownedFields(scope, ["binding", "local", "buyer", "seller", "listingPin", "jobId", "time", "deadline", "allowExpired"]) as Partial<DelegationScope>;
-  const listingPin = suppliedPin === undefined ? undefined : ownedConfig(suppliedPin, "wire_input_invalid");
+  const fields = ownedFields(scope, SCOPE_KEYS) as Partial<DelegationScope>;
+  assertCompleteScope(scope, fields);
+  const { binding, local, buyer, seller, jobId, time, deadline, allowExpired = false } = fields;
+  const listingPin = ownedConfig(fields.listingPin, "wire_input_invalid");
   const admitted = types.isUint8Array(supplied)
     ? admitWireJson(ownedBytes(supplied, "peer_delegation_invalid", 401, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxHeaderLength, code: "peer_delegation_invalid", status: 401 }), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401)
     : isAdmittedValue(supplied) ? supplied : fail("peer_delegation_invalid", 401, "ARTIFACT-NOT-ADMITTED");
@@ -121,8 +138,7 @@ export async function verifySellerSessionDelegation(supplied: unknown, scope: De
   if (!verifyEd25519(bytes, walletSignatureBytes(delegation.signature), claimKey(p.buyer))) fail("peer_delegation_signature_invalid");
   // The trusted reader is asked only about a delegation the buyer's wallet signed.
   await assertTp1Authority(binding as Tp1Binding, local, [p.buyer, p.seller], p.jobId);
-  if ((buyer !== undefined && p.buyer !== buyer) || (seller !== undefined && p.seller !== seller) ||
-      (listingPin !== undefined && !sameCanonical(p.listingPin, listingPin)) || (jobId !== undefined && p.jobId !== jobId)) {
+  if ((buyer !== undefined && p.buyer !== buyer) || p.seller !== seller || !sameCanonical(p.listingPin, listingPin) || p.jobId !== jobId) {
     fail("peer_delegation_mismatch", 409);
   }
   if (time !== undefined && (!isUint(time) || p.notBefore > time || (!allowExpired && p.expiresAt <= time))) fail("peer_delegation_expired", 408);
