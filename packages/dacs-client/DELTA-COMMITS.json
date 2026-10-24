@@ -955,5 +955,6 @@
     ]
   },
   {"sha":null,"subject":"fix(client): D11 keep all diagnostic readers passive and project retained fields","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/purchases.mjs","packages/dacs-client/test/diagnostic-reader.test.mjs","packages/dacs-client/test/host-observations.test.mjs"]},
-  {"sha":null,"subject":"fix(client): D11 reconcile the observation-limit diagnostic merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]}
+  {"sha":null,"subject":"fix(client): D11 reconcile the observation-limit diagnostic merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 qualify merged diagnostic source","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]}
 ]
