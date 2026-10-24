@@ -1727,31 +1727,6 @@
       ]
     },
     {
-      "commit": "3ad09a07d7129eeb1007c5f07014818ecfe721d3",
-      "parents": [
-        "1db565d700663d1d23449943002298d6c4eda038",
-        "e2a7882e3b38cd49ce980869cfe51a819661402b"
-      ],
-      "files": [
-        {
-          "path": "packages/dacs-client/src/purchases.mjs",
-          "parentBlobs": [
-            "eda3e9fe0b741cf378c61df1fad749965cf9f073",
-            "9050fd47c365e95cf63295837070a311a48111da"
-          ],
-          "after": "7ac41a6e4f20480403f32993a28954b42217f3e4"
-        },
-        {
-          "path": "packages/dacs-client/test/host-observations.test.mjs",
-          "parentBlobs": [
-            "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05",
-            "3d124286ec49346c6a72fb0d8e15086ef06d3632"
-          ],
-          "after": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
-        }
-      ]
-    },
-    {
       "commit": "9d124121acd0415df51f5dd35c09e98c77e1bf9a",
       "parents": [
         "ba61cf5b840e1e9d4192665f8a3335c23005fdbd",
@@ -1798,23 +1773,6 @@
             "3d124286ec49346c6a72fb0d8e15086ef06d3632"
           ],
           "after": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
-        }
-      ]
-    },
-    {
-      "commit": "1db565d700663d1d23449943002298d6c4eda038",
-      "parents": [
-        "d05d43d5ca20fbac6a25db822450c75e2db29d9e",
-        "0b03491e50a221730c206d914882ea085e22e79d"
-      ],
-      "files": [
-        {
-          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-          "parentBlobs": [
-            "eb7c37692bdd5da4ac476e6791a35172f404212e",
-            "ea871900d025e7310e2a35b95a626da101ca9edd"
-          ],
-          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
         }
       ]
     },
