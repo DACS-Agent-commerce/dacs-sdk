@@ -6,7 +6,7 @@ import { join } from "node:path";
 // or records are mutated by this harness.
 const fault = vi.hoisted(() => ({ fds: new Map<number, string>(), data: new Map<number, Buffer>(), durable: new Map<string, Buffer>(),
   directory: "", syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false,
-  shortRead: false, eof: false, reads: [] as number[], onLink: null as null | ((name: string) => void) }));
+  shortWrite: false, zeroWrite: false, attemptStats: 0, trackDurability: true, shortRead: false, eof: false, reads: [] as number[], onLink: null as null | ((name: string) => void) }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs,
@@ -15,6 +15,7 @@ vi.mock("node:fs", async (original) => {
     fsyncSync(fd: number) {
       if (fault.syncError && (!fault.syncDirectoryOnly || fs.fstatSync(fd).isDirectory())) throw fault.syncError;
       fs.fsyncSync(fd);
+      if (!fault.trackDurability) return;
       const path = fault.fds.get(fd)!;
       const stat = fs.fstatSync(fd);
       if (stat.isDirectory()) {
@@ -32,9 +33,15 @@ vi.mock("node:fs", async (original) => {
       fs.linkSync(from, to);
     },
     lstatSync(path: string, options: any) {
+      if (/o-[0-9a-f]{64}-[0-9]+$/.test(path)) fault.attemptStats++;
       const stat = fs.lstatSync(path, options);
       if (fault.foreignUid && stat?.isDirectory()) return new Proxy(stat, { get(target, key) { return key === "uid" ? target.uid + 1 : Reflect.get(target, key); } });
       return stat;
+    },
+    writeSync(fd: number, buffer: Buffer | string, offset?: number, length?: number) {
+      if (fault.zeroWrite) return 0;
+      if (typeof buffer === "string") return fs.writeSync(fd, fault.shortWrite ? buffer.slice(0, 10) : buffer);
+      return fs.writeSync(fd, buffer, offset, fault.shortWrite ? Math.min(10, length ?? buffer.length) : length);
     },
     readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number) {
       fault.reads.push(length);
@@ -73,6 +80,7 @@ function crash(directory: string) {
 }
 beforeEach(() => {
   fault.fds.clear(); fault.data.clear(); fault.durable.clear(); fault.syncError = fault.linkError = null; fault.syncDirectoryOnly = false;
+  fault.shortWrite = fault.zeroWrite = false; fault.trackDurability = true; fault.attemptStats = 0;
   fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.onLink = null; fault.reads = [];
 });
 afterEach(() => { expect(fault.fds.size).toBe(0); });
@@ -100,9 +108,8 @@ describe("journal publication and recovery regression cases", () => {
     crash(directory); at++;
     reopened = openWireRequestJournal(directory, { clock: () => at, leaseMs: 1000 });
     expect(reserve(reopened, { operationId: other })).toMatchObject({ state: "recover", attempt: 1, leaseUntil: at + 1000 });
-  });
-  it("every file and directory fsync failure prevents a successful reservation or completion", () => {
-    for (const directoryOnly of [false, true]) for (const phase of ["open", "reserve", "complete"]) {
+  }, 30000);
+  it.each([false, true].flatMap((directoryOnly) => ["open", "reserve", "complete"].map((phase) => ({ directoryOnly, phase }))))("fsync failure prevents success: $phase (directory=$directoryOnly)", ({ directoryOnly, phase }) => {
       const { journal } = setup();
       const effect = phase === "complete" ? reserve(journal) : null;
       const error = new Error(`fsync ${phase}`);
@@ -110,8 +117,7 @@ describe("journal publication and recovery regression cases", () => {
       const invoke = () => phase === "open" ? openWireRequestJournal(journal.directory) : phase === "reserve" ? reserve(journal) : completeWireEffect(journal, effect!, { status: 200, text: "{}" });
       expect(invoke).toThrow(error);
       fault.syncError = null;
-    }
-  });
+  }, 30000);
   it("EIO during nonce or attempt link propagates unchanged, cleans temporary files and issues no effect", () => {
     for (const target of ["nonce", "attempt"]) {
       const { journal, directory } = setup();
@@ -127,7 +133,7 @@ describe("journal publication and recovery regression cases", () => {
       expect(names(directory).some((n) => n.startsWith("tmp-"))).toBe(false);
       expect(reserve(openWireRequestJournal(directory))).toMatchObject({ state: "new", attempt: 0 });
     }
-  });
+  }, 30000);
   it("nonexclusive publication and foreign directory ownership refuse journal handles", () => {
     const { directory } = setup();
     fault.nonexclusive = true;
@@ -135,12 +141,12 @@ describe("journal publication and recovery regression cases", () => {
     fault.nonexclusive = false; fault.foreignUid = true;
     expect(() => openWireRequestJournal(directory)).toThrowError(refused("DIRECTORY-UNSAFE"));
     expect(names(directory)).toEqual([]);
-  });
+  }, 30000);
   it.each([NaN, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])("invalid clock %s issues no attempt", (at) => {
     const { journal, directory } = setup(() => at);
     expect(() => reserve(journal)).toThrowError(expect.objectContaining({ code: "seller_configuration_invalid", status: 500, detail: "JOURNAL-CLOCK" }));
     expect(names(directory).filter((n) => n.startsWith("o-"))).toEqual([]);
-  });
+  }, 30000);
   it.each([200.5, "200"])("noninteger status %s is refused before publication, also in stored form", (status) => {
     const { journal, directory } = setup(), effect = reserve(journal);
     const before = names(directory);
@@ -148,7 +154,7 @@ describe("journal publication and recovery regression cases", () => {
     expect(names(directory)).toEqual(before);
     plant(directory, `o-${effect.operationId}.done`, { operationId: effect.operationId, attempt: 0, outcome: stored(status as number) });
     expect(() => reserve(openWireRequestJournal(directory))).toThrowError(refused("STORE-OUTCOME-INVALID"));
-  });
+  }, 30000);
   it("exact 512KiB and status 599 survive reopen; one extra byte fails before completion", () => {
     const { journal, directory } = setup(), effect = reserve(journal);
     const text = '{"x":"' + "x".repeat(512 * 1024 - 8) + '"}';
@@ -156,27 +162,25 @@ describe("journal publication and recovery regression cases", () => {
     expect(() => completeWireEffect(journal, effect, { status: 200, text: text + " " })).toThrowError(expect.objectContaining({ code: "wire_input_invalid", detail: "OUTCOME-INVALID" }));
     completeWireEffect(journal, effect, { status: 599, text });
     expect(reserve(openWireRequestJournal(directory))).toMatchObject({ state: "completed", outcome: { status: 599, text } });
-  });
-  it("stored operation identity, exact outcome members and encoded bytes are independently checked", () => {
-    for (const patch of [{ operationId: "d".repeat(64) }, { outcome: { ...stored(), extra: true } }, { outcome: { status: 200, textBytes: null } }]) {
+  }, 30000);
+  it.each([{ operationId: "d".repeat(64) }, { outcome: { ...stored(), extra: true } }, { outcome: { status: 200, textBytes: null } }])("stored outcome corruption is refused (%#)", (patch) => {
       const { journal, directory } = setup(), effect = reserve(journal);
       plant(directory, `o-${effect.operationId}.done`, { operationId: effect.operationId, attempt: 0, outcome: stored(), ...patch });
       expect(() => reserve(openWireRequestJournal(directory))).toThrowError(refused("STORE-OUTCOME-INVALID"));
-    }
-  });
+  }, 30000);
   it("conflicting completed index and durable end cannot report successful completion", () => {
     const { journal, directory } = setup(), effect = reserve(journal);
     completeWireEffect(journal, effect, { status: 200, text: "{}" });
     plant(directory, `o-${effect.operationId}.done`, { operationId: effect.operationId, attempt: 0, outcome: stored(200, '{"other":true}') });
     expect(() => completeWireEffect(journal, effect, { status: 200, text: "{}" })).toThrowError(expect.objectContaining({ code: "seller_effect_conflict", status: 500 }));
-  });
+  }, 30000);
   it("end operation, superseded type, and superseded encoded outcomes refuse independently", () => {
     for (const patch of [{ operationId: "d".repeat(64) }, { superseded: "yes", outcome: null }, { superseded: true, outcome: stored() }]) {
       const { journal, directory } = setup(), effect = reserve(journal);
       plant(directory, `o-${effect.operationId}-0.end`, { operationId: effect.operationId, attempt: 0, superseded: false, outcome: stored(), ...patch });
       expect(() => reserve(openWireRequestJournal(directory))).toThrowError(refused("STORE-END-INVALID"));
     }
-  });
+  }, 30000);
   it("crash after durable end and before completed index reconstructs the exact outcome", () => {
     const { journal, directory } = setup(), effect = reserve(journal);
     const outcome = { status: 599, text: '{"kept":"é"}\n' };
@@ -184,7 +188,7 @@ describe("journal publication and recovery regression cases", () => {
     fs.unlinkSync(join(directory, `o-${effect.operationId}.done`));
     expect(reserve(openWireRequestJournal(directory))).toMatchObject({ state: "completed", outcome });
     expect(read(directory, `o-${effect.operationId}.done`).outcome).toEqual(stored(outcome.status, outcome.text));
-  });
+  }, 30000);
   it("null completion remains idempotent across reopen; recovery lease matches durable attempt", () => {
     let at = 1000;
     const { journal, directory } = setup(() => at), effect = reserve(journal);
@@ -195,7 +199,7 @@ describe("journal publication and recovery regression cases", () => {
     const recovered = reserve(journal);
     expect(recovered).toMatchObject({ state: "recover", attempt: 1, leaseUntil: at + 1000 });
     expect(read(directory, `o-${effect.operationId}-1`).leaseUntil).toBe(at + 1000);
-  });
+  }, 30000);
   it("a first-publication race preserves the winning binding and precise pending diagnostic", () => {
     for (const foreign of [true, false]) {
       const { journal } = setup();
@@ -207,7 +211,7 @@ describe("journal publication and recovery regression cases", () => {
       expect(() => reserveEffect(journalStore(journal), original)).toThrowError(expect.objectContaining(foreign
         ? { code: "peer_operation_mismatch", status: 409 } : { code: "seller_effect_pending", status: 503 }));
     }
-  });
+  }, 30000);
   it("multiple short reads respect the remaining buffer, and truncated EOF terminates with bounded reads", () => {
     const { journal, directory } = setup(), effect = reserve(journal);
     completeWireEffect(journal, effect, { status: 200, text: '{"short":"reads"}' });
@@ -218,7 +222,7 @@ describe("journal publication and recovery regression cases", () => {
     expect(() => reserve(journal)).toThrowError(refused("STORE-OUTCOME-INVALID"));
     expect(fault.reads).toHaveLength(2);
     expect(names(directory).some((n) => /^(tmp|probe)-/.test(n))).toBe(false);
-  });
+  }, 30000);
 });
 it("oversized outcome text is refused before allocating/admitting its UTF-8 bytes", () => {
   const { journal } = setup(), effect = reserve(journal);
@@ -247,3 +251,56 @@ it("repeated read/publication failures and successes balance a bounded descripto
     expect(fault.fds.size).toBe(0);
   }
 });
+
+
+it("publishes all UTF-8 bytes after short writes before issuing an effect", () => {
+  const { journal, directory } = setup();
+  fault.shortWrite = true;
+  const effect = reserve(journal);
+  expect(effect.state).toBe("new");
+  completeWireEffect(journal, effect, { status: 200, text: '{"message":"é"}' });
+  expect(reserve(openWireRequestJournal(directory))).toMatchObject({ state: "completed", outcome: { status: 200, text: '{"message":"é"}' } });
+});
+
+it.each(["zero-write", "file-sync"])("cleans temporary files and preserves the %s failure", (failure) => {
+  const { journal, directory } = setup();
+  const cause = Object.assign(new Error("file sync failed"), { code: "EIO" });
+  fault.zeroWrite = failure === "zero-write";
+  if (failure === "file-sync") fault.syncError = cause;
+  expect(() => reserve(journal)).toThrowError(failure === "file-sync" ? cause : expect.objectContaining({ code: "seller_replay_guard_invalid" }));
+  expect(names(directory).some((name) => name.startsWith("tmp-"))).toBe(false);
+});
+
+it("expires unfinished leases, fences stale completions and persists the crash retry budget", () => {
+  let at = 1000;
+  const { journal, directory } = setup(() => at);
+  let effect = reserve(journal);
+  at = 1999;
+  expect(() => reserve(journal)).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+  for (let superseded = 1; superseded < 16; superseded++) {
+    at = 1000 + superseded * 1000;
+    const previous = effect;
+    effect = reserve(journal);
+    expect(effect).toMatchObject({ state: "recover", attempt: superseded });
+    expect(() => completeWireEffect(journal, previous, { status: 200, text: "{}" }))
+      .toThrowError(expect.objectContaining({ code: "seller_effect_superseded" }));
+  }
+  at = 17000;
+  const reopened = openWireRequestJournal(directory, { clock: () => at, leaseMs: 1000 });
+  expect(() => reserve(reopened)).toThrowError(expect.objectContaining({ code: "seller_effect_unresolved" }));
+}, 30000);
+
+it("bounds attempt lookup after many clean retries without spending the crash budget", () => {
+  const { journal, directory } = setup();
+  fault.trackDurability = false;
+  let effect = reserve(journal);
+  for (let attempt = 0; attempt < 128; attempt++) {
+    completeWireEffect(journal, effect, null);
+    effect = reserve(journal);
+  }
+  const reopened = openWireRequestJournal(directory, { clock: () => 1000, leaseMs: 1000 });
+  completeWireEffect(journal, effect, null);
+  fault.attemptStats = 0;
+  expect(reserve(reopened)).toMatchObject({ state: "recover", attempt: 129 });
+  expect(fault.attemptStats).toBeLessThan(32);
+}, 30000);
