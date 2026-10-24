@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "379ee1454926776ec0ecbe80418b100237e7bbae"
+        "blob": "2b9993ae890c9df0c962b87b1a92ecbc2b546c8f"
       },
       "DELTA-LEDGER.json": {
-        "blob": "e9440fc72ea5c8b8d597c2784da8b08be4d69ea5"
+        "blob": "5b8bbfa15a7828e11af2fccd020ce885cd02e5d6"
       },
       "DELTA-MAP.md": {
-        "blob": "5f4ece8ca9582a9e5bb7083bbdcf2ab2a0fc1f9c"
+        "blob": "cb9e7764af5d7dc97720e288070a00f52db85bca"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e0653d4f2ae56b8976c492e4657898997df3dd5a"
+        "blob": "fa1526d96b86cf69ca2ae75627a30a0f2440738b"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1226,7 +1226,7 @@
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "ea871900d025e7310e2a35b95a626da101ca9edd"
+        "blob": "6e92f93f88eacacd26f5dd031c64a0c29388eb3f"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
@@ -1628,10 +1628,10 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/store-atomicity.test.mjs": {
-        "blob": "aa9dbf4fc1e98f055efc5d7690e042dad16f9186"
+        "blob": "4814964834698bcd72cc3faaf6f2438b8ce35cee"
       },
       "test/store-host-boundary.test.mjs": {
-        "blob": "a9892f8cd0a72d7ce09af15c568880d6bb364a8e"
+        "blob": "74c4ba0638f76b77d45dd45c1260e7e718a8e7af"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
