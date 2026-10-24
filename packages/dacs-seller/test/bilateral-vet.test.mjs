@@ -141,9 +141,17 @@ for(const reverse of [false,true])test(`retained timestamps recover after restar
  const w=fixture(),p=w.provider(),a=w.input(),b=structuredClone(a);b.scope.generatedAt++;await p.resolveBuyer(a);await p.resolveBuyer(b);const fresh=w.provider();
  for(const input of reverse?[b,a]:[a,b])assert.equal((await fresh.resolveSeller(request(w,input))).disposition,'present');w.store.close();
 });
-test('restart refuses a saved context whose Vet ref changed under valid replacement proof',async()=>{
- const w=fixture(),input=w.input();await w.provider().resolveBuyer(input);const address=compositeVerificationAddress(input.scope.jobId,w.buyer.claim),row=w.records.get(address);
+for(const role of ['buyer','seller'])for(const method of ['resolveSeller','recoverBuyer'])test(`${method} after restart refuses a changed ${role} Vet ref on every retry`,async t=>{
+ const w=fixture(),input=w.input();t.after(()=>w.store.close());await w.provider().resolveBuyer(input);
+ const address=compositeVerificationAddress(input.scope.jobId,w[role].claim),row=w.records.get(address),signer=role==='buyer'?w.seller:w.buyer;
  const {signComponentArtifact,ARTIFACT_SEPARATORS}=await import('@kynesyslabs/dacs');const {fixtureRecord}=await import('./helpers/protocol-fixture.mjs');
- const {signature,...unsigned}=row.artifact;const replacement=await signComponentArtifact({...unsigned,generatedAt:unsigned.generatedAt-1},ARTIFACT_SEPARATORS.CompositeVerificationRecord,{signer:w.seller.claim,algorithm:'ed25519',sign:w.seller.signBytes});
- w.records.set(address,fixtureRecord(address,replacement,w.seller));assert.equal((await w.provider().resolveSeller(request(w,input))).disposition,'indeterminate');w.store.close();
+ const {signature,...unsigned}=row.artifact;const replacement=await signComponentArtifact({...unsigned,generatedAt:unsigned.generatedAt-1},ARTIFACT_SEPARATORS.CompositeVerificationRecord,{signer:signer.claim,algorithm:'ed25519',sign:signer.signBytes});
+ w.records.set(address,fixtureRecord(address,replacement,w.seller));const restarted=w.provider();
+ for(let attempt=0;attempt<2;attempt++){
+  if(method==='resolveSeller')assert.equal((await restarted.resolveSeller(request(w,input))).disposition,'indeterminate');
+  else assert.equal(await restarted.recoverBuyer(input),null);
+ }
+ assert.equal(restarted.contexts.size,0);
+ assert.equal(w.seen.length,1);
+ w.records.set(address,row);assert.equal((await restarted.resolveSeller(request(w,input))).disposition,'present');assert.equal(w.seen.length,1);
 });
