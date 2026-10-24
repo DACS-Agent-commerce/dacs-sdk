@@ -194,3 +194,32 @@ it("awaits and preserves rejected async lookups through every assertion", async 
     () => fixtureWire.assertPurchaseProfile(authority.binding.profile, authority.binding),
   ]) await expect(Promise.resolve().then(action)).rejects.toBe(cause);
 });
+
+
+it.each([null, 42, {}, "", RECORD.chainIdentity.toUpperCase(), `${RECORD.chainIdentity} `])("refuses malformed refusal policy entries (%#)", async (entry) => {
+  const options = { record: RECORD, local: A };
+  Object.defineProperty(options, "refusedChainIdentities", { value: [entry] });
+  await expect(bindTp1Fixture(options)).rejects.toMatchObject({ code: "wire_input_invalid", status: 500 });
+});
+
+it("keeps the exported profile key policy immutable", async () => {
+  const { binding } = await controlledAuthority();
+  expect(Object.isFrozen(fixtureWire.TP1_WIRE_PROFILE_KEYS)).toBe(true);
+  expect(() => Reflect.set(fixtureWire.TP1_WIRE_PROFILE_KEYS, "0", "unexpected")).not.toThrow();
+  expect(fixtureWire.isTp1WireProfile(binding.profile)).toBe(true);
+});
+
+it("authenticates exactly one seller for the discovery scope", async () => {
+  const authority = await controlledAuthority();
+  await fixtureWire.assertTp1Authority(authority.binding, A, [SELLER], "dacs-seller-discovery/v1");
+  expect(authority.scopes.at(-1)).toEqual({ local: A, sessionId: "dacs-seller-discovery/v1", participants: [SELLER] });
+  const reads = authority.scopes.length;
+  for (const participants of [[], [BUYER, SELLER]]) {
+    await expect(fixtureWire.assertTp1Authority(authority.binding, A, participants, "dacs-seller-discovery/v1"))
+      .rejects.toMatchObject({ code: "tp1_participant_profile_mismatch" });
+  }
+  expect(authority.scopes).toHaveLength(reads);
+  authority.change((decision) => ({ ...decision, participants: decision.participants.map((party) => ({ ...party, claim: BUYER })) }));
+  await expect(fixtureWire.assertTp1Authority(authority.binding, A, [SELLER], "dacs-seller-discovery/v1"))
+    .rejects.toMatchObject({ code: "tp1_participant_profile_mismatch" });
+});
