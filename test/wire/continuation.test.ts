@@ -90,6 +90,7 @@ function resigned(x: Awaited<ReturnType<typeof world>>, signature: Record<string
   return { ...c, record: { ...c.record, signature: { ...c.record.signature, ...signature } } };
 }
 
+// Each case opens isolated journals that qualify publication in fresh processes: load-sensitive under the 5 s default.
 describe("the seller checks the job's finalized commitment on every payment and delivery route", { timeout: 60_000 }, () => {
   const modes = (x: Awaited<ReturnType<typeof world>>, path: string) => [
     ["direct", async () => await x.direct(x.request(path)), {}],
