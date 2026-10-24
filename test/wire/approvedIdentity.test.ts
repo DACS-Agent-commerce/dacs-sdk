@@ -125,10 +125,10 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     const bb = await bindTp1Fixture({ record: RECORD, local: A });
     const sb = await bindTp1Fixture({ record: RECORD, local: B });
     const delegation = await signSellerSessionDelegation({ version: "1", kind: "seller-session-delegation", buyer: buyer.claim, sessionPublicKey: session.key, seller: seller.claim, listingPin: PIN, jobId: JOB, notBefore: NOW, expiresAt: NOW + 60_000, profile: bb.profile }, buyer, bb, A);
-    verifySellerSessionDelegation(delegation, { buyer: buyer.claim, seller: seller.claim, listingPin: PIN, jobId: JOB, time: NOW, binding: sb, local: B });
+    await verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { buyer: buyer.claim, seller: seller.claim, listingPin: PIN, jobId: JOB, time: NOW, binding: sb, local: B });
     const publicEndpoint = "https://seller.identity.invalid";
     const discovery = await signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: sb.profile, seller: seller.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [PIN], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 60_000 }, seller, sb, B);
-    verifyEndpointProof(discovery, { readListingEligibility: readFixtureListingEligibility, listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW });
+    await verifyEndpointProof(discovery, { readListingEligibility: readFixtureListingEligibility, listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW });
     expect(buyer.calls + seller.calls).toBe(2);
   });
 
@@ -273,18 +273,18 @@ async function controlledAuthority(asynchronous = false) {
 }
 
 it("refuses a syntactically valid identity record outside the SDK approval list", async () => {
-  await expect(Promise.resolve().then(() => bindTp1Fixture({ record: { ...RECORD, recordId: "unapproved-record" }, local: A }))).rejects.toThrow(expect.objectContaining({ code: "tp1_identity_unapproved", status: 500 }));
+  await expect(Promise.resolve().then(async () => await bindTp1Fixture({ record: { ...RECORD, recordId: "unapproved-record" }, local: A }))).rejects.toThrow(expect.objectContaining({ code: "tp1_identity_unapproved", status: 500 }));
 });
 
 it("requires the original binding and the current bound local connection", async () => {
   const { binding } = await controlledAuthority();
-  await expect(Promise.resolve().then(() => fixtureWire.assertTp1Binding(binding, A))).resolves.toBeUndefined();
-  await expect(Promise.resolve().then(() => fixtureWire.assertTp1Binding({ ...binding }, A))).rejects.toThrow(/tp1_binding_required/);
-  await expect(Promise.resolve().then(() => fixtureWire.assertTp1Authority({ ...binding }, A, [], null))).rejects.toThrow(/tp1_binding_required/);
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Binding(binding, A))).resolves.toBeUndefined();
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Binding({ ...binding }, A))).rejects.toThrow(/tp1_binding_required/);
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Authority({ ...binding }, A, [], null))).rejects.toThrow(/tp1_binding_required/);
   for (const field of ["endpoint", "connectionId", "transportAuthority"] as const) {
     const local = { ...A, [field]: field === "endpoint" ? "https://changed.identity.invalid/" : "changed" };
-    await expect(Promise.resolve().then(() => fixtureWire.assertTp1Binding(binding, local))).rejects.toThrow(/tp1_local_binding_changed/);
-    await expect(Promise.resolve().then(() => fixtureWire.assertTp1Authority(binding, local, [], null))).rejects.toThrow(/tp1_local_binding_changed/);
+    await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Binding(binding, local))).rejects.toThrow(/tp1_local_binding_changed/);
+    await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Authority(binding, local, [], null))).rejects.toThrow(/tp1_local_binding_changed/);
   }
 });
 
@@ -297,7 +297,7 @@ it("rechecks revoked or changed authority through assertTp1Binding", async () =>
     (decision: fixtureWire.Tp1AuthorityDecision) => ({ ...decision, local: { ...A, connectionId: "revoked" } }),
   ]) {
     authority.change(transform);
-    await expect(Promise.resolve().then(() => fixtureWire.assertTp1Binding(authority.binding, A))).rejects.toThrow(/tp1_connection_unverified/);
+    await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Binding(authority.binding, A))).rejects.toThrow(/tp1_connection_unverified/);
   }
 });
 
@@ -322,13 +322,13 @@ it.each([
 ])("refuses a wrong session, participant, profile or module tuple (%#)", async (transform) => {
   const authority = await controlledAuthority();
   authority.change(transform);
-  await expect(Promise.resolve().then(() => fixtureWire.assertTp1Authority(authority.binding, A, [BUYER, SELLER], AUTHORITY_JOB))).rejects.toThrow(/tp1_participant_profile_mismatch/);
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Authority(authority.binding, A, [BUYER, SELLER], AUTHORITY_JOB))).rejects.toThrow(/tp1_participant_profile_mismatch/);
 });
 
 it("rejects malformed sessions and duplicate or missing participants before consulting authority", async () => {
   const { binding, scopes } = await controlledAuthority();
   for (const [participants, session] of [[[BUYER, BUYER], AUTHORITY_JOB], [[BUYER], AUTHORITY_JOB], [[BUYER, SELLER], "invalid-job"]] as const) {
-    await expect(Promise.resolve().then(() => fixtureWire.assertTp1Authority(binding, A, participants, session))).rejects.toThrow(/tp1_participant_profile_mismatch/);
+    await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Authority(binding, A, participants, session))).rejects.toThrow(/tp1_participant_profile_mismatch/);
   }
   expect(scopes).toHaveLength(1);
 });
@@ -337,25 +337,25 @@ it("preserves an authority reader's exact error", async () => {
   const authority = await controlledAuthority();
   const cause = new Error("authority lookup timed out");
   authority.change(() => { throw cause; });
-  await expect(Promise.resolve().then(() => fixtureWire.assertTp1Binding(authority.binding, A))).rejects.toThrow(cause);
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertTp1Binding(authority.binding, A))).rejects.toThrow(cause);
 });
 
 it("enforces every peer and retained purchase profile field", async () => {
   const { binding } = await controlledAuthority();
   await fixtureWire.assertPeerProfile(binding.profile, binding);
   await fixtureWire.assertPurchaseProfile(binding.profile, binding);
-  await expect(Promise.resolve().then(() => fixtureWire.assertPeerProfile(undefined, binding))).rejects.toThrow(/tp1_profile_missing/);
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertPeerProfile(undefined, binding))).rejects.toThrow(/tp1_profile_missing/);
   const { revision: omitted, ...missingRevision } = binding.profile;
   expect(omitted).toBe("TP-1");
-  await expect(Promise.resolve().then(() => fixtureWire.assertPeerProfile(missingRevision, binding))).rejects.toThrow(/tp1_profile_revision_missing/);
-  await expect(Promise.resolve().then(() => fixtureWire.assertPeerProfile({ ...binding.profile, revision: "TP-2" }, binding))).rejects.toThrow(/tp1_profile_revision_unknown/);
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertPeerProfile(missingRevision, binding))).rejects.toThrow(/tp1_profile_revision_missing/);
+  await expect(Promise.resolve().then(async () => await fixtureWire.assertPeerProfile({ ...binding.profile, revision: "TP-2" }, binding))).rejects.toThrow(/tp1_profile_revision_unknown/);
   for (const field of ["id", "base", "chainIdentity", "pinVersion"] as const) {
     const profile = { ...binding.profile, [field]: field === "base" ? "0".repeat(40) : field === "chainIdentity" ? "0".repeat(64) : "other" };
-    await expect(Promise.resolve().then(() => fixtureWire.assertPeerProfile(profile, binding, 502))).rejects.toThrow(expect.objectContaining({ code: "tp1_profile_mismatch", status: 502 }));
-    await expect(Promise.resolve().then(() => fixtureWire.assertPurchaseProfile(profile, binding))).rejects.toThrow(/tp1_purchase_profile_mismatch/);
+    await expect(Promise.resolve().then(async () => await fixtureWire.assertPeerProfile(profile, binding, 502))).rejects.toThrow(expect.objectContaining({ code: "tp1_profile_mismatch", status: 502 }));
+    await expect(Promise.resolve().then(async () => await fixtureWire.assertPurchaseProfile(profile, binding))).rejects.toThrow(/tp1_purchase_profile_mismatch/);
   }
   for (const profile of [undefined, missingRevision]) {
-    await expect(Promise.resolve().then(() => fixtureWire.assertPurchaseProfile(profile, binding))).rejects.toThrow(/tp1_purchase_profile_mismatch/);
+    await expect(Promise.resolve().then(async () => await fixtureWire.assertPurchaseProfile(profile, binding))).rejects.toThrow(/tp1_purchase_profile_mismatch/);
   }
 });
 
@@ -373,13 +373,13 @@ it("a profile shape does not imply the approved identity literals", async () => 
 });
 
 it("refuses a configured chain even when its complete record is approved", async () => {
-  await expect(Promise.resolve().then(() => bindTp1Fixture({ record: RECORD, local: A, refusedChainIdentities: [RECORD.chainIdentity] })))
+  await expect(Promise.resolve().then(async () => await bindTp1Fixture({ record: RECORD, local: A, refusedChainIdentities: [RECORD.chainIdentity] })))
     .rejects.toMatchObject({ code: "tp1_identity_refused", status: 500 });
 });
 
 it("refuses the simulated fixture chain before approval", async () => {
   const chainIdentity = hash("dacs-chatgpt-plugin/demos-sr2-sdk-wire-fixture/v1");
-  await expect(Promise.resolve().then(() => bindTp1Fixture({ record: { ...RECORD, chainIdentity }, local: A })))
+  await expect(Promise.resolve().then(async () => await bindTp1Fixture({ record: { ...RECORD, chainIdentity }, local: A })))
     .rejects.toMatchObject({ code: "tp1_identity_fixture", status: 500 });
 });
 
@@ -410,7 +410,7 @@ it("awaits successful async authority for binding and every assertion", async ()
 
 it("preserves a rejected async authority lookup during binding", async () => {
   const cause = new Error("authority lookup timed out");
-  await expect(Promise.resolve().then(() => fixtureWire.bindTp1Profile({ record: RECORD, local: A, readAuthority: async () => { throw cause; } })))
+  await expect(Promise.resolve().then(async () => await fixtureWire.bindTp1Profile({ record: RECORD, local: A, readAuthority: async () => { throw cause; } })))
     .rejects.toBe(cause);
 });
 
@@ -419,10 +419,10 @@ it("awaits and preserves rejected async lookups through every assertion", async 
   const cause = new Error("authority lookup timed out");
   authority.change(async () => { throw cause; });
   for (const action of [
-    () => fixtureWire.assertTp1Binding(authority.binding, A),
-    () => fixtureWire.assertTp1Authority(authority.binding, A, [BUYER, SELLER], AUTHORITY_JOB),
-    () => fixtureWire.assertPeerProfile(authority.binding.profile, authority.binding),
-    () => fixtureWire.assertPurchaseProfile(authority.binding.profile, authority.binding),
+    async () => await fixtureWire.assertTp1Binding(authority.binding, A),
+    async () => await fixtureWire.assertTp1Authority(authority.binding, A, [BUYER, SELLER], AUTHORITY_JOB),
+    async () => await fixtureWire.assertPeerProfile(authority.binding.profile, authority.binding),
+    async () => await fixtureWire.assertPurchaseProfile(authority.binding.profile, authority.binding),
   ]) await expect(Promise.resolve().then(action)).rejects.toBe(cause);
 });
 
