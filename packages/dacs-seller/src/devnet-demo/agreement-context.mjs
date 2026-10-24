@@ -271,6 +271,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
     return true;
   }
+  // A buyer Vet kept in memory for a retry is read back from the anchor again before it is reused.
+  async function buyerVetAnchored({recordRef}) {
+    const logicalAddress=recordRef.anchor.locator,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+    return read.status==='present'&&contentHash(read.artifact)===recordRef.contentHash&&await validReceipt(read,logicalAddress,read.artifact,wallet.claim);
+  }
   async function produceSeller(job) {
     const identityBundle=await sellerSession(job),authority=job.binding.buyerIdentityBundle.presentedBy;
     const logicalAddress=compositeVerificationAddress(job.jobId,wallet.claim);
@@ -450,6 +455,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         try{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
           await sellerSession(job);
+          if(job.buyerVet&&!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
           job.buyerVet??=await produce({job,identityBundle:buyerIdentityBundle,session,lease:leased.lease,role:'buyer'});
           if(job.buyerVet.refused)return job.buyerVet;
           const sellerVet=await produceSeller(job);
