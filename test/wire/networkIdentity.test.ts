@@ -99,7 +99,7 @@ async function attemptEveryEffect(binding: unknown, local: unknown) {
   const delegationPayload = { version: "1" as const, kind: "seller-session-delegation" as const, buyer: buyer.signer.claim, sessionPublicKey: session.raw, seller: seller.signer.claim, listingPin: PIN, jobId: JOB, notBefore: NOW - 1000, expiresAt: NOW + 60_000, profile };
   const codes = {
     signWireRequest: await errorCode(async () => transport.send((await signWireRequest({ signer: buyer.signer, binding: b, local, path: "/dacs/v1/commitments", jobId: JOB, text: "{}", seller: seller.signer.claim, job: { listingPin: PIN, agreementHash: "a".repeat(64), profile }, now: NOW })).header)),
-    sellerSessionDelegationSigningBytes: await errorCode(() => sellerSessionDelegationSigningBytes(delegationPayload, b, local)),
+    sellerSessionDelegationSigningBytes: await errorCode(async () => (await sellerSessionDelegationSigningBytes(delegationPayload, b, local))),
     signSellerSessionDelegation: await errorCode(() => signSellerSessionDelegation(delegationPayload, buyer.signer, b, local)),
     signWireResponse: await errorCode(async () => transport.send(await signWireResponse(request, 200, "{}", { signer: seller.signer, binding: b, local, now: NOW, purchaseProfile: profile }))),
     signDiscoveryDocument: await errorCode(async () => transport.send(Buffer.from(await signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile, seller: seller.signer.claim, publicEndpoint: "https://seller.identity.invalid", transport: ["dacs-seller-http/v1"], listings: [PIN], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 60_000 }, seller.signer, b, local)).toString("base64url"))),
@@ -113,22 +113,22 @@ describe("TP-1 network identity gate", () => {
   const mockedMainnet = synthetic("MOCKED-MAINNET-labelled-testnet");
 
   const testApproved = (r: unknown, approvedRecordDigests: readonly string[], local: unknown, refusedChainIdentities?: readonly string[]) =>
-    withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record: r, local, ...(refusedChainIdentities ? { refusedChainIdentities } : {}) }));
+    withTestApproval(approvedRecordDigests, async () => (await bindTp1Fixture({ record: r, local, ...(refusedChainIdentities ? { refusedChainIdentities } : {}) })));
   /** The public gate, with an approval list passed in as a caller might try. */
-  const callerApproves = (r: unknown, approvedRecordDigests: string[]) =>
-    bindTp1Fixture({ record: r, local: RPC_A, approvedRecordDigests } as unknown as BindTp1Options);
+  const callerApproves = async (r: unknown, approvedRecordDigests: string[]) =>
+    (await bindTp1Fixture({ record: r, local: RPC_A, approvedRecordDigests } as unknown as BindTp1Options));
 
   const refusals: Array<[string, () => unknown, string]> = [
-    ["no approved identity record supplied", () => bindTp1Fixture({ record: undefined, local: RPC_A }), "tp1_identity_record_missing"],
-    ["a record with no chain identity pin", () => bindTp1Fixture({ record: { ...record, chainIdentity: null }, local: RPC_A }), "tp1_identity_pin_missing"],
-    ["a record with no pin version", () => bindTp1Fixture({ record: { ...record, pinVersion: undefined }, local: RPC_A }), "tp1_identity_pin_missing"],
-    ["the plugin fixture identity used as a live pin, even if approved", () => { const r = synthetic("fixture", PLUGIN_FIXTURE_IDENTITY); return testApproved(r, [digest(r)], RPC_A); }, "tp1_identity_fixture"],
-    ["an unapproved synthetic record", () => bindTp1Fixture({ record, local: RPC_A }), "tp1_identity_unapproved"],
-    ["a valid record the caller tries to approve with its own list", () => callerApproves(record, [digest(record)]), "tp1_identity_unapproved"],
-    ["a mocked mainnet identity labelled testnet, with no caller refused list", () => bindTp1Fixture({ record: mockedMainnet, local: RPC_A }), "tp1_identity_unapproved"],
-    ["a mocked mainnet identity labelled testnet that the caller tries to approve itself", () => callerApproves(mockedMainnet, [digest(mockedMainnet)]), "tp1_identity_unapproved"],
-    ["a mocked mainnet identity labelled testnet, approved by mistake but on a refused list", () => testApproved(mockedMainnet, [...approved, digest(mockedMainnet)], RPC_A, [mockedMainnet.chainIdentity]), "tp1_identity_refused"],
-    ["a record whose network label alone says testnet but whose schema is not the record format", () => bindTp1Fixture({ record: { network: "demos-testnet", chainIdentity: record.chainIdentity, pinVersion: "1" }, local: RPC_A }), "tp1_identity_record_invalid"],
+    ["no approved identity record supplied", async () => (await bindTp1Fixture({ record: undefined, local: RPC_A })), "tp1_identity_record_missing"],
+    ["a record with no chain identity pin", async () => (await bindTp1Fixture({ record: { ...record, chainIdentity: null }, local: RPC_A })), "tp1_identity_pin_missing"],
+    ["a record with no pin version", async () => (await bindTp1Fixture({ record: { ...record, pinVersion: undefined }, local: RPC_A })), "tp1_identity_pin_missing"],
+    ["the plugin fixture identity used as a live pin, even if approved", async () => { const r = synthetic("fixture", PLUGIN_FIXTURE_IDENTITY); return (await testApproved(r, [digest(r)], RPC_A)); }, "tp1_identity_fixture"],
+    ["an unapproved synthetic record", async () => (await bindTp1Fixture({ record, local: RPC_A })), "tp1_identity_unapproved"],
+    ["a valid record the caller tries to approve with its own list", async () => (await callerApproves(record, [digest(record)])), "tp1_identity_unapproved"],
+    ["a mocked mainnet identity labelled testnet, with no caller refused list", async () => (await bindTp1Fixture({ record: mockedMainnet, local: RPC_A })), "tp1_identity_unapproved"],
+    ["a mocked mainnet identity labelled testnet that the caller tries to approve itself", async () => (await callerApproves(mockedMainnet, [digest(mockedMainnet)])), "tp1_identity_unapproved"],
+    ["a mocked mainnet identity labelled testnet, approved by mistake but on a refused list", async () => (await testApproved(mockedMainnet, [...approved, digest(mockedMainnet)], RPC_A, [mockedMainnet.chainIdentity])), "tp1_identity_refused"],
+    ["a record whose network label alone says testnet but whose schema is not the record format", async () => (await bindTp1Fixture({ record: { network: "demos-testnet", chainIdentity: record.chainIdentity, pinVersion: "1" }, local: RPC_A })), "tp1_identity_record_invalid"],
   ];
 
   it("derives the refused fixture identity from its fixture string (the plugin constant's value)", async () => {
@@ -141,29 +141,29 @@ describe("TP-1 network identity gate", () => {
   });
 
   for (const [name, attempt, expected] of refusals) {
-    it(`refuses ${name}; zero signatures and zero sends on every signing entry point`, async () => {
+    it(`refuses ${name}`, async () => {
       expect(await errorCode(attempt)).toBe(expected);
-      // Without a binding, every effect path refuses before its signer: no binding,
-      // and a forged object shaped like a binding, alike.
+    });
+  }
+  it("refuses missing and forged bindings before every signing effect", async () => {
       for (const forged of [undefined, { profile: { id: "dacs-testnet-tp1", revision: "TP-1", base: "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20", chainIdentity: mockedMainnet.chainIdentity, pinVersion: "1" }, recordDigest: "0".repeat(64), local: RPC_A, localDigest: digest(RPC_A) }]) {
         const result = await attemptEveryEffect(forged, RPC_A);
         expect(Object.values(result.codes)).toEqual(Array(5).fill("tp1_binding_required"));
         expect(result.signatures).toBe(0);
         expect(result.sends).toBe(0);
       }
-    });
-  }
+  });
 
   it("two RPC endpoints for the same approved identity still work", async () => {
     const buyer = instrumentedParty(), seller = instrumentedParty();
-    const buyerBinding = testApproved(record, approved, RPC_A);
-    const sellerBinding = testApproved(record, approved, RPC_B);
+    const buyerBinding = (await testApproved(record, approved, RPC_A));
+    const sellerBinding = (await testApproved(record, approved, RPC_B));
     const text = `{"jobId":"${JOB}"}`;
     const { payload, header } = await signWireRequest({ signer: buyer.signer, binding: buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: seller.signer.claim, job: { listingPin: PIN, agreementHash: "a".repeat(64), profile: buyerBinding.profile }, now: NOW });
-    const opened = openWireEnvelope(header, "request", { binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
-    checkWireRequest(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: "a".repeat(64), buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
+    const opened = (await openWireEnvelope(header, "request", { binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile }));
+    (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: "a".repeat(64), buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile }));
     const response = await signWireResponse(opened.payload, 200, "{}", { signer: seller.signer, binding: sellerBinding, local: RPC_B, now: NOW, purchaseProfile: sellerBinding.profile });
-    expect(verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: buyerBinding, local: RPC_A }).principal).toBe(seller.signer.claim);
+    expect((await verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: buyerBinding, local: RPC_A })).principal).toBe(seller.signer.claim);
     expect(buyer.signer.calls + seller.signer.calls).toBe(2);
   });
 
@@ -173,8 +173,8 @@ describe("TP-1 network identity gate", () => {
    */
   async function verifiedWorld() {
     const buyer = instrumentedParty(), seller = instrumentedParty(), session = instrumentedParty();
-    const buyerBinding = testApproved(record, approved, RPC_A);
-    const sellerBinding = testApproved(record, approved, RPC_B);
+    const buyerBinding = (await testApproved(record, approved, RPC_A));
+    const sellerBinding = (await testApproved(record, approved, RPC_B));
     const text = `{"jobId":"${JOB}"}`;
     const job = { listingPin: PIN, agreementHash: "a".repeat(64), profile: buyerBinding.profile };
     const requestInput = { signer: buyer.signer, binding: buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: seller.signer.claim, job, now: NOW };
@@ -190,14 +190,14 @@ describe("TP-1 network identity gate", () => {
     /** Each verification entry point, with the given seller-side and buyer-side binding and connection. */
     const verifyAll = (sellerSide: [unknown, unknown], buyerSide: [unknown, unknown]) => {
       const [sb, sl] = sellerSide as [Tp1Binding, unknown], [bb, bl] = buyerSide as [Tp1Binding, unknown];
-      const effect = (fn: () => unknown) => errorCode(() => { fn(); effects.count += 1; });
+      const effect = (fn: () => unknown) => errorCode(async () => { await fn(); effects.count += 1; });
       return Promise.all([
-        effect(() => openWireEnvelope(header, "request", { binding: sb, local: sl, purchaseProfile: check.purchaseProfile })),
-        effect(() => checkWireRequest(openWireEnvelope(header, "request", { binding: sb, local: sl, purchaseProfile: check.purchaseProfile }), { ...check, binding: sb, local: sl })),
-        effect(() => verifySellerSessionDelegation(delegation, { binding: sb, local: sl, buyer: buyer.signer.claim, seller: seller.signer.claim, listingPin: PIN, jobId: JOB, time: NOW })),
-        effect(() => verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: bl })),
-        effect(() => verifyEndpointProof(discovery, { readListingEligibility: readFixtureListingEligibility, listing, binding: bb, local: bl, now: NOW })),
-        effect(() => assertPeerProfile(bb?.profile, bb)),
+        effect(async () => (await openWireEnvelope(header, "request", { binding: sb, local: sl, purchaseProfile: check.purchaseProfile }))),
+        effect(async () => (await checkWireRequest((await openWireEnvelope(header, "request", { binding: sb, local: sl, purchaseProfile: check.purchaseProfile })), { ...check, binding: sb, local: sl }))),
+        effect(async () => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: sb, local: sl, buyer: buyer.signer.claim, seller: seller.signer.claim, listingPin: PIN, jobId: JOB, time: NOW }))),
+        effect(async () => (await verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: bl }))),
+        effect(async () => (await verifyEndpointProof(discovery, { readListingEligibility: readFixtureListingEligibility, listing, binding: bb, local: bl, now: NOW }))),
+        effect(async () => (await assertPeerProfile(bb?.profile, bb))),
       ]);
     };
     const signatures = () => buyer.signer.calls + seller.signer.calls + session.signer.calls;
@@ -239,17 +239,17 @@ describe("TP-1 network identity gate", () => {
       expect(codes).toEqual([...Array(5).fill("tp1_local_binding_changed"), "ok"]);
       expect(w.effects.count).toBe(1);
       // A request opened before the change is not checked after it.
-      const opened = openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
-      expect(await errorCode(() => checkWireRequest(opened, { ...w.check, binding: w.sellerBinding, local: { ...RPC_B, [field]: value } }))).toBe("tp1_local_binding_changed");
+      const opened = (await openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }));
+      expect(await errorCode(async () => (await checkWireRequest(opened, { ...w.check, binding: w.sellerBinding, local: { ...RPC_B, [field]: value } })))).toBe("tp1_local_binding_changed");
     });
   }
 
   it("checkWireRequest takes only the envelope openWireEnvelope verified, under the same binding", async () => {
     const w = await verifiedWorld();
-    const opened = openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
+    const opened = (await openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }));
     const decoded = JSON.parse(Buffer.from(w.header, "base64url").toString("utf8"));
-    const other = testApproved(record, approved, RPC_B);
-    const run = (subject: unknown, binding = w.sellerBinding) => errorCode(() => checkWireRequest(subject as typeof opened, { ...w.check, binding, local: RPC_B }));
+    const other = (await testApproved(record, approved, RPC_B));
+    const run = (subject: unknown, binding = w.sellerBinding) => errorCode(async () => (await checkWireRequest(subject as typeof opened, { ...w.check, binding, local: RPC_B })));
     expect(await run(opened)).toBe("ok");
     expect(await run(decoded)).toBe("peer_request_unverified");
     expect(await run({ payload: decoded.payload, delegation: null })).toBe("peer_request_unverified");
@@ -275,22 +275,22 @@ describe("TP-1 network identity gate", () => {
       ["no kept-tuple argument", {}],
     ];
     for (const [name, kept] of cases) {
-      expect(await errorCode(() => { openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, ...kept } as never); effects += 1; }), `open, ${name}`).toBe("tp1_purchase_profile_mismatch");
+      expect(await errorCode(async () => { (await openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, ...kept } as never)); effects += 1; }), `open, ${name}`).toBe("tp1_purchase_profile_mismatch");
       expect(await errorCode(async () => { await signWireResponse(w.payload, 200, "{}", { ...seller, now: NOW, ...kept } as never); effects += 1; }), `answer, ${name}`).toBe("tp1_purchase_profile_mismatch");
       expect(await errorCode(async () => { await signWireEnvelope(answer, { ...seller, ...kept } as never); effects += 1; }), `envelope, ${name}`).toBe("tp1_purchase_profile_mismatch");
       // Before anything else is read: a malformed header, or a body the buyer must refuse, is not reached.
-      expect(await errorCode(() => openWireEnvelope("not a header", "request", { binding: w.sellerBinding, local: RPC_B, ...kept } as never)), `open first, ${name}`).toBe("tp1_purchase_profile_mismatch");
+      expect(await errorCode(async () => (await openWireEnvelope("not a header", "request", { binding: w.sellerBinding, local: RPC_B, ...kept } as never))), `open first, ${name}`).toBe("tp1_purchase_profile_mismatch");
       expect(await errorCode(() => signWireResponse(w.payload, 200, '{"a":1,"a":2}', { ...seller, now: NOW, ...kept } as never)), `answer first, ${name}`).toBe("tp1_purchase_profile_mismatch");
     }
     // `null` is a seller's new purchase only: the buyer opens no answer, and nobody signs a request, without a kept tuple.
-    expect(await errorCode(() => openWireEnvelope(w.response, "response", { binding: w.buyerBinding, local: RPC_A, purchaseProfile: null }))).toBe("tp1_purchase_profile_mismatch");
+    expect(await errorCode(async () => (await openWireEnvelope(w.response, "response", { binding: w.buyerBinding, local: RPC_A, purchaseProfile: null })))).toBe("tp1_purchase_profile_mismatch");
     expect(await errorCode(() => signWireEnvelope(w.payload, { signer: w.buyer.signer, binding: w.buyerBinding, local: RPC_A, purchaseProfile: null }))).toBe("tp1_purchase_profile_mismatch");
     expect(effects).toBe(0);
     expect(w.signatures() - before).toBe(0);
     // The exact tuple, or none kept yet for a new purchase, opens the request and signs the answer.
     for (const purchaseProfile of [w.sellerBinding.profile, null]) {
-      const opened = openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile });
-      checkWireRequest(opened, { ...w.check, requestJournal: testJournal(), binding: w.sellerBinding, local: RPC_B, purchaseProfile });
+      const opened = (await openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile }));
+      (await checkWireRequest(opened, { ...w.check, requestJournal: testJournal(), binding: w.sellerBinding, local: RPC_B, purchaseProfile }));
       await signWireResponse(opened.payload, 200, "{}", { ...seller, now: NOW, purchaseProfile });
     }
     expect(w.signatures() - before).toBe(2);
@@ -307,8 +307,8 @@ describe("TP-1 network identity gate", () => {
       WeakMap.prototype.get = () => w.sellerBinding;
       Array.prototype.includes = () => true;
       codes = await w.verifyAll([forged, RPC_B], [forged, RPC_A]);
-      bound = await errorCode(() => bindTp1Fixture({ record, local: RPC_A }));
-      checked = await errorCode(() => checkWireRequest(decoded, { ...w.check, binding: w.sellerBinding, local: RPC_B }));
+      bound = await errorCode(async () => (await bindTp1Fixture({ record, local: RPC_A })));
+      checked = await errorCode(async () => (await checkWireRequest(decoded, { ...w.check, binding: w.sellerBinding, local: RPC_B })));
     } finally {
       WeakSet.prototype.has = has;
       WeakMap.prototype.get = get;
@@ -338,10 +338,10 @@ describe("TP-1 network identity gate", () => {
       for (const as of ["proxy", "getter"] as const) {
         // Approved record first, the mocked mainnet identity later; the caller even refuses that identity itself.
         const r = changing(record, "chainIdentity", mockedMainnet.chainIdentity, honest, as);
-        records.add(await errorCode(async () => transport.send((await signWith(testApproved(r, approved, RPC_A, [mockedMainnet.chainIdentity]))).header)));
+        records.add(await errorCode(async () => transport.send((await signWith((await testApproved(r, approved, RPC_A, [mockedMainnet.chainIdentity])))).header)));
         // A checked https endpoint first, an unchecked one later.
         const l = changing(RPC_A, "endpoint", "http://rpc-unchecked.identity.invalid/", honest, as);
-        locals.add(await errorCode(async () => transport.send((await signWith(testApproved(record, approved, l))).header)));
+        locals.add(await errorCode(async () => transport.send((await signWith((await testApproved(record, approved, l)))).header)));
       }
     }
     expect([...records]).toEqual(["tp1_identity_record_invalid"]);
@@ -354,7 +354,7 @@ describe("TP-1 network identity gate", () => {
     expect(transport.sends).toBe(0);
     // Plain data still binds, frozen or not, and signs once.
     const frozen = Object.freeze({ ...record, provenance: Object.freeze({ ...record.provenance }) });
-    transport.send((await signWith(testApproved(frozen, approved, Object.freeze({ ...RPC_A })))).header);
+    transport.send((await signWith((await testApproved(frozen, approved, Object.freeze({ ...RPC_A }))))).header);
     expect(buyer.signer.calls).toBe(1);
     expect(transport.sends).toBe(1);
   });
@@ -369,13 +369,13 @@ describe("TP-1 network identity gate", () => {
       let reads = 0;
       const changingPayload = new Proxy({ ...genuine.payload }, { get: (target, key, receiver) => (key === "expiresAt" && reads++ >= honest ? NOW + 24 * 3_600_000 : Reflect.get(target, key, receiver)) });
       const delegation = { ...genuine, payload: changingPayload };
-      codes.add(await errorCode(() => verifySellerSessionDelegation(delegation, { binding: w.sellerBinding, local: RPC_B, buyer: buyer.signer.claim, seller: seller.signer.claim, listingPin: PIN, jobId: JOB, time: NOW })));
+      codes.add(await errorCode(async () => (await verifySellerSessionDelegation(delegation, { binding: w.sellerBinding, local: RPC_B, buyer: buyer.signer.claim, seller: seller.signer.claim, listingPin: PIN, jobId: JOB, time: NOW }))));
       codes.add(await errorCode(() => signWireRequest({ signer: session.signer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text: "{}", seller: seller.signer.claim, job: { listingPin: PIN, agreementHash: "a".repeat(64), profile: w.buyerBinding.profile }, delegation, now: NOW })));
     }
     expect([...codes]).toEqual(["peer_delegation_invalid"]);
     expect(session.signer.calls).toBe(0);
     // The genuine delegation, frozen, still verifies and signs.
-    expect(verifySellerSessionDelegation(Object.freeze(genuine), { binding: w.sellerBinding, local: RPC_B, time: NOW }).expiresAt).toBe(NOW + 60_000);
+    expect((await verifySellerSessionDelegation(Buffer.from(JSON.stringify(Object.freeze(genuine))), { binding: w.sellerBinding, local: RPC_B, time: NOW })).expiresAt).toBe(NOW + 60_000);
     await signWireRequest({ signer: session.signer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text: "{}", seller: seller.signer.claim, job: { listingPin: PIN, agreementHash: "a".repeat(64), profile: w.buyerBinding.profile }, delegation: genuine, now: NOW });
     expect(session.signer.calls).toBe(1);
   });
@@ -389,15 +389,15 @@ describe("TP-1 network identity gate", () => {
     const ctx = (w: World, side: "buyer" | "seller") =>
       side === "buyer" ? { signer: w.buyer.signer, binding: w.buyerBinding, local: RPC_A, purchaseProfile: w.buyerBinding.profile } : { signer: w.seller.signer, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile };
     const received = (w: World) => ({ header: w.response, status: 200, body: Buffer.from("{}"), now: NOW, binding: w.buyerBinding, local: RPC_A });
-    const opened = (w: World) => openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
+    const opened = async (w: World) => (await openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }));
     // [entry point: the input that changes, the call, the one outcome expected for every read count]
     const rows: Array<[string, (w: World, c: Changing) => unknown, string]> = [
-      ["bindTp1Profile: options", (_w, c) => withTestApproval(approved, () => bindTp1Fixture(c({ record, local: RPC_A } as BindTp1Options, "record", mockedMainnet))), "wire_input_invalid"],
-      ["assertTp1Binding: current connection", (w, c) => assertTp1Binding(w.buyerBinding, c(RPC_A, "endpoint", "http://rpc-unchecked.identity.invalid/")), "tp1_local_binding_invalid"],
+      ["bindTp1Profile: options", (_w, c) => withTestApproval(approved, async () => (await bindTp1Fixture(c({ record, local: RPC_A } as BindTp1Options, "record", mockedMainnet)))), "wire_input_invalid"],
+      ["assertTp1Binding: current connection", async (w, c) => (await assertTp1Binding(w.buyerBinding, c(RPC_A, "endpoint", "http://rpc-unchecked.identity.invalid/"))), "tp1_local_binding_invalid"],
       ["isTp1WireProfile: profile", (w, c) => isTp1WireProfile(c(w.buyerBinding.profile, "chainIdentity", "not a chain identity")), "false"],
-      ["assertPeerProfile: received profile", (w, c) => assertPeerProfile(c(w.buyerBinding.profile, "chainIdentity", mockedMainnet.chainIdentity), w.buyerBinding), "tp1_profile_mismatch"],
-      ["assertPeerProfile: received revision", (w, c) => assertPeerProfile(c(w.buyerBinding.profile, "revision", "TP-1.1"), w.buyerBinding), "tp1_profile_mismatch"],
-      ["assertPurchaseProfile: kept tuple", (w, c) => assertPurchaseProfile(c(w.buyerBinding.profile, "revision", "TP-1.1"), w.buyerBinding), "tp1_purchase_profile_mismatch"],
+      ["assertPeerProfile: received profile", async (w, c) => (await assertPeerProfile(c(w.buyerBinding.profile, "chainIdentity", mockedMainnet.chainIdentity), w.buyerBinding)), "tp1_profile_mismatch"],
+      ["assertPeerProfile: received revision", async (w, c) => (await assertPeerProfile(c(w.buyerBinding.profile, "revision", "TP-1.1"), w.buyerBinding)), "tp1_profile_mismatch"],
+      ["assertPurchaseProfile: kept tuple", async (w, c) => (await assertPurchaseProfile(c(w.buyerBinding.profile, "revision", "TP-1.1"), w.buyerBinding)), "tp1_purchase_profile_mismatch"],
       ["isWirePayload: payload", (w, c) => isWirePayload(c(w.payload, "profile", null), "request"), "false"],
       ["wireEnvelopeSigningBytes: payload", (w, c) => wireEnvelopeSigningBytes(c(w.payload, "profile", mainnet(w))), "peer_envelope_invalid"],
       ["wireRequestHash: request", (w, c) => wireRequestHash(c(w.payload, "profile", mainnet(w))), "peer_envelope_invalid"],
@@ -405,27 +405,27 @@ describe("TP-1 network identity gate", () => {
       ["signWireEnvelope: signing context", (w, c) => signWireEnvelope(w.payload, c(ctx(w, "buyer"), "local", { ...RPC_A, connectionId: "a-2" })), "wire_input_invalid"],
       ["signWireEnvelope: delegation", (w, c) => signWireEnvelope(w.payload, ctx(w, "buyer"), c(w.delegation, "signature", `0x${"0".repeat(128)}`)), "peer_delegation_invalid"],
       ["signWireEnvelope: kept tuple", (w, c) => signWireEnvelope(w.payload, { ...ctx(w, "buyer"), purchaseProfile: c(w.buyerBinding.profile, "revision", "TP-1.1") }), "tp1_purchase_profile_mismatch"],
-      ["openWireEnvelope: kept tuple", (w, c) => openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: c(w.sellerBinding.profile, "revision", "TP-1.1") }), "tp1_purchase_profile_mismatch"],
-      ["openWireEnvelope: options", (w, c) => openWireEnvelope(w.header, "request", c({ binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }, "local", { ...RPC_B, connectionId: "b-2" })), "wire_input_invalid"],
-      ["checkWireRequest: check", (w, c) => checkWireRequest(opened(w), c({ ...w.check, binding: w.sellerBinding, local: RPC_B }, "rawBody", Buffer.from(`{"jobId":"${OTHER_JOB}"}`))), "wire_input_invalid"],
-      ["checkWireRequest: Listing pin", (w, c) => checkWireRequest(opened(w), { ...w.check, listingPin: c(PIN, "version", 2), binding: w.sellerBinding, local: RPC_B }), "wire_input_invalid"],
-      ["checkWireRequest: kept tuple", (w, c) => checkWireRequest(opened(w), { ...w.check, purchaseProfile: c(w.sellerBinding.profile, "revision", "TP-1.1"), binding: w.sellerBinding, local: RPC_B }), "tp1_purchase_profile_mismatch"],
-      ["sellerSessionDelegationSigningBytes: payload", (w, c) => sellerSessionDelegationSigningBytes(c(w.delegationPayload, "profile", mainnet(w)), w.buyerBinding, RPC_A), "peer_delegation_invalid"],
+      ["openWireEnvelope: kept tuple", async (w, c) => (await openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: c(w.sellerBinding.profile, "revision", "TP-1.1") })), "tp1_purchase_profile_mismatch"],
+      ["openWireEnvelope: options", async (w, c) => (await openWireEnvelope(w.header, "request", c({ binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }, "local", { ...RPC_B, connectionId: "b-2" }))), "wire_input_invalid"],
+      ["checkWireRequest: check", async (w, c) => (await checkWireRequest((await opened(w)), c({ ...w.check, binding: w.sellerBinding, local: RPC_B }, "rawBody", Buffer.from(`{"jobId":"${OTHER_JOB}"}`)))), "wire_input_invalid"],
+      ["checkWireRequest: Listing pin", async (w, c) => (await checkWireRequest((await opened(w)), { ...w.check, listingPin: c(PIN, "version", 2), binding: w.sellerBinding, local: RPC_B })), "wire_input_invalid"],
+      ["checkWireRequest: kept tuple", async (w, c) => (await checkWireRequest((await opened(w)), { ...w.check, purchaseProfile: c(w.sellerBinding.profile, "revision", "TP-1.1"), binding: w.sellerBinding, local: RPC_B })), "tp1_purchase_profile_mismatch"],
+      ["sellerSessionDelegationSigningBytes: payload", async (w, c) => (await sellerSessionDelegationSigningBytes(c(w.delegationPayload, "profile", mainnet(w)), w.buyerBinding, RPC_A)), "peer_delegation_invalid"],
       ["signSellerSessionDelegation: payload", (w, c) => signSellerSessionDelegation(c(w.delegationPayload, "profile", mainnet(w)), w.buyer.signer, w.buyerBinding, RPC_A), "peer_delegation_invalid"],
-      ["verifySellerSessionDelegation: scope", (w, c) => verifySellerSessionDelegation(w.delegation, c({ binding: w.sellerBinding, local: RPC_B, jobId: JOB }, "jobId", OTHER_JOB)), "wire_input_invalid"],
-      ["verifySellerSessionDelegation: Listing pin", (w, c) => verifySellerSessionDelegation(w.delegation, { binding: w.sellerBinding, local: RPC_B, listingPin: c(PIN, "version", 2) }), "wire_input_invalid"],
+      ["verifySellerSessionDelegation: scope", async (w, c) => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify(w.delegation)), c({ binding: w.sellerBinding, local: RPC_B, jobId: JOB }, "jobId", OTHER_JOB))), "wire_input_invalid"],
+      ["verifySellerSessionDelegation: Listing pin", async (w, c) => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify(w.delegation)), { binding: w.sellerBinding, local: RPC_B, listingPin: c(PIN, "version", 2) })), "wire_input_invalid"],
       ["signWireResponse: request", (w, c) => signWireResponse(c(w.payload, "profile", mainnet(w)), 200, "{}", { ...ctx(w, "seller"), now: NOW }), "peer_envelope_invalid"],
       ["signWireResponse: signing context", (w, c) => signWireResponse(w.payload, 200, "{}", c({ ...ctx(w, "seller"), now: NOW }, "now", NOW + 3_600_000)), "wire_input_invalid"],
       ["signWireResponse: kept tuple", (w, c) => signWireResponse(w.payload, 200, "{}", { ...ctx(w, "seller"), now: NOW, purchaseProfile: c(w.sellerBinding.profile, "revision", "TP-1.1") }), "tp1_purchase_profile_mismatch"],
       ["signWireRequest: input", (w, c) => signWireRequest(c({ ...w.requestInput }, "jobId", OTHER_JOB)), "wire_input_invalid"],
       ["signWireRequest: job", (w, c) => signWireRequest({ ...w.requestInput, job: c(w.job, "listingPin", { ...PIN, version: 2 }) }), "wire_input_invalid"],
       ["signWireRequest: kept tuple", (w, c) => signWireRequest({ ...w.requestInput, job: { ...w.job, profile: c(w.job.profile, "revision", "TP-1.1") } }), "wire_input_invalid"],
-      ["verifyWireResponse: request", (w, c) => verifyWireResponse(c(w.payload, "nonce", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), received(w)), "peer_envelope_invalid"],
-      ["verifyWireResponse: received answer", (w, c) => verifyWireResponse(w.payload, c(received(w), "body", Buffer.from('{"other":1}'))), "wire_input_invalid"],
+      ["verifyWireResponse: request", async (w, c) => (await verifyWireResponse(c(w.payload, "nonce", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), received(w))), "peer_envelope_invalid"],
+      ["verifyWireResponse: received answer", async (w, c) => (await verifyWireResponse(w.payload, c(received(w), "body", Buffer.from('{"other":1}')))), "wire_input_invalid"],
       ["discoverySigningBytes: payload", (w, c) => discoverySigningBytes(c(w.discoveryPayload, "profile", mainnet(w))), "discovery_invalid"],
       ["signDiscoveryDocument: payload", (w, c) => signDiscoveryDocument(c(w.discoveryPayload, "profile", mainnet(w)), w.seller.signer, w.sellerBinding, RPC_B), "discovery_invalid"],
-      ["verifyEndpointProof: options", (w, c) => verifyEndpointProof(w.discovery, c({ readListingEligibility: readFixtureListingEligibility, listing: w.listing, binding: w.buyerBinding, local: RPC_A, now: NOW }, "now", NOW + 3_600_000)), "wire_input_invalid"],
-      ["verifyEndpointProof: Listing", (w, c) => verifyEndpointProof(w.discovery, { readListingEligibility: readFixtureListingEligibility, listing: c(w.listing, "publicEndpoint", "https://other.identity.invalid"), binding: w.buyerBinding, local: RPC_A, now: NOW }), "wire_input_invalid"],
+      ["verifyEndpointProof: options", async (w, c) => (await verifyEndpointProof(w.discovery, c({ readListingEligibility: readFixtureListingEligibility, listing: w.listing, binding: w.buyerBinding, local: RPC_A, now: NOW }, "now", NOW + 3_600_000))), "wire_input_invalid"],
+      ["verifyEndpointProof: Listing", async (w, c) => (await verifyEndpointProof(w.discovery, { readListingEligibility: readFixtureListingEligibility, listing: c(w.listing, "publicEndpoint", "https://other.identity.invalid"), binding: w.buyerBinding, local: RPC_A, now: NOW })), "wire_input_invalid"],
     ];
     for (const [name, attempt, expected] of rows) {
       it(`${name}: a Proxy or getter whose answer changes after any of 0-16 reads gets one refusal, with no signature`, async () => {
@@ -454,8 +454,8 @@ describe("TP-1 network identity gate", () => {
   for (const [field, value] of [["endpoint", "https://rpc-c.identity.invalid/"], ["transportAuthority", "test-c"], ["connectionId", "a-2"]] as const) {
     it(`changing either actor's own ${field} invalidates its authorization before signing`, async () => {
       const buyer = instrumentedParty(), seller = instrumentedParty();
-      const buyerBinding = testApproved(record, approved, RPC_A);
-      const sellerBinding = testApproved(record, approved, RPC_B);
+      const buyerBinding = (await testApproved(record, approved, RPC_A));
+      const sellerBinding = (await testApproved(record, approved, RPC_B));
       const transport = instrumentedTransport();
       const job = { listingPin: PIN, agreementHash: "a".repeat(64), profile: buyerBinding.profile };
       const changedA = { ...RPC_A, [field]: value };
