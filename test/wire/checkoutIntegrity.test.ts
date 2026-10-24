@@ -34,7 +34,7 @@ it("preserves byte-pinned wire fixtures and provenance under a CRLF checkout con
       writeFileSync(join(scratch, ".gitattributes"), readFileSync(new URL(".gitattributes", root)));
     }
     git("-c", "core.autocrlf=false", "init", "--quiet");
-    git("-c", "core.autocrlf=false", "add", ".");
+    git("-c", "core.autocrlf=false", "add", ...files, ...(existsSync(join(scratch, ".gitattributes")) ? [".gitattributes"] : []));
     // Removing the files forces actual checkout conversion, regardless of stat caches.
     for (const file of files) unlinkSync(join(scratch, file));
     git("-c", "core.autocrlf=true", "checkout-index", "--all", "--force");
