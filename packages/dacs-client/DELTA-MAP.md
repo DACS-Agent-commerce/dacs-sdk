@@ -588,8 +588,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 
 | Merge | Parents | File | Parent blobs | Merged blob |
 |---|---|---|---|---|
-| 2b4976dc787df9aee664651b2fc0b0f10382e1e2 | 3546ddc8c44f96cf4cfb9d64ef2ceccbc942f949, 91fd90f8892b9a77cc896d706e279d945cf3ce6f | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 9b3c78ed8b64b9113170ca6796196f49957881c2, dea888ee7f7906fc011ccb8e69319cf00f036c85 | fb6babcd859364770760f6231f2ca59791d1854b |
-| 77612915a67967b357df4a0001229cebc13ca4b7 | 5cad3072940618a796f9762276a539036f82aca1, f68c71873ffe077611df94cec6adee19150bbbf9 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | c013a280922e2fd638a29651dd8be053dc7acd9d, e1ee6a0855e0955fba14cda7d1ae14aa02248fa6 | ef6723b2e7509c38a37fee121912cfc7c197895a |
+| 65014fd81899680ed5366373460586f3d8433719 | 3546ddc8c44f96cf4cfb9d64ef2ceccbc942f949, 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 9b3c78ed8b64b9113170ca6796196f49957881c2, dea888ee7f7906fc011ccb8e69319cf00f036c85 | fb6babcd859364770760f6231f2ca59791d1854b |
+| b0b2d068c497a5adf68ca6146cf0fe91bd22da01 | 5cad3072940618a796f9762276a539036f82aca1, 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | c013a280922e2fd638a29651dd8be053dc7acd9d, e1ee6a0855e0955fba14cda7d1ae14aa02248fa6 | ef6723b2e7509c38a37fee121912cfc7c197895a |
 
 ## Complete commit and file inventory
 
