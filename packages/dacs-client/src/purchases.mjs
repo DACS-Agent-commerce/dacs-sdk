@@ -36,7 +36,7 @@ import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
 import { OutboundError } from './util/http.mjs';
-import { nodeProjectedNonce } from './dacs/chain.mjs';
+import { nodeProjectedNonce, OS_INTEGER } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView } from './dacs/protocol-purchases.mjs';
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
@@ -47,6 +47,7 @@ import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1';
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
+const MAX_TRANSFER_OBSERVATION_BYTES = 64 * 1024;
 // Domain separator of the purchase commitment (approval-bound, not on chain).
 export const COMMITMENT_DOMAIN = 'dacs-chatgpt-plugin/fixed-price-dem-purchase-commitment/v1';
 // Recorded with every payment observation so no reader mistakes it for more.
@@ -69,6 +70,7 @@ export const PURCHASE_TERMINAL_STATUSES = TERMINAL;
 // purchase after settled_verified keeps its link only for the counter-signature.
 export const ACTIONABLE = new Set(['agreement_pending', 'awaiting_approval', 'approved', 'payment_handoff']);
 const linkable = (operation) => ACTIONABLE.has(operation.status) || (operation.status === 'settled_verified' && operation.state?.protocol?.stage === 'awaiting-countersignature');
+const validIncludedAt = value => Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
 const demAmount = (os) => {
   const fraction = (os % 1_000_000_000n).toString().padStart(9, '0').replace(/0+$/, '');
   return `${os / 1_000_000_000n}${fraction ? `.${fraction}` : ''}`;
@@ -396,7 +398,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         ? {
             txHash: observation.observation?.txHash ?? coords.reportedTxHash,
             blockNumber: observation.observation?.blockNumber ?? null,
-            includedAt: observation.observation?.includedAt ? new Date(observation.observation.includedAt).toISOString() : null,
+            includedAt: validIncludedAt(observation.observation?.includedAt) ? new Date(observation.observation.includedAt).toISOString() : null,
             amountOs: observation.observation?.amountOs ?? null,
             chainMode: observation.chainMode,
             verifiedAt: coords.verifiedAt,
@@ -710,10 +712,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (!coordinates.recordObservation(...args)) throw new OperationError('stale_readback', 'the retained purchase pointer changed; observation was not saved');
   }
 
+  const nativeResolutionAvailable = () => protocol?.nativePaymentReadbackAvailable !== false && typeof protocol?.nativePaymentSuperseded === 'function';
+  const nativeResolutionHelp = nextStep => nativeResolutionAvailable() ? { nextStep } : {
+    nativeReadback: 'unavailable',
+    nextStep: 'Native source reconciliation is unavailable in this host. Reconcile the retained journal in the original qualified host.',
+  };
+
   async function resolveNativeSupersession(operation) {
     if (!usesNativeAgreementPayment(operation) || operation.status !== 'superseded') return true;
     const coords = coordinates.get(operation.id);
     if (coords?.observation?.nativeLaneResolved === true) return true;
+    if (!nativeResolutionAvailable()) return false;
     const owner = ops.get(operation.accountId, coords?.observation?.supersededBy);
     const settled = owner && coordinates.get(owner.id);
     try {
@@ -763,6 +772,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   async function resolveNativeNonceConsumption(operation) {
     const coords = coordinates.get(operation.id);
     if (coords?.observation?.nativeNonceResolved === true) return true;
+    if (!nativeResolutionAvailable()) return false;
     try {
       if (!['settled_verified', 'payment_mismatch'].includes(operation.status) || coords?.observation?.slotConsumed !== true || coords.observation.txHash !== coords.reportedTxHash) {
         throw new OperationError('invalid_state', 'native nonce reconciliation lacks this purchase\'s confirmed slot');
@@ -797,7 +807,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   async function withNativeNonceResolution(result) {
     if (!usesNativeAgreementPayment(result.operation)) return result;
     const resolved = await resolveNativeNonceConsumption(result.operation);
-    return { ...result, verification: { ...result.verification, nativeNonceResolved: resolved, ...(!resolved ? { nextStep: 'Retry verify_deal on this purchase to finish releasing other retained native source intents at its nonce.' } : {}) } };
+    return { ...result, verification: { ...result.verification, nativeNonceResolved: resolved, ...(!resolved ? nativeResolutionHelp('Retry verify_deal on this purchase to finish releasing other retained native source intents at its nonce.') : {}) } };
   }
 
   async function finishNativeSupersessions(operation) {
@@ -807,6 +817,54 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       const other = ops.get(operation.accountId, pending.operationId);
       if (other) await resolveNativeSupersession(other);
     }
+  }
+
+  // The host reader's result is an observation, not a terms contradiction
+  // until its fields have the documented types. Discard malformed data before
+  // persisting it (in particular, bigint cannot be serialized as JSON).
+  function checkedTransferObservation(value, hash) {
+    const invalid = reason => ({ status: 'malformed', reason });
+    const exceeded = new RangeError('chain observation exceeds its byte limit');
+    try {
+      let used = 0;
+      const hasSourceDisposition = value != null && Object.hasOwn(value, 'sourceDisposition');
+      const containers = new WeakMap();
+      const charge = amount => { used += amount; if (used > MAX_TRANSFER_OBSERVATION_BYTES) throw exceeded; };
+      const stringBytes = text => {
+        if (text.length > MAX_TRANSFER_OBSERVATION_BYTES - used) throw exceeded;
+        return Buffer.byteLength(JSON.stringify(text));
+      };
+      const bytes = JSON.stringify(value, function (key, field) {
+        const parent = containers.get(this), array = Array.isArray(field);
+        const omitted = field === undefined || ['function', 'symbol'].includes(typeof field);
+        if (omitted && !parent?.array) return field;
+        if (parent) { charge(parent.count++ ? 1 : 0); if (!parent.array) charge(stringBytes(key) + 1); }
+        if (field && typeof field === 'object') {
+          // Bound native JSON's key/index enumeration before it allocates it.
+          if (array && field.length > MAX_TRANSFER_OBSERVATION_BYTES) throw exceeded;
+          let count = 0;
+          for (const name in field) if (Object.hasOwn(field, name) && (++count > MAX_TRANSFER_OBSERVATION_BYTES || name.length > MAX_TRANSFER_OBSERVATION_BYTES)) throw exceeded;
+          charge(2); containers.set(field, { array, count: 0 });
+        } else charge(typeof field === 'string' ? stringBytes(field) : (JSON.stringify(omitted ? null : field)?.length ?? 0));
+        return field;
+      });
+      if (typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TRANSFER_OBSERVATION_BYTES) return invalid('chain observation exceeds its byte limit');
+      value = JSON.parse(bytes);
+      if (hasSourceDisposition && !Object.hasOwn(value, 'sourceDisposition')) return invalid('chain observation omitted its source disposition');
+    } catch (error) { return invalid(error === exceeded ? exceeded.message : 'chain observation must be JSON serializable'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('chain observation must be an object');
+    if (!['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
+    if (value.reason !== undefined && typeof value.reason !== 'string') return invalid('chain observation reason must be text');
+    if (value.status === 'included') {
+      if (typeof value.amountOs !== 'string' || !OS_INTEGER.test(value.amountOs)) return invalid('included amountOs must be canonical decimal OS text');
+      if (!readableAddress(value.payer) || !readableAddress(value.payee)) return invalid('included payer and payee must be readable Demos addresses');
+      if (!Number.isSafeInteger(value.blockNumber) || value.blockNumber < 0) return invalid('included blockNumber must be a nonnegative safe integer');
+      if (value.includedAt !== undefined && !validIncludedAt(value.includedAt)) return invalid('included includedAt must be valid nonnegative integer epoch milliseconds');
+      try {
+        if (typeof value.txHash !== 'string' || canonicalHash(value.txHash) !== hash) return invalid('included txHash differs from the requested hash');
+      } catch { return invalid('included txHash must be a transaction hash'); }
+    }
+    return value;
   }
 
   async function verifySettlement(operation) {
@@ -836,7 +894,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (operation.status === 'superseded' && coords?.observation?.supersededBy) {
       const native = usesNativeAgreementPayment(operation);
       const resolved = native ? await resolveNativeSupersession(operation) : true;
-      return { operation, verification: { outcome: 'superseded', ...coords.observation, ...(native ? { nativeLaneResolved: resolved, ...(!resolved ? { nextStep: 'Retry verify_deal on this purchase to finish releasing its retained native source lane.' } : {}) } : {}) } };
+      return { operation, verification: { outcome: 'superseded', ...coords.observation, ...(native ? { nativeLaneResolved: resolved, ...(!resolved ? nativeResolutionHelp('Retry verify_deal on this purchase to finish releasing its retained native source lane.') : {}) } : {}) } };
     }
     if (!coords?.reportedTxHash) return { operation, verification: { outcome: operation.status === 'payment_uncertain' ? 'hash_required' : 'no_transaction_reported' } };
     const hash = coords.reportedTxHash;
@@ -849,7 +907,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       await assertBoundDomain(operation);
     } catch (error) {
       const refused = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, ...scope };
-      if (!(error instanceof OperationError)) return { operation, verification: { outcome: 'chain_unavailable', reason: error.message, ...refused } };
+      if (!(error instanceof OperationError)) return { operation, verification: { outcome: 'chain_unavailable', reason: String(error?.message ?? error).slice(0, 240), ...refused } };
       ops.record(operation.id, 'readback_refused', { txHash: hash, reason: error.code });
       return { operation, verification: { outcome: 'network_identity_mismatch', reason: error.code, mismatches: [error.message], ...refused } };
     }
@@ -857,10 +915,11 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     try {
       observation = await (usesNativeAgreementPayment(operation) && chain.observePurchaseTransfer ? chain.observePurchaseTransfer(hash) : chain.observeTransfer(hash));
     } catch (error) {
-      observation = { status: 'unavailable', reason: error.message };
+      observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240) };
     }
+    observation = checkedTransferObservation(observation, hash);
     let body = null, bodyError = null;
-    if (!['unavailable', 'pending', 'not-found'].includes(observation.status)) {
+    if (!['malformed', 'unavailable', 'pending', 'not-found'].includes(observation.status)) {
       try { body = await chain.getTransaction(hash); } catch (error) { bodyError = error; }
     }
     const decided = transaction(db, () => {
@@ -882,7 +941,11 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
           ...(retained.verifiedAt ? { verifiedAt: retained.verifiedAt } : {}) },
       };
       operation = current;
-      const result = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, observer: '@kynesyslabs/dacs observePayDemTransferCore (single-node consistent view; not a validator-quorum proof)', ...scope, observation, slotConsumed: false };
+      const result = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, observer: typeof chain.observer === 'string' && chain.observer.trim() ? chain.observer : 'host-supplied chain reader (observer not declared)', ...scope, observation, slotConsumed: false };
+      if (observation.status === 'malformed') {
+        recordUnverified(result);
+        return { operation, verification: { outcome: 'invalid_observation', ...result } };
+      }
       if (observation.status === 'unavailable') {
         recordUnverified(result);
         return { operation, verification: { outcome: 'chain_unavailable', ...result } };
@@ -1040,7 +1103,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (decided.verification.outcome === 'superseded' && usesNativeAgreementPayment(decided.operation)) {
       const resolved = await resolveNativeSupersession(decided.operation);
       return { ...decided, verification: { ...decided.verification, nativeLaneResolved: resolved,
-        ...(!resolved ? { nextStep: 'Retry verify_deal on this purchase to finish releasing its retained native source lane.' } : {}) } };
+        ...(!resolved ? nativeResolutionHelp('Retry verify_deal on this purchase to finish releasing its retained native source lane.') : {}) } };
     }
     return decided.operation.status === 'payment_mismatch' ? withNativeNonceResolution(decided) : decided;
   }
@@ -1053,15 +1116,16 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (!found || found.kind !== 'purchase') throw new OperationError('not_found', 'purchase not found for this account');
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);}
     catch(error){
-      if(error.details?.buyerAccessMissing)throw error;
+      if(error?.code!=='buyer_access_closed'||error?.details?.buyerAccessMissing)throw error;
       const coords=coordinates.get(found.id);
-      if(error.code!=='buyer_access_closed'||!coords?.reportedTxHash||(txHash&&canonicalHash(txHash)!==coords.reportedTxHash))throw error;
+      if(!coords?.reportedTxHash||(txHash&&canonicalHash(txHash)!==coords.reportedTxHash))throw error;
       const native=await protocol?.readIssuedPayment?.(found,coords.reportedTxHash);
       if(native)return {operation:found,verification:{outcome:'readback_only',...native,...OBSERVATION_LIMITS}};
       if(usesNativeAgreementPayment(found))throw error;
       let observation;
       try{await assertBoundDomain(found);observation=await protocol?.observeReportedPayment?.(coords.reportedTxHash)??await chain.observeTransfer(coords.reportedTxHash);}
-      catch(readError){observation={status:'indeterminate',reason:String(readError.message).slice(0,240)};}
+      catch(readError){observation={status:'unavailable',reason:String(readError?.message??readError).slice(0,240)};}
+      observation=checkedTransferObservation(observation,coords.reportedTxHash);
       return {operation:found,verification:{outcome:'readback_only',observation,...OBSERVATION_LIMITS}};
     }
     const operation = expireIfNeeded(found);

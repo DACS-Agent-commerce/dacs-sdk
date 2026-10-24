@@ -1157,6 +1157,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   return {
     available,
     actionsAdmitted: false,
+    nativePaymentReadbackAvailable: Boolean(nativePayment),
     // Chain readback: the buyer's own chain reader, for the
     // operator's buyer driver; the operator-action hold, for its key sweep.
     ...(chainReadback ? { chainReadback } : {}),

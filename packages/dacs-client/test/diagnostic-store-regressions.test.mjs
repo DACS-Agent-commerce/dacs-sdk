@@ -227,3 +227,19 @@ test('a microsecond report cannot mark a future delivery deadline overdue', t =>
   assert.equal(w.ops.get(op.accountId, op.id).state.protocol.deliveryDeadline, undefined);
   assert.deepEqual(w.ops.history(op.id), history);
 });
+import { openWorld, ABSENT } from './helpers/domain-store-crash-world.mjs';
+test('public watch refuses a host promise before its continuation can persist an overdue event', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacs-watch-store-')), path = join(dir, 'state.sqlite');
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const world = openWorld(path);
+  world.seed('delivery');
+  const before = world.snapshot('delivery'), op = world.operation('delivery');
+  const transition = world.ops.transition.bind(world.ops);
+  world.ops.transition = (...args) => Promise.resolve().then(() => transition(...args));
+  const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true, now: () => ABSENT.checkedAt });
+  assert.throws(() => watch.observe(op, ABSENT), { code: 'client_not_wired' });
+  await new Promise(resolve => setImmediate(resolve));
+  const reopened = openWorld(path);
+  try { assert.deepEqual(reopened.snapshot('delivery'), before); }
+  finally { reopened.db.close(); }
+});

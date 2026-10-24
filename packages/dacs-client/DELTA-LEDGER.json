@@ -1387,6 +1387,47 @@
     {"delta":"D11","subject":"fix(client): D11 resolve duplicate schema import after stack merge","files":[{"path":"packages/dacs-client/test/helpers/purchase-integrity-database.mjs","before":"5863b0e71bcd0580199dbc733cdbe629e7aa8831","after":"f1e6076cb72330b0bfed0ede94455e39d360272d"}]},
     {"delta":"D11","subject":"fix(client): D11 reconcile adapter initialization merge","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"eb7c37692bdd5da4ac476e6791a35172f404212e","after":"eb7c37692bdd5da4ac476e6791a35172f404212e"}]},
     {"delta":"D11","subject":"fix(client): D11 qualify merged transaction source","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"78994cc83d1c0bbe3065bec8852ea8b37f8d1988","after":"78994cc83d1c0bbe3065bec8852ea8b37f8d1988"}]},
-    {"delta":"D11","subject":"fix(client): D11 select historical changes in provenance deletion probes","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"052a7eaf5e1cf405c211dcd21b9ef1e3faad108a","after":"052a7eaf5e1cf405c211dcd21b9ef1e3faad108a"}]}
+    {"delta":"D11","subject":"fix(client): D11 select historical changes in provenance deletion probes","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"052a7eaf5e1cf405c211dcd21b9ef1e3faad108a","after":"052a7eaf5e1cf405c211dcd21b9ef1e3faad108a"}]},
+    {"delta":"D11","subject":"delta(client): D11 split 05 validate retained host transfer observations","files":[{"path":"packages/dacs-client/src/dacs/chain.mjs","before":"ba97147f77c17de62b3a769c61f830a793f1a449","after":"597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"},{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"d523e721e629c2f2e3164fed45065d24f87aee3f","after":"fe7f09a4177ea24fb5161ba2983755df49b09901"},{"path":"packages/dacs-client/src/purchases.mjs","before":"d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9","after":"427f897f08c2e6eba7f14290c899b56cdbab7cb5"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"c8a2fd31115b3af715df4b9cb589c188280dbe4a","after":"19be8559b54d902e57fd1056dab758c48d052dbe"},{"path":"packages/dacs-client/test/domain-store-crash.test.mjs","before":null,"after":"59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"},{"path":"packages/dacs-client/test/helpers/domain-store-crash-worker.mjs","before":null,"after":"c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9"},{"path":"packages/dacs-client/test/helpers/domain-store-crash-world.mjs","before":null,"after":"a91f8018335cd08180669ba04b8312608b046d8a"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":null,"after":"05af633db6d7e5bd8d18a40f23e9afef0dae01ef"},{"path":"packages/dacs-client/test/purchase-executed-only.test.mjs","before":"498f20be5b423d6328ffb0031d71d4e3d8233c43","after":"36cf0c10d71208afda5d52f6aef02adc0121da62"}]},
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 retain validated observation snapshots and cover native refusal",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "427f897f08c2e6eba7f14290c899b56cdbab7cb5",
+          "after": "8494a56749dee2fa254d8fb025e681cf7f70ccd2"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "19be8559b54d902e57fd1056dab758c48d052dbe",
+          "after": "f213a2cfade904c48b9515355f49fb5a7a89d9fd"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "05af633db6d7e5bd8d18a40f23e9afef0dae01ef",
+          "after": "b2db7b91c5e1e6de55edde544c2b5d078c1f3978"
+        },
+        {
+          "path": "packages/dacs-client/test/native-supersession-unavailable.test.mjs",
+          "before": null,
+          "after": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 remove trailing observation fixture whitespace",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "b2db7b91c5e1e6de55edde544c2b5d078c1f3978",
+          "after": "0af1586bc61b3a59509d361eebe3644f36d40150"
+        }
+      ]
+    },
+    {"delta":"D11","subject":"fix(client): D11 bound host observation serialization before allocation","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"da5b40ae3a41302de3391ecc32fd71e84271bcc5","after":"496cab2a82edadd5043e76243d0c6e070e6ec9c2"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"0af1586bc61b3a59509d361eebe3644f36d40150","after":"dbf2160e35246b96feb7612e10bc38c0bde93d9b"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"e1ee6a0855e0955fba14cda7d1ae14aa02248fa6","after":"e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"}]},
+    {"delta":"D11","subject":"fix(client): D11 preserve observation byte-limit refusal reasons","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"496cab2a82edadd5043e76243d0c6e070e6ec9c2","after":"f4db211d40294b6cbdb7937dbc7765374443cf18"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"dbf2160e35246b96feb7612e10bc38c0bde93d9b","after":"73808dae810ad137fd226f9e0f9fe7a33763a3c5"}]},
+    {"delta":"D11","subject":"fix(client): D11 retain explicit observation disposition","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"f4db211d40294b6cbdb7937dbc7765374443cf18","after":"9050fd47c365e95cf63295837070a311a48111da"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"73808dae810ad137fd226f9e0f9fe7a33763a3c5","after":"3d124286ec49346c6a72fb0d8e15086ef06d3632"}]}
 ]
 }
