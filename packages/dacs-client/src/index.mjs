@@ -1,8 +1,10 @@
+import { createProtocolPurchases as createInternalProtocolPurchases } from './dacs/protocol-purchases.mjs';
+import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 // Public buyer API. Root import leaves SQLite unloaded; constructing the SQLite store loads it.
 /** createPurchaseService(options) returns authenticated diagnostic status/readback methods; requires db, ops, coordinates, chain, store and purposes. Actions throw OperationError(profile_not_admitted); missing/expired capabilities throw not_found. purchaseNext(operation) returns held guidance, PURCHASE_STATUS_HELP is its status map, and networkIdentityLabel(domain) returns a genesis label; these formatters do not write. */
 export { createPublicPurchaseService as createPurchaseService, diagnosticPurchaseNext as purchaseNext, DIAGNOSTIC_PURCHASE_STATUS_HELP as PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
 /** createProtocolPurchases({db,ops,coordinates,store,...}) returns held protocol methods; actions refuse with profile_not_admitted. protocolView(operation,options) returns redacted historical guidance; usesAgreementContext/usesNativeDemDelivery(operation) return booleans. Projection has no writes; invalid seams throw. */
-export { createProtocolPurchases, diagnosticProtocolView as protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
+export { diagnosticProtocolView as protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
 /** createDeliveryDeadlineWatch({db,ops,coordinates,store,enabled=false,now}) returns observe/sweep/start/stop/setDeliveryCheck methods. When enabled, observe may call ops.transition and persist overdue/delivery events despite purchase actions being held; invalid/async stores throw NotWiredError. */
 export { createDeliveryDeadlineWatch } from './dacs/delivery-deadline-watch.mjs';
 /** createCoordinateStore({db,now}) returns save/get/reportHash/recordObservation and nonce lookup methods over PURCHASE_STATE_SCHEMA. Mutators write SQLite coordinates; invalid state and uniqueness failures throw SQLite errors. The purchase hold does not disable this host utility. */
@@ -57,3 +59,13 @@ export { fundingHelpSentence } from './buyer-funding.mjs';
 export { createSqlitePurchaseStore } from './seams/purchase-store-not-wired.mjs';
 /** PURCHASE_STATE_SCHEMA is the host SQLite DDL string required by the buyer factories; db.exec(PURCHASE_STATE_SCHEMA) creates persistent schema objects and may throw SQLite errors. Reading the constant has no effect. */
 export { PURCHASE_STATE_SCHEMA } from './purchase-state-schema.mjs';
+
+const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment']);
+/** createProtocolPurchases(options) returns passive protocol readers and refusal methods; actions throw profile_not_admitted before host effects. */
+export function createProtocolPurchases(options) {
+  const protocol = createInternalProtocolPurchases(options);
+  const methods = Object.fromEntries(Object.entries(protocol).filter(([, value]) => typeof value === 'function')
+    .map(([name, method]) => [name, PASSIVE_PROTOCOL_METHODS.has(name) ? method : assertPurchaseActionsAdmitted]));
+  return Object.freeze({ available: protocol.available, actionsAdmitted: false,
+    nativePaymentReadbackAvailable: protocol.nativePaymentReadbackAvailable, ...methods });
+}

@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "1beedc60ee588fd4bda22c96b0a0e23c6ccd3056"
+        "blob": "c37f5645046bb0cf036b0b731db783b81b6242aa"
       },
       "DELTA-LEDGER.json": {
-        "blob": "8d4fe933a79658f253311d452022620c72b1beb3"
+        "blob": "796c4427788cb7755b11c72782cae062d6b922a5"
       },
       "DELTA-MAP.md": {
-        "blob": "a008db2b6a337db6181a08f281caae200742cd4e"
+        "blob": "12401440e401dbb2ee1eed3bc0b96d7e810e0365"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "285c3ad6b03f514176b91f5710cd557f778123e7"
+        "blob": "e3401d8d237a62ea191965da808d0dce653303ff"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1211,7 +1211,7 @@
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
       "src/index.mjs": {
-        "blob": "ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5"
+        "blob": "e5645c81db36570840808f82a52187d27afdffcc"
       },
       "src/public-verification.mjs": {
         "blob": "eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"
@@ -1643,7 +1643,7 @@
         "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
       },
       "test/package-contents.test.mjs": {
-        "blob": "13d71f2e8ed865ee4ae9686cc57c5214307c8a55"
+        "blob": "f05e545f62faf232439c60bb69b08f6ac5684026"
       },
       "test/passive-observation.test.mjs": {
         "blob": "47763286db946e57755aec2a43523eb3215a1276"
@@ -1652,7 +1652,7 @@
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
       },
       "test/public-api.test.mjs": {
-        "blob": "c074963573ad7c710ca3b873a44105bbec0c1946"
+        "blob": "b28c6ef97e3004d9921c2b9f48a66d0e4d936423"
       },
       "test/purchase-executed-only.test.mjs": {
         "blob": "36cf0c10d71208afda5d52f6aef02adc0121da62"
