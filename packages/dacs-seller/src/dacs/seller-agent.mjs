@@ -1042,8 +1042,37 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // an absence the reader proved (a shutdown cut the approval before anything
   // was signed): the runner then reconciles its WAL, reads the same absence
   // and submits again, which asks the operator again.
-  const recoverNativeDeliveryBinding = async () => ({status:"not-needed"});
-  const recoverNativeSdkDelivery = async () => null;
+  async function recoverNativeDeliveryBinding(session, work) {
+    if (!nativeDelivery || session.deliveryReady) return { status: 'not-needed' };
+    const result = session.deliveryHold?.result;
+    if (result?.decision !== 'indeterminate' || !['delivery-submission-ambiguous', 'delivery-resolution-pending'].includes(result.code) ||
+        result.safeToRetryDelivery !== false || result.recovery?.action !== 'reconcile-delivery' ||
+        typeof result.fulfilmentId !== 'string' || !result.fulfilmentId) return { status: 'not-needed' };
+    const { disposition: _disposition, fulfilment: _fulfilment, reason: _reason, permitId: _permitId, ...authorization } = work.intake;
+    if (!result.consumedPaymentAuthorization || canonicalize(result.consumedPaymentAuthorization) !== canonicalize(authorization)) {
+      return { status: 'held', reason: 'retained SDK delivery recovery authority differs from the native payment intake' };
+    }
+    const report = deliveryReport(session, work.intake.settlementId);
+    const binding = nativeDeliveryBinding(session, work, result.fulfilmentId);
+    if (session.deliveryAdapter && (session.deliveryAdapter.fulfilmentId !== result.fulfilmentId ||
+        canonicalize(session.deliveryAdapter.deliveryBinding) !== canonicalize(binding))) {
+      return { status: 'held', reason: 'retained native delivery recovery binding differs from the SDK fulfilment intent' };
+    }
+    let read;
+    try {
+      read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: deliverableAddress(session.jobId), report,
+        receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding });
+    } catch (error) {
+      return { status: 'held', reason: `native delivery reconciliation readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` };
+    }
+    if (isProvenUnsignedAbsence(read)) return { status: 'askable' };
+    if (read.status !== 'present') return { status: 'held', reason: read.reason ?? 'original native Deliverable CREATE is not authenticated on fresh readback' };
+    session.deliveryAdapter = { fulfilmentId: result.fulfilmentId, deliveryBinding: binding,
+      reconciliationId: read.receipt.transactionRef.value, substrate: 'source-native-delivery-recovered-readonly' };
+    persist(session);
+    return { status: 'present' };
+  }
+
   async function runSdkDeliveryReady(session, work, paymentRead) {
     if (!deliveryContext || !session.demDeliveryContext || !fulfilmentStore) {
       return { status: 'not-ready', reason: 'authenticated DEM delivery context is unavailable' };
@@ -1443,6 +1472,33 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       contentHash: deliveredHash, anchorReceipt: result.anchorReceipt, evidenceHash: result.evidenceHash,
       ...(nativeDelivery ? { deliveryBinding: nativeDeliveryBinding(session, work, result.fulfilmentId) } : {}),
       substrate: nativeDelivery ? nativeDeliverySubstrate : 'mixed-test-native-payment-plus-loopback-sr2-delivery', evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
+  }
+
+  async function recoverNativeSdkDelivery(session, work) {
+    const recovery = await recoverNativeDeliveryBinding(session, work);
+    if (recovery.status === 'not-needed') return null;
+    if (recovery.status === 'held') {
+      session.deliveryHold = { reason: recovery.reason, ...(session.deliveryHold?.result ? { result: session.deliveryHold.result } : {}) };
+      persist(session);
+      return nativeEvidenceResponse(work, { status: 'held', reason: recovery.reason });
+    }
+    const delivery = await runSdkDeliveryReady(session, work, { receipt: work.nativeReceipt });
+    if (delivery.status !== 'delivery-ready') {
+      session.deliveryHold = { reason: delivery.reason, ...(delivery.result ? { result: structuredClone(delivery.result) } : {}) };
+      persist(session);
+      return nativeEvidenceResponse(work, { status: 'held', reason: delivery.reason });
+    }
+    const result = delivery.ready.result, deliveredHash = sha256Hex(canonicalize(result.artifact.anchoredValue));
+    const binding = nativeDeliveryBinding(session, work, result.fulfilmentId);
+    session.deliveryReady = { fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress, contentHash: deliveredHash,
+      anchorReceipt: structuredClone(result.anchorReceipt), evidenceHash: result.evidenceHash, ...(deliveryEvidenceEnabled?{evidence:structuredClone(result.evidence)}:{}), paymentPermitId: work.intake.permitId,
+      finalisation: structuredClone(delivery.ready.finalisation), auditSource: structuredClone(delivery.auditSource),
+      deliveryBinding: binding, substrate: 'source-native-one-node-delivery' };
+    session.stage = 'delivery-ready';
+    persist(session);
+    return finishDeliveryEvidence(session, work, { status: 'delivery-ready', fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress,
+      contentHash: deliveredHash, anchorReceipt: result.anchorReceipt, evidenceHash: result.evidenceHash, deliveryBinding: binding,
+      substrate: nativeDeliverySubstrate, evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
   }
 
   async function readPersistedNativeDelivery(session, work) {
