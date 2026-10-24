@@ -11,6 +11,7 @@ import {
   observePayDemTransferCore,
   type DemosTransferObservation,
   type PayDemRail,
+  type PayDemRailResult,
   type PayDemReconciledSettlement,
   type WalletSpendAuthorityV1,
   type WalletSpendReservationV1,
@@ -518,6 +519,7 @@ describe("native DEM buyer payment track", () => {
         events.push("broadcast");
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -584,7 +586,16 @@ describe("native DEM buyer payment track", () => {
     });
   });
 
-  it("keeps funded wallet settlement indeterminate without an accounted network fee", async () => {
+  it.each([
+    ["missing network fee", undefined, "executed"],
+    ["missing execution", "1000000000", undefined],
+    ["inclusion-only execution", "1000000000", "included"],
+    ["confirmed alias execution", "1000000000", "confirmed"],
+    ["boolean execution", "1000000000", true],
+    ["null execution", "1000000000", null],
+  ])("keeps funded wallet settlement indeterminate with %s", async (
+    _label, networkFeeOs, execution,
+  ) => {
     const database = await open(join(root(), "buyer.sqlite"));
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
     const publishNotice = vi.fn();
@@ -594,9 +605,11 @@ describe("native DEM buyer payment track", () => {
       asset: "DEM",
       maximumConcurrentEffects: 1,
     });
+    let submissions = 0;
     const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
       address: PAYER,
       async settle(input) {
+        submissions += 1;
         await input.journalPreparedTransfer!({
           txHash: TX_HASH,
           nonce: 7,
@@ -610,6 +623,7 @@ describe("native DEM buyer payment track", () => {
         await input.assertCurrentBeforeBroadcast!();
         return {
           ok: true,
+          ...(execution === undefined ? {} : { execution }),
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -617,7 +631,8 @@ describe("native DEM buyer payment track", () => {
           finality: { model: "bft-final" },
           blockNumber: 42,
           txRefKind: "demos",
-        };
+          ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
+        } as unknown as PayDemRailResult;
       },
     });
     const payment = createDacsPayDemBuyerPaymentTrackV1({
@@ -645,6 +660,9 @@ describe("native DEM buyer payment track", () => {
       activeEffects: 1,
       assets: [{ cumulativeSettledDebit: "0" }],
     });
+    await coordinator.runPending({ limit: 2 });
+    expect(submissions).toBe(1);
+    expect(publishNotice).not.toHaveBeenCalled();
   });
 
   it("composes the generated Demos wrapper through the wallet pre-broadcast boundary", async () => {
@@ -676,6 +694,7 @@ describe("native DEM buyer payment track", () => {
         events.push("broadcast");
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -777,6 +796,7 @@ describe("native DEM buyer payment track", () => {
           broadcasts += 1;
           return {
             ok: true,
+            execution: "executed",
             txHash: TX_HASH,
             chainId: "demos",
             payer: PAYER,
@@ -1101,6 +1121,7 @@ describe("native DEM buyer payment track", () => {
         broadcasts += 1;
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -1182,6 +1203,7 @@ describe("native DEM buyer payment track", () => {
         async settle() {
           return {
             ok: true,
+            execution: "executed",
             txHash: TX_HASH,
             chainId: "demos",
             payer: PAYER,
@@ -1246,6 +1268,7 @@ describe("native DEM buyer payment track", () => {
         await input.assertCurrentBeforeBroadcast!();
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -1836,7 +1859,7 @@ it("types completed custom reconciliation with mandatory execution evidence", as
   const settlement = {
     ok: true, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: PAYEE,
     amountOs: "1", finality: { model: "bft-final" }, blockNumber: 43,
-  } satisfies PayDemReconciledSettlement;
+  } satisfies Omit<PayDemReconciledSettlement, "execution">;
   type Completed = Extract<DacsPayDemBuyerChainReconciliationV1, { status: "completed" }>;
   const completed: Completed = {
     status: "completed", settlement: { ...settlement, execution: "executed" },

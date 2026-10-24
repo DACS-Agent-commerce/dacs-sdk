@@ -9,6 +9,7 @@ import {
   type DemosTransferResult,
   type PayDemRail,
   type PayDemSettlementReconcile,
+  type PayDemSettlementRecoveryContext,
 } from "../../src/rails/payDem.js";
 import {
   createIdempotencyStore,
@@ -36,7 +37,13 @@ function fakeClient(
     async transfer(args) {
       self.sent = args;
       return (
-        over.result ?? { ok: true, state: "included", hash: TX_HASH, blockNumber: 4242 }
+        over.result ?? {
+          ok: true,
+          state: "included",
+          execution: "executed",
+          hash: TX_HASH,
+          blockNumber: 4242,
+        }
       );
     },
   };
@@ -123,6 +130,67 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(client.sent).toBeUndefined();
   });
 
+  const recovery = (over: Record<string, unknown> = {}) => ({
+    railId: "demos-native:DEM",
+    jobId: "job-recovery",
+    phaseIndex: 2,
+    settlementKey: "demos-native:DEM:job-recovery:2",
+    network: "demos:testnet",
+    payer: PAYER,
+    payee: RECIPIENT,
+    amountOs: "1500000000",
+    ...over,
+  });
+
+  test("hands the exact recovery context to the native client", async () => {
+    const client = fakeClient();
+    await expect(payDemSettleCore(params({ recovery: recovery() }), client))
+      .resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(client.sent).toEqual({
+      to: RECIPIENT,
+      amountOs: 1_500_000_000n,
+      recovery: recovery(),
+    });
+  });
+
+  test.each([
+    ["a null context", null, /recovery context must be stable data/],
+    ["an array context", [], /recovery context must be stable data/],
+    ["a negative phase index", recovery({ phaseIndex: -1 }),
+      /recovery phaseIndex must be a non-negative safe integer/],
+    ["a fractional phase index", recovery({ phaseIndex: 1.5 }),
+      /recovery phaseIndex must be a non-negative safe integer/],
+    ["a key for another job", recovery({ jobId: "job-other" }),
+      /settlementKey does not match railId, jobId, and phaseIndex/],
+    ["a key for another phase", recovery({ phaseIndex: 3 }),
+      /settlementKey does not match railId, jobId, and phaseIndex/],
+    ["a non-canonical payer", recovery({ payer: `0x${PAYER}` }),
+      /recovery payer must be a canonical native Demos address/],
+    ["a non-canonical payee", recovery({ payee: RECIPIENT.toUpperCase() }),
+      /recovery payee must be a canonical native Demos address/],
+    ["a zero amount", recovery({ amountOs: "0" }),
+      /recovery amountOs must be a canonical positive OS integer/],
+    ["a leading-zero amount", recovery({ amountOs: "01500000000" }),
+      /recovery amountOs must be a canonical positive OS integer/],
+    ["another payer", recovery({ payer: "e5".repeat(32) }),
+      /does not bind the exact payer, payee, network, and OS amount/],
+    ["another payee", recovery({ payee: "e5".repeat(32) }),
+      /does not bind the exact payer, payee, network, and OS amount/],
+    ["another network", recovery({ network: "demos" }),
+      /does not bind the exact payer, payee, network, and OS amount/],
+    ["another amount", recovery({ amountOs: "1500000001" }),
+      /does not bind the exact payer, payee, network, and OS amount/],
+  ])("rejects %s as the recovery context before transfer", async (
+    _case,
+    context,
+    message,
+  ) => {
+    const client = fakeClient();
+    await expect(payDemSettleCore(params({ recovery: context }), client))
+      .rejects.toThrow(message);
+    expect(client.sent).toBeUndefined();
+  });
+
   test("rejects a non-integer / invalid base-unit amount", async () => {
     await expect(payDemSettleCore(params({ amount: "1.5" }), fakeClient())).rejects.toThrow(
       /invalid OS base-unit amount/,
@@ -173,6 +241,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       result: {
         ok: true,
         state: "included",
+        execution: "executed",
         hash: `0x${TX_HASH.toUpperCase()}`,
         blockNumber: 1,
       },
@@ -186,7 +255,9 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("broadcast ACCEPTANCE without observed inclusion → ok:false, no bft-final (steward finding)", async () => {
     // ok:true + a hash but NO terminal inclusion state: the node accepted the tx
     // for submission, it hasn't been observed to land. Must not mint bft-final.
-    const client = fakeClient({ result: { ok: true, hash: TX_HASH, blockNumber: 9 } });
+    const client = fakeClient({
+      result: { ok: true, execution: "executed", hash: TX_HASH, blockNumber: 9 },
+    });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
@@ -194,10 +265,37 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   });
 
   test("terminal inclusion state but NO block height → ok:false (finality witness missing)", async () => {
-    const client = fakeClient({ result: { ok: true, state: "included", hash: TX_HASH } });
+    const client = fakeClient({
+      result: { ok: true, state: "included", execution: "executed", hash: TX_HASH },
+    });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
+  });
+
+  test.each([
+    ["no execution attestation", {}],
+    ["an execution attestation other than executed", { execution: "included" }],
+    ["a boolean execution attestation", { execution: true }],
+  ])("inclusion with %s → ok:false, no evidence (#338)", async (_case, execution) => {
+    // A client written to the pre-#338 contract reports inclusion alone as
+    // success; the core must not mint bft-final evidence from it.
+    const client = fakeClient({
+      result: {
+        ok: true,
+        state: "included",
+        hash: TX_HASH,
+        blockNumber: 7,
+        ...execution,
+      } as DemosTransferResult,
+    });
+    await expect(payDemSettleCore(params(), client)).resolves.toEqual({
+      ok: false,
+      txHash: TX_HASH,
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
   });
 
   test("a poll that timed out (nonterminal) → ok:false, no evidence", async () => {
@@ -210,7 +308,13 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("accepts the exact DACS-4 §9.5.9 terminal included state", async () => {
     expect([...TERMINAL_INCLUDED]).toEqual(["included"]);
     const client = fakeClient({
-      result: { ok: true, state: "included", hash: TX_HASH, blockNumber: 7 },
+      result: {
+        ok: true,
+        state: "included",
+        execution: "executed",
+        hash: TX_HASH,
+        blockNumber: 7,
+      },
     });
     await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
       ok: true,
@@ -223,7 +327,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     "fails closed for non-normative terminal state %s",
     async (state) => {
       const client = fakeClient({
-        result: { ok: true, state, hash: TX_HASH, blockNumber: 7 },
+        result: { ok: true, state, execution: "executed", hash: TX_HASH, blockNumber: 7 },
       });
       const res = await payDemSettleCore(params(), client);
       expect(res.ok).toBe(false);
@@ -236,7 +340,13 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     TERMINAL_INCLUDED.add("confirmed");
     try {
       const client = fakeClient({
-        result: { ok: true, state: "confirmed", hash: TX_HASH, blockNumber: 7 },
+        result: {
+          ok: true,
+          state: "confirmed",
+          execution: "executed",
+          hash: TX_HASH,
+          blockNumber: 7,
+        },
       });
       const res = await payDemSettleCore(params(), client);
       expect(res.ok).toBe(false);
@@ -269,6 +379,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     response.resolve({
       ok: true,
       state: "included",
+      execution: "executed",
       hash: TX_HASH,
       blockNumber: 12,
     });
@@ -291,6 +402,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         return {
           ok: true,
           state: "included",
+          execution: "executed" as const,
           hash: TX_HASH,
           blockNumber: 12,
         };
@@ -453,7 +565,35 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const second = await settle(req());
     expect(transfers).toBe(1);
     expect(second).toEqual(first);
+    expect(first).not.toHaveProperty("execution");
   });
+
+  test.each([undefined, "included", "confirmed", true, null])(
+    "holds a fresh legacy rail success without literal execution (%s)",
+    async (execution) => {
+      const log = createInMemorySettlementLog();
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const submit = vi.fn(async () => ({
+        ok: true,
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: SELLER_HEX,
+        finality: { model: "bft-final" },
+        blockNumber: 42,
+        txRefKind: "demos",
+        ...(execution === undefined ? {} : { execution }),
+      }));
+      const rail = { address: PAYER, settle: submit } as unknown as PayDemRail;
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+      });
+      await expect(settle(req())).rejects.toThrow(/does not attest executed/);
+      await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(putOutcome).not.toHaveBeenCalled();
+    },
+  );
 
   test("a tx-bearing timeout holds the intent and never submits a second payment", async () => {
     let transfers = 0;
@@ -499,6 +639,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 4242,
       txRefKind: "demos",
       amountOs: context.amountOs,
+      execution: "executed" as const,
     }));
     const resumed = await payDemSettle(rail, { network: "demos" }, {
       store,
@@ -507,6 +648,87 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(transfers).toBe(1);
     expect(resumed.txHash).toBe(TX_HASH);
     expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["without reconciliation", undefined,
+      /cannot be authenticated after restart without reconciliation/],
+    ["when reconciliation proves absence", async () => null,
+      /contradicts reconciliation proof of absence/],
+    ["when reconciliation returns another transaction", { txHash: OTHER_TX_HASH },
+      /does not match the authoritative reconciled transaction/],
+    ["when reconciliation returns another block", { blockNumber: 4243 },
+      /does not match the authoritative reconciled transaction/],
+    ["when reconciliation does not attest execution (#338)",
+      async (context: PayDemSettlementRecoveryContext) => ({
+        ok: true,
+        txHash: TX_HASH,
+        chainId: context.network,
+        payer: context.payer,
+        payee: context.payee,
+        finality: { model: "bft-final" as const },
+        blockNumber: 4242,
+        txRefKind: "demos",
+        amountOs: context.amountOs,
+      }),
+      /does not attest that the transaction record shows the transfer executed/],
+    ["when reconciliation attests inclusion instead of execution (#338)",
+      { execution: "included" },
+      /does not attest that the transaction record shows the transfer executed/],
+  ])("refuses a restarted durable outcome %s", async (_case, reconciled, message) => {
+    const client = fakeClient();
+    let transfers = 0;
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async (params) => {
+        transfers += 1;
+        return payDemSettleCore(params, client);
+      },
+    };
+    const store = createIdempotencyStore(createInMemorySettlementLog());
+    await payDemSettle(rail, { network: "demos" }, { store })(req());
+    const reconcile = typeof reconciled === "function"
+      ? reconciled
+      : reconciled === undefined
+        ? undefined
+        : vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+            ok: true,
+            txHash: TX_HASH,
+            chainId: context.network,
+            payer: context.payer,
+            payee: context.payee,
+            finality: { model: "bft-final" as const },
+            blockNumber: 4242,
+            txRefKind: "demos",
+            amountOs: context.amountOs,
+            execution: "executed" as const,
+            ...reconciled,
+          }));
+
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store,
+      ...(reconcile === undefined
+        ? {}
+        : { reconcile: reconcile as unknown as PayDemSettlementReconcile }),
+    })(req())).rejects.toThrow(message);
+    expect(transfers).toBe(1);
+  });
+
+  test("refuses a request for another phase or rail before transferring", async () => {
+    const client = fakeClient();
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: vi.fn(async (params) => payDemSettleCore(params, client)),
+    };
+
+    await expect(payDemSettle(rail, { network: "demos" })(req({ phase: "deliver" })))
+      .rejects.toThrow(/requires phase "pay-dem", got "deliver"/);
+    await expect(payDemSettle(rail, {
+      network: "demos",
+      railId: "demos-native:DEM",
+    })(req({ rail: "pay-dem" })))
+      .rejects.toThrow(/request rail "pay-dem" does not match authenticated descriptor/);
+    expect(rail.settle).not.toHaveBeenCalled();
   });
 
   test("durably recovers intent → journal → ambiguity → restart under the same exact tuple", async () => {
@@ -582,6 +804,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 95563,
       txRefKind: "demos",
       amountOs: context.amountOs,
+      execution: "executed" as const,
     }));
     now = 11;
     const restartedStore = createIdempotencyStore(log, {
@@ -601,6 +824,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 95563,
       txRefKind: "demos",
     });
+    expect(recovered).not.toHaveProperty("execution");
     expect(transfers).toBe(1);
     expect(restartedRail.settle).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledTimes(1);
@@ -663,9 +887,24 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     ["tx ref", { txRefKind: "payment" }, /non-Demos transaction reference/],
     ["finality", { finality: { model: "provider-receipt" } }, /bft-final finality/],
     ["block", { blockNumber: -1 }, /block number/],
+    ["fractional block", { blockNumber: 1.5 }, /invalid Demos block number/],
+    ["extra field", { memo: "paid" }, /malformed pay-dem settlement shape/],
+    ["non-boolean ok", { ok: "true" }, /malformed pay-dem settlement shape/],
+    ["numeric amount", { amountOs: 5_000_000_000 }, /exact requested OS amount/],
+    ["empty hash", { txHash: "" }, /success lacks canonical tx identity/],
+    ["null finality", { finality: null }, /success lacks canonical tx identity/],
+    ["finality with depth", { finality: { model: "bft-final", finalityBlocks: 1 } },
+      /exact Demos bft-final finality/],
+    ["fee with a leading zero", { networkFeeOs: "01" }, /network-fee accounting/],
+    ["numeric fee", { networkFeeOs: 1 }, /network-fee accounting/],
+    ["indeterminate with finality", { ok: false },
+      /failure must not claim settlement finality/],
+    ["missing block", { omit: "blockNumber" }, /success lacks canonical tx identity/],
+    ["missing tx ref", { omit: "txRefKind" }, /success lacks canonical tx identity/],
+    ["missing finality", { omit: "finality" }, /success lacks canonical tx identity/],
   ])("rejects malicious %s reconciliation without rebroadcast", async (
     _label,
-    override,
+    { omit, ...override }: Record<string, unknown>,
     pattern,
   ) => {
     const key = "demos-native:DEM:job-malicious:2";
@@ -682,7 +921,88 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         throw new Error("must not rebroadcast");
       }),
     };
-    const reconcile = vi.fn(async (context) => ({
+    const reconcile = vi.fn(async (context) => {
+      const reconciled: Record<string, unknown> = {
+        ok: true,
+        txHash: TX_HASH,
+        chainId: context.network,
+        payer: context.payer,
+        payee: context.payee,
+        finality: { model: "bft-final" as const },
+        blockNumber: 9,
+        txRefKind: "demos",
+        amountOs: context.amountOs,
+        execution: "executed" as const,
+        ...override,
+      };
+      if (typeof omit === "string") delete reconciled[omit];
+      return reconciled;
+    });
+    const putOutcome = vi.spyOn(log, "putOutcome");
+
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store: createIdempotencyStore(log),
+      reconcile: reconcile as unknown as PayDemSettlementReconcile,
+    })(request)).rejects.toThrow(pattern);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(rail.settle).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["an array", []],
+    ["a string", "settled"],
+  ])("rejects a held intent's reconciliation that returns %s, without rebroadcast", async (
+    _case,
+    reconciled,
+  ) => {
+    const log = createInMemorySettlementLog();
+    const request = req({
+      rail: "demos-native:DEM",
+      jobId: "job-not-object",
+      phaseIndex: 6,
+    });
+    await seedExpiredIntent(log, request);
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: vi.fn(async () => {
+        throw new Error("must not rebroadcast");
+      }),
+    };
+    const putOutcome = vi.spyOn(log, "putOutcome");
+
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store: createIdempotencyStore(log),
+      reconcile: (async () => reconciled) as unknown as PayDemSettlementReconcile,
+    })(request)).rejects.toThrow(/must return a settlement object or null/);
+    expect(rail.settle).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["no execution attestation", {}],
+    ["an execution attestation other than executed", { execution: "included" }],
+    ["a boolean execution attestation", { execution: true }],
+  ])("refuses a held intent's reconciliation with %s, without rebroadcast (#338)", async (
+    _case,
+    execution,
+  ) => {
+    // A reconciler written when `included` alone meant success must not turn
+    // an included-but-failed transfer into a settlement on recovery.
+    const log = createInMemorySettlementLog();
+    const request = req({
+      rail: "demos-native:DEM",
+      jobId: "job-unattested",
+      phaseIndex: 4,
+    });
+    await seedExpiredIntent(log, request);
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: vi.fn(async () => {
+        throw new Error("must not rebroadcast");
+      }),
+    };
+    const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
       ok: true,
       txHash: TX_HASH,
       chainId: context.network,
@@ -692,14 +1012,19 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 9,
       txRefKind: "demos",
       amountOs: context.amountOs,
-      ...override,
+      ...execution,
     }));
+    const putOutcome = vi.spyOn(log, "putOutcome");
 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: createIdempotencyStore(log),
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
-    })(request)).rejects.toThrow(pattern);
+    })(request)).rejects.toThrow(
+      /does not attest that the transaction record shows the transfer executed/,
+    );
+    expect(reconcile).toHaveBeenCalledTimes(1);
     expect(rail.settle).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
   });
 
   test("a cached success cannot be reused under changed amount terms", async () => {
@@ -737,6 +1062,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 7,
       txRefKind: "demos",
       amountOs: context.amountOs,
+      execution: "executed" as const,
     }));
 
     await expect(payDemSettle(rail, { network: "demos" }, {
@@ -830,6 +1156,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       async settle(input) {
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: input.network ?? "demos",
           payer: PAYER,
@@ -1048,3 +1375,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(client.sent).toBeUndefined();
   });
 });
+
+// These unit tests exercise settlement rules with injected capabilities.
+vi.mock("../../src/rails/payDemExecutionAuthority.js", async () =>
+  import("../support/payDemExecutionAuthority.js"));
