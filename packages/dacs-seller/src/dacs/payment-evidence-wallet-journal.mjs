@@ -83,6 +83,7 @@ const TX_STATES = new Set(['applied', 'pending', 'absent']);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const reason = (error) => String(error?.message ?? error).slice(0, 200);
 const nonceOf = (value, least) => (Number.isSafeInteger(value) && value >= least ? value : null);
+const journalBusy = (cause) => Object.assign(new Error('the wallet journal is busy', { cause }), { code: 'wallet_journal_busy' });
 // Each journal's own anchorEvidence and reconcilePaymentEvidence, mapped to it.
 const journals = new WeakMap();
 // True only for the two functions of one createPaymentEvidenceWalletJournal.
@@ -143,14 +144,14 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
   const file = lstatSync(path);
   if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid?.() || (file.mode & 0o077)) throw new TypeError('the wallet journal must be a private (0600) file owned by this user');
   const db = new DatabaseSync(path);
-  if (db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'signed_creates'").get()) {
-    db.close();
-    throw new TypeError('the wallet journal file has the earlier format, which kept no nonce; it is not read');
-  }
   // One row per signed CREATE; superseded rows are kept, and an address has at most one live row.
   let journalId;
   try {
-    db.exec('PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000');
+    // Another opener's initialization is waited for as long as a wallet read is.
+    db.exec(`PRAGMA synchronous=FULL; PRAGMA busy_timeout=${readTimeoutMs}`);
+    if (db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'signed_creates'").get()) {
+      throw new TypeError('the wallet journal file has the earlier format, which kept no nonce; it is not read');
+    }
     const initialized = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'journal_meta'").get();
     journalId = initialized ? db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get()?.value : undefined;
     if (!journalId) {
@@ -169,7 +170,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       }).immediate();
       journalId = db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get().value;
     }
-  } catch (error) { db.close(); throw error; }
+  } catch (error) { db.close(); throw error.code === 'SQLITE_BUSY' ? journalBusy(error) : error; }
   // SQLite's writer lock is the signing lease across handles and processes.
   // A crash releases it. Commit the signed bytes before any broadcast.
   db.exec('PRAGMA busy_timeout=0');
@@ -186,7 +187,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
         try { db.exec('BEGIN IMMEDIATE'); begun = true; }
         catch (cause) {
           if (cause.code !== 'SQLITE_BUSY') throw cause;
-          if (performance.now() >= deadline) throw Object.assign(new Error('the wallet journal is busy', { cause }), { code: 'wallet_journal_busy' });
+          if (performance.now() >= deadline) throw journalBusy(cause);
           await delay(LOCK_POLL_MS);
         }
       }
@@ -223,14 +224,15 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       const nonce = nonceOf(object(value) ? value.nonce : value, 0);
       return nonce === null ? null : { nonce, blockHeight: object(value) ? nonceOf(value.blockHeight, 0) : null };
     });
-    if (!('value' in account)) return { alive: true, reason: `the account nonce could not be read: ${account.cause}` };
-    if (account.value.nonce < signed.nonce) return { alive: true };
     const state = await read(() => readTransactionState({ txHash: signed.txHash }), (value) => {
       if (TX_STATES.has(value)) return { state: value, checkedThroughBlock: null };
       return object(value) && TX_STATES.has(value.state) ? { state: value.state, checkedThroughBlock: nonceOf(value.checkedThroughBlock, 0) } : null;
     });
+    // Execution is authoritative even if the account nonce is stale or unreadable.
+    if ('value' in state && state.value.state === 'applied') return { alive: true, applied: true };
+    if (!('value' in account)) return { alive: true, reason: `the account nonce could not be read: ${account.cause}` };
     if (!('value' in state)) return { alive: true, reason: `the kept CREATE's state could not be read: ${state.cause}` };
-    if (state.value.state !== 'absent') return { alive: true, applied: state.value.state === 'applied' };
+    if (state.value.state !== 'absent' || account.value.nonce < signed.nonce) return { alive: true };
     if (account.value.blockHeight === null || state.value.checkedThroughBlock === null || state.value.checkedThroughBlock < account.value.blockHeight) {
       return { alive: true, reason: 'the kept CREATE has no complete absence observation through the account nonce snapshot' };
     }
