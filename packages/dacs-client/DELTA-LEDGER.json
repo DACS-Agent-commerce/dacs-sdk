@@ -1482,6 +1482,30 @@
     {"delta":"D11","subject":"fix(client): D11 keep diagnostic readers passive and preserve error codes","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"101829cfc9443886330fb9cfd9c60798e9e5533f","after":"29247a830041995bed6ab28c39de18ff986d021c"},{"path":"packages/dacs-client/test/diagnostic-reader.test.mjs","before":null,"after":"4d6125730c234a34f8ae969c9d7299e55621e3a3"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"2a76678b52961a67d4ebdd8b276ebbee6354e465","after":"2ed8e9cf194d953890836e04ed79a5a219fccd2b"}]},
     {"delta":"D11","subject":"fix(client): D11 keep all diagnostic readers passive and project retained fields","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"4dcf3fff5fa6f16aaac8a9d87df51d1a72cc0e14","after":"9d6a339ad2226afeea539b3e06277fac0e64c8f6"},{"path":"packages/dacs-client/test/diagnostic-reader.test.mjs","before":"4d6125730c234a34f8ae969c9d7299e55621e3a3","after":"99154dd18992f65e0a498a9e2be1064fffa08a14"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"038451763d3b32832380d800fd814d0cb21939b7","after":"bd7f7cc507a40c8d76ad523382073fb1ccd95d29"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"ef6723b2e7509c38a37fee121912cfc7c197895a","after":"ef6723b2e7509c38a37fee121912cfc7c197895a"}]},
     {"delta":"D11","subject":"fix(client): D11 reconcile the observation-limit diagnostic merge","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"eda3e9fe0b741cf378c61df1fad749965cf9f073","after":"eda3e9fe0b741cf378c61df1fad749965cf9f073"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"718f49eefd6863ed5ae3d6c7124a8dd3cc472a05","after":"718f49eefd6863ed5ae3d6c7124a8dd3cc472a05"}]},
-    {"delta":"D11","subject":"fix(client): D11 qualify merged diagnostic source","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"7ac41a6e4f20480403f32993a28954b42217f3e4","after":"7ac41a6e4f20480403f32993a28954b42217f3e4"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"6575800a2095f41ac8f5a350d37f0925be6f5d9d","after":"6575800a2095f41ac8f5a350d37f0925be6f5d9d"}]}
+    {"delta":"D11","subject":"fix(client): D11 qualify merged diagnostic source","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"7ac41a6e4f20480403f32993a28954b42217f3e4","after":"7ac41a6e4f20480403f32993a28954b42217f3e4"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"6575800a2095f41ac8f5a350d37f0925be6f5d9d","after":"6575800a2095f41ac8f5a350d37f0925be6f5d9d"}]},
+    {"delta":"D11","subject":"delta(client): D11 split 07 expose the private buyer package boundary","files":[{"path":"packages/dacs-client/src/dacs/listing.mjs","before":"1241256345f2f48584566926616d89ec43e7e831","after":"40f44cef846981dd2d87bd4654e8192b8e784ac6"},{"path":"packages/dacs-client/src/index.mjs","before":null,"after":"a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4"},{"path":"packages/dacs-client/src/public-verification.mjs","before":null,"after":"eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":null,"after":"84b222cd3ec30df147e61cd776534666fd9e75fd"},{"path":"packages/dacs-client/test/public-api.test.mjs","before":null,"after":"c0d259390c30873269d2a1c9b306b8867dcc63b0"},{"path":"packages/dacs-client/test/sweep-contracts.test.mjs","before":"3955731dbff3f936b239e42a7a4aa8f13c69091f","after":"dac6e6aae63aac269c0a84197ce2b77d3211eb35"}]},
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 document public contracts and keep packed checks offline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4",
+          "after": "a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "84b222cd3ec30df147e61cd776534666fd9e75fd",
+          "after": "171253367491218f30989ba8511f92305937f75b"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "c0d259390c30873269d2a1c9b306b8867dcc63b0",
+          "after": "5f2ef3b4e30101b70f88e665ded5485f77764da9"
+        }
+      ]
+    },
+    {"delta":"D11","subject":"fix(client): D11 document exact public interfaces and test the packed journal","files":[{"path":"packages/dacs-client/src/index.mjs","before":"a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17","after":"ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"171253367491218f30989ba8511f92305937f75b","after":"13d71f2e8ed865ee4ae9686cc57c5214307c8a55"},{"path":"packages/dacs-client/test/public-api.test.mjs","before":"5f2ef3b4e30101b70f88e665ded5485f77764da9","after":"c074963573ad7c710ca3b873a44105bbec0c1946"}]},
+    {"delta":"D11","subject":"fix(client): D11 hold public protocol actions and stage packed dependencies","files":[{"path":"packages/dacs-client/src/index.mjs","before":"ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5","after":"e5645c81db36570840808f82a52187d27afdffcc"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"13d71f2e8ed865ee4ae9686cc57c5214307c8a55","after":"f05e545f62faf232439c60bb69b08f6ac5684026"},{"path":"packages/dacs-client/test/public-api.test.mjs","before":"c074963573ad7c710ca3b873a44105bbec0c1946","after":"b28c6ef97e3004d9921c2b9f48a66d0e4d936423"}]}
 ]
 }

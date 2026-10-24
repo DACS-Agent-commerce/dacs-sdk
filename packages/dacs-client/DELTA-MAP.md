@@ -596,6 +596,25 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 qualify merged diagnostic source | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:46`, `packages/dacs-client/src/purchases.mjs:51`, `packages/dacs-client/src/purchases.mjs:74`, `packages/dacs-client/src/purchases.mjs:118`, `packages/dacs-client/src/purchases.mjs:171`, `packages/dacs-client/src/purchases.mjs:187`, `packages/dacs-client/src/purchases.mjs:193`, `packages/dacs-client/src/purchases.mjs:244`, `packages/dacs-client/src/purchases.mjs:250`, `packages/dacs-client/src/purchases.mjs:273`, `packages/dacs-client/src/purchases.mjs:276`, `packages/dacs-client/src/purchases.mjs:294`, `packages/dacs-client/src/purchases.mjs:312`, `packages/dacs-client/src/purchases.mjs:379`, `packages/dacs-client/src/purchases.mjs:445`, `packages/dacs-client/src/purchases.mjs:451`, `packages/dacs-client/src/purchases.mjs:453`, `packages/dacs-client/src/purchases.mjs:455`, `packages/dacs-client/src/purchases.mjs:463`, `packages/dacs-client/src/purchases.mjs:484`, `packages/dacs-client/src/purchases.mjs:491`, `packages/dacs-client/src/purchases.mjs:497`, `packages/dacs-client/src/purchases.mjs:515`, `packages/dacs-client/src/purchases.mjs:518`, `packages/dacs-client/src/purchases.mjs:528`, `packages/dacs-client/src/purchases.mjs:535`, `packages/dacs-client/src/purchases.mjs:580`, `packages/dacs-client/src/purchases.mjs:599`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:707`, `packages/dacs-client/src/purchases.mjs:715`, `packages/dacs-client/src/purchases.mjs:813`, `packages/dacs-client/src/purchases.mjs:833`, `packages/dacs-client/src/purchases.mjs:843`, `packages/dacs-client/src/purchases.mjs:893`, `packages/dacs-client/src/purchases.mjs:928`, `packages/dacs-client/src/purchases.mjs:940`, `packages/dacs-client/src/purchases.mjs:1031`, `packages/dacs-client/src/purchases.mjs:1058`, `packages/dacs-client/src/purchases.mjs:1071`, `packages/dacs-client/src/purchases.mjs:1079`, `packages/dacs-client/src/purchases.mjs:1081`, `packages/dacs-client/src/purchases.mjs:1083`, `packages/dacs-client/src/purchases.mjs:1105`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1267`, `packages/dacs-client/src/purchases.mjs:1275`, `packages/dacs-client/src/purchases.mjs:1279`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1288`, `packages/dacs-client/src/purchases.mjs:1292`, `packages/dacs-client/src/purchases.mjs:1333`, `packages/dacs-client/src/purchases.mjs:1340`, `packages/dacs-client/src/purchases.mjs:1358`, `packages/dacs-client/src/purchases.mjs:1367`, `packages/dacs-client/src/purchases.mjs:1374`, `packages/dacs-client/src/purchases.mjs:1381`, `packages/dacs-client/src/purchases.mjs:1388`, `packages/dacs-client/src/purchases.mjs:1434` | 7ac41a6e4f20480403f32993a28954b42217f3e4 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 6575800a2095f41ac8f5a350d37f0925be6f5d9d |
+| D11 | delta(client): D11 split 07 expose the private buyer package boundary | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
+| | `packages/dacs-client/src/index.mjs:1` | a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4 |
+| | `packages/dacs-client/src/public-verification.mjs:1` | eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 84b222cd3ec30df147e61cd776534666fd9e75fd |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | c0d259390c30873269d2a1c9b306b8867dcc63b0 |
+| | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | dac6e6aae63aac269c0a84197ce2b77d3211eb35 |
+| D11 | fix(client): D11 document public contracts and keep packed checks offline | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 171253367491218f30989ba8511f92305937f75b |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 5f2ef3b4e30101b70f88e665ded5485f77764da9 |
+| D11 | fix(client): D11 document exact public interfaces and test the packed journal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 13d71f2e8ed865ee4ae9686cc57c5214307c8a55 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | c074963573ad7c710ca3b873a44105bbec0c1946 |
+| D11 | fix(client): D11 hold public protocol actions and stage packed dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | e5645c81db36570840808f82a52187d27afdffcc |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | f05e545f62faf232439c60bb69b08f6ac5684026 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | b28c6ef97e3004d9921c2b9f48a66d0e4d936423 |
 
 ## Complete commit and file inventory
 
@@ -1500,6 +1519,46 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `package-lock.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/LICENSE:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/README.md:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/package.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/index.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/public-verification.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/public-api.test.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/README.md:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/public-api.test.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/public-api.test.mjs:1` |
 
 ## Original moved files
 
@@ -1521,7 +1580,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs` | `http-mcp/src/dacs/demos-sr2-wallet-bridge.mjs` | aae9cc8e17848ff796c10b1c2289b7da798eefa0 | unchanged | aae9cc8e17848ff796c10b1c2289b7da798eefa0 |
 | `packages/dacs-client/src/dacs/devnet-purchase-consumer.mjs` | `http-mcp/src/dacs/devnet-purchase-consumer.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/dacs/directory.mjs` | `http-mcp/src/dacs/directory.mjs` | 7501cb68e65b07831eda5ce1723e870864656c69 | changed by D16 | c91e7f4769c14fa8b8306ef38647c65230cce881 |
-| `packages/dacs-client/src/dacs/listing.mjs` | `http-mcp/src/dacs/listing.mjs` | 7fb53138139c1e46b96f39741cacef6ed19055f8 | changed by D16 | 1241256345f2f48584566926616d89ec43e7e831 |
+| `packages/dacs-client/src/dacs/listing.mjs` | `http-mcp/src/dacs/listing.mjs` | 7fb53138139c1e46b96f39741cacef6ed19055f8 | changed by D16, D11 | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
 | `packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs` | `http-mcp/src/dacs/native-agreement-payment-consumer.mjs` | 9a0967034f9bad78b2c03836343926dce0a537f6 | unchanged | 9a0967034f9bad78b2c03836343926dce0a537f6 |
 | `packages/dacs-client/src/dacs/native-dem-delivery-consumer.mjs` | `http-mcp/src/dacs/native-dem-delivery-consumer.mjs` | c542cfbceb16d7d440698c48c9e9d93377ea744c | unchanged | c542cfbceb16d7d440698c48c9e9d93377ea744c |
 | `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs` | `http-mcp/src/dacs/native-payment-evidence-consumer.mjs` | 7083a9147813ea400ad40e17491ceb9d2f9de3c2 | unchanged | 7083a9147813ea400ad40e17491ceb9d2f9de3c2 |

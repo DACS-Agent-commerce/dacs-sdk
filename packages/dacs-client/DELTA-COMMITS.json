@@ -896,5 +896,42 @@
       "packages/dacs-client/scripts/merge-snapshots.test.mjs"
     ]
   },
-  {"sha":null,"subject":"fix(client): D11 pin reachable merges and require working bytes to match HEAD","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/scripts/delta-map.mjs","packages/dacs-client/scripts/merge-snapshots.test.mjs"]}
+  {"sha":null,"subject":"fix(client): D11 pin reachable merges and require working bytes to match HEAD","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/scripts/delta-map.mjs","packages/dacs-client/scripts/merge-snapshots.test.mjs"]},
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 07 expose the private buyer package boundary",
+    "files": [
+      "package-lock.json",
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/LICENSE",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/listing.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/src/public-verification.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs",
+      "packages/dacs-client/test/sweep-contracts.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 document public contracts and keep packed checks offline",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs"
+    ]
+  },
+  {"sha":null,"subject":"fix(client): D11 document exact public interfaces and test the packed journal","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/README.md","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/index.mjs","packages/dacs-client/test/package-contents.test.mjs","packages/dacs-client/test/public-api.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 hold public protocol actions and stage packed dependencies","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/index.mjs","packages/dacs-client/test/package-contents.test.mjs","packages/dacs-client/test/public-api.test.mjs"]}
 ]
