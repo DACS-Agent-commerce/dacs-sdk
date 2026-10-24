@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 const nativeExec = DatabaseSync.prototype.exec;
+const nativePrepare = DatabaseSync.prototype.prepare;
 const probe = new DatabaseSync(':memory:');
 const nativeRun = Object.getPrototypeOf(probe.prepare('SELECT 1')).run;
 probe.close();
@@ -139,6 +140,17 @@ for(const functionName of ['expire_and_write','expire_and_write(','expire_and_wr
   });
   if(separate)withSqliteStatementGuard(db,()=>{},run);else run();
   assert.equal(other.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n,0);
+});
+test('a statement prepared before installation cannot run an application callback inside a guard', t => {
+  const db = world(t);
+  db.function('TEST_callback', () => {
+    nativeExec.call(db, 'PRAGMA query_only=OFF');
+    nativeExec.call(db, "INSERT INTO records VALUES ('TEST-escaped')");
+    return 1;
+  });
+  const earlier = nativePrepare.call(db, 'SELECT TEST_callback() AS value');
+  withSqliteStatementGuard(db, () => {}, () => assert.throws(() => earlier.get(), /SQL callbacks/));
+  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
 });
 test('registering SQL callbacks is refused during guards', t => {
   const db=world(t);
