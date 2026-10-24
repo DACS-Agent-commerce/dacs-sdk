@@ -1,7 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
-import { ed25519KeyPair, received, signedAgreement, tp1Listing, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { ed25519KeyPair, received, signedAgreement, tp1Listing, wireCommitment } from "./commitmentFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
@@ -57,64 +57,64 @@ const code = async (fn: () => unknown) => {
   try { await fn(); return "ok"; } catch (error) { if (error instanceof WireError) return error.code; throw error; }
 };
 
-function world() {
+async function world() {
   const buyer = party(), seller = party(SELLER_SEED), session = party();
   const record = synthetic("round-trip");
   const approvedRecordDigests = [digest(record)];
-  const buyerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record, local: RPC_A }));
-  const sellerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record, local: RPC_B }));
+  const buyerBinding = (await withTestApproval(approvedRecordDigests, async () => (await bindTp1Fixture({ record, local: RPC_A }))));
+  const sellerBinding = (await withTestApproval(approvedRecordDigests, async () => (await bindTp1Fixture({ record, local: RPC_B }))));
   // The job's finalized commitment and its signed Agreement, which the seller read itself: payment and delivery routes need them.
   const { agreement, agreementHash } = signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN, generatedAt: NOW - 120_000 });
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash, listingPin: PIN, committedAt: NOW - 60_000 });
   return { buyer, seller, session, record, approvedRecordDigests, buyerBinding, sellerBinding, commitment, agreement, agreementHash };
 }
 
-async function sellerReceives(w: ReturnType<typeof world>, header: string, text: string, requireDelegation = false) {
-  const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation });
-  checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation,
-    commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, signedListing: received(LISTING) });
+async function sellerReceives(w: Awaited<ReturnType<typeof world>>, header: string, text: string, requireDelegation = false) {
+  const opened = (await openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation }));
+  (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation,
+    commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: w.sellerBinding.profile.chainIdentity }), signedListing: received(LISTING) }));
   return opened.payload;
 }
 
 describe("TP-1 round trips (fresh keys, both directions)", () => {
   it("buyer → seller request, seller → buyer response, over two RPC endpoints", async () => {
-    const w = world();
+    const w = (await world());
     const text = `{"jobId":"${JOB}"}`;
     const { payload, header } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW });
     expect(payload.profile).toEqual(w.buyerBinding.profile);
     const received = await sellerReceives(w, header, text);
     const answer = '{"status":"committed"}';
     const responseHeader = await signWireResponse(received, 200, answer, { signer: w.seller, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile });
-    const receipt = verifyWireResponse(payload, { header: responseHeader, status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A });
+    const receipt = (await verifyWireResponse(payload, { header: responseHeader, status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A }));
     expect(receipt.principal).toBe(w.seller.claim);
     expect(receipt.body).toEqual({ status: "committed" });
   });
 
   it("delegated session: wallet signs the delegation, the session key signs requests", async () => {
-    const w = world();
+    const w = (await world());
     const delegation = await signSellerSessionDelegation({
       version: "1", kind: "seller-session-delegation", buyer: w.buyer.claim, sessionPublicKey: w.session.raw, seller: w.seller.claim,
       listingPin: PIN, jobId: JOB, notBefore: NOW - 1000, expiresAt: NOW + 3_600_000, profile: w.buyerBinding.profile,
     }, w.buyer, w.buyerBinding, RPC_A);
-    expect(verifySellerSessionDelegation(delegation, { binding: w.sellerBinding, local: RPC_B, buyer: w.buyer.claim, seller: w.seller.claim, listingPin: PIN, jobId: JOB, time: NOW }).sessionPublicKey).toBe(w.session.raw);
+    expect((await verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: w.sellerBinding, local: RPC_B, buyer: w.buyer.claim, seller: w.seller.claim, listingPin: PIN, jobId: JOB, time: NOW })).sessionPublicKey).toBe(w.session.raw);
     const text = `{"jobId":"${JOB}"}`;
     const { header } = await signWireRequest({ signer: w.session, delegation, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/payments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW });
     expect((await sellerReceives(w, header, text, true)).buyer).toBe(w.buyer.claim);
   });
 
   it("discovery: the seller's endpoint proof verifies for the Listing's seller and exact endpoint", async () => {
-    const w = world();
+    const w = (await world());
     const payload: DiscoveryPayload = {
       format: "dacs-seller-discovery/v1", profile: w.sellerBinding.profile, seller: w.seller.claim, publicEndpoint: ENDPOINT,
       transport: ["dacs-seller-http/v1"], listings: [PIN], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 300_000,
     };
     const bytes = await signDiscoveryDocument(payload, w.seller, w.sellerBinding, RPC_B);
-    expect(verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: w.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW }).ready).toBe(true);
-    expect(await code(() => verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: w.seller.claim, publicEndpoint: `${ENDPOINT}/`, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW }))).toBe("discovery_endpoint_mismatch");
+    expect((await verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: w.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW })).ready).toBe(true);
+    expect(await code(async () => (await verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: w.seller.claim, publicEndpoint: `${ENDPOINT}/`, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW })))).toBe("discovery_endpoint_mismatch");
   });
 
   it("old-domain and missing or wrong-profile messages fail in both directions", async () => {
-    const w = world();
+    const w = (await world());
     const text = `{"jobId":"${JOB}"}`;
     const { payload } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW });
     const raw = (p: object, domain: string, signer: WireSigner) => Buffer.from(canonicalize({ payload: p, signature: Buffer.from(signer.sign(Buffer.from(`${domain}${canonicalize(p)}`)) as Uint8Array).toString("base64url") })).toString("base64url");
@@ -123,18 +123,18 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
     expect(await code(() => sellerReceives(w, raw(noProfile, DACS_SELLER_HTTP_DOMAINS.request, w.buyer), text))).toBe("tp1_profile_missing");
     // A buyer bound to another (also approved) chain: the seller refuses, and the buyer refuses that seller's answers.
     const other = synthetic("other-chain");
-    const otherBuyer = withTestApproval([digest(other)], () => bindTp1Fixture({ record: other, local: RPC_A }));
+    const otherBuyer = (await withTestApproval([digest(other)], async () => (await bindTp1Fixture({ record: other, local: RPC_A }))));
     const crossed = await signWireRequest({ signer: w.buyer, binding: otherBuyer, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: otherBuyer.profile }, now: NOW });
     expect(await code(() => sellerReceives(w, crossed.header, text))).toBe("tp1_profile_mismatch");
     const answer = '{"status":"committed"}';
     const responseHeader = await signWireResponse(payload, 200, answer, { signer: w.seller, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile });
-    expect(await code(() => verifyWireResponse(crossed.payload, { header: responseHeader, status: 200, body: Buffer.from(answer), now: NOW, binding: otherBuyer, local: RPC_A }))).toBe("tp1_profile_mismatch");
+    expect(await code(async () => (await verifyWireResponse(crossed.payload, { header: responseHeader, status: 200, body: Buffer.from(answer), now: NOW, binding: otherBuyer, local: RPC_A })))).toBe("tp1_profile_mismatch");
     const oldResponse = { ...payload, kind: "response", bodyHash: sha(answer), expiresAt: NOW + 60_000, requestHash: sha(canonicalize(payload)), status: 200 };
-    expect(await code(() => verifyWireResponse(payload, { header: raw(oldResponse, "dacs-chatgpt-plugin:loopback-seller-peer:v1:", w.seller), status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A }))).toBe("peer_signature_invalid");
+    expect(await code(async () => (await verifyWireResponse(payload, { header: raw(oldResponse, "dacs-chatgpt-plugin:loopback-seller-peer:v1:", w.seller), status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A })))).toBe("peer_signature_invalid");
   });
 
   it("the tuple (identifier, revision, base): a missing or other revision is refused in both directions under a valid signature, with no fallback", async () => {
-    const w = world();
+    const w = (await world());
     const text = `{"jobId":"${JOB}"}`;
     const answer = '{"status":"committed"}';
     const job = { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile };
@@ -155,38 +155,37 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
       expect(await code(async () => { await sellerReceives(w, raw({ ...payload, profile }, DACS_SELLER_HTTP_DOMAINS.request, w.buyer), text); effects += 1; }), `seller, ${name}`).toBe(expected);
       // Buyer direction: a seller-signed answer naming it yields no receipt.
       const response = { ...payload, profile, kind: "response", bodyHash: sha(answer), expiresAt: NOW + 60_000, requestHash: sha(canonicalize(payload)), status: 200 };
-      expect(await code(async () => { verifyWireResponse(payload, { header: raw(response, DACS_SELLER_HTTP_DOMAINS.response, w.seller), status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A }); effects += 1; }), `buyer, ${name}`).toBe(expected);
+      expect(await code(async () => { (await verifyWireResponse(payload, { header: raw(response, DACS_SELLER_HTTP_DOMAINS.response, w.seller), status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A })); effects += 1; }), `buyer, ${name}`).toBe(expected);
     }
     expect(effects).toBe(0);
     // A purchase kept under another tuple: the buyer signs nothing; the seller opens nothing, its check refuses
     // the exact-tuple request, and it signs no answer.
     const counting = { claim: w.buyer.claim, calls: 0, sign(b: Uint8Array) { counting.calls += 1; return w.buyer.sign(b); } };
     const sellerCounting = { claim: w.seller.claim, calls: 0, sign(b: Uint8Array) { sellerCounting.calls += 1; return w.seller.sign(b); } };
-    const exactlyOpened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
+    const exactlyOpened = (await openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }));
     for (const keptProfile of [preRevision, { ...payload.profile, revision: "TP-1.1" }]) {
       const purchaseProfile = keptProfile as typeof job.profile;
       expect(await code(() => signWireRequest({ signer: counting, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { ...job, profile: purchaseProfile }, now: NOW }))).toBe("tp1_purchase_profile_mismatch");
-      expect(await code(() => openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile }))).toBe("tp1_purchase_profile_mismatch");
-      expect(await code(() => checkWireRequest(exactlyOpened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile }))).toBe("tp1_purchase_profile_mismatch");
+      expect(await code(async () => (await openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile })))).toBe("tp1_purchase_profile_mismatch");
+      expect(await code(async () => (await checkWireRequest(exactlyOpened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile })))).toBe("tp1_purchase_profile_mismatch");
       expect(await code(() => signWireResponse(payload, 200, answer, { signer: sellerCounting, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile }))).toBe("tp1_purchase_profile_mismatch");
     }
     expect(counting.calls + sellerCounting.calls).toBe(0);
     // The exact tuple, kept or for a new purchase, passes.
     for (const purchaseProfile of [w.sellerBinding.profile, null]) {
-      const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile });
-      expect(await code(() => checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile }))).toBe("ok");
+      const opened = (await openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile }));
+      expect(await code(async () => (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile })))).toBe("ok");
       expect(await code(() => signWireResponse(opened.payload, 200, answer, { signer: sellerCounting, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile }))).toBe("ok");
     }
     expect(sellerCounting.calls).toBe(2);
   });
 
   it("raw-input negatives are refused on the composed paths: no seller effect, no buyer receipt, and no producer signs one", async () => {
-    const w = world();
+    const w = (await world());
     const raw = (p: object, domain: string, signer: WireSigner) => Buffer.from(canonicalize({ payload: p, signature: Buffer.from(signer.sign(Buffer.from(`${domain}${canonicalize(p)}`)) as Uint8Array).toString("base64url") })).toString("base64url");
     const negatives: Array<[string, Buffer, string]> = [
       ["duplicate member", Buffer.from(`{"jobId":"${JOB}","jobId":"${JOB}"}`), "DUPLICATE-MEMBER"],
       ["malformed UTF-8", Buffer.concat([Buffer.from(`{"jobId":"${JOB}","note":"`), Buffer.from([0xc3, 0x28]), Buffer.from('"}')]), "INVALID-UTF8"],
-      ["non-NFC string", Buffer.from(`{"jobId":"${JOB}","note":"café"}`), "WIRE-NON-NFC-STRING"],
       ["invalid number", Buffer.from(`{"jobId":"${JOB}","amount":9007199254740993}`), "NUMBER-OUTSIDE-DACS-MAGNITUDE"],
     ];
     const { payload: good } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text: `{"jobId":"${JOB}"}`, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW });
@@ -194,9 +193,9 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
       // Seller: a correctly signed header binds these exact bytes; only admission can refuse them.
       const request = { ...good, bodyHash: sha256Bytes(bytes) };
       let effects = 0;
-      const seller = () => {
-        const opened = openWireEnvelope(raw(request, DACS_SELLER_HTTP_DOMAINS.request, w.buyer), "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
-        const { body } = checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: bytes, now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
+      const seller = async () => {
+        const opened = (await openWireEnvelope(raw(request, DACS_SELLER_HTTP_DOMAINS.request, w.buyer), "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }));
+        const { body } = (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: bytes, now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }));
         effects += 1;
         return body;
       };
@@ -204,12 +203,12 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
       expect(effects).toBe(0);
       // Buyer: a correctly signed response binds these exact bytes; no receipt is issued.
       const response = { ...good, kind: "response", bodyHash: sha256Bytes(bytes), expiresAt: NOW + 60_000, requestHash: sha(canonicalize(good)), status: 200 };
-      expect(await detailOf(() => verifyWireResponse(good, { header: raw(response, DACS_SELLER_HTTP_DOMAINS.response, w.seller), status: 200, body: bytes, now: NOW, binding: w.buyerBinding, local: RPC_A })), `buyer, ${name}`).toEqual(["response_json_rejected", detail]);
+      expect(await detailOf(async () => (await verifyWireResponse(good, { header: raw(response, DACS_SELLER_HTTP_DOMAINS.response, w.seller), status: 200, body: bytes, now: NOW, binding: w.buyerBinding, local: RPC_A }))), `buyer, ${name}`).toEqual(["response_json_rejected", detail]);
     }
     // Producers apply the same profile to what they sign (malformed UTF-8 cannot be a JS string).
     const counting = { claim: w.buyer.claim, calls: 0, sign(b: Uint8Array) { counting.calls += 1; return w.buyer.sign(b); } };
     const sellerCounting = { claim: w.seller.claim, calls: 0, sign(b: Uint8Array) { sellerCounting.calls += 1; return w.seller.sign(b); } };
-    for (const text of [`{"a":1,"a":2}`, `{"note":"café"}`, `{"amount":9007199254740993}`, "[]"]) {
+    for (const text of [`{"a":1,"a":2}`, `{"amount":9007199254740993}`, "[]"]) {
       expect(await code(() => signWireRequest({ signer: counting, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW }))).toBe("outgoing_body_rejected");
       expect(await code(() => signWireResponse(good, 200, text, { signer: sellerCounting, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile }))).toBe("outgoing_body_rejected");
     }
@@ -217,7 +216,7 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
   });
 
   it("no delegation authenticates or accompanies a seller answer, at any entry point", async () => {
-    const w = world();
+    const w = (await world());
     const text = `{"jobId":"${JOB}"}`;
     const answer = '{"paid":true}';
     const { payload: request } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/payments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW });
@@ -231,28 +230,28 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
     // The buyer's session key signs the answer and the buyer's valid delegation of that key rides along.
     const forged = headerOf(w.session, { delegation });
     const received = { status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A };
-    const openAsResponse = (header: string, options: object) => openWireEnvelope(header, "response", { binding: w.buyerBinding, local: RPC_A, purchaseProfile: request.profile, principal: request.seller, ...options });
+    const openAsResponse = async (header: string, options: object) => (await openWireEnvelope(header, "response", { binding: w.buyerBinding, local: RPC_A, purchaseProfile: request.profile, principal: request.seller, ...options }));
     let receipts = 0;
-    expect(await code(() => { verifyWireResponse(request, { ...received, header: forged }); receipts += 1; })).toBe("peer_envelope_invalid");
+    expect(await code(async () => { (await verifyWireResponse(request, { ...received, header: forged })); receipts += 1; })).toBe("peer_envelope_invalid");
     // A host opening the answer with the exported verifier and requireDelegation set: the delegation is not read.
-    expect(await code(() => { openAsResponse(forged, { requireDelegation: true }); receipts += 1; })).toBe("peer_envelope_invalid");
-    expect(await code(() => { openAsResponse(forged, { requireDelegation: false }); receipts += 1; })).toBe("peer_envelope_invalid");
+    expect(await code(async () => { (await openAsResponse(forged, { requireDelegation: true })); receipts += 1; })).toBe("peer_envelope_invalid");
+    expect(await code(async () => { (await openAsResponse(forged, { requireDelegation: false })); receipts += 1; })).toBe("peer_envelope_invalid");
     // The session-signed answer without the delegation is not the seller's.
-    expect(await code(() => { verifyWireResponse(request, { ...received, header: headerOf(w.session) }); receipts += 1; })).toBe("peer_signature_invalid");
+    expect(await code(async () => { (await verifyWireResponse(request, { ...received, header: headerOf(w.session) })); receipts += 1; })).toBe("peer_signature_invalid");
     // The seller's own answer never meets a delegation requirement, and is opened only under the tuple the request names.
     const genuine = headerOf(w.seller);
-    expect(await code(() => { openAsResponse(genuine, { requireDelegation: true }); receipts += 1; })).toBe("peer_delegation_required");
-    expect(await code(() => { openAsResponse(genuine, { purchaseProfile: null }); receipts += 1; })).toBe("tp1_purchase_profile_mismatch");
+    expect(await code(async () => { (await openAsResponse(genuine, { requireDelegation: true })); receipts += 1; })).toBe("peer_delegation_required");
+    expect(await code(async () => { (await openAsResponse(genuine, { purchaseProfile: null })); receipts += 1; })).toBe("tp1_purchase_profile_mismatch");
     expect(receipts).toBe(0);
     // Controls: the seller's own answer opens and verifies.
-    expect(openAsResponse(genuine, {}).payload.seller).toBe(w.seller.claim);
-    expect(verifyWireResponse(request, { ...received, header: genuine }).principal).toBe(w.seller.claim);
+    expect((await openAsResponse(genuine, {})).payload.seller).toBe(w.seller.claim);
+    expect((await verifyWireResponse(request, { ...received, header: genuine })).principal).toBe(w.seller.claim);
 
     // checkWireRequest takes only an opened request: an answer the seller opened under the same binding is refused
     // before the exchange is compared or a reservation is made.
-    const sellerOpened = openWireEnvelope(genuine, "response", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, principal: w.seller.claim });
+    const sellerOpened = (await openWireEnvelope(genuine, "response", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, principal: w.seller.claim }));
     const reserve = testJournals();
-    expect(await code(() => checkWireRequest(sellerOpened as unknown as Parameters<typeof checkWireRequest>[0], { requestJournal: reserve.open(), retained: { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: response.path, rawBody: Buffer.from(answer), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }))).toBe("peer_request_unverified");
+    expect(await code(async () => (await checkWireRequest(sellerOpened as unknown as Parameters<typeof checkWireRequest>[0], { requestJournal: reserve.open(), retained: { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: response.path, rawBody: Buffer.from(answer), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile })))).toBe("peer_request_unverified");
     expect(reserve.reservations()).toHaveLength(0);
 
     // The generic signer refuses an answer with a delegation before its signer is called; without one it signs.
@@ -265,13 +264,13 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
   });
 
   it("a window above 60 s, or an answer lifetime above 30 s, is refused before any check passes or any signature is made", async () => {
-    const w = world();
+    const w = (await world());
     const signer = { claim: w.seller.claim, calls: 0, sign(b: Uint8Array) { signer.calls += 1; return w.seller.sign(b); } };
     const text = `{"jobId":"${JOB}"}`;
     const { payload, header } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW, lifetimeMs: 30_000 });
-    const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
+    const opened = (await openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }));
     for (const maxLifetimeMs of [120_000, 60_001, 0, 1.5, -1]) {
-      expect(await code(() => checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, maxLifetimeMs }))).toBe("seller_configuration_invalid");
+      expect(await code(async () => (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, maxLifetimeMs })))).toBe("seller_configuration_invalid");
     }
     for (const lifetimeMs of [120_000, 60_000, 30_001, 0, 1.5, -1]) {
       expect(await code(() => signWireResponse(payload, 200, "{}", { signer, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile, lifetimeMs }))).toBe("seller_configuration_invalid");
@@ -282,50 +281,50 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
     }
     expect(signer.calls).toBe(0);
     // 60 s itself stays allowed, as in the plugin.
-    expect(await code(() => checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, maxLifetimeMs: 60_000 }))).toBe("ok");
+    expect(await code(async () => (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, maxLifetimeMs: 60_000 })))).toBe("ok");
   });
 });
 
 describe("the buyer's delegated session signer (signWireRequest)", () => {
   const text = `{"jobId":"${JOB}"}`;
   const counted = (signer: WireSigner) => ({ claim: signer.claim, calls: 0, sign(bytes: Uint8Array) { this.calls++; return signer.sign(bytes); } });
-  async function delegated(w: ReturnType<typeof world>, notBefore: number, expiresAt: number) {
+  async function delegated(w: Awaited<ReturnType<typeof world>>, notBefore: number, expiresAt: number) {
     return signSellerSessionDelegation({ version: "1", kind: "seller-session-delegation", buyer: w.buyer.claim, sessionPublicKey: w.session.raw,
       seller: w.seller.claim, listingPin: PIN, jobId: JOB, notBefore, expiresAt, profile: w.buyerBinding.profile }, w.buyer, w.buyerBinding, RPC_A);
   }
-  const input = (w: ReturnType<typeof world>, signer: WireSigner, delegation: unknown, change: Record<string, unknown> = {}) => ({
+  const input = (w: Awaited<ReturnType<typeof world>>, signer: WireSigner, delegation: unknown, change: Record<string, unknown> = {}) => ({
     signer, delegation, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/payments", jobId: JOB, text, seller: w.seller.claim,
     job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW, ...change,
   }) as Parameters<typeof signWireRequest>[0];
-  const sellerCheck = (w: ReturnType<typeof world>, header: string) => {
-    const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true });
-    return checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim },
+  const sellerCheck = async (w: Awaited<ReturnType<typeof world>>, header: string) => {
+    const opened = (await openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true }));
+    return (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim },
       seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW,
-      binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, signedListing: received(LISTING) });
+      binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: w.sellerBinding.profile.chainIdentity }), signedListing: received(LISTING) }));
   };
 
   it("clamps a live request's expiry to its delegation's, and the seller accepts it", async () => {
-    const w = world(), session = counted(w.session), delegation = await delegated(w, NOW - 1000, NOW + 10_000);
+    const w = (await world()), session = counted(w.session), delegation = await delegated(w, NOW - 1000, NOW + 10_000);
     const { payload, header } = await signWireRequest(input(w, session, delegation));
     expect(payload.expiresAt).toBe(NOW + 10_000);
     expect(payload.buyer).toBe(w.buyer.claim);
-    expect(sellerCheck(w, header)).toEqual({ body: { jobId: JOB }, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
+    expect((await sellerCheck(w, header))).toEqual({ body: { jobId: JOB }, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
     // With room before the delegation expires, the request keeps its own lifetime.
     const later = await delegated(w, NOW - 1000, NOW + 3_600_000);
     expect((await signWireRequest(input(w, session, later, { lifetimeMs: 20_000 }))).payload.expiresAt).toBe(NOW + 20_000);
   });
 
   it("signs readback under an expired delegation with its own lifetime; the seller allows read routes only", async () => {
-    const w = world(), session = counted(w.session), delegation = await delegated(w, NOW - 120_000, NOW - 1000);
+    const w = (await world()), session = counted(w.session), delegation = await delegated(w, NOW - 120_000, NOW - 1000);
     const read = await signWireRequest(input(w, session, delegation, { path: "/dacs/v1/agreements/state" }));
     expect(read.payload.expiresAt).toBe(NOW + 30_000);
-    expect(sellerCheck(w, read.header)).toEqual({ body: { jobId: JOB }, readbackOnly: true, effect: null });
+    expect((await sellerCheck(w, read.header))).toEqual({ body: { jobId: JOB }, readbackOnly: true, effect: null });
     const effect = await signWireRequest(input(w, session, delegation));
-    expect(await code(() => sellerCheck(w, effect.header))).toBe("peer_delegation_expired");
+    expect(await code(async () => (await sellerCheck(w, effect.header)))).toBe("peer_delegation_expired");
   });
 
   it("refuses a job deadline before the delegation expires, with zero signatures", async () => {
-    const w = world(), session = counted(w.session), delegation = await delegated(w, NOW - 1000, NOW + 3_600_000);
+    const w = (await world()), session = counted(w.session), delegation = await delegated(w, NOW - 1000, NOW + 3_600_000);
     const job = { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile, deadline: NOW + 1000 };
     expect(await code(() => signWireRequest(input(w, session, delegation, { job })))).toBe("peer_delegation_deadline");
     expect(session.calls).toBe(0);
@@ -335,13 +334,13 @@ describe("the buyer's delegated session signer (signWireRequest)", () => {
     ["a zero lifetime", { lifetimeMs: 0 }], ["a lifetime over 60 s", { lifetimeMs: 60_001 }], ["a lifetime over 30 s", { lifetimeMs: 30_001 }], ["a fractional lifetime", { lifetimeMs: 1.5 }],
     ["an invalid seller", { seller: "did:demos:agent:not-a-key" }],
   ])("refuses %s as a TypeError, with zero signatures", async (_name, change) => {
-    const w = world(), session = counted(w.session), delegation = await delegated(w, NOW - 1000, NOW + 3_600_000);
+    const w = (await world()), session = counted(w.session), delegation = await delegated(w, NOW - 1000, NOW + 3_600_000);
     await expect(signWireRequest(input(w, session, delegation, change))).rejects.toThrow(new TypeError("buyer transport configuration is invalid"));
     expect(session.calls).toBe(0);
   });
 
   it("refuses a signer whose claim is not the delegated session key, with zero signatures", async () => {
-    const w = world(), wallet = counted(w.buyer), delegation = await delegated(w, NOW - 1000, NOW + 3_600_000);
+    const w = (await world()), wallet = counted(w.buyer), delegation = await delegated(w, NOW - 1000, NOW + 3_600_000);
     await expect(signWireRequest(input(w, wallet, delegation))).rejects.toThrow(new TypeError("session signing key differs from the buyer delegation"));
     expect(wallet.calls).toBe(0);
   });
@@ -351,3 +350,15 @@ const sha256Bytes = (bytes: Uint8Array) => createHash("sha256").update(bytes).di
 const detailOf = async (fn: () => unknown) => {
   try { await fn(); return ["ok"]; } catch (error) { if (error instanceof WireError) return [error.code, error.detail]; throw error; }
 };
+
+
+it("preserves decomposed body strings through composed request and response transport", async () => {
+  const w = await world();
+  const text = `{"jobId":"${JOB}","note":"e\u0301"}`;
+  const sent = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB,
+    text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now: NOW });
+  const received = await sellerReceives(w, sent.header, text);
+  const answer = '{"note":"e\u0301"}';
+  const header = await signWireResponse(received, 200, answer, { signer: w.seller, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile });
+  expect((await verifyWireResponse(sent.payload, { header, status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A })).body.note).toBe("e\u0301");
+});
