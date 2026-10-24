@@ -12,12 +12,13 @@ import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
-import { isSettlementEvidence } from "../../src/artifacts/validators.js";
+import { isListing, isSettlementEvidence } from "../../src/artifacts/validators.js";
 import type {
   IdentityBundle,
+  ListingDraft,
   SettlementFinalityParameters,
 } from "../../src/artifacts/types.js";
-import { canonicalize } from "../../src/canonical/index.js";
+import { canonicalize, contentHash } from "../../src/canonical/index.js";
 import { deriveX402ReceiptCommitment } from "../../src/seller/x402Receipt.js";
 import {
   ed25519Sign,
@@ -2001,12 +2002,48 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 vi.mock("../../src/rails/payDemExecutionAuthority.js", async () =>
   import("../support/payDemExecutionAuthority.js"));
 
-async function nativeAuditFixture(anchorCommitted = false) {
+async function nativeAuditFixture(anchorCommitted = false, normative = false) {
   const store = createInMemorySessionStore();
   const kv = new Map<string, Record<string, unknown>>();
-  kv.set("stor:listing", await buildSignedArtifact({ ...listing, supportedPaymentRails: ["pay-dem"] },
-    ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
-  const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+  const rail = normative ? "demos-native:DEM" : "pay-dem";
+  if (normative) {
+    const draft: ListingDraft = {
+      dacsVersion: "1", listingVersion: 1, listingId: "native-fence",
+      seller: {
+        identity: {
+          bundleVersion: "1", presentedBy: sellerDid, presentedAt: 1780000000000,
+          claims: [{ ref: sellerDid }],
+          presentation: { kind: "per-claim", signatures: [{ ref: sellerDid, signature: "presentation" }] },
+        },
+        displayName: "Native seller",
+      },
+      offering: {
+        title: "Native fence", description: "Native session publication", category: "data.test", tags: [],
+        deliverable: { kind: "storage-program", accessModel: "public" },
+      },
+      buyerRequirement: { requirementVersion: "1", required: [] },
+      pipeline: [
+        { kind: "negotiate-fixed-price" }, { kind: "commit-agreement" },
+        { kind: "pay-dem", parameters: { rail } }, { kind: "deliver-storage-program" },
+      ],
+      pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
+      acceptedRails: [{ railId: rail }],
+      terms: { deadlineSecAfterCommit: 3600 }, validity: { notBefore: 1770000000000 },
+    };
+    kv.set("stor:listing", await signComponentArtifact(draft, ARTIFACT_SEPARATORS.Listing, {
+      algorithm: "ed25519", signer: sellerDid, sign,
+    }));
+  } else {
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing, supportedPaymentRails: [rail] },
+      ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+  }
+  const validateListing: NonNullable<SessionDeps["validateListing"]> = (raw) => {
+    if (!isListing(raw)) throw new Error("expected native normative listing");
+    return { disposition: "verified", step: 9, reason: "fixture admission",
+      listing: raw, listingContentHash: contentHash(raw) };
+  };
+  const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail },
+    deliveryPhase: normative ? "deliver-storage-program" : terms.deliveryPhase };
   const payer = "ab".repeat(32);
   const payee = sellerDid.slice("did:demos:agent:".length);
   const txHash = "cd".repeat(32);
@@ -2027,8 +2064,9 @@ async function nativeAuditFixture(anchorCommitted = false) {
       return ref;
     },
   });
+  first.deps.validateListing = validateListing;
   await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("audit fixture crash");
-  return { store, kv, demTerms, success, failure };
+  return { store, kv, demTerms, success, failure, validateListing };
 }
 
 function legacyNativeStore(store: NonNullable<SessionDeps["sessionStore"]>, unbound = false) {
@@ -2100,8 +2138,8 @@ test("rejects an indeterminate audit of an unbound legacy success before checkpo
   expect(await settlementCheckpoints(f.store)).toEqual(before);
 });
 
-test("holds the native session fence while success evidence is being anchored", async () => {
-  const f = await nativeAuditFixture();
+test.each([false, true])("holds the native session fence while success evidence is being anchored normative=%s", async (normative) => {
+  const f = await nativeAuditFixture(false, normative);
   let competingWrite: Awaited<ReturnType<typeof f.store.transition>> | undefined;
   const resumed = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.success,
     anchor: async (name, value) => {
@@ -2123,6 +2161,7 @@ test("holds the native session fence while success evidence is being anchored", 
       return ref;
     },
   });
+  resumed.deps.validateListing = f.validateListing;
   await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
     .resolves.toMatchObject({ outcome: "completed" });
   expect(competingWrite).toMatchObject({ ok: false, reason: "lease-held" });
