@@ -375,7 +375,7 @@ export async function consume(artifacts, scratch, log = console.log, options = {
   if (nativeVersion) {
     try { await lstat(join(consumer, "node_modules/better-sqlite3")); fail("optional native dependency unexpectedly installed"); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
-    await consumeImports(consumer, artifacts, log, (artifact, entry) => artifact.manifest.name === "@kynesyslabs/dacs-node" && entry.subpath !== "./sqlite");
+    await consumeImports(consumer, artifacts, log, (artifact, entry) => !(artifact.manifest.name === "@kynesyslabs/dacs-node" && entry.subpath === "./sqlite"));
     execute("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional", "--save-exact", `better-sqlite3@${nativeVersion}`], consumer);
     await retainConsumerReceipt(consumer, artifacts, options.outputDirectory, "with-native");
     validateLock(JSON.parse(await readFile(join(consumer, "package-lock.json"))), artifactResolutions, consumer, true);
@@ -466,8 +466,8 @@ export async function checkGenerator(consumer, artifacts, log = console.log) {
       if (packages.some(d => d.name === name) && spec !== versions[name]) fail(`generated dependency mismatch: ${mode} ${name}`);
       if (name === "better-sqlite3" && spec !== nativeVersion) fail(`generated native dependency mismatch: ${mode} ${name}`);
     }
-    if (mode === "live-demos" && (p.dependencies?.["better-sqlite3"] !== nativeVersion ||
-        nativeVersion !== undefined && (typeof nativeVersion !== "string" || semver.valid(nativeVersion) !== nativeVersion)))
+    if (mode === "live-demos" && (typeof nativeVersion !== "string" || semver.valid(nativeVersion) !== nativeVersion ||
+        p.dependencies?.["better-sqlite3"] !== nativeVersion))
       fail(`generated native dependency mismatch: ${mode} better-sqlite3`);
     log(`generator pins verified: ${mode}`);
   }
@@ -505,7 +505,7 @@ export async function release(mode, options = {}) {
     if (mode === "check") for (const a of result.artifacts) if (a.manifest.version !== plannedVersion)
       result.notReady.push(`${a.manifest.name}: planned release version ${plannedVersion}, got ${a.manifest.version}`);
     for (const reason of result.notReady) log(`not ready: ${reason}`);
-    try { if (mode === "dry-run") await dryRun(result.artifacts, log); else await consume(result.artifacts.filter(a => a.releasable), scratch, log, { outputDirectory }); }
+    try { if (mode === "dry-run") await dryRun(result.artifacts, log); else await consume(result.artifacts.filter(a => a.releasable), scratch, log, { outputDirectory, execute: options.execute }); }
     catch (error) { result.errors.push(error.message); }
     if (mode === "check") try { validateArtifactSet(result.artifacts, true); }
     catch (error) { result.errors.push(error.message); }
