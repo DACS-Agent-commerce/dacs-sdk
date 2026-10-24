@@ -12,11 +12,17 @@ import { assertSellerSessionLifetime } from '../public/portal/seller-session-lim
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
 export const SELLER_TRANSPORT_MAX_RESPONSE = 512 * 1024;
+const MAX_TRANSPORT_LIFETIME_MS = 60_000;
+const MAX_TRANSPORT_HEADER_CHARS = 4096;
+const DEFAULT_TRANSPORT_LIFETIME_MS = 30_000;
 const DOMAIN = 'dacs-chatgpt-plugin:loopback-seller-peer:v1:';
 const DELEGATION_DOMAIN = 'dacs-chatgpt-plugin:seller-session-delegation:v1:';
 const HASH = /^[0-9a-f]{64}$/;
 const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
 const NONCE = /^[A-Za-z0-9_-]{22,86}$/;
+const isHash = value => typeof value === 'string' && HASH.test(value);
+const isClaim = value => typeof value === 'string' && CLAIM.test(value);
+const isNonce = value => typeof value === 'string' && NONCE.test(value);
 const PROPOSAL = '/dacs/v1/agreements/proposals';
 const STATE = '/dacs/v1/agreements/state';
 const PAYMENT = '/dacs/v1/payments';
@@ -52,7 +58,7 @@ export class SellerTransportError extends Error {
 function pinValid(pin) {
   return keys(pin, ['listingId', 'version', 'contentHash']) &&
     typeof pin.listingId === 'string' && pin.listingId.length > 0 && pin.listingId.length <= 256 &&
-    uint(pin.version) && pin.version > 0 && typeof pin.contentHash === 'string' && HASH.test(pin.contentHash);
+    uint(pin.version) && pin.version > 0 && typeof pin.contentHash === 'string' && isHash(pin.contentHash);
 }
 
 function payloadValid(p, kind) {
@@ -60,10 +66,10 @@ function payloadValid(p, kind) {
   if (kind === 'response') fields.push('requestHash', 'status');
   return ['request', 'response'].includes(kind) && keys(p, fields) && p.version === '1' && p.kind === kind && p.method === 'POST' &&
     typeof p.path === 'string' && /^\/dacs\/v1\/[a-z/-]+$/.test(p.path) && p.path.length <= 160 &&
-    HASH.test(p.bodyHash) && isCanonicalJobId(p.jobId) && CLAIM.test(p.buyer) && CLAIM.test(p.seller) && p.buyer !== p.seller &&
-    pinValid(p.listingPin) && HASH.test(p.agreementHash) && NONCE.test(p.nonce) &&
+    isHash(p.bodyHash) && isCanonicalJobId(p.jobId) && isClaim(p.buyer) && isClaim(p.seller) && p.buyer !== p.seller &&
+    pinValid(p.listingPin) && isHash(p.agreementHash) && isNonce(p.nonce) &&
     Buffer.from(p.nonce, 'base64url').toString('base64url') === p.nonce && uint(p.expiresAt) &&
-    (kind !== 'response' || (HASH.test(p.requestHash) && uint(p.status) && p.status >= 200 && p.status <= 599));
+    (kind !== 'response' || (isHash(p.requestHash) && uint(p.status) && p.status >= 200 && p.status <= 599));
 }
 
 /** Return the exact envelope signing bytes; throw on malformed payloads. */
@@ -90,7 +96,7 @@ async function signedHeader(payload, signer, delegation) {
 // A delegation is read only when the seller is configured for delegated
 // sessions; otherwise the envelope keeps the exact pre-delegation shape.
 function verifiedHeader(header, kind, principal, { requireDelegation = false, onDelegation } = {}) {
-  if (typeof header !== 'string' || header.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(header)) fail('peer_envelope_invalid');
+  if (typeof header !== 'string' || header.length > MAX_TRANSPORT_HEADER_CHARS || !/^[A-Za-z0-9_-]+$/.test(header)) fail('peer_envelope_invalid');
   const bytes = Buffer.from(header, 'base64url');
   if (bytes.toString('base64url') !== header) fail('peer_envelope_invalid');
   let envelope;
@@ -119,8 +125,8 @@ function publicKeyFor(raw) {
 /** Return delegation signing bytes; throw on invalid scope or lifetime. */
 export function sellerSessionDelegationSigningBytes(payload) {
   if (!keys(payload, ['version', 'kind', 'buyer', 'sessionPublicKey', 'seller', 'listingPin', 'jobId', 'notBefore', 'expiresAt']) ||
-      payload.version !== '1' || payload.kind !== 'seller-session-delegation' || typeof payload.buyer !== 'string' || typeof payload.seller !== 'string' || !CLAIM.test(payload.buyer) || !CLAIM.test(payload.seller) ||
-      payload.buyer === payload.seller || typeof payload.sessionPublicKey !== 'string' || !HASH.test(payload.sessionPublicKey) || !pinValid(payload.listingPin) || !isCanonicalJobId(payload.jobId) ||
+      payload.version !== '1' || payload.kind !== 'seller-session-delegation' || typeof payload.buyer !== 'string' || typeof payload.seller !== 'string' || !isClaim(payload.buyer) || !isClaim(payload.seller) ||
+      payload.buyer === payload.seller || typeof payload.sessionPublicKey !== 'string' || !isHash(payload.sessionPublicKey) || !pinValid(payload.listingPin) || !isCanonicalJobId(payload.jobId) ||
       !uint(payload.notBefore) || !uint(payload.expiresAt) || payload.expiresAt <= payload.notBefore) fail('peer_delegation_invalid');
   try { assertSellerSessionLifetime(payload.expiresAt-payload.notBefore); } catch { fail('peer_delegation_invalid'); }
   return Buffer.from(`${DELEGATION_DOMAIN}${canonicalize(payload)}`, 'utf8');
@@ -154,7 +160,7 @@ export function verifySellerSessionDelegation(delegation, { buyer, seller, listi
 }
 
 function checkSigner(signer) {
-  if (!CLAIM.test(signer?.claim) || typeof signer.sign !== 'function') throw new Error('a separate Demos Ed25519 signing callback is required');
+  if (!isClaim(signer?.claim) || typeof signer.sign !== 'function') throw new Error('a separate Demos Ed25519 signing callback is required');
 }
 
 function requestIdentity(p) {
@@ -596,29 +602,35 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
 }
 
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
-export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = 60000, requireDelegation = false }) {
+export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = MAX_TRANSPORT_LIFETIME_MS, requireDelegation = false }) {
   checkSigner(sellerSigner);
-  if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > 60000) throw new Error('seller transport configuration is invalid');
+  if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > MAX_TRANSPORT_LIFETIME_MS) throw new Error('seller transport configuration is invalid');
   if (typeof requireDelegation !== 'boolean' || (requireDelegation && store.journaledOnlyReserve !== true)) throw new Error('seller delegation configuration is invalid');
   const delegations = new WeakMap();
   const authenticatedRequests = new WeakMap();
-  // Requests authenticated by an expired delegation; the store admits them
-  // only for readback of effects already journaled for the job.
+  // Expired request or delegation: only read back effects already journaled for the job.
   const readbackOnly = new WeakSet();
+  const isReadbackOnly = (request) => {
+    if (!authenticatedRequests.has(request)) fail('peer_request_unauthenticated');
+    const time = now();
+    if (!uint(time) || request.expiresAt <= time || delegations.get(request)?.payload.expiresAt <= time) readbackOnly.add(request);
+    return readbackOnly.has(request);
+  };
+  const refuseExpired = request => fail(delegations.get(request)?.payload.expiresAt <= now() ? 'peer_delegation_expired' : 'peer_expired', 408);
   const guardedStore = Object.freeze({
     bind: (value) => store.bind(value),
-    issueContextChallenge: (request, ...args) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.issueContextChallenge(request, ...args),
-    attemptContextPresentation: (request, ...args) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.attemptContextPresentation(request, ...args),
-    reserve: (request, body, options = {}) => store.reserve(request, body, readbackOnly.has(request) ? { ...options, journaledOnly: true } : options),
-    ...(typeof store.classify === 'function' ? { classify: (request, body, options = {}) => store.classify(request, body, readbackOnly.has(request) ? { ...options, journaledOnly: true } : options) } : {}),
+    issueContextChallenge: (request, ...args) => isReadbackOnly(request) ? refuseExpired(request) : store.issueContextChallenge(request, ...args),
+    attemptContextPresentation: (request, ...args) => isReadbackOnly(request) ? refuseExpired(request) : store.attemptContextPresentation(request, ...args),
+    reserve: (request, body, options = {}) => store.reserve(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options),
+    ...(typeof store.classify === 'function' ? { classify: (request, body, options = {}) => store.classify(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options) } : {}),
     ...(typeof store.contextAdmission === 'function' ? { contextAdmission: (jobId) => store.contextAdmission(jobId) } : {}),
     ...(typeof store.contextAnswer === 'function' ? { contextAnswer: (jobId) => store.contextAnswer(jobId) } : {}),
     finish: (...args) => store.finish(...args),
     // Handing an effect back to the retry, or releasing it, lets a later claim run it: never for an expired delegation.
-    ...(typeof store.reconcile === 'function' ? { reconcile: (reservation, request, status, text, options = {}) => readbackOnly.has(request) && (options.retry || options.noEffect)
-      ? fail('peer_delegation_expired', 408) : store.reconcile(reservation, request, status, text, options) } : {}),
+    ...(typeof store.reconcile === 'function' ? { reconcile: (reservation, request, status, text, options = {}) => isReadbackOnly(request) && (options.retry || options.noEffect)
+      ? refuseExpired(request) : store.reconcile(reservation, request, status, text, options) } : {}),
     // Running a step again is new work: never for an expired delegation.
-    ...(typeof store.resume === 'function' ? { resume: (reservation, request) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.resume(reservation, request) } : {}),
+    ...(typeof store.resume === 'function' ? { resume: (reservation, request) => isReadbackOnly(request) ? refuseExpired(request) : store.resume(reservation, request) } : {}),
     close: () => store.close?.(),
   });
   const pin = clone(listingPin);
@@ -626,11 +638,11 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   return {
     seller: sellerSigner.claim,
     listingPin: pin,
-    store: requireDelegation ? guardedStore : store,
+    store: guardedStore,
     requireDelegation,
-    // True for a request its expired session delegation admits only to read
-    // back already journaled effects: its reconciliation runs read only.
-    readbackOnly: (request) => readbackOnly.has(request),
+    // True when request or delegation expiry permits only journaled readback;
+    // reconciliation may complete retained work but cannot start an effect.
+    readbackOnly: isReadbackOnly,
     readRequest(header) {
       const request = verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) });
       authenticatedRequests.set(request, canonicalize(request));
@@ -694,14 +706,14 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
 // public delegation. Legacy fixtures may supply their own buyer signer.
 // resolveJob comes from the approved Agreement, never an HTTP response.
 /** Create signed requests and bound response verification; throw on invalid configuration. */
-export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, delegation, seller, resolveJob, now = () => Date.now(), lifetimeMs = 30000, nonce = () => randomBytes(24).toString('base64url') }) {
+export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, delegation, seller, resolveJob, now = () => Date.now(), lifetimeMs = DEFAULT_TRANSPORT_LIFETIME_MS, nonce = () => randomBytes(24).toString('base64url') }) {
   const signing = sessionSigner ?? buyerSigner;
   checkSigner(signing);
   if (sessionSigner && (buyerSigner || !delegation || signing.claim !== `did:demos:agent:${delegation.payload?.sessionPublicKey}`)) throw new Error('session signing key differs from the buyer delegation');
   if (!sessionSigner && delegation) throw new Error('a delegated request needs a session signing key');
   const buyer = sessionSigner ? verifySellerSessionDelegation(delegation).buyer : buyerSigner.claim;
   const retainedDelegation = delegation ? clone(delegation) : null;
-  if (!CLAIM.test(seller) || seller === buyer || typeof resolveJob !== 'function' || !uint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > 60000) throw new Error('buyer transport configuration is invalid');
+  if (!isClaim(seller) || seller === buyer || typeof resolveJob !== 'function' || !uint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > MAX_TRANSPORT_LIFETIME_MS) throw new Error('buyer transport configuration is invalid');
   return {
     async request(path, body, text) {
       if (!record(body)) fail('peer_body_invalid', 409);
@@ -723,7 +735,7 @@ export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, de
       const { kind: requestKind, bodyHash: requestBodyHash, expiresAt: requestExpiry, ...expected } = request;
       const time = now();
       if (!exact(identity, expected) || requestHash !== sha256Hex(canonicalize(request)) || signedStatus !== status ||
-          bodyHash !== sha256Hex(text) || !uint(time) || expiresAt <= time || expiresAt > time + 60000) fail('peer_response_mismatch');
+          bodyHash !== sha256Hex(text) || !uint(time) || expiresAt <= time || expiresAt > time + MAX_TRANSPORT_LIFETIME_MS) fail('peer_response_mismatch');
       return { principal: seller, audience: buyer, messageId: request.nonce, messageHash: requestHash, authenticationHash: sha256Hex(header) };
     },
   };
