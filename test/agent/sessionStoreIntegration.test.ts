@@ -17,6 +17,7 @@ import type {
   IdentityBundle,
   SettlementFinalityParameters,
 } from "../../src/artifacts/types.js";
+import { canonicalize } from "../../src/canonical/index.js";
 import { deriveX402ReceiptCommitment } from "../../src/seller/x402Receipt.js";
 import {
   ed25519Sign,
@@ -1153,8 +1154,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         },
       });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("checkpoint crash");
+      // This fixture represents receipts written before execution authentication existed.
       const resumeStore = saved === "anchor only" ? undefined : saved === "anchored evidence"
-        ? createInMemorySessionStore() : store;
+        ? createInMemorySessionStore() : legacyNativeStore(store);
       const legacyStore = saved === "legacy checkpoint" ? { ...store, load: async (jobId: string) => {
         const loaded = await store.load(jobId);
         if (loaded.status === "ok") {
@@ -1197,7 +1199,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
             .rejects.toBe(missingJournal);
         }
-        expect(await store.load("job-1")).toEqual(before);
+        if (before.status === "ok") {
+          expect(await settlementCheckpoints(store)).toEqual(before.record.checkpoints.filter((cp) => cp.key === "settle:0"));
+        } else {
+          expect(await store.load("job-1")).toEqual(before);
+        }
         expect([...kv]).toEqual(beforeEvidence);
       } else if (saved.startsWith("anchor")) {
         await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
@@ -1270,7 +1276,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     for (let repeat = 0; repeat < 2; repeat += 1) {
       await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
         .rejects.toThrow(/conflicts with the rail outcome|different.*transaction/);
-      expect(await store.load("job-1")).toEqual(before);
+      expect(await settlementCheckpoints(store)).toEqual(before.status === "ok" && before.record.checkpoints.filter((cp) => cp.key === "settle:0"));
       expect([...kv]).toEqual(beforeEvidence);
     }
     expect(once).not.toHaveBeenCalled();
@@ -1280,7 +1286,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
   });
 
   test.each(["checkpoint", "anchored evidence"].flatMap((saved) =>
-    ["absent", "indeterminate", "timeout", "hash", "network", "payer", "payee", "block", "fee", "proof amount", "stale success", "missing reconciler"]
+    ["absent", "indeterminate", "timeout", "hash", "network", "payer", "payee", "block", "fee", "proof amount", "missing reconciler"]
       .map((reply) => ({ saved, reply }))),
   )("withholds saved native success from $saved on $reply without a second debit", async ({ saved, reply }) => {
     const store = createInMemorySessionStore();
@@ -1307,19 +1313,6 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       resumeSettlement: async (): Promise<SettleResult> => {
         reconciliations += 1;
         if (reply === "timeout") throw new Error("chain observation timed out");
-        if (reply === "stale success") {
-          const loaded = await store.load("job-1");
-          if (loaded.status !== "ok") throw new Error("missing session");
-          const original = loaded.record.checkpoints.find((cp) => cp.stage === "outcome")!.data!;
-          const { finalityModel: _model, ...binding } = original;
-          await store.transition({ jobId: "job-1", expectedRevision: loaded.record.revision,
-            phase: "failed", now: 1780000000001, checkpoint: { key: "settle:0", stage: "outcome", data: {
-              ...binding, ok: false, errorClass: "permanent", failureProofJson: JSON.stringify({
-                kind: "demos-failed-record", txHash: success.txHash, payer: success.payer,
-                payee: sellerDid.split(":").at(-1)!, nonce: 9, blockNumber: 42, amountOs: "1000000000",
-              }),
-            } } });
-        }
         if (reply === "proof amount") return { ok: false, txHash: success.txHash, chainId: success.chainId,
           payer: success.payer, payee: success.payee, blockNumber: 42, txRefKind: "demos",
           errorClass: "permanent", failureProof: { kind: "demos-failed-record", txHash: success.txHash,
@@ -1341,12 +1334,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(reconciliations).toBe(reply === "missing reconciler" ? 0 : 1);
     expect(resumed.settleCalls.n).toBe(0);
     const after = await store.load("job-1");
-    if (reply === "stale success") {
-      expect(after.status === "ok" && after.record.checkpoints.at(-1)?.data)
-        .toMatchObject({ ok: false, errorClass: "permanent" });
-    } else {
-      expect(after.status === "ok" && after.record.checkpoints).toEqual(before.status === "ok" && before.record.checkpoints);
-    }
+    expect(after.status === "ok" && after.record.checkpoints).toEqual(before.status === "ok" && before.record.checkpoints);
     if (saved === "checkpoint") expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
   });
 
@@ -2012,3 +2000,243 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 // These session tests exercise recovery with injected settlement capabilities.
 vi.mock("../../src/rails/payDemExecutionAuthority.js", async () =>
   import("../support/payDemExecutionAuthority.js"));
+
+async function nativeAuditFixture(anchorCommitted = false) {
+  const store = createInMemorySessionStore();
+  const kv = new Map<string, Record<string, unknown>>();
+  kv.set("stor:listing", await buildSignedArtifact({ ...listing, supportedPaymentRails: ["pay-dem"] },
+    ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+  const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+  const payer = "ab".repeat(32);
+  const payee = sellerDid.slice("did:demos:agent:".length);
+  const txHash = "cd".repeat(32);
+  const success: SettleResult = { ok: true, txHash, chainId: "demos", payer,
+    payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
+  const failure: SettleResult = { ok: false, txHash, chainId: "demos", payer,
+    payee: sellerDid, blockNumber: 42, txRefKind: "demos", errorClass: "permanent",
+    failureProof: { kind: "demos-failed-record", txHash, payer, payee,
+      nonce: 9, blockNumber: 42, amountOs: "1000000000" } };
+  const first = await makeDeps(store, { kv, settle: async () => success,
+    anchor: async (name, value) => {
+      const ref = `stor:${name}`;
+      if (name === sessionAnchorName.evidence("job-1")) {
+        if (anchorCommitted) kv.set(ref, value as Record<string, unknown>);
+        throw new Error("audit fixture crash");
+      }
+      kv.set(ref, value as Record<string, unknown>);
+      return ref;
+    },
+  });
+  await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("audit fixture crash");
+  return { store, kv, demTerms, success, failure };
+}
+
+function legacyNativeStore(store: NonNullable<SessionDeps["sessionStore"]>, unbound = false) {
+  return { ...store, load: async (jobId: string) => {
+    const loaded = await store.load(jobId);
+    if (loaded.status === "ok") {
+      for (const cp of loaded.record.checkpoints) {
+        if (cp.key !== "settle:0" || cp.stage !== "outcome" || !cp.data) continue;
+        delete cp.data.executionAuthenticated;
+        if (unbound) {
+          const { txHash, chainId } = cp.data;
+          if (typeof txHash !== "string" || typeof chainId !== "string") throw new Error("missing legacy identity");
+          cp.data = { ok: true, txHash, chainId };
+        }
+      }
+    }
+    return loaded;
+  } };
+}
+
+async function settlementCheckpoints(store: NonNullable<SessionDeps["sessionStore"]>) {
+  const loaded = await store.load("job-1");
+  if (loaded.status !== "ok") throw new Error("missing audit session");
+  return loaded.record.checkpoints.filter((cp) => cp.key === "settle:0");
+}
+
+test.each([false, true])("refuses demotion of authenticated native execution after a prior audit=%s", async (auditFirst) => {
+  const f = await nativeAuditFixture();
+  if (auditFirst) {
+    const audit = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.success,
+      anchor: async () => { throw new Error("second anchor crash"); } });
+    await expect(runSessionCore(audit.listingRef, f.demTerms, audit.deps, "job-1"))
+      .rejects.toThrow("second anchor crash");
+  }
+  const before = await settlementCheckpoints(f.store);
+  const resumed = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.failure });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .rejects.toThrow(/conflicts|contradict/);
+  expect(await settlementCheckpoints(f.store)).toEqual(before);
+});
+
+test("audits anchored legacy success without persisting a contradictory failure", async () => {
+  const f = await nativeAuditFixture(true);
+  const before = await settlementCheckpoints(f.store);
+  const resumed = await makeDeps(legacyNativeStore(f.store), { kv: f.kv,
+    resumeSettlement: async () => f.failure });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .rejects.toThrow(/success evidence.*execution|execution.*success evidence/);
+  expect(await settlementCheckpoints(f.store)).toEqual(before);
+});
+
+test.each(["block", "kind"])("refuses an anchor-only audit with a conflicting %s", async (change) => {
+  const f = await nativeAuditFixture(true);
+  const resumed = await makeDeps(undefined, { kv: f.kv, resumeSettlement: async () => ({
+    ...f.success, ...(change === "block" ? { blockNumber: 43 } : { txRefKind: "payment" }),
+  }) });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .rejects.toThrow(/success evidence.*execution|execution.*success evidence/);
+});
+
+test("rejects an indeterminate audit of an unbound legacy success before checkpoint writes", async () => {
+  const f = await nativeAuditFixture();
+  const before = await settlementCheckpoints(f.store);
+  const { finality: _finality, ...ambiguous } = f.success;
+  const resumed = await makeDeps(legacyNativeStore(f.store, true), { kv: f.kv,
+    resumeSettlement: async () => ({ ...ambiguous, ok: false }) });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .rejects.toThrow(/indeterminate|conflicts/);
+  expect(await settlementCheckpoints(f.store)).toEqual(before);
+});
+
+test("holds the native session fence while success evidence is being anchored", async () => {
+  const f = await nativeAuditFixture();
+  let competingWrite: Awaited<ReturnType<typeof f.store.transition>> | undefined;
+  const resumed = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.success,
+    anchor: async (name, value) => {
+      if (name === sessionAnchorName.evidence("job-1")) {
+        const loaded = await f.store.load("job-1");
+        if (loaded.status !== "ok") throw new Error("missing session");
+        const cp = loaded.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
+        if (!cp?.data) throw new Error("missing settlement");
+        const data: Record<string, string | number | boolean> = { ...cp.data, ok: false, errorClass: "permanent",
+          failureProofJson: canonicalize(f.failure.failureProof) };
+        delete data.finalityModel;
+        delete data.executionAuthenticated;
+        competingWrite = await f.store.transition({ jobId: "job-1",
+          expectedRevision: loaded.record.revision, phase: "failed",
+          checkpoint: { key: "settle:0", stage: "outcome", data }, now: resumed.deps.nowMs() });
+      }
+      const ref = `stor:${name}`;
+      f.kv.set(ref, value as Record<string, unknown>);
+      return ref;
+    },
+  });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .resolves.toMatchObject({ outcome: "completed" });
+  expect(competingWrite).toMatchObject({ ok: false, reason: "lease-held" });
+  expect((await settlementCheckpoints(f.store)).filter((cp) => cp.stage === "outcome").at(-1)?.data?.ok).toBe(true);
+});
+
+test("durably authenticates a legacy success on its first successful execution audit", async () => {
+  const f = await nativeAuditFixture();
+  const old = await f.store.load("job-1");
+  if (old.status !== "ok") throw new Error("missing original session");
+  const legacy = createInMemorySessionStore();
+  let record = await legacy.create({ jobId: "job-1", agreementHash: old.record.agreementHash,
+    phase: "settled", now: 1780000000000 });
+  for (const cp of old.record.checkpoints) {
+    if (cp.data) delete cp.data.executionAuthenticated;
+    const written = await legacy.transition({ jobId: "job-1", expectedRevision: record.revision,
+      checkpoint: cp, now: 1780000000000 });
+    if (!written.ok) throw new Error("cannot seed legacy session");
+    record = written.record;
+  }
+  const audit = await makeDeps(legacy, { kv: f.kv, resumeSettlement: async () => f.success,
+    anchor: async () => { throw new Error("audit anchor crash"); } });
+  await expect(runSessionCore(audit.listingRef, f.demTerms, audit.deps, "job-1"))
+    .rejects.toThrow("audit anchor crash");
+  const before = await settlementCheckpoints(legacy);
+  expect(before.at(-1)?.data?.executionAuthenticated).toBe(true);
+  const contradicting = await makeDeps(legacy, { kv: f.kv, resumeSettlement: async () => f.failure });
+  await expect(runSessionCore(contradicting.listingRef, f.demTerms, contradicting.deps, "job-1"))
+    .rejects.toThrow(/conflicts|contradict/);
+  expect(await settlementCheckpoints(legacy)).toEqual(before);
+});
+
+test("refuses permanent-failure to success checkpoint progression", async () => {
+  const f = await nativeAuditFixture();
+  const loaded = await f.store.load("job-1");
+  if (loaded.status !== "ok") throw new Error("missing session");
+  const original = loaded.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
+  if (!original?.data) throw new Error("missing outcome");
+  const store = createInMemorySessionStore();
+  let record = await store.create({ jobId: "job-1", agreementHash: loaded.record.agreementHash, now: 1780000000000 });
+  const data = { ...original.data };
+  delete data.executionAuthenticated;
+  delete data.finalityModel;
+  for (const outcome of [
+    { ...data, ok: false, errorClass: "permanent", failureProofJson: canonicalize(f.failure.failureProof) },
+    { ...data, ok: true, finalityModel: "bft-final" },
+  ]) {
+    const write = await store.transition({ jobId: "job-1", expectedRevision: record.revision,
+      checkpoint: { key: "settle:0", stage: "outcome", data: outcome }, now: 1780000000000 });
+    if (!write.ok) throw new Error("cannot seed contradictory history");
+    record = write.record;
+  }
+  const resumed = await makeDeps(store, { kv: f.kv, resumeSettlement: async () => f.success });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .rejects.toThrow(/conflicting|invalid/);
+});
+
+test("refuses a well-formed Demos failure proof on an x402 settlement", async () => {
+  const f = await nativeAuditFixture();
+  const other = await makeDeps(undefined, { settle: async () => f.failure });
+  other.deps.expectedSettlementPayee = sellerDid;
+  const x402Terms = { ...terms, price: { ...terms.price, amount: "1" } };
+  await expect(runSessionCore(other.listingRef, x402Terms, other.deps))
+    .rejects.toThrow(/does not bind the payment amount and rail/);
+});
+
+test("renews the native session fence while evidence publication waits", async () => {
+  const f = await nativeAuditFixture();
+  vi.useFakeTimers();
+  vi.setSystemTime(1780000000000);
+  let release: () => void = () => { throw new Error("publication gate not initialized"); };
+  let started: () => void = () => { throw new Error("publication signal not initialized"); };
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const anchoring = new Promise<void>((resolve) => { started = resolve; });
+  const resumed = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.success,
+    anchor: async (name, value) => {
+      if (name === sessionAnchorName.evidence("job-1")) { started(); await gate; }
+      const ref = `stor:${name}`;
+      f.kv.set(ref, value as Record<string, unknown>);
+      return ref;
+    },
+  });
+  resumed.deps.nowMs = () => Date.now();
+  const pending = runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1");
+  try {
+    await anchoring;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(f.store.acquireLease({ jobId: "job-1", owner: "competing-worker",
+      ttlMs: 30_000, now: Date.now() })).resolves.toMatchObject({ ok: false });
+    release();
+    await expect(pending).resolves.toMatchObject({ outcome: "completed" });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    release();
+    await pending.catch(() => undefined);
+    vi.useRealTimers();
+  }
+});
+
+test("aborts native publication completion on a conflicting revision", async () => {
+  const f = await nativeAuditFixture();
+  const resumed = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.success,
+    anchor: async (name) => {
+      if (name === sessionAnchorName.evidence("job-1")) {
+        const loaded = await f.store.load("job-1");
+        if (loaded.status !== "ok" || !loaded.record.lease) throw new Error("missing fence");
+        // Simulate an out-of-band mutation even by the current owner.
+        await f.store.transition({ jobId: "job-1", expectedRevision: loaded.record.revision,
+          owner: loaded.record.lease.owner, phase: "unexpected", now: resumed.deps.nowMs() });
+      }
+      return `stor:${name}`;
+    },
+  });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .rejects.toThrow(/fence lost|revision changed/);
+  expect(f.kv.has(`stor:${sessionAnchorName.bundle("job-1")}`)).toBe(false);
+});
