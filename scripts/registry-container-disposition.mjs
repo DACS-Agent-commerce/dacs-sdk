@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { rmSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
+import { readdirSync, rmSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { pathToFileURL } from "node:url";
 import { join, posix, resolve } from "node:path";
@@ -239,11 +239,35 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
   return [...aliases];
 }
 
+// Node resolves a package from any node_modules directory above the importing
+// file, so a copy below a package's own files (`dist/node_modules`) is used by
+// that package. The inventory lists only `<package>/node_modules`, so this
+// returns every other node_modules entry inside an installed package directory,
+// as paths relative to it. Links are not followed; a missing directory has none.
+export function nestedModuleRoots(directory) {
+  const roots = [];
+  const visit = (current, prefix) => {
+    let entries;
+    try { entries = readdirSync(current, { withFileTypes: true }); }
+    catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.name === "node_modules") { if (prefix) roots.push(path); }
+      else if (entry.isDirectory()) visit(join(current, entry.name), path);
+    }
+  };
+  visit(directory, "");
+  return roots;
+}
+
 // Every installed copy of a candidate package, top-level, nested or aliased,
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
 // reads it, in the installed package.json.
-export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory }) {
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
   const inventory = installedInventory ?? [];
@@ -255,8 +279,8 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
   // an entry that may be a directory is not inspected, so it is refused.
   errors.push(...inventory.filter(item => isBinEntry(item) && item.target === undefined && item.error === undefined)
     .map(item => "cannot inspect a .bin entry that is not an executable link: " + item.location));
-  errors.push(...inventory.filter(item => /(^|\/)node_modules\/@[^/]+\/node_modules$/.test(item.location))
-    .map(item => "cannot inspect node_modules inside a scope directory: " + item.location));
+  errors.push(...inventory.filter(item => /(^|\/)node_modules\/(@[^/]+\/)?node_modules$/.test(item.location))
+    .map(item => "cannot inspect a node_modules directory inside node_modules or a scope directory: " + item.location));
   for (const { name, integrity, version } of candidates) {
     if (typeof version !== "string" || version === "") {
       errors.push("candidate record has no release version: " + name);
@@ -276,6 +300,9 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
       if (installedInventory && location !== "node_modules/" + name &&
           (entry?.optional === true || entry?.dev === true || entry?.devOptional === true) &&
           !inventory.some(item => item.location === location)) continue;
+      for (const root of installedModuleRoots?.(location) ?? []) {
+        errors.push("cannot inspect node_modules inside an installed candidate: " + location + "/" + root);
+      }
       if (!entry) { errors.push("installed candidate has no lock entry: " + location); continue; }
       let url = null;
       try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
@@ -888,6 +915,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       return { name, integrity, version };
     });
     const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
+      installedModuleRoots: location => nestedModuleRoots(join(project, location)),
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
     const violations = registryDependencyViolations({ manifest, lock, registry });

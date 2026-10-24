@@ -1586,7 +1586,40 @@ describe("candidate executable and nested alias lookup", () => {
         .toBe(join(location, "index.js"));
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("cannot inspect node_modules inside a scope directory: " + scope);
+    expect(result.stderr).toContain("cannot inspect a node_modules directory inside node_modules or a scope directory: " + scope);
+  });
+
+  // Node's ESM resolver, unlike require, searches a `node_modules` directory
+  // that is itself inside `node_modules`.
+  it("rejects a candidate copy hidden in node_modules/node_modules", () => {
+    const fixture = dependencyPolicyHarness();
+    let resolved = "";
+    const result = fixture.run(project => {
+      const holder = join(project, "node_modules/node_modules/@kynesyslabs/dacs");
+      mkdirSync(holder, { recursive: true });
+      writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil", type: "module" }));
+      writeFileSync(join(holder, "index.js"), "export default 'shadow';");
+      const probe = join(project, "node_modules/@kynesyslabs/dacs-node/probe.mjs");
+      writeFileSync(probe, "process.stdout.write(import.meta.resolve('@kynesyslabs/dacs'));");
+      resolved = spawnSync(process.execPath, [probe], { encoding: "utf8" }).stdout;
+    });
+    expect(resolved).toContain("node_modules/node_modules/@kynesyslabs/dacs/index.js");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot inspect a node_modules directory inside node_modules or a scope directory: node_modules/node_modules");
+  });
+
+  it.each(["dist", "lib/inner"])("rejects a candidate copy hidden in %s/node_modules inside an installed candidate", directory => {
+    const fixture = dependencyPolicyHarness();
+    const host = "node_modules/@kynesyslabs/dacs-node";
+    const result = fixture.run(project => {
+      const holder = join(project, host, directory, "node_modules/@kynesyslabs/dacs");
+      mkdirSync(holder, { recursive: true });
+      writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+      writeFileSync(join(holder, "index.js"), "module.exports = 'shadow';");
+      expect(createRequire(join(project, host, directory, "index.js")).resolve("@kynesyslabs/dacs")).toBe(join(holder, "index.js"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`cannot inspect node_modules inside an installed candidate: ${host}/${directory}/node_modules`);
   });
 
   it.each(["optional", "dev", "devOptional"])("follows the installed alias past an omitted %s lock entry", flag => {
