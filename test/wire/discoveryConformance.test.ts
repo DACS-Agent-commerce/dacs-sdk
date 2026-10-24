@@ -78,6 +78,7 @@ it("authority is rechecked after each trusted reader returns", async () => {
     const a = signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: listing.pin, listing });
     const c = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: a.agreementHash, listingPin: listing.pin, committedAt: NOW - 5000 });
     let calls = 0;
+    // A payment request is refused without commitment evidence before any recheck, so only the receipt boundary continues a purchase.
     const options = { ...x.options, listing: { ...x.options.listing, listingPin: listing.pin },
       request: { ...x.request, path: boundary === "receipt" ? wire.DACS_SELLER_HTTP_PATHS.payments : wire.DACS_SELLER_HTTP_PATHS.proposals, agreementHash: a.agreementHash },
       ...(boundary === "receipt" ? { commitment: received(c), agreement: received(a.agreement), signedListing: received(listing.listing) } : {}),
