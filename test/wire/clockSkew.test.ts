@@ -18,7 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
-  checkWireRequest, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signSellerSessionDelegation, signWireResponse, verifyWireResponse,
+  checkWireRequest, DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signSellerSessionDelegation, signWireResponse, verifyWireResponse,
   WireError, wireOperationId, wireRequestHash, type RequestCheck, type WireRequestPayload, type WireSigner,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
@@ -26,6 +26,8 @@ import {
 vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
 
+// Every journal open qualifies publication in fresh processes: load-sensitive under the 5 s default.
+vi.setConfig({ testTimeout: 60_000 });
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { openJournal, testJournal, testJournals } = journalFixture(fixtureWire);
 
@@ -73,7 +75,8 @@ const code = async (fn: () => unknown) => {
 
 const buyerSigns = (w: World, now: number, change: Record<string, unknown> = {}) => signWireRequest({
   signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/payments", jobId: JOB, text: TEXT, seller: w.seller.claim,
-  job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now, ...change,
+  job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now,
+  commitment: received(w.commitment), agreement: received(w.agreement), signedListing: received(LISTING), ...change,
 } as Parameters<typeof signWireRequest>[0]);
 
 async function sellerCheck(w: World, header: string, now: number, change: Partial<RequestCheck> = {}, requireDelegation = false) {
@@ -129,7 +132,10 @@ describe("a delegation sent to a seller that does not require one", () => {
     const read = await buyerSigns(w, NOW, { signer: w.session, delegation: expired, path: "/dacs/v1/agreements/state" });
     expect((await (await sellerCheck(w, read.header, NOW)).check()).readbackOnly).toBe(true);
     // A request the session key signs without its delegation names the session key as buyer: the host's record refuses it.
-    const bare = await buyerSigns(w, NOW, { signer: w.session });
+    // The buyer's own gate refuses it, so the header is signed by hand to reach the host.
+    const barePayload = { ...(await buyerSigns(w, NOW, { signer: w.session, delegation: live })).payload, buyer: w.session.claim };
+    const bare = { header: Buffer.from(canonicalize({ payload: barePayload,
+      signature: Buffer.from(await w.session.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.request + canonicalize(barePayload)))).toString("base64url") })).toString("base64url") };
     const hostRecord = { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim };
     expect(await code(async () => (await (await sellerCheck(w, bare.header, NOW, { retained: hostRecord, artifacts: [] })).check()))).toBe("peer_agreement_party_mismatch");
   });
