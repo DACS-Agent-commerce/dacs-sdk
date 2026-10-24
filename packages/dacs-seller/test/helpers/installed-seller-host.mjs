@@ -12,6 +12,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as core from '@kynesyslabs/dacs';
 import * as seller from '@kynesyslabs/dacs-seller';
+import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
 import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/src/dacs/native-payment-evidence-consumer.mjs';
@@ -158,8 +159,8 @@ let activeHost=null;const start=async(extra={})=>activeHost=await seller.startSe
 
 // Refused configurations: each names its cause and starts nothing.
 const refusal = async (options) => { try { const host = await seller.startSellerHost(options); await host.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
-// The same for an agent an operator composes itself (createSellerAgent).
-const agentRefusal = async (options) => { try { const agent = await seller.createSellerAgent(options); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
+// Check the internal constructor without exposing it in the root package API.
+const agentRefusal = async (options) => { try { const agent = await createSellerAgent(options); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
 if (second !== null) {
   process.stdout.write(`${JSON.stringify({ secondProcess: await refusal({ signer, listing, dataDirectory, ...capabilities() }) })}\n`);
   process.exit(0);

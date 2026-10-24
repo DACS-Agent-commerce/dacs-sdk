@@ -63,9 +63,11 @@ evidence anchor and `reconcilePaymentEvidence` from the operator's wallet
 `validateListing` reads a Listing through the core SDK and resolves its rail
 from a `railAuthority` (or, for tests only, `simulatedFixture: true`). The other root
 exports are the parts the host composes, for operators who compose their own:
-`createSellerAgent`, `createSellerHttpHandler`, `createSellerTransportStore`,
+`createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerTransportServerAuth` and the buyer side `createSellerAgentClient`
-and `createSellerTransportClientAuth`. The kit's other modules are reachable
+and `createSellerTransportClientAuth`. The incomplete `createSellerAgent` constructor
+stays outside the root API, as required by [PROFILE.json](PROFILE.json).
+The kit's other modules are reachable
 by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
