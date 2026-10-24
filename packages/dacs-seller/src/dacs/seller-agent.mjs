@@ -1980,4 +1980,4 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 }
 
-export { canonicalSignature, proposalTimeProblem };
+export { canonicalSignature };
