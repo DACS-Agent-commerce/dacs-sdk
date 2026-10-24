@@ -267,6 +267,24 @@ export function validateLock(lock, artifacts, consumer = ".", omitOptional = fal
   for (const name of allowed.keys()) if (!installed.has(name)) fail(`missing installed artifact in lock: ${name}`);
 }
 
+export function expectedNode20Rejection(p, subpath, error, node = process.versions.node) {
+  const restricted = p.name === "@kynesyslabs/dacs-seller" && p.engines?.node === ">=22.13.0" ||
+    p.name === "@kynesyslabs/dacs-client" && subpath === "./durable-journal";
+  return node.startsWith("20.") && Boolean(restricted) && error.code === "ERR_UNKNOWN_BUILTIN_MODULE" && error.message === "No such built-in module: node:sqlite";
+}
+
+export async function checkInstalled(consumer, artifacts) {
+  const base = await realpath(consumer);
+  for (const { manifest: p } of artifacts) {
+    const dir = join(consumer, "node_modules", p.name);
+    const actual = await realpath(dir);
+    if ((await lstat(dir)).isSymbolicLink() || relative(base, actual).startsWith("..")) fail(`installed package link/outside consumer: ${p.name}`);
+    const installed = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+    if (installed.name !== p.name || installed.version !== p.version) fail(`installed identity mismatch: ${p.name}`);
+    validateManifest(installed, packages.find(d => d.name === p.name));
+  }
+}
+
 export async function prepare(root, scratch, log = console.log, execute = run) {
   await mkdir(scratch, { recursive: true });
   const artifacts = [], errors = [], notReady = [];
@@ -341,6 +359,130 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
   return { artifacts, errors, notReady };
 }
 
+export async function consume(artifacts, scratch, log = console.log, options = {}) {
+  const execute = options.execute ?? run;
+  if (!artifacts.length) fail("no release artifacts to install");
+  validateArtifactSet(artifacts);
+  const peers = new Map();
+  const nativeVersion = artifacts.find(a => a.manifest.name === "@kynesyslabs/dacs-node")?.manifest.optionalDependencies?.["better-sqlite3"];
+  if (nativeVersion && semver.valid(nativeVersion) !== nativeVersion) fail("native dependency must use an exact version: better-sqlite3");
+  for (const { manifest: p } of artifacts) for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+    for (const [name, version] of Object.entries(p[section] ?? {})) {
+      if (packages.some(d => d.name === name)) {
+        if (!artifacts.some(a => a.manifest.name === name)) fail(`missing packed internal dependency: ${name}`);
+      } else if (section === "peerDependencies") peers.set(name, version);
+    }
+  }
+  const directory = join(scratch, "consumer"); await mkdir(directory);
+  const consumer = await realpath(directory);
+  const tarballs = await Promise.all(artifacts.map(a => realpath(a.tarball)));
+  const artifactResolutions = artifacts.map((a, i) => ({ name: a.manifest.name, tarball: tarballs[i] }));
+  await writeFile(join(consumer, "package.json"), JSON.stringify({ name: "dacs-release-consumer", version: "1.0.0", private: true, type: "module" }));
+  execute("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional", ...tarballs, ...[...peers].map(([name, version]) => `${name}@${version}`)], consumer);
+  await retainConsumerReceipt(consumer, artifacts, options.outputDirectory, "without-native");
+  validateLock(JSON.parse(await readFile(join(consumer, "package-lock.json"))), artifactResolutions, consumer, true);
+  await checkInstalled(consumer, artifacts);
+  if (nativeVersion) {
+    try { await lstat(join(consumer, "node_modules/better-sqlite3")); fail("optional native dependency unexpectedly installed"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    await consumeImports(consumer, artifacts, log, (artifact, entry) => !(artifact.manifest.name === "@kynesyslabs/dacs-node" && entry.subpath === "./sqlite"));
+    execute("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional", "--save-exact", `better-sqlite3@${nativeVersion}`], consumer);
+    await retainConsumerReceipt(consumer, artifacts, options.outputDirectory, "with-native");
+    validateLock(JSON.parse(await readFile(join(consumer, "package-lock.json"))), artifactResolutions, consumer, true);
+    await checkInstalled(consumer, artifacts);
+    const installed = JSON.parse(await readFile(join(consumer, "node_modules/better-sqlite3/package.json"), "utf8"));
+    if (installed.name !== "better-sqlite3" || installed.version !== nativeVersion) fail("native dependency identity mismatch: better-sqlite3");
+    // The initial install disables every lifecycle hook. Only this exact native
+    // package may build; dependency and release-package hooks remain disabled.
+    log(execute("npm", ["rebuild", `better-sqlite3@${nativeVersion}`, "--ignore-scripts=false", "--foreground-scripts", "--no-audit", "--no-fund"], consumer,
+      { npm_config_devdir: join(scratch, "node-gyp"), npm_config_jobs: "2" }));
+    log(execute(process.execPath, ["--input-type=module", "-e", `
+      import Database from 'better-sqlite3';
+      const db = new Database(':memory:');
+      try { if (db.prepare('SELECT 1 AS ready').get().ready !== 1) throw Error('native sqlite smoke failed'); }
+      finally { db.close(); }
+      console.log('native sqlite ready: better-sqlite3@${nativeVersion}');`], consumer).trim());
+  }
+  await consumeImports(consumer, artifacts, log);
+  await checkGenerator(consumer, artifacts, log);
+}
+
+export async function consumeImports(consumer, artifacts, log = console.log, include = () => true) {
+  const base = await realpath(join(consumer, "node_modules"));
+  const errors = [];
+  for (const artifact of artifacts) for (const entry of publicEntries(artifact.manifest, artifact.files)) {
+    if (!include(artifact, entry)) continue;
+    const spec = artifact.manifest.name + (entry.subpath === "." ? "" : entry.subpath.slice(1));
+    const code = `import {fileURLToPath} from 'node:url';
+      const spec = ${JSON.stringify(spec)};
+      const filename = fileURLToPath(import.meta.resolve(spec));
+      if (!filename.startsWith(${JSON.stringify(base + "/")})) throw Error('export resolves outside consumer');
+      const attributes = filename.endsWith('.json') ? {with:{type:'json'}} : {};
+      const expectedNode20Rejection = ${expectedNode20Rejection.toString()};
+      const manifest = ${JSON.stringify({ name: artifact.manifest.name, engines: artifact.manifest.engines })};
+      try { await import(spec, attributes); console.log('imported ' + spec); }
+      catch (error) {
+        if (expectedNode20Rejection(manifest, ${JSON.stringify(entry.subpath)}, error)) console.log('not imported (expected Node 20 rejection): ' + spec + ' needs node:sqlite');
+        else throw error;
+      }`;
+    try { log(run(process.execPath, ["--input-type=module", "-e", code], consumer).trim()); }
+    catch (error) { errors.push(`${spec}: ${error.message}`); }
+  }
+  if (errors.length) fail(errors.join("\n"));
+}
+
+export async function retainConsumerReceipt(consumer, artifacts, outputDirectory, phase) {
+  if (!outputDirectory) return;
+  const lock = await readFile(join(consumer, "package-lock.json"), "utf8");
+  const directory = join(outputDirectory, phase);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "package-lock.json"), lock);
+  await writeFile(join(directory, "package.json"), await readFile(join(consumer, "package.json")));
+  const hashes = await Promise.all(artifacts.map(async a => ({ name: a.manifest.name, version: a.manifest.version,
+    sha512: createHash("sha512").update(await readFile(a.tarball)).digest("hex") })));
+  await writeFile(join(directory, "receipt.json"), JSON.stringify({ node: process.version, npm: run("npm", ["--version"], consumer).trim(),
+    platform: process.platform, arch: process.arch, artifacts: hashes,
+    resolved: JSON.parse(lock).packages }, null, 2) + "\n");
+}
+
+export async function checkGenerator(consumer, artifacts, log = console.log) {
+  const generator = artifacts.find(a => a.manifest.name === "create-dacs-agent");
+  if (!generator) return;
+  for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"]) {
+    if (!artifacts.some(a => a.manifest.name === name)) fail(`missing packed generator dependency: ${name}`);
+  }
+  const versions = Object.fromEntries(artifacts.map(a => [a.manifest.name, a.manifest.version]));
+  log(run(process.execPath, ["--input-type=module", "-e", `
+    import { readFile } from 'node:fs/promises';
+    import { createDacsAgentProject, CREATE_DACS_AGENT_VERSION } from 'create-dacs-agent';
+    const versions = ${JSON.stringify(versions)};
+    if (CREATE_DACS_AGENT_VERSION !== versions['create-dacs-agent']) throw Error('generator version mismatch');
+    for (const mode of ['offline', 'live-demos']) {
+      const targetDirectory = process.cwd() + '/generated-' + mode;
+      await createDacsAgentProject({ targetDirectory, mode, role: mode === 'offline' ? 'demo-all' : 'buyer', rails: 'both', install: false, run: false });
+      const p = JSON.parse(await readFile(targetDirectory + '/package.json', 'utf8'));
+      for (const name of ['@kynesyslabs/dacs', '@kynesyslabs/dacs-node']) {
+        if (!versions[name] || p.dependencies?.[name] !== versions[name]) throw Error('generated dependency mismatch: ' + mode + ' ' + name);
+      }
+      if (mode === 'live-demos' && p.dacs?.generatorVersion !== versions['create-dacs-agent']) throw Error('generated metadata version mismatch');
+      console.log('generator project created: ' + mode);
+    }`], consumer).trim());
+  const nativeVersion = artifacts.find(a => a.manifest.name === "@kynesyslabs/dacs-node")?.manifest.optionalDependencies?.["better-sqlite3"];
+  for (const mode of ["offline", "live-demos"]) {
+    const p = JSON.parse(await readFile(join(consumer, `generated-${mode}`, "package.json"), "utf8"));
+    try { validateDependencies(p); }
+    catch (error) { fail(`generated ${mode}: ${error.message}`); }
+    for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) for (const [name, spec] of Object.entries(p[section] ?? {})) {
+      if (packages.some(d => d.name === name) && spec !== versions[name]) fail(`generated dependency mismatch: ${mode} ${name}`);
+      if (name === "better-sqlite3" && spec !== nativeVersion) fail(`generated native dependency mismatch: ${mode} ${name}`);
+    }
+    if (mode === "live-demos" && (typeof nativeVersion !== "string" || semver.valid(nativeVersion) !== nativeVersion ||
+        p.dependencies?.["better-sqlite3"] !== nativeVersion))
+      fail(`generated native dependency mismatch: ${mode} better-sqlite3`);
+    log(`generator pins verified: ${mode}`);
+  }
+}
+
 export async function dryRun(artifacts, log = console.log, execute = run) {
   const errors = [];
   for (const artifact of artifacts) {
@@ -354,3 +496,38 @@ export async function dryRun(artifacts, log = console.log, execute = run) {
   if (errors.length) fail(errors.join("\n"));
 }
 
+export async function release(mode, options = {}) {
+  if (!["check", "dry-run"].includes(mode)) fail(`unknown release mode: ${mode}`);
+  const { tmpdir } = await import("node:os");
+  const { fileURLToPath } = await import("node:url");
+  const root = options.root ?? fileURLToPath(new URL("..", import.meta.url));
+  const log = options.log ?? console.log;
+  const scratch = await mkdtemp(join(tmpdir(), "dacs-release-"));
+  let outputDirectory;
+  try {
+    if (mode === "check") {
+      const outputRoot = options.outputDirectory ?? join(root, "package-artifacts/five-package", `node-${process.versions.node}`);
+      await mkdir(outputRoot, { recursive: true });
+      outputDirectory = await mkdtemp(join(outputRoot, "run-"));
+      await writeFile(join(outputDirectory, "result.json"), JSON.stringify({ status: "preparing", plannedVersion }));
+    }
+    const result = await prepare(root, scratch, log);
+    if (mode === "check") for (const a of result.artifacts) if (a.manifest.version !== plannedVersion)
+      result.notReady.push(`${a.manifest.name}: planned release version ${plannedVersion}, got ${a.manifest.version}`);
+    for (const reason of result.notReady) log(`not ready: ${reason}`);
+    try { if (mode === "dry-run") await dryRun(result.artifacts, log); else await consume(result.artifacts.filter(a => a.releasable), scratch, log, { outputDirectory, execute: options.execute }); }
+    catch (error) { result.errors.push(error.message); }
+    if (mode === "check") try { validateArtifactSet(result.artifacts, true); }
+    catch (error) { result.errors.push(error.message); }
+    // Preparation reports source readiness; broken builds/artifacts/dry-runs always fail.
+    const blockers = [...result.errors, ...(mode === "check" ? result.notReady : [])];
+    const ready = result.notReady.length === 0 && result.errors.length === 0;
+    if (outputDirectory) await writeFile(join(outputDirectory, "result.json"), JSON.stringify({
+      status: ready ? "passed" : "blocked", plannedVersion, errors: result.errors, notReady: result.notReady,
+      artifacts: result.artifacts.map(a => ({ name: a.manifest.name, version: a.manifest.version })),
+    }, null, 2) + "\n");
+    if (blockers.length) fail(`Release checks blocked:\n${blockers.join("\n")}`);
+    log(ready ? `${mode === "check" ? "Release checks" : "Preparation dry-runs"} passed: all five packages` : "Release not ready: preparation report completed; strict release:check remains blocked");
+    return { ...result, ready };
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}

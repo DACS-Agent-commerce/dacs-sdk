@@ -5,9 +5,10 @@ import { mkdtemp, mkdir, writeFile, rm, readFile, readdir, cp, symlink } from "n
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   packages, plannedVersion, validateManifest, validateFiles, publicEntries,
-  validateLock, prepare, dryRun, validateArtifactSet,
+  validateLock, checkInstalled, prepare, consume, dryRun, expectedNode20Rejection, release, checkGenerator, validateArtifactSet,
 } from "../../scripts/release-checks.mjs";
 
 const core = packages[0];
@@ -84,12 +85,33 @@ test("consumer lock refuses links and directory dependencies but admits the inpu
   }
 });
 
+test("only declared Node 22 surfaces may reject node:sqlite on Node 20", () => {
+  const error = { code: "ERR_UNKNOWN_BUILTIN_MODULE", message: "No such built-in module: node:sqlite" };
+  const p = { name: packages[3].name, engines: { node: ">=22.13.0" } };
+  assert.equal(expectedNode20Rejection(p, ".", error, "20.19.0"), true);
+  assert.equal(expectedNode20Rejection(p, ".", error, "22.21.1"), false);
+  assert.equal(expectedNode20Rejection({ ...p, name: core.name }, ".", error, "20.19.0"), false);
+  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, ".", error, "20.19.0"), false);
+  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./durable-journal", error, "20.19.0"), true);
+  for (const message of ["No such built-in module: node:sqlite-extra", "No such built-in module: node:sqlite/extra", "other failure involving node:sqlite"]) {
+    assert.equal(expectedNode20Rejection(p, ".", { ...error, message }, "20.19.0"), false);
+  }
+  assert.equal(expectedNode20Rejection(p, ".", { ...error, code: "ERR_MODULE_NOT_FOUND" }, "20.19.0"), false);
+});
+
 async function fixture(fn) {
   const root = await mkdtemp(join(tmpdir(), "dacs-release-test-"));
   try { return await fn(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
-async function sourceTree(root, version = "0.1.0-alpha.0") {
+test("installed package directories cannot resolve through workspace symlinks", () => fixture(async root => {
+  const outside = join(root, "outside"); const consumer = join(root, "consumer");
+  await mkdir(outside); await mkdir(join(consumer, "node_modules", "@kynesyslabs"), { recursive: true });
+  await symlink(outside, join(consumer, "node_modules", core.name));
+  await assert.rejects(checkInstalled(consumer, [{ manifest: manifest(), definition: core }]), /link|outside/);
+}));
+
+async function sourceTree(root, version = "0.1.0-alpha.0", native = false) {
   for (const definition of packages) {
     const dir = join(root, definition.directory); const p = { ...manifest(definition), version };
     await mkdir(join(dir, "dist"), { recursive: true });
@@ -106,8 +128,10 @@ async function sourceTree(root, version = "0.1.0-alpha.0") {
         export const CREATE_DACS_AGENT_VERSION = ${JSON.stringify(version)};
         export async function createDacsAgentProject({targetDirectory, mode}) {
           await fs.mkdir(targetDirectory);
+          const native = JSON.parse(await fs.readFile(process.cwd() + '/node_modules/@kynesyslabs/dacs-node/package.json', 'utf8')).optionalDependencies?.['better-sqlite3'];
           await fs.writeFile(targetDirectory + '/package.json', JSON.stringify({
-            dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION, '@kynesyslabs/dacs-node': CREATE_DACS_AGENT_VERSION},
+            dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION, '@kynesyslabs/dacs-node': CREATE_DACS_AGENT_VERSION,
+              ...(mode === 'live-demos' && native ? {'better-sqlite3': native} : {})},
             ...(mode === 'live-demos' ? {dacs: {generatorVersion: CREATE_DACS_AGENT_VERSION}} : {})
           }));
         }`;
@@ -116,6 +140,7 @@ async function sourceTree(root, version = "0.1.0-alpha.0") {
     await writeFile(join(dir, "package.json"), JSON.stringify(p));
     await writeFile(join(dir, "build.mjs"), build);
     if (definition.name === "@kynesyslabs/dacs-node") {
+      if (native) p.optionalDependencies = { "better-sqlite3": "12.6.2" };
       p.exports["./vectors/dacs-http-envelope-v1.json"] = "./vectors/dacs-http-envelope-v1.json";
       p.files.push("vectors");
       await mkdir(join(dir, "vectors"), { recursive: true });
@@ -131,6 +156,28 @@ async function sourceTree(root, version = "0.1.0-alpha.0") {
     await writeFile(join(dir, "package.json"), JSON.stringify(p));
   }
 }
+
+test("compiled builds, direct-source packs, wildcard/JSON imports and five dry-runs work without a registry", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, "0.1.0-alpha.0", true); const logs = [];
+  const buildPath = join(root, "build.mjs");
+  await writeFile(buildPath, (await readFile(buildPath, "utf8")) +
+    "if(process.env.npm_config_fetch_retries !== '2' || process.env.npm_config_fetch_timeout !== '20000') throw Error('bounded npm retry policy missing');");
+  await writeFile(join(root, "dist/stale.js"), "throw Error('stale output');");
+  const result = await prepare(root, join(root, "scratch"), message => logs.push(message));
+  assert.equal(result.errors.length, 0, result.errors.join("\n"));
+  assert.equal(result.artifacts.length, 5);
+  assert.ok(!result.artifacts[0].files.includes("dist/stale.js"), "build must clean stale output before pack");
+  await consume(result.artifacts, join(root, "scratch"), message => logs.push(message),
+    { execute: nativeFixtureExecutor(result.artifacts) });
+  await dryRun(result.artifacts, message => logs.push(message));
+  for (const p of packages) assert.ok(logs.some(line => line.includes(p.name) && line.includes("dry-run")));
+  assert.ok(logs.some(line => line.includes("@kynesyslabs/dacs-node") && line.includes("peerDependencies")));
+  assert.ok(logs.some(line => line.includes("0.1.0-alpha.1") && line.includes("0.1.0-alpha.0")));
+  const installed = JSON.parse(await readFile(join(root, "scratch", "consumer", "node_modules", core.name, "package.json")));
+  assert.equal(installed.version, "0.1.0-alpha.0");
+  assert.ok(logs.some(line => line.includes("imported @kynesyslabs/dacs-seller/src/entry0.mjs")));
+  assert.ok(logs.some(line => line.includes("imported @kynesyslabs/dacs-node/vectors/dacs-http-envelope-v1.json")));
+}));
 
 test("every publish invocation is offline, dry-run only, with lifecycle hooks disabled", async () => {
   const calls = [];
@@ -153,6 +200,13 @@ test("one failed npm dry-run preserves its cause and still attempts the other pa
   assert.equal(calls, 5);
 });
 
+test("an internal runtime dependency must come from this packed set", async () => {
+  for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+    const p = { ...manifest(packages[4]), [section]: { [core.name]: "0.1.0-alpha.0" } };
+    await assert.rejects(consume([{ manifest: p }], "/unused"), /missing packed internal dependency/);
+  }
+});
+
 test("missing packages stay not ready while the other packages are packed", { timeout: 120_000 }, () => fixture(async root => {
   await sourceTree(root);
   await rm(join(root, packages[3].directory), { recursive: true });
@@ -160,6 +214,17 @@ test("missing packages stay not ready while the other packages are packed", { ti
   assert.equal(result.artifacts.length, 4);
   assert.ok(result.notReady.some(e => e.includes("dacs-seller")));
 }));
+
+test("a shipped module with an unresolved import fails from the clean consumer", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const path = join(root, "build.mjs");
+  await writeFile(path, (await readFile(path, "utf8")) + "\nfs.appendFileSync('dist/entry0.js', \"import 'missing-release-dependency';\");");
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  const logs = [];
+  await assert.rejects(consume(result.artifacts, join(root, "scratch"), message => logs.push(message)), /missing-release-dependency/);
+  assert.ok(logs.some(line => line.includes("imported create-dacs-agent")), "later imports must still run");
+}));
+
 
 test("all five packages enforce the existing release identity and publish policy", () => {
   for (const definition of packages) {
@@ -195,6 +260,15 @@ test("nested internal lock entries must resolve to supplied tarballs", () => {
   assert.doesNotThrow(() => validateLock({ packages: { [name]: { resolved: "file:/tmp/core.tgz" } } }, [{ name: core.name, tarball: "/tmp/core.tgz" }]));
 });
 
+test("mutating an installed package identity fails", () => fixture(async root => {
+  const dir = join(root, "node_modules", core.name);
+  await mkdir(dir, { recursive: true });
+  for (const damage of [{ name: "impostor" }, { version: "9.9.9" }]) {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ ...manifest(), ...damage }));
+    await assert.rejects(checkInstalled(root, [{ manifest: manifest() }]), /installed identity mismatch/);
+  }
+}));
+
 async function changeManifest(root, definition, damage) {
   const path = join(root, definition.directory, "package.json");
   await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path)), ...damage }));
@@ -207,6 +281,100 @@ test("mixed release versions and ranged internal peers fail preparation", { time
   const result = await prepare(root, join(root, "scratch"), () => {});
   assert.ok(result.notReady.some(e => e.includes("release versions differ")));
   assert.ok(result.notReady.some(e => e.includes("internal dependency must use exact release version")));
+}));
+
+test("strict release rejects a private package even when the surviving subset imports", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await changeManifest(root, packages[2], { private: true });
+  const logs = [];
+  await assert.rejects(release("check", { root, log: line => logs.push(line) }), /private package/);
+  assert.ok(logs.some(line => line.includes("imported create-dacs-agent")), "the surviving subset must actually import");
+  assert.ok(!logs.some(line => line.includes("Release checks passed")));
+}));
+
+test("preparation dry run reports not ready without failing on missing/private packages", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await changeManifest(root, packages[2], { private: true });
+  await rm(join(root, packages[3].directory), { recursive: true });
+  const logs = [];
+  const result = await release("dry-run", { root, log: line => logs.push(line) });
+  assert.equal(result.ready, false);
+  assert.ok(logs.some(line => line.includes("not ready") && line.includes("private package")));
+  assert.ok(logs.some(line => line.includes("not ready") && line.includes(packages[3].name)));
+  assert.ok(logs.some(line => line.includes("npm publish --dry-run")));
+}));
+
+test("preparation dry run still fails on build defects", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await writeFile(join(root, "build.mjs"), "throw Error('fixture build failure');");
+  const logs = [];
+  await assert.rejects(release("dry-run", { root, log: line => logs.push(line) }), /fixture build failure/);
+}));
+
+// Keep registry/native ABI qualification explicit; default regressions use local artifacts.
+for (const integration of [false, true]) {
+test(integration ? "native sqlite integration qualifies the real registry driver" :
+  "native sqlite uses its exact pin; root and sqlite entries import with only its build allowed (offline fixture)",
+  { timeout: 240_000, skip: integration && process.env.DACS_RELEASE_NATIVE_INTEGRATION !== "1" }, () => fixture(async root => {
+  await sourceTree(root);
+  const def = packages[1];
+  await changeManifest(root, def, { optionalDependencies: { "better-sqlite3": "12.6.2" } });
+  const coreManifest = JSON.parse(await readFile(join(root, "package.json")));
+  await changeManifest(root, core, { scripts: { ...coreManifest.scripts, postinstall: "node -e \"throw Error('unrelated install script ran')\"" } });
+  const path = join(root, def.directory, "build.mjs");
+  await writeFile(path, (await readFile(path, "utf8")) + "\nfs.appendFileSync('dist/entry2.js', \"import 'better-sqlite3';\");");
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.notReady, []);
+  const logs = [];
+  await consume(result.artifacts, join(root, "scratch"), line => logs.push(line), {
+    outputDirectory: join(root, "receipts"), execute: integration ? undefined : nativeFixtureExecutor(result.artifacts),
+  });
+  assert.ok(logs.indexOf("imported @kynesyslabs/dacs-node") < logs.findIndex(line => line.includes("native sqlite ready")));
+  const beforeNative = logs.slice(0, logs.findIndex(line => line.includes("native sqlite ready")));
+  for (const artifact of result.artifacts) for (const entry of publicEntries(artifact.manifest, artifact.files)) {
+    if (artifact.manifest.name === def.name && entry.subpath === "./sqlite") continue;
+    const spec = artifact.manifest.name + (entry.subpath === "." ? "" : entry.subpath.slice(1));
+    assert.ok(beforeNative.includes(`imported ${spec}`), `${spec} must import without the optional driver`);
+  }
+  const before = JSON.parse(await readFile(join(root, "receipts/without-native/package.json")));
+  const after = JSON.parse(await readFile(join(root, "receipts/with-native/package.json")));
+  assert.equal(before.dependencies["better-sqlite3"], undefined);
+  assert.equal(after.dependencies["better-sqlite3"], "12.6.2");
+  assert.ok(logs.some(line => line.includes("native sqlite ready: better-sqlite3@12.6.2")));
+  assert.ok(logs.some(line => line.includes("imported @kynesyslabs/dacs-node/sqlite")));
+  assert.ok(logs.some(line => line === "imported @kynesyslabs/dacs-node"));
+  assert.ok(!logs.some(line => line.includes("not imported")));
+  const installed = join(root, "scratch/consumer/node_modules", def.name);
+  await writeFile(join(installed, "dist/entry2.js"), "import 'better-sqlite3-extra';");
+  await assert.rejects(consumeImports(join(root, "scratch/consumer"), result.artifacts), /better-sqlite3-extra/);
+}));
+
+}
+
+test("the allowed native dependency must have an exact version pin", async () => {
+  await assert.rejects(consume([{ manifest: { ...manifest(packages[1]), optionalDependencies: { "better-sqlite3": "^12.6.2" } } }], "/unused"), /native dependency must use an exact version/);
+});
+
+// Recheck public imports after mutating the installed consumer.
+async function consumeImports(...args) {
+  return (await import("../../scripts/release-checks.mjs")).consumeImports(...args, () => {});
+}
+
+test("public imports accept a symlinked scratch root and reject exports escaping node_modules", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const scratch = join(root, "scratch");
+  const result = await prepare(root, scratch, () => {});
+  // Exercise real offline npm installation with the non-native package subset.
+  result.artifacts = result.artifacts.filter(a => a.manifest.name !== "create-dacs-agent");
+  const alias = join(root, "alias"); await symlink(scratch, alias);
+  await consume(result.artifacts, alias, () => {});
+  const dir = join(scratch, "consumer/node_modules", core.name);
+  await symlink(join(root, "outside.mjs"), join(dir, "dist/outside.js"));
+  await writeFile(join(root, "outside.mjs"), "export const outside = true;");
+  const p = result.artifacts[0].manifest;
+  await writeFile(join(dir, "package.json"), JSON.stringify({ ...p, exports: { ...p.exports, ".": "./dist/outside.js" } }));
+  await assert.rejects(consumeImports(join(alias, "consumer"), result.artifacts), /export resolves outside consumer/);
 }));
 
 const execute = (command, args, cwd) => execFileSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -291,6 +459,22 @@ test("null exclusions and more specific export overrides follow Node resolution"
   assert.ok(paths.includes("./feature/private/public"));
   assert.ok(!paths.includes("./feature/private/hidden"));
 });
+
+test("packed export exclusions admit public imports while private files remain inaccessible", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, "0.1.0-alpha.0", true);
+  const p = JSON.parse(await readFile(join(root, "package.json")));
+  p.exports["./feature/*"] = "./dist/feature/*.js";
+  p.exports["./feature/private/*"] = null;
+  await writeFile(join(root, "package.json"), JSON.stringify(p));
+  await writeFile(join(root, "build.mjs"), (await readFile(join(root, "build.mjs"), "utf8")) +
+    "fs.mkdirSync('dist/feature/private',{recursive:true});fs.writeFileSync('dist/feature/public.js','export const ready=true;');fs.writeFileSync('dist/feature/private/hidden.js',\"throw Error('private module imported');\");");
+  const scratch = join(root, "scratch"); const result = await prepare(root, scratch, () => {});
+  assert.deepEqual(result.errors, []);
+  await consume(result.artifacts, scratch, () => {}, { execute: nativeFixtureExecutor(result.artifacts) });
+  const code = `await import('${core.name}/feature/public');try {await import('${core.name}/feature/private/hidden');throw Error('private exported');}catch(e){if(e.code!=='ERR_PACKAGE_PATH_NOT_EXPORTED')throw e;}`;
+  execute(process.execPath, ["--input-type=module", "-e", code], join(scratch, "consumer"));
+}));
+
 test("build-time changes to packed versions and internal pins fail preparation", { timeout: 120_000 }, () => fixture(async root => {
   await sourceTree(root);
   const def = packages[4], path = join(root, def.directory, "build.mjs");
@@ -303,6 +487,24 @@ test("build-time changes to packed versions and internal pins fail preparation",
     assert.ok(result.errors.some(e => expected.test(e)), result.errors.join("\n"));
     assert.equal(result.artifacts.length, 4);
   }
+}));
+
+test("strict release requires the planned version and admits a coherent complete set", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await assert.rejects(release("check", { root, log: () => {} }), /planned release version/);
+  await sourceTree(root, plannedVersion, true);
+  const result = await release("check", { root, log: () => {}, execute: nativeFixtureExecutor() });
+  assert.equal(result.ready, true);
+  assert.deepEqual(result.errors, []);
+  const receipts = join(root, "package-artifacts/five-package", `node-${process.versions.node}`);
+  const runs = await readdir(receipts);
+  assert.equal(runs.length, 2, "each check must retain a separate run without stale receipts");
+  const statuses = await Promise.all(runs.map(async run => JSON.parse(await readFile(join(receipts, run, "result.json")))));
+  assert.deepEqual(statuses.map(s => s.status).sort(), ["blocked", "passed"]);
+  assert.ok(statuses.find(s => s.status === "passed").artifacts.every(a => a.version === plannedVersion));
+  const passedRun = runs[statuses.findIndex(s => s.status === "passed")];
+  const receipt = JSON.parse(await readFile(join(receipts, passedRun, "without-native/receipt.json")));
+  assert.deepEqual(receipt.artifacts.map(a => a.name), packages.map(p => p.name), "success must consume all five artifacts");
 }));
 
 test("not-ready manifests still build, pack and enforce the file policy", { timeout: 120_000 }, () => fixture(async root => {
@@ -327,6 +529,69 @@ test("not-ready manifests still build, pack and enforce the file policy", { time
   assert.ok(invalid.errors.some(e => e.includes("outside allow-list: scripts/leak.mjs")));
 }));
 
+test("consumer retains locks, resolutions, artifact hashes and toolchain after scratch removal", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, "0.1.0-alpha.0", true); const scratch = join(root, "scratch"), outputDirectory = join(root, "receipt");
+  const result = await prepare(root, scratch, () => {});
+  const expectedHash = createHash("sha512").update(await readFile(result.artifacts[0].tarball)).digest("hex");
+  await consume(result.artifacts, scratch, () => {}, { outputDirectory, execute: nativeFixtureExecutor(result.artifacts) });
+  await rm(scratch, { recursive: true });
+  const receipt = JSON.parse(await readFile(join(outputDirectory, "without-native/receipt.json")));
+  const lock = JSON.parse(await readFile(join(outputDirectory, "without-native/package-lock.json")));
+  assert.equal(receipt.node, process.version);
+  assert.match(receipt.npm, /^\d+\.\d+\.\d+/);
+  assert.equal(receipt.artifacts.length, 5);
+  assert.equal(receipt.artifacts.find(a => a.name === core.name).sha512, expectedHash);
+  assert.ok(receipt.artifacts.every(a => /^[a-f0-9]{128}$/.test(a.sha512)));
+  assert.deepEqual(receipt.resolved, lock.packages);
+  assert.equal(lock.packages[`node_modules/${core.name}`].version, "0.1.0-alpha.0");
+}));
+
+test("packed generator rejects stale exported version, offline pins, live pins and metadata", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, "0.1.0-alpha.0", true); const scratch = join(root, "scratch");
+  const result = await prepare(root, scratch, () => {});
+  await consume(result.artifacts, scratch, () => {}, { execute: nativeFixtureExecutor(result.artifacts) });
+  const consumer = join(scratch, "consumer"), entry = join(consumer, "node_modules/create-dacs-agent/dist/entry0.js");
+  const original = await readFile(entry, "utf8");
+  for (const [source, pattern] of [
+    [original.replace('"0.1.0-alpha.0"', '"9.9.9"'), /generator version mismatch/],
+    [original.replace("dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION", "dependencies: {'@kynesyslabs/dacs': '9.9.9'"), /generated dependency mismatch: offline/],
+    [original.replace("dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION", "dependencies: {'@kynesyslabs/dacs': mode === 'live-demos' ? '9.9.9' : CREATE_DACS_AGENT_VERSION"), /generated dependency mismatch: live-demos/],
+    [original.replace("generatorVersion: CREATE_DACS_AGENT_VERSION", "generatorVersion: '9.9.9'"), /generated metadata version mismatch/],
+  ]) {
+    await rm(join(consumer, "generated-offline"), { recursive: true, force: true });
+    await rm(join(consumer, "generated-live-demos"), { recursive: true, force: true });
+    await writeFile(entry, source);
+    await assert.rejects(checkGenerator(consumer, result.artifacts, () => {}), pattern);
+  }
+}));
+
+test("node root must import with its optional native driver absent", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root); const def = packages[1];
+  await changeManifest(root, def, { optionalDependencies: { "better-sqlite3": "12.6.2" } });
+  const path = join(root, def.directory, "build.mjs");
+  await writeFile(path, (await readFile(path, "utf8")) + "fs.appendFileSync('dist/entry0.js',\"import 'better-sqlite3';\");");
+  const scratch = join(root, "scratch"), result = await prepare(root, scratch, () => {}), logs = [];
+  await assert.rejects(consume(result.artifacts, scratch, line => logs.push(line),
+    { execute: nativeFixtureExecutor(result.artifacts) }), /better-sqlite3/);
+  assert.ok(!logs.some(line => line.includes("native sqlite ready")));
+}));
+
+test("public packages cannot import the optional driver at module load", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  for (const definition of [core, packages[1]]) {
+    await changeManifest(root, definition, { optionalDependencies: { "better-sqlite3": "12.6.2" } });
+  }
+  const path = join(root, "build.mjs");
+  await writeFile(path, (await readFile(path, "utf8")) + "fs.appendFileSync('dist/entry0.js',\"import 'better-sqlite3';\");");
+  const scratch = join(root, "scratch"), result = await prepare(root, scratch, () => {}), logs = [];
+  assert.deepEqual(result.errors, []);
+  await assert.rejects(consume(result.artifacts, scratch, line => logs.push(line),
+    { execute: nativeFixtureExecutor(result.artifacts) }), error =>
+      error.message.includes(`${core.name}:`) && error.message.includes("better-sqlite3"));
+  assert.ok(!logs.some(line => line.includes("native sqlite ready")));
+}));
+
+
 test("the held private snapshot's preparation inventory cannot admit a new packed path", { timeout: 120_000 }, () => fixture(async root => {
   await sourceTree(root);
   const dir = join(root, packages[2].directory);
@@ -349,6 +614,28 @@ test("the held private snapshot's preparation inventory cannot admit a new packe
   assert.equal(changed.artifacts.length, 4);
 }));
 
+
+test("generator admission preserves the cause when a required packed dependency is missing", async () => {
+  await assert.rejects(checkGenerator("/unused", [{ manifest: manifest(packages[4]) }], () => {}), /missing packed generator dependency: @kynesyslabs\/dacs/);
+});
+
+
+test("a build-time private blocker cannot approve a four-package consumer", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, plannedVersion);
+  const path = join(root, packages[2].directory, "build.mjs");
+  await writeFile(path, (await readFile(path, "utf8")) +
+    "const p=JSON.parse(fs.readFileSync('package.json'));p.private=true;fs.writeFileSync('package.json',JSON.stringify(p));");
+  const logs = [], outputDirectory = join(root, "results");
+  await assert.rejects(release("check", { root, outputDirectory, log: line => logs.push(line) }), /private package/);
+  assert.ok(!logs.some(line => line.includes("Release checks passed")));
+  const [run] = await readdir(outputDirectory);
+  const result = JSON.parse(await readFile(join(outputDirectory, run, "result.json")));
+  assert.equal(result.status, "blocked");
+  assert.ok(result.notReady.some(e => e.includes("private package")));
+  assert.ok(result.errors.some(e => e.includes("all five")));
+  const receipt = JSON.parse(await readFile(join(outputDirectory, run, "without-native/receipt.json")));
+  assert.deepEqual(receipt.artifacts.map(a => a.name), packages.filter(p => p !== packages[2]).map(p => p.name));
+}));
 
 test("known blockers do not mask independent source or packed manifest defects", { timeout: 240_000 }, () => fixture(async root => {
   for (const packed of [false, true]) {
@@ -508,6 +795,51 @@ test("lock evidence requires package maps and installed resolutions with explici
   assert.throws(() => validateLock(bundled, []), /resolution/);
 });
 
+// Reify only local fixture archives; never ask npm to resolve optional registry metadata.
+function nativeFixtureExecutor(artifacts) {
+  const nativeVersion = "12.6.2";
+  return (command, args, cwd, env) => {
+    if (command !== "npm") return execute(command, args, cwd);
+    if (args[0] === "rebuild") {
+      assert.deepEqual(args, ["rebuild", `better-sqlite3@${nativeVersion}`, "--ignore-scripts=false", "--foreground-scripts", "--no-audit", "--no-fund"]);
+      assert.equal(env.npm_config_jobs, "2");
+      assert.equal(env.npm_config_devdir, join(cwd, "../node-gyp"));
+      assert.equal(JSON.parse(readFileSync(join(cwd, "node_modules/better-sqlite3/package.json"))).version, nativeVersion);
+      return "fixture native rebuild";
+    }
+    assert.equal(args[0], "install");
+    assert.deepEqual(args.slice(1, 5), ["--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional"]);
+    artifacts ??= args.slice(5).map(tarball => ({ tarball,
+      manifest: JSON.parse(execFileSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" })),
+    }));
+    const p = JSON.parse(readFileSync(join(cwd, "package.json")));
+    const native = args.includes(`better-sqlite3@${nativeVersion}`);
+    const lock = { lockfileVersion: 3, packages: { "": p } };
+    p.dependencies ??= {};
+    for (const artifact of artifacts) {
+      const dir = join(cwd, "node_modules", artifact.manifest.name);
+      mkdirSync(dir, { recursive: true });
+      execFileSync("tar", ["-xzf", artifact.tarball, "-C", dir, "--strip-components=1"]);
+      p.dependencies[artifact.manifest.name] = `file:${artifact.tarball}`;
+      lock.packages[`node_modules/${artifact.manifest.name}`] = {
+        version: artifact.manifest.version, resolved: `file:${artifact.tarball}`,
+      };
+    }
+    if (native) {
+      assert.deepEqual(args.slice(5), ["--save-exact", `better-sqlite3@${nativeVersion}`]);
+      const dir = join(cwd, "node_modules/better-sqlite3"); mkdirSync(dir);
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "better-sqlite3", version: nativeVersion, main: "index.cjs" }));
+      writeFileSync(join(dir, "index.cjs"), "module.exports = class { prepare() { return { get: () => ({ready: 1}) }; } close() {} };\n");
+      p.dependencies["better-sqlite3"] = nativeVersion;
+      lock.packages["node_modules/better-sqlite3"] = { version: nativeVersion,
+        resolved: `https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-${nativeVersion}.tgz` };
+    } else assert.deepEqual(args.slice(5), artifacts.map(a => a.tarball));
+    writeFileSync(join(cwd, "package.json"), JSON.stringify(p));
+    writeFileSync(join(cwd, "package-lock.json"), JSON.stringify(lock));
+    return "";
+  };
+}
+
 test("empty internal runtime pins cannot pass strict five-package admission", () => {
   for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
     const artifacts = packages.map(definition => ({
@@ -613,6 +945,69 @@ test("wildcard captures obey the same URL and subpath rules as literal exports",
     assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", `dist/${capture}.js`]), /export target|export subpath/);
   }
 });
+
+async function generatorConsumer(root, damage = "") {
+  const artifacts = [core, packages[1], packages[4]].map(definition => ({ manifest: manifest(definition) }));
+  artifacts[1].manifest.optionalDependencies = { "better-sqlite3": "12.6.2" };
+  const directory = join(root, "node_modules", packages[4].name);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "package.json"), JSON.stringify({ ...manifest(packages[4]), exports: "./index.js" }));
+  await writeFile(join(directory, "index.js"), `
+    import { mkdir, writeFile } from 'node:fs/promises';
+    export const CREATE_DACS_AGENT_VERSION = '0.1.0-alpha.0';
+    export async function createDacsAgentProject({targetDirectory, mode}) {
+      const p = {
+        dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION, '@kynesyslabs/dacs-node': CREATE_DACS_AGENT_VERSION,
+          ...(mode === 'live-demos' ? {'better-sqlite3': '12.6.2'} : {})},
+        ...(mode === 'live-demos' ? {dacs: {generatorVersion: CREATE_DACS_AGENT_VERSION}} : {})
+      };
+      ${damage}
+      await mkdir(targetDirectory, {recursive: true});
+      await writeFile(targetDirectory + '/package.json', JSON.stringify(p));
+    }
+  `);
+  return artifacts;
+}
+
+test("generated dependency maps obey registry policy in every section and mode", () => fixture(async root => {
+  const valid = await generatorConsumer(root);
+  await assert.doesNotReject(checkGenerator(root, valid, () => {}));
+  for (const mode of ["offline", "live-demos"]) {
+    for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "overrides", "resolutions"]) {
+      for (const spec of ["file:/tmp/owner-source", `npm:${core.name}@0.1.0-alpha.0`]) {
+        const artifacts = await generatorConsumer(root,
+          `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {}).other = ${JSON.stringify(spec)};`);
+        await assert.rejects(checkGenerator(root, artifacts, () => {}), /non-registry dependency/);
+      }
+    }
+  }
+}));
+
+for (const spec of [undefined, "9.9.9"]) {
+  test(`live generated native pin rejects ${spec === undefined ? "an omitted dependency" : "a version differing from the Node artifact"}`, () => fixture(async root => {
+    const damage = spec === undefined ? "delete p.dependencies['better-sqlite3'];" :
+      `p.dependencies['better-sqlite3'] = ${JSON.stringify(spec)};`;
+    const artifacts = await generatorConsumer(root, `if (mode === 'live-demos') { ${damage} }`);
+    await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+  }));
+}
+
+test("live generated driver requires the exact qualified optional pin", () => fixture(async root => {
+  const artifacts = await generatorConsumer(root);
+  delete artifacts[1].manifest.optionalDependencies;
+  await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+  artifacts[1].manifest.optionalDependencies = { "better-sqlite3": "^12.6.2" };
+  await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+  artifacts[1].manifest.optionalDependencies["better-sqlite3"] = "11.8.1";
+  await generatorConsumer(root, "if (mode === 'live-demos') p.dependencies['better-sqlite3'] = '11.8.1';");
+  await assert.doesNotReject(checkGenerator(root, artifacts, () => {}));
+}));
+
+test("live generation rejects matching absent Node and generated native pins", () => fixture(async root => {
+  const artifacts = await generatorConsumer(root, "delete p.dependencies['better-sqlite3'];");
+  delete artifacts[1].manifest.optionalDependencies;
+  await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch: live-demos better-sqlite3/);
+}));
 
 test("wildcard exports preserve dollar tokens in literal filenames and Node imports", async () => {
   const root = await mkdtemp(join(tmpdir(), "dacs-export-dollars-"));
@@ -722,6 +1117,54 @@ test("non-strict artifact admission rejects unknown and duplicate identities and
     assert.throws(() => validateArtifactSet([{ manifest: { ...manifest(), ...damage } }]), /identity|publish policy/);
   }
 });
+
+test("generated runtime sections reject mismatched internal pins", () => fixture(async root => {
+  for (const mode of ["offline", "live-demos"]) {
+    for (const section of ["optionalDependencies", "peerDependencies", "dependencies"]) {
+      for (const definition of packages) {
+        const artifacts = await generatorConsumer(root,
+          `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {})[${JSON.stringify(definition.name)}] = '^0.1.0-alpha.0';`);
+        artifacts.push(...packages.filter(d => !artifacts.some(a => a.manifest.name === d.name)).map(d => ({ manifest: manifest(d) })));
+        await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated dependency mismatch/);
+      }
+      const pins = Object.fromEntries(packages.map(d => [d.name, "0.1.0-alpha.0"]));
+      const artifacts = await generatorConsumer(root,
+        `if (mode === ${JSON.stringify(mode)}) Object.assign(p[${JSON.stringify(section)}] ??= {}, ${JSON.stringify(pins)});`);
+      artifacts.push(...packages.filter(d => !artifacts.some(a => a.manifest.name === d.name)).map(d => ({ manifest: manifest(d) })));
+      await assert.doesNotReject(checkGenerator(root, artifacts, () => {}));
+    }
+  }
+}));
+
+test("generated native runtime declarations reject mismatched pins", () => fixture(async root => {
+  for (const mode of ["live-demos", "offline"]) {
+    for (const section of ["optionalDependencies", "peerDependencies", "dependencies"]) {
+      for (const spec of ["11.8.1", "^12.6.2"]) {
+        const artifacts = await generatorConsumer(root,
+          `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {})['better-sqlite3'] = ${JSON.stringify(spec)};`);
+        await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+      }
+      const artifacts = await generatorConsumer(root,
+        `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {})['better-sqlite3'] = '12.6.2';`);
+      await assert.doesNotReject(checkGenerator(root, artifacts, () => {}));
+    }
+  }
+}));
+
+test("packed imports use the selected conditional target's JSON attribute", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, plannedVersion, true);
+  const definition = packages[2], path = join(root, definition.directory, "package.json");
+  const p = JSON.parse(await readFile(path, "utf8"));
+  p.exports["."] = { node: "./src/entry0.mjs", default: "./package.json" };
+  p.exports["./metadata"] = { node: "./package.json", default: "./src/entry0.mjs" };
+  p.exports["./fallback"] = { browser: "./package.json", import: "./src/entry0.mjs" };
+  await writeFile(path, JSON.stringify(p));
+  const logs = [], result = await release("check", { root, log: line => logs.push(line), execute: nativeFixtureExecutor() });
+  assert.equal(result.ready, true);
+  for (const suffix of ["", "/metadata", "/fallback"]) {
+    assert.ok(logs.includes(`imported ${definition.name}${suffix}`));
+  }
+}));
 
 test("a star is a wildcard only in pattern export keys, never in entry fields or literal exports", () => {
   const def = packages[4];
