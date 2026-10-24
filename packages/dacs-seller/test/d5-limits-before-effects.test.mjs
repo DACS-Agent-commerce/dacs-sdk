@@ -10,7 +10,7 @@ import {canonicalize,identityBundleHash,sha256Hex} from '@kynesyslabs/dacs';
 const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs');
 const {createSellerContextRoute,SELLER_CONTEXT_LIMITS}=await import('../src/dacs/seller-context-route.mjs');
 const {createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
-import {JOBS,T,key,bundleFor,exchange,world} from './helpers/d5-http-fixture.mjs';
+import {JOBS,T,key,bundleFor,exchange,presentContext,world} from './helpers/d5-http-fixture.mjs';
 
 test('transport job capacity is independent of live nonce capacity, with completed jobs retained', async t => {
  const dir=await mkdtemp(join(tmpdir(),'seller-job-capacity-'));t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -49,7 +49,7 @@ test('B3 accepted start at the exact one-hour boundary is outside the rolling co
  w.advance(1);assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,200);assert.equal(w.effects().writes,2);assert.deepEqual(SELLER_CONTEXT_LIMITS,{maxStartsPerBuyerPerHour:5,maxStartsPerHour:12});
 });
 test('B4 retries use the durable answer and cannot reserve or execute another write',async t=>{
- const w=await world(t);const input=await w.wire(),first=await exchange(w.handler,input),before=w.effects();
+ const w=await world(t,{recover:presentContext});const input=await w.wire(),first=await exchange(w.handler,input),before=w.effects();
  assert.equal((await exchange(w.handler,input)).text,first.text);assert.deepEqual(effectState(w.effects()),effectState(before));
  const fresh=await exchange(w.handler,await w.wire());assert.equal(fresh.text,first.text);assert.deepEqual(effectState(w.effects()),effectState(before));
 });
@@ -213,7 +213,7 @@ test('B43 the context client preserves a signed canonical-job refusal as a defin
 });
 
 test('B17 retries and unknown-job state reads retain bounded nonce answers without new effects; another buyer still starts',async t=>{
- const w=await world(t,{maxRecords:128,maxRequestsPerWindow:1000});const first=await w.wire();await exchange(w.handler,first);
+ const w=await world(t,{maxRecords:128,maxRequestsPerWindow:1000,recover:presentContext});const first=await w.wire();await exchange(w.handler,first);
  const before=w.effects();assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,409);
  for(let i=0;i<20;i++){
   assert.equal((await exchange(w.handler,await w.wire())).status,200);
@@ -224,7 +224,7 @@ test('B17 retries and unknown-job state reads retain bounded nonce answers witho
  assert.deepEqual(effectState(w.effects()),effectState(before));assert.equal((await exchange(w.handler,await w.wire({actor:w.other,jobId:JOBS[2]}))).status,200);
 });
 test('B18 completed expired nonces free capacity after restart while old effect answers remain',async t=>{
- const requestLifetimeMs=30000,nonceWindowMs=60000,w=await world(t,{maxRecords:1}),first=await w.wire(),firstAnswer=await exchange(w.handler,first);
+ const requestLifetimeMs=30000,nonceWindowMs=60000,w=await world(t,{maxRecords:1,recover:presentContext}),first=await w.wire(),firstAnswer=await exchange(w.handler,first);
  assert.equal(firstAnswer.status,200);w.advance(requestLifetimeMs+1);
  const reopened=createSellerTransportStore({path:w.path,maxRecords:1,maxContextRecords:10000,now:w.now});t.after(()=>reopened.close());
  const early=await w.wire({actor:w.other,jobId:JOBS[1]});
@@ -247,7 +247,7 @@ test('B19 new nonce rows are bounded per buyer before journaling, and expire out
  w.advance(60000);assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,200);
 });
 test('B20 a successful unsigned-cut resume uses one remaining-write hold and the same admission',async t=>{
- let calls=0;const w=await world(t,{perform:async body=>{if(++calls===1)throw new Error('unsigned shutdown cut');return {disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}}},resumable:async()=>({writes:1})});
+ let calls=0;const w=await world(t,{perform:async body=>{if(++calls===1)throw new Error('unsigned shutdown cut');return presentContext(body)},recover:async body=>calls>1?presentContext(body):null,resumable:async()=>({writes:1})});
  const input=await w.wire();assert.equal((await exchange(w.handler,input)).status,503);const before=w.effects(),admitted=w.store.contextAdmission(JOBS[0]);
  let resumed=false;const original=w.store.resume;w.store.resume=(...args)=>{const result=original(...args);resumed=result.resumed;return result};
  assert.equal((await exchange(w.handler,await w.wire())).status,200);assert.equal(resumed,true);assert.equal(w.effects().holds,before.holds+1);assert.equal(w.effects().writes,before.writes+1);assert.deepEqual(w.store.contextAdmission(JOBS[0]),admitted);
@@ -430,4 +430,14 @@ for(const missing of ['admitWrites','releaseWrites','writable','recover'])test(`
 test('provider sees the active purchase guard before each write and after cancellation',async t=>{
  let open=true;const decisions=[];const w=await world(t,{writable:()=>open,perform:async(body,options)=>{decisions.push(options?.writable?.());open=false;decisions.push(options?.writable?.());return {disposition:'rejected'};}});
  await exchange(w.handler,await w.wire());assert.deepEqual(decisions,[true,false]);
+});
+test('an asynchronous buyer access refusal stops a start before any hold or write',async t=>{
+ const w=await world(t,{assertBuyerAccess:async()=>{throw Object.assign(new Error('closed'),{code:'buyer_access_closed'})}}),before=w.effects();
+ const out=await exchange(w.handler,await w.wire());assert.equal(out.status,409);assert.equal(JSON.parse(out.text).error,'buyer_access_closed');assert.deepEqual(effectState(w.effects()),effectState(before));
+});
+test('a saved present answer is not repeated once its Vet records no longer verify',async t=>{
+ let verified=true;const w=await world(t,{recover:async body=>verified?presentContext(body):null}),input=await w.wire();
+ assert.equal((await exchange(w.handler,input)).status,200);const before=w.effects();verified=false;
+ const replay=await exchange(w.handler,input);assert.equal(replay.status,503);assert.equal(JSON.parse(replay.text).error,'operation_uncertain');assert.deepEqual(effectState(w.effects()),effectState(before));
+ verified=true;assert.equal((await exchange(w.handler,input)).status,200);
 });
