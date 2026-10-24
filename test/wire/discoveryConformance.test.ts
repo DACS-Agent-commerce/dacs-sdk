@@ -79,7 +79,7 @@ it("authority is rechecked after each trusted reader returns", async () => {
     const c = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: a.agreementHash, listingPin: listing.pin, committedAt: NOW - 5000 });
     let calls = 0;
     const options = { ...x.options, listing: { ...x.options.listing, listingPin: listing.pin },
-      request: { ...x.request, path: wire.DACS_SELLER_HTTP_PATHS.payments, agreementHash: a.agreementHash },
+      request: { ...x.request, path: boundary === "receipt" ? wire.DACS_SELLER_HTTP_PATHS.payments : wire.DACS_SELLER_HTTP_PATHS.proposals, agreementHash: a.agreementHash },
       ...(boundary === "receipt" ? { commitment: received(c), agreement: received(a.agreement), signedListing: received(listing.listing) } : {}),
       readListingEligibility: (scope: Parameters<wire.ListingEligibilityReader>[0]) => { if (boundary === "eligibility") { calls++; x.revoke(); } return readFixtureListingEligibility(scope); },
       readCommitmentReceipt: Object.assign(() => { calls++; x.revoke(); return "valid"; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) };
