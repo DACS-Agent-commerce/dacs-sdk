@@ -580,6 +580,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` | 7c52736459700578f31e4223dc7c1fae4528b275 |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | 630f67cd493c31464a65b27db6c3eb3f5fe0a8c1 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 47763286db946e57755aec2a43523eb3215a1276 |
+| D11 | fix(client): D11 let SQLite identify empty exec remainders | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 4342294acfd3f71ee5c3f348f08ac542b0596392 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | cf66e34a3816d78a633002b462ff99253850a429 |
 
 ## Reviewed merge snapshots
 
@@ -1449,6 +1452,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` |
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
