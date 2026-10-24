@@ -692,14 +692,15 @@ accessor property or an exotic prototype is refused outright
 (`tp1_identity_record_invalid`, `tp1_local_binding_invalid`), whatever it
 answers; frozen plain data is accepted. String values are compared after CF-1
 normalization, the form the approval digest has always covered. Verifiers copy
-their current connection the same way, and `verifySellerSessionDelegation` and
-`signWireRequest` copy a caller's delegation once, so the payload checked,
+their current connection the same way, and `signWireRequest` copies a caller's delegation once. Received delegations at
+`verifySellerSessionDelegation` must be bounded bytes or values from wire admission, so the payload checked,
 returned, used to bound the request's expiry and embedded in the header is the
 one whose signature verified (`peer_delegation_invalid` otherwise).
 
-The same rule holds at every exported function in `src/wire/` that takes a
-caller-built record, payload, envelope, profile or options object: it takes
-one owned, data-only copy at entry and checks and uses only that copy.
+The named admission, signing, verification and profile boundaries below take
+one owned, data-only copy of caller-built records and use that copy. This is
+not a guarantee for every utility export: `wireOperationId` requires a trusted request,
+and helpers outside these boundaries must be called with their documented input types.
 - **Payloads, requests, delegations and profiles** are copied with
   `snapshotCanonicalJsonRead`, which accepts frozen plain data and refuses a
   Proxy, an accessor, an exotic prototype or an `undefined` member. So the
@@ -734,17 +735,11 @@ one owned, data-only copy at entry and checks and uses only that copy.
 No shipped module takes another approval list: there is no test entry point
 in `src/` or `dist/`. Tests need bindings for synthetic records, so they
 replace `src/wire/approval.ts` with `test/wire/testApproval.ts` through
-`vi.mock`, and call the same `bindTp1Profile`. `test/wire/wire.test.ts` pins
-that only `profile.ts` imports the approval module in `src/`, `packages/` and
-`scripts/`. `test/wire/builtPackage.test.ts` builds the package, copies the
-compiled output into a scratch `node_modules` for a consumer in a separate
-Node process, imports every compiled wire module
-by its resolved file path, and checks that none offers an approval, that the
-consumer's own attempts give zero signatures, that every reachable function's
-result is refused as a binding, and that every verification entry point
-refuses a forged binding. A copy of that build whose `approval.js` alone names
-the synthetic vector record shows the compiled verifiers also refuse a changed
-connection and an unverified envelope.
+`vi.mock`, and call the same `bindTp1Profile`. Current source-level approval
+and boundary evidence is in `test/wire/approvedIdentity.test.ts`,
+`test/wire/authority.test.ts` and `test/wire/networkIdentity.test.ts`.
+Approval-import topology and a separate compiled-package consumer are not
+qualified by those tests; compiled-consumer checks are planned with package export.
 
 Every signing function (`signWireRequest`, `signWireResponse`,
 `signWireEnvelope`, `signSellerSessionDelegation`,
@@ -848,7 +843,8 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `wire_artifact_rejected` (500) | `admitWireArtifact` given bytes CF-5 admission refuses; the detail is admission's own code |
 | `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price PayeeBoundAgreementDocument (a plain or identity-bound one included, or one carrying another discriminator beside it: detail `DISCRIMINATOR`; or a `terms.priorPaymentDispositionRef`, which TP-1 has no `pay-alternative` phase for: detail `PRIOR-DISPOSITION`), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7); or whose terms the SDK's DACS-3 §8.5.2 verifier refuses against the signed Listing at `committedAt` (currency, price, rail, deliverable, pattern, parties: detail `LISTING-TERMS`, its `cause` the verifier's error) |
 | `continuation_commitment_invalid` (500) | a `commitment` given as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or as bytes admission refuses; or whose record, seller signature or finalized receipt does not check, whose receipt is not a CORE §5.1 AnchorReceipt or whose transaction reference is not a ChainTxRef, whose receipt time is before the Agreement's `generatedAt`, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
-| `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader that answered anything but a disposition (a promise included) |
+| `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader whose awaited result is not a disposition; synchronous and asynchronous readers are accepted |
+| `commitment_reader_chain_mismatch` (500) | the trusted receipt reader's `chainIdentity` is absent or differs from the verified binding's chain; checked before invoking the reader |
 | `commitment_unverified` (503) | the receipt reader answered `indeterminate` or `error`: the commitment is not established, never final |
 | `seller_commitment_required` (500), `peer_agreement_uncommitted` (409) | a payment or delivery request checked without the job's commitment, or with `commitment: null` (the seller's own reader found none) |
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |

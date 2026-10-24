@@ -37,3 +37,12 @@ it("scopes the discovery and CA-7 contract to its actual keys and routes", () =>
   expect(text).toContain("before Agreement or commitment signature interpretation");
   expect(text).toContain("Read routes enforce retained request scope");
 });
+
+it("documents receipt reader and owned-input contracts accurately", () => {
+  const text = readFileSync(resolve(docs, "dacs-seller-http-v1.md"), "utf8");
+  expect(text).not.toContain("at every exported function");
+  expect(text).toContain("`wireOperationId` requires a trusted request");
+  expect(text).not.toContain("(a promise included)");
+  expect(text).toContain("`commitment_reader_chain_mismatch`");
+  expect(text).not.toContain("that only `profile.ts` imports the approval module");
+});
