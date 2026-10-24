@@ -13,6 +13,12 @@ describe("TP-1 documentation available on this stack prefix", () => {
       if (target) expect(existsSync(resolve(dirname(file), target)), `${name}: ${href}`).toBe(true);
     }
   });
+  it.each(names)("cites existing local source and tests in %s", name => {
+    const text = readFileSync(resolve(docs, name), "utf8");
+    for (const [, path] of text.matchAll(/`((?:src|test)\/[A-Za-z0-9_./-]+\.(?:ts|json|mjs))`/g)) {
+      if (path) expect(existsSync(path), `${name}: ${path}`).toBe(true);
+    }
+  });
   it("names the internal profile record until the wire package export exists", () => {
     const pkg: { exports: Record<string, unknown> } = JSON.parse(readFileSync("package.json", "utf8"));
     if (!pkg.exports["./wire"]) {
