@@ -3,6 +3,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/jcs.js";
 import { RawJsonAdmissionError } from "../../src/canonical/rawJson.js";
+import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/ed25519.js";
 import { DacsError, faultCategory } from "../../src/errors.js";
 import * as wire from "../../src/wire/index.js";
 
@@ -28,7 +29,7 @@ function refusal(action: () => unknown): wire.WireError {
 }
 
 describe("wire CF-5 admission", () => {
-  // Byte-exact Standard corpus; wire additionally refuses non-NFC string values.
+  // Byte-exact Standard corpus, including CF-1 normalization after admission.
   for (const vector of vectors) {
     it(vector.name, () => {
       const bytes = vector.rawHex === undefined
@@ -39,17 +40,6 @@ describe("wire CF-5 admission", () => {
           cause: { name: "RawJsonAdmissionError", code: vector.expectedErrorCode },
         });
       } else {
-        const parsed: unknown = JSON.parse(bytes.toString("utf8"));
-        if (JSON.stringify(parsed) !== JSON.stringify(JSON.parse(canonicalize(parsed)))) {
-          // Member order is allowed; only normalized string values change meaning.
-          const containsNfd = (value: unknown): boolean => typeof value === "string"
-            ? value !== value.normalize("NFC")
-            : value !== null && typeof value === "object" && Object.values(value).some(containsNfd);
-          if (containsNfd(parsed)) {
-            expect(refusal(() => admit(bytes))).toMatchObject({ detail: "WIRE-NON-NFC-STRING" });
-            return;
-          }
-        }
         expect(Buffer.from(canonicalize(admit(bytes))).toString("hex")).toBe(vector.canonicalUtf8Hex);
       }
     });
@@ -154,4 +144,105 @@ it("decodes only exact canonical envelope signatures and wallet encodings", () =
   expect(wire.walletSignatureBytes(` 0x0x${bytes.toString("hex")} `)).toEqual(bytes);
   expect(wire.walletSignatureBytes(encoded)).toEqual(bytes);
   expect(refusal(() => wire.walletSignatureBytes(bytes))).toMatchObject({ code: "peer_delegation_signature_invalid" });
+});
+
+
+it("snapshots __proto__ as an own data property without changing the prototype", () => {
+  const input: unknown = JSON.parse('{"__proto__":{"extra":1}}');
+  const fields = wire.ownedFields(input, ["__proto__"]);
+  expect(Object.getPrototypeOf(fields)).toBe(Object.prototype);
+  expect(Object.getOwnPropertyDescriptor(fields, "__proto__")).toMatchObject({ value: { extra: 1 } });
+  expect(Object.hasOwn(fields, "extra")).toBe(false);
+  expect("extra" in fields).toBe(false);
+});
+
+it("counts non-enumerable and symbol own keys in exact-key predicates", () => {
+  const pin = { listingId: "listing", version: 1, contentHash: "a".repeat(64) };
+  expect(wire.hasKeys(pin, ["listingId", "version", "contentHash"])).toBe(true);
+  for (const key of ["extra", Symbol("extra")]) {
+    const extra = Object.defineProperty({ ...pin }, key, { value: true });
+    expect(wire.hasKeys(extra, ["listingId", "version", "contentHash"])).toBe(false);
+    expect(wire.isListingPin(extra)).toBe(false);
+  }
+  expect(wire.hasKeys(Object.create({ field: 1 }), ["field"])).toBe(false);
+});
+
+describe("ListingPin boundaries", () => {
+  const pin = { listingId: "Aaz09._~-", version: 1, contentHash: "a".repeat(64) };
+  it.each([
+    pin,
+    { ...pin, listingId: "x".repeat(128), version: Number.MAX_SAFE_INTEGER },
+  ])("accepts supported tuple %#", (value) => {
+    expect(wire.isListingPin(value)).toBe(true);
+  });
+  it.each([
+    null, [], {}, { ...pin, extra: 1 }, { ...pin, contentHash: undefined },
+    { ...pin, listingId: "" }, { ...pin, listingId: "x".repeat(129) },
+    { ...pin, listingId: "a/b" }, { ...pin, listingId: "é" }, { ...pin, listingId: 1 },
+    ...[0, -0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1"].map((version) => ({ ...pin, version })),
+    ...["a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64), null].map((contentHash) => ({ ...pin, contentHash })),
+  ])("refuses malformed tuple %#", (value) => {
+    expect(wire.isListingPin(value)).toBe(false);
+  });
+});
+
+it("checks scalar and claim boundaries", () => {
+  for (const value of [0, 1, Number.MAX_SAFE_INTEGER]) expect(wire.isUint(value)).toBe(true);
+  for (const value of [-0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1", null]) expect(wire.isUint(value)).toBe(false);
+  const hex = "ab".repeat(32);
+  expect(wire.isHash(hex)).toBe(true);
+  expect(wire.isClaim(`did:demos:agent:${hex}`)).toBe(true);
+  for (const value of [null, 1, hex.slice(1), `${hex}a`, hex.toUpperCase(), "g".repeat(64)]) {
+    expect(wire.isHash(value)).toBe(false);
+    expect(wire.isClaim(typeof value === "string" ? `did:demos:agent:${value}` : value)).toBe(false);
+  }
+  expect(wire.isClaim(hex)).toBe(false);
+  expect(wire.isClaim(`did:demos:agent:${hex}?network=testnet`)).toBe(false);
+  expect(wire.claimKey(`did:demos:agent:${hex}`)).toBe(hex);
+  expect(wire.claimKey(hex)).toBe(hex);
+});
+
+it("verifies Ed25519 against the exact message, signature and key", () => {
+  const message = Buffer.from("wire validation regression");
+  const seed = Buffer.alloc(32, 11);
+  const publicHex = Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex");
+  const signature = ed25519Sign(message, privateKeyFromSeed(seed));
+  expect(wire.verifyEd25519(message, signature, publicHex)).toBe(true);
+  expect(wire.verifyEd25519(Buffer.from("changed message"), signature, publicHex)).toBe(false);
+  const otherHex = Buffer.from(rawPublicKey(publicKeyFromSeed(Buffer.alloc(32, 12)))).toString("hex");
+  expect(wire.verifyEd25519(message, signature, otherHex)).toBe(false);
+  const changedSignature = Buffer.from(signature);
+  changedSignature[0] = (changedSignature[0] ?? 0) ^ 1;
+  expect(wire.verifyEd25519(message, changedSignature, publicHex)).toBe(false);
+  for (const value of [signature.subarray(1), Buffer.alloc(65)]) expect(wire.verifyEd25519(message, value, publicHex)).toBe(false);
+  for (const value of ["", "g".repeat(64), publicHex.slice(2), publicHex.toUpperCase()]) expect(wire.verifyEd25519(message, signature, value)).toBe(false);
+});
+
+
+it("preserves received string values until canonicalization, including array values", () => {
+  const value = admit(Buffer.from('{"text":"e\u0301","items":["e\u0301"]}'));
+  expect(value).toEqual({ text: "e\u0301", items: ["e\u0301"] });
+  expect(canonicalize(value)).toBe('{"items":["é"],"text":"é"}');
+});
+
+it("refuses detached byte views with the requested wire code and copy cause", () => {
+  const bytes = new Uint8Array([1]);
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
+  expect(refusal(() => wire.ownedBytes(bytes, "detached_input", 400)))
+    .toMatchObject({ code: "detached_input", status: 400, cause: expect.any(TypeError) });
+});
+
+it("rejects hostile predicate inputs without executing traps or accessors", () => {
+  let reads = 0;
+  const trap = () => { reads++; throw new Error("must not execute"); };
+  const { proxy: revoked, revoke } = Proxy.revocable({}, {});
+  revoke();
+  for (const value of [
+    new Proxy({}, { ownKeys: trap, get: trap }), revoked,
+    { listingId: "listing", version: 1, get contentHash() { return trap(); } },
+  ]) {
+    expect(wire.hasKeys(value, ["listingId", "version", "contentHash"])).toBe(false);
+    expect(wire.isListingPin(value)).toBe(false);
+  }
+  expect(reads).toBe(0);
 });
