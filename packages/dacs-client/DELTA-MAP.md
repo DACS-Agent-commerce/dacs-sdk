@@ -527,6 +527,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | eb7c37692bdd5da4ac476e6791a35172f404212e |
 | D11 | fix(client): D11 qualify merged transaction source | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 78994cc83d1c0bbe3065bec8852ea8b37f8d1988 |
+| D11 | fix(client): D11 select historical changes in provenance deletion probes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 052a7eaf5e1cf405c211dcd21b9ef1e3faad108a |
 | D11 | delta(client): D11 split 05 validate retained host transfer observations | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:154`, `packages/dacs-client/src/dacs/chain.mjs:160`, `packages/dacs-client/src/dacs/chain.mjs:249` | 597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:24`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:51`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:258`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:266`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:270`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:343`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:434`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:493`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:560`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:671`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:695`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:870`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1116`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1159`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1314`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1320` | fe7f09a4177ea24fb5161ba2983755df49b09901 |
@@ -1306,6 +1308,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 qualify merged transaction source | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 qualify merged transaction source | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 | delta(client): D11 split 05 validate retained host transfer observations | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): D11 split 05 validate retained host transfer observations | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): D11 split 05 validate retained host transfer observations | `packages/dacs-client/DELTA-MAP.md:1` |
