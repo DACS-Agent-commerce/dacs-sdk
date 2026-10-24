@@ -50,10 +50,13 @@ const BASE64URL_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 
 export type JsonRecord = Record<string, unknown>;
 export const isRecord = (v: unknown): v is JsonRecord =>
-  v !== null && typeof v === "object" && !Array.isArray(v);
+  v !== null && typeof v === "object" && !types.isProxy(v) && !Array.isArray(v);
 /** Exactly these own keys, no more, no fewer. */
 export const hasKeys = (v: unknown, expected: readonly string[]): v is JsonRecord =>
-  isRecord(v) && Reflect.ownKeys(v).length === expected.length && expected.every((k) => Object.hasOwn(v, k));
+  isRecord(v) && Reflect.ownKeys(v).length === expected.length && expected.every((k) => {
+    const descriptor = Object.getOwnPropertyDescriptor(v, k);
+    return descriptor !== undefined && "value" in descriptor;
+  });
 /** The pre-TP-1 shape: exactly `fields` except `profile`. A profile-less message names its own refusal. */
 export const lacksProfile = (v: unknown, fields: readonly string[]): boolean =>
   hasKeys(v, fields.filter((f) => f !== "profile"));
@@ -122,8 +125,10 @@ export interface ByteLimit {
 export function ownedBytes(value: unknown, code = "wire_input_invalid", status = 500, limit?: ByteLimit): Buffer {
   if (!types.isUint8Array(value)) return fail(code, status);
   if (limit !== undefined && viewByteLength(value) > limit.maxBytes) return fail(limit.code, limit.status, "BYTE-LIMIT-EXCEEDED");
-  const copy = new Uint8Array(value);
-  return Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength);
+  try {
+    const copy = new Uint8Array(value);
+    return Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength);
+  } catch (cause) { return fail(code, status, undefined, cause); }
 }
 /** `method` taken at module load: a later patch of its prototype does not change what it does here. */
 export const uncurry = <A extends unknown[], R>(method: (...args: A) => R) =>

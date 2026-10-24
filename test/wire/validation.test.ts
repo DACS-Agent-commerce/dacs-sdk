@@ -217,3 +217,32 @@ it("verifies Ed25519 against the exact message, signature and key", () => {
   for (const value of [signature.subarray(1), Buffer.alloc(65)]) expect(wire.verifyEd25519(message, value, publicHex)).toBe(false);
   for (const value of ["", "g".repeat(64), publicHex.slice(2), publicHex.toUpperCase()]) expect(wire.verifyEd25519(message, signature, value)).toBe(false);
 });
+
+
+it("preserves received string values until canonicalization, including array values", () => {
+  const value = admit(Buffer.from('{"text":"e\u0301","items":["e\u0301"]}'));
+  expect(value).toEqual({ text: "e\u0301", items: ["e\u0301"] });
+  expect(canonicalize(value)).toBe('{"items":["é"],"text":"é"}');
+});
+
+it("refuses detached byte views with the requested wire code and copy cause", () => {
+  const bytes = new Uint8Array([1]);
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
+  expect(refusal(() => wire.ownedBytes(bytes, "detached_input", 400)))
+    .toMatchObject({ code: "detached_input", status: 400, cause: expect.any(TypeError) });
+});
+
+it("rejects hostile predicate inputs without executing traps or accessors", () => {
+  let reads = 0;
+  const trap = () => { reads++; throw new Error("must not execute"); };
+  const { proxy: revoked, revoke } = Proxy.revocable({}, {});
+  revoke();
+  for (const value of [
+    new Proxy({}, { ownKeys: trap, get: trap }), revoked,
+    { listingId: "listing", version: 1, get contentHash() { return trap(); } },
+  ]) {
+    expect(wire.hasKeys(value, ["listingId", "version", "contentHash"])).toBe(false);
+    expect(wire.isListingPin(value)).toBe(false);
+  }
+  expect(reads).toBe(0);
+});
