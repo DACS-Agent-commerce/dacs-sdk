@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "00fd0a1d73df6ab8931f2cad6aa38d87a93e4dd2"
+        "blob": "54a144374766968f6afecec13a8e7387abd72ee4"
       },
       "DELTA-LEDGER.json": {
-        "blob": "008d1f2b3377bb29e88d6b1181013bb39e8f03f5"
+        "blob": "12dcfc2262ee69ea7a291871880a49516109e1ac"
       },
       "DELTA-MAP.md": {
-        "blob": "d31b83f469e71755f3c5035c6c43756511b8c6c9"
+        "blob": "abf6d022f4980816844ce6adbde8e7925b2c18b1"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -385,7 +385,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "6df23e5c3d47dedc7eedd25436a3b920a475746e"
+        "blob": "95351a7f278c57c6a30139f51a0bed3f95906374"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "532c3a38ca7f07de3f91c0d5ce7186694f396b36"
+        "blob": "dd51d72f42310af3ee00f035a6d134fd7733ddb5"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1145,7 +1145,7 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "fe7f09a4177ea24fb5161ba2983755df49b09901"
+        "blob": "8a08a79ef38ce5593a6447714e82068f4da698ac"
       },
       "src/dacs/purchase-protocol.mjs": {
         "blob": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
@@ -1220,7 +1220,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "9050fd47c365e95cf63295837070a311a48111da"
+        "blob": "7ac41a6e4f20480403f32993a28954b42217f3e4"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1288,8 +1288,11 @@
       "test/delivery-evidence-gate.test.mjs": {
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
       },
+      "test/diagnostic-reader.test.mjs": {
+        "blob": "99154dd18992f65e0a498a9e2be1064fffa08a14"
+      },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"
+        "blob": "ef6723b2e7509c38a37fee121912cfc7c197895a"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
@@ -1610,7 +1613,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "3d124286ec49346c6a72fb0d8e15086ef06d3632"
+        "blob": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
