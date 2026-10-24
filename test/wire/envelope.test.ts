@@ -45,13 +45,20 @@ const OTHER_JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
 it.each([
   ["a payload changed after it was signed", (x: Awaited<ReturnType<typeof wireWorld>>) => ({ ...x.signed(x.delegation, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), payload: { ...x.delegation, jobId: OTHER_JOB } }), "peer_delegation_signature_invalid"],
   ["another job", (x: Awaited<ReturnType<typeof wireWorld>>) => x.signed({ ...x.delegation, jobId: OTHER_JOB }, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), "peer_delegation_mismatch"],
-  ["a lapsed lifetime", (x: Awaited<ReturnType<typeof wireWorld>>) => x.signed({ ...x.delegation, expiresAt: x.input.now }, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), "peer_delegation_expired"],
+  ["a start in the future", (x: Awaited<ReturnType<typeof wireWorld>>) => x.signed({ ...x.delegation, notBefore: x.input.now + 1 }, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), "peer_delegation_expired"],
 ])("emits no request signature when the supplied delegation has %s", async (_name, delegate, code) => {
   const x = await wireWorld();
   x.session.calls = 0;
   const ctx = { ...x.input, signer: x.session, purchaseProfile: x.binding.profile };
   await expect(wire.signWireEnvelope(x.request, ctx, delegate(x) as wire.SellerSessionDelegation)).rejects.toMatchObject({ code });
   expect(x.session.calls).toBe(0);
+});
+
+it("signs a request under a delegation that has expired, leaving the routes it serves to the receiver", async () => {
+  const x = await wireWorld();
+  const delegation = x.signed({ ...x.delegation, expiresAt: x.input.now }, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation) as wire.SellerSessionDelegation;
+  const header = await wire.signWireEnvelope(x.request, { ...x.input, signer: x.session, purchaseProfile: x.binding.profile }, delegation);
+  expect((await wire.openWireEnvelope(header, "request", x.context)).payload).toEqual(x.request);
 });
 
 async function continuationSigning(path: string) {
