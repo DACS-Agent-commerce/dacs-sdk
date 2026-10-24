@@ -63,7 +63,7 @@ async function proofFixture(ready = true, now = COMMITTED_AT) {
   const request = { ...purchase.scope.request, path: "/dacs/v1/payments" };
   const continuation = { request, commitment: artifactBytes(purchase.anchored), agreement: artifactBytes(purchase.agreement),
     signedListing: artifactBytes(purchase.listing), readCommitmentReceipt: Object.assign(async () => "valid", { chainIdentity: binding.profile.chainIdentity }) };
-  const scope = { binding, ...listing, now, request };
+  const scope = { binding, ...listing, now, request: { ...request, path: wire.DACS_SELLER_HTTP_PATHS.proposals } };
   return { purchase, payload, document, options, continuation, scope };
 }
 
@@ -99,6 +99,26 @@ it("rechecks revoked Listing decisions and seller readiness before a request can
   const drainingProof = await wire.verifyEndpointProof(draining.document(), draining.options);
   await expect(Promise.resolve().then(() => wireDiscovery.assertEndpointProof(drainingProof, draining.scope))).rejects.toMatchObject({ code: "seller_not_ready" });
 });
+
+it("awaits an asynchronous Listing decision and keeps the cause of its rejection", async () => {
+  const f = await proofFixture();
+  const readListingEligibility = async (scope: Parameters<wire.ListingEligibilityReader>[0]) => readFixtureListingEligibility(scope);
+  const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility });
+  await wire.assertEndpointProof(proof, f.scope);
+  const cause = new Error("listing store timeout");
+  const failing = async () => { throw cause; };
+  await expect(wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility: failing })).rejects.toBe(cause);
+});
+
+it.each([wire.DACS_SELLER_HTTP_PATHS.payments, wire.DACS_SELLER_HTTP_PATHS.bundleRequest, wire.DACS_SELLER_HTTP_PATHS.bundleCountersignature])(
+  "refuses a request on %s that carries no commitment evidence", async (path) => {
+    const f = await proofFixture();
+    const request = { ...f.continuation.request, path };
+    const proof = await wire.verifyEndpointProof(f.document(), f.options);
+    const refused = { code: "continuation_commitment_invalid", detail: "CONTINUATION-EVIDENCE-REQUIRED" };
+    await expect(wire.assertEndpointProof(proof, { ...f.scope, request })).rejects.toMatchObject(refused);
+    await expect(wire.verifyEndpointProof(f.document(), { ...f.options, request })).rejects.toMatchObject(refused);
+  });
 
 it("verifies a complete committed purchase at proof creation and on proof assertion", async () => {
   const f = await proofFixture(false, COMMITTED_AT + 120_000);
