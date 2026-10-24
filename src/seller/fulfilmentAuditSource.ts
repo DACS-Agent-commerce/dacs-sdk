@@ -439,7 +439,7 @@ const sameJcs = (left: unknown, right: unknown): boolean => {
  * source at delivery.
  */
 export function isSellerFulfilmentVetInvocationMismatch(
-  invocation: SellerFulfilmentVetRequirementInvocation,
+  invocation: unknown,
   context: {
     jobId: string;
     buyerClaim: string;
@@ -448,76 +448,85 @@ export function isSellerFulfilmentVetInvocationMismatch(
     bindings: ReadonlyMap<string, SellerFulfilmentVetBinding>;
   },
 ): boolean {
-  const key = canonicalize(invocation.vetRecordRef);
-  const binding = context.bindings.get(key);
-  const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
-  const requirementCandidates = [
-    ...invocation.requirement.required,
-    ...(invocation.requirement.oneOf ?? []).flat(),
-  ];
-  const seenResultRefs = new Set<string>();
-  const seenResultHashes = new Set<string>();
-  const listingOwned = binding?.roles.has("buyer") === true;
-  const expectedVerifier = listingOwned
-    ? context.sellerClaim
-    : binding?.roles.has("seller") === true
-      ? context.buyerClaim
-      : undefined;
-  const expectedCompositeAddress =
-    `dacs2:composite:${context.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
-  const uncoveredRequired = invocation.requirement.required.some(
-    (required) => !expectedResults.some((result) =>
-      result.scheme === required.scheme && sameJcs(result.requirement, required)),
-  );
-  const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
-    (group) => group.length === 0 || !group.some((alternative) =>
-      expectedResults.some((result) =>
-        result.scheme === alternative.scheme && sameJcs(result.requirement, alternative))),
-  );
-  return !binding || expectedVerifier === undefined ||
-    invocation.evaluatedParty !== binding.primaryClaim ||
-    invocation.verifier !== expectedVerifier ||
-    invocation.vetRecordRef.anchor.kind !== "storage-program" ||
-    invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
-    (invocation.vetRecordRef.signer !== undefined &&
-      invocation.vetRecordRef.signer !== invocation.verifier) ||
-    (listingOwned && !sameJcs(invocation.requirement, context.buyerRequirement)) ||
-    invocation.dealSpecific.some((result) => result.sourceJobId !== context.jobId) ||
-    uncoveredRequired || uncoveredOneOf ||
-    expectedResults.some((result) => {
-      const refKey = canonicalize(result.ref);
-      const expectedResultAddress =
-        `dacs2:${result.sourceJobId}:${result.scheme}:` +
-        `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
-      const duplicate = seenResultRefs.has(refKey) ||
-        seenResultHashes.has(result.ref.contentHash);
-      seenResultRefs.add(refKey);
-      seenResultHashes.add(result.ref.contentHash);
-      return duplicate || result.scheme !== result.requirement.scheme ||
-        result.ref.anchor.kind !== "storage-program" ||
-        result.ref.anchor.locator !== expectedResultAddress ||
-        !requirementCandidates.some((candidate) => sameJcs(candidate, result.requirement)) ||
-        (result.requirement.recipeVersion !== undefined &&
-          result.ref.recipeVersion !== result.requirement.recipeVersion);
-    });
+  try {
+    if (!hasExactJcsView(invocation) || !isVetRequirementInvocation(invocation)) return true;
+    const key = canonicalize(invocation.vetRecordRef);
+    const binding = context.bindings.get(key);
+    const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
+    const requirementCandidates = [
+      ...invocation.requirement.required,
+      ...(invocation.requirement.oneOf ?? []).flat(),
+    ];
+    const seenResultRefs = new Set<string>();
+    const seenResultHashes = new Set<string>();
+    const listingOwned = binding?.roles.has("buyer") === true;
+    const expectedVerifier = listingOwned
+      ? context.sellerClaim
+      : binding?.roles.has("seller") === true
+        ? context.buyerClaim
+        : undefined;
+    const expectedCompositeAddress =
+      `dacs2:composite:${context.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
+    const uncoveredRequired = invocation.requirement.required.some(
+      (required) => !expectedResults.some((result) =>
+        result.scheme === required.scheme && sameJcs(result.requirement, required)),
+    );
+    const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
+      (group) => group.length === 0 || !group.some((alternative) =>
+        expectedResults.some((result) =>
+          result.scheme === alternative.scheme && sameJcs(result.requirement, alternative))),
+    );
+    return !binding || expectedVerifier === undefined ||
+      invocation.evaluatedParty !== binding.primaryClaim ||
+      invocation.verifier !== expectedVerifier ||
+      invocation.vetRecordRef.anchor.kind !== "storage-program" ||
+      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
+      (invocation.vetRecordRef.signer !== undefined &&
+        invocation.vetRecordRef.signer !== invocation.verifier) ||
+      (listingOwned && !sameJcs(invocation.requirement, context.buyerRequirement)) ||
+      invocation.dealSpecific.some((result) => result.sourceJobId !== context.jobId) ||
+      uncoveredRequired || uncoveredOneOf ||
+      expectedResults.some((result) => {
+        const refKey = canonicalize(result.ref);
+        const expectedResultAddress =
+          `dacs2:${result.sourceJobId}:${result.scheme}:` +
+          `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
+        const duplicate = seenResultRefs.has(refKey) ||
+          seenResultHashes.has(result.ref.contentHash);
+        seenResultRefs.add(refKey);
+        seenResultHashes.add(result.ref.contentHash);
+        return duplicate || result.scheme !== result.requirement.scheme ||
+          result.ref.anchor.kind !== "storage-program" ||
+          result.ref.anchor.locator !== expectedResultAddress ||
+          !requirementCandidates.some((candidate) => sameJcs(candidate, result.requirement)) ||
+          (result.requirement.recipeVersion !== undefined &&
+            result.ref.recipeVersion !== result.requirement.recipeVersion);
+      });
+  } catch {
+    return true;
+  }
 }
 
 const MAX_PARTY_VET_INVOCATIONS = 2;
+const MAX_VET_REQUIREMENT_MEMBERS = 64;
+const MAX_VET_INVOCATION_RESULTS = 64;
 
 /**
  * Why the Vet requirement invocations a seller would carry into its delivery
  * audit source are not ones the fulfilment core accepts, or null: the strict
  * invocation shape, exactly one invocation per distinct party Vet record, and
- * `isSellerFulfilmentVetInvocationMismatch` for each. A seller runs this
- * before it signs the Agreement, so a context the delivery runner would refuse
- * after payment is refused before it.
+ * `isSellerFulfilmentVetInvocationMismatch` for each. Returns a refusal for
+ * malformed or over-limit invocation sets; never throws.
+ * Authenticate the SessionRecord roster separately; supply its bundle hashes
+ * when parties share a Vet record, and validate the orchestrator role. This checks invocation
+ * coverage before signing, not every delivery precondition.
  */
 export function sellerFulfilmentVetRequirementsViolation(
   vetRequirements: unknown,
   input: {
     jobId: string;
-    buyer: { primaryClaim: string; vetRecordRef: AttestationRef };
-    seller: { primaryClaim: string; vetRecordRef: AttestationRef };
+    buyer: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
+    seller: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
     buyerRequirement: unknown;
   },
 ): string | null {
@@ -526,19 +535,31 @@ export function sellerFulfilmentVetRequirementsViolation(
         !hasExactJcsView(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
       return "the Vet requirement invocations are not the strict audit-source shape";
     }
+    for (const entry of vetRequirements) {
+      const groups = entry.requirement.oneOf ?? [];
+      const members = entry.requirement.required.length +
+        groups.reduce((count, group) => count + group.length, 0);
+      if (groups.length > MAX_VET_REQUIREMENT_MEMBERS || members > MAX_VET_REQUIREMENT_MEMBERS ||
+          entry.freshness.length + entry.dealSpecific.length > MAX_VET_INVOCATION_RESULTS) {
+        return "the Vet requirement invocations exceed the requirement or result limit";
+      }
+    }
     canonicalize({ artifacts: { vetRequirements } });
-    const bindings = new Map<string, { primaryClaim: string; roles: Set<string> }>();
+    const bindings = new Map<string, { primaryClaim: string; bundleHash?: string; roles: Set<string> }>();
     for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
-      if (!isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
+      if (!hasExactJcsView(party.vetRecordRef) ||
+          !isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
         return `the ${role} Vet reference or claim is malformed`;
       }
       const key = canonicalize(party.vetRecordRef);
       const existing = bindings.get(key);
-      if (existing && existing.primaryClaim !== party.primaryClaim) {
+      if (existing && (existing.primaryClaim !== party.primaryClaim ||
+          typeof existing.bundleHash !== "string" || !HASH_RE.test(existing.bundleHash) ||
+          existing.bundleHash !== party.bundleHash)) {
         return "one Vet record cannot represent different authenticated party identities";
       }
       if (existing) existing.roles.add(role);
-      else bindings.set(key, { primaryClaim: party.primaryClaim, roles: new Set([role]) });
+      else bindings.set(key, { primaryClaim: party.primaryClaim, bundleHash: party.bundleHash, roles: new Set([role]) });
     }
     const partyRefs = [...new Map([input.buyer, input.seller].map((party) =>
       [canonicalize(party.vetRecordRef), party.vetRecordRef])).values()];
