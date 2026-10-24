@@ -141,7 +141,7 @@ export interface Tp1WireProfile extends Tp1WireProfileShape {
   revision: typeof TP1_PROFILE_REVISION;
   base: typeof TP1_BASE_REVISION;
 }
-export const TP1_WIRE_PROFILE_KEYS = ["id", "revision", "base", "chainIdentity", "pinVersion"] as const;
+export const TP1_WIRE_PROFILE_KEYS = Object.freeze(["id", "revision", "base", "chainIdentity", "pinVersion"] as const);
 
 /** One actor's own connection. It never travels on the wire. */
 export interface LocalNetworkBinding {
@@ -252,7 +252,7 @@ function localBinding(supplied: unknown): LocalNetworkBinding {
 export async function bindTp1Profile(options: BindTp1Options): Promise<Tp1Binding> {
   const { record: supplied, refusedChainIdentities: suppliedRefused = [], local: suppliedLocal, readAuthority } = ownedFields(options, ["record", "refusedChainIdentities", "local", "readAuthority"]);
   const refusedChainIdentities = ownedConfig(suppliedRefused, "wire_input_invalid");
-  if (!Array.isArray(refusedChainIdentities)) return fail("wire_input_invalid", 500);
+  if (!Array.isArray(refusedChainIdentities) || !refusedChainIdentities.every((entry) => typeof entry === "string" && HASH.test(entry))) return fail("wire_input_invalid", 500);
   if (supplied === undefined || supplied === null) return fail("tp1_identity_record_missing", 500);
   const record = ownedConfig(supplied, "tp1_identity_record_invalid");
   if (!isRecord(record)) return fail("tp1_identity_record_invalid", 500);
