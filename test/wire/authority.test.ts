@@ -81,7 +81,7 @@ async function boundaries(x: Awaited<ReturnType<typeof world>>) {
     ["retained request admission", async () => (await wire.checkWireRequest(opened, { ...context, seller: x.seller.claim,
       retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.request.buyer, seller: x.request.seller }, listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
       ready: true, requestJournal: journals.open() }))],
-    ["delegation verifier", async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...context, jobId, time: now }))],
+    ["delegation verifier", async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...context, seller: x.seller.claim, listingPin: x.request.listingPin, jobId, time: now }))],
     ["response verifier", async () => (await wire.verifyWireResponse(x.request, { ...context, header: response, status: 200, body: Buffer.from("{}"), now }))],
     ["discovery verifier", async () => (await wire.verifyEndpointProof(discovery, proofOptions))],
     ["retained endpoint proof", async () => (await assertEndpointProof(endpointProof, { binding: x.binding,
@@ -267,7 +267,7 @@ describe("the trusted reader is asked about participants only after a signature 
     const delegation = { payload: { version: "1", kind: "seller-session-delegation", buyer: g.x.buyer.claim, seller: g.x.seller.claim,
       sessionPublicKey: session.claim.slice(-64), listingPin: g.x.request.listingPin, jobId, notBefore: now - 1000, expiresAt: now + 60_000,
       profile: g.binding.profile }, signature: forged };
-    await expect(Promise.resolve().then(async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: g.binding, local, jobId, time: now })))).rejects
+    await expect(Promise.resolve().then(async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: g.binding, local, seller: g.x.seller.claim, listingPin: g.x.request.listingPin, jobId, time: now })))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_delegation_signature_invalid" }));
     const signed = { payload: g.x.request, signature: session.sign(wire.wireEnvelopeSigningBytes(g.x.request)).toString("base64url"), delegation };
     await expect(Promise.resolve().then(async () => (await wire.openWireEnvelope(header(signed), "request", { ...g.context, requireDelegation: true })))).rejects
