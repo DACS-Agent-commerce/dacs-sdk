@@ -78,9 +78,10 @@ it("authority is rechecked after each trusted reader returns", async () => {
     const a = signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: listing.pin, listing });
     const c = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: a.agreementHash, listingPin: listing.pin, committedAt: NOW - 5000 });
     let calls = 0;
+    // A payment request is refused without commitment evidence before any recheck, so only the receipt boundary continues a purchase.
     const options = { ...x.options, listing: { ...x.options.listing, listingPin: listing.pin },
-      request: { ...x.request, path: wire.DACS_SELLER_HTTP_PATHS.payments, agreementHash: a.agreementHash },
-      ...(boundary === "receipt" ? { commitment: received(c), agreement: received(a.agreement), signedListing: received(listing.listing) } : {}),
+      ...(boundary === "receipt" ? { request: { ...x.request, path: wire.DACS_SELLER_HTTP_PATHS.payments, agreementHash: a.agreementHash },
+        commitment: received(c), agreement: received(a.agreement), signedListing: received(listing.listing) } : {}),
       readListingEligibility: (scope: Parameters<wire.ListingEligibilityReader>[0]) => { if (boundary === "eligibility") { calls++; x.revoke(); } return readFixtureListingEligibility(scope); },
       readCommitmentReceipt: Object.assign(() => { calls++; x.revoke(); return "valid"; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) };
     await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(x.document({ ...x.discovery, listings: [listing.pin] }), options)))).rejects.toThrowError(expect.objectContaining({ code: "tp1_participant_profile_mismatch" }));
