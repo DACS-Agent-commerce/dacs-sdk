@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -51,7 +52,8 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-consumer-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const run = (command, args, cwd) => {
-    const result = spawnSync(command, args, { cwd, encoding: 'utf8', maxBuffer: 4 << 20 });
+    const result = spawnSync(command, args, { cwd, encoding: 'utf8', maxBuffer: 4 << 20,
+      env: { ...process.env, npm_config_cache: join(directory, '.npm-cache') } });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     return result.stdout;
   };
@@ -63,13 +65,24 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
     '@kynesyslabs/dacs-client': 'file:' + join(directory, client.filename) };
   const manifest = { name: 'TEST-packed-buyer', private: true, type: 'module', dependencies };
   writeFileSync(join(app, 'package.json'), JSON.stringify(manifest));
-  // Reuse the repository's exact registry resolutions and cached tarballs,
-  // populated during dependency setup; consumer installation must stay offline.
+  // Stage exact installed runtime packages as local artifacts. This test owns
+  // its fresh npm cache and never needs ambient registry tarballs or a network.
   const lock = JSON.parse(readFileSync(join(sdkDir, 'package-lock.json')));
   lock.name = manifest.name;
   lock.packages[''] = manifest;
   for (const path of Object.keys(lock.packages)) {
     if (path && (!path.startsWith('node_modules/') || lock.packages[path].link)) delete lock.packages[path];
+  }
+  const dependencyArtifacts = join(directory, 'dependencies');
+  mkdirSync(dependencyArtifacts);
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    if (!path || entry.dev || entry.optional) continue;
+    const installed = join(sdkDir, path);
+    assert.equal(JSON.parse(readFileSync(join(installed, 'package.json'))).version, entry.version, path);
+    const artifact = join(dependencyArtifacts, String(Object.keys(lock.packages).indexOf(path)) + '.tgz');
+    run('tar', ['-czf', artifact, '--exclude=./node_modules', '--transform=s,^.,package,', '-C', installed, '.'], directory);
+    entry.resolved = 'file:' + artifact;
+    entry.integrity = 'sha512-' + createHash('sha512').update(readFileSync(artifact)).digest('base64');
   }
   for (const [name, packed, source] of [['@kynesyslabs/dacs', core, sdkDir], ['@kynesyslabs/dacs-client', client, packageDir]]) {
     const pkg = JSON.parse(readFileSync(join(source, 'package.json')));
