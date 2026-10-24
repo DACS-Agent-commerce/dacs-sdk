@@ -39,6 +39,7 @@ function exportTargets(value) {
     return [value];
   }
   if (Array.isArray(value) || record(value)) {
+    if (Object.hasOwn(value, "module-sync")) fail("unsupported export condition: module-sync");
     if (!Array.isArray(value) && Object.keys(value).some(key => /^\d+$/.test(key))) fail("invalid export condition");
     return Object.values(value).flatMap(exportTargets);
   }
@@ -189,7 +190,8 @@ export function publicEntries(p, files) {
       const subpath = key.replace("*", () => capture);
       if (effectiveKey(subpath) !== key) continue;
       validateExportSubpath(subpath);
-      const concrete = paths.flatMap(target => exportTargets(target.replaceAll("*", () => capture)));
+      // Node substitutes the capture only for pattern keys; elsewhere a star is a literal filename character.
+      const concrete = key.includes("*") ? paths.flatMap(target => exportTargets(target.replaceAll("*", () => capture))) : paths;
       for (const target of concrete) if (!files.includes(target.slice(2))) fail(`missing packed target: ${target} (${subpath})`);
       entries.set(subpath, { subpath, json: concrete.some(t => t.endsWith(".json")) });
     }
@@ -202,12 +204,14 @@ export function validateFiles(definition, p, files) {
     if (isAbsolute(file) || file.split("/").some(s => s === ".." || s === ".") || file.includes("\\")) fail(`invalid packed path: ${file}`);
     if (!definition.allow.some(glob => pattern(glob).test(file))) fail(`outside allow-list: ${file}`);
   }
-  const required = ["./package.json", ...exportTargets(p.exports), ...entryTargets(p)];
+  const literalExportTargets = Object.entries(exportMap(p.exports)).flatMap(([key, value]) =>
+    exportTargets(value).filter(target => !key.includes("*") || !target.includes("*")));
+  const required = ["./package.json", ...literalExportTargets, ...entryTargets(p)];
   for (const target of required) {
     const path = target.startsWith("./") ? target.slice(2) : target;
     if (path.split("/").some(s => s === ".." || s === ".") || isAbsolute(path) || path.includes("\\")) fail(`invalid export target: ${target}`);
-    // Wildcard exports are checked per concrete capture by publicEntries below.
-    if (!path.includes("*") && !files.includes(path)) fail(`missing packed target: ${target}`);
+    // Pattern-key targets containing a star are checked per concrete capture by publicEntries below.
+    if (!files.includes(path)) fail(`missing packed target: ${target}`);
   }
   publicEntries(p, files);
 }

@@ -479,3 +479,31 @@ test("non-strict artifact admission rejects unknown and duplicate identities and
     assert.throws(() => validateArtifactSet([{ manifest: { ...manifest(), ...damage } }]), /identity|publish policy/);
   }
 });
+
+test("a star is a wildcard only in pattern export keys, never in entry fields or literal exports", () => {
+  const def = packages[4];
+  const base = manifest(def), files = members(base);
+  for (const damage of [{ main: "./dist/*.js" }, { types: "./dist/*.d.ts" }, { bin: "./dist/*.js" }, { bin: { agent: "./dist/*.js" } }]) {
+    assert.throws(() => validateFiles(def, { ...base, ...damage }, [...files, "dist/.js", "dist/.d.ts"]), /missing packed target/);
+  }
+  const literal = { ...base, exports: { ".": "./dist/runtime*.js" } };
+  assert.throws(() => validateFiles(def, literal, ["package.json", "dist/runtime.js"]), /missing packed target/);
+  assert.throws(() => validateFiles(def, { ...base, exports: { ".": "./dist/*.js" } }, ["package.json", "dist/.js"]), /missing packed target/);
+  const present = ["package.json", "dist/runtime*.js"];
+  assert.doesNotThrow(() => validateFiles(def, literal, present));
+  assert.deepEqual(publicEntries(literal, present).map(e => e.subpath), ["."]);
+  assert.doesNotThrow(() => validateFiles(def, { ...base, bin: "./dist/a*b.js" }, [...files, "dist/a*b.js"]));
+});
+
+test("module-sync export conditions are refused because Node 22 resolves them before default", () => {
+  const def = packages[4];
+  for (const exports of [
+    { ".": { "module-sync": null, default: "./dist/index.js" } },
+    { ".": { import: { "module-sync": "./dist/sync.js", default: "./dist/index.js" } } },
+    { ".": ["./dist/index.js", { "module-sync": "./dist/sync.js" }] },
+  ]) {
+    const p = { ...manifest(def), exports };
+    assert.throws(() => validateManifest(p, def), /module-sync/);
+    assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", "dist/sync.js"]), /module-sync/);
+  }
+});
