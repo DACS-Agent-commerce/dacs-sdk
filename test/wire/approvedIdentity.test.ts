@@ -89,20 +89,23 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
   it("binds the 2026-10-20 chain and refuses the 2026-10-15 record and its chain before signing", async () => {
     expect(hash(canonicalize(PREVIOUS_RECORD))).toBe(PREVIOUS_DIGEST);
     expect(TP1_APPROVED_IDENTITY_RECORD_DIGESTS).not.toContain(PREVIOUS_DIGEST);
-    const bound = bindTp1Fixture({ record: structuredClone(RECORD), local: A });
+    const bound = (await bindTp1Fixture({ record: structuredClone(RECORD), local: A }));
     expect(bound.profile).toMatchObject({ chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc", pinVersion: "dacs-demos-testnet-identity/2026-10-20" });
     expect(bound.recordDigest).toBe(DIGEST);
     const buyer = party(), seller = party();
-    await request(buyer, seller, bound, A);
+    const transport = { send: vi.fn<(header: string) => void>() };
+    const sent = await request(buyer, seller, bound, A);
+    transport.send(sent.header);
+    expect(transport.send).toHaveBeenCalledExactlyOnceWith(sent.header);
+    transport.send.mockClear();
     expect(buyer.calls).toBe(1);
     // The previous record exactly as approved, and the previous chain under the current record's other fields.
     for (const record of [PREVIOUS_RECORD, changed({ chainIdentity: PREVIOUS_CHAIN }), changed({ recordId: PREVIOUS_RECORD.recordId, pinVersion: PREVIOUS_RECORD.pinVersion, chainIdentity: PREVIOUS_CHAIN })]) {
-      let sends = 0;
+
       expect(await refusal(async () => {
-        await request(buyer, seller, bindTp1Fixture({ record, local: A }), A);
-        sends += 1;
+        transport.send((await request(buyer, seller, (await bindTp1Fixture({ record, local: A })), A)).header);
       }), record.recordId).toBe("tp1_identity_unapproved");
-      expect(sends).toBe(0);
+      expect(transport.send).not.toHaveBeenCalled();
     }
     expect(buyer.calls + seller.calls).toBe(1);
   });
@@ -113,10 +116,10 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     const sb = await bindTp1Fixture({ record: RECORD, local: sellerLocal });
     expect(bb.profile).toEqual(sb.profile);
     const { payload, header } = await request(buyer, seller, bb, buyerLocal);
-    const opened = openWireEnvelope(header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
-    checkWireRequest(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
+    const opened = (await openWireEnvelope(header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile }));
+    (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile }));
     const response = await signWireResponse(opened.payload, 200, "{}", { signer: seller, binding: sb, local: sellerLocal, now: NOW, purchaseProfile: sb.profile });
-    expect(verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: buyerLocal }).principal).toBe(seller.claim);
+    expect((await verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: buyerLocal })).principal).toBe(seller.claim);
     expect(buyer.calls + seller.calls).toBe(2);
   });
 
@@ -152,14 +155,13 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     ["actor authority in record", changed({ transportAuthority: A.transportAuthority }), "tp1_identity_record_invalid"],
   ])("refuses %s before signing or a test transport send", async (_, record, expected) => {
     const buyer = party(), seller = party();
-    let sends = 0;
+    const transport = { send: vi.fn<(header: string) => void>() };
     expect(await refusal(async () => {
-      const binding = bindTp1Fixture({ record, local: A });
-      await request(buyer, seller, binding, A);
-      sends += 1;
+      const binding = (await bindTp1Fixture({ record, local: A }));
+      transport.send((await request(buyer, seller, binding, A)).header);
     })).toBe(expected);
     expect(buyer.calls + seller.calls).toBe(0);
-    expect(sends).toBe(0);
+    expect(transport.send).not.toHaveBeenCalled();
   });
 
   for (const actor of ["buyer", "seller"] as const) {
@@ -167,21 +169,25 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
       const buyer = party(), seller = party();
       const bb = await bindTp1Fixture({ record: RECORD, local: A });
       const sb = await bindTp1Fixture({ record: RECORD, local: B });
+      const transport = { send: vi.fn<(header: string) => void>() };
       const original = await request(buyer, seller, bb, A);
+      transport.send(original.header);
       const response = await signWireResponse(original.payload, 200, "{}", { signer: seller, binding: sb, local: B, now: NOW, purchaseProfile: sb.profile });
+      transport.send(response);
+      expect(transport.send.mock.calls).toEqual([[original.header], [response]]);
+      transport.send.mockClear();
       const before = buyer.calls + seller.calls;
       const local = { ...(actor === "buyer" ? A : B), [field]: value };
-      let sends = 0;
+
       expect(await refusal(async () => {
-        if (actor === "buyer") await request(buyer, seller, bb, local);
-        else await signWireResponse(original.payload, 200, "{}", { signer: seller, binding: sb, local, now: NOW, purchaseProfile: sb.profile });
-        sends += 1;
+        if (actor === "buyer") transport.send((await request(buyer, seller, bb, local)).header);
+        else transport.send(await signWireResponse(original.payload, 200, "{}", { signer: seller, binding: sb, local, now: NOW, purchaseProfile: sb.profile }));
       })).toBe("tp1_local_binding_changed");
-      expect(await refusal(() => actor === "buyer"
-        ? verifyWireResponse(original.payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local })
-        : openWireEnvelope(original.header, "request", { binding: sb, local, purchaseProfile: sb.profile }))).toBe("tp1_local_binding_changed");
+      expect(await refusal(async () => actor === "buyer"
+        ? (await verifyWireResponse(original.payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local }))
+        : (await openWireEnvelope(original.header, "request", { binding: sb, local, purchaseProfile: sb.profile })))).toBe("tp1_local_binding_changed");
       expect(buyer.calls + seller.calls).toBe(before);
-      expect(sends).toBe(0);
+      expect(transport.send).not.toHaveBeenCalled();
     });
   }
 
@@ -194,7 +200,7 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     for (const other of [{ chainIdentity: hash("SYNTHETIC/peer-other-chain") }, { chainIdentity: PREVIOUS_CHAIN }, { chainIdentity: PREVIOUS_CHAIN, pinVersion: PREVIOUS_RECORD.pinVersion }]) {
       envelope.payload.profile = { ...bb.profile, ...other };
       envelope.signature = Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:request:${canonicalize(envelope.payload)}`))).toString("base64url");
-      expect(await refusal(() => openWireEnvelope(Buffer.from(canonicalize(envelope)).toString("base64url"), "request", { binding: sb, local: B, purchaseProfile: sb.profile })), JSON.stringify(other)).toBe("tp1_profile_mismatch");
+      expect(await refusal(async () => (await openWireEnvelope(Buffer.from(canonicalize(envelope)).toString("base64url"), "request", { binding: sb, local: B, purchaseProfile: sb.profile }))), JSON.stringify(other)).toBe("tp1_profile_mismatch");
     }
   });
 
@@ -210,7 +216,7 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     // A valid request under the approved binding; only the seller's kept tuple differs, or is not given.
     for (const kept of [{ purchaseProfile: { ...sb.profile, revision: "TP-1.1" } }, { purchaseProfile: preRevision }, { purchaseProfile: undefined }, {}]) {
       const name = JSON.stringify(kept);
-      expect(await refusal(() => { openWireEnvelope(header, "request", { binding: sb, local: B, ...kept } as never); opened += 1; }), `open ${name}`).toBe("tp1_purchase_profile_mismatch");
+      expect(await refusal(async () => { (await openWireEnvelope(header, "request", { binding: sb, local: B, ...kept } as never)); opened += 1; }), `open ${name}`).toBe("tp1_purchase_profile_mismatch");
       expect(await refusal(async () => { await signWireResponse(payload, 200, "{}", { signer: seller, binding: sb, local: B, now: NOW, ...kept } as never); signed += 1; }), `answer ${name}`).toBe("tp1_purchase_profile_mismatch");
       expect(await refusal(async () => { await signWireEnvelope(answer, { signer: seller, binding: sb, local: B, ...kept } as never); signed += 1; }), `envelope ${name}`).toBe("tp1_purchase_profile_mismatch");
     }
@@ -218,7 +224,7 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     expect(buyer.calls + seller.calls).toBe(before);
     // The exact tuple, or none kept yet for a new purchase, opens and signs once each.
     for (const purchaseProfile of [sb.profile, null]) {
-      const { payload: received } = openWireEnvelope(header, "request", { binding: sb, local: B, purchaseProfile });
+      const { payload: received } = (await openWireEnvelope(header, "request", { binding: sb, local: B, purchaseProfile }));
       await signWireResponse(received, 200, "{}", { signer: seller, binding: sb, local: B, now: NOW, purchaseProfile });
     }
     expect(buyer.calls + seller.calls).toBe(before + 2);
@@ -240,10 +246,10 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
       const response = { ...payload, profile, kind: "response", bodyHash: hash("{}"), expiresAt: NOW + 60_000, requestHash: hash(canonicalize(payload)), status: 200 };
       const d = { ...delegationPayload, profile };
       const document = Buffer.from(canonicalize({ payload: { ...discovery, profile }, signature: Buffer.from(seller.sign(Buffer.from(`dacs-seller-http:v1:discovery:${canonicalize({ ...discovery, profile })}`))).toString("base64url") }));
-      expect(await refusal(() => openWireEnvelope(header({ ...payload, profile }, "dacs-seller-http:v1:request:", buyer), "request", { binding: sb, local: B, purchaseProfile: sb.profile }))).toBe(expected);
-      expect(await refusal(() => verifyWireResponse(payload, { header: header(response, "dacs-seller-http:v1:response:", seller), status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: A }))).toBe(expected);
-      expect(await refusal(() => verifySellerSessionDelegation({ payload: d, signature: Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:delegation:${canonicalize(d)}`))).toString("base64url") }, { binding: sb, local: B }))).toBe(expected);
-      expect(await refusal(() => verifyEndpointProof(document, { readListingEligibility: readFixtureListingEligibility, listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW }))).toBe(expected);
+      expect(await refusal(async () => (await openWireEnvelope(header({ ...payload, profile }, "dacs-seller-http:v1:request:", buyer), "request", { binding: sb, local: B, purchaseProfile: sb.profile })))).toBe(expected);
+      expect(await refusal(async () => (await verifyWireResponse(payload, { header: header(response, "dacs-seller-http:v1:response:", seller), status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: A })))).toBe(expected);
+      expect(await refusal(async () => (await verifySellerSessionDelegation(Buffer.from(JSON.stringify({ payload: d, signature: Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:delegation:${canonicalize(d)}`))).toString("base64url") })), { binding: sb, local: B })))).toBe(expected);
+      expect(await refusal(async () => (await verifyEndpointProof(document, { readListingEligibility: readFixtureListingEligibility, listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW })))).toBe(expected);
       // Signers sign only the exact tuple.
       const before = buyer.calls + seller.calls;
       expect(await refusal(() => signSellerSessionDelegation(d as never, buyer, bb, A))).toBe(expected);
