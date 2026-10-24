@@ -15,7 +15,7 @@ import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { assertEndpointProof, type EndpointProof } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
@@ -121,7 +121,8 @@ export interface EnvelopeSigningContext extends SigningContext {
  * current TP-1 binding and the tuple kept for the purchase. The payload and
  * delegation are copied once: the profile check, the signed bytes and the
  * header all come from those copies. A delegation is verified for the
- * request's buyer, seller, Listing and job at `now` before the signer is called.
+ * request's buyer, seller, Listing and job at `now` before the signer is called
+ * (an expired one only for a read route).
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
   const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing"]) as EnvelopeSigningContext;
@@ -140,9 +141,10 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   // the complete encoded header, including a supplied delegation, before signing.
   const encode = (signature: string) => Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
-  // A delegation is verified against this request's scope and clock before a request signature is spent on it.
+  // A delegation is verified against this request's scope and clock before a request signature is spent on it; only a read route may outlive it.
   if (delegation !== null) await verifySellerSessionDelegation(Buffer.from(canonicalize(delegation)), {
     binding, local, buyer: payload.buyer as string, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin, jobId: payload.jobId as string, time: now,
+    allowExpired: isReadRoute(payload.path as string),
   });
   if (payload.kind === "request") await assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
