@@ -28,6 +28,8 @@ vi.mock("node:fs", async (importOriginal) => {
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournals, openJournal } = journalFixture(fixtureWire);
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
+/** The journal suites sign repeatedly and fsync every durable step: far past Vitest's 5 s default on a loaded machine. */
+const JOURNAL_TEST_TIMEOUT_MS = 60_000;
 
 const NOW = Date.UTC(2026, 9, 18);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -75,7 +77,7 @@ async function world() {
   return { seller, context, agreement, request, direct, delegated, artifact, retained, commitment, check };
 }
 
-describe("an effect route without the SDK's journal", () => {
+describe("an effect route without the SDK's journal", { timeout: JOURNAL_TEST_TIMEOUT_MS }, () => {
   // None came from openWireRequestJournal, a journal that declares itself durable included; none is ever called.
   const undeclared = (stub: () => boolean): Array<[string, object]> => [
     ["the earlier reserveRequest callback", { reserveRequest: stub }],
@@ -277,7 +279,7 @@ describe("the durable journal across a restart and concurrent workers", () => {
   }, 120_000);
 });
 
-describe("the durable journal ends each attempt once: by its outcome, or by the request that recovers it", () => {
+describe("the durable journal ends each attempt once: by its outcome, or by the request that recovers it", { timeout: JOURNAL_TEST_TIMEOUT_MS }, () => {
   afterEach(() => { race.beforeLink = undefined; });
   const settle = <T>(f: () => T): { value?: T; error?: string } => {
     try { return { value: f() }; } catch (error) { if (error instanceof wire.WireError) return { error: error.code }; throw error; }
@@ -365,7 +367,7 @@ describe("the durable journal ends each attempt once: by its outcome, or by the 
   });
 });
 
-describe("the durable journal keyed by operation across a reopen", () => {
+describe("the durable journal keyed by operation across a reopen", { timeout: JOURNAL_TEST_TIMEOUT_MS }, () => {
   it("a fresh nonce for an effect another handle reserved is held; the effect completes only on its own handle, and a reopened journal answers with the outcome", async () => {
     const x = (await world());
     const directory = mkdtempSync(join(tmpdir(), "dacs-wire-operation-"));
