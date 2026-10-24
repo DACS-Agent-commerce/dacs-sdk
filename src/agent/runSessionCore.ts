@@ -4681,7 +4681,7 @@ async function runSessionCoreWithFence(
         "saved native success evidence requires execution reconciliation", prior, false,
       );
       if (!authenticated.ok || authenticated.blockNumber !== identity.blockNumber ||
-          authenticated.txRefKind !== identity.kind) {
+          (authenticated.txRefKind ?? "payment") !== identity.kind) {
         throw new CounterpartyError("saved native success evidence contradicts chain execution");
       }
     }
