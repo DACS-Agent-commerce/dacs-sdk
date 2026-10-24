@@ -1654,7 +1654,7 @@ describe("runtime-image package inventory", () => {
     const summary = b7b180fSimulation({
       "runtime-image-policy.json": JSON.stringify({ ...policy, typescriptPresent: false, rubicSdkPresent: false }),
       "runtime-image-inventory.json": inventory(packages => {
-        const retained = packages.filter(item => !["typescript", "rubic-sdk"].includes(item.name));
+        const retained = packages.filter(item => item.name !== "typescript" && item.name !== "rubic-sdk");
         packages.splice(0, packages.length, ...retained, { name: "vitest", location: "node_modules/vitest", version: "3.2.4" });
       }),
     });
