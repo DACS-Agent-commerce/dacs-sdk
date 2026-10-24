@@ -109,17 +109,29 @@ function syncDirectory(directory: string): void {
 function publish(store: Store, name: string, contents: string): boolean {
   const temporary = join(store.directory, `tmp-${randomBytes(16).toString("hex")}`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  let published = true, primary: unknown;
   try {
-    writeSync(fd, contents);
-    fsyncSync(fd);
-  } finally { closeSync(fd); }
-  let published = true;
-  try { linkSync(temporary, join(store.directory, name)); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") { unlinkSync(temporary); throw error; }
-    published = false;
+    try {
+      const bytes = Buffer.from(contents, "utf8");
+      for (let offset = 0; offset < bytes.length;) {
+        const count = writeSync(fd, bytes, offset, bytes.length - offset);
+        if (count === 0) corrupt("STORE-WRITE-NO-PROGRESS");
+        offset += count;
+      }
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+    try { linkSync(temporary, join(store.directory, name)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      published = false;
+    }
+  } catch (error) { primary = error; throw error; } finally {
+    try { unlinkSync(temporary); }
+    catch (cleanup) {
+      if (primary instanceof Error) Object.defineProperty(primary, "cleanupError", { value: cleanup });
+      else throw cleanup;
+    }
   }
-  unlinkSync(temporary);
   syncDirectory(store.directory);
   return published;
 }
@@ -154,13 +166,13 @@ function readRecord(store: Store, name: string, maxBytes: number): JsonRecord | 
 
 const attemptName = (operationId: string, attempt: number) => `o-${operationId}-${attempt}`;
 const endedName = (operationId: string, attempt: number) => `o-${operationId}-${attempt}.end`;
-const ATTEMPT = ["operationId", "attempt", "requestHash", "leaseUntil", "binding"];
+const ATTEMPT = ["operationId", "attempt", "requestHash", "leaseUntil", "binding", "superseded"];
 
 /** An attempt record this journal published; anything else there is a corrupt store, never a lapsed lease. */
 function readAttempt(store: Store, operationId: string, attempt: number): JsonRecord {
   const record = readRecord(store, attemptName(operationId, attempt), SMALL_FILE_BYTES);
   if (!hasKeys(record, ATTEMPT) || record.operationId !== operationId || record.attempt !== attempt || !isHash(record.requestHash) ||
-      !isUint(record.leaseUntil) || !isHash(record.binding)) corrupt("STORE-ATTEMPT-INVALID");
+      !isUint(record.leaseUntil) || !isHash(record.binding) || !isUint(record.superseded) || record.superseded > attempt || record.superseded >= MAX_EFFECT_ATTEMPTS) corrupt("STORE-ATTEMPT-INVALID");
   return record!;
 }
 
@@ -299,20 +311,26 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
   if (!isHash(key) || !isHash(operationId) || !isHash(binding) || !isHash(requestHash)) fail("wire_input_invalid", 500);
   if (!publish(store, `k-${key}`, canonicalize({ key, operationId, binding, requestHash }))) fail("peer_request_replayed", 409);
   const at = now(store);
-  const lease = (attempt: number) => canonicalize({ operationId, attempt, requestHash, leaseUntil: at + store.leaseMs, binding });
+  const lease = (attempt: number, superseded = 0) => canonicalize({ operationId, attempt, requestHash, leaseUntil: at + store.leaseMs, binding, superseded });
   const completed = (): WireEffect => {
     const outcome = readOutcome(store, operationId);
     assertBinding(store, operationId, binding);
     return deepFreeze({ state: "completed" as const, operationId, outcome });
   };
   if (exists(store, outcomeName(operationId))) return completed();
-  let next = 0, superseded = 0;
-  while (exists(store, attemptName(operationId, next))) {
-    // A successor can only exist after its predecessor ended. Those ends are
-    // immutable, so every worker (including after restart) counts the same
-    // crash budget. Clean null ends still advance the fencing token.
-    if (next > 0 && readEnd(store, operationId, next - 1).superseded) superseded++;
-    next++;
+  // Immutable attempts form a contiguous index. Search it in at most 106 safe-integer probes.
+  let next = 0, upper = 1;
+  if (exists(store, attemptName(operationId, 0))) {
+    while (exists(store, attemptName(operationId, upper))) {
+      if (upper === Number.MAX_SAFE_INTEGER) corrupt("STORE-ATTEMPT-LIMIT");
+      next = upper; upper = Math.min(Number.MAX_SAFE_INTEGER, upper * 2);
+    }
+    while (next + 1 < upper) {
+      const middle = next + Math.floor((upper - next) / 2);
+      if (exists(store, attemptName(operationId, middle))) next = middle;
+      else upper = middle;
+    }
+    next = upper;
   }
   if (next === 0) {
     if (publish(store, attemptName(operationId, 0), lease(0))) return issue(store, { state: "new", operationId, attempt: 0, leaseUntil: at + store.leaseMs });
@@ -324,7 +342,7 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
   // The outcome may have been published while the attempts were counted.
   if (exists(store, outcomeName(operationId))) return completed();
   const latest = next - 1;
-  const { leaseUntil } = readAttempt(store, operationId, latest);
+  const { leaseUntil, superseded } = readAttempt(store, operationId, latest);
   if (!exists(store, endedName(operationId, latest))) {
     if (at < (leaseUntil as number)) fail("seller_effect_pending", 503);
     // Its lease ran out: end it as superseded, unless it ended itself first (the end read next decides).
@@ -332,8 +350,8 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
   }
   const { outcome, superseded: latestSuperseded } = readEnd(store, operationId, latest);
   if (outcome !== null) { publishOutcome(store, operationId, latest, outcome); return completed(); }
-  if (superseded + Number(latestSuperseded) >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
-  if (!publish(store, attemptName(operationId, next), lease(next))) fail("seller_effect_pending", 503);
+  if (Number(superseded) + Number(latestSuperseded) >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
+  if (!publish(store, attemptName(operationId, next), lease(next, Number(superseded) + Number(latestSuperseded)))) fail("seller_effect_pending", 503);
   return issue(store, { state: "recover", operationId, attempt: next, leaseUntil: at + store.leaseMs });
 }
 
