@@ -10,14 +10,23 @@ function check() {
   try { for (const { predicate } of callbacks) predicate(); }
   finally { checking = false; }
 }
+function applicationFunctions(db) {
+  return new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
+    .filter(row => !row.builtin).map(row => row.name.toLowerCase()));
+}
 function execute(fn, db, sql) {
   check();
   if (checking || callbacks.length === 0) return fn();
+  // A statement prepared before installation has no known owner, so its
+  // program cannot be inspected: refuse it while any guarded connection has
+  // application functions it might call.
+  if (!db && callbacks.some(frame => applicationFunctions(frame.db).size > 0)) {
+    throw new TypeError('SQL callbacks or unrecognized function opcodes are unsupported by the statement guard');
+  }
   // EXPLAIN includes trigger programs. Application functions (including
   // overrides of built-ins) cannot run while native writers are enabled.
   if (db && sql) {
-    const functions = new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
-      .filter(row => !row.builtin).map(row => row.name.toLowerCase()));
+    const functions = applicationFunctions(db);
     const program = nativeAll.call(nativePrepare.call(db, `EXPLAIN ${sql}`));
     if (program.some(row => {
       if (!/^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)\d*$/.test(row.opcode)) return false;
@@ -103,14 +112,19 @@ function install(db) {
  * Native methods remain unrestricted outside guarded callbacks. Predicates
  * may inspect SQLite themselves; those probes bypass recursive checking.
  * SQL callback execution/registration is unsupported during guards. Statements
- * prepared before installation can only read while a guard is active.
+ * prepared before installation can only read while a guard is active, and are
+ * refused when the guarded connection has application functions.
+ * This stops stale code from writing through ordinary or captured native
+ * writers. It does not stop code that deliberately holds a native exec and
+ * clears query_only; that needs a native authorizer, which Node 22 lacks.
  */
 export function withSqliteStatementGuard(db, predicate, fn) {
   install(db);
   const saved = nativeGet.call(nativePrepare.call(db, 'PRAGMA query_only')).query_only;
   const parent = callbacks.find(frame => frame.db === db);
-  // The connection-level flag survives automatic rollback. Even native
-  // function references captured before installation cannot write around it.
+  // The connection-level flag survives automatic rollback, so native writers
+  // captured before installation fail on it. It is not a security boundary:
+  // code that holds a native exec can clear the flag itself.
   nativeExec.call(db, 'PRAGMA query_only=ON');
   callbacks.push({ db, predicate, writable: parent ? parent.writable : saved === 0 });
   try { check(); return fn(); }
