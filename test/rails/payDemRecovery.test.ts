@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
+import * as canonicalSnapshot from "../../src/canonical/snapshot.js";
 import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import {
   payDemSettle,
@@ -141,6 +142,34 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     expect(f.submit).not.toHaveBeenCalled();
   });
 
+  test.each(["extra", "txHash", "chainId"])("rejects oversized history %s before taking a snapshot", async (field) => {
+    const history = [{ ...prior(), [field]: "x".repeat(1024 * 1024) }];
+    const capture = vi.spyOn(canonicalSnapshot, "snapshotCanonicalJsonRead");
+    try {
+      const f = fixture(async () => executed());
+      await expect(f.settle(request(history))).rejects.toThrow();
+      expect(capture).not.toHaveBeenCalledWith(history, "pay-dem recovery history");
+      expect(f.once).not.toHaveBeenCalled();
+      expect(f.submit).not.toHaveBeenCalled();
+    } finally {
+      capture.mockRestore();
+    }
+  });
+
+  test("bounds rejected audit keys and refuses new keys with omitted history at capacity", async () => {
+    const f = fixture(async () => { throw new Error("missing journal"); });
+    for (let i = 0; i < 1024; i += 1) {
+      await expect(f.settle({ ...request(), jobId: `rejected-${i}` })).rejects.toThrow("missing journal");
+    }
+    const rejected = { ...request(), jobId: "over-capacity" };
+    await expect(f.settle(rejected)).rejects.toThrow(/audit capacity/);
+    const { priorAttempts: _history, ...withoutHistory } = rejected;
+    await expect(f.settle(withoutHistory)).rejects.toThrow(/audit capacity/);
+    await expect(f.settle({ ...request(), jobId: "rejected-0" })).rejects.toThrow("missing journal");
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  });
+
   test("captures history before an asynchronous audit and binds the captured hash", async () => {
     const attempt = prior();
     const history = [attempt];
@@ -198,9 +227,9 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
     const { priorAttempts: _history, ...fresh } = request();
     await expect(settle(fresh)).resolves.toMatchObject({ ok: true });
-    await expect(settle(request())).resolves.toMatchObject({ ok: false, errorClass: "permanent" });
-    await expect(settle(request())).resolves.toMatchObject({ ok: false, errorClass: "permanent" });
-    await expect(settle(fresh)).resolves.toMatchObject({ ok: false, errorClass: "permanent" });
+    await expect(settle(request())).rejects.toThrow(/contradicted a permanent/);
+    await expect(settle(request())).rejects.toThrow(/contradicted a permanent/);
+    await expect(settle(fresh)).rejects.toThrow(/contradicted a permanent/);
     expect(submit).toHaveBeenCalledTimes(1);
     expect(once).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledTimes(3);
