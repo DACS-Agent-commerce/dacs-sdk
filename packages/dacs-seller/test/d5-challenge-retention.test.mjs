@@ -589,6 +589,27 @@ test('a journal-only nonce keeps its pending answer after another nonce complete
   assert.equal(w.store.reserve(retained, {}).text, '{"state":"pending"}');
 });
 
+for (const outcome of ['noEffect', 'retry', 'complete', 'uncertain']) test(`terminal session fences new proposal effects after ${outcome} and reopen`, t => {
+  const w = world(t, { maxRecords: 20 }), admitted = context(w, 0);
+  w.store.finish(w.store.reserve(admitted, contextBody(0), { admit: w.now }), 200, '{}');
+  const proposal = request(w, 0, { nonce: 'proposal' }), reservation = w.store.reserve(proposal, {});
+  const status = outcome === 'uncertain' ? 503 : 200, text = '{ "TEST": "retained answer" }';
+  w.store.finish(reservation, status, text, { noEffect: outcome === 'noEffect', retry: outcome === 'retry' });
+  assert.equal(w.count('peer_jobs'), 1, 'the context admission retains the job row');
+  w.terminal(proposal.jobId); w.reopen();
+  const replay = w.store.reserve(proposal, {});
+  assert.equal(replay.disposition, outcome === 'uncertain' ? 'uncertain' : 'cached');
+  if (replay.disposition === 'cached') assert.deepEqual(replay, { disposition: 'cached', status, text });
+  const fresh = { ...proposal, nonce: 'fresh-proposal' };
+  if (outcome === 'noEffect' || outcome === 'retry') {
+    noMutations(() => assert.throws(() => w.store.classify(fresh, {}), { code: 'context_session_terminal' }));
+    noMutations(() => assert.throws(() => w.store.reserve(fresh, {}), { code: 'context_session_terminal' }));
+  } else {
+    assert.equal(w.store.classify(fresh, {}), 'known');
+    assert.equal(w.store.reserve(fresh, {}).disposition, replay.disposition);
+  }
+});
+
 test('terminal context cleanup cannot admit another buyer proposal for that job after reopen', t => {
   const w = world(t, { maxRecords: 5, maxContextRecords: 1 }), first = context(w, 0);
   w.store.finish(w.store.reserve(first, contextBody(0), { admit: w.now }), 200, '{}');
