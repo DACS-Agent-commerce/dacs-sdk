@@ -82,13 +82,14 @@ export function readPackedManifest(tarball) {
     if (!Number.isSafeInteger(size) || end > archive.length) throw new Error("packed tarball has a truncated entry");
     // Reject links and path-override extensions instead of guessing extraction semantics.
     if (header.subarray(157, 257).some(byte => byte !== 0) ||
-        !["0", "", "5"].includes(type) || name.includes("\\") ||
+        !["0", "", "5"].includes(type) || name.includes("\\") || name.includes(":") ||
         !(name.startsWith("package/") || (name === "package" && type === "5")) ||
         (type === "5" ? size !== 0 : name.endsWith("/")) ||
-        name.replace(/\/$/, "").split("/").some(part => !part || part === "." || part === "..")) {
+        name.replace(/\/$/, "").split("/").some(part => !part || /[. ]$/.test(part))) {
       throw new Error("packed tarball has an unsupported entry type or path");
     }
-    const normalized = name.replace(/\/$/, "");
+    // Detect conflicts on case-insensitive filesystems without changing archive bytes.
+    const normalized = name.replace(/\/$/, "").toLowerCase();
     const parents = normalized.split("/").slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join("/"));
     if (entries.has(normalized) || (type !== "5" && directories.has(normalized)) ||
         parents.some(parent => entries.has(parent) && entries.get(parent) !== "5")) {
