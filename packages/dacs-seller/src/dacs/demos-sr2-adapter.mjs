@@ -4,14 +4,15 @@
 // The adapter owns no key and never broadcasts.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  canonicalize, isAnchorReceipt, logicalToStorageProgramName, sha256Hex,
+  canonicalize, contentHash, isAnchorReceipt, logicalToStorageProgramName, sha256Hex,
   assertDemosWriteEvidence, decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash, demosWriteEvidenceBindsReceiptContent,
   demosWriteEvidenceToAnchorReceipt,
 } from '@kynesyslabs/dacs';
 import { fetchBoundedJson } from '../util/http.mjs';
 import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
-import { deriveStorageAddress } from './wallet-transactions.mjs';
+import { canonicalSignature } from './fixture-anchors.mjs';
+import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
 // Import the pure signed-to-executed projection from the core public root;
 // the substrate barrel eagerly loads an optional demosdk peer.
@@ -20,6 +21,8 @@ import { isDevnetAgreementTransport } from './devnet-source.mjs';
 
 export const DEMOS_SR2_EVIDENCE_MODE = 'simulated-fixture';
 export const DEMOS_SR2_FIXTURE_CHAIN_IDENTITY = sha256Hex('dacs-chatgpt-plugin/demos-sr2-sdk-wire-fixture/v1');
+// Terminal stage for an explicitly denied, provably unsigned handoff only.
+export const DENIED_UNSIGNED = 'denied-unsigned';
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
 const MAX_NATIVE_CANDIDATES = 32;
 const HASH = /^[0-9a-f]{64}$/;
@@ -94,19 +97,54 @@ export function createInMemoryDemosSr2Journal(initial = []) {
   };
 }
 
+function descriptor(record) {
+  const { planId, logicalAddress, nativeAddress, writer, nonce, hash, envelopeHash, stage, transactionHash } = record;
+  return { planId, logicalAddress, nativeAddress, writer, nonce, contentHash: hash, envelopeHash, stage,
+    ...(transactionHash ? { transactionHash } : {}), evidenceMode: record.evidenceMode ?? DEMOS_SR2_EVIDENCE_MODE };
+}
+
+function inputs({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, receiptContentHash = contentHash(artifact) }) {
+  if (typeof logicalAddress !== 'string' || !logicalAddress || logicalAddress.trim() !== logicalAddress) reject('invalid', 'logical address is required');
+  const programName = logicalToStorageProgramName(logicalAddress);
+  if (programName.length > 256) reject('invalid', 'program name exceeds the offline fixture limit');
+  const value = JSON.parse(canonicalize(artifact));
+  if (!object(value) || Buffer.byteLength(canonicalize(value)) > 64 * 1024) reject('invalid', 'artifact must be a bounded JSON object');
+  if (!HASH.test(receiptContentHash)) reject('invalid', 'receipt content hash must be SHA-256 hex');
+  const owner = addressForClaim(writer);
+  const envelopeHash = exactHash(value);
+  if (artifactKind !== undefined && (typeof artifactKind !== 'string' || !/^[A-Za-z][A-Za-z0-9-]{0,79}$/.test(artifactKind))) reject('invalid', 'explicit artifact kind is malformed');
+  if (deliveryBinding !== undefined && (artifactKind !== 'Deliverable' || !object(deliveryBinding))) reject('invalid', 'delivery binding is admitted only for an explicit Deliverable');
+  return { logicalAddress, artifact: value, writer, owner, programName, hash: receiptContentHash, envelopeHash,
+    ...(artifactKind !== undefined ? { artifactKind } : {}), ...(deliveryBinding !== undefined ? { deliveryBinding:clone(deliveryBinding) } : {}),
+    metadata: { logicalAddress, contentHash: receiptContentHash, envelopeHash, ...(artifactKind !== undefined ? { artifactKind } : {}),
+      ...(deliveryBinding !== undefined ? { deliveryBinding:clone(deliveryBinding) } : {}) } };
+}
+
+export function demosSr2TxRef(receipt) {
+  return { kind: 'storage-program', address: receipt.nativeAddress, writeTxHash: receipt.transactionRef.value };
+}
+
 export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null }) {
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
   const endpoint = new URL(rpcUrl);
   if (sourceCapability ? rpcUrl !== sourceCapability.pins.endpoint : (endpoint.protocol !== 'http:' || !LITERAL_LOOPBACK.has(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/')) {
     reject('offline-only', 'Demos SR-2 requires a literal HTTP loopback root endpoint');
   }
-  if (!journal || ['records'].some((k) => typeof journal[k] !== 'function')) reject('journal-required', 'an explicit readback journal is required');
+  if (!journal || ['get', 'put', 'records', 'withWalletLock'].some((k) => typeof journal[k] !== 'function')) reject('journal-required', 'an explicit offline write journal is required');
   const base = endpoint.origin;
   const expectedIdentity=sourceCapability?.pins.chainIdentity ?? DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
   const mode=sourceCapability ? 'explicit-pinned-transport-single-node' : DEMOS_SR2_EVIDENCE_MODE;
   const scope = canonicalize([base, expectedIdentity,...(sourceCapability?[sourceCapability.transportBinding.bindingId]:[])]);
+  const sourceInputs=(raw)=>{const i=inputs(raw);if(sourceCapability)i.metadata.networkBinding=clone(sourceCapability.transportBinding);return i;};
+  const walletKey = (writer) => canonicalize([scope, writer]);
   const ownRecords = async () => (await journal.records()).filter((r) => r.scope === scope);
   const retained = async (logicalAddress, writer) => (await ownRecords()).find((r) => r.logicalAddress === logicalAddress && r.writer === writer);
+  async function persist(record) {
+    await journal.put(record);
+    const readback = await journal.get(record.planId);
+    if (!readback || canonicalize(readback) !== canonicalize(record)) reject('journal-error', 'the exact adapter stage was not durably retained');
+  }
+
   const readBudget = new AsyncLocalStorage();
   async function boundedRead(work) {
     if (readBudget.getStore()) return work();
@@ -311,5 +349,202 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     });
   }
 
-  return { read, recheck };
+  async function planWrite(input) {
+    const requested = sourceInputs(input);
+    return journal.withWalletLock(walletKey(requested.writer), async () => {
+      const saved = await retained(requested.logicalAddress, requested.writer);
+      if (saved) {
+        if (saved.envelopeHash !== requested.envelopeHash || saved.hash !== requested.hash || saved.artifactKind !== requested.artifactKind) reject('conflict', 'immutable logical address already has different content or kind');
+        return descriptor(saved);
+      }
+      const existing = await read(requested.logicalAddress, { expectedWriter: requested.writer });
+      if (existing.status === 'present') {
+        if (exactHash(existing.artifact) !== requested.envelopeHash || existing.receipt.contentHash !== requested.hash) reject('conflict', 'immutable native record already has different content');
+        const complete = { ...requested, scope, planId: exactHash([scope, requested.writer, requested.logicalAddress]), nativeAddress: existing.receipt.nativeAddress,
+          nonce: Number(existing.receipt.nonce), stage: 'verified', transactionHash: existing.receipt.transactionRef.value,
+          payload: { content: JSON.parse(existing.demosEvidence.signedTransaction).content }, authorizationMessage: existing.receipt.transactionRef.value };
+        await persist(complete);
+        return descriptor(complete);
+      }
+      if ((await ownRecords()).some((r) => r.writer === requested.writer && !['verified', DENIED_UNSIGNED].includes(r.stage))) reject('wallet-fenced', 'another unresolved wallet handoff owns the nonce lane');
+      const current = await nodeCall('getAddressNonce', { address: requested.owner });
+      if (!integer(current) || !Number.isSafeInteger(current + 1)) reject('indeterminate', 'account nonce is unavailable or exhausted');
+      const nonce = current + 1;
+      const nativeAddress = deriveStorageAddress(requested.owner, requested.programName, nonce, '');
+      const timestamp = now();
+      if (!integer(timestamp)) reject('invalid', 'plan timestamp must be a nonnegative integer');
+      const payload = buildStorageProgramCreatePayload({ from: requested.owner, storageAddress: nativeAddress, programName: requested.programName,
+        logicalAddress: requested.logicalAddress, signedListing: requested.artifact, nonce, timestamp });
+      payload.content.data[1].metadata = clone(requested.metadata);
+      payload.content.from_ed25519_address = requested.owner;
+      const authorizationMessage = sha256Hex(JSON.stringify(payload.content));
+      const record = { ...requested, scope, planId: exactHash([scope, requested.writer, requested.logicalAddress]), nativeAddress, nonce,
+        stage: 'prepared', payload, authorizationMessage,...(sourceCapability?{evidenceMode:mode}: {}) };
+      await persist(record);
+      return descriptor(record);
+    });
+  }
+
+  async function takeWalletHandoff({ planId, walletAddress }) {
+    const saved = await journal.get(planId);
+    if (!saved || saved.scope !== scope) reject('invalid', 'unknown wallet plan');
+    return journal.withWalletLock(walletKey(saved.writer), async () => {
+      const current = await journal.get(planId);
+      if (walletAddress !== current.owner) reject('wrong-writer', 'handoff belongs to another wallet');
+      if (current.stage !== 'prepared') reject('handoff-already-issued', 'this plan cannot issue another wallet handoff');
+      await chainIdentity();
+      const nonce = await nodeCall('getAddressNonce', { address: current.owner });
+      if (!integer(nonce)) reject('indeterminate', 'account nonce is unavailable');
+      if (nonce + 1 !== current.nonce) reject('stale-plan', 'wallet nonce changed after planning');
+      // Persist before returning. Unknown outcomes remain fenced forever until
+      // authenticated readback; there is no reset/re-send method here.
+      current.stage = 'handoff-issued';
+      await persist(current);
+      return { ...descriptor(current), request: { method: 'sign', params: [current.authorizationMessage] },
+        unsignedTransaction: clone(current.payload), integration: 'local-sign-only; embedded-sendTransaction-held' };
+    });
+  }
+
+  async function authorizeWrite({ planId, walletAddress, writerSignature }) {
+    const saved = await journal.get(planId);
+    if (!saved || saved.scope !== scope) reject('invalid', 'unknown wallet plan');
+    return journal.withWalletLock(walletKey(saved.writer), async () => {
+      const current = await journal.get(planId);
+      if (walletAddress !== current.owner || !verifyDemosSignature({ address: current.owner, message: current.authorizationMessage, signature: writerSignature })) reject('wrong-writer', 'wallet did not authorize these exact bytes');
+      if (current.stage !== 'handoff-issued') reject('authorization-already-issued', 'the signed envelope cannot be issued again');
+      const signedTransaction = clone(current.payload);
+      signedTransaction.hash = current.authorizationMessage;
+      signedTransaction.signature = { type: 'ed25519', data: `0x${Buffer.from(canonicalSignature(writerSignature), 'base64url').toString('hex')}` };
+      current.stage = 'authorization-issued';
+      await persist(current);
+      return { ...descriptor(current), signedTransaction };
+    });
+  }
+
+  // Consume a pointer, never submit a transaction. A missing/uncertain read
+  // throws indeterminate and keeps the wallet lane and original plan fenced.
+  async function write({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, transactionHash, receiptContentHash = contentHash(artifact) }) {
+    const requested = sourceInputs({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, receiptContentHash });
+    return journal.withWalletLock(walletKey(writer), async () => {
+      const saved = await retained(logicalAddress, writer);
+      if (!saved || saved.envelopeHash !== requested.envelopeHash || saved.hash !== requested.hash || saved.artifactKind !== requested.artifactKind) reject('conflict', 'write requires the exact retained wallet plan');
+      if (!['authorization-issued', 'verified'].includes(saved.stage)) reject('authorization-required', 'exact wallet authorization has not been established');
+      if (saved.transactionHash && saved.transactionHash !== transactionHash) reject('invalid', 'verified transaction pointer cannot change');
+      const native = await nativeRead(saved.nativeAddress);
+      const record = await authenticate(logicalAddress, writer, native, transactionHash, saved);
+      saved.stage = 'verified';
+      saved.transactionHash = transactionHash;
+      await persist(saved);
+      return record.receipt;
+    });
+  }
+
+  async function verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind, deliveryBinding, receiptContentHash = contentHash(artifact), signedProjection }) {
+    try {
+      const projection = signedProjection === undefined ? undefined : clone(signedProjection);
+      if (!isAnchorReceipt(receipt) || receipt.logicalAddress !== logicalAddress || receipt.writer !== expectedWriter || receipt.contentHash !== receiptContentHash) return 'invalid';
+      const proof = decodeDemosAnchorReceiptProof(receipt);
+      if (proof.chainIdentity !== expectedIdentity || proof.operation !== 'create') return 'invalid';
+      const derived = deriveStorageAddress(addressForClaim(expectedWriter), logicalToStorageProgramName(logicalAddress), Number(receipt.nonce), '');
+      if (derived !== receipt.nativeAddress || proof.nativeRead.valueHash !== exactHash(artifact)) return 'invalid';
+      const native = await nativeRead(receipt.nativeAddress);
+      if (artifactKind !== undefined && native.metadata.artifactKind !== artifactKind) return 'invalid';
+      if (deliveryBinding !== undefined && canonicalize(native.metadata.deliveryBinding) !== canonicalize(deliveryBinding)) return 'invalid';
+      const record = await authenticate(logicalAddress, expectedWriter, native, receipt.transactionRef.value, await retained(logicalAddress, expectedWriter), projection);
+      const expected = record.receipt;
+      // observedAt is the original observation, not this reauthentication's
+      // wall clock. Every other field must match fresh inclusion/native facts.
+      record.demosEvidence.nativeRead.observedAt = receipt.observedAt;
+      if (!demosWriteEvidenceBindsReceiptContent(record.demosEvidence, logicalAddress, receiptContentHash) || exactHash(artifact) !== exactHash(record.artifact)) return 'invalid';
+      const reprojection = demosWriteEvidenceToAnchorReceipt({ logicalAddress, contentHash: receiptContentHash, writer: expectedWriter, evidence: record.demosEvidence });
+      return canonicalize(reprojection) === canonicalize(receipt) && expected.nativeAddress === receipt.nativeAddress ? 'valid' : 'invalid';
+    } catch (error) {
+      if (error?.code === 'indeterminate') return 'indeterminate';
+      return 'invalid';
+    }
+  }
+
+  // Separate handoff for the frozen explicit wallet kind. The old skeleton
+  // authorizer is unchanged; it never accepts SDK-added fields implicitly.
+  async function takeStorageAnchorHandoff({ planId, walletAddress, network }) {
+    if (typeof network !== 'string' || !/^[a-z0-9._-]{1,64}$/.test(network)) reject('invalid', 'an explicit fixture network label is required');
+    const saved = await journal.get(planId);
+    if (!saved || saved.scope !== scope) reject('invalid', 'unknown wallet plan');
+    return journal.withWalletLock(walletKey(saved.writer), async () => {
+      const current = await journal.get(planId);
+      if (walletAddress !== current.owner) reject('wrong-writer', 'handoff belongs to another wallet');
+      if (current.stage !== 'prepared') reject('handoff-already-issued', 'this plan cannot issue another wallet handoff');
+      await chainIdentity();
+      const nonce = await nodeCall('getAddressNonce', { address: current.owner });
+      if (!integer(nonce) || nonce + 1 !== current.nonce) reject('stale-plan', 'wallet nonce differs from the retained plan');
+      current.payload.content.network = network;
+      if(sourceCapability && network!==sourceCapability.pins.network) reject('invalid-chain','the CREATE network differs from the opaque source capability');
+      current.payload.content.chainIdentity = expectedIdentity;
+      current.authorizationProfile = 'embedded-storage-anchor-create';
+      current.stage = 'handoff-issued';
+      await persist(current);
+      return { ...descriptor(current), unsignedTransaction: clone(current.payload) };
+    });
+  }
+
+  // The caller must supply the exact signed/approved envelope retained by the
+  // injected wallet journal, not an RPC body or an untrusted hash pointer.
+  async function adoptWalletAuthorization({ planId, walletRecord }) {
+    const saved = await journal.get(planId);
+    if (!saved || saved.scope !== scope) reject('invalid', 'unknown wallet plan');
+    return journal.withWalletLock(walletKey(saved.writer), async () => {
+      const current = await journal.get(planId);
+      const signed = walletRecord?.signedTransaction;
+      const approved = walletRecord?.approved;
+      const c = signed?.content;
+      if (current.authorizationProfile !== 'embedded-storage-anchor-create' || !['handoff-issued', 'authorization-issued', 'verified'].includes(current.stage)) reject('authorization-required', 'no explicit embedded wallet handoff was retained');
+      if (!['broadcast-started', 'sr2-readback-pending', 'broadcast-accepted'].includes(walletRecord?.stage)
+        || !object(approved) || !object(approved.transaction?.content) || !object(c) || approved.owner !== current.writer || approved.logicalAddress !== current.logicalAddress
+        || approved.contentHash !== current.hash || approved.envelopeHash !== current.envelopeHash || (current.artifactKind !== undefined && approved.artifactKind !== current.artifactKind)
+        || canonicalize(approved.transaction?.content) !== canonicalize(current.payload.content)
+        || signed.hash !== walletRecord.hash || !HASH.test(signed.hash) || sha256Hex(JSON.stringify(c)) !== signed.hash
+        || signed.signature?.type !== 'ed25519' || !verifyDemosSignature({ address: current.owner, message: signed.hash, signature: signed.signature.data })) reject('authorization-required', 'the exact approved wallet signature and journal record are required');
+      const initial = current.payload.content;
+      if (c.from !== current.owner || c.from_ed25519_address !== current.owner || c.to !== current.nativeAddress || c.nonce !== current.nonce
+        || c.timestamp !== initial.timestamp || wireInteger(c.amount) !== 0 || c.network !== initial.network || c.chainIdentity !== initial.chainIdentity
+        || canonicalize(c.data) !== canonicalize(initial.data) || !Array.isArray(c.gcr_edits) || c.gcr_edits.length !== 4) reject('invalid', 'the signed SDK CREATE differs from its retained scope or coordinate');
+      if (current.authorizedTransaction && canonicalize(current.authorizedTransaction) !== canonicalize(signed)) reject('invalid', 'retained wallet authorization cannot change');
+      current.authorizedTransaction = clone(signed);
+      current.authorizationMessage = signed.hash;
+      if (current.stage !== 'verified') current.stage = 'authorization-issued';
+      await persist(current);
+      return descriptor(current);
+    });
+  }
+
+  // Terminal retirement of one explicitly denied, never-authorized embedded
+  // handoff. Under the writer's lane lock it requires: the exact retained plan
+  // at `handoff-issued` with no adopted authorization, the caller's proof that
+  // no signed wallet record exists for it (read inside this lock), an empty
+  // exact name index for its program, and an account nonce that has not
+  // consumed the plan's nonce (a later plan reuses that nonce, so the two can
+  // never both apply). Any
+  // other state, or any unavailable observation, rejects and stays fenced. The
+  // record is kept (never deleted) and can never issue, adopt or write again.
+  async function retireDeniedHandoff({ logicalAddress, writer, walletAddress, provesUnsigned }) {
+    if (typeof provesUnsigned !== 'function') reject('invalid', 'an unsigned-lane proof is required');
+    return journal.withWalletLock(walletKey(writer), async () => {
+      const current = await retained(logicalAddress, writer);
+      if (!current || walletAddress !== current.owner) reject('invalid', 'no exact retained plan for this writer');
+      if (current.stage === DENIED_UNSIGNED) return descriptor(current);
+      if (current.stage !== 'handoff-issued' || current.authorizationProfile !== 'embedded-storage-anchor-create' || current.authorizedTransaction) reject('authorization-required', 'only an unauthorized issued handoff can be retired');
+      if (await provesUnsigned(clone(current)) !== true) reject('authorization-required', 'a signed wallet record may exist for this handoff');
+      await chainIdentity();
+      const rows = await nodeCall('searchStoragePrograms', { query: current.programName, options: { exactMatch: true, limit: 50, offset: 0 } });
+      if (!Array.isArray(rows) || rows.length !== 0) reject('indeterminate', 'the name index does not prove the program absent');
+      const nonce = await nodeCall('getAddressNonce', { address: current.owner });
+      if (!integer(nonce) || nonce + 1 !== current.nonce) reject('indeterminate', 'account nonce does not prove the handoff unconsumed');
+      current.stage = DENIED_UNSIGNED;
+      current.retirement = { reason: 'explicit-wallet-denial-without-signed-record', observedAccountNonce: nonce };
+      await persist(current);
+      return descriptor(current);
+    });
+  }
+
+  return { rpcOrigin: base, evidenceMode: DEMOS_SR2_EVIDENCE_MODE, planWrite, takeWalletHandoff, authorizeWrite, takeStorageAnchorHandoff, adoptWalletAuthorization, retireDeniedHandoff, read, recheck, write, verifyReceipt };
 }
