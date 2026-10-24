@@ -5,7 +5,7 @@
 > client integration remains a release qualification requirement. The wire runs only
 > under testnet profile TP-1 ([testnet-profile-tp1.md](testnet-profile-tp1.md)).
 
-`@kynesyslabs/dacs/wire` defines the HTTPS wire between a buyer and a seller's
+The internal `src/wire` module defines the HTTPS wire between a buyer and a seller's
 own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
 exact signing bytes, and validators. It has no HTTP server or client. Its one
@@ -21,27 +21,25 @@ exact-bytes admission) and two new parts (discovery and endpoint proof, the
 TP-1 identity gate). Host admission additionally requires the replay and
 Agreement context checks described below. Unless a section says otherwise, behaviour is the
 plugin's. The plugin implementation is not public. Where this SDK pins a ported
-behaviour, the table names its own source and tests. The original-behaviour
-capture in `test/wire/fixtures/` was made by running the unmodified plugin
-module, and `test/wire/originalFixture.test.ts` compares this wire against it.
-Anything else said here about the plugin is taken from its implementation and
-not yet independently checked (composition checks qualify it).
+behaviour, the table names its own source and tests. Original-plugin captures and a parity comparison test are planned for a later
+compatibility slice. Plugin parity is unverified at this prefix. Claims about
+the plugin are taken from its implementation and require composition checks.
 
 | What | Pinned in this SDK by |
 |---|---|
 | Route table, including the context route | `src/wire/routes.ts`; `test/wire/wire.test.ts` |
-| Envelope, signing bytes, header | `src/wire/envelope.ts`, `src/wire/validate.ts`; the original-behaviour capture (`test/wire/originalFixture.test.ts`) |
-| Delegation | `src/wire/delegation.ts`; the original-behaviour capture |
-| Response and client half | `src/wire/response.ts`; the original-behaviour capture |
+| Envelope, signing bytes, header | `src/wire/envelope.ts`, `src/wire/validate.ts`; `test/wire/envelope.test.ts` |
+| Delegation | `src/wire/delegation.ts`; `test/wire/delegation.test.ts` |
+| Response and client half | `src/wire/response.ts`; `test/wire/response.test.ts` |
 | Limits | `DACS_SELLER_HTTP_LIMITS` in `src/wire/routes.ts`; `test/wire/wire.test.ts` |
 | Raw JSON admission | dacs-sdk `3904d70` `src/canonical/rawJson.ts:92-212` (`admitRawJson`) |
-| Discovery and endpoint proof | new: `src/wire/discovery.ts`; the discovery vectors |
+| Discovery and endpoint proof | new: `src/wire/discovery.ts`; `test/wire/discoveryLifetime.test.ts` |
 
 ## Implementation decisions and release scope
 
 The SDK implements one buyer-to-seller transport, `dacs-seller-http/v1`,
 without a fallback to the plugin signing domains. Its definitions and validators
-ship in the existing core package as `@kynesyslabs/dacs/wire` (`./wire`);
+currently live in internal `src/wire`; the package wire entry point is pending;
 HTTP hosting and clients belong to their consuming packages. The seller's durable
 request journal ships here (`openWireRequestJournal`).
 The only supported profile is experimental TP-1 on the approved Demos testnet
