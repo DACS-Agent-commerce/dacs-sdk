@@ -1084,7 +1084,10 @@ describe("runtime-image package inventory", () => {
     const policy = JSON.parse(readFileSync(b7b180fFile("runtime-image-policy.json"), "utf8"));
     const summary = b7b180fSimulation({
       "runtime-image-policy.json": JSON.stringify({ ...policy, typescriptPresent: false, rubicSdkPresent: false }),
-      "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4"),
+      "runtime-image-inventory.json": inventory(packages => {
+        const retained = packages.filter(item => !["typescript", "rubic-sdk"].includes(item.name));
+        packages.splice(0, packages.length, ...retained, { name: "vitest", location: "node_modules/vitest", version: "3.2.4" });
+      }),
     });
     expect(summary.securityGate.findings.productionImageDependencies).toEqual([
       { name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null }]);
