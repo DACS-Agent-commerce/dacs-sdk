@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { canonicalize, createFixedPriceAgreementSigningPlan, createFixedPriceAgreementSignatureContribution, sha256Hex } from '@kynesyslabs/dacs';
 import { createSellerTransportClientAuth, createSellerTransportServerAuth, sellerSessionDelegationSigningBytes,
-  verifySellerSessionDelegation, normalizeSellerSessionDelegationSignature, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+  sellerTransportSigningBytes, verifySellerSessionDelegation, normalizeSellerSessionDelegationSignature, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
 import { assertSellerSessionLifetime, SELLER_SESSION_MAX_LIFETIME_MS } from '../src/public/portal/seller-session-limits.mjs';
 
 // Fixed public test seeds, never operator credentials.
@@ -200,4 +201,67 @@ test('delegated server checks Agreement scope and deadlines before the authentic
   const body = await proposalBody(1499), proposal = world({ delegated: true, route: '/dacs/v1/agreements/proposals', requestBody: body, bindingHash: body.transportIdentity.agreementHash });
   const proposed = await proposal.request();
   assert.throws(() => proposal.validate(proposed), { code: 'peer_delegation_deadline' });
+});
+
+
+for (const delegated of [false, true]) test(`effect entry rechecks expired request time (delegated=${delegated})`, async () => {
+  const w = world({ delegated, context: true }), asked = await w.request();
+  w.validate(asked); w.setTime(asked.request.expiresAt);
+  assert.equal(w.server.readbackOnly(asked.request), true);
+  w.server.store.reserve(asked.request, asked.body); w.server.store.classify(asked.request, asked.body);
+  assert.deepEqual(w.calls.map(call => [call[0], call[3]]), [['reserve', { journaledOnly: true }], ['classify', { journaledOnly: true }]]);
+  for (const effect of [() => w.server.store.issueContextChallenge(asked.request, {}),
+    () => w.server.store.attemptContextPresentation(asked.request, {}), () => w.server.store.resume({}, asked.request),
+    () => w.server.store.reconcile({}, asked.request, 200, '{}', { retry: true }),
+    () => w.server.store.reconcile({}, asked.request, 200, '{}', { noEffect: true })]) {
+    assert.throws(effect, error => error.status === 408 && ['peer_expired', 'peer_delegation_expired'].includes(error.code));
+  }
+  assert.equal(w.calls.length, 2);
+});
+
+test('effect entry rechecks delegation expiry after successful validation', async () => {
+  const w = world({ delegated: true, context: true }), asked = await w.request();
+  w.validate(asked); w.setTime(1500);
+  for (const method of ['issueContextChallenge', 'attemptContextPresentation']) {
+    assert.throws(() => w.server.store[method](asked.request, {}), { code: 'peer_delegation_expired', status: 408 });
+  }
+  assert.equal(w.calls.length, 0);
+});
+
+test('scalar envelope fields refuse arrays and objects before authentication callbacks', async () => {
+  const w = world(), asked = await w.request(); let callbacks = 0;
+  const envelope = JSON.parse(Buffer.from(asked.header, 'base64url'));
+  const fields = ['bodyHash', 'buyer', 'seller', 'agreementHash', 'nonce', 'requestHash', 'listingPin.contentHash'];
+  const response = JSON.parse(Buffer.from(await w.server.responseHeader(asked.request, 200, '{}'), 'base64url'));
+  for (const field of fields) for (const shape of ['array', 'object']) {
+    const malformed = structuredClone(field === 'requestHash' ? response : envelope);
+    const target = field.startsWith('listingPin.') ? malformed.payload.listingPin : malformed.payload;
+    const key = field.split('.').at(-1), value = target[key];
+    target[key] = shape === 'array' ? [value] : { toString: value };
+    assert.throws(() => sellerTransportSigningBytes(malformed.payload), { code: 'peer_envelope_invalid', status: 401 });
+    assert.throws(() => field === 'requestHash'
+      ? w.client.verifyResponse(asked.request, { header: encoded(malformed), status: 200, text: '{}' })
+      : w.validate({ ...asked, request: w.server.readRequest(encoded(malformed)) }, { onAuthenticatedBody: () => { callbacks++; } }), { code: 'peer_envelope_invalid', status: 401 });
+  }
+  assert.equal(callbacks, 0);
+  await assert.rejects(world({ route: '/dacs/v1/payments', bindingHash: [agreementHash],
+    requestBody: { jobId, payerPayingKey: buyer.claim, txHash: 'a'.repeat(64) } }).request(), { code: 'peer_envelope_invalid' });
+});
+
+test('signer and seller configuration rejects coercible claim values', () => {
+  const coerce = { toString() { throw new Error('TEST claim coercion must not run'); } };
+  for (const claim of [[buyer.claim], coerce]) {
+    assert.throws(() => createSellerTransportClientAuth({ buyerSigner: { ...buyer, claim }, seller: seller.claim, resolveJob() {} }), /signing callback/);
+    assert.throws(() => createSellerTransportServerAuth({ sellerSigner: { ...seller, claim }, listingPin: pin, store: {} }), /signing callback/);
+    assert.throws(() => createSellerTransportClientAuth({ buyerSigner: buyer, seller: claim, resolveJob() {} }), /configuration/);
+  }
+});
+
+test('transport factories share named lifetime, header and default limits', () => {
+  const source = readFileSync(new URL('../src/dacs/seller-transport-auth.mjs', import.meta.url), 'utf8');
+  assert.match(source, /const MAX_TRANSPORT_LIFETIME_MS = 60_000;/);
+  const factories = source.slice(source.indexOf('export function createSellerTransportServerAuth('));
+  assert.doesNotMatch(factories, /\b(?:60000|60_000|4096|30000)\b/);
+  const header = source.slice(source.indexOf('function verifiedHeader('), source.indexOf('function publicKeyFor('));
+  assert.doesNotMatch(header, /\b4096\b/);
 });
