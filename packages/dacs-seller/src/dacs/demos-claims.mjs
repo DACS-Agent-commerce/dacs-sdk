@@ -18,6 +18,13 @@ const SMALL_ORDER_Y = new Set([0n, 1n, P25519 - 1n, Y8, P25519 - Y8]);
 
 export class DemosClaimFormatError extends Error {}
 
+// True when the 32 raw public key bytes encode a small-order point, in any
+// encoding; a signature by such a key proves nothing.
+export function isSmallOrderPublicKey(raw) {
+  const y = (BigInt(`0x${Buffer.from(raw).reverse().toString('hex')}`) & ((1n << 255n) - 1n)) % P25519;
+  return SMALL_ORDER_Y.has(y);
+}
+
 export function normalizeDemosAddress(value) {
   if (typeof value !== 'string') throw new DemosClaimFormatError('wallet address must be a string');
   const hex = value.trim().replace(/^0x/i, '').toLowerCase();
@@ -68,8 +75,7 @@ export function verifyDemosSignature(input) {
     const { address, message, signature } = input;
     if (typeof message !== 'string' || !message.isWellFormed()) return false;
     const raw = Buffer.from(normalizeDemosAddress(address).slice(2), 'hex');
-    const y = (BigInt(`0x${Buffer.from(raw).reverse().toString('hex')}`) & ((1n << 255n) - 1n)) % P25519;
-    if (SMALL_ORDER_Y.has(y)) return false;
+    if (isSmallOrderPublicKey(raw)) return false;
     const key = publicKeyFromRaw(raw);
     return ed25519Verify(Buffer.from(message, 'utf8'), decodeSignature(signature), key);
   } catch {
