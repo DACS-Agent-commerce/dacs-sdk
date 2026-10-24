@@ -272,3 +272,19 @@ test('transport factories share named lifetime, header and default limits', () =
   const header = source.slice(source.indexOf('function verifiedHeader('), source.indexOf('function publicKeyFor('));
   assert.doesNotMatch(header, /\b4096\b/);
 });
+
+test('a small-order identity key never authenticates a request or a delegation by the constant signature', async () => {
+  // The identity point with R = the identity and S = 0 verifies for every message.
+  const identityKey = Buffer.concat([Buffer.from([1]), Buffer.alloc(31)]).toString('hex');
+  const constantSignature = Buffer.concat([Buffer.from([1]), Buffer.alloc(63)]).toString('base64url');
+  const forger = `did:demos:agent:${identityKey}`;
+  const w = world(), asked = await w.request();
+  for (const nonce of [Buffer.alloc(24, 5), Buffer.alloc(24, 6)]) {
+    const envelope = JSON.parse(Buffer.from(asked.header, 'base64url'));
+    Object.assign(envelope.payload, { buyer: forger, nonce: nonce.toString('base64url') });
+    envelope.signature = constantSignature;
+    assert.throws(() => w.server.readRequest(encoded(envelope)), { code: 'peer_signature_invalid' });
+  }
+  const forged = delegation({ buyer: forger });
+  assert.throws(() => verifySellerSessionDelegation({ ...forged, signature: constantSignature }), { code: 'peer_delegation_signature_invalid' });
+});
