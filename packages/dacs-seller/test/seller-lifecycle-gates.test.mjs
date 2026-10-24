@@ -46,7 +46,7 @@ test('seller caller commits, accepts verified payment and delivers, but signs no
  const w=await agentFixture({lifecycle:true});
  try{
   assert.equal((await w.agent.commit({jobId})).status,'committed');
-  assert.equal(w.store.loadSession(jobId).commitment.committedAt,1800000001000,'CA-8 uses receipt block time, not record/local time');
+  assert.equal(w.store.loadSession(jobId).commitment.committedAt,NOW+2000,'CA-8 uses receipt block time, not record/local time');
   assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
   const writes=w.anchors.writes.length;
   const unsigned=()=>{const session=w.store.loadSession(jobId);assert.equal(session.finalisedAt,undefined);assert.equal(session.bundleHash,undefined);assert.equal(session.sellerBundleSignature,undefined);assert.equal(session.sellerCopy,undefined);};
