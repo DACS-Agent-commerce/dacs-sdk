@@ -117,7 +117,9 @@
     "package:verify": "node scripts/verify-package.mjs",
     "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
     "release:set:verify": "node scripts/verify-release-set.mjs",
-    "release:set:publish": "node scripts/publish-release-set.mjs"
+    "release:set:publish": "node scripts/publish-release-set.mjs",
+    "seller:test": "node scripts/run-seller-tests.mjs",
+    "seller:prepare": "node scripts/prepare-seller-consumer.mjs"
   },
   "publishConfig": {
     "access": "public",
