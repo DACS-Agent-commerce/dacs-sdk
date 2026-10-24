@@ -217,7 +217,7 @@ export function validateLock(lock, artifacts, consumer = ".", omitOptional = fal
 export function expectedNode20Rejection(p, subpath, error, node = process.versions.node) {
   const restricted = p.name === "@kynesyslabs/dacs-seller" && p.engines?.node === ">=22.13.0" ||
     p.name === "@kynesyslabs/dacs-client" && subpath === "./durable-journal";
-  return node.startsWith("20.") && Boolean(restricted) && error.code === "ERR_UNKNOWN_BUILTIN_MODULE" && error.message.includes("node:sqlite");
+  return node.startsWith("20.") && Boolean(restricted) && error.code === "ERR_UNKNOWN_BUILTIN_MODULE" && error.message === "No such built-in module: node:sqlite";
 }
 
 export async function checkInstalled(consumer, artifacts) {
@@ -305,6 +305,7 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
 }
 
 export async function consume(artifacts, scratch, log = console.log, options = {}) {
+  const execute = options.execute ?? run;
   if (!artifacts.length) fail("no release artifacts to install");
   validateArtifactSet(artifacts);
   const peers = new Map();
@@ -322,7 +323,7 @@ export async function consume(artifacts, scratch, log = console.log, options = {
   const tarballs = await Promise.all(artifacts.map(a => realpath(a.tarball)));
   const artifactResolutions = artifacts.map((a, i) => ({ name: a.manifest.name, tarball: tarballs[i] }));
   await writeFile(join(consumer, "package.json"), JSON.stringify({ name: "dacs-release-consumer", version: "1.0.0", private: true, type: "module" }));
-  run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional", ...tarballs, ...[...peers].map(([name, version]) => `${name}@${version}`)], consumer);
+  execute("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional", ...tarballs, ...[...peers].map(([name, version]) => `${name}@${version}`)], consumer);
   await retainConsumerReceipt(consumer, artifacts, options.outputDirectory, "without-native");
   validateLock(JSON.parse(await readFile(join(consumer, "package-lock.json"))), artifactResolutions, consumer, true);
   await checkInstalled(consumer, artifacts);
@@ -330,7 +331,7 @@ export async function consume(artifacts, scratch, log = console.log, options = {
     try { await lstat(join(consumer, "node_modules/better-sqlite3")); fail("optional native dependency unexpectedly installed"); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     await consumeImports(consumer, artifacts, log, (artifact, entry) => artifact.manifest.name === "@kynesyslabs/dacs-node" && entry.subpath !== "./sqlite");
-    run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional", "--save-exact", `better-sqlite3@${nativeVersion}`], consumer);
+    execute("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional", "--save-exact", `better-sqlite3@${nativeVersion}`], consumer);
     await retainConsumerReceipt(consumer, artifacts, options.outputDirectory, "with-native");
     validateLock(JSON.parse(await readFile(join(consumer, "package-lock.json"))), artifactResolutions, consumer, true);
     await checkInstalled(consumer, artifacts);
@@ -338,9 +339,9 @@ export async function consume(artifacts, scratch, log = console.log, options = {
     if (installed.name !== "better-sqlite3" || installed.version !== nativeVersion) fail("native dependency identity mismatch: better-sqlite3");
     // The initial install disables every lifecycle hook. Only this exact native
     // package may build; dependency and release-package hooks remain disabled.
-    log(run("npm", ["rebuild", `better-sqlite3@${nativeVersion}`, "--ignore-scripts=false", "--foreground-scripts", "--no-audit", "--no-fund"], consumer,
+    log(execute("npm", ["rebuild", `better-sqlite3@${nativeVersion}`, "--ignore-scripts=false", "--foreground-scripts", "--no-audit", "--no-fund"], consumer,
       { npm_config_devdir: join(scratch, "node-gyp"), npm_config_jobs: "2" }));
-    log(run(process.execPath, ["--input-type=module", "-e", `
+    log(execute(process.execPath, ["--input-type=module", "-e", `
       import Database from 'better-sqlite3';
       const db = new Database(':memory:');
       try { if (db.prepare('SELECT 1 AS ready').get().ready !== 1) throw Error('native sqlite smoke failed'); }
