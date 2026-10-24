@@ -224,12 +224,19 @@ test('B17 retries and unknown-job state reads retain bounded nonce answers witho
  assert.deepEqual(effectState(w.effects()),effectState(before));assert.equal((await exchange(w.handler,await w.wire({actor:w.other,jobId:JOBS[2]}))).status,200);
 });
 test('B18 completed expired nonces free capacity after restart while old effect answers remain',async t=>{
- const w=await world(t,{maxRecords:1});const first=await w.wire();await exchange(w.handler,first);w.advance(30001);
+ const requestLifetimeMs=30000,nonceWindowMs=60000,w=await world(t,{maxRecords:1}),first=await w.wire(),firstAnswer=await exchange(w.handler,first);
+ assert.equal(firstAnswer.status,200);w.advance(requestLifetimeMs+1);
  const reopened=createSellerTransportStore({path:w.path,maxRecords:1,maxContextRecords:10000,now:w.now});t.after(()=>reopened.close());
+ const early=await w.wire({actor:w.other,jobId:JOBS[1]});
+ // Request expiry does not end the retained nonce's full rate window.
+ await assert.rejects(w.route.reserve(w.auth.readRequest(early.header),JSON.parse(early.text),reopened),{code:'peer_store_capacity'});
+ w.advance(nonceWindowMs-requestLifetimeMs);
  const input=await w.wire({actor:w.other,jobId:JOBS[1]}),request=w.auth.readRequest(input.header),body=JSON.parse(input.text);
  const reservation=await w.route.reserve(request,body,reopened);assert.equal(reservation.disposition,'perform');reopened.finish(reservation,200,'{}');
  assert.equal(nonceCount(w),1);assert.equal(w.effects().counts.peer_effects,2);
- const fresh=await signed(w,JSON.parse(first.text));assert.equal((await exchange(w.handler,fresh)).text,(await exchange(w.handler,await signed(w,JSON.parse(first.text)))).text);
+ w.advance(nonceWindowMs+1);
+ const fresh=await signed(w,JSON.parse(first.text)),cached=await exchange(w.handler,fresh),retry=await exchange(w.handler,fresh);
+ assert.equal(cached.status,200);assert.equal(retry.status,200);assert.equal(cached.text,firstAnswer.text);assert.equal(retry.text,firstAnswer.text);
  assert.equal(w.effects().writes,1,'retained answer never calls provider again');
 });
 test('B19 new nonce rows are bounded per buyer before journaling, and expire out of the rate window',async t=>{
