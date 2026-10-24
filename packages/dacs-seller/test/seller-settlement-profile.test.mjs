@@ -294,8 +294,8 @@ function nativeChain(w) {
       seen.publish++;
       const receipt = { receiptVersion: '1', substrate: 'TEST-offline-demos-sr2', finalityProfile: 'TEST-one-node-not-finality', logicalAddress,
         nativeAddress: `TEST-native-${core.sha256Hex(logicalAddress).slice(0, 16)}`, contentHash: core.contentHash(artifact), transactionRef: { kind: 'demos-tx', value: TX },
-        writer: w.signer.claim, nonce: '7', state: 'finalized', observationDisposition: 'established', observedAt: Date.now() + 1000,
-        evidence: { kind: 'demos-tx', value: TX }, blockRef: { id: BLOCK, height: '9', timestamp: Date.now() + 1000 } };
+        writer: w.signer.claim, nonce: '7', state: 'finalized', observationDisposition: 'established', observedAt: w.now + 1000,
+        evidence: { kind: 'demos-tx', value: TX }, blockRef: { id: BLOCK, height: '9', timestamp: w.now + 1000 } };
       retained.stored = { artifact: clone(artifact), receipt, txRef: { kind: 'demos', txHash: TX, blockNumber: 9 }, signedProjection: { TEST: 'projection' } };
       return { status: 'present', ...clone(retained.stored) };
     },
@@ -317,6 +317,7 @@ function nativeChain(w) {
   return { seen, options, anchorAgreement };
 }
 
+const nativeClaim=w=>({...w.payment,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE});
 test('a committed native session takes its payment claim to the transfer observation under its pinned rail, also after a restart with a later registry version or a disabled revision', async (t) => {
   for (const later of [{ authority: { railRegistryVersion: 2 } }, { changes: { availability: 'disabled' }, authority: { railRegistryVersion: 2 } }]) {
     const w = await world(t), chain = nativeChain(w), durableDirectory = w.dir();
