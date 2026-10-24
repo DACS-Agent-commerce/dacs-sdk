@@ -14,7 +14,7 @@ import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfi
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_V1, isReadRoute } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isListingPin, isUint,
-  lacksProfile, ownedArtifact, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+  lacksProfile, ownedArtifact, ownedBytes, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 export const DACS_SELLER_DISCOVERY_FORMAT = "dacs-seller-discovery/v1";
@@ -88,9 +88,9 @@ export function discoverySigningBytes(supplied: DiscoveryPayload): Buffer {
  * served document all come from that copy.
  */
 export async function signDiscoveryDocument(supplied: DiscoveryPayload, signer: WireSigner, binding: Tp1Binding, local: unknown): Promise<Uint8Array> {
-  assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "discovery_invalid", 500) as DiscoveryPayload;
-  assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
+  await assertTp1Binding(binding, local);
+  await assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
   if (!sameCanonical(payload.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 500);
   if (signer.claim !== payload.seller) fail("discovery_signer_wrong", 500);
   // A document this signer built is its own fault (500); a received one is the seller's (502).
@@ -99,9 +99,9 @@ export async function signDiscoveryDocument(supplied: DiscoveryPayload, signer: 
   // Defence in depth: the field bounds keep the largest valid document under 16 KiB (test/wire/admission.test.ts),
   // so this refuses only if those bounds are widened without the buyer's limit.
   if (Buffer.byteLength(canonicalize({ payload, signature: "A".repeat(86) })) > DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes) fail("discovery_too_large", 500);
-  assertTp1Authority(binding, local, [payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
+  await assertTp1Authority(binding, local, [payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const signature = envelopeSignatureBytes(await signer.sign(signingBytes), "discovery_signature_invalid").toString("base64url");
-  assertTp1Authority(binding, local, [payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
+  await assertTp1Authority(binding, local, [payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
   return Buffer.from(canonicalize({ payload, signature }), "utf8");
 }
 
@@ -194,11 +194,12 @@ export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_P
  * Agreement hash and buyer. At signing, a request on any other route is a new
  * purchase: undefined.
  */
-function commitmentTime(commitment: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; now: number; request?: ContinuedRequest }): number | undefined {
+async function commitmentTime(commitment: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; now: number; binding: Tp1Binding; request?: ContinuedRequest }): Promise<number | undefined> {
   const { request } = scope;
   if (commitment === undefined || (request && !isContinuingRoute(request.path) && !isReadRoute(request.path))) return undefined;
-  return commitmentReceiptTime(commitment, agreement, listing, reader, { seller: scope.seller, listingPin: scope.listingPin, now: scope.now,
-    ...(request ? { request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } } : {}) });
+  if (!request) fail("continuation_commitment_invalid", 500, "CONTINUATION-REQUEST-REQUIRED");
+  return await commitmentReceiptTime(commitment, agreement, listing, reader, { binding: scope.binding, seller: scope.seller, listingPin: scope.listingPin, now: scope.now,
+    request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } });
 }
 
 /**
@@ -237,7 +238,7 @@ function assertListingWindow(decision: VerifiedListingEligibility, now: number, 
   const at = committedAt ?? now;
   if (!isUint(decision.notBefore) || !isUint(decision.expiresAt) || !isUint(now) ||
       decision.notBefore > now || decision.notBefore > at ||
-      (committedAt === undefined ? decision.expiresAt <= now : decision.expiresAt < committedAt)) fail("listing_unsupported", 500);
+      (committedAt === undefined ? decision.expiresAt < now : decision.expiresAt < committedAt)) fail("listing_unsupported", 500);
 }
 
 /**
@@ -246,7 +247,7 @@ function assertListingWindow(decision: VerifiedListingEligibility, now: number, 
  * only: neither refuses a continuing request given the job's finalized
  * commitment (commitmentTime).
  */
-export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; request: ContinuedRequest; commitment?: unknown; agreement?: unknown; signedListing?: unknown }): asserts proof is EndpointProof {
+export async function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; request: ContinuedRequest; commitment?: unknown; agreement?: unknown; signedListing?: unknown }): Promise<void> {
   const kept = typeof proof === "object" && proof !== null ? proofGet(proofs, proof) : undefined;
   if (!kept || kept.binding !== scope.binding) fail("endpoint_proof_required", 500);
   const p = proof as EndpointProof;
@@ -255,10 +256,10 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
   // The buyer's own kept proof has lapsed: fetching discovery again clears it (transient), not the seller's fault.
   if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 503);
   const decision = readListingDecision(kept.readListingEligibility, kept.listing, scope.now);
-  const committedAt = commitmentTime(scope.commitment, scope.agreement, scope.signedListing, kept.readCommitmentReceipt, scope);
+  const committedAt = await commitmentTime(scope.commitment, scope.agreement, scope.signedListing, kept.readCommitmentReceipt, scope);
   if (!p.ready && committedAt === undefined) fail("seller_not_ready", 503);
   assertListingWindow(decision, scope.now, committedAt);
-  assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
+  await assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
 }
 
 /**
@@ -275,22 +276,24 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
  * commitment here and is kept with the proof: purchase signing asks it again
  * for every continuing request. Without it no request continues a purchase.
  */
-export function verifyEndpointProof(bytes: Uint8Array, options: {
+export async function verifyEndpointProof(bytes: Uint8Array, options: {
   listing: VerifiedListingEndpoint; binding: Tp1Binding; local: unknown; now: number; readListingEligibility: ListingEligibilityReader;
-  commitment?: unknown; agreement?: unknown; signedListing?: unknown; readCommitmentReceipt?: CommitmentReceiptReader;
-}): EndpointProof {
-  const { listing: suppliedListing, binding, local, now, readListingEligibility, commitment, agreement, signedListing, readCommitmentReceipt } =
-    ownedFields(options, ["listing", "binding", "local", "now", "readListingEligibility", "commitment", "agreement", "signedListing", "readCommitmentReceipt"]);
-  assertTp1Binding(binding, local);
+  request?: ContinuedRequest; commitment?: unknown; agreement?: unknown; signedListing?: unknown; readCommitmentReceipt?: CommitmentReceiptReader;
+}): Promise<EndpointProof> {
+  const { listing: suppliedListing, binding, local, now, readListingEligibility, commitment, agreement, signedListing, readCommitmentReceipt, request: suppliedRequest } =
+    ownedFields(options, ["listing", "binding", "local", "now", "readListingEligibility", "commitment", "agreement", "signedListing", "readCommitmentReceipt", "request"]);
+  const received = ownedBytes(bytes, "wire_input_invalid", 500, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes, code: "discovery_json_rejected", status: 502 });
+  const request = suppliedRequest === undefined ? undefined : ownedArtifact(suppliedRequest, "wire_input_invalid", 500) as ContinuedRequest;
   let listing: VerifiedListingEndpoint;
   try { listing = snapshotWireJsonRead(suppliedListing, "verified Listing") as VerifiedListingEndpoint; }
   catch { return fail("wire_input_invalid", 500); }
-  const document = admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes, "discovery_json_rejected", 502) as JsonRecord;
+  await assertTp1Binding(binding, local);
+  const document = admitWireJson(received, DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes, "discovery_json_rejected", 502) as JsonRecord;
   if (!hasKeys(document, ["payload", "signature"])) fail("discovery_invalid", 502);
   const p = document.payload as JsonRecord;
   if (lacksProfile(p, FIELDS)) fail("tp1_profile_missing", 502);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
-  if (hasKeys(p, FIELDS)) assertPeerProfile(p.profile, binding as Tp1Binding, 502);
+  if (hasKeys(p, FIELDS)) await assertPeerProfile(p.profile, binding as Tp1Binding, 502);
   if (!payloadValid(p)) fail("discovery_invalid", 502);
   if (!hasKeys(listing, ["seller", "publicEndpoint", "listingPin"]) || !isClaim(listing.seller) ||
       !isPublicEndpoint(listing.publicEndpoint) || !isListingPin(listing.listingPin)) fail("wire_input_invalid", 500);
@@ -299,15 +302,15 @@ export function verifyEndpointProof(bytes: Uint8Array, options: {
     fail("discovery_signature_invalid", 502);
   }
   // The trusted reader is asked only about the verified Listing's seller, once its signature verified.
-  assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
+  await assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   if (p.publicEndpoint !== listing.publicEndpoint) fail("discovery_endpoint_mismatch", 502);
   if (!p.listings.some((pin) => sameCanonical(pin, listing.listingPin))) fail("discovery_listing_missing", 502);
   if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);
   if (!isUint(now) || p.issuedAt > now + ISSUED_SKEW_MS || p.expiresAt <= now) fail("discovery_expired", 502);
   const decision = readListingDecision(readListingEligibility, listing, now as number);
   assertListingWindow(decision, now as number,
-    commitmentTime(commitment, agreement, signedListing, readCommitmentReceipt, { seller: listing.seller, listingPin: listing.listingPin, now: now as number }));
-  assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
+    await commitmentTime(commitment, agreement, signedListing, readCommitmentReceipt, { binding: binding as Tp1Binding, request, seller: listing.seller, listingPin: listing.listingPin, now: now as number }));
+  await assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const proof = deepFreeze({ payload: cloneJson(p), ready: p.ready });
   proofSet(proofs, proof, { binding: binding as Tp1Binding, listing: deepFreeze(listing), readListingEligibility: readListingEligibility as ListingEligibilityReader, readCommitmentReceipt });
   return proof;
