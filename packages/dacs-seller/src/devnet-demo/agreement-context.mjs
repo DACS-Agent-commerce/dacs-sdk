@@ -555,6 +555,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const [buyerVet,sellerVet]=records;
     const input={jobId:scope.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:{identityBundle:buyerIdentityBundle,vetRecordRef:buyerVet.recordRef},seller:{identityBundle:sellerVet.identityBundle,vetRecordRef:sellerVet.recordRef},selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:scope.generatedAt};
     const vetRequirements=records.map((vet,index)=>({vetRecordRef:clone(vet.recordRef),evaluatedParty:vet.record.evaluatedParty,requirement:clone(index===0?listing.buyerRequirement:SELLER_REQUIREMENT),verifier:index===0?wallet.claim:buyerIdentityBundle.presentedBy,freshness:[],dealSpecific:[]}));
+    // A valid replacement CVR cannot change the saved Agreement context.
+    // Refuse before caching, so a later lookup cannot bypass that binding.
+    const {generatedAt:_generatedAt,...base}=input;
+    if(retained.seller&&(!same(retained.seller.input,base)||!same(retained.seller.vetRequirements,vetRequirements)))return null;
     if(!contextAllowed(lifecycle,scope.generatedAt))return null;
     if([...contexts.values()].some((entry)=>{const {generatedAt,...kept}=entry.scope;return entry.input.jobId===scope.jobId&&(!same(kept,terms)||!same(entry.input.buyer.identityBundle,buyerIdentityBundle));}))return null;
     const key=canonicalize(scope);
