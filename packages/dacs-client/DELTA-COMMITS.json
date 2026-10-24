@@ -775,49 +775,11 @@
     ]
   },
   {"sha":null,"subject":"fix(client): D11 share buyer schema with the database fixture","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/test/helpers/purchase-integrity-database.mjs","packages/dacs-client/test/purchase-state-schema.test.mjs"]},
-  {
-    "sha": null,
-    "subject": "delta(client): D11 split 04 inject buyer seams behind the action hold",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
-      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
-      "packages/dacs-client/src/purchase-state-schema.mjs",
-      "packages/dacs-client/src/purchases.mjs",
-      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-      "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs",
-      "packages/dacs-client/test/d11-purchase-actions.test.mjs",
-      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
-      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
-      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
-      "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
-      "packages/dacs-client/test/helpers/readback-review-loader.mjs",
-      "packages/dacs-client/test/purchase-executed-only.test.mjs",
-      "packages/dacs-client/test/purchase-integrity.test.mjs",
-      "packages/dacs-client/test/purchase-review-races.test.mjs",
-      "packages/dacs-client/test/readback-review-decisions.test.mjs",
-      "packages/dacs-client/test/sweep-contracts.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 omit unimplemented diagnostic factory options",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/purchases.mjs",
-      "packages/dacs-client/test/d11-seam-parameters.test.mjs"
-    ]
-  },
+  {"sha":null,"subject":"delta(client): D11 split 04 inject buyer seams behind the action hold","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/dacs/delivery-deadline-watch.mjs","packages/dacs-client/src/dacs/protocol-purchases.mjs","packages/dacs-client/src/purchase-state-schema.mjs","packages/dacs-client/src/purchases.mjs","packages/dacs-client/src/seams/purchase-store-not-wired.mjs","packages/dacs-client/src/seams/wallet-actions-not-wired.mjs","packages/dacs-client/test/d11-purchase-actions.test.mjs","packages/dacs-client/test/d11-seam-parameters.test.mjs","packages/dacs-client/test/diagnostic-store-regressions.test.mjs","packages/dacs-client/test/helpers/purchase-integrity-database.mjs","packages/dacs-client/test/helpers/purchase-integrity-operations.mjs","packages/dacs-client/test/helpers/readback-review-loader.mjs","packages/dacs-client/test/purchase-executed-only.test.mjs","packages/dacs-client/test/purchase-integrity.test.mjs","packages/dacs-client/test/purchase-review-races.test.mjs","packages/dacs-client/test/readback-review-decisions.test.mjs","packages/dacs-client/test/sweep-contracts.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 omit unimplemented diagnostic factory options","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/purchases.mjs","packages/dacs-client/test/d11-seam-parameters.test.mjs"]},
   {"sha":null,"subject":"fix(client): D11 reconcile held buyer seam merge provenance","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
   {"sha":null,"subject":"fix(client): D11 resolve duplicate schema import after stack merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/test/helpers/purchase-integrity-database.mjs"]},
   {"sha":null,"subject":"fix(client): D11 reconcile adapter initialization merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
-  {"sha":null,"subject":"fix(client): D11 qualify merged transaction source","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]}
+  {"sha":null,"subject":"fix(client): D11 qualify merged transaction source","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 select historical changes in provenance deletion probes","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/scripts/delta-provenance.test.mjs"]}
 ]

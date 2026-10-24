@@ -527,6 +527,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | eb7c37692bdd5da4ac476e6791a35172f404212e |
 | D11 | fix(client): D11 qualify merged transaction source | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 78994cc83d1c0bbe3065bec8852ea8b37f8d1988 |
+| D11 | fix(client): D11 select historical changes in provenance deletion probes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 052a7eaf5e1cf405c211dcd21b9ef1e3faad108a |
 
 ## Complete commit and file inventory
 
@@ -1279,6 +1281,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 qualify merged transaction source | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 qualify merged transaction source | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
