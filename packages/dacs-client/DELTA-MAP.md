@@ -492,6 +492,12 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 refuse unowned statements while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 2d4843812322f511ac816fee299dfde349c90df7 |
+| D11 | fix(client): D11 split the held purchase-state schema prerequisite | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 557ea59e906125decb9c56d5b2322a1d30af3321 |
+| | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | ce3bb31eb69d5828748e1d04e797bd10de4ef5f3 |
+| D11 | fix(client): D11 share buyer schema with the database fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:16`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:20`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:28`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:40`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:54` | a454605da7223935b8e8417722828049bf904eaf |
+| | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | 940e94f63ffc2a65f42ea03bf262fb42fc200525 |
 
 ## Complete commit and file inventory
 
@@ -1192,6 +1198,20 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/src/purchase-state-schema.mjs:1` |
+| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:16`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:20`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:28`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:40`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:54` |
+| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
 
 ## Original moved files
 
