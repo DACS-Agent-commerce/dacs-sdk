@@ -2002,7 +2002,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 vi.mock("../../src/rails/payDemExecutionAuthority.js", async () =>
   import("../support/payDemExecutionAuthority.js"));
 
-async function nativeAuditFixture(anchorCommitted = false, normative = false) {
+async function nativeAuditFixture(anchorCommitted = false, normative = false, omitTxRefKind = false) {
   const store = createInMemorySessionStore();
   const kv = new Map<string, Record<string, unknown>>();
   const rail = normative ? "demos-native:DEM" : "pay-dem";
@@ -2048,7 +2048,8 @@ async function nativeAuditFixture(anchorCommitted = false, normative = false) {
   const payee = sellerDid.slice("did:demos:agent:".length);
   const txHash = "cd".repeat(32);
   const success: SettleResult = { ok: true, txHash, chainId: "demos", payer,
-    payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
+    payee: sellerDid, blockNumber: 42, ...(omitTxRefKind ? {} : { txRefKind: "demos" }),
+    finality: { model: "bft-final" } };
   const failure: SettleResult = { ok: false, txHash, chainId: "demos", payer,
     payee: sellerDid, blockNumber: 42, txRefKind: "demos", errorClass: "permanent",
     failureProof: { kind: "demos-failed-record", txHash, payer, payee,
@@ -2125,6 +2126,13 @@ test.each(["block", "kind"])("refuses an anchor-only audit with a conflicting %s
   }) });
   await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
     .rejects.toThrow(/success evidence.*execution|execution.*success evidence/);
+});
+
+test("accepts an anchor-only audit whose rail omits the optional txRefKind", async () => {
+  const f = await nativeAuditFixture(true, false, true);
+  const resumed = await makeDeps(undefined, { kv: f.kv, resumeSettlement: async () => f.success });
+  await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+    .resolves.toMatchObject({ outcome: "completed" });
 });
 
 test("rejects an indeterminate audit of an unbound legacy success before checkpoint writes", async () => {
