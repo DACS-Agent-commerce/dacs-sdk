@@ -54,6 +54,14 @@ it.each([
   expect(x.session.calls).toBe(0);
 });
 
+it("signs a read route's request under a delegation that has expired", async () => {
+  const x = await wireWorld();
+  const delegation = x.signed({ ...x.delegation, expiresAt: x.input.now }, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation) as wire.SellerSessionDelegation;
+  const request = { ...x.request, path: wire.DACS_SELLER_HTTP_PATHS.state };
+  const header = await wire.signWireEnvelope(request, { ...x.input, signer: x.session, purchaseProfile: x.binding.profile }, delegation);
+  expect((await wire.openWireEnvelope(header, "request", x.context)).payload).toEqual(request);
+});
+
 async function continuationSigning(path: string) {
   const p = await committedPurchase((listing) => { listing.seller.publicEndpoint = "https://seller.proof.invalid"; });
   const binding = p.scope.binding, local = binding.local, now = p.scope.now, publicEndpoint = "https://seller.proof.invalid";
