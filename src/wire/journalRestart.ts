@@ -19,21 +19,21 @@ if (phase === "publish") {
   const dir = fs.openSync(directory, fs.constants.O_RDONLY);
   try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
 } else {
-  const fd = fs.openSync(published, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  try {
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile() || stat.size !== Buffer.byteLength(expected)) process.exit(1);
-    const retained = () => {
+  const retained = () => {
+    const fd = fs.openSync(published, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size !== Buffer.byteLength(expected)) process.exit(1);
       const bytes = Buffer.alloc(Buffer.byteLength(expected) + 1);
       const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
       return bytes.subarray(0, count).toString("utf8");
-    };
-    if (retained() !== expected) process.exit(1);
-    fs.writeFileSync(temporary, "different", { flag: "wx", mode: 0o600 });
-    try { fs.linkSync(temporary, published); process.exit(1); }
-    catch (error) { if (error.code !== "EEXIST") throw error; }
-    if (retained() !== expected) process.exit(1);
-  } finally { fs.closeSync(fd); }
+    } finally { fs.closeSync(fd); }
+  };
+  if (retained() !== expected) process.exit(1);
+  fs.writeFileSync(temporary, "different", { flag: "wx", mode: 0o600 });
+  try { fs.linkSync(temporary, published); process.exit(1); }
+  catch (error) { if (error.code !== "EEXIST") throw error; }
+  if (retained() !== expected) process.exit(1);
 }
 `;
 
@@ -46,19 +46,25 @@ export function qualifyJournalRestart(directory: string): void {
   const token = randomBytes(16).toString("hex");
   const temporary = join(directory, `tmp-restart-${token}`);
   const published = join(directory, `probe-restart-${token}`);
+  let primary: unknown;
   try {
     for (const phase of ["publish", "verify"]) {
       const result = spawnSync(process.execPath, ["--eval", PROBE_PROGRAM, phase, directory, temporary, published, token], {
         encoding: "utf8", timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES,
       });
       if (result.error || result.status !== 0 || result.signal !== null) {
-        fail("seller_replay_guard_invalid", 500, "RESTART-NOT-QUALIFIED", result.error ?? new Error(`Restart probe ${phase} failed (${result.status}, ${result.signal})`));
+        fail("seller_replay_guard_invalid", 500, "RESTART-NOT-QUALIFIED", result.error ?? new Error(`Restart probe ${phase} failed (${result.status}, ${result.signal}): ${result.stderr.trim()}`));
       }
     }
-  } finally {
+  } catch (error) { primary = error; throw error; } finally {
+    const cleanupErrors: unknown[] = [];
     for (const path of [temporary, published]) {
       try { unlinkSync(path); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length > 0) {
+      if (primary instanceof Error) Object.defineProperty(primary, "cleanupErrors", { value: cleanupErrors });
+      else fail("seller_replay_guard_invalid", 500, "RESTART-NOT-QUALIFIED", new AggregateError(cleanupErrors, "Restart probe cleanup failed"));
     }
   }
 }
