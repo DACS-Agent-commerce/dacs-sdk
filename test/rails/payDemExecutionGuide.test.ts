@@ -51,6 +51,12 @@ describe("the pay-dem execution guide", () => {
     }
   });
 
+  it("states the seller observer's dependency on node mempool admission", () => {
+    expect(guide).toContain("On seller intake, the seller did not sign the buyer's transaction");
+    expect(guide).toContain("relies on the node's mempool admission re-deriving the edits");
+    expect(guide).toContain("Decoded records exceeding depth, node or collection limits are indeterminate at once");
+  });
+
   it("describes edits that node2's confirmed native send actually carries", () => {
     const fixture = JSON.parse(readFileSync(
       new URL("../fixtures/demos-node2-records.json", import.meta.url),
@@ -116,7 +122,12 @@ describe("the pay-dem execution guide", () => {
     expect(guide).toContain("An indeterminate pay-dem result is `ok: false` with no `errorClass`.");
   });
 
-  it("names every retried transport error and the summed waits", () => {
+  it("separates bounded record fetches from retried SDK status reads", () => {
+    expect(guide).not.toContain("Demos.getTxByHash");
+    expect(guide).toContain("one bounded read-only `getTxByHash` RPC request per poll");
+    expect(guide).toContain("64 KiB");
+    expect(guide).toContain("Record requests have no transport retries");
+    expect(guide).toContain("Inside one status read, demosdk's transport retries");
     for (const code of ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]) {
       expect(guide).toContain(`\`${code}\``);
     }
