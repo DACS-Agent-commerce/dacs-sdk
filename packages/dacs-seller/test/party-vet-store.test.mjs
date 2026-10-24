@@ -6,7 +6,7 @@ import { fork, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
@@ -155,4 +155,39 @@ test('restart succeeds after the first opener is killed before schema creation',
   assert.equal(child.signal, 'SIGKILL', child.stderr);
   const store = openPartyVetStore({ path }); t.after(() => store.close());
   assert.equal(store.usage().jobs, 0);
+});
+
+for (const backend of ['memory', 'sqlite']) test(`${backend}: malformed Unicode keys are refused without poisoning retained jobs`, async t => {
+  const path = join(dirFor(t), 'unicode.sqlite');
+  const store = backend === 'memory' ? createInMemoryPartyVetStore() : openPartyVetStore({ path });
+  await store.update('good', () => ({ n: 1 }));
+  for (const key of ['job-\ud800', 'job-\udfff']) {
+    await assert.rejects(store.update(key, () => ({ n: 2 })), code('journal-invalid'));
+    await assert.rejects(store.read(key), code('journal-invalid'));
+  }
+  assert.deepEqual(await store.entries(), [['good', { n: 1 }]]);
+  store.close();
+  if (backend === 'sqlite') { const again = openPartyVetStore({ path }); t.after(() => again.close()); assert.deepEqual(await again.read('good'), { n: 1 }); }
+});
+
+test('unsafe parent paths, hard links and planted sidecars are refused before SQLite opens', t => {
+  const dir = dirFor(t), safe = join(dir, 'safe'); mkdirSync(safe, { mode: 0o700 });
+  const path = join(safe, 'p.sqlite'); openPartyVetStore({ path }).close();
+  const alias = join(safe, 'alias.sqlite'); linkSync(path, alias);
+  for (const name of [path, alias]) assert.throws(() => openPartyVetStore({ path: name }), code('journal-invalid'));
+  const linked = join(dir, 'linked'); symlinkSync(safe, linked);
+  assert.throws(() => openPartyVetStore({ path: join(linked, 'new.sqlite') }));
+  const shared = join(dir, 'shared'); mkdirSync(shared, { mode: 0o700 }); chmodSync(shared, 0o777);
+  assert.throws(() => openPartyVetStore({ path: join(shared, 'new.sqlite') }));
+  const sidecar = join(safe, 'sidecar.sqlite'); openPartyVetStore({ path: sidecar }).close();
+  writeFileSync(sidecar + '-wal', 'hostile', { mode: 0o666 }); chmodSync(sidecar + '-wal', 0o666);
+  assert.throws(() => openPartyVetStore({ path: sidecar }), code('journal-invalid'));
+});
+
+for (const kind of ['empty', 'foreign']) test(`rejected ${kind} database remains byte-for-byte unchanged`, t => {
+  const path = join(dirFor(t), 'foreign.sqlite'); writeFileSync(path, '', { mode: 0o600 });
+  if (kind === 'foreign') { const db = new DatabaseSync(path); db.exec('CREATE TABLE unrelated (n INTEGER)'); db.close(); }
+  const before = readFileSync(path);
+  assert.throws(() => openPartyVetStore({ path }), code('journal-integrity'));
+  assert.deepEqual(readFileSync(path), before);
 });
