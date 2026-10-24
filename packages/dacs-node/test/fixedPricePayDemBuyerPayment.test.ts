@@ -123,6 +123,23 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
   });
 
   it.each([
+    ["hash", { txHash: "a".repeat(64) }],
+    ["payer", { payer: "a".repeat(64) }],
+    ["payee", { payee: "a".repeat(64) }],
+    ["amount", { amountOs: "NaN" }],
+    ["nonce", { nonce: prepared.nonce + 1 }],
+  ] as const)("rejects conflicting %s before missing execution evidence", async (_label, conflict) => {
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(async () => ({
+      status: "included", nonce: prepared.nonce, txHash: prepared.txHash,
+      payer: payment.payer, payee: payment.payee, amountOs: payment.amountOs,
+      blockNumber: 42, includedAt: 1_000, ...conflict,
+    }));
+    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+      status: "operator-action", reasonCode: "pay-dem-chain-observation-conflict",
+    });
+  });
+
+  it.each([
     ["confirmed", "7", "completed"],
     ["confirmed", "8", "operator-action"],
     ["confirmed", undefined, "operator-action"],
