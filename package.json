@@ -101,6 +101,7 @@
     "docs/testnet-profile-tp1.md",
     "docs/about-the-testnet-release.md",
     "conformance/tp1-register.json",
+    "conformance/tp1-provenance-ids.json",
     "conformance/tp1-node-observations/block0.json",
     "conformance/tp1-node-observations/block1.json",
     "conformance/tp1-node-observations/genesis-string-zero.json",

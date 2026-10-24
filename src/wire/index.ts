@@ -1,5 +1,5 @@
 // @kynesyslabs/dacs/wire: the dacs-seller-http/v1 wire and testnet profile
-// TP-1. Definitions, signing bytes and validators, with no I/O or HTTP server;
+// TP-1. Definitions, signing bytes and validators, with no HTTP server or client;
 // the one store is the seller's request journal (journal.ts), a local
 // directory. See docs/dacs-seller-http-v1.md and docs/testnet-profile-tp1.md.
 export {

@@ -1,3 +1,5 @@
+import * as wireValidate from "../../src/wire/validate.js";
+import * as wireDiscovery from "../../src/wire/discovery.js";
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
@@ -68,7 +70,7 @@ async function proofFixture(ready = true, now = COMMITTED_AT) {
 it("rejects altered discovery signatures and endpoint mismatches", async () => {
   const f = await proofFixture();
   const altered: unknown = JSON.parse(f.document().toString());
-  if (!wire.isRecord(altered)) throw new Error("invalid fixture document");
+  if (!wireValidate.isRecord(altered)) throw new Error("invalid fixture document");
   altered.signature = Buffer.alloc(64).toString("base64url");
   await expect(Promise.resolve().then(() => wire.verifyEndpointProof(Buffer.from(JSON.stringify(altered)), f.options)))
     .rejects.toMatchObject({ code: "discovery_signature_invalid" });
@@ -81,8 +83,8 @@ it("accepts the Listing expiry endpoint and refuses one millisecond after it", a
   const f = await proofFixture();
   const readListingEligibility = (scope: Parameters<wire.ListingEligibilityReader>[0]) => ({ ...readFixtureListingEligibility(scope), expiresAt: f.options.now });
   const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility });
-  await wire.assertEndpointProof(proof, f.scope);
-  await expect(Promise.resolve().then(() => wire.assertEndpointProof(proof, { ...f.scope, now: f.scope.now + 1 })))
+  await wireDiscovery.assertEndpointProof(proof, f.scope);
+  await expect(Promise.resolve().then(() => wireDiscovery.assertEndpointProof(proof, { ...f.scope, now: f.scope.now + 1 })))
     .rejects.toMatchObject({ code: "listing_unsupported" });
 });
 
@@ -92,10 +94,10 @@ it("rechecks revoked Listing decisions and seller readiness before a request can
   const readListingEligibility = (scope: Parameters<wire.ListingEligibilityReader>[0]) => revoked ? null : readFixtureListingEligibility(scope);
   const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility });
   revoked = true;
-  await expect(Promise.resolve().then(() => wire.assertEndpointProof(proof, f.scope))).rejects.toMatchObject({ code: "listing_unsupported" });
+  await expect(Promise.resolve().then(() => wireDiscovery.assertEndpointProof(proof, f.scope))).rejects.toMatchObject({ code: "listing_unsupported" });
   const draining = await proofFixture(false);
   const drainingProof = await wire.verifyEndpointProof(draining.document(), draining.options);
-  await expect(Promise.resolve().then(() => wire.assertEndpointProof(drainingProof, draining.scope))).rejects.toMatchObject({ code: "seller_not_ready" });
+  await expect(Promise.resolve().then(() => wireDiscovery.assertEndpointProof(drainingProof, draining.scope))).rejects.toMatchObject({ code: "seller_not_ready" });
 });
 
 it("verifies a complete committed purchase at proof creation and on proof assertion", async () => {
@@ -104,7 +106,7 @@ it("verifies a complete committed purchase at proof creation and on proof assert
   let reads = 0;
   f.continuation.readCommitmentReceipt = Object.assign(async () => { reads++; return "valid"; }, { chainIdentity: f.options.binding.profile.chainIdentity });
   const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility, ...f.continuation });
-  await wire.assertEndpointProof(proof, { ...f.scope, ...f.continuation });
+  await wireDiscovery.assertEndpointProof(proof, { ...f.scope, ...f.continuation });
   expect(reads).toBe(2);
 });
 
@@ -139,10 +141,10 @@ it("rechecks CA-7 and the receipt when asserting an already issued proof", async
   let verdict = "valid";
   f.continuation.readCommitmentReceipt = Object.assign(async () => verdict, { chainIdentity: f.options.binding.profile.chainIdentity });
   const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, ...f.continuation });
-  await expect(wire.assertEndpointProof(proof, { ...f.scope, ...f.continuation, agreement: Buffer.from("{}") }))
+  await expect(wireDiscovery.assertEndpointProof(proof, { ...f.scope, ...f.continuation, agreement: Buffer.from("{}") }))
     .rejects.toMatchObject({ code: "continuation_agreement_invalid" });
   verdict = "invalid";
-  await expect(wire.assertEndpointProof(proof, { ...f.scope, ...f.continuation }))
+  await expect(wireDiscovery.assertEndpointProof(proof, { ...f.scope, ...f.continuation }))
     .rejects.toMatchObject({ code: "continuation_commitment_invalid" });
 });
 

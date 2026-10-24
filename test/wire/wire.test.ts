@@ -189,7 +189,8 @@ describe("conformance/tp1-register.json", () => {
       const targets = [...text.matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1]!.split("#")[0]!).filter((t) => t !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(t)).filter((t) => doc !== "README.md" || ["./docs/about-the-testnet-release.md", "./docs/testnet-profile-tp1.md", "docs/testnet-profile-tp1.md"].includes(t));
       expect(targets.length).toBeGreaterThan(0);
       for (const target of targets) {
-        expect(shipped.has(posix.normalize(posix.join(posix.dirname(doc), target))), `${doc} links ${target}`).toBe(true);
+        const resolved = posix.normalize(posix.join(posix.dirname(doc), target));
+        expect([...shipped].some(file => resolved === file || resolved.startsWith(file + "/")), `${doc} links ${target}`).toBe(true);
       }
     }
     expect(register.network.record).toEqual(TP1_APPROVED_IDENTITY_RECORD);
@@ -295,7 +296,7 @@ describe("package export", () => {
   });
 
   it("ships no approval injection: approval.ts holds only the frozen approval list, and only profile.ts reads it", () => {
-    expect(Object.keys(approvalModule)).toEqual(["TP1_APPROVED_IDENTITY_RECORD_DIGESTS"]);
+    expect(Object.keys(approvalModule)).toEqual(["TP1_APPROVED_IDENTITY_RECORD_DIGESTS", "TP1_REFUSED_CHAIN_IDENTITIES"]);
     expect(approvalModule.TP1_APPROVED_IDENTITY_RECORD_DIGESTS).toEqual(TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests);
     expect(Object.isFrozen(approvalModule.TP1_APPROVED_IDENTITY_RECORD_DIGESTS)).toBe(true);
     expect(wireExports.TP1_APPROVED_IDENTITY_RECORD_DIGESTS).toBe(approvalModule.TP1_APPROVED_IDENTITY_RECORD_DIGESTS);

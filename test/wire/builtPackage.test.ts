@@ -45,13 +45,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const wire = await import("@kynesyslabs/dacs/wire");
 const { canonicalize } = await import("@kynesyslabs/dacs/canonical");
 // Independent test authority for the compiled consumer, with no production mocks.
-const bindTp1Fixture = (options) => wire.bindTp1Profile({ ...options, readAuthority: (scope) => ({
+const bindTp1Fixture = async (options) => (await wire.bindTp1Profile({ ...options, readAuthority: (scope) => ({
   local: { ...scope.local }, chainIdentity: options.record.chainIdentity, provenance: "compiled-test-authority/v1",
   sessionId: scope.sessionId, participants: scope.participants.map((claim) => ({ claim,
     profile: { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION, chainIdentity: options.record.chainIdentity, pinVersion: options.record.pinVersion },
     modules: { CORE: "0.3", "DACS-1": "0.7", "DACS-2": "0.6", "DACS-3": "0.5", "DACS-4": "0.8", "DACS-5": "0.5" },
   })),
-}) });
+}) }));
 
 const file = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const vector = Object.fromEntries(file.vectors.map((v) => [v.id, v.input]));
@@ -91,7 +91,7 @@ const signWith = (binding, local) => code(() => wire.signWireRequest({ signer, b
 
 // Every verification entry point, on the vectors' correctly signed messages.
 let effects = 0;
-const effect = (fn) => code(() => { fn(); effects += 1; });
+const effect = (fn) => code(async () => { await fn(); effects += 1; });
 const decodedRequest = JSON.parse(b(vector["request/valid-direct"].header).toString("utf8"));
 // The shipped durable journal, in a fresh directory, and the seller ready for a new purchase. No other journal is accepted.
 const qualifiedJournal = () => wire.openWireRequestJournal(mkdtempSync(join(tmpdir(), "dacs-consumer-journal-")));
@@ -99,13 +99,13 @@ out.journalProbeExported = typeof wire.qualifyWireRequestJournal;
 const check = { requestJournal: qualifiedJournal(), ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller }, seller: file.parties.seller, listingPin: file.job.listingPin, method: "POST", path: vector["request/valid-direct"].path, rawBody: b(vector["request/valid-direct"].body), now: file.now, purchaseProfile: profile };
 async function verifyAll(sellerBinding, sLocal, buyerBinding, bLocal) {
   return {
-    openWireEnvelope: await effect(() => wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sLocal, purchaseProfile: profile })),
-    checkWireRequest: await effect(() => wire.checkWireRequest(wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sLocal, purchaseProfile: profile }), { ...check, binding: sellerBinding, local: sLocal })),
-    checkUnopened: await effect(() => wire.checkWireRequest(decodedRequest, { ...check, binding: sellerBinding, local: sLocal })),
-    verifySellerSessionDelegation: await effect(() => wire.verifySellerSessionDelegation(vector["delegation/valid"].delegation, { binding: sellerBinding, local: sLocal, buyer: file.parties.buyer, seller: file.parties.seller, listingPin: file.job.listingPin, jobId: file.job.jobId, time: file.now })),
-    verifyWireResponse: await effect(() => wire.verifyWireResponse(vector["response/valid"].request, { header: vector["response/valid"].header, status: 200, body: b(vector["response/valid"].body), now: file.now, binding: buyerBinding, local: bLocal })),
-    verifyEndpointProof: await effect(() => wire.verifyEndpointProof(b(vector["discovery/valid"].document), { readListingEligibility, listing: vector["discovery/valid"].listing, binding: buyerBinding, local: bLocal, now: file.now })),
-    assertPeerProfile: await effect(() => wire.assertPeerProfile(profile, buyerBinding)),
+    openWireEnvelope: await effect(async () => (await wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sLocal, purchaseProfile: profile }))),
+    checkWireRequest: await effect(async () => (await wire.checkWireRequest((await wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sLocal, purchaseProfile: profile })), { ...check, binding: sellerBinding, local: sLocal }))),
+    checkUnopened: await effect(async () => (await wire.checkWireRequest(decodedRequest, { ...check, binding: sellerBinding, local: sLocal }))),
+    verifySellerSessionDelegation: await effect(async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(vector["delegation/valid"].delegation)), { binding: sellerBinding, local: sLocal, buyer: file.parties.buyer, seller: file.parties.seller, listingPin: file.job.listingPin, jobId: file.job.jobId, time: file.now }))),
+    verifyWireResponse: await effect(async () => (await wire.verifyWireResponse(vector["response/valid"].request, { header: vector["response/valid"].header, status: 200, body: b(vector["response/valid"].body), now: file.now, binding: buyerBinding, local: bLocal }))),
+    verifyEndpointProof: await effect(async () => (await wire.verifyEndpointProof(b(vector["discovery/valid"].document), { readListingEligibility, listing: vector["discovery/valid"].listing, binding: buyerBinding, local: bLocal, now: file.now }))),
+    assertPeerProfile: await effect(async () => (await wire.assertPeerProfile(profile, buyerBinding))),
   };
 }
 const forgeries = (local) => [
@@ -115,20 +115,20 @@ const forgeries = (local) => [
 
 if (process.argv[3] === "approved-synthetic") {
   // This copy approves the SYNTHETIC vector record only; it is never shipped.
-  const sellerBinding = bindTp1Fixture({ record, local: sellerLocal });
-  const buyerBinding = bindTp1Fixture({ record, local: buyerLocal });
+  const sellerBinding = (await bindTp1Fixture({ record, local: sellerLocal }));
+  const buyerBinding = (await bindTp1Fixture({ record, local: buyerLocal }));
   const changed = (local) => ({ ...local, connectionId: local.connectionId + "-changed" });
   out.genuine = await verifyAll(sellerBinding, sellerLocal, buyerBinding, buyerLocal);
   out.genuineEffects = effects; effects = 0;
   out.changedLocal = await verifyAll(sellerBinding, changed(sellerLocal), buyerBinding, changed(buyerLocal));
   out.copiedBinding = await verifyAll({ ...sellerBinding }, sellerLocal, { ...buyerBinding }, buyerLocal);
-  out.copiedEnvelope = await code(() => wire.checkWireRequest({ ...wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }) }, { ...check, binding: sellerBinding, local: sellerLocal }));
-  out.otherBindingEnvelope = await code(() => wire.checkWireRequest(wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }), { ...check, binding: bindTp1Fixture({ record, local: sellerLocal }), local: sellerLocal }));
+  out.copiedEnvelope = await code(async () => (await wire.checkWireRequest({ ...(await wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile })) }, { ...check, binding: sellerBinding, local: sellerLocal })));
+  out.otherBindingEnvelope = await code(async () => (await wire.checkWireRequest((await wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile })), { ...check, binding: (await bindTp1Fixture({ record, local: sellerLocal })), local: sellerLocal })));
   out.otherEffects = effects;
   // The compiled profile gate on the vectors' correctly signed revision cases.
-  const open = (id) => code(() => wire.openWireEnvelope(vector[id].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }));
-  out.revisionVectors = Object.fromEntries(["request/profile-revision-missing", "request/profile-identifier-and-base-only", "request/profile-revision-unknown", "request/profile-revision-mismatch", "request/profile-revision-lowercase", "request/profile-revision-trailing-space"].map((id) => [id, open(id)]));
-  out.revisionVectors["request/purchase-profile-revision-missing"] = await code(() => wire.checkWireRequest(wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }), { ...check, binding: sellerBinding, local: sellerLocal, purchaseProfile: vector["request/purchase-profile-revision-missing"].purchaseProfile }));
+  const open = (id) => code(async () => (await wire.openWireEnvelope(vector[id].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile })));
+  out.revisionVectors = Object.fromEntries(await Promise.all(["request/profile-revision-missing", "request/profile-identifier-and-base-only", "request/profile-revision-unknown", "request/profile-revision-mismatch", "request/profile-revision-lowercase", "request/profile-revision-trailing-space"].map(async (id) => [id, (await open(id))])));
+  out.revisionVectors["request/purchase-profile-revision-missing"] = await code(async () => (await wire.checkWireRequest((await wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile })), { ...check, binding: sellerBinding, local: sellerLocal, purchaseProfile: vector["request/purchase-profile-revision-missing"].purchaseProfile })));
   for (const [id, verdict] of Object.entries(out.revisionVectors)) out.revisionVectors[id] = await verdict;
   console.log(JSON.stringify(out));
   process.exit(0);
@@ -136,10 +136,10 @@ if (process.argv[3] === "approved-synthetic") {
 
 // The shipped build: the consumer's own approval attempts, then forged bindings.
 const digest = sha(canonicalize(record));
-out.bindWithCallerList = await code(() => bindTp1Fixture({ record, local: buyerLocal, approvedRecordDigests: [digest] }));
+out.bindWithCallerList = await code(async () => (await bindTp1Fixture({ record, local: buyerLocal, approvedRecordDigests: [digest] })));
 out.extendSdkList = await code(() => wire.TP1_APPROVED_IDENTITY_RECORD_DIGESTS.push(digest));
 out.extendProfileList = await code(() => wire.TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests.push(digest));
-out.bindAfterAttempts = await code(() => bindTp1Fixture({ record, local: buyerLocal }));
+out.bindAfterAttempts = await code(async () => (await bindTp1Fixture({ record, local: buyerLocal })));
 out.signWithForgedBinding = await signWith(forgeries(buyerLocal)[1], buyerLocal);
 out.forgedVerification = [];
 for (const [i, forged] of forgeries(sellerLocal).entries()) out.forgedVerification.push(await verifyAll(forged, sellerLocal, forgeries(buyerLocal)[i], buyerLocal));
@@ -163,21 +163,21 @@ out.signatures = signer.calls;
 out.effects = effects;
 // The unmodified shipped approval module admits the supplied approved identity record.
 const approvedRecord = wire.TP1_APPROVED_IDENTITY_RECORD;
-const bb = bindTp1Fixture({ record: approvedRecord, local: buyerLocal });
-const sb = bindTp1Fixture({ record: approvedRecord, local: sellerLocal });
+const bb = (await bindTp1Fixture({ record: approvedRecord, local: buyerLocal }));
+const sb = (await bindTp1Fixture({ record: approvedRecord, local: sellerLocal }));
 const sellerKeys = generateKeyPairSync("ed25519");
 const sellerSigner = { claim: "did:demos:agent:" + sellerKeys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), calls: 0,
   sign(bytes) { sellerSigner.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), sellerKeys.privateKey)); } };
 const publicEndpoint = "https://seller.built-package.invalid";
 const discoveryBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
-const endpointProof = wire.verifyEndpointProof(discoveryBytes, { readListingEligibility, listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
+const endpointProof = (await wire.verifyEndpointProof(discoveryBytes, { readListingEligibility, listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now }));
 // Discovery is a separate seller signature from the request/answer pair counted below.
 sellerSigner.calls = 0;
 const approvedRequest = await wire.signWireRequest({ endpointProof, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now });
-const approvedOpened = wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
-wire.checkWireRequest(approvedOpened, { requestJournal: qualifiedJournal(), ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: signer.claim, seller: sellerSigner.claim }, seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
+const approvedOpened = (await wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile }));
+(await wire.checkWireRequest(approvedOpened, { requestJournal: qualifiedJournal(), ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: signer.claim, seller: sellerSigner.claim }, seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: sb.profile }));
 const approvedResponse = await wire.signWireResponse(approvedOpened.payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, purchaseProfile: sb.profile });
-const receipt = wire.verifyWireResponse(approvedRequest.payload, { header: approvedResponse, status: 200, body: Buffer.from("{}"), now: file.now, binding: bb, local: buyerLocal });
+const receipt = (await wire.verifyWireResponse(approvedRequest.payload, { header: approvedResponse, status: 200, body: Buffer.from("{}"), now: file.now, binding: bb, local: buyerLocal }));
 out.approvedIdentity = { recordDigest: bb.recordDigest, sameProfile: canonicalize(bb.profile) === canonicalize(sb.profile), differentEndpoints: bb.local.endpoint !== sb.local.endpoint, verifiedSeller: receipt.principal === sellerSigner.claim, signatures: signer.calls + sellerSigner.calls };
 // The 2026-10-15 record, for the chain node2 served before its 2026-10-20 rebuild: the shipped approval refuses it.
 const tick = String.fromCharCode(96);
@@ -189,8 +189,8 @@ const callsBeforePrevious = signer.calls;
 out.previousIdentity = {
   boundChain: bb.profile.chainIdentity,
   digest: sha(canonicalize(previousRecord)),
-  record: await code(async () => wire.signWireRequest({ signer, binding: bindTp1Fixture({ record: previousRecord, local: buyerLocal }), local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now })),
-  chain: await code(() => bindTp1Fixture({ record: { ...approvedRecord, chainIdentity: previousRecord.chainIdentity }, local: buyerLocal })),
+  record: await code(async () => wire.signWireRequest({ signer, binding: (await bindTp1Fixture({ record: previousRecord, local: buyerLocal })), local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now })),
+  chain: await code(async () => (await bindTp1Fixture({ record: { ...approvedRecord, chainIdentity: previousRecord.chainIdentity }, local: buyerLocal }))),
   signatures: signer.calls - callsBeforePrevious,
 };
 // The approved tuple in the compiled package, and its refusals under the shipped approval.
@@ -198,9 +198,9 @@ const { revision: _revision, ...preRevision } = bb.profile;
 const resigned = (p) => Buffer.from(canonicalize({ payload: p, signature: Buffer.from(signer.sign(Buffer.from("dacs-seller-http:v1:request:" + canonicalize(p)))).toString("base64url") })).toString("base64url");
 out.approvedIdentityTuple = {
   tuple: [bb.profile.id, bb.profile.revision, bb.profile.base],
-  revisionMissing: await code(() => wire.openWireEnvelope(resigned({ ...approvedRequest.payload, profile: preRevision }), "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile })),
-  revisionUnknown: await code(() => wire.openWireEnvelope(resigned({ ...approvedRequest.payload, profile: { ...bb.profile, revision: "TP-1.1" } }), "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile })),
-  keptPreRevision: await code(() => wire.checkWireRequest(wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile }), { seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: preRevision })),
+  revisionMissing: await code(async () => (await wire.openWireEnvelope(resigned({ ...approvedRequest.payload, profile: preRevision }), "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile }))),
+  revisionUnknown: await code(async () => (await wire.openWireEnvelope(resigned({ ...approvedRequest.payload, profile: { ...bb.profile, revision: "TP-1.1" } }), "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile }))),
+  keptPreRevision: await code(async () => (await wire.checkWireRequest((await wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile })), { seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: preRevision }))),
 };
 // The compiled seller entry points under the shipped approval: a kept tuple other than the binding's, or none
 // given, opens nothing and signs nothing; the exact tuple, or none kept yet for a new purchase, does both.
@@ -211,14 +211,14 @@ let sellerOpened = 0, sellerSigned = 0;
 out.approvedIdentitySeller = {};
 for (const [name, kept] of Object.entries(keptCases)) {
   out.approvedIdentitySeller[name] = [
-    await code(() => { wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, ...kept }); sellerOpened += 1; }),
+    await code(async () => { (await wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, ...kept })); sellerOpened += 1; }),
     await code(async () => { await wire.signWireResponse(approvedRequest.payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, ...kept }); sellerSigned += 1; }),
     await code(async () => { await wire.signWireEnvelope(approvedAnswer, { signer: sellerSigner, binding: sb, local: sellerLocal, ...kept }); sellerSigned += 1; }),
   ];
 }
 out.approvedIdentitySeller.effects = { opened: sellerOpened, signed: sellerSigned, signerCalls: sellerSigner.calls - sellerCallsBefore };
 for (const purchaseProfile of [sb.profile, null]) {
-  const { payload } = wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile });
+  const { payload } = (await wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile }));
   await wire.signWireResponse(payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, purchaseProfile });
 }
 out.approvedIdentitySeller.exactOrNewPurchaseSignerCalls = sellerSigner.calls - sellerCallsBefore;
@@ -237,7 +237,7 @@ const { signature: _listingPlaceholder, ...unsignedListing } = JSON.parse(readFi
 const listingPin = { listingId: unsignedListing.listingId, version: unsignedListing.listingVersion, contentHash: contentHash(unsignedListing) };
 const signedListing = { ...unsignedListing, signature: { algorithm: "ed25519", signer: sellerSigner.claim, value: sign(null, Buffer.from("dacs-listing:v1:" + listingPin.contentHash), sellerKeys.privateKey).toString("base64url") } };
 const drainedBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [listingPin], capabilities: wire.TP1_CAPABILITIES, ready: false, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
-const drained = wire.verifyEndpointProof(drainedBytes, { readListingEligibility, readCommitmentReceipt: () => "valid", listing: { seller: sellerSigner.claim, publicEndpoint, listingPin }, binding: bb, local: buyerLocal, now: file.now });
+const drained = (await wire.verifyEndpointProof(drainedBytes, { readListingEligibility, readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: bb.profile.chainIdentity }), listing: { seller: sellerSigner.claim, publicEndpoint, listingPin }, binding: bb, local: buyerLocal, now: file.now }));
 const facts = { jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: listingPin, buyer: signer.claim, seller: sellerSigner.claim, committedAt: 42 };
 const received = (v) => { try { return v === undefined || v === null ? v : Buffer.from(JSON.stringify(v)); } catch { return v; } };
 const pay = (commitment, agreement, agreementHash = file.job.agreementHash, listing = received(signedListing)) => payRaw(received(commitment), received(agreement), agreementHash, listing);
@@ -277,7 +277,7 @@ const agreement = { ...unsignedAgreement, signatures: [partySignature(signer.cla
 const unsignedRecord = { finalityCommitmentVersion: "1", jobId: file.job.jobId, agreementHash, listingRef: listingPin, parties: [signer.claim, sellerSigner.claim], pattern: "fixed-price", createdAt: file.now - 2000 };
 const recordValue = Buffer.from(sellerKeys.privateKey ? sign(null, Buffer.from("dacs-finality-commitment:v1:" + sha(canonicalize(unsignedRecord))), sellerKeys.privateKey) : []).toString("base64url");
 const signedRecord = { ...unsignedRecord, signature: { algorithm: "ed25519", signer: sellerSigner.claim, value: recordValue } };
-const anchorReceipt = { receiptVersion: "1", substrate: "demos:testnet", finalityProfile: "demos-bft-final", logicalAddress: "dacs3:commit:" + file.job.jobId, nativeAddress: "stor-commitment",
+const anchorReceipt = { receiptVersion: "1", substrate: "demos", finalityProfile: "demos-bft-final", logicalAddress: "dacs3:commit:" + file.job.jobId, nativeAddress: "stor-commitment",
   contentHash: sha(canonicalize(unsignedRecord)), transactionRef: { kind: "demos", value: "tx" }, writer: "w", state: "finalized", observationDisposition: "established", observedAt: file.now, blockRef: { id: "b", timestamp: file.now - 1000 }, evidence: { kind: "proof", value: "p" } };
 const genuineCommitment = JSON.parse(JSON.stringify({ record: signedRecord, nativeAddress: "stor-commitment", anchorTxRef: { kind: "storage-program", address: "stor-commitment", writeTxHash: "c".repeat(64) }, anchorReceipt }));
 out.commitmentForgery.genuine = await pay(genuineCommitment, JSON.parse(JSON.stringify(agreement)), agreementHash);
@@ -321,7 +321,7 @@ beforeAll(() => {
   const approvedPkg = join(approvedDir, "node_modules/@kynesyslabs/dacs");
   cpSync(pkg, approvedPkg, { recursive: true });
   const digests = JSON.parse(readFileSync(VECTORS, "utf8")).identity.testApprovedRecordDigests;
-  writeFileSync(join(approvedPkg, "dist/wire/approval.js"), `export const TP1_APPROVED_IDENTITY_RECORD_DIGESTS = Object.freeze(${JSON.stringify(digests)});\n`);
+  writeFileSync(join(approvedPkg, "dist/wire/approval.js"), `export const TP1_APPROVED_IDENTITY_RECORD_DIGESTS = Object.freeze(${JSON.stringify(digests)});\nexport const TP1_REFUSED_CHAIN_IDENTITIES = Object.freeze([]);\n`);
   approvedCopy = consume(approvedDir, "approved-synthetic");
 }, 240_000);
 
@@ -340,7 +340,7 @@ describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
   it("ships no approval injection: no compiled module or declaration names one, and approval.js holds only the SDK's frozen 2026-10-20 approval list", () => {
     expect(shipped.files).toContain("approval.js");
     expect(shipped.filesNamingTestApproval).toEqual([]);
-    expect(shipped.approvalModule).toEqual({ names: ["TP1_APPROVED_IDENTITY_RECORD_DIGESTS"], list: ["5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330"], frozen: true, sameAsWire: true });
+    expect(shipped.approvalModule).toEqual({ names: ["TP1_APPROVED_IDENTITY_RECORD_DIGESTS", "TP1_REFUSED_CHAIN_IDENTITIES"], list: ["5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330"], frozen: true, sameAsWire: true });
     expect(shipped.functionsBeyondWire.filter((f: string) => /^(approval|profile)\.js:/.test(f))).toEqual([]);
     expect(shipped.functionsBeyondWire.some((f: string) => /bind|approv/i.test(f))).toBe(false);
   });

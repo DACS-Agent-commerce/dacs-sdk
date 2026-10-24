@@ -1,3 +1,4 @@
+import * as wireValidate from "../../src/wire/validate.js";
 import { expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -56,7 +57,7 @@ it("a fresh buyer process rechecks retained bytes and reuses the seller's comple
   const child = run();
   expect(child.status, child.stdout + child.stderr).toBe(0);
   const answer: unknown = JSON.parse(readFileSync(outputPath, "utf8"));
-  if (!wire.hasKeys(answer, ["pid", "header", "calls"]) || !wire.isUint(answer.pid) || typeof answer.header !== "string" || answer.calls !== 1) {
+  if (!wireValidate.hasKeys(answer, ["pid", "header", "calls"]) || !wireValidate.isUint(answer.pid) || typeof answer.header !== "string" || answer.calls !== 1) {
     throw new Error("invalid isolated buyer result");
   }
   expect(answer.pid).not.toBe(process.pid);

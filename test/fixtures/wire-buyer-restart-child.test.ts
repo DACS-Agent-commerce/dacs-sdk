@@ -1,3 +1,4 @@
+import * as wireValidate from "../../src/wire/validate.js";
 import { it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as wire from "../../src/wire/index.js";
@@ -13,9 +14,9 @@ it.skipIf(inputPath === undefined)("rebuilds buyer authority solely from retaine
   const outputPath = process.env.DACS_BUYER_RESTART_OUTPUT;
   if (inputPath === undefined || outputPath === undefined) throw new Error("isolated buyer paths missing");
   const input: unknown = JSON.parse(readFileSync(inputPath, "utf8"));
-  if (!wire.isRecord(input) || !wire.isUint(input.now) || !wire.isRecord(input.listing) || !wire.isRecord(input.request) ||
-      !wire.isClaim(input.listing.seller) || !wire.isPublicEndpoint(input.listing.publicEndpoint) || !wire.isListingPin(input.listing.listingPin) ||
-      !isCanonicalJobId(input.request.jobId) || !wire.isHash(input.request.agreementHash) || !wire.isClaim(input.request.buyer) || typeof input.request.path !== "string" ||
+  if (!wireValidate.isRecord(input) || !wireValidate.isUint(input.now) || !wireValidate.isRecord(input.listing) || !wireValidate.isRecord(input.request) ||
+      !wireValidate.isClaim(input.listing.seller) || !wire.isPublicEndpoint(input.listing.publicEndpoint) || !wireValidate.isListingPin(input.listing.listingPin) ||
+      !isCanonicalJobId(input.request.jobId) || !wireValidate.isHash(input.request.agreementHash) || !wireValidate.isClaim(input.request.buyer) || typeof input.request.path !== "string" ||
       typeof input.discovery !== "string" || typeof input.commitment !== "string" || typeof input.agreement !== "string" || typeof input.signedListing !== "string" || typeof input.nonce !== "string") {
     throw new Error("invalid isolated buyer fixture");
   }

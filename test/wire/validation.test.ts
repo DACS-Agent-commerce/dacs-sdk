@@ -1,3 +1,4 @@
+import * as wireValidate from "../../src/wire/validate.js";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
@@ -60,13 +61,13 @@ describe("wire CF-5 admission", () => {
   it("only byte admission can grant the recursively frozen admission marker", () => {
     const value = admit(Buffer.from('{"child":[{"x":1}]}')) as { child: { x: number }[] };
     for (const item of [value, value.child, value.child[0]]) {
-      expect(wire.isAdmittedValue(item)).toBe(true);
+      expect(wireValidate.isAdmittedValue(item)).toBe(true);
       expect(Object.isFrozen(item)).toBe(true);
     }
-    expect(wire.isAdmittedValue({ child: [{ x: 1 }] })).toBe(false);
-    expect(wire.isAdmittedValue(JSON.parse(JSON.stringify(value)))).toBe(false);
-    expect(wire.isAdmittedValue(Object.freeze({ x: 1 }))).toBe(false);
-    expect(wire.isAdmittedValue(null)).toBe(false);
+    expect(wireValidate.isAdmittedValue({ child: [{ x: 1 }] })).toBe(false);
+    expect(wireValidate.isAdmittedValue(JSON.parse(JSON.stringify(value)))).toBe(false);
+    expect(wireValidate.isAdmittedValue(Object.freeze({ x: 1 }))).toBe(false);
+    expect(wireValidate.isAdmittedValue(null)).toBe(false);
     expect("sealAdmitted" in wire).toBe(false);
   });
 });
@@ -74,7 +75,7 @@ describe("wire CF-5 admission", () => {
 it("deepFreeze traverses a shallow-frozen parent and arrays", () => {
   const child = { list: [{ value: 1 }] };
   const parent = Object.freeze({ child });
-  expect(wire.deepFreeze(parent)).toBe(parent);
+  expect(wireValidate.deepFreeze(parent)).toBe(parent);
   expect(Object.isFrozen(child)).toBe(true);
   expect(Object.isFrozen(child.list)).toBe(true);
   expect(Object.isFrozen(child.list[0])).toBe(true);
@@ -82,15 +83,15 @@ it("deepFreeze traverses a shallow-frozen parent and arrays", () => {
 
 it("ownership takes an independent normalized snapshot", () => {
   const input = { child: { text: "e\u0301" }, absent: undefined };
-  const copy = wire.ownedConfig(input, "invalid");
+  const copy = wireValidate.ownedConfig(input, "invalid");
   input.child.text = "changed";
   expect(copy).toEqual({ child: { text: "é" } });
-  expect(wire.ownedArtifact(Object.freeze({ value: 1 }), "invalid")).toEqual({ value: 1 });
+  expect(wireValidate.ownedArtifact(Object.freeze({ value: 1 }), "invalid")).toEqual({ value: 1 });
 });
 
 it.each([
-  [() => wire.ownedConfig({ value: () => 0 }, "invalid"), 500],
-  [() => wire.ownedArtifact({ value: undefined }, "invalid"), 401],
+  [() => wireValidate.ownedConfig({ value: () => 0 }, "invalid"), 500],
+  [() => wireValidate.ownedArtifact({ value: undefined }, "invalid"), 401],
 ] as const)("ownership refusals preserve their snapshot cause (%#)", (action, status) => {
   const error = refusal(action);
   expect(error).toMatchObject({ code: "invalid", status });
@@ -101,7 +102,7 @@ it.each([
 it("refuses revoked Proxies as permanent local input faults", () => {
   const { proxy, revoke } = Proxy.revocable({}, {});
   revoke();
-  const error = refusal(() => wire.ownedFields(proxy, ["field"]));
+  const error = refusal(() => wireValidate.ownedFields(proxy, ["field"]));
   expect(error).toMatchObject({ code: "wire_input_invalid", status: 500 });
   expect(faultCategory(error)).toBe("permanent");
 });
@@ -109,10 +110,10 @@ it("refuses revoked Proxies as permanent local input faults", () => {
 it("rejects hostile options without invoking getters or Proxy traps", () => {
   const trap = () => { throw new Error("must not execute"); };
   for (const input of [new Proxy({}, { getPrototypeOf: trap }), { get field() { return trap(); } }, new Date(), []]) {
-    expect(refusal(() => wire.ownedFields(input, ["field"]))).toMatchObject({ code: "wire_input_invalid" });
-    if (!Array.isArray(input)) expect(wire.ownedOrNothing(input)).toBeUndefined();
+    expect(refusal(() => wireValidate.ownedFields(input, ["field"]))).toMatchObject({ code: "wire_input_invalid" });
+    if (!Array.isArray(input)) expect(wireValidate.ownedOrNothing(input)).toBeUndefined();
   }
-  expect(wire.ownedFields({ field: 1 }, ["field", "absent"])).toEqual({ field: 1, absent: undefined });
+  expect(wireValidate.ownedFields({ field: 1 }, ["field", "absent"])).toEqual({ field: 1, absent: undefined });
 });
 
 it("copies the intrinsic byte view and charges before copying", () => {
@@ -121,35 +122,35 @@ it("copies the intrinsic byte view and charges before copying", () => {
   }
   const bytes = new HostileBytes([1, 2, 3]);
   Object.defineProperty(bytes, "byteLength", { value: 0 });
-  const copy = wire.ownedBytes(bytes);
+  const copy = wireValidate.ownedBytes(bytes);
   bytes[0] = 9;
   expect([...copy]).toEqual([1, 2, 3]);
-  expect(refusal(() => wire.ownedBytes(bytes, "invalid", 500, { maxBytes: 2, code: "too_large", status: 413 })))
+  expect(refusal(() => wireValidate.ownedBytes(bytes, "invalid", 500, { maxBytes: 2, code: "too_large", status: 413 })))
     .toMatchObject({ code: "too_large", status: 413, detail: "BYTE-LIMIT-EXCEEDED" });
-  expect([...wire.ownedBytes(runInNewContext("new Uint8Array([4])"))]).toEqual([4]);
+  expect([...wireValidate.ownedBytes(runInNewContext("new Uint8Array([4])"))]).toEqual([4]);
   for (const value of [new Uint16Array([1]), new Proxy(bytes, {}), {}]) {
-    expect(refusal(() => wire.ownedBytes(value))).toMatchObject({ code: "wire_input_invalid" });
+    expect(refusal(() => wireValidate.ownedBytes(value))).toMatchObject({ code: "wire_input_invalid" });
   }
 });
 
 it("decodes only exact canonical envelope signatures and wallet encodings", () => {
   const bytes = Buffer.alloc(64, 7);
   for (const value of [bytes, bytes.toString("base64url"), bytes.toString("hex"), `0x${bytes.toString("hex")}`]) {
-    expect(wire.envelopeSignatureBytes(value)).toEqual(bytes);
+    expect(wireValidate.envelopeSignatureBytes(value)).toEqual(bytes);
   }
   const encoded = bytes.toString("base64url");
   for (const value of [bytes.subarray(1), `${encoded}=`, `${encoded.slice(0, -1)}x`, "a".repeat(127), {}]) {
-    expect(refusal(() => wire.envelopeSignatureBytes(value))).toMatchObject({ code: "peer_signature_invalid" });
+    expect(refusal(() => wireValidate.envelopeSignatureBytes(value))).toMatchObject({ code: "peer_signature_invalid" });
   }
-  expect(wire.walletSignatureBytes(` 0x0x${bytes.toString("hex")} `)).toEqual(bytes);
-  expect(wire.walletSignatureBytes(encoded)).toEqual(bytes);
-  expect(refusal(() => wire.walletSignatureBytes(bytes))).toMatchObject({ code: "peer_delegation_signature_invalid" });
+  expect(wireValidate.walletSignatureBytes(` 0x0x${bytes.toString("hex")} `)).toEqual(bytes);
+  expect(wireValidate.walletSignatureBytes(encoded)).toEqual(bytes);
+  expect(refusal(() => wireValidate.walletSignatureBytes(bytes))).toMatchObject({ code: "peer_delegation_signature_invalid" });
 });
 
 
 it("snapshots __proto__ as an own data property without changing the prototype", () => {
   const input: unknown = JSON.parse('{"__proto__":{"extra":1}}');
-  const fields = wire.ownedFields(input, ["__proto__"]);
+  const fields = wireValidate.ownedFields(input, ["__proto__"]);
   expect(Object.getPrototypeOf(fields)).toBe(Object.prototype);
   expect(Object.getOwnPropertyDescriptor(fields, "__proto__")).toMatchObject({ value: { extra: 1 } });
   expect(Object.hasOwn(fields, "extra")).toBe(false);
@@ -158,13 +159,13 @@ it("snapshots __proto__ as an own data property without changing the prototype",
 
 it("counts non-enumerable and symbol own keys in exact-key predicates", () => {
   const pin = { listingId: "listing", version: 1, contentHash: "a".repeat(64) };
-  expect(wire.hasKeys(pin, ["listingId", "version", "contentHash"])).toBe(true);
+  expect(wireValidate.hasKeys(pin, ["listingId", "version", "contentHash"])).toBe(true);
   for (const key of ["extra", Symbol("extra")]) {
     const extra = Object.defineProperty({ ...pin }, key, { value: true });
-    expect(wire.hasKeys(extra, ["listingId", "version", "contentHash"])).toBe(false);
-    expect(wire.isListingPin(extra)).toBe(false);
+    expect(wireValidate.hasKeys(extra, ["listingId", "version", "contentHash"])).toBe(false);
+    expect(wireValidate.isListingPin(extra)).toBe(false);
   }
-  expect(wire.hasKeys(Object.create({ field: 1 }), ["field"])).toBe(false);
+  expect(wireValidate.hasKeys(Object.create({ field: 1 }), ["field"])).toBe(false);
 });
 
 describe("ListingPin boundaries", () => {
@@ -173,7 +174,7 @@ describe("ListingPin boundaries", () => {
     pin,
     { ...pin, listingId: "x".repeat(128), version: Number.MAX_SAFE_INTEGER },
   ])("accepts supported tuple %#", (value) => {
-    expect(wire.isListingPin(value)).toBe(true);
+    expect(wireValidate.isListingPin(value)).toBe(true);
   });
   it.each([
     null, [], {}, { ...pin, extra: 1 }, { ...pin, contentHash: undefined },
@@ -182,24 +183,24 @@ describe("ListingPin boundaries", () => {
     ...[0, -0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1"].map((version) => ({ ...pin, version })),
     ...["a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64), null].map((contentHash) => ({ ...pin, contentHash })),
   ])("refuses malformed tuple %#", (value) => {
-    expect(wire.isListingPin(value)).toBe(false);
+    expect(wireValidate.isListingPin(value)).toBe(false);
   });
 });
 
 it("checks scalar and claim boundaries", () => {
-  for (const value of [0, 1, Number.MAX_SAFE_INTEGER]) expect(wire.isUint(value)).toBe(true);
-  for (const value of [-0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1", null]) expect(wire.isUint(value)).toBe(false);
+  for (const value of [0, 1, Number.MAX_SAFE_INTEGER]) expect(wireValidate.isUint(value)).toBe(true);
+  for (const value of [-0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1", null]) expect(wireValidate.isUint(value)).toBe(false);
   const hex = "ab".repeat(32);
-  expect(wire.isHash(hex)).toBe(true);
-  expect(wire.isClaim(`did:demos:agent:${hex}`)).toBe(true);
+  expect(wireValidate.isHash(hex)).toBe(true);
+  expect(wireValidate.isClaim(`did:demos:agent:${hex}`)).toBe(true);
   for (const value of [null, 1, hex.slice(1), `${hex}a`, hex.toUpperCase(), "g".repeat(64)]) {
-    expect(wire.isHash(value)).toBe(false);
-    expect(wire.isClaim(typeof value === "string" ? `did:demos:agent:${value}` : value)).toBe(false);
+    expect(wireValidate.isHash(value)).toBe(false);
+    expect(wireValidate.isClaim(typeof value === "string" ? `did:demos:agent:${value}` : value)).toBe(false);
   }
-  expect(wire.isClaim(hex)).toBe(false);
-  expect(wire.isClaim(`did:demos:agent:${hex}?network=testnet`)).toBe(false);
-  expect(wire.claimKey(`did:demos:agent:${hex}`)).toBe(hex);
-  expect(wire.claimKey(hex)).toBe(hex);
+  expect(wireValidate.isClaim(hex)).toBe(false);
+  expect(wireValidate.isClaim(`did:demos:agent:${hex}?network=testnet`)).toBe(false);
+  expect(wireValidate.claimKey(`did:demos:agent:${hex}`)).toBe(hex);
+  expect(wireValidate.claimKey(hex)).toBe(hex);
 });
 
 it("verifies Ed25519 against the exact message, signature and key", () => {
@@ -207,15 +208,15 @@ it("verifies Ed25519 against the exact message, signature and key", () => {
   const seed = Buffer.alloc(32, 11);
   const publicHex = Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex");
   const signature = ed25519Sign(message, privateKeyFromSeed(seed));
-  expect(wire.verifyEd25519(message, signature, publicHex)).toBe(true);
-  expect(wire.verifyEd25519(Buffer.from("changed message"), signature, publicHex)).toBe(false);
+  expect(wireValidate.verifyEd25519(message, signature, publicHex)).toBe(true);
+  expect(wireValidate.verifyEd25519(Buffer.from("changed message"), signature, publicHex)).toBe(false);
   const otherHex = Buffer.from(rawPublicKey(publicKeyFromSeed(Buffer.alloc(32, 12)))).toString("hex");
-  expect(wire.verifyEd25519(message, signature, otherHex)).toBe(false);
+  expect(wireValidate.verifyEd25519(message, signature, otherHex)).toBe(false);
   const changedSignature = Buffer.from(signature);
   changedSignature[0] = (changedSignature[0] ?? 0) ^ 1;
-  expect(wire.verifyEd25519(message, changedSignature, publicHex)).toBe(false);
-  for (const value of [signature.subarray(1), Buffer.alloc(65)]) expect(wire.verifyEd25519(message, value, publicHex)).toBe(false);
-  for (const value of ["", "g".repeat(64), publicHex.slice(2), publicHex.toUpperCase()]) expect(wire.verifyEd25519(message, signature, value)).toBe(false);
+  expect(wireValidate.verifyEd25519(message, changedSignature, publicHex)).toBe(false);
+  for (const value of [signature.subarray(1), Buffer.alloc(65)]) expect(wireValidate.verifyEd25519(message, value, publicHex)).toBe(false);
+  for (const value of ["", "g".repeat(64), publicHex.slice(2), publicHex.toUpperCase()]) expect(wireValidate.verifyEd25519(message, signature, value)).toBe(false);
 });
 
 
@@ -228,7 +229,7 @@ it("preserves received string values until canonicalization, including array val
 it("refuses detached byte views with the requested wire code and copy cause", () => {
   const bytes = new Uint8Array([1]);
   structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
-  expect(refusal(() => wire.ownedBytes(bytes, "detached_input", 400)))
+  expect(refusal(() => wireValidate.ownedBytes(bytes, "detached_input", 400)))
     .toMatchObject({ code: "detached_input", status: 400, cause: expect.any(TypeError) });
 });
 
@@ -241,8 +242,8 @@ it("rejects hostile predicate inputs without executing traps or accessors", () =
     new Proxy({}, { ownKeys: trap, get: trap }), revoked,
     { listingId: "listing", version: 1, get contentHash() { return trap(); } },
   ]) {
-    expect(wire.hasKeys(value, ["listingId", "version", "contentHash"])).toBe(false);
-    expect(wire.isListingPin(value)).toBe(false);
+    expect(wireValidate.hasKeys(value, ["listingId", "version", "contentHash"])).toBe(false);
+    expect(wireValidate.isListingPin(value)).toBe(false);
   }
   expect(reads).toBe(0);
 });

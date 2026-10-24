@@ -1,3 +1,4 @@
+import * as wireCommitment from "../../src/wire/commitment.js";
 import { expect, it } from "vitest";
 import * as wire from "../../src/wire/index.js";
 import { spawnSync } from "node:child_process";
@@ -18,11 +19,11 @@ it("public raw JSON byte bounds, null artifacts and primitive shape predicates",
 const readerFor = (purchase: Purchase, verify: (...args: unknown[]) => unknown = () => "valid") =>
   Object.assign(verify, { chainIdentity: purchase.scope.binding.profile.chainIdentity });
 const check = (purchase: Purchase, reader: unknown = readerFor(purchase), scope: unknown = purchase.scope) =>
-  wire.commitmentReceiptTime(bytes(purchase.anchored), bytes(purchase.agreement), bytes(purchase.listing), reader, scope as wire.CommitmentScope);
+  wireCommitment.commitmentReceiptTime(bytes(purchase.anchored), bytes(purchase.agreement), bytes(purchase.listing), reader, scope as wireCommitment.CommitmentScope);
 
 it("authenticates complete signed purchase evidence with sync and async readers", async () => {
   const purchase = await committedPurchase();
-  expect(wire.FINALITY_COMMITMENT_DOMAIN).toBe(FINALITY_COMMITMENT_SEPARATOR);
+  expect(wireCommitment.FINALITY_COMMITMENT_DOMAIN).toBe(FINALITY_COMMITMENT_SEPARATOR);
   expect(await check(purchase)).toBe(COMMITTED_AT);
   const sdkVerifier: FinalityCommitmentReader["verifyAnchorReceipt"] = async (): Promise<"valid"> => "valid";
   const reader: wire.CommitmentReceiptReader = Object.assign(sdkVerifier, { chainIdentity: purchase.scope.binding.profile.chainIdentity });
@@ -31,9 +32,9 @@ it("authenticates complete signed purchase evidence with sync and async readers"
 
 it("accepts byte-admitted evidence and refuses a fabricated pre-parsed copy", async () => {
   const purchase = await committedPurchase();
-  expect(await wire.commitmentReceiptTime(wire.admitWireArtifact(bytes(purchase.anchored)),
+  expect(await wireCommitment.commitmentReceiptTime(wire.admitWireArtifact(bytes(purchase.anchored)),
     wire.admitWireArtifact(bytes(purchase.agreement)), wire.admitWireArtifact(bytes(purchase.listing)), readerFor(purchase), purchase.scope)).toBe(COMMITTED_AT);
-  await expect(Promise.resolve().then(() => wire.commitmentReceiptTime(purchase.anchored,
+  await expect(Promise.resolve().then(() => wireCommitment.commitmentReceiptTime(purchase.anchored,
     bytes(purchase.agreement), bytes(purchase.listing), readerFor(purchase), purchase.scope)))
     .rejects.toMatchObject({ code: "continuation_commitment_invalid", detail: "ARTIFACT-NOT-ADMITTED" });
 });
@@ -329,7 +330,7 @@ function finalizedResult(purchase: Purchase, resumed: boolean): FinalizedFinalit
 
 it.each([false, true])("accepts the exact finalized result shape (resumed=%s)", async (resumed) => {
   const purchase = await committedPurchase();
-  expect(await wire.commitmentReceiptTime(bytes(finalizedResult(purchase, resumed)), bytes(purchase.agreement),
+  expect(await wireCommitment.commitmentReceiptTime(bytes(finalizedResult(purchase, resumed)), bytes(purchase.agreement),
     bytes(purchase.listing), readerFor(purchase), purchase.scope)).toBe(COMMITTED_AT);
 });
 
@@ -340,7 +341,7 @@ it.each([
   const purchase = await committedPurchase();
   const result = { ...finalizedResult(purchase, false), [field]: value };
   let calls = 0;
-  await expect(wire.commitmentReceiptTime(bytes(result), bytes(purchase.agreement), bytes(purchase.listing),
+  await expect(wireCommitment.commitmentReceiptTime(bytes(result), bytes(purchase.agreement), bytes(purchase.listing),
     readerFor(purchase, () => { calls++; return "valid"; }), purchase.scope))
     .rejects.toMatchObject({ code: "continuation_commitment_invalid", status: 500 });
   expect(calls).toBe(0);

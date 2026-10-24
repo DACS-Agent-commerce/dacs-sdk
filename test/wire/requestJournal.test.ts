@@ -1,3 +1,4 @@
+import * as wireJournal from "../../src/wire/journal.js";
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalDirectory, journalFixture } from "./requestJournalFixture.js";
@@ -293,7 +294,7 @@ describe("the durable journal ends each attempt once: by its outcome, or by the 
     const at = (journal: wire.WireRequestJournal) => {
       const request = x.request(P.payments, nonce());
       const { buyer, seller, profile, agreementHash, nonce: requestNonce } = request;
-      return wire.reserveEffect(wire.journalStore(journal), { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce: requestNonce })),
+      return wireJournal.reserveEffect(wireJournal.journalStore(journal), { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce: requestNonce })),
         operationId: wire.wireOperationId(request), binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wire.wireRequestHash(request) });
     };
     let first = at(a);

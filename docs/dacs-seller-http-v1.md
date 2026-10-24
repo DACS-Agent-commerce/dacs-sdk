@@ -5,7 +5,7 @@
 > client integration remains a release qualification requirement. The wire runs only
 > under testnet profile TP-1 ([testnet-profile-tp1.md](testnet-profile-tp1.md)).
 
-The internal `src/wire` module defines the HTTPS wire between a buyer and a seller's
+`@kynesyslabs/dacs/wire` defines the HTTPS wire between a buyer and a seller's
 own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
 exact signing bytes, and validators. It has no HTTP server or client. Its one
@@ -21,9 +21,9 @@ exact-bytes admission) and two new parts (discovery and endpoint proof, the
 TP-1 identity gate). Host admission additionally requires the replay and
 Agreement context checks described below. Unless a section says otherwise, behaviour is the
 plugin's. The plugin implementation is not public. Where this SDK pins a ported
-behaviour, the table names its own source and tests. Original-plugin captures and a parity comparison test are planned for a later
-compatibility slice. Plugin parity is unverified at this prefix. Claims about
-the plugin are taken from its implementation and require composition checks.
+behaviour, the table names its own source and tests. Original-plugin captures are replayed by `test/wire/originalFixture.test.ts`
+in the repository, with separately identified adaptations and immutable message bytes.
+Other claims about the plugin still require composition qualification.
 
 | What | Pinned in this SDK by |
 |---|---|
@@ -39,7 +39,7 @@ the plugin are taken from its implementation and require composition checks.
 
 The SDK implements one buyer-to-seller transport, `dacs-seller-http/v1`,
 without a fallback to the plugin signing domains. Its definitions and validators
-currently live in internal `src/wire`; the package wire entry point is pending;
+ship in `@kynesyslabs/dacs/wire` (`./wire`);
 HTTP hosting and clients belong to their consuming packages. The seller's durable
 request journal ships here (`openWireRequestJournal`).
 The only supported profile is experimental TP-1 on the approved Demos testnet
@@ -738,8 +738,8 @@ replace `src/wire/approval.ts` with `test/wire/testApproval.ts` through
 `vi.mock`, and call the same `bindTp1Profile`. Current source-level approval
 and boundary evidence is in `test/wire/approvedIdentity.test.ts`,
 `test/wire/authority.test.ts` and `test/wire/networkIdentity.test.ts`.
-Approval-import topology and a separate compiled-package consumer are not
-qualified by those tests; compiled-consumer checks are planned with package export.
+Approval-import topology is checked in `test/wire/wire.test.ts`;
+`test/wire/builtPackage.test.ts` runs the compiled package in a separate consumer process.
 
 Every signing function (`signWireRequest`, `signWireResponse`,
 `signWireEnvelope`, `signSellerSessionDelegation`,
@@ -860,9 +860,10 @@ The plugin capture does not contain the codes in the rows above from
 Current admission, identity, envelope and response checks are in
 `test/wire/admission.test.ts`, `test/wire/networkIdentity.test.ts`,
 `test/wire/envelope.test.ts` and `test/wire/response.test.ts`.
-Compatibility vectors, original-plugin captures, adaptations, generators and
-hash-pinning comparison tests are planned for later stack slices. This prefix
-contains none of that evidence and makes no verified plugin-parity claim.
+The [compatibility vectors](../vectors/dacs-seller-http-v1.json) accompany this package.
+Original-plugin captures, adaptations, generators and hash-pinning replay tests
+are retained in the repository. Test paths here refer to repository evidence;
+tests and historical capture tools are not installed runtime APIs.
 
 ### TP-1 reader restriction and purchase gates
 
