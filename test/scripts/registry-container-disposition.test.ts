@@ -26,7 +26,7 @@ function baselineOnlySummary() {
     packageVersion: JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string,
     generatedTestsPassed: true,
     functionalPassed: true,
-    docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
+    docker: { policy: { schema: "dacs-runtime-image-policy/v1", typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true } },
     audit: { directAdvisories: [] as string[], observedAdvisories: ["GHSA-23hp-3jrh-7fpw"], unlistedAdvisories: [] as string[], info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
     securityGate: {
       passed: false,
@@ -1187,7 +1187,7 @@ describe("acceptance failure class", () => {
 it("pins the recorded pqcrypto image version while accepting its recorded metadata spelling", () => {
   const known = { name: "pqcrypto", location: "node_modules/pqcrypto", version: "1.0.01" };
   const baseline = { policyFindings: { productionImageDependencies: [known] } };
-  const summary = (version: string) => ({ securityGate: {
+  const summary = (version: string) => ({ docker: { policy: { typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: false } }, securityGate: {
     productionImageDependencyPolicyPassed: false, engineStrictExitCode: 0,
     lockSbomExitCode: 0, physicalSbomExitCode: 0,
     findings: { productionImageDependencies: [{ ...known, version }], productionImageInventory: completeInventory },
