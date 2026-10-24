@@ -30,10 +30,10 @@
 // Legacy purchases (no terms.protocol) are unchanged.
 import { createHash } from 'node:crypto';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
-import { PURPOSES } from './seams/wallet-actions-not-wired.mjs';
+import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
 import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
-import { transaction, isUniqueViolation } from './seams/purchase-store-not-wired.mjs';
+import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
 import { OutboundError } from './util/http.mjs';
 import { nodeProjectedNonce } from './dacs/chain.mjs';
@@ -42,6 +42,7 @@ import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymen
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
 import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { buyerFundingError } from './buyer-funding.mjs';
+import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 
 export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1';
 export const PURCHASE_RAIL = 'demos-native:DEM';
@@ -160,7 +161,9 @@ export function approvalBinding(operation) {
   };
 }
 
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null }) {
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }) {
+  const { transaction, isUniqueViolation } = purchaseStore(store);
+  const PURPOSES = walletPurposes(purposes);
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
   const insertApproval = db.prepare(`INSERT INTO approvals (id, operation_id, challenge_id, signer_address, terms_hash, signature, approved_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
@@ -275,6 +278,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function prepare({ accountId, listingId, version, seller, idempotencyKey, walletAddress, protocol: mode }) {
+    assertPurchaseActionsAdmitted();
     const wallet = selectWallet(accountId, walletAddress);
     protocol?.assertBuyerAccess?.(wallet);
     // A legacy request hashes exactly as before; a DACS request adds its mode.
@@ -409,6 +413,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function issueApprovalChallenge({ operationId, token, address }) {
+    assertPurchaseActionsAdmitted();
     let operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     if (operation.status !== 'awaiting_approval') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -453,6 +458,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function approve({ operationId, token, challengeId, signature }) {
+    assertPurchaseActionsAdmitted();
     const operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     if (operation.status !== 'awaiting_approval') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -471,11 +477,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // same payload only while the nonce fence proves nothing was consumed and
   // the configured RPC is still the bound network.
   async function prepareHandoff({ operationId, token }) {
+    assertPurchaseActionsAdmitted();
     const operation = portalOperation(operationId, token);
     if (usesNativeAgreementPayment(operation)) return protocol.withNativePaymentLane(operation, () => prepareHandoffCore({ operationId, token }));
     return prepareHandoffCore({ operationId, token });
   }
   async function prepareHandoffCore({ operationId, token }) {
+    assertPurchaseActionsAdmitted();
     let operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     const t = operation.terms;
@@ -577,6 +585,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // Wallet result from the portal. A hash is only a pointer for verification.
   async function nativePaymentLane({ operationId, token, key }) {
+    assertPurchaseActionsAdmitted();
     const operation = portalOperation(operationId, token), approval = approvalFor.get(operation.id);
     if (!usesNativeAgreementPayment(operation) || operation.status !== 'payment_handoff' || !coordinates.get(operation.id)
       || !approval || approval.terms_hash !== operation.termsHash || approval.signer_address !== operation.terms.buyer.wallet) throw new OperationError('native_payment_lane_held', 'a normal approved, one-time native handoff is required; CREATE authority is not payment authority');
@@ -1095,12 +1104,14 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function agreementIdentity({ operationId, token, address }) {
+    assertPurchaseActionsAdmitted();
     const operation = await admitProtocolStart(operationId, token);
     if (operation.status === 'agreement_pending' && operation.state.protocol.planned) await assertBoundDomain(operation);
     return protocol.identityRequest(operation, address);
   }
 
   async function admitProtocolStart(operationId, token) {
+    assertPurchaseActionsAdmitted();
     const operation = protocolOperation(operationId, token);
     protocol.assertBuyerAccess?.(operation.terms.buyer.wallet);
     if (operation.status === 'agreement_pending' && !operation.state.protocol.planned) {
@@ -1118,6 +1129,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // A plan step already running for this purchase answers before the domain,
   // balance and fee reads: its own signatures wait for it, others are told at once.
   async function agreementPlan({ operationId, token, signature, delegationSignature, intentGeneratedAt }) {
+    assertPurchaseActionsAdmitted();
     const running = protocol.runningPlan?.(protocolOperation(operationId, token), signature, delegationSignature, intentGeneratedAt);
     if (running) return running;
     return protocol.planRequest(await admitProtocolStart(operationId, token), signature, delegationSignature, intentGeneratedAt);
@@ -1126,18 +1138,21 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   const planRunning = (operation) => operation.status === 'agreement_pending' && !operation.state?.protocol?.planned && protocol?.planRunning?.(operation) === true;
 
   async function agreementSubmit({ operationId, token, agreementSignature, anchorSignature }) {
+    assertPurchaseActionsAdmitted();
     const operation = protocolOperation(operationId, token);
     if (operation.status === 'agreement_pending') await assertBoundDomain(operation);
     return { operation: await protocol.submitAgreement(operation, { agreementSignature, anchorSignature }) };
   }
 
   function completionRequest({ operationId, token }) {
+    assertPurchaseActionsAdmitted();
     const operation = protocolOperation(operationId, token);
     if (operation.status !== 'settled_verified') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     return { operation, request: protocol.countersignRequest(operation) };
   }
 
   async function completionCountersign({ operationId, token, bundleSignature, anchorSignature }) {
+    assertPurchaseActionsAdmitted();
     const operation = protocolOperation(operationId, token);
     if (operation.status !== 'settled_verified') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     return { operation: await protocol.countersign(operation, { bundleSignature, anchorSignature }) };

@@ -1,16 +1,17 @@
-// Test-only offline harness from frontend 82bf8c4; no application wiring.
+// Test-only host extras over the shipped buyer-state schema.
 // Durable state for accounts, wallets, agents, operations, challenges and the
 // OAuth provider. Backed by node:sqlite (WAL, synchronous=FULL) so idempotency
 // keys, one-use challenges and approvals are enforced by UNIQUE constraints and
 // survive process restarts.
 import { DatabaseSync } from 'node:sqlite';
-import { PURCHASE_STATE_SCHEMA } from '../../src/purchase-state-schema.mjs';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 // v2: reported_tx_hash no longer UNIQUE (verified-only partial index). Pre-release:
 // older files are refused rather than migrated.
 const SCHEMA_VERSION = 2;
+
+import { PURCHASE_STATE_SCHEMA } from '../../src/purchase-state-schema.mjs';
 
 const MIGRATIONS = [
   PURCHASE_STATE_SCHEMA,
@@ -82,33 +83,6 @@ export function openDatabase(path) {
   return db;
 }
 
-// node:sqlite DatabaseSync is not re-entrant across BEGIN; nested calls join
-// the outer transaction.
-const depth = new WeakMap();
-
-// Runs fn inside BEGIN IMMEDIATE so concurrent writers (other processes on the
-// same file) serialize instead of interleaving read-check-write sequences.
-// The depth is set only once BEGIN succeeds: a BEGIN that fails (the lock is
-// held past the busy timeout) must not leave later calls running as nested,
-// that is without a transaction of their own.
-export function transaction(db, fn) {
-  const current = depth.get(db) ?? 0;
-  if (current > 0) return fn();
-  db.exec('BEGIN IMMEDIATE');
-  depth.set(db, 1);
-  try {
-    const result = fn();
-    if (result && typeof result.then === 'function') throw new Error('transaction bodies must be synchronous');
-    db.exec('COMMIT');
-    return result;
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  } finally {
-    depth.set(db, 0);
-  }
-}
-
-export function isUniqueViolation(error) {
-  return error?.code === 'ERR_SQLITE_ERROR' && /UNIQUE constraint failed/.test(error.message);
-}
+// Exercise the same concrete adapter shipped to package consumers.
+import { createSqlitePurchaseStore } from '../../src/seams/purchase-store-not-wired.mjs';
+export const { transaction, isUniqueViolation } = createSqlitePurchaseStore();
