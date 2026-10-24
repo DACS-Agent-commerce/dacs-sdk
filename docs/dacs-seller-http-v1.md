@@ -556,3 +556,301 @@ document stating anything else is refused. `FP-DEM` and the delivery channel
 name `demos-storage` are SDK labels, not Standard identifiers. The Standard
 calls this delivery phase `deliver-storage-program`
 (`spec/DACS-4-SETTLE.md:831` at `d45c0a2`).
+
+## The TP-1 profile member and identity gate
+
+Every request, response, delegation and discovery document carries, inside
+its signed bytes,
+`profile: {id: "dacs-testnet-tp1", revision: "TP-1", base: "d45c0a29…0f20", chainIdentity, pinVersion}`.
+`id`, `revision` and `base` (the full 40-hex Standard base commit) are the
+profile tuple; `chainIdentity` and `pinVersion` are the approved record's pins. This
+identity binding is approved, on 2026-10-15 at 21:23Z, as proposed: each party
+requires an exact match with the tuple it selected locally and with the tuple
+kept for that purchase, and a missing, unknown or mismatched value is refused
+before any effect, with no fallback to admission on identifier and base alone.
+
+When a payload has exactly the wire's members, a receiver checks its profile
+before every other payload check and before the signature (a payload with
+missing or extra members is refused as malformed first). In order, it refuses: no profile (`tp1_profile_missing`); a profile
+without `revision` (`tp1_profile_revision_missing`), which includes the
+pre-revision `{id, base, chainIdentity, pinVersion}` and a profile of
+identifier and base alone; a revision this SDK does not define
+(`tp1_profile_revision_unknown`), compared exactly against
+`TP1_PROFILE_REVISIONS` (only `"TP-1"`), so `"tp-1"`, `" TP-1"`, `"TP-1 "`, a
+number, `null`, a list, and a later revision's name such as `"TP-1.1"` are all
+unknown; and any other difference from its own bound profile, an extra member
+included (`tp1_profile_mismatch`). A revision given twice in the received bytes
+is refused at admission (`wire_json_rejected`, `DUPLICATE-MEMBER`), so a second
+value cannot hide behind the signed one. Signers apply the same check to the
+payload they are given and sign only their own exact tuple. Endpoints are
+deliberately not in the profile: two parties may use different RPC endpoints
+for the same approved chain.
+
+**The tuple kept for the purchase.** Each party also holds the tuple it kept
+for the purchase, and requires it to be exactly its own bound profile, and so
+exactly the profile of every message for that purchase (`assertPurchaseProfile`;
+`tp1_purchase_profile_mismatch`).
+
+- Buyer: `WireJobContext.profile` (required) is the tuple the buyer selected and
+  kept for the job. `signWireRequest` signs nothing unless it is exactly the
+  binding's profile. `verifyWireResponse` refuses, before it opens the answer,
+  a kept request that names another tuple, and opens the answer under that
+  tuple; the answer must then carry the same tuple as both the request and the
+  buyer's binding. The buyer always has a kept tuple: `null` is refused.
+- Seller: `openWireEnvelope`, `checkWireRequest` and `signWireResponse` each
+  take a required `purchaseProfile`: the tuple the seller kept for the job, or
+  `null` for a job with none kept yet (a new purchase; the seller then keeps
+  the request's). Omitted, or any value but the seller's own bound profile, is
+  refused before the header, the request or the body is read: no request is
+  opened, and the seller's signer is not called. The opened request must then
+  carry that same profile (`assertPeerProfile`), and `checkWireRequest` checks
+  the kept tuple again before the exchange is compared.
+- `signWireEnvelope`, which both signers call and which is exported, takes the
+  same required `purchaseProfile` and checks it before the profile and before
+  its signer. `null` passes only for a response (a seller's answer to a new
+  purchase); a request is never signed without a kept tuple. It signs the
+  `expiresAt` the payload carries: the 30 s signer lifetime is applied by
+  `signWireRequest` and `signWireResponse`, so a host that calls
+  `signWireEnvelope` directly must bound `expiresAt` itself.
+
+With one revision defined, a message naming any other revision is unknown.
+When a later SDK defines another revision, a party that selected or kept
+`TP-1` refuses a message or purchase naming the other as `tp1_profile_mismatch`
+or `tp1_purchase_profile_mismatch`; nothing is admitted on identifier and base
+alone.
+
+`chainIdentity` and `pinVersion` come from the approved immutable testnet
+identity record. The integrator supplies the record; the SDK approves it.
+`bindTp1Profile` checks the record's SHA-256 digest against the SDK's own
+`TP1_APPROVED_IDENTITY_RECORD_DIGESTS` (`src/wire/approval.ts`, a frozen list)
+and takes no approval list from its caller. The list pins the canonical digest
+of `TP1_APPROVED_IDENTITY_RECORD`, approved by the owner on 2026-10-20:
+record identifier and pin version `dacs-demos-testnet-identity/2026-10-20`,
+source kind `confirmed-block-one-predecessor`, with its documented fallback.
+The 2026-10-15 record, for the chain node2 served before its 2026-10-20
+rebuild, is no longer listed and is refused.
+The complete record and digest are in the [TP-1 declaration](testnet-profile-tp1.md#profile).
+Actor-local endpoints and transport authorities are excluded. The gate refuses,
+in order: no record;
+a record without its pins; a malformed record; the plugin's simulated-fixture
+chain identity (`DACS_STORAGE_ANCHOR_CHAIN_IDENTITY`, the SHA-256 of a fixture
+string, which `TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES` derives) used as a live
+pin; a refused identity; and any record
+whose digest the SDK has not approved. Refused identities are the SDK's own
+`TP1_REFUSED_CHAIN_IDENTITIES` (empty until a dated approval names any, for example a
+known mainnet identity) plus any the caller adds; a caller can add refusals but
+never remove one. A network label such as `"demos-testnet"` never authorizes
+anything: a mocked mainnet identity labelled testnet is unapproved, with or
+without a caller refusal list, and even when the caller passes its own
+approval list.
+
+The approved record identifies the allowed chain. Binding also requires a
+`readAuthority: Tp1AuthorityReader` installed by the local verifier or
+orchestrator, outside caller-controlled artifacts and HTTP phase input. It
+must authenticate the active transport's chain independently of the approved
+record. An endpoint string and a network label do not establish that fact.
+The reader returns `{local, chainIdentity, provenance, sessionId, participants}`.
+`local` includes the exact endpoint, transport authority and connection
+generation; `provenance` identifies that connection's authenticated attestation.
+The binding retains their digest and the reader in process-local state. A
+missing reader, wrong chain, changed connection or changed attestation refuses
+authorization. Two independently authenticated endpoints for the approved
+chain remain usable.
+
+Before signing or accepting a request, response or delegation, the wire asks
+that same reader for both authenticated participants in their exact `jobId`
+session. Discovery checks its seller in the `dacs-seller-discovery/v1` scope.
+Each participant entry is `{claim, profile, modules}`: the authenticated claim,
+the complete five-field wire profile, and exactly CORE 0.3, DACS-1 0.7,
+DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5. These are independent local
+authority, not additional wire members; the existing signed bytes are preserved.
+The returned session and ordered participant list must match exactly, with no
+missing or duplicate entry. A signed claim that names the right base cannot
+override different authenticated module evidence.
+
+The reader must consult current authenticated transport and participant/session
+state on every call and refuse revoked, missing, ambiguous or unavailable
+evidence. It must not echo the query or populate decisions from peer messages.
+The query with `sessionId: null` and an empty participant list checks only the
+connection, including at binding. It is not participant authorization. Every
+use rechecks authority, including admission of an already opened request and
+signing under a retained endpoint proof. Signers recheck after an asynchronous
+signature before returning it. Reader exceptions preserve their original
+causes. Reads performed by the integration, including through third-party
+libraries, require a byte limit before decoding, bounded decoded lists and a
+deadline. The wire itself performs no network I/O. Neither bindings nor a
+saved successful decision are restart credentials; recreate a binding and
+authenticate its current evidence after restart. Retained effect adapters still
+require composition qualification.
+
+`bindTp1Profile` reads each of its options once and takes one owned copy of
+the record and of the local connection (`snapshotCanonicalJsonConfig`,
+`src/canonical/snapshot.ts`) before any check. Every check, the approval
+digest and the bound `chainIdentity` and `pinVersion` come from that copy, so
+a record cannot be approved as one value and bound as another. A Proxy, an
+accessor property or an exotic prototype is refused outright
+(`tp1_identity_record_invalid`, `tp1_local_binding_invalid`), whatever it
+answers; frozen plain data is accepted. String values are compared after CF-1
+normalization, the form the approval digest has always covered. Verifiers copy
+their current connection the same way, and `signWireRequest` copies a caller's delegation once. Received delegations at
+`verifySellerSessionDelegation` must be bounded bytes or values from wire admission, so the payload checked,
+returned, used to bound the request's expiry and embedded in the header is the
+one whose signature verified (`peer_delegation_invalid` otherwise).
+
+The named admission, signing, verification and profile boundaries below take
+one owned, data-only copy of caller-built records and use that copy. This is
+not a guarantee for every utility export: `wireOperationId` requires a trusted request,
+and helpers outside these boundaries must be called with their documented input types.
+- **Payloads, requests, delegations and profiles** are copied with
+  `snapshotCanonicalJsonRead`, which accepts frozen plain data and refuses a
+  Proxy, an accessor, an exotic prototype or an `undefined` member. So the
+  profile a signer checks is the profile in the bytes it signs and in the
+  header, document or delegation it returns. Each refuses with its own code:
+  `peer_envelope_invalid` (`signWireEnvelope`, `wireEnvelopeSigningBytes`,
+  `wireRequestHash`, and the request given to `signWireResponse` or
+  `verifyWireResponse`), `peer_delegation_invalid` (both delegation signers),
+  `discovery_invalid` (`signDiscoveryDocument`, `discoverySigningBytes`) and
+  `tp1_profile_mismatch` (`assertPeerProfile`). The predicates
+  `isTp1WireProfile` and `isWirePayload` answer `false` for such a value.
+- **Options objects** (the signing context, `openWireEnvelope`'s options,
+  `checkWireRequest`'s check, a delegation scope, `signWireRequest`'s input,
+  the received response, `verifyEndpointProof`'s options and
+  `bindTp1Profile`'s options) are read once, field by field, through their own
+  data properties, so no getter or Proxy trap runs. A Proxy, an accessor or a
+  prototype other than `Object.prototype` or `null` is refused
+  (`wire_input_invalid`). The records inside them (a Listing pin, a job,
+  the retained artifacts, a refusal list) are copied as above. The verified
+  Listing is copied with `snapshotWireJsonRead`, which preserves its endpoint
+  bytes without NFC normalization and refuses the same non-data inputs.
+  Body bytes are copied once through the typed array's own slots. The body
+  that is admitted is then the body that is hashed. A received body longer
+  than its limit (64 KiB for a request, 512 KiB for an answer, by the view's
+  own length) is refused as its admission refuses it (`bad_json` or
+  `response_json_rejected`, detail `BYTE-LIMIT-EXCEEDED`) before it is
+  copied, and so before any other check of that call.
+- **What is not copied:** a binding and an opened envelope are proved by
+  membership in a set the SDK holds, and are frozen. A signer is a callback:
+  its `claim` is read once and `sign` called once.
+
+No shipped module takes another approval list: there is no test entry point
+in `src/` or `dist/`. Tests need bindings for synthetic records, so they
+replace `src/wire/approval.ts` with `test/wire/testApproval.ts` through
+`vi.mock`, and call the same `bindTp1Profile`. Current source-level approval
+and boundary evidence is in `test/wire/approvedIdentity.test.ts`,
+`test/wire/authority.test.ts` and `test/wire/networkIdentity.test.ts`.
+Approval-import topology and a separate compiled-package consumer are not
+qualified by those tests; compiled-consumer checks are planned with package export.
+
+Every signing function (`signWireRequest`, `signWireResponse`,
+`signWireEnvelope`, `signSellerSessionDelegation`,
+`sellerSessionDelegationSigningBytes`, `signDiscoveryDocument`) first
+requires a binding made by `bindTp1Profile` and
+the signer's current local connection (`endpoint`, `transportAuthority`,
+`connectionId`), which must equal the one the binding was made with. Changing
+an actor's own endpoint, authority or connection invalidates its binding
+(`tp1_local_binding_changed`) before its signer is called (the local connection fence);
+the peer's endpoint is never compared. The three that sign a request or
+response then require the tuple kept for the purchase, as above.
+
+Every verification function (`openWireEnvelope`, `checkWireRequest`,
+`verifySellerSessionDelegation`, `verifyWireResponse`, `verifyEndpointProof`)
+requires the same: a binding made by `bindTp1Profile` and the verifier's
+current connection (`local`), checked before anything is read.
+`openWireEnvelope` then checks the tuple kept for the purchase before it reads
+the header, and `checkWireRequest` checks it again before it compares the
+exchange. A binding is
+proved only by membership in a set private to `profile.ts` that
+`bindTp1Profile` fills; an object carrying the same profile or fields, a copy,
+a prototype child or a proxy of a binding is not a member
+(`tp1_binding_required`). `assertPeerProfile` also refuses a non-binding and
+rechecks connection authority using the binding's stored local connection.
+The set and list lookups are taken from their prototypes
+when the module loads, so a later patch of `Array`, `WeakSet` or `WeakMap`
+prototypes does not open the gate. With the owned copies above, this holds
+against callers, including a record, connection, payload, request, delegation
+or options object whose answers change between reads, at binding, signing and
+verifying alike. It is not a boundary against other code in the process: only
+those set and list lookups are captured at load, so code that patches other
+runtime methods after the SDK loads (for example `node:crypto` hashing, which
+digests the identity record), replaces SDK modules through the loader or
+patches the runtime before the SDK loads can open the gate, and could equally
+call a signer directly.
+
+## Exact-bytes admission (D7)
+
+Every received signed or hashed wire input is admitted from its exact bytes
+with `admitRawJson` (CF-5) before anything parses or hashes it, inside the
+function that accepts it: the envelope header (`openWireEnvelope`), the request
+body (`checkWireRequest`, through `admitWireRequestBody`), the response body
+(`verifyWireResponse`, through `admitWireResponseBody`) and the discovery
+document (`verifyEndpointProof`). Producers apply the same profile to the
+bodies they sign. Admission refuses malformed UTF-8,
+byte-order marks, duplicate member names, numbers outside the DACS magnitude,
+non-JSON constants and nesting over 128. The wire adds one rule: every string
+**value** must already be NFC (`WIRE-NON-NFC-STRING`), because CF-1 normalizes
+values when canonicalizing and two different received values could otherwise
+carry one signature. Member names are not normalized, as CF-1 requires.
+Admission does not require JCS whitespace or member order. The plugin parsed
+these inputs with `JSON.parse`: it accepted duplicate members and non-NFC
+values, which this wire refuses.
+
+## Refusal codes
+
+Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
+`bad_json`, `bad_request`), except where the fault is the actor's own input.
+A `WireError`'s `category` follows its status: 500 is the actor's own
+configuration or input (`permanent`), 503 a state that may clear
+(`transient`), and any other status the counterparty's. So the actor's own
+kept tuple (`tp1_purchase_profile_mismatch`), a payload a signer built
+itself, such as an answer status outside 200-599 (`peer_envelope_invalid`),
+a delegation or discovery document a signer was given to sign
+(`peer_delegation_invalid`, `discovery_invalid`), and a refusal of the
+buyer's own delegation in `signWireRequest` (its code kept, such as
+`peer_delegation_mismatch`) are 500, and signing under an endpoint proof whose document has since expired
+(`discovery_expired`) is 503: fetch discovery again. New codes:
+
+| Code | Meaning |
+|---|---|
+| `wire_json_rejected` (detail: admission code) | envelope header failed admission |
+| `bad_json` (detail: admission code) | request body failed admission |
+| `response_json_rejected` (detail: admission code) | response body failed admission |
+| `outgoing_body_rejected` (detail: admission code) | a signer was given a body its peer would refuse |
+| `seller_configuration_invalid` (500) | `checkWireRequest`'s `maxLifetimeMs` outside 1-60,000 ms; `signWireResponse`'s `lifetimeMs` outside 1-30,000 ms, or a `maxLifetimeMs` given to it |
+| `tp1_profile_missing`, `tp1_profile_mismatch` | profile absent, or not the receiver's own |
+| `tp1_profile_revision_missing`, `tp1_profile_revision_unknown` | profile without a revision, or naming a revision this SDK does not define (exact comparison) |
+| `tp1_purchase_profile_mismatch` (500) | the tuple kept for the purchase is absent, `null` where only a seller's new purchase allows it, or not the actor's own bound profile |
+| `tp1_identity_record_missing`, `tp1_identity_pin_missing`, `tp1_identity_record_invalid`, `tp1_identity_fixture`, `tp1_identity_refused`, `tp1_identity_unapproved` | identity gate |
+| `tp1_binding_required`, `tp1_local_binding_changed`, `tp1_local_binding_invalid` | signing or verifying without a binding from `bindTp1Profile`, or on a changed connection |
+| `tp1_authority_required`, `tp1_connection_unverified`, `tp1_participant_profile_mismatch` | missing trusted reader, unauthenticated/changed active connection, or mismatched authenticated participant/session profile and module evidence |
+| `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
+| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal` |
+| `discovery_*` | discovery document and endpoint proof |
+| `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
+| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a proposal, commitment, commitment-signature or context request |
+| `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
+| `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
+| `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
+| `seller_replay_guard_required` (500) | an effect route checked without a `requestJournal` that `openWireRequestJournal` returned, or `completeWireEffect` given another object |
+| `seller_replay_guard_invalid` (500) | a journal directory that is not absolute, missing, a link, owned by another user or writable by others, on which exclusive publishing fails, or holding an entry the journal did not write |
+| `peer_request_replayed` (409) | the journal already holds the request's nonce key: the same signed request again |
+| `seller_effect_pending` (503) | another attempt of the same operation (job and route) holds its live lease |
+| `peer_operation_mismatch` (409) | an effect request for a job and route whose operation was first reserved under another Agreement hash, buyer or tuple |
+| `seller_effect_unresolved` (500) | 16 attempts were superseded after their leases ran out |
+| `seller_effect_conflict`, `seller_effect_superseded` (500) | `completeWireEffect` with an outcome other than the one recorded, or from an attempt a later one superseded |
+| `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
+| `continuation_phase_unsupported` (500) | a `commitment` checked under a Listing commit phase other than `commit-payee-bound-agreement`, or none (DACS-3 §8.5.2 check 9); or whose Listing does not have exactly one pay phase, `pay-dem` (detail `PAY-PHASE`), or exactly one delivery phase, `deliver-storage-program` (detail `DELIVERY-PHASE`) |
+| `continuation_listing_invalid` (500) | a `commitment` given without the signed Listing the request pins, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with a Listing that is not that pin's, not the seller's, not signed by the named seller claim's key over that pin (detail `LISTING-SIGNATURE`), not one fixed-price commitment, auto-accept or without a positive `deadlineSecAfterCommit`; whose deliverable is not `storage-program` (detail `DELIVERABLE-KIND`, DACS-4 §9.6.1 step 1); or whose pricing is not fixed in DEM (detail `TP1-PRICING`) |
+| `wire_artifact_rejected` (500) | `admitWireArtifact` given bytes CF-5 admission refuses; the detail is admission's own code |
+| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price PayeeBoundAgreementDocument (a plain or identity-bound one included, or one carrying another discriminator beside it: detail `DISCRIMINATOR`; or a `terms.priorPaymentDispositionRef`, which TP-1 has no `pay-alternative` phase for: detail `PRIOR-DISPOSITION`), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7); or whose terms the SDK's DACS-3 §8.5.2 verifier refuses against the signed Listing at `committedAt` (currency, price, rail, deliverable, pattern, parties: detail `LISTING-TERMS`, its `cause` the verifier's error) |
+| `continuation_commitment_invalid` (500) | a `commitment` given as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or as bytes admission refuses; or whose record, seller signature or finalized receipt does not check, whose receipt is not a CORE §5.1 AnchorReceipt or whose transaction reference is not a ChainTxRef, whose receipt time is before the Agreement's `generatedAt`, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
+| `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader whose awaited result is not a disposition; synchronous and asynchronous readers are accepted |
+| `commitment_reader_chain_mismatch` (500) | the trusted receipt reader's `chainIdentity` is absent or differs from the verified binding's chain; checked before invoking the reader |
+| `commitment_unverified` (503) | the receipt reader answered `indeterminate` or `error`: the commitment is not established, never final |
+| `seller_commitment_required` (500), `peer_agreement_uncommitted` (409) | a payment or delivery request checked without the job's commitment, or with `commitment: null` (the seller's own reader found none) |
+| `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
+| `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
+| `peer_envelope_too_large`, `peer_response_too_large`, `body_too_large` (500) | a signer given a header, response body or request body over the limits: its own input, never the peer's fault; nothing is signed |
+| `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
+
+The plugin capture does not contain the codes in the rows above from
+`seller_retained_agreement_required` down; they are new in this SDK.
