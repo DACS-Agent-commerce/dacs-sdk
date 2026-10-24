@@ -184,6 +184,17 @@ test('a signed CREATE the node or the readback would refuse is not kept: exact p
   assert.equal(w.calls.broadcast.length, 1);
 });
 
+test('a CREATE signed with the SDK node fee, execution edits and source binding is kept and sent', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.sign.push({ edit: (content) => { Object.assign(content, { network: 'TEST-network', chainIdentity: 'TEST-chain' }); content.data[1].metadata.networkBinding = { network: 'TEST-network' }; } });
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
+  const kept = await journal.readSignedProjection(w.input());
+  assert.equal(kept.content.gcr_edits.length, 4);
+  assert.equal(kept.content.transaction_fee.network_fee, 2);
+  assert.equal(w.calls.broadcast.length, 1);
+});
+
 test('the pair check names only one journal\'s own anchorEvidence and reconcilePaymentEvidence', async (t) => {
   const a = wallet(t).open(), b = wallet(t).open();
   t.after(() => { a.close(); b.close(); });
@@ -402,10 +413,9 @@ const hostileCreateEdits = [
   ['an invalid timestamp', (content) => { content.timestamp = 'TEST'; }],
   ['a negative timestamp', (content) => { content.timestamp = -1; }],
   ['an amount', (content) => { content.amount = 7; }],
-  ['a network fee', (content) => { content.transaction_fee.network_fee = 999; }],
-  ['an RPC fee', (content) => { content.transaction_fee.rpc_fee = 1; }],
-  ['an additional fee', (content) => { content.transaction_fee.additional_fee = 1; }],
-  ['an RPC payee', (content) => { content.transaction_fee.rpc_address = content.from; }],
+  ['no node fee', (content) => { delete content.transaction_fee; }],
+  ['no execution edits', (content) => { delete content.gcr_edits; }],
+  ['empty execution edits', (content) => { content.gcr_edits = []; }],
   ['a private ACL', (content) => { content.data[1].acl.mode = 'private'; }],
   ['off-chain storage', (content) => { content.data[1].storageLocation = 'offchain'; }],
   ['an unknown storage location', (content) => { content.data[1].storageLocation = 'TEST-invalid'; }],
