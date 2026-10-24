@@ -447,7 +447,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(job&&!same(job.binding,binding))return Promise.resolve({refused:'conflict'});
     if(!job){job={jobId:scope.jobId,binding:clone(binding),buyerVet:null,running:null,finished:false,writeStarted:false,evicted:false,open};vets.set(scope.jobId,job);}
     if(!job.running){
-      job.open=open;
+      job.open=open;job.finished=false;
       const addresses=[compositeVerificationAddress(scope.jobId,buyerIdentityBundle.presentedBy),compositeVerificationAddress(scope.jobId,listing.seller.identity.presentedBy)];
       const run=(async()=>{
         const bound=await bind(job,addresses);
@@ -470,10 +470,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       })();
       job.running=run;running.add(scope.jobId);
       // Registered before any waiter, so a waiter that retries finds this
-      // run settled and its entry already updated. A finished run is kept
-      // for later requests of the job. An ended job's row waits for its run.
+      // run settled and its entry already updated. A finished job is kept for
+      // later requests, which run on its checkpoints and read both records
+      // back before answering. An ended job's row waits for its run.
       const settled=()=>{running.delete(scope.jobId);if(drops.has(scope.jobId))drop(scope.jobId).catch(logged('deletion',scope.jobId));};
-      run.then((out)=>{job.finished=Boolean(out.buyerVet);if(!job.finished){job.running=null;forget(job);}else if(job.evicted)forget(job);settled();},()=>{
+      run.then((out)=>{job.finished=Boolean(out.buyerVet);job.running=null;if(!job.finished||job.evicted)forget(job);settled();},()=>{
         job.running=null;
         if(!job.writeStarted||job.evicted)forget(job);
         settled();

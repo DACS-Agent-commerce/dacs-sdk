@@ -51,3 +51,9 @@ test('a buyer Vet kept for a retry is not reused once its receipt no longer qual
  f.controls.receiptStateFor=address=>address===compositeVerificationAddress(JOB,buyer.claim)?'accepted':'finalized';
  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='party_vet_unavailable');assert.equal(f.local.writes.length,1);f.base.close();
 });
+for(const [party,address,code] of [['buyer',()=>compositeVerificationAddress(JOB,buyer.claim),'party_vet_unavailable'],['seller',()=>compositeVerificationAddress(JOB,seller.claim),'seller_vet_receipt_invalid']])test(`a finished job is read back again: a ${party} receipt that no longer qualifies refuses the repeat`,async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ assert.equal((await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).sellerVet.record.overallDecision,'pass');
+ f.controls.receiptStateFor=asked=>asked===address()?'accepted':'finalized';
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code===code);assert.equal(f.local.writes.length,2);f.base.close();
+});
