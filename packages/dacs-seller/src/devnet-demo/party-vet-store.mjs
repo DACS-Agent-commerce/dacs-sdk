@@ -14,8 +14,8 @@
 // journal-integrity, journal-invalid). No key or secret is ever stored.
 import DatabaseSync from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, fsyncSync, linkSync, lstatSync, mkdtempSync, openSync, rmSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { closeSync, constants, fsyncSync, fstatSync, linkSync, lstatSync, mkdtempSync, openSync, rmSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 export const PARTY_VET_STORE_FORMAT = 'dacs-party-vet-store';
 export const PARTY_VET_STORE_VERSION = 1;
@@ -34,7 +34,7 @@ class PartyVetStoreError extends Error {
 const fail = (code, message, options) => { throw new PartyVetStoreError(code, message, options); };
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const bounded = (name, value, min, max) => { if (!Number.isSafeInteger(value) || value < min || value > max) fail('journal-invalid', `${name} must be an integer from ${min} to ${max}`); return value; };
-const checkKey = (key) => { if (typeof key !== 'string' || !key || Buffer.byteLength(key) > 512 || key.includes('\0')) fail('journal-invalid', 'party Vet store keys are non-empty strings of at most 512 bytes'); return key; };
+const checkKey = (key) => { if (typeof key !== 'string' || !key || Buffer.from(key).toString('utf8') !== key || Buffer.byteLength(key) > 512 || key.includes('\0')) fail('journal-invalid', 'party Vet store keys are non-empty strings of at most 512 bytes'); return key; };
 const encode = (value) => {
   let text;
   try { text = JSON.stringify(value); }
@@ -111,10 +111,30 @@ function initializePartyVetStore(path) {
   }
 }
 
+// Synchronous admission follows the private-store ownership/path policy; this
+// API cannot use the asynchronous directory preparation primitive.
+function admitPath(path) {
+  if (!process.getuid) fail('journal-invalid', 'party Vet storage requires POSIX ownership checks');
+  const parent = dirname(path), uid = process.getuid();
+  for (let component = parent; ; component = dirname(component)) {
+    const stat = lstatSync(component), scratch = stat.uid === 0 && (stat.mode & 0o1000) !== 0 && component !== parent;
+    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.uid !== uid && stat.uid !== 0) ||
+        (component === parent && stat.uid !== uid) || ((stat.mode & 0o022) !== 0 && !scratch)) fail('journal-invalid', 'party Vet storage requires private owned directories without symbolic links');
+    if (component === dirname(component)) break;
+  }
+  for (const name of [path, path + '-wal', path + '-shm', path + '-journal']) {
+    let stat;
+    try { stat = lstatSync(name); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || stat.uid !== uid) fail('journal-invalid', 'the party Vet store must be a private regular file with one link owned by this process user');
+  }
+}
+
 // path: absolute. A missing target is published only after initialization;
 // an existing file must be this format and intact.
 export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {}) {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || path.startsWith('file:')) fail('journal-invalid', 'an explicit absolute party Vet store path is required');
+  path = resolve(path);
+  admitPath(path);
   bounded('busyTimeoutMs', busyTimeoutMs, 0, 10_000);
   const limits = limitsFor(options);
   let file;
@@ -123,8 +143,16 @@ export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {
     if (error.code !== 'ENOENT') throw error;
     initializePartyVetStore(path); file = lstatSync(path);
   }
-  if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || (process.getuid && file.uid !== process.getuid())) fail('journal-invalid', 'the party Vet store must be a private regular file owned by this process user');
+  if (file.nlink !== 1 || !file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || (process.getuid && file.uid !== process.getuid())) fail('journal-invalid', 'the party Vet store must be a private regular file owned by this process user');
   let db;
+  const verifyIdentity = () => {
+    admitPath(path);
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(fd), after = lstatSync(path);
+      if ([opened, after].some(stat => stat.dev !== file.dev || stat.ino !== file.ino || stat.nlink !== 1)) fail('journal-invalid', 'the party Vet store changed while opening');
+    } finally { closeSync(fd); }
+  };
   const translate = (error) => {
     if (error instanceof PartyVetStoreError) return error;
     const text = String(error?.message ?? error);
@@ -142,12 +170,12 @@ export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {
   };
   let storeId;
   try {
-    db = new DatabaseSync(path);
+    verifyIdentity();
+    db = new DatabaseSync(path, { readonly: true, fileMustExist: true });
+    verifyIdentity();
     db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
-    if (db.prepare('PRAGMA journal_mode = WAL').get().journal_mode !== 'wal') fail('journal-error', 'WAL journal mode is unavailable for the party Vet store');
-    db.exec('PRAGMA synchronous = FULL');
     if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') fail('journal-integrity', 'the party Vet store failed its integrity check');
-    storeId = tx('BEGIN IMMEDIATE', () => {
+    storeId = tx('BEGIN', () => {
       const schema = db.prepare('SELECT type, name, tbl_name, sql FROM sqlite_schema').all();
       if (schema.some(row => !(row.type === 'table' && Object.hasOwn(STORE_TABLES, row.name) && row.sql === STORE_TABLES[row.name]) &&
           !(row.type === 'index' && Object.hasOwn(STORE_TABLES, row.tbl_name) && row.sql === null && row.name === `sqlite_autoindex_${row.tbl_name}_1`))) {
@@ -171,7 +199,14 @@ export function openPartyVetStore({ path, busyTimeoutMs = 1000, ...options } = {
       return value;
     } catch (cause) { fail('journal-integrity', 'a party Vet store row is malformed', { cause }); }
   };
-  try { tx('BEGIN', () => { for (const row of db.prepare('SELECT key, value, bytes, digest FROM jobs').iterate()) decode(row); }); }
+  try {
+    tx('BEGIN', () => { for (const row of db.prepare('SELECT key, value, bytes, digest FROM jobs').iterate()) decode(row); });
+    db.close(); verifyIdentity();
+    db = new DatabaseSync(path, { fileMustExist: true }); verifyIdentity();
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+    if (db.prepare('PRAGMA journal_mode = WAL').get().journal_mode !== 'wal') fail('journal-error', 'WAL journal mode is unavailable for the party Vet store');
+    db.exec('PRAGMA synchronous = FULL');
+  }
   catch (error) { db.close(); closed = true; throw translate(error); }
   const backend = {
     // Changes run in an IMMEDIATE transaction, reads in a deferred one.

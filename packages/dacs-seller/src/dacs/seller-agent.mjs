@@ -26,6 +26,7 @@ import {
   canonicalize,
   commitFixedPriceAgreement,
   contentHash,
+  isListing,
   createFsFencedSessionStore,
   createInMemoryFencedSessionStore,
   createInMemorySellerReceiptStore,
@@ -84,6 +85,7 @@ import {
   verifyPaymentEvidence,
 } from './purchase-protocol.mjs';
 
+/** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
   constructor(code, message, status = 422, options = {}) {
     super(message,options);
@@ -114,10 +116,13 @@ const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, ''
 const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ? answer.status.slice(0, 32) : 'missing',
   ...(typeof answer?.txHash === 'string' ? { txHash: answer.txHash.slice(0, 128) } : {}), ...(typeof answer?.reason === 'string' ? { reason: answer.reason.slice(0, 240) } : {}) });
 
-// The deterministic test report this agent delivers: derived only from the
-// Agreement and the verified payment, so every replay is byte-identical.
+/** Build a deterministic report from the Agreement, its exact Listing and settlement ID.
+ * Throws SellerAgentError for a malformed job or mismatched Listing. */
 export function buildReport({ agreement, listing, settlementId }) {
   if (!isCanonicalJobId(agreement?.jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+  if (!isListing(listing) || contentHash(listing) !== agreement.listingRef?.contentHash) {
+    throw new SellerAgentError('listing_invalid', 'Listing does not match the Agreement');
+  }
   const terms = agreementTerms(agreement);
   return {
     reportVersion: '1',
@@ -1296,7 +1301,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (durable) await commit({ jobId }); // fresh authenticated commitment readback
     const terms = agreementTerms(session.agreement);
     if (session.paymentWork && (session.paymentWork.txHash !== paymentTxHash(txHash) || session.paymentWork.payerPayingKey !== payerPayingKey)) throw new SellerAgentError('seller_payment_work_conflict', 'a different verified claim is retained for this job', 503);
-    const intake = session.paymentWork?.intake ?? await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash } }, intakeDepsFor(jobId));
+    // A retained intake is historical evidence. Reauthenticate the transfer
+    // before resuming publication; the receipt store preserves its exact claim.
+    const intake = await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash } }, intakeDepsFor(jobId));
     if ([...settlementJobs].some(([id,claims]) => claims.has(jobId) && !hasSettlementCredit(id,jobId))) return { status: 'indeterminate', reason: 'settlement-collision' };
     if (intake.disposition !== 'verified' || (intake.fulfilment !== 'claim' && intake.fulfilment !== 'already-claimed')) {
       return { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason };
