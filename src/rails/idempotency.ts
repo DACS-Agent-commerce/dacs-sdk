@@ -118,8 +118,8 @@ export type SettlementOutcomeWrite =
   | { status: "stale" | "conflict" };
 
 export interface SettlementLog {
-  /** Read an immutable outcome without acquiring a lease or changing a generation. */
-  readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
+  /** Read a retained binding and optional outcome without acquiring a lease or changing a generation. */
+  readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord | Pick<SettlementOutcomeRecord, "bindingHash">> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
   claimIntent(input: Readonly<{
     key: string;
@@ -538,8 +538,11 @@ export function createInMemorySettlementLog(): SettlementLog {
 
   return {
     async readOutcome(key) {
-      const outcome = records.get(key)?.outcome;
-      return outcome === undefined ? null : cloneOutcome(outcome);
+      const record = records.get(key);
+      if (record === undefined) return null;
+      return record.outcome === undefined
+        ? Object.freeze({ bindingHash: record.bindingHash })
+        : cloneOutcome(record.outcome);
     },
     async claimIntent(input) {
       const expiresAt = leaseExpiry(input.now, input.leaseDurationMs);
@@ -676,11 +679,20 @@ type BoundSettlementLog = Readonly<{
   [K in keyof SettlementLog]: SettlementLog[K];
 }>;
 
+function settlementLogMethod<K extends Exclude<keyof SettlementLog, "readOutcome">>(
+  log: SettlementLog,
+  name: K,
+): SettlementLog[K];
+function settlementLogMethod(
+  log: SettlementLog,
+  name: "readOutcome",
+  optional: true,
+): SettlementLog["readOutcome"];
 function settlementLogMethod<K extends keyof SettlementLog>(
   log: SettlementLog,
   name: K,
   optional = false,
-): SettlementLog[K] {
+): SettlementLog[K] | undefined {
   let cursor: object | null = log;
   while (cursor !== null) {
     if (nodeTypes.isProxy(cursor)) {
@@ -689,7 +701,7 @@ function settlementLogMethod<K extends keyof SettlementLog>(
     const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
     if (descriptor !== undefined) {
       if (optional && "value" in descriptor && descriptor.value === undefined) {
-        return undefined as SettlementLog[K];
+        return undefined;
       }
       if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
           nodeTypes.isProxy(descriptor.value)) {
@@ -699,7 +711,7 @@ function settlementLogMethod<K extends keyof SettlementLog>(
     }
     cursor = Object.getPrototypeOf(cursor) as object | null;
   }
-  if (optional) return undefined as SettlementLog[K];
+  if (optional) return undefined;
   throw new DacsError(`settlement log is missing ${String(name)}`);
 }
 
@@ -804,10 +816,15 @@ export function createIdempotencyStore(
       }
       const raw = await durable.readOutcome(key);
       if (raw === null) return null;
-      const outcome = captureStoredOutcome(raw, "settlement read-only outcome");
-      if (outcome.bindingHash !== bindingHash) {
+      const record = frozenClone(raw, "settlement read-only record");
+      if (typeof record.bindingHash !== "string" || !/^[0-9a-f]{64}$/.test(record.bindingHash)) {
+        throw new DacsError("settlement read-only record has an invalid binding hash");
+      }
+      if (record.bindingHash !== bindingHash) {
         throw new DacsError(`settlement ${key} outcome binding conflicts with requested terms`);
       }
+      if (hasExactKeys(record, ["bindingHash"])) return null;
+      const outcome = captureStoredOutcome(record, "settlement read-only outcome");
       return captureBoundResult(outcome.result as SettleResult, capturedBinding,
         "settlement read-only outcome") as SettleResult;
     },
