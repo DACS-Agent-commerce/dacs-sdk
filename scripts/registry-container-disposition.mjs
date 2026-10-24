@@ -298,7 +298,8 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
 // npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
 // `Response timeout while trying to fetch` for a body timeout.
 export const FAILURE_CLASSES = ["network", "policy", "functional"];
-const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)|dial tcp: lookup .+: (?:no such host|server misbehaving|temporary failure)|Could not resolve (?:host|proxy):|Failed to connect to .+ port \d+|Connection (?:timed out|refused)|connect: (?:connection refused|network is unreachable)|ETIMEDOUT command deadline/;
+const MAX_FAILURE_EVIDENCE_ENTRIES = 5, MAX_FAILURE_EVIDENCE_BYTES = 8192;
+const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E5\d\d|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)|dial tcp: lookup .+: (?:no such host|server misbehaving|temporary failure)|Could not resolve (?:host|proxy):|Failed to connect to .+ port \d+|Connection (?:timed out|refused)|connect: (?:connection refused|network is unreachable)|\b(?:408|429|5\d\d) [^\r\n]+ - (?:GET|POST) https?:\/\/|invalid json response body at |Invalid response body while trying to fetch |^registry ping did not succeed within 30 attempts$/;
 
 // A report-shaped `npm audit --json` document: a result for the audit policy.
 const isAuditReport = value => typeof value === "object" && value !== null &&
@@ -374,10 +375,20 @@ export function failureSummary({ stage, exitCode, read }) {
     failureEvidence: evidence, functionalPassed: false, generatedTestsPassed: false };
 }
 
+function retryableFailureEvidence(text) {
+  const code = npmErrorCode(text);
+  try {
+    const endpoint = JSON.parse(text);
+    return typeof endpoint?.message === "string" && !["auditReportVersion", "vulnerabilities", "metadata"].some(key => Object.hasOwn(endpoint, key)) &&
+      (endpoint.statusCode === undefined ? networkSignature.test(endpoint.message) :
+        Number.isInteger(endpoint.statusCode) && ([408, 429].includes(endpoint.statusCode) || (endpoint.statusCode >= 500 && endpoint.statusCode <= 599)));
+  } catch { return (!code || code === "FETCH_ERROR" || networkSignature.test(code)) && networkSignature.test(text); }
+}
 function interruptedFailureClass(summary) {
   return typeof summary.failedStage === "string" && summary.failedStage.trim() && FAILURE_CLASSES.includes(summary.failureClass) &&
-    (summary.failureClass !== "network" || (Array.isArray(summary.failureEvidence) && summary.failureEvidence.some(line =>
-      typeof line === "string" && line.trim()))) ? summary.failureClass : "functional";
+    (summary.failureClass !== "network" || (Array.isArray(summary.failureEvidence) && summary.failureEvidence.length <= MAX_FAILURE_EVIDENCE_ENTRIES &&
+      [...summary.failureEvidence].every(line => typeof line === "string" && Buffer.byteLength(line) <= MAX_FAILURE_EVIDENCE_BYTES) &&
+      summary.failureEvidence.some(retryableFailureEvidence))) ? summary.failureClass : "functional";
 }
 
 const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
