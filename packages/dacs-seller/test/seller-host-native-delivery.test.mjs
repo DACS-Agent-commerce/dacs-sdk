@@ -30,6 +30,7 @@ import { createSessionAdmissionFixture } from './helpers/session-admission-fixtu
 
 const deliveryStaged=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function runSdkDeliveryReady');
 const assertDeliveryStage=(answer,w)=>{if(deliveryStaged){assert.equal(answer.delivery.status,'held');assert.equal(w.effects.deliverySubmit.length,0);}else assert.ok(['held','delivery-ready','delivered'].includes(answer.delivery.status));};
+let jobSequence=0;
 const RPC = 'http://127.0.0.1:9/';
 const clone = (value) => structuredClone(value);
 const demToOs = (amount) => { const [whole, fraction = ''] = amount.split('.'); return (BigInt(whole) * 10n ** 9n + BigInt(fraction.padEnd(9, '0'))).toString(); };
@@ -185,7 +186,6 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // they can run ahead of wall time).
   const clock = () => Math.max(NOW, node.latestBlockMs());
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey,now:clock });
-  let jobSequence=0;
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
     category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
@@ -1664,4 +1664,10 @@ for(const damage of ['proof','order','deliveryReady','ambiguous'])test(`authenti
  });const answer=await p.claim(tx);
  if(['proof','order'].includes(damage))assert.notEqual(answer.status,'payment-evidenced');else{assert.equal(answer.status,'payment-evidenced',shown(answer));assert.equal(answer.delivery.status,'held');}
  assert.equal(w.effects.deliverySubmit.length,0);assert.equal(w.createsAt(paymentAddress(p)),1);
+});
+
+
+test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
+  const first=await world(t),second=await world(t);
+  assert.notEqual((await first.purchase()).jobId,(await second.purchase()).jobId);
 });
