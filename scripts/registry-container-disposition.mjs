@@ -229,51 +229,69 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
   return violations;
 }
 
-// Resolve declared candidate aliases with Node's nearest node_modules lookup,
-// including hoisting. Installed identity cannot identify a substituted alias.
+// The `npm:` aliases declared for a candidate, with the location of the
+// package declaring each ("" for the root manifest).
 const moduleFileExtensions = [".js", ".json", ".node"];
-function candidateAliasLocations(manifest, packages, inventory, candidate) {
-  const available = new Set(inventory ? inventory.map(item => item.location) : Object.keys(packages));
-  const aliases = new Set();
+function candidateAliases(manifest, packages, candidate) {
+  const aliases = [];
   for (const [ownerLocation, owner] of [["", manifest], ...Object.entries(packages)]) {
     for (const field of specFields) {
       for (const [alias, spec] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
-        if (typeof spec !== "string" || !/^npm:/i.test(spec) || !registrySourceSpec(spec) ||
-            npmPackageArg.resolve(alias, spec).subSpec?.name !== candidate) continue;
-        const parts = ownerLocation ? ownerLocation.split("/") : [];
-        for (;;) {
-          if (parts.at(-1) !== "node_modules") {
-            const location = [...parts, "node_modules", alias].join("/");
-            const found = [location, ...moduleFileExtensions.map(extension => location + extension)]
-              .filter(candidate => available.has(candidate));
-            if (found.length) { for (const candidate of found) aliases.add(candidate); break; }
-          }
-          if (parts.length === 0) break;
-          parts.pop();
-        }
+        if (typeof spec === "string" && /^npm:/i.test(spec) && registrySourceSpec(spec) &&
+            npmPackageArg.resolve(alias, spec).subSpec?.name === candidate) aliases.push({ ownerLocation, alias });
       }
     }
   }
-  return [...aliases];
+  return aliases;
+}
+
+// Resolve declared candidate aliases with Node's nearest node_modules lookup,
+// including hoisting. Installed identity cannot identify a substituted alias.
+function candidateAliasLocations(manifest, packages, inventory, candidate) {
+  const available = new Set(inventory ? inventory.map(item => item.location) : Object.keys(packages));
+  const locations = new Set();
+  for (const { ownerLocation, alias } of candidateAliases(manifest, packages, candidate)) {
+    const parts = ownerLocation ? ownerLocation.split("/") : [];
+    for (;;) {
+      if (parts.at(-1) !== "node_modules") {
+        const location = [...parts, "node_modules", alias].join("/");
+        const found = [location, ...moduleFileExtensions.map(extension => location + extension)]
+          .filter(path => available.has(path));
+        if (found.length) { for (const path of found) locations.add(path); break; }
+      }
+      if (parts.length === 0) break;
+      parts.pop();
+    }
+  }
+  return [...locations];
 }
 
 // Node resolves a package from any node_modules directory above the importing
 // file, so a copy below a package's own files (`dist/node_modules`) is used by
 // that package. The inventory lists only `<package>/node_modules`, so this
 // returns every other node_modules entry inside an installed package directory,
-// as paths relative to it. Links are not followed; a missing directory has none.
-export function nestedModuleRoots(directory) {
+// as paths relative to it. With `names`, it returns only those entries holding
+// a module of one of those names or a file shadowing one. Links are not
+// followed; a missing directory has none.
+export function nestedModuleRoots(directory, names) {
   const roots = [];
-  const visit = (current, prefix) => {
-    let entries;
-    try { entries = readdirSync(current, { withFileTypes: true }); }
+  const list = current => {
+    try { return readdirSync(current, { withFileTypes: true }); }
     catch (error) {
-      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return;
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
       throw error;
     }
-    for (const entry of entries) {
+  };
+  const holdsNamedModule = root => list(root).some(entry => {
+    const found = entry.name.startsWith("@") && entry.isDirectory()
+      ? list(join(root, entry.name)).map(inner => `${entry.name}/${inner.name}`) : [entry.name];
+    return found.some(module => names.has(module) ||
+      moduleFileExtensions.some(extension => module.endsWith(extension) && names.has(module.slice(0, -extension.length))));
+  });
+  const visit = (current, prefix) => {
+    for (const entry of list(current)) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.name === "node_modules") { if (prefix) roots.push(path); }
+      if (entry.name === "node_modules") { if (prefix && (!names || holdsNamedModule(join(current, entry.name)))) roots.push(path); }
       else if (entry.isDirectory()) visit(join(current, entry.name), path);
     }
   };
@@ -299,7 +317,10 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
     .map(item => "cannot inspect a .bin entry that is not an executable link: " + item.location));
   errors.push(...inventory.filter(item => /(^|\/)node_modules\/(@[^/]+\/)?node_modules$/.test(item.location))
     .map(item => "cannot inspect a node_modules directory inside node_modules or a scope directory: " + item.location));
+  const candidateLocations = new Set();
+  const candidateNames = new Set(candidates.map(candidate => candidate.name));
   for (const { name, integrity, version } of candidates) {
+    for (const { alias } of candidateAliases(manifest, packages, name)) candidateNames.add(alias);
     if (typeof version !== "string" || version === "") {
       errors.push("candidate record has no release version: " + name);
       continue;
@@ -314,6 +335,7 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
       ...candidateAliasLocations(manifest, packages, installedInventory, name)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
+      candidateLocations.add(location);
       const entry = packages[location];
       if (installedInventory && location !== "node_modules/" + name &&
           (entry?.optional === true || entry?.dev === true || entry?.devOptional === true) &&
@@ -348,6 +370,12 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
             version + ", observed " + String(manifest?.name) + "@" + String(manifest?.version) + ")");
         }
       }
+    }
+  }
+  // Any other installed package may hold a candidate below its own files too.
+  for (const { location } of inventory.filter(item => !isBinEntry(item) && item.link !== true && !candidateLocations.has(item.location))) {
+    for (const root of installedModuleRoots?.(location, candidateNames) ?? []) {
+      errors.push("cannot inspect a candidate inside node_modules in an installed package: " + location + "/" + root);
     }
   }
   return errors;
@@ -691,11 +719,11 @@ export function extractPolicyFindings(readInput) {
     .flatMap(([name, present]) => {
       const copies = (Array.isArray(inventory?.packages) ? inventory.packages : [])
         .filter(item => item?.name === name || item?.location === `node_modules/${name}`);
-      return copies.length ? copies.map(({ location, version }) => ({ name, location, ...identity(location), version }))
+      return copies.length ? copies.map(copy => ({ name: copy.name, location: copy.location, ...identity(copy.location), version: copy.version }))
         : present === true ? [{ name, location: null, version: null, integrity: null }] : [];
     });
-  const productionImageDependencies = [...named,
-    ...unexpected.filter(item => !named.some(known => known.location === item.location))];
+  const productionImageDependencies = [...named, ...unexpected.filter(item =>
+    !named.some(known => known.location === item.location && known.name === item.name))];
   return {
     schema: POLICY_FINDINGS_SCHEMA,
     gitDependencies,
@@ -933,7 +961,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       return { name, integrity, version };
     });
     const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
-      installedModuleRoots: location => nestedModuleRoots(join(project, location)),
+      installedModuleRoots: (location, names) => nestedModuleRoots(join(project, location), names),
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
     const violations = registryDependencyViolations({ manifest, lock, registry });
