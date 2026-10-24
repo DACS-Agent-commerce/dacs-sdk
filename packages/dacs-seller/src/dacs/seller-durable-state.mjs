@@ -537,6 +537,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true, ...accepted===undefined?{}:{accepted:clone(accepted)} } });
         });
       },
+      // Retire an unsigned candidate's capacity while retaining its accepted
+      // presentation for exact retry; retirement never permits nonce reuse.
+      retireChallenge(nonce,presentationHash) {
+        transaction(()=>{const prior=effect(`session-challenge:${nonce}`);if(prior?.attempt?.presentationHash!==presentationHash||prior.attempt.admitted!==true)fail('seller_state_corrupt');putEffect(`session-challenge:${nonce}`,{...prior,attempt:{...prior.attempt,retired:true}});});
+      },
       // A signature leaves signOnce only after its completion record, written
       // under the job fence. So a retained intent for the same bytes is a
       // signing that released nothing (its signer threw, or its holder died or
