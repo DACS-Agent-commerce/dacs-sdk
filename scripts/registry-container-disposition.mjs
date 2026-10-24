@@ -178,7 +178,8 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
 // returns every other node_modules entry inside an installed package directory,
 // as paths relative to it. With `names`, it returns only those entries holding
 // a module of one of those names or a file shadowing one. Links are not
-// followed; a missing directory has none.
+// followed, except a scope directory that is a link, which Node does follow; a
+// missing directory has none.
 export function nestedModuleRoots(directory, names) {
   const roots = [];
   const list = current => {
@@ -189,7 +190,7 @@ export function nestedModuleRoots(directory, names) {
     }
   };
   const holdsNamedModule = root => list(root).some(entry => {
-    const found = entry.name.startsWith("@") && entry.isDirectory()
+    const found = entry.name.startsWith("@") && (entry.isDirectory() || entry.isSymbolicLink())
       ? list(join(root, entry.name)).map(inner => `${entry.name}/${inner.name}`) : [entry.name];
     return found.some(module => names.has(module) ||
       moduleFileExtensions.some(extension => module.endsWith(extension) && names.has(module.slice(0, -extension.length))));
@@ -197,8 +198,11 @@ export function nestedModuleRoots(directory, names) {
   const visit = (current, prefix) => {
     for (const entry of list(current)) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.name === "node_modules") { if (prefix && (!names || holdsNamedModule(join(current, entry.name)))) roots.push(path); }
-      else if (entry.isDirectory()) visit(join(current, entry.name), path);
+      if (entry.name === "node_modules") {
+        if (prefix && (!names || holdsNamedModule(join(current, entry.name)))) roots.push(path);
+        // Packages inside a nested root may hold further roots of their own.
+        if (prefix && entry.isDirectory()) visit(join(current, entry.name), path);
+      } else if (entry.isDirectory()) visit(join(current, entry.name), path);
     }
   };
   visit(directory, "");
