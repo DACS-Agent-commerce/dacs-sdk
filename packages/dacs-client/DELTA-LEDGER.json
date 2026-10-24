@@ -1853,5 +1853,100 @@
         }
       ]
     }
+  ],
+  "mergeSnapshots": [
+    {
+      "commit": "65014fd81899680ed5366373460586f3d8433719",
+      "parents": [
+        "3546ddc8c44f96cf4cfb9d64ef2ceccbc942f949",
+        "9b96780f976f8a07c2ecd4f768fe42742f73189c"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "parentBlobs": [
+            "9b3c78ed8b64b9113170ca6796196f49957881c2",
+            "dea888ee7f7906fc011ccb8e69319cf00f036c85"
+          ],
+          "after": "fb6babcd859364770760f6231f2ca59791d1854b"
+        }
+      ]
+    },
+    {
+      "commit": "b0b2d068c497a5adf68ca6146cf0fe91bd22da01",
+      "parents": [
+        "5cad3072940618a796f9762276a539036f82aca1",
+        "6981392d0aa52df220608201fad089f8270118c7"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "parentBlobs": [
+            "c013a280922e2fd638a29651dd8be053dc7acd9d",
+            "e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"
+          ],
+          "after": "ef6723b2e7509c38a37fee121912cfc7c197895a"
+        }
+      ]
+    },
+    {
+      "commit": "9d124121acd0415df51f5dd35c09e98c77e1bf9a",
+      "parents": [
+        "ba61cf5b840e1e9d4192665f8a3335c23005fdbd",
+        "e2a7882e3b38cd49ce980869cfe51a819661402b"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "parentBlobs": [
+            "eda3e9fe0b741cf378c61df1fad749965cf9f073",
+            "9050fd47c365e95cf63295837070a311a48111da"
+          ],
+          "after": "7ac41a6e4f20480403f32993a28954b42217f3e4"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "parentBlobs": [
+            "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05",
+            "3d124286ec49346c6a72fb0d8e15086ef06d3632"
+          ],
+          "after": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
+        }
+      ]
+    },
+    {
+      "commit": "ba61cf5b840e1e9d4192665f8a3335c23005fdbd",
+      "parents": [
+        "0875a40ae4176f8d914b58f23bfd21c146f5b49b",
+        "0b03491e50a221730c206d914882ea085e22e79d"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "parentBlobs": [
+            "eb7c37692bdd5da4ac476e6791a35172f404212e",
+            "ea871900d025e7310e2a35b95a626da101ca9edd"
+          ],
+          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
+        }
+      ]
+    },
+    {
+      "commit": "96584d881a24f3ef11d47fa15c610404bd721c02",
+      "parents": [
+        "f6427e7acf38ee8949644cb709a03d9e41f2ee51",
+        "0b03491e50a221730c206d914882ea085e22e79d"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "parentBlobs": [
+            "eb7c37692bdd5da4ac476e6791a35172f404212e",
+            "ea871900d025e7310e2a35b95a626da101ca9edd"
+          ],
+          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
+        }
+      ]
+    }
   ]
 }
