@@ -615,6 +615,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/index.mjs:1` | e5645c81db36570840808f82a52187d27afdffcc |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | f05e545f62faf232439c60bb69b08f6ac5684026 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | b28c6ef97e3004d9921c2b9f48a66d0e4d936423 |
+| D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | acd00b6505dca812acfa411da3cb9538a5956b55 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | eedc7797a49fc7635cb1600db68fb1dc0d9ea74f |
 
 ## Complete commit and file inventory
 
@@ -1564,6 +1567,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/README.md:1` |
 | delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 

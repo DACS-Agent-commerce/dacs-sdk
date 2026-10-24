@@ -944,5 +944,6 @@
       "packages/dacs-client/README.md",
       "packages/dacs-client/scripts/check-hold.mjs"
     ]
-  }
+  },
+  {"sha":null,"subject":"fix(client): D11 refuse virtual-table programs while application functions exist","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]}
 ]
