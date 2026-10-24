@@ -9,18 +9,18 @@ vi.mock("../../src/crypto/ed25519.js", async (original) => {
 });
 import * as wire from "../../src/wire/index.js";
 import { encodeHeader, wireWorld } from "./conformanceFixture.js";
-it("verifier exceptions refuse otherwise valid envelopes, delegations and discovery", () => {
-  const x = wireWorld(), header = encodeHeader(x.signed(x.request));
+it("verifier exceptions refuse otherwise valid envelopes, delegations and discovery", async () => {
+  const x = await wireWorld(), header = encodeHeader(x.signed(x.request));
   const delegation = x.signed(x.delegation, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), discovery = x.document();
-  expect(wire.openWireEnvelope(header, "request", x.context).payload).toEqual(x.request);
-  expect(wire.verifySellerSessionDelegation(delegation, x.context)).toEqual(x.delegation);
-  expect(wire.verifyEndpointProof(discovery, x.options).ready).toBe(true);
+  expect((await wire.openWireEnvelope(header, "request", x.context)).payload).toEqual(x.request);
+  expect(await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), x.context)).toEqual(x.delegation);
+  expect((await wire.verifyEndpointProof(discovery, x.options)).ready).toBe(true);
   injection.fail = true;
   try {
     for (const [invoke, code] of [
-      [() => wire.openWireEnvelope(header, "request", x.context), "peer_signature_invalid"],
-      [() => wire.verifySellerSessionDelegation(delegation, x.context), "peer_delegation_signature_invalid"],
-      [() => wire.verifyEndpointProof(discovery, x.options), "discovery_signature_invalid"],
-    ] as const) expect(invoke).toThrowError(expect.objectContaining({ code }));
+      [async () => await wire.openWireEnvelope(header, "request", x.context), "peer_signature_invalid"],
+      [async () => await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), x.context), "peer_delegation_signature_invalid"],
+      [async () => await wire.verifyEndpointProof(discovery, x.options), "discovery_signature_invalid"],
+    ] as const) await expect(Promise.resolve().then(async () => { await invoke(); })).rejects.toThrowError(expect.objectContaining({ code }));
   } finally { injection.fail = false; }
 });
