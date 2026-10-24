@@ -508,14 +508,18 @@ export function isSellerFulfilmentVetInvocationMismatch(
 }
 
 const MAX_PARTY_VET_INVOCATIONS = 2;
+const MAX_VET_REQUIREMENT_MEMBERS = 64;
+const MAX_VET_INVOCATION_RESULTS = 64;
 
 /**
  * Why the Vet requirement invocations a seller would carry into its delivery
  * audit source are not ones the fulfilment core accepts, or null: the strict
  * invocation shape, exactly one invocation per distinct party Vet record, and
- * `isSellerFulfilmentVetInvocationMismatch` for each. A seller runs this
- * before it signs the Agreement, so a context the delivery runner would refuse
- * after payment is refused before it.
+ * `isSellerFulfilmentVetInvocationMismatch` for each. Returns a refusal for
+ * malformed or over-limit invocation sets; never throws.
+ * Authenticate the SessionRecord roster separately, including bundle hashes
+ * for a shared Vet record and the orchestrator role. This checks invocation
+ * coverage before signing, not every delivery precondition.
  */
 export function sellerFulfilmentVetRequirementsViolation(
   vetRequirements: unknown,
@@ -531,10 +535,20 @@ export function sellerFulfilmentVetRequirementsViolation(
         !hasExactJcsView(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
       return "the Vet requirement invocations are not the strict audit-source shape";
     }
+    for (const entry of vetRequirements) {
+      const groups = entry.requirement.oneOf ?? [];
+      const members = entry.requirement.required.length +
+        groups.reduce((count, group) => count + group.length, 0);
+      if (groups.length > MAX_VET_REQUIREMENT_MEMBERS || members > MAX_VET_REQUIREMENT_MEMBERS ||
+          entry.freshness.length + entry.dealSpecific.length > MAX_VET_INVOCATION_RESULTS) {
+        return "the Vet requirement invocations exceed the requirement or result limit";
+      }
+    }
     canonicalize({ artifacts: { vetRequirements } });
     const bindings = new Map<string, { primaryClaim: string; roles: Set<string> }>();
     for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
-      if (!isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
+      if (!hasExactJcsView(party.vetRecordRef) ||
+          !isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
         return `the ${role} Vet reference or claim is malformed`;
       }
       const key = canonicalize(party.vetRecordRef);
