@@ -8,3 +8,10 @@
 export const TP1_APPROVED_IDENTITY_RECORD_DIGESTS: readonly string[] = Object.freeze([
   "5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330",
 ]);
+
+/**
+ * Chain identities refused even if a record naming them were approved, for
+ * example a known mainnet identity. Empty until a dated approval names any; a caller may
+ * add refusals (BindTp1Options.refusedChainIdentities) but never remove these.
+ */
+export const TP1_REFUSED_CHAIN_IDENTITIES: readonly string[] = Object.freeze([]);
