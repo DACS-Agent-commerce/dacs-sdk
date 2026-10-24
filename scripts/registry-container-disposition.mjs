@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
+import { readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
+import { pathToFileURL } from "node:url";
 import { join, posix } from "node:path";
-import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
+import { createHash } from "node:crypto";
 // Pure classification of observed advisory IDs against the curated baseline.
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
@@ -132,6 +135,132 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
   return violations;
 }
 
+// Resolve declared candidate aliases with Node's nearest node_modules lookup,
+// including hoisting. Installed identity cannot identify a substituted alias.
+const moduleFileExtensions = [".js", ".json", ".node"];
+function candidateAliasLocations(manifest, packages, inventory, candidate) {
+  const available = new Set(inventory ? inventory.map(item => item.location) : Object.keys(packages));
+  const aliases = new Set();
+  for (const [ownerLocation, owner] of [["", manifest], ...Object.entries(packages)]) {
+    for (const field of specFields) {
+      for (const [alias, spec] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
+        if (typeof spec !== "string" || !/^npm:/i.test(spec) || !registrySourceSpec(spec) ||
+            npmPackageArg.resolve(alias, spec).subSpec?.name !== candidate) continue;
+        const parts = ownerLocation ? ownerLocation.split("/") : [];
+        for (;;) {
+          if (parts.at(-1) !== "node_modules") {
+            const location = [...parts, "node_modules", alias].join("/");
+            const found = [location, ...moduleFileExtensions.map(extension => location + extension)]
+              .filter(candidate => available.has(candidate));
+            if (found.length) { for (const candidate of found) aliases.add(candidate); break; }
+          }
+          if (parts.length === 0) break;
+          parts.pop();
+        }
+      }
+    }
+  }
+  return [...aliases];
+}
+
+// Node resolves a package from any node_modules directory above the importing
+// file, so a copy below a package's own files (`dist/node_modules`) is used by
+// that package. The inventory lists only `<package>/node_modules`, so this
+// returns every other node_modules entry inside an installed package directory,
+// as paths relative to it. Links are not followed; a missing directory has none.
+export function nestedModuleRoots(directory) {
+  const roots = [];
+  const visit = (current, prefix) => {
+    let entries;
+    try { entries = readdirSync(current, { withFileTypes: true }); }
+    catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.name === "node_modules") { if (prefix) roots.push(path); }
+      else if (entry.isDirectory()) visit(join(current, entry.name), path);
+    }
+  };
+  visit(directory, "");
+  return roots;
+}
+
+// Every installed copy of a candidate package, top-level, nested or aliased,
+// must be the packed release-set tarball that release-provenance.json records,
+// at the release's version both in the lock and, when `installedManifest`
+// reads it, in the installed package.json.
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots }) {
+  const { origin, path } = consumerRegistry(registry);
+  const packages = isPlainObject(lock?.packages) ? lock.packages : {};
+  const inventory = installedInventory ?? [];
+  const isBinEntry = item => /\/\.bin\/[^/]+$/.test(item.location);
+  const errors = inventory.filter(item => item.link === true && !isBinEntry(item))
+    .map(item => "cannot inspect linked installed packages: " + item.location);
+  // The inventory does not descend into `.bin`, but Node resolves packages from
+  // a `node_modules` directory there. Only a link to a file is an executable;
+  // an entry that may be a directory is not inspected, so it is refused.
+  errors.push(...inventory.filter(item => isBinEntry(item) && item.target === undefined && item.error === undefined)
+    .map(item => "cannot inspect a .bin entry that is not an executable link: " + item.location));
+  errors.push(...inventory.filter(item => /(^|\/)node_modules\/(@[^/]+\/)?node_modules$/.test(item.location))
+    .map(item => "cannot inspect a node_modules directory inside node_modules or a scope directory: " + item.location));
+  for (const { name, integrity, version } of candidates) {
+    if (typeof version !== "string" || version === "") {
+      errors.push("candidate record has no release version: " + name);
+      continue;
+    }
+    const candidateLocation = location => typeof location === "string" &&
+      (location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
+    const locations = [...new Set([...Object.keys(packages).filter(location => candidateLocation(location) || packages[location]?.name === name),
+      ...inventory.filter(item => item.name === name || candidateLocation(item.location) ||
+        (typeof item.location === "string" && moduleFileExtensions.some(extension =>
+          item.location.endsWith(extension) && candidateLocation(item.location.slice(0, -extension.length)))))
+        .map(item => item.location),
+      ...candidateAliasLocations(manifest, packages, installedInventory, name)])];
+    if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
+    for (const location of locations) {
+      const entry = packages[location];
+      if (installedInventory && location !== "node_modules/" + name &&
+          (entry?.optional === true || entry?.dev === true || entry?.devOptional === true) &&
+          !inventory.some(item => item.location === location)) continue;
+      for (const root of installedModuleRoots?.(location) ?? []) {
+        errors.push("cannot inspect node_modules inside an installed candidate: " + location + "/" + root);
+      }
+      if (!entry) { errors.push("installed candidate has no lock entry: " + location); continue; }
+      let url = null;
+      try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
+      if (url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+        errors.push("candidate package did not resolve through the isolated registry: " + location);
+      } else if (entry.integrity !== integrity) {
+        errors.push("candidate package integrity does not match the packed tarball: " + location +
+          " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
+      }
+      if (entry.name !== undefined && entry.name !== name) errors.push("candidate package lock name does not match the release: " + location);
+      if (entry?.version !== version) {
+        errors.push("candidate package lock version does not match the release: " + location +
+          " (expected " + version + ", observed " + String(entry?.version) + ")");
+      }
+      if (installedManifest) {
+        let manifest;
+        try { manifest = installedManifest(location); }
+        catch (error) {
+          errors.push("installed candidate package is not the release: " + location + " (cannot read manifest: " +
+            (error?.code ?? error?.name ?? "Error") + ": " + (error?.message ?? String(error)) + ")");
+          continue;
+        }
+        if (manifest?.name !== name || manifest?.version !== version) {
+          errors.push("installed candidate package is not the release: " + location + " (expected " + name + "@" +
+            version + ", observed " + String(manifest?.name) + "@" + String(manifest?.version) + ")");
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+// npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
+// `Response timeout while trying to fetch` for a body timeout.
 // npm's EBADENGINE check (npm-install-checks) tests each non-optional package's
 // engines.node and engines.npm with semver.satisfies(current, range,
 // { includePrerelease: true }). This is that range grammar for a release
@@ -340,3 +469,41 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   return { scanComplete: errors.length === 0, errors, unexpected, missing };
 }
 
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [mode] = process.argv.slice(2);
+  if (mode === "--dependency-policy") {
+    const [project, registry, report, releaseSet, version] = process.argv.slice(3);
+    if (report) rmSync(report, { force: true });
+    if (!project || !registry || !report || !releaseSet || !version) {
+      throw new Error("usage: --dependency-policy <project> <registry> <report> <release-set> <version>");
+    }
+    const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(join(project, "package-lock.json"), "utf8"));
+    for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core", "@x402/evm",
+      "@x402/fetch", "better-sqlite3", "viem"]) {
+      if (typeof manifest.dependencies?.[name] !== "string") throw new Error("dual-rail consumer is missing " + name);
+    }
+    // The packed tarball and its release-provenance.json record must agree
+    // before either is compared with the consumer's lock.
+    const provenance = JSON.parse(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"));
+    if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
+    const candidates = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"].map(name => {
+      const archive = join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`);
+      const integrity = "sha512-" + createHash("sha512").update(readFileSync(archive)).digest("base64");
+      const recorded = provenance.packages?.[name]?.integrity;
+      if (recorded !== integrity) {
+        throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
+      }
+      return { name, integrity, version };
+    });
+    const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
+      installedModuleRoots: location => nestedModuleRoots(join(project, location)),
+      installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
+    if (errors.length) throw new Error(errors.join("\n"));
+    const violations = registryDependencyViolations({ manifest, lock, registry });
+    writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
+      violations }, null, 2) + "\n");
+  } else {
+    throw new Error("unsupported registry policy mode: " + String(mode));
+  }
+}
