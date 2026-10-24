@@ -6,3 +6,4 @@ export * from "./journal.js";
 export * from "./discovery.js";
 export * from "./delegation.js";
 export * from "./envelope.js";
+export * from "./response.js";

@@ -90,7 +90,8 @@ function resigned(x: Awaited<ReturnType<typeof world>>, signature: Record<string
   return { ...c, record: { ...c.record, signature: { ...c.record.signature, ...signature } } };
 }
 
-describe("the seller checks the job's finalized commitment on every payment and delivery route", () => {
+// Each case opens isolated journals that qualify publication in fresh processes: load-sensitive under the 5 s default.
+describe("the seller checks the job's finalized commitment on every payment and delivery route", { timeout: 60_000 }, () => {
   const modes = (x: Awaited<ReturnType<typeof world>>, path: string) => [
     ["direct", async () => await x.direct(x.request(path)), {}],
     ["delegated", async () => await x.delegated(x.request(path)), { requireDelegation: true, artifacts: [x.artifact] }],
@@ -243,7 +244,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
         .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported" }));
     }
     expect(reads).toBe(6);
-  });
+  }, 60_000); // Each isolated journal qualifies publication in fresh processes.
 
   it("a wire-accepted TP-1 purchase passes seller payment intake's Agreement-type check", async () => {
     const x = await world();
