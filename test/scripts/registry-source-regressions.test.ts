@@ -1,8 +1,16 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 const modulePath = "../../scripts/registry-container-disposition.mjs";
 const { registryDependencyViolations } = await import(modulePath);
 const registry = "https://example.com/npm/";
+const scratch: string[] = [];
+afterEach(() => {
+  for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
 const rootLock = () => ({ packages: { "": {} } });
 describe("registry dependency source regressions", () => {
   it.each([".", "..", "...", ".hidden", "some tag", "^"])("rejects non-registry spec %s in manifest and lock maps", spec => {
@@ -36,6 +44,24 @@ describe("npm registry grammar and integrity", () => {
   });
   it.each(["npm:node_modules", "npm:favicon.ico"])("rejects an alias without a valid package name: %s", spec => {
     expect(registryDependencyViolations({ manifest: { dependencies: { x: spec } }, lock: rootLock(), registry })).not.toEqual([]);
+  });
+  // npm 10.8's npm-package-arg accepts `npm:node_modules` as an alias with no
+  // name; the checker must not depend on the parser to refuse it.
+  it("rejects an alias that the executing npm's parser accepts without a package name", () => {
+    const npmDirectory = mkdtempSync(join(tmpdir(), "legacy-npm-"));
+    scratch.push(npmDirectory);
+    mkdirSync(join(npmDirectory, "bin"));
+    mkdirSync(join(npmDirectory, "node_modules/npm-package-arg"), { recursive: true });
+    writeFileSync(join(npmDirectory, "node_modules/npm-package-arg/index.js"),
+      "exports.resolve = () => ({ registry: true, type: 'alias', subSpec: { registry: true } });\n");
+    const script = `const { registryDependencyViolations } = await import(${JSON.stringify(resolve(import.meta.dirname, modulePath))});
+      const violations = registryDependencyViolations({ manifest: { dependencies: { x: "npm:node_modules" } },
+        lock: { packages: { "": {} } }, registry: ${JSON.stringify(registry)} });
+      console.log(JSON.stringify(violations));`;
+    const run = spawnSync(process.execPath, ["--input-type=module", "-e", script],
+      { encoding: "utf8", env: { ...process.env, npm_execpath: join(npmDirectory, "bin/npm-cli.js") } });
+    expect(run.stderr).toBe("");
+    expect(JSON.parse(run.stdout)).toEqual([{ location: "package.json", field: "dependencies.x", value: "npm:node_modules" }]);
   });
   const hash = (algorithm: string) => algorithm + "-" + createHash(algorithm).update("fixture").digest("base64");
   it.each([
