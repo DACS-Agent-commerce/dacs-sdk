@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, writeFile, rm, readFile, readdir, cp, symlink } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   packages, plannedVersion, validateManifest, validateFiles, publicEntries,
   validateLock, checkInstalled, prepare, consume, dryRun, expectedNode20Rejection, release, checkGenerator, validateArtifactSet,
@@ -92,6 +93,9 @@ test("only declared Node 22 surfaces may reject node:sqlite on Node 20", () => {
   assert.equal(expectedNode20Rejection({ ...p, name: core.name }, ".", error, "20.19.0"), false);
   assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, ".", error, "20.19.0"), false);
   assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./durable-journal", error, "20.19.0"), true);
+  for (const message of ["No such built-in module: node:sqlite-extra", "No such built-in module: node:sqlite/extra", "other failure involving node:sqlite"]) {
+    assert.equal(expectedNode20Rejection(p, ".", { ...error, message }, "20.19.0"), false);
+  }
   assert.equal(expectedNode20Rejection(p, ".", { ...error, code: "ERR_MODULE_NOT_FOUND" }, "20.19.0"), false);
 });
 
@@ -303,7 +307,11 @@ test("preparation dry run still fails on build defects", { timeout: 120_000 }, (
   await assert.rejects(release("dry-run", { root, log: line => logs.push(line) }), /fixture build failure/);
 }));
 
-test("native sqlite uses its exact pin; root and sqlite entries import with only its build allowed", { timeout: 240_000 }, () => fixture(async root => {
+// Keep registry/native ABI qualification explicit; default regressions use local artifacts.
+for (const integration of [false, true]) {
+test(integration ? "native sqlite integration qualifies the real registry driver" :
+  "native sqlite uses its exact pin; root and sqlite entries import with only its build allowed (offline fixture)",
+  { timeout: 240_000, skip: integration && process.env.DACS_RELEASE_NATIVE_INTEGRATION !== "1" }, () => fixture(async root => {
   await sourceTree(root);
   const def = packages[1];
   await changeManifest(root, def, { optionalDependencies: { "better-sqlite3": "12.6.2" } });
@@ -315,7 +323,9 @@ test("native sqlite uses its exact pin; root and sqlite entries import with only
   assert.deepEqual(result.errors, []);
   assert.deepEqual(result.notReady, []);
   const logs = [];
-  await consume(result.artifacts, join(root, "scratch"), line => logs.push(line), { outputDirectory: join(root, "receipts") });
+  await consume(result.artifacts, join(root, "scratch"), line => logs.push(line), {
+    outputDirectory: join(root, "receipts"), execute: integration ? undefined : nativeFixtureExecutor(result.artifacts),
+  });
   assert.ok(logs.indexOf("imported @kynesyslabs/dacs-node") < logs.findIndex(line => line.includes("native sqlite ready")));
   const before = JSON.parse(await readFile(join(root, "receipts/without-native/package.json")));
   const after = JSON.parse(await readFile(join(root, "receipts/with-native/package.json")));
@@ -329,6 +339,8 @@ test("native sqlite uses its exact pin; root and sqlite entries import with only
   await writeFile(join(installed, "dist/entry2.js"), "import 'better-sqlite3-extra';");
   await assert.rejects(consumeImports(join(root, "scratch/consumer"), result.artifacts), /better-sqlite3-extra/);
 }));
+
+}
 
 test("the allowed native dependency must have an exact version pin", async () => {
   await assert.rejects(consume([{ manifest: { ...manifest(packages[1]), optionalDependencies: { "better-sqlite3": "^12.6.2" } } }], "/unused"), /native dependency must use an exact version/);
@@ -536,7 +548,8 @@ test("node root must import with its optional native driver absent", { timeout: 
   const path = join(root, def.directory, "build.mjs");
   await writeFile(path, (await readFile(path, "utf8")) + "fs.appendFileSync('dist/entry0.js',\"import 'better-sqlite3';\");");
   const scratch = join(root, "scratch"), result = await prepare(root, scratch, () => {}), logs = [];
-  await assert.rejects(consume(result.artifacts, scratch, line => logs.push(line)), /better-sqlite3/);
+  await assert.rejects(consume(result.artifacts, scratch, line => logs.push(line),
+    { execute: nativeFixtureExecutor(result.artifacts) }), /better-sqlite3/);
   assert.ok(!logs.some(line => line.includes("native sqlite ready")));
 }));
 
@@ -740,3 +753,45 @@ test("lock evidence requires package maps and installed resolutions with explici
   delete bundled.packages["node_modules/outer"];
   assert.throws(() => validateLock(bundled, []), /resolution/);
 });
+
+// Reify only local fixture archives; never ask npm to resolve optional registry metadata.
+function nativeFixtureExecutor(artifacts) {
+  const nativeVersion = "12.6.2";
+  return (command, args, cwd, env) => {
+    if (command !== "npm") return execute(command, args, cwd);
+    if (args[0] === "rebuild") {
+      assert.deepEqual(args, ["rebuild", `better-sqlite3@${nativeVersion}`, "--ignore-scripts=false", "--foreground-scripts", "--no-audit", "--no-fund"]);
+      assert.equal(env.npm_config_jobs, "2");
+      assert.equal(env.npm_config_devdir, join(cwd, "../node-gyp"));
+      assert.equal(JSON.parse(readFileSync(join(cwd, "node_modules/better-sqlite3/package.json"))).version, nativeVersion);
+      return "fixture native rebuild";
+    }
+    assert.equal(args[0], "install");
+    assert.deepEqual(args.slice(1, 5), ["--ignore-scripts", "--no-audit", "--no-fund", "--omit=optional"]);
+    const p = JSON.parse(readFileSync(join(cwd, "package.json")));
+    const native = args.includes(`better-sqlite3@${nativeVersion}`);
+    const lock = { lockfileVersion: 3, packages: { "": p } };
+    p.dependencies ??= {};
+    for (const artifact of artifacts) {
+      const dir = join(cwd, "node_modules", artifact.manifest.name);
+      mkdirSync(dir, { recursive: true });
+      execFileSync("tar", ["-xzf", artifact.tarball, "-C", dir, "--strip-components=1"]);
+      p.dependencies[artifact.manifest.name] = `file:${artifact.tarball}`;
+      lock.packages[`node_modules/${artifact.manifest.name}`] = {
+        version: artifact.manifest.version, resolved: `file:${artifact.tarball}`,
+      };
+    }
+    if (native) {
+      assert.deepEqual(args.slice(5), ["--save-exact", `better-sqlite3@${nativeVersion}`]);
+      const dir = join(cwd, "node_modules/better-sqlite3"); mkdirSync(dir);
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "better-sqlite3", version: nativeVersion, main: "index.cjs" }));
+      writeFileSync(join(dir, "index.cjs"), "module.exports = class { prepare() { return { get: () => ({ready: 1}) }; } close() {} };\n");
+      p.dependencies["better-sqlite3"] = nativeVersion;
+      lock.packages["node_modules/better-sqlite3"] = { version: nativeVersion,
+        resolved: `https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-${nativeVersion}.tgz` };
+    } else assert.deepEqual(args.slice(5), artifacts.map(a => a.tarball));
+    writeFileSync(join(cwd, "package.json"), JSON.stringify(p));
+    writeFileSync(join(cwd, "package-lock.json"), JSON.stringify(lock));
+    return "";
+  };
+}
