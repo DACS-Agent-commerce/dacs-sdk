@@ -1017,8 +1017,10 @@ test('new Listing sessions use the current inclusive validity interval, before a
 });
 
 
-test('HTTP proposal recovery completes a contribution saved before its final proposal checkpoint without signing twice', async (t) => {
-  const w = await world(t), h = await httpSeller(t, w);
+// Interrupts the first proposal over HTTP after the seller contribution is saved and
+// before the final proposal checkpoint, then restarts the seller. Answers a reader of
+// the number of Agreement signatures made so far.
+async function cutBeforeFinalProposalCheckpoint(w, h) {
   // Fail authentication of the first session snapshot that carries the final
   // proposal binding. The contribution and core durable checkpoints precede it.
   let cut = true, agreementSigns = 0;
@@ -1036,9 +1038,27 @@ test('HTTP proposal recovery completes a contribution saved before its final pro
   assert.ok(h.agent.durableSessionOf(w.jobId).sellerContribution, 'contribution was saved');
   assert.equal(h.agent.durableSessionOf(w.jobId).proposal, null, 'completed proposal checkpoint was not saved');
   await h.restart(w.steward.railAuthority());
+  return () => agreementSigns;
+}
+
+test('HTTP proposal recovery completes a contribution saved before its final proposal checkpoint without signing twice', async (t) => {
+  const w = await world(t), h = await httpSeller(t, w);
+  const agreementSigns = await cutBeforeFinalProposalCheckpoint(w, h);
   const answer = await h.client.propose(h.proposal);
   assert.equal(answer.disposition, 'complete');
-  assert.equal(agreementSigns, 1, 'the durable signature is reused');
+  assert.equal(agreementSigns(), 1, 'the durable signature is reused');
+});
+
+test('read-only recovery answers a contribution saved before its final proposal checkpoint without signing', async (t) => {
+  const w = await world(t), h = await httpSeller(t, w);
+  const agreementSigns = await cutBeforeFinalProposalCheckpoint(w, h);
+  const body = h.proposal, rawBody = Buffer.from(JSON.stringify(body));
+  const request = { method: 'POST', path: '/dacs/v1/agreements/proposals', jobId: w.jobId, buyer: w.buyerKey.claim, seller: w.signer.claim,
+    listingPin: seller.listingPin(w.listing), agreementHash: body.proposal.plan.agreementHash, bodyHash: core.sha256Hex(rawBody) };
+  const answer = await h.agent.reconcileTransport({ request, body, rawBody, readOnly: true });
+  assert.equal(answer.disposition, 'present');
+  assert.equal(answer.value.disposition, 'complete');
+  assert.equal(agreementSigns(), 1, 'nothing was signed again');
 });
 
 test('a completed durable signature keeps its rail pin when the next session save fails', async (t) => {

@@ -11,8 +11,19 @@ import { ed25519Verify, publicKeyFromRaw, isCanonicalBase64Url, parseDemosAgentC
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const BASE64URL_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+// Refuse every encoding of a small-order point, as the client completion
+// verifier does: ignore the sign bit and reduce noncanonical y modulo p.
+const P25519 = 2n ** 255n - 19n, Y8 = 2707385501144840649318225287225658788936804267575313519463743609750303402022n;
+const SMALL_ORDER_Y = new Set([0n, 1n, P25519 - 1n, Y8, P25519 - Y8]);
 
 export class DemosClaimFormatError extends Error {}
+
+// True when the 32 raw public key bytes encode a small-order point, in any
+// encoding; a signature by such a key proves nothing.
+export function isSmallOrderPublicKey(raw) {
+  const y = (BigInt(`0x${Buffer.from(raw).reverse().toString('hex')}`) & ((1n << 255n) - 1n)) % P25519;
+  return SMALL_ORDER_Y.has(y);
+}
 
 export function normalizeDemosAddress(value) {
   if (typeof value !== 'string') throw new DemosClaimFormatError('wallet address must be a string');
@@ -63,7 +74,9 @@ export function verifyDemosSignature(input) {
   try {
     const { address, message, signature } = input;
     if (typeof message !== 'string' || !message.isWellFormed()) return false;
-    const key = publicKeyFromRaw(Buffer.from(normalizeDemosAddress(address).slice(2), 'hex'));
+    const raw = Buffer.from(normalizeDemosAddress(address).slice(2), 'hex');
+    if (isSmallOrderPublicKey(raw)) return false;
+    const key = publicKeyFromRaw(raw);
     return ed25519Verify(Buffer.from(message, 'utf8'), decodeSignature(signature), key);
   } catch {
     return false;
