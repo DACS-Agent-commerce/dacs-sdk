@@ -93,3 +93,28 @@ for(const problem of ['absent','changed','unavailable','failed-transfer','payer'
 test('retained fixture payment succeeds only after unchanged fresh transfer and artifacts verify',async()=>{
  const w=await agentFixture({lifecycle:true});try{await w.agent.commit({jobId});const answer=await w.agent.submitPayment(payment(w));await w.reopen();assert.deepEqual(await w.agent.submitPayment(payment(w)),answer);}finally{w.close();}
 });
+
+for(const status of ['failed','unavailable','changed'])test(`interrupted fixture payment reauthenticates ${status} transfer before resuming publication`,async()=>{
+ const w=await agentFixture({lifecycle:true});
+ try{
+  await w.agent.commit({jobId});
+  const address=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);
+  w.anchors.controls.failAfterWrite=address;
+  await assert.rejects(w.agent.submitPayment(payment(w)),{code:'seller_anchor_reconciliation_required'});
+  const retained=w.agent.durableSessionOf(jobId).paymentWork;
+  await w.reopen();
+  assert.notEqual((await w.store.reconcileJob(jobId,w.anchors)).status,'held');
+  const writes=w.anchors.writes.length;
+  w.controls.observation=status==='changed'
+   ?{status:'included',txHash:HASH,payer:w.buyer.address,payee:w.seller.address,amountOs:'2500000000',blockNumber:9,includedAt:NOW+4000}
+   :{status,reason:'TEST transfer readback '+status};
+  let answer;
+  try{answer=await w.agent.submitPayment(payment(w));}catch(error){assert.equal(error.code,'payment_readback_required');}
+  assert.notEqual(answer?.status,'delivered');
+  assert.equal(w.anchors.writes.length,writes,'no deliverable or delivery evidence is published from cached intake');
+  assert.deepEqual(w.agent.durableSessionOf(jobId).paymentWork,retained,'the original payment work stays exact');
+  w.controls.observation=null;
+  assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
+  assert.equal(w.anchors.writes.filter(value=>value===address).length,1,'recovery reuses the original payment evidence CREATE');
+ }finally{w.close();}
+});
