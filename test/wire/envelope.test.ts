@@ -41,6 +41,19 @@ it.each(["seller", "jobId", "listingPin"] as const)("refuses a session delegatio
     .rejects.toMatchObject({ code: "peer_delegation_mismatch" });
 });
 
+const OTHER_JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
+it.each([
+  ["a payload changed after it was signed", (x: Awaited<ReturnType<typeof wireWorld>>) => ({ ...x.signed(x.delegation, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), payload: { ...x.delegation, jobId: OTHER_JOB } }), "peer_delegation_signature_invalid"],
+  ["another job", (x: Awaited<ReturnType<typeof wireWorld>>) => x.signed({ ...x.delegation, jobId: OTHER_JOB }, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), "peer_delegation_mismatch"],
+  ["a lapsed lifetime", (x: Awaited<ReturnType<typeof wireWorld>>) => x.signed({ ...x.delegation, expiresAt: x.input.now }, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation), "peer_delegation_expired"],
+])("emits no request signature when the supplied delegation has %s", async (_name, delegate, code) => {
+  const x = await wireWorld();
+  x.session.calls = 0;
+  const ctx = { ...x.input, signer: x.session, purchaseProfile: x.binding.profile };
+  await expect(wire.signWireEnvelope(x.request, ctx, delegate(x) as wire.SellerSessionDelegation)).rejects.toMatchObject({ code });
+  expect(x.session.calls).toBe(0);
+});
+
 async function continuationSigning(path: string) {
   const p = await committedPurchase((listing) => { listing.seller.publicEndpoint = "https://seller.proof.invalid"; });
   const binding = p.scope.binding, local = binding.local, now = p.scope.now, publicEndpoint = "https://seller.proof.invalid";
