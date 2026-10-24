@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import DatabaseSync from 'better-sqlite3';
 import { tmpdir } from 'node:os';
@@ -73,10 +74,9 @@ test('an address is signed once: the kept signed CREATE is broadcast again as th
   t.after(() => journal.close());
   const [first] = w.calls.signed;
   assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'rebroadcast', txHash: first }, 'signed and kept, nonce not overtaken: broadcast again, never unsigned');
-  assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'submitted', txHash: first }, 'a second anchor broadcasts the kept CREATE');
-  w.faults.broadcast.push('throw');
-  const pending = await journal.reconcilePaymentEvidence(w.input());
-  assert.deepEqual([pending.status, pending.txHash], ['pending', first], 'a broadcast that fails keeps it pending');
+  assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'applied', txHash: first }, 'a second anchor reports the retained applied CREATE');
+  const applied = await journal.reconcilePaymentEvidence(w.input());
+  assert.deepEqual([applied.status, applied.txHash], ['applied', first], 'applied transactions stay live without another broadcast');
   assert.equal(w.calls.sign, 1, 'signed once');
   assert.equal(new Set(w.calls.broadcast).size, 1, 'every broadcast is the same signed bytes');
 });
@@ -94,7 +94,7 @@ test('a journal asked about a transaction it never kept refuses; its id and the 
   const projection = await journal.readSignedProjection(w.input());
   assert.equal(projection.hash, txHash, 'the live kept CREATE');
   assert.equal(JSON.stringify(projection), w.calls.broadcast.at(-1), 'exactly the bytes broadcast');
-  assert.deepEqual(await journal.reconcilePaymentEvidence({ ...w.input(), attempt: { outcome: 'sent', answer: { status: 'submitted', txHash } } }), { status: 'rebroadcast', txHash }, 'its own attempt is answered');
+  assert.deepEqual(await journal.reconcilePaymentEvidence({ ...w.input(), attempt: { outcome: 'sent', answer: { status: 'submitted', txHash } } }), { status: 'applied', txHash }, 'its own applied attempt is answered');
   journal.close();
   journal = w.open();
   assert.equal(journal.journalId, id, 'the same file is the same journal');
@@ -118,7 +118,7 @@ test('nothing signed is unsigned: a throw before signing or a signature that is 
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
   assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
   assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'submitted', txHash: w.calls.signed.at(-1) });
-  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
 });
 
 // The fate of a kept CREATE is read by its hash and its nonce, so a wallet
@@ -141,7 +141,7 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
   const db = new DatabaseSync(w.path, { readonly: true });
   try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM evidence_creates').get().n, 0); } finally { db.close(); }
   assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', 'a true signature is kept and sent');
-  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
 });
 
 // The kept bytes must be a CREATE the node can execute and the SR-2 readback
@@ -223,8 +223,8 @@ test('a dropped CREATE overtaken by another write of the wallet is superseded: u
     const second = (await journal.anchorEvidence(w.input())).txHash;
     assert.equal(second, w.calls.signed[1], 'signed anew');
     assert.ok(w.chain.applied.includes(second), 'the new signature lands');
-    assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'rebroadcast', txHash: second }, 'the applied CREATE is live, never superseded');
-    assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'submitted', txHash: second }, 'and is not signed again');
+    assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'applied', txHash: second }, 'the applied CREATE is live, never superseded');
+    assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'applied', txHash: second }, 'and is not signed or broadcast again');
     assert.equal(w.calls.sign, 2, 'signed once more, once');
     const db = new DatabaseSync(w.path), rows = db.prepare('SELECT tx_hash, nonce, superseded_at IS NOT NULL AS superseded FROM evidence_creates ORDER BY nonce').all().map((row) => ({ ...row }));
     db.close();
@@ -330,13 +330,13 @@ test('a process killed after signing, after the signed CREATE is kept, or after 
       // Kept before the broadcast (cut 'kept'), or sent and applied (cut 'sent'):
       // the kept CREATE is the one live row, broadcast again as the same bytes.
       assert.deepEqual(db(), [{ tx_hash: signedByChild[0], superseded_at: null }], `${cut}: the signed CREATE was kept before it was sent`);
-      assert.deepEqual(answer, { status: 'rebroadcast', txHash: signedByChild[0] }, `${cut}: never unsigned while it can land`);
-      assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'submitted', txHash: signedByChild[0] }, `${cut}: a second anchor broadcasts the kept CREATE`);
+      assert.deepEqual(answer, { status: cut === 'sent' ? 'applied' : 'rebroadcast', txHash: signedByChild[0] }, `${cut}: never unsigned while it can land`);
+      assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'applied', txHash: signedByChild[0] }, `${cut}: a second anchor retains the applied CREATE`);
       assert.equal(w.calls.sign, 0, `${cut}: this process signed nothing`);
     }
     assert.equal(w.chain.applied.length, 1, `${cut}: one CREATE landed`);
     assert.equal(db().filter((row) => row.superseded_at === null).length, 1, `${cut}: one live signed CREATE`);
-    assert.equal(new Set(w.calls.broadcast).size, 1, `${cut}: every broadcast here is the same signed bytes`);
+    assert.equal(new Set(w.calls.broadcast).size, cut === 'sent' ? 0 : 1, `${cut}: applied transactions are not broadcast again`);
   }
 });
 
@@ -350,7 +350,7 @@ test('nonce advancement with an unknown transaction keeps the CREATE until its i
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
   assert.equal((await journal.anchorEvidence(w.input())).txHash, first);
   visible = 'applied';
-  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
   assert.equal(w.calls.sign, 1);
   assert.equal(new Set(w.calls.broadcast).size, 1);
 });
@@ -392,8 +392,8 @@ test('overlapping retries across handles reuse the winning signature and answer'
   const answers = await settled;
   assert.equal(signatures, 1);
   assert.ok(answers.every((answer) => answer.status === 'fulfilled'));
-  assert.deepEqual(answers[0], answers[1]);
-  assert.deepEqual(answers[0], answers[2]);
+  assert.equal(new Set(answers.map(answer => answer.value.txHash)).size, 1);
+  assert.ok(answers.every(answer => ['submitted', 'applied'].includes(answer.value.status)));
   assert.equal(new Set(w.calls.broadcast).size, 1);
 });
 
@@ -450,9 +450,17 @@ test('a replaced journal refuses sent attempts with missing or malformed transac
 
 
 test('a multibyte signed transaction beyond the wire byte limit is not retained or broadcast', async (t) => {
-  const w = wallet(t), journal = w.open();
+  const w = wallet(t), node = walletChain({ state: w.chain });
+  const journal = w.open({ signCreate(asked) {
+    const answer = node.signCreate(asked);
+    const projection = JSON.parse(answer.signedTransaction);
+    projection.content.data[1].data.TEST = '🙂'.repeat(300_000);
+    answer.signedTransaction = JSON.stringify(projection);
+    Object.defineProperty(answer, 'txHash', { get() { throw new Error('TEST oversized reply must be refused before hash inspection'); } });
+    return answer;
+  } });
   t.after(() => journal.close());
-  const input = w.input({ artifact: { TEST: '🙂'.repeat(300_000) } });
+  const input = w.input();
   await assert.rejects(journal.anchorEvidence(input), { code: 'wallet_sign_invalid' });
   assert.equal(await journal.readSignedProjection(input), null);
   assert.equal(w.calls.broadcast.length, 0);
@@ -491,4 +499,75 @@ test('a superseded named attempt cannot broadcast or answer for its live success
   assert.equal((await journal.readSignedProjection(w.input())).hash, second.txHash);
   assert.equal((await journal.reconcilePaymentEvidence(w.input({ attempt: { answer: second } }))).txHash, second.txHash);
   assert.equal(w.calls.sign, 2);
+});
+
+
+for (const method of ['anchorEvidence', 'reconcilePaymentEvidence']) test(`an applied CREATE is retained without duplicate broadcasts on ${method}`, async (t) => {
+  const w = wallet(t);
+  const broadcast = async ({ signedTransaction, txHash }) => {
+    assert.equal(w.chain.applied.includes(txHash), false, 'the node rejects duplicate applied hashes');
+    w.calls.broadcast.push(signedTransaction);
+    // A qualified broadcaster lands this transaction once.
+    w.chain.applied.push(txHash); w.chain.accountNonce = w.chain.signed[txHash];
+  };
+  let journal = w.open({ broadcast });
+  const first = await journal.anchorEvidence(w.input());
+  assert.equal(first.status, 'submitted');
+  journal.close(); journal = w.open({ broadcast });
+  t.after(() => journal.close());
+  assert.deepEqual(await journal[method](w.input()), { status: 'applied', txHash: first.txHash });
+  assert.equal(w.calls.sign, 1);
+  assert.equal(w.calls.broadcast.length, 1);
+  assert.equal((await journal.readSignedProjection(w.input())).hash, first.txHash);
+});
+
+test('initialization killed before journal ID insertion rolls back the schema and reopens', (t) => {
+  const w = wallet(t, { file: true });
+  const child = spawnSync(process.execPath, [CRASH_CHILD, w.path, w.chainFile, 'initialize'], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(child.signal, 'SIGKILL', child.stderr);
+  const db = new DatabaseSync(w.path);
+  try { assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'evidence_creates'").get(), undefined); }
+  finally { db.close(); }
+  const journal = w.open();
+  const id = journal.journalId;
+  journal.close();
+  const reopened = w.open();
+  assert.equal(reopened.journalId, id);
+  reopened.close();
+});
+
+test('an empty schema interrupted before its journal ID can finish initialization', (t) => {
+  const w = wallet(t), initialized = w.open();
+  initialized.close();
+  const db = new DatabaseSync(w.path);
+  db.prepare("DELETE FROM journal_meta WHERE key = 'journal-id'").run();
+  db.close();
+  const journal = w.open();
+  assert.match(journal.journalId, /^[0-9a-f]{32}$/);
+  journal.close();
+});
+
+test('simultaneous first opens serialize initialization and retain one journal ID', async (t) => {
+  const w = wallet(t), barrier = new SharedArrayBuffer(4);
+  const starts = [], answers = [], exits = [];
+  for (let index = 0; index < 2; index++) {
+    const worker = new Worker(new URL('./helpers/payment-evidence-wallet-initialize.mjs', import.meta.url), { workerData: { path: w.path, barrier } });
+    t.after(() => worker.terminate());
+    starts.push(new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.on('message', (message) => { if (message.ready) resolve(); });
+    }));
+    answers.push(new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.on('message', (message) => { if (!message.ready) resolve(message); });
+    }));
+    exits.push(new Promise((resolve, reject) => { worker.once('error', reject); worker.once('exit', resolve); }));
+  }
+  await Promise.all(starts);
+  Atomics.store(new Int32Array(barrier), 0, 1); Atomics.notify(new Int32Array(barrier), 0);
+  const results = await Promise.all(answers);
+  assert.equal(results[0].error, undefined); assert.equal(results[1].error, undefined);
+  assert.match(results[0].journalId, /^[0-9a-f]{32}$/);
+  assert.equal(results[0].journalId, results[1].journalId);
+  assert.deepEqual(await Promise.all(exits), [0, 0]);
 });

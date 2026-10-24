@@ -11,6 +11,16 @@ export function deriveStorageAddress(owner, programName, nonce, salt = '') {
   return `stor-${sha256Hex(`${owner}:${programName}:${nonce}:${salt}`).slice(0, 40)}`;
 }
 
+const MAX_LISTING_BYTES = 16_384;
+const MAX_STORAGE_JSON_DEPTH = 64;
+
+function assertStorageJsonDepth(value, depth = 1) {
+  if (depth > MAX_STORAGE_JSON_DEPTH) throw new TypeError('storage JSON nesting depth exceeds 64 levels');
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) assertStorageJsonDepth(child, depth + 1);
+  }
+}
+
 const ZERO_FEE = Object.freeze({ network_fee: 0, rpc_fee: 0, additional_fee: 0, rpc_address: null });
 
 export function buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress, signedListing, nonce, timestamp, salt = '' }) {
@@ -22,7 +32,10 @@ export function buildStorageProgramCreatePayload({ from, storageAddress, program
       storageAddress !== deriveStorageAddress(from, programName, nonce, salt)) {
     throw new TypeError('storage CREATE requires a valid owner, program name, nonce, timestamp, logical address, artifact and matching storage address');
   }
-  canonicalize(signedListing);
+  const canonical = canonicalize(signedListing);
+  if (Buffer.byteLength(canonical, 'utf8') > MAX_LISTING_BYTES) throw new TypeError('canonical listing exceeds the storage byte limit');
+  const snapshot = JSON.parse(canonical);
+  assertStorageJsonDepth(snapshot);
   return {
     content: {
       type: 'storageProgram',
@@ -36,7 +49,7 @@ export function buildStorageProgramCreatePayload({ from, storageAddress, program
           storageAddress,
           programName,
           encoding: 'json',
-          data: signedListing,
+          data: snapshot,
           metadata: { logicalAddress },
           acl: { mode: 'public' },
           salt,
