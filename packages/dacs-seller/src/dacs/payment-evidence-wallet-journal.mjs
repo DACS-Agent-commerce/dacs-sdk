@@ -36,7 +36,10 @@
 //    at input.logicalAddress, with `to` and the operation's storageAddress the
 //    address the writer, the program name and the nonce derive, from the
 //    writer's address (`from` and `from_ed25519_address`), with the writer's
-//    Ed25519 signature over the hash as 0x and lower-case hex. Anything else is
+//    Ed25519 signature over the hash as 0x and lower-case hex. Its amount is 0,
+//    its ACL public and its storage on-chain; the node fee and execution edits
+//    the SDK adds (`transaction_fee`, `gcr_edits`) are required and not
+//    compared, as the node regenerates the edits. Anything else is
 //    refused (wallet_sign_invalid), and nothing is kept or sent;
 //  - broadcast({ signedTransaction, txHash }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
@@ -79,6 +82,10 @@ const LOCK_POLL_MS = 5;
 const TX_HASH = /^[0-9a-f]{64}$/;
 // demosdk 4.0.16 (demosclass.js sign): Ed25519 is 0x and lower-case hex.
 const SIGNATURE = /^0x[0-9a-f]{128}$/;
+// The members the signer may leave on a storage CREATE: the SDK's own, and the source binding the SR-2 readback asks for.
+const CONTENT_MEMBERS = new Set(['type', 'from', 'from_ed25519_address', 'to', 'amount', 'data', 'nonce', 'timestamp', 'transaction_fee', 'gcr_edits', 'network', 'chainIdentity']);
+const OPERATION_MEMBERS = new Set(['operation', 'storageAddress', 'programName', 'encoding', 'data', 'metadata', 'acl', 'salt', 'storageLocation']);
+const METADATA_MEMBERS = new Set(['logicalAddress', 'artifactKind', 'contentHash', 'envelopeHash', 'networkBinding']);
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const reason = (error) => String(error?.message ?? error).slice(0, 200);
@@ -125,12 +132,15 @@ function signedCreateProblem(answer, input) {
   const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
   if (content.to !== storageAddress || op.storageAddress !== storageAddress) return `is not at the storage address its writer, name and nonce derive (${storageAddress})`;
   if (nonceOf(content.timestamp, 0) === null) return 'has no valid timestamp';
-  const { content: expected } = buildStorageProgramCreatePayload({ from, storageAddress, programName,
-    logicalAddress: input.logicalAddress, signedListing: input.artifact, nonce: answer.nonce, timestamp: content.timestamp });
-  expected.from_ed25519_address = from;
-  expected.data[1].metadata = { logicalAddress: input.logicalAddress, artifactKind: input.artifactKind,
-    contentHash: input.receiptContentHash, envelopeHash: sha256Hex(canonicalize(input.artifact)) };
-  if (canonicalize(content) !== canonicalize(expected)) return 'is not the exact public zero-value, zero-fee on-chain CREATE';
+  // The pre-signing builder bounds the artifact and checks the signed members.
+  buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress: input.logicalAddress,
+    signedListing: input.artifact, nonce: answer.nonce, timestamp: content.timestamp });
+  // The signer adds the node's fee and the execution edits the node regenerates and compares (demosdk sign), so
+  // those are not compared here; the members around them are the zero-value public on-chain CREATE.
+  if (!Object.keys(content).every((key) => CONTENT_MEMBERS.has(key)) || !Object.keys(op).every((key) => OPERATION_MEMBERS.has(key))
+      || !Object.keys(metadata).every((key) => METADATA_MEMBERS.has(key))) return 'carries a member a storage CREATE does not';
+  if (content.amount !== 0 || !object(op.acl) || Object.keys(op.acl).join() !== 'mode' || op.acl.mode !== 'public' || op.storageLocation !== 'onchain') return 'is not the public zero-value on-chain CREATE';
+  if (!object(content.transaction_fee) || !Array.isArray(content.gcr_edits) || content.gcr_edits.length === 0) return 'has no node fee and execution edits, so the node cannot execute it';
   return null;
 }
 
