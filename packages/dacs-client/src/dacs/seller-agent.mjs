@@ -77,13 +77,8 @@ import {
   verifyPaymentEvidence,
 } from './purchase-protocol.mjs';
 
-export class SellerAgentError extends Error {
-  constructor(code, message, status = 422) {
-    super(message);
-    this.code = code;
-    this.status = status;
-  }
-}
+import { SellerAgentError } from './seller-agent-error.mjs';
+export { SellerAgentError } from './seller-agent-error.mjs';
 
 const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
 const FINALISED_SKEW_MS = 5 * 60 * 1000;

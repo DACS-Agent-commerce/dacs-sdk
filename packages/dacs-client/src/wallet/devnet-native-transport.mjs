@@ -5,7 +5,7 @@
 // authority; that is not provided live authority or independent validation.
 import { isNativeDeliveryEvidence } from '../dacs/delivery-evidence.mjs';
 import { classifyStorageWriteSubmission, storageWriteAbsent, storageWriteAccountNonce, storageWriteConfirmationMatches, storageWriteIdentityMatches, rpcEnvelope, STORAGE_WRITE_SUBMISSION_PROFILE } from '../devnet-demo/storage-write-recovery.mjs';
-import { storageConfirmationShapeMatches, nativePayloadDigest } from '../seams/wallet-actions-not-wired.mjs';
+import { storageConfirmationShapeMatches, nativePayloadDigest } from './payload-helpers.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { fetchBoundedJson } from '../util/http.mjs';
