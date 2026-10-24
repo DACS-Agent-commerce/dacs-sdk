@@ -74,6 +74,7 @@ export interface RailDispatchOptions {
     inclusionPollIntervalMs?: number;
     statusRequestTimeoutMs?: number;
     nonceVisibilityTimeoutMs?: number;
+    transactionRecordTimeoutMs?: number;
   };
   /**
    * Trusted local RAV-R3 preflight. Required for operator_gated, closed_data,
@@ -206,6 +207,7 @@ interface CapturedPayDemOptions {
   inclusionPollIntervalMs?: number;
   statusRequestTimeoutMs?: number;
   nonceVisibilityTimeoutMs?: number;
+  transactionRecordTimeoutMs?: number;
 }
 
 interface CapturedRailDispatchOptions {
@@ -509,6 +511,11 @@ function captureDispatchOptions(
           "nonceVisibilityTimeoutMs",
           "pay-dem nonce visibility timeout",
         ),
+        transactionRecordTimeoutMs: optionalDispatchValue<number>(
+          payDem,
+          "transactionRecordTimeoutMs",
+          "pay-dem transaction record timeout",
+        ),
       });
     return Object.freeze({
       ...common,
@@ -773,6 +780,7 @@ export async function settleFromRail(
       const inclusionPollIntervalMs = payDem?.inclusionPollIntervalMs;
       const statusRequestTimeoutMs = payDem?.statusRequestTimeoutMs;
       const nonceVisibilityTimeoutMs = payDem?.nonceVisibilityTimeoutMs;
+      const transactionRecordTimeoutMs = payDem?.transactionRecordTimeoutMs;
       const demNetwork = requireMatchingNetwork(
         payment.network,
         "demos",
@@ -802,6 +810,9 @@ export async function settleFromRail(
         ...(nonceVisibilityTimeoutMs === undefined
           ? {}
           : { nonceVisibilityTimeoutMs }),
+        ...(transactionRecordTimeoutMs === undefined
+          ? {}
+          : { transactionRecordTimeoutMs }),
       });
       return bindDescriptorRequest(descriptorIdentity, payDemSettle(rail, {
         ...(demRecipient === undefined
