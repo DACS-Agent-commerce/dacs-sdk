@@ -62,10 +62,28 @@ function exportMap(value) {
   if (typeof value === "string" || Array.isArray(value) || value === null) return { ".": value };
   if (value && Object.keys(value).length && Object.keys(value).every(key => !key.startsWith("."))) return { ".": value };
   const map = value ?? {};
-  for (const key of Object.keys(map)) if (key !== "." && (!key.startsWith("./") ||
+  for (const key of Object.keys(map)) validateExportSubpath(key);
+  return map;
+}
+
+function validateExportSubpath(key) {
+  if (key !== "." && (!key.startsWith("./") ||
     /[%?#\\]/.test(key) || key.split("*").length > 2 ||
     key.slice(2).split("/").some(segment => /^(|\.{1,2}|node_modules)$/i.test(segment)))) fail(`invalid export subpath: ${key}`);
-  return map;
+}
+
+function importTarget(value) {
+  if (typeof value === "string" || value === null) return value;
+  if (Array.isArray(value)) {
+    for (const child of value) { const target = importTarget(child); if (target) return target; }
+    return null;
+  }
+  for (const [condition, child] of Object.entries(value ?? {})) {
+    if (["node", "node-addons", "import", "default"].includes(condition)) {
+      const target = importTarget(child);
+      if (target !== undefined) return target;
+    }
+  }
 }
 
 function dependencyTargets(value, nested, path = "") {
@@ -119,7 +137,11 @@ export function validateArtifactSet(artifacts, planned = false) {
     for (const { manifest } of artifacts) validateManifest(manifest, packages.find(p => p.name === manifest.name));
   }
   const version = planned ? plannedVersion : artifacts[0]?.manifest.version;
+  const names = new Set();
   for (const { manifest: p } of artifacts) {
+    if (!packages.some(d => d.name === p.name) || names.has(p.name)) fail(`unknown or duplicate release package identity: ${p.name}`);
+    names.add(p.name);
+    validateReleaseIdentity(p, p.name);
     if (p.version !== version) fail(`release versions differ: ${p.version} vs ${version}`);
     validateDependencies(p);
     validateInternalPins(p, version);
@@ -137,7 +159,12 @@ function manifestProblems(p, definition) {
       const version = typeof p.version === "string" && semver.parse(p.version);
       if (!version || version.version + (version.build.length ? `+${version.build.join(".")}` : "") !== p.version) fail("invalid package version");
     },
-    ...definition.requiredExports.map(key => () => { if (!exportMap(p.exports)[key]) fail(`missing public export ${key}`); }),
+    ...definition.requiredExports.map(key => () => {
+      const value = exportMap(p.exports)[key];
+      if (!value) fail(`missing public export ${key}`);
+      const target = importTarget(value);
+      if (!target || /\.d\.[cm]?ts$/.test(target)) fail(`runtime target required for public export ${key}`);
+    }),
   ]);
 }
 
@@ -178,9 +205,10 @@ export function publicEntries(p, files) {
       if (!captures.size) fail(`export ${key} has no packed matches`);
     } else captures.add("");
     for (const capture of captures) {
-      const subpath = key.replace("*", capture);
+      const subpath = key.replace("*", () => capture);
       if (effectiveKey(subpath) !== key) continue;
-      const concrete = paths.flatMap(target => exportTargets(target.replaceAll("*", capture)));
+      validateExportSubpath(subpath);
+      const concrete = paths.flatMap(target => exportTargets(target.replaceAll("*", () => capture)));
       for (const target of concrete) if (!files.includes(target.slice(2))) fail(`missing packed target: ${target} (${subpath})`);
       entries.set(subpath, { subpath, json: concrete.some(t => t.endsWith(".json")) });
     }
