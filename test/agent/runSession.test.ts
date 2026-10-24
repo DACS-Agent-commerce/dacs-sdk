@@ -519,7 +519,11 @@ describe("runSession orchestration (T4)", () => {
       },
     });
     await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
+<<<<<<< HEAD
       /settlement rail returned an invalid terminal-failure proof/,
+=======
+      /settlement rail returned a malformed (?:result|terminal-failure proof)/,
+>>>>>>> stack/ws1/05-execution-attestations
     );
     expect(anchored.some((name) => name.includes("evidence"))).toBe(false);
   });

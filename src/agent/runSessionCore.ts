@@ -2124,10 +2124,17 @@ function validateSettlementResultBinding(
   request: SettleRequest,
   label: string,
 ): void {
+<<<<<<< HEAD
   if (result.errorClass !== undefined &&
       (request.phase !== "pay-dem" || request.asset !== "DEM" ||
         !hasDefinitiveDemosFailure(result, baseUnits(request.amount, 9), result.chainId))) {
     throw new CounterpartyError(`${label} terminal failure does not bind the payment amount and rail`);
+=======
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      (request.phase !== "pay-dem" || request.asset !== "DEM" ||
+        !hasDefinitiveDemosFailure(result, baseUnits(request.amount, 9), result.chainId))) {
+    throw new CounterpartyError(`${label} returned a malformed terminal-failure proof that does not bind the payment amount and rail`);
+>>>>>>> stack/ws1/05-execution-attestations
   }
   if (result.payee !== request.expectedPayee) {
     throw new CounterpartyError(
@@ -2498,6 +2505,23 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           reason: "rail settlement outcome has malformed or extra fields",
         };
       }
+      if (data.errorClass !== undefined || data.failureProofJson !== undefined) {
+        try {
+          if (data.errorClass !== "permanent" || typeof data.failureProofJson !== "string" ||
+              phase !== "pay-dem" || asset !== "DEM" ||
+              !hasDefinitiveDemosFailure({
+                ok, txHash, chainId,
+                payer, payee,
+                errorClass: data.errorClass, blockNumber: data.blockNumber,
+                txRefKind: data.txRefKind,
+                failureProof: JSON.parse(data.failureProofJson),
+              }, baseUnits(amount, 9), chainId)) {
+            return { status: "invalid", reason: "invalid durable terminal-failure proof" };
+          }
+        } catch {
+          return { status: "invalid", reason: "invalid durable terminal-failure proof" };
+        }
+      }
       return {
         status: "current-rail",
         outcome: {
@@ -2508,8 +2532,13 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           payer,
           payee,
           ok,
+<<<<<<< HEAD
           ...(data.errorClass === "permanent" ? { errorClass: "permanent" as const,
             failureProofJson: data.failureProofJson as string } : {}),
+=======
+          ...(data.errorClass === "permanent" && typeof data.failureProofJson === "string"
+            ? { errorClass: "permanent" as const, failureProofJson: data.failureProofJson } : {}),
+>>>>>>> stack/ws1/05-execution-attestations
           ...(typeof data.networkFeeOs === "string" ? { networkFeeOs: data.networkFeeOs } : {}),
           ...durableFinalityFields(finality),
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
@@ -4380,9 +4409,12 @@ export async function runSessionCore(
         `settlement for ${jobId} is not bound to the requested rail, Agreement, terms, phase, and destination`,
       );
     }
+<<<<<<< HEAD
     if (outcome.ok && isNativeSettlement(outcome)) {
       return recoverRailOutcome("saved native success requires execution reconciliation", outcome);
     }
+=======
+>>>>>>> stack/ws1/05-execution-attestations
     if (!outcome.ok && outcome.txHash.length > 0 && outcome.errorClass !== "permanent") {
       return recoverRailOutcome(
         "transaction-bearing failure remains indeterminate",
