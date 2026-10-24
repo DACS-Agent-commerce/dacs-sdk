@@ -1559,6 +1559,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/src/index.mjs:1` |
 | fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/README.md:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
