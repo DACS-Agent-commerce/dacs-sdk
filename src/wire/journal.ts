@@ -28,7 +28,7 @@
 // records one and no attempt starts after it. Every request's nonce key is
 // published too: the same signed request again is peer_request_replayed (409).
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, unlinkSync, writeSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 import { qualifyJournalRestart } from "./journalRestart.js";
@@ -260,7 +260,8 @@ function now(store: Store): number {
 
 /**
  * Open the journal in `directory`: an existing absolute directory, not a
- * symbolic link, owned by this process's user and writable by no one else.
+ * symbolic link and reached through none (the path is its own real path),
+ * owned by this process's user and writable by no one else.
  * Before it is returned, an exclusive publish is tried twice on it: the second
  * must be refused. A publisher then exits before a fresh process checks
  * retained bytes and exclusive retry. Failure, or Windows (no directory sync), is
@@ -278,6 +279,8 @@ export function openWireRequestJournal(directory: string, options: WireRequestJo
   if (stat === undefined || !stat.isDirectory()) fail("seller_replay_guard_invalid", 500, "DIRECTORY-MISSING");
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
   if ((uid !== undefined && stat!.uid !== uid) || (stat!.mode & 0o022) !== 0) fail("seller_replay_guard_invalid", 500, "DIRECTORY-UNSAFE");
+  // Every later call resolves the path again, so a link anywhere in it (or a trailing slash, `..`) could be retargeted to an empty directory.
+  if (realpathSync(directory) !== directory) fail("seller_replay_guard_invalid", 500, "DIRECTORY-ALIAS");
   const store: Store = { directory, leaseMs: leaseMs as number, clock: clock as () => number };
   const probe = `probe-${randomBytes(16).toString("hex")}`;
   const first = publish(store, probe, "{}"), second = publish(store, probe, "{}");
