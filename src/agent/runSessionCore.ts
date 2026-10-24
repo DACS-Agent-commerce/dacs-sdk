@@ -932,11 +932,7 @@ function durableSettlementCheckpointData(
   return data;
 }
 
-function snapshotSettleResult(
-  value: unknown,
-  label: string,
-  request: SettleRequest,
-): SettleResult {
+function snapshotSettleResult(value: unknown, label: string): SettleResult {
   let snapshot: unknown;
   try {
     // Settlement is an asynchronous callback/read boundary. A conforming rail
@@ -999,12 +995,6 @@ function snapshotSettleResult(
         result.txRefKind.trim() !== result.txRefKind))
   ) {
     throw new CounterpartyError(`${label} returned a malformed result`);
-  }
-  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
-      !hasDefinitiveDemosFailure(
-        result as unknown as SettleResult, baseUnits(request.amount, 9), result.chainId,
-      )) {
-    throw new CounterpartyError(`${label} returned an invalid terminal-failure proof`);
   }
   const parsedFinality = parseSettlementFinalityParameters(result.finality);
   if (result.finality !== undefined) {
@@ -2124,10 +2114,10 @@ function validateSettlementResultBinding(
   request: SettleRequest,
   label: string,
 ): void {
-  if (result.errorClass !== undefined &&
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
       (request.phase !== "pay-dem" || request.asset !== "DEM" ||
         !hasDefinitiveDemosFailure(result, baseUnits(request.amount, 9), result.chainId))) {
-    throw new CounterpartyError(`${label} terminal failure does not bind the payment amount and rail`);
+    throw new CounterpartyError(`${label} returned a malformed terminal-failure proof that does not bind the payment amount and rail`);
   }
   if (result.payee !== request.expectedPayee) {
     throw new CounterpartyError(
@@ -2412,23 +2402,6 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
       phaseIndex: phaseIndex as number,
     };
     if (data.outcomeSource === "rail-result") {
-      if (data.errorClass !== undefined || data.failureProofJson !== undefined) {
-        try {
-          if (data.errorClass !== "permanent" || typeof data.failureProofJson !== "string" ||
-              phase !== "pay-dem" || asset !== "DEM" ||
-              !hasDefinitiveDemosFailure({
-                ok, txHash, chainId,
-                payer: data.payer as string, payee: data.payee as string,
-                errorClass: data.errorClass, blockNumber: data.blockNumber,
-                txRefKind: data.txRefKind,
-                failureProof: JSON.parse(data.failureProofJson),
-              }, baseUnits(amount, 9), chainId)) {
-            return { status: "invalid", reason: "invalid durable terminal-failure proof" };
-          }
-        } catch {
-          return { status: "invalid", reason: "invalid durable terminal-failure proof" };
-        }
-      }
       const {
         payer,
         payee,
@@ -2498,6 +2471,23 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           reason: "rail settlement outcome has malformed or extra fields",
         };
       }
+      if (data.errorClass !== undefined || data.failureProofJson !== undefined) {
+        try {
+          if (data.errorClass !== "permanent" || typeof data.failureProofJson !== "string" ||
+              phase !== "pay-dem" || asset !== "DEM" ||
+              !hasDefinitiveDemosFailure({
+                ok, txHash, chainId,
+                payer, payee,
+                errorClass: data.errorClass, blockNumber: data.blockNumber,
+                txRefKind: data.txRefKind,
+                failureProof: JSON.parse(data.failureProofJson),
+              }, baseUnits(amount, 9), chainId)) {
+            return { status: "invalid", reason: "invalid durable terminal-failure proof" };
+          }
+        } catch {
+          return { status: "invalid", reason: "invalid durable terminal-failure proof" };
+        }
+      }
       return {
         status: "current-rail",
         outcome: {
@@ -2508,8 +2498,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           payer,
           payee,
           ok,
-          ...(data.errorClass === "permanent" ? { errorClass: "permanent" as const,
-            failureProofJson: data.failureProofJson as string } : {}),
+          ...(data.errorClass === "permanent" && typeof data.failureProofJson === "string"
+            ? { errorClass: "permanent" as const, failureProofJson: data.failureProofJson } : {}),
           ...(typeof data.networkFeeOs === "string" ? { networkFeeOs: data.networkFeeOs } : {}),
           ...durableFinalityFields(finality),
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
@@ -4279,7 +4269,6 @@ export async function runSessionCore(
         ),
       ),
       "settlement recovery",
-      settleRequest,
     );
     validateSettlementResultBinding(
       recovered,
@@ -4451,7 +4440,6 @@ export async function runSessionCore(
               ),
             ),
             "settlement rail",
-            settleRequest,
           );
           validateSettlementResultBinding(pay, settleRequest, "settlement rail");
           // Defense in depth (independent of the rail): a settlement is only a
