@@ -450,14 +450,22 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // anchored record. Unknown signature outcomes require reconciliation; it
   // never repeats a signer or creates another record for the party. A run that
   // fails before any write drops its binding, so a fresh attempt can bind.
+  // A request for a finished job reads both records back again before it is
+  // answered (recheckFinished), so a receipt that stopped qualifying is refused.
   // The run answers {job,buyerVet,sellerVet}, or {refused:'conflict'|'legacy'}.
+  async function recheckFinished(job) {
+    if(!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet no longer has a verified finalized anchor receipt');
+    const sellerVet=await produceSeller(job);
+    return sellerVet.refused?sellerVet:{job,buyerVet:job.buyerVet,sellerVet};
+  }
   function jobVet(scope,buyerIdentityBundle,open) {
     const {generatedAt:_generatedAt,...terms}=scope,binding={scope:terms,buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
     let job=vets.get(scope.jobId);
     if(job&&!same(job.binding,binding))return Promise.resolve({refused:'conflict'});
     if(!job){job={jobId:scope.jobId,binding:clone(binding),buyerVet:null,running:null,finished:false,writeStarted:false,evicted:false,open};vets.set(scope.jobId,job);}
+    if(job.finished&&job.running)return job.running.then(()=>recheckFinished(job));
     if(!job.running){
-      job.open=open;job.finished=false;
+      job.open=open;
       const addresses=[compositeVerificationAddress(scope.jobId,buyerIdentityBundle.presentedBy),compositeVerificationAddress(scope.jobId,listing.seller.identity.presentedBy)];
       const run=(async()=>{
         const bound=await bind(job,addresses);
@@ -480,11 +488,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       })();
       job.running=run;running.add(scope.jobId);
       // Registered before any waiter, so a waiter that retries finds this
-      // run settled and its entry already updated. A finished job is kept for
-      // later requests, which run on its checkpoints and read both records
-      // back before answering. An ended job's row waits for its run.
+      // run settled and its entry already updated. A finished run is kept
+      // for later requests of the job. An ended job's row waits for its run.
       const settled=()=>{running.delete(scope.jobId);if(drops.has(scope.jobId))drop(scope.jobId).catch(logged('deletion',scope.jobId));};
-      run.then((out)=>{job.finished=Boolean(out.buyerVet);job.running=null;if(!job.finished||job.evicted)forget(job);settled();},()=>{
+      run.then((out)=>{job.finished=Boolean(out.buyerVet);if(!job.finished){job.running=null;forget(job);}else if(job.evicted)forget(job);settled();},()=>{
         job.running=null;
         if(!job.writeStarted||job.evicted)forget(job);
         settled();
