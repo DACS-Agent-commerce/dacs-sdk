@@ -97,3 +97,8 @@ test('different store handles fence the same durable step while its outcome is p
  const input=request(async()=>{effects++;started.resolve();await gate.promise;return{TEST:'one durable effect'};});const a=first.store.runOnce(input),b=second.store.runOnce(input);await started.promise;gate.resolve();
  const result=await Promise.all([a,b]);assert.deepEqual(result[0],result[1]);assert.equal(effects,1);one.close();two.close();
 });
+test('binding changed while authorization is in flight refuses a non-signing effect',async()=>{
+ const f=await fixture();let effects=0;
+ const input={...request(async()=>{effects++;return{};}),authorize:async()=>{await f.state.update(JOB,row=>({...row,binding:{TEST:'new binding'}}));return{status:'authorized'};}};
+ await assert.rejects(f.store.runOnceAuthorized(input),e=>e.errors?.[0]?.code==='binding-changed');assert.equal(effects,0);f.raw.close();
+});
