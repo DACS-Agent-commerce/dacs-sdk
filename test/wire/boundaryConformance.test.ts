@@ -13,12 +13,12 @@ describe("wire boundary regression cases", () => {
       const p = { ...x.delegation, ...patch } as any;
       const before = x.reads();
       await refuses(async () => await wire.sellerSessionDelegationSigningBytes(p, x.binding, x.local), "peer_delegation_invalid", 500);
-      await refuses(async () => await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(x.signed(p, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation))), x.context), "peer_delegation_invalid");
+      await refuses(async () => await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(x.signed(p, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation))), x.delegationScope), "peer_delegation_invalid");
       expect(x.reads()).toBe(before);
     }
     const p = { ...x.delegation, expiresAt: x.delegation.notBefore + 86_400_000 };
     const d = await wire.signSellerSessionDelegation(p, x.buyer, x.binding, x.local);
-    expect(await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(d)), { ...x.context, time: NOW })).toEqual(p);
+    expect(await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(d)), x.delegationScope)).toEqual(p);
     await refuses(async () => await wire.sellerSessionDelegationSigningBytes({ ...p, expiresAt: p.expiresAt + 1 }, x.binding, x.local), "peer_delegation_invalid");
     x.seller.calls = 0;
     await expect(wire.signSellerSessionDelegation(p, x.seller, x.binding, x.local)).rejects.toMatchObject({ code: "peer_delegation_invalid", status: 500 });
@@ -83,7 +83,7 @@ describe("wire boundary regression cases", () => {
     for (const listingPin of pins) {
       const p = { ...x.delegation, listingPin } as any;
       await expect(wire.signSellerSessionDelegation(p, x.buyer, x.binding, x.local)).rejects.toMatchObject({ code: "peer_delegation_invalid" });
-      await refuses(async () => await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(x.signed(p, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation))), x.context), "peer_delegation_invalid");
+      await refuses(async () => await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(x.signed(p, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation))), x.delegationScope), "peer_delegation_invalid");
       const d = { ...x.discovery, listings: [x.pin, listingPin] } as any;
       await expect(wire.signDiscoveryDocument(d, x.seller, x.binding, x.local)).rejects.toMatchObject({ code: "discovery_invalid" });
       await refuses(async () => await wire.verifyEndpointProof(x.document(d), x.options), "discovery_invalid");
@@ -105,7 +105,7 @@ describe("wire boundary regression cases", () => {
     const hex = Buffer.from(d.signature, "base64url").toString("hex");
     const inserted = d.signature.slice(0, 12) + "0x" + d.signature.slice(12);
     for (const signature of [alias(d.signature), inserted, hex + "junk", "junk" + hex]) {
-      await refuses(async () => await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify({ ...d, signature })), x.context), "peer_delegation_signature_invalid");
+      await refuses(async () => await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify({ ...d, signature })), x.delegationScope), "peer_delegation_signature_invalid");
       await expect(wire.signSellerSessionDelegation(x.delegation, { claim: x.buyer.claim, sign: () => signature }, x.binding, x.local)).rejects.toMatchObject({ code: "peer_delegation_signature_invalid" });
     }
     expect(walletSignatureBytes(d.signature)).toEqual(Buffer.from(d.signature, "base64url"));
