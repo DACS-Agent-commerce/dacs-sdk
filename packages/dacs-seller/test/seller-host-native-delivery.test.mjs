@@ -104,9 +104,10 @@ function demosNode() {
   };
   // The buyer's native DEM transfer.
   const pay = ({ from, to, amountOs }) => {
-    const content = { type: 'native', from, from_ed25519_address: from, to, amount: amountOs, data: ['native', { nativeOperation: 'send', args: [to, amountOs] }], nonce: 1, timestamp: NOW };
+    const nonce=(nonces.get(from)??0)+1;nonces.set(from,nonce);
+    const content = { type: 'native', from, from_ed25519_address: from, to, amount: amountOs, data: ['native', { nativeOperation: 'send', args: [to, amountOs] }], nonce, timestamp: NOW };
     const tx = { hash: core.sha256Hex(JSON.stringify(content)), content, signature: { type: 'ed25519', data: 'TEST-buyer-transfer' } };
-    include(tx);
+    include(tx);accountNonces.set(from,nonce);
     return tx.hash;
   };
   // A storage CREATE the writer's wallet signed (Demos: ed25519 over the tx hash).
@@ -844,4 +845,10 @@ for(const damage of ['proof','order','deliveryReady','ambiguous'])test(`authenti
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
   const first=await world(t),second=await world(t);
   assert.notEqual((await first.purchase()).jobId,(await second.purchase()).jobId);
+});
+
+test('deterministic fixture transfers advance the payer nonce',()=>{
+  const node=demosNode(),from=key(12).address,to=key(17).address,input={from,to,amountOs:'2500000000'};
+  assert.notEqual(node.pay(input),node.pay(input));
+  assert.equal(node.accountNonce(from),2);
 });
