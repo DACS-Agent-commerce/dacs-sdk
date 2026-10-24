@@ -361,3 +361,198 @@ apply the same admission profile to the body they are about to sign
 This changes seller behaviour: the plugin signed any `JSON.stringify(answer)`.
 The seller port must produce NFC, in-profile JSON before it signs, by
 normalizing its answer or refusing it earlier.
+
+## Seller session delegation
+
+The buyer's wallet signs, under `dacs-seller-http:v1:delegation:`:
+
+`{version: "1", kind: "seller-session-delegation", buyer, sessionPublicKey, seller, listingPin, jobId, notBefore, expiresAt, profile}`
+
+with `notBefore < expiresAt`, a lifetime of at most 24 h, and the new `profile`
+member. A verifier refuses it before `notBefore` by its own clock, as the
+plugin does, so a buyer sets `notBefore` at least 30 s (`maxClockSkewMs`)
+before its own clock; a refusal comes before any seller effect. The delegation lets that session key authenticate transport toward
+that seller, Listing and job until expiry; it never authorizes an identity
+presentation, a storage write, an Agreement or a payment. Wallet signatures are
+accepted as the 64 raw bytes, or as a string of hex or canonical base64url,
+after surrounding whitespace is trimmed and any leading `0x` or `0X` prefixes
+(one or more) are removed, as the plugin's `decodeSignature` does; a canonical
+base64url signature that itself begins with `0x` is read as written. The
+delegation always carries the canonical base64url form. Producing the bytes to sign
+(`sellerSessionDelegationSigningBytes`) already requires the wallet side's TP-1
+binding, so a wallet with no approved identity is never asked to sign.
+
+## Discovery document and endpoint proof (new)
+
+The seller serves `GET /.well-known/dacs-seller.json`: the canonical JSON
+`{payload, signature}` with the payload signed by the
+key of the seller claim named by `payload.seller` (the Listing signer can differ)
+under `dacs-seller-http:v1:discovery:`.
+
+| Field | Value |
+|---|---|
+| `format` | `"dacs-seller-discovery/v1"` |
+| `profile` | the TP-1 profile member |
+| `seller` | the seller claim |
+| `publicEndpoint` | an HTTPS origin: the literal `https://` and an authority, then at most one `/`; no credentials, path, query or fragment; no backslash, tab or line break, and no trailing space or control character (spellings the URL parser would repair into another URL). Other spellings the parser normalizes (letter case, a default port) are kept as written and compared byte for byte, so a Listing must name the endpoint exactly as the document does. A request goes to the origin followed by the route path (`new URL(path, publicEndpoint)`, the same as dropping a trailing `/` and appending the path), and discovery to the origin's `/.well-known/dacs-seller.json` (RFC 8615); a seller behind a path-prefix proxy serves these paths at its origin |
+| `transport` | `["dacs-seller-http/v1"]` |
+| `listings` | 1-32 Listing pins served here |
+| `capabilities` | exactly `TP1_CAPABILITIES` (listed below) |
+| `ready` | whether the seller accepts new purchases |
+| `issuedAt`, `expiresAt` | Unix ms, at most 10 minutes apart; `issuedAt` may be at most 60 s after the verifier's clock |
+
+The **endpoint proof** is this document checked against the verified Listing
+(`verifyEndpointProof`): the signer must be the Listing's seller, the
+signature must verify, `publicEndpoint` must equal the Listing's
+`publicEndpoint` byte for byte (never normalized), the Listing's pin must be
+listed, the capabilities must be exactly TP-1's, and the document must be
+current. The buyer runs it before preparing or signing anything for a
+purchase; it stops a Listing from aiming buyer traffic at a server its seller
+does not control.
+
+`verifyEndpointProof` also requires `readListingEligibility`, a trusted,
+synchronous buyer integration that authenticates the full Listing and its
+content hash and resolves its selected pipeline, accepted rail and locally
+configured service. It returns `VerifiedListingEligibility` for that exact
+seller, byte-exact endpoint and Listing pin, with its validity window. It must
+refuse revoked, missing or unavailable Listings and preserve source errors.
+Do not construct this decision from discovery capabilities or other
+unverified seller input. Any network reads belong to the authenticated reader
+and require byte/list limits and deadlines before decoding.
+
+The wire checks fixed pricing, `negotiate-fixed-price`, the commit phase
+`commitPhase: "commit-payee-bound-agreement"` (DACS-3 §8.5.2 check 9: the only phase TP-1
+commits, whose artifact is a PayeeBoundAgreementDocument), `pay-dem`, Demos
+storage delivery, the bounded synchronous report output and absence of buyer
+request input. The service must be `fixed-text` or an explicitly configured,
+pure, deterministic, synchronous text module. The reader is called at proof
+creation and again immediately before every request signature; retaining an
+endpoint proof does not retain an authoritative eligibility verdict. A reader
+must return a current decision or throw; a Promise is refused.
+
+`ready: false` and the end of the Listing's window stop new purchases only.
+For a job whose commitment has finalized, the buyer passes the job's finality
+commitment as `commitment`, with the signed Agreement (`agreement`) and the
+signed Listing it pins (`signedListing`), to `signWireRequest`, request-kind
+`signWireEnvelope` and `verifyEndpointProof`. In TP-1 the seller is the
+orchestrator (G3) and runs `commitFixedPriceAgreement`. It sends the result
+(`FinalizedAgreementCommitment`) and the Agreement to its buyer as JSON. Both
+are external DACS documents (CORE CF-5), so the wire admits each from its
+exact received bytes before anything reads it: the buyer passes those bytes
+(or the same record read again after a restart, as bytes), or a value the
+wire's own admission returned: `admitWireArtifact(bytes)`, or a member of a
+body `verifyWireResponse` or `checkWireRequest` admitted (frozen, and recorded
+as admitted). A caller's object, a decoded string or a re-serialized copy is
+refused (`ARTIFACT-NOT-ADMITTED`), and bytes admission refuses (duplicate
+members, ill-formed UTF-8, an out-of-profile number, nesting past 128, a
+unsupported numeric value) keep admission's own detail. Non-NFC string values are preserved at admission. The wire checks the evidence
+itself, every time. First, the signed Listing the purchase pins, passed as
+`signedListing` with the commitment and admitted the same way. It must be a
+DACS-1 §6.3.4 Listing whose recomputed content hash, id and version are the
+Listing pin the request, the record and the Agreement name. That hash omits
+the Listing's signature, so the wire verifies that signature itself
+(DACS-1 §6.3.4): `ed25519` by the key named in `signature.signer`, which
+must be carried in `seller.identity.claims`. Any authorized seller claim may
+sign, including a second key distinct from `presentedBy`; the signature must
+verify under that named key over `dacs-listing:v1:` and the content hash
+(`continuation_listing_invalid`, detail `LISTING-SIGNATURE`), as well as the
+Agreement both parties signed and the record the seller signed over it. It must be presented
+by the seller, carry a positive `deadlineSecAfterCommit`, not be auto-accept,
+and select one fixed-price commitment: exactly one `negotiate-fixed-price`
+phase, directly followed by `commit-payee-bound-agreement`; otherwise it is
+`continuation_phase_unsupported`. The Listing signature is verified first; phase selection
+then occurs before Agreement or commitment signature interpretation (DACS-3 §8.5.2
+check 9, CA-5). The rest of the Listing must be TP-1's too: exactly one pay
+phase, `pay-dem` (`continuation_phase_unsupported`, detail `PAY-PHASE`), and
+exactly one delivery phase, `deliver-storage-program` (detail
+`DELIVERY-PHASE`). That delivery first validates that the Agreement's
+`deliverableType` is `storage-program` (`spec/DACS-4-SETTLE.md:831-839` at
+`d45c0a2`), so the Listing's `offering.deliverable` must be a
+`storage-program` DeliverableSpec (`continuation_listing_invalid`, detail
+`DELIVERABLE-KIND`). Its pricing must be `fixed`, in DEM (detail
+`TP1-PRICING`). No other pipeline phase kind is supported (detail
+`PIPELINE`). A Listing whose delivery step must fail never reaches a
+payment. The eligibility decision's `commitPhase` gates new purchases
+only; no phase a host states selects a continuation's Agreement type. It
+checks the record's members
+(`finalityCommitmentVersion` `"1"`,
+`fixed-price`), the job, the Agreement hash, the Listing pin and the parties
+`[buyer, seller]`. It checks the record's Ed25519 signature under
+`dacs-finality-commitment:v1:` by the seller. It checks that the receipt is a
+CORE §5.1 AnchorReceipt and the transaction reference a DACS-4 §9.3 ChainTxRef
+(the commitment gate's own validators), on substrate `demos`,
+`finalized` and `established`, at
+`dacs3:commit:{jobId}`, with the record's
+native address and content hash, and takes `committedAt` from its
+`blockRef.timestamp`. It checks the Agreement the record commits, passed as
+`agreement` with the commitment (DACS-3 §8.6 CA-7). It must be an exact
+fixed-price PayeeBoundAgreementDocument whose recomputed content hash is the record's
+`agreementHash`, with the record's job, Listing pin and parties (by role),
+and with an Ed25519 signature by each party under `dacs-payee-bound-agreement:v1:`. A
+seller-signed record for an Agreement the buyer never signed is therefore
+refused (`continuation_agreement_invalid`), at both buyer signers and on
+every seller payment and delivery continuation route. Last, it asks `readCommitmentReceipt` (the buyer's own
+SR-2 reader, given to `verifyEndpointProof` and kept with the proof) to
+authenticate the receipt against the chain. A legacy record, a pending
+receipt, another signer, a stated time the receipt does not give, or a
+reader answer of `"invalid"` is refused
+(`continuation_commitment_invalid`). `"indeterminate"` or `"error"` is
+`commitment_unverified` (503): never final. With no reader, nothing
+continues (`commitment_reader_required`). At signing it must name the
+request's job, Agreement hash, buyer, seller and Listing pin
+(`verifyEndpointProof` requires an authenticated `request` scope when commitment
+evidence is supplied; both proof creation and signing compare the full request identity). Then the payment, delivery and
+readback routes (`payments`, `bundles/request`, `bundles/countersignature`,
+`agreements/state`, `bundles/buyer-copy`) are signed while the document says
+`ready: false`, and the Listing's window must hold the commitment's receipt
+time `committedAt` instead of now, its last instant included (DACS-3 §8.5.2
+check 6, `notAfter >= committedAt`). The Agreement's own `generatedAt` never
+stands in for `committedAt`, so a backdated one extends nothing; a
+`committedAt` before it (the gate's `generatedAt <= committedAt`) or more
+than 30 s after the signer's clock is refused. Once `committedAt` is known,
+the wire re-evaluates DACS-3 §8.5.2 checks 5 and 6 from the signed Listing,
+as the SDK's commitment gate does after finality (:659-661): a commitment
+whose receipt time precedes the Listing's `notBefore` or follows its
+`notAfter`, or whose Agreement `terms.deadline` is past `committedAt +
+deadlineSecAfterCommit`, is invalid (`continuation_commitment_invalid`). So
+is one whose receipt time follows that `terms.deadline` (the Agreement's
+settle-by time, which seller payment intake also requires). Then, at
+`committedAt`, the wire runs the SDK's own DACS-3 §8.5.2 verifier,
+`validateFixedPriceAgreementBinding`, the one seller payment intake runs, on
+the Agreement and the signed Listing. It checks checks 1-4 (currency, the
+exact listed price, a recognized pricing kind, the rail as a complete
+`acceptedRails` reference bound by the pay phase, and the deliverable's type,
+hash and schemaUrl), the pattern, the artifact the commit phase selects,
+and the parties against the Listing's seller. An Agreement both parties
+signed, and the seller anchored, whose terms are not the Listing's (2 DEM
+under a 1 DEM Listing, another rail, another deliverable) is refused
+(`continuation_agreement_invalid`, detail `LISTING-TERMS`, with the
+verifier's error as its `cause`): a finalized record does not show that the
+commitment gate ran. This holds on every seller payment and delivery continuation route and at both buyer
+signers, so a record the gate anchored and then refused after finality, read
+back later, continues nothing.
+A proposal, commitment or context request is always a new purchase. A reader therefore returns an ended
+window as it is; it still throws for a revoked, missing or unavailable
+Listing, and every other proof check applies.
+
+A buyer's proof can still say `ready: true` for up to ten minutes after the
+seller drains, so the seller enforces its own current state: `checkWireRequest`
+requires `ready` (whether it accepts new purchases now) on the proposal,
+commitment, commitment-signature and context routes and refuses each while it
+is `false` (`seller_not_ready`, 503). On the payment and delivery routes it
+requires the job's finalized commitment instead, checked the same way with
+the seller's own receipt reader. Read routes enforce retained request scope
+without repeating CA-7; successful readback authentication does not attest an Agreement.
+
+`capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
+`pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
+`dacs4:deliverable:{jobId}`; `fixed-text` and configured pure, synchronous text
+modules only; the existing bounded report envelope
+(`dacs-chatgpt-plugin/devnet-purchased-report`, report version `"1"`,
+`text/plain; charset=utf-8`, at most 16,384 characters, synchronous:
+`TP1_CAPABILITIES` in `src/wire/profile.ts`; that the plugins' producer accepts
+only this is taken from the plugin implementation); no buyer request input. A
+document stating anything else is refused. `FP-DEM` and the delivery channel
+name `demos-storage` are SDK labels, not Standard identifiers. The Standard
+calls this delivery phase `deliver-storage-program`
+(`spec/DACS-4-SETTLE.md:831` at `d45c0a2`).
