@@ -325,9 +325,11 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
         if (source.scripts.clean) execute("npm", ["run", "clean"], dir);
         log(execute("npm", ["run", "build"], dir));
       } else log("  direct-source package (no compilation)");
-      const pack = JSON.parse(execute("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", scratch], dir));
+      // Each package packs into its own folder so equal archive filenames cannot replace an accepted archive.
+      const destination = await mkdtemp(join(scratch, "pack-"));
+      const pack = JSON.parse(execute("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", destination], dir));
       if (pack.length !== 1) fail("expected one packed artifact");
-      const tarball = join(scratch, pack[0].filename);
+      const tarball = join(destination, pack[0].filename);
       const files = execute("tar", ["-tzf", tarball], root).trim().split("\n").map(path => {
         if (!path.startsWith("package/")) fail(`invalid archive path ${path}`);
         return path.slice(8);
