@@ -498,6 +498,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 share buyer schema with the database fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:16`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:20`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:28`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:40`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:54` | a454605da7223935b8e8417722828049bf904eaf |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | 940e94f63ffc2a65f42ea03bf262fb42fc200525 |
+| D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | acd00b6505dca812acfa411da3cb9538a5956b55 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | eedc7797a49fc7635cb1600db68fb1dc0d9ea74f |
 
 ## Complete commit and file inventory
 
@@ -1212,6 +1215,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:16`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:20`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:28`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:40`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:54` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
