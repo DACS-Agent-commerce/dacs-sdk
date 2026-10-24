@@ -553,13 +553,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // it ended before the work checkpoint,
     // and it is not final yet; the effect goes back to `retry`, as finish would
     // leave it, so the next claim runs it again under the same slot.
-    // noEffect (payments only): the claim ended before the agent's work
+    // noEffect (payments and proven unsigned proposals): the claim ended before the agent's work
     // checkpoint with a definite answer that kept nothing; its effect, slot
     // and transaction go, as finish's noEffect, so another claim can start.
     reconcile(reservation, request, status, text, { retry = false, noEffect = false } = {}) {
       requireJobId(request?.jobId);
       if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
-      if ((noEffect && request.path !== PAYMENT) || (retry && request.path !== PAYMENT && request.path !== '/dacs/v1/agreements/proposals')) fail('peer_reconciliation_invalid', 503);
+      if ((noEffect && request.path !== PAYMENT && request.path !== PROPOSAL) || (retry && request.path !== PAYMENT && request.path !== '/dacs/v1/agreements/proposals')) fail('peer_reconciliation_invalid', 503);
       if (retry && noEffect) fail('peer_reconciliation_invalid', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);

@@ -177,7 +177,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           // `indeterminate` (`no-effect`) is released as on the ordinary path.
           const payment = !contextStep && req.url === PAYMENT_PATH && !readOnly;
           const retry = (payment || (!contextStep && req.url === PROPOSAL_PATH && !readOnly)) && proof?.disposition === 'retry';
-          const released = payment && proof?.disposition === 'no-effect' && !retainsClaim(agent, request.jobId, body);
+          const released = proof?.disposition==='no-effect' && ((payment&&!retainsClaim(agent,request.jobId,body))||(!contextStep&&!readOnly&&req.url===PROPOSAL_PATH&&proof.value?.disposition==='rejected'));
           if (proof?.disposition === 'present' || retry || released) {
             const text = JSON.stringify(proof.value);
             authentication.store.reconcile(reservation, request, 200, text, { retry, noEffect: released });
