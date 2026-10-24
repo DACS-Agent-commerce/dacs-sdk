@@ -1056,3 +1056,51 @@ test("non-strict artifact admission rejects unknown and duplicate identities and
     assert.throws(() => validateArtifactSet([{ manifest: { ...manifest(), ...damage } }]), /identity|publish policy/);
   }
 });
+
+test("generated runtime sections reject mismatched internal pins", () => fixture(async root => {
+  for (const mode of ["offline", "live-demos"]) {
+    for (const section of ["optionalDependencies", "peerDependencies", "dependencies"]) {
+      for (const definition of packages) {
+        const artifacts = await generatorConsumer(root,
+          `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {})[${JSON.stringify(definition.name)}] = '^0.1.0-alpha.0';`);
+        artifacts.push(...packages.filter(d => !artifacts.some(a => a.manifest.name === d.name)).map(d => ({ manifest: manifest(d) })));
+        await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated dependency mismatch/);
+      }
+      const pins = Object.fromEntries(packages.map(d => [d.name, "0.1.0-alpha.0"]));
+      const artifacts = await generatorConsumer(root,
+        `if (mode === ${JSON.stringify(mode)}) Object.assign(p[${JSON.stringify(section)}] ??= {}, ${JSON.stringify(pins)});`);
+      artifacts.push(...packages.filter(d => !artifacts.some(a => a.manifest.name === d.name)).map(d => ({ manifest: manifest(d) })));
+      await assert.doesNotReject(checkGenerator(root, artifacts, () => {}));
+    }
+  }
+}));
+
+test("generated native runtime declarations reject mismatched pins", () => fixture(async root => {
+  for (const mode of ["live-demos", "offline"]) {
+    for (const section of ["optionalDependencies", "peerDependencies", "dependencies"]) {
+      for (const spec of ["11.8.1", "^12.6.2"]) {
+        const artifacts = await generatorConsumer(root,
+          `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {})['better-sqlite3'] = ${JSON.stringify(spec)};`);
+        await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+      }
+      const artifacts = await generatorConsumer(root,
+        `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {})['better-sqlite3'] = '12.6.2';`);
+      await assert.doesNotReject(checkGenerator(root, artifacts, () => {}));
+    }
+  }
+}));
+
+test("packed imports use the selected conditional target's JSON attribute", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, plannedVersion);
+  const definition = packages[2], path = join(root, definition.directory, "package.json");
+  const p = JSON.parse(await readFile(path, "utf8"));
+  p.exports["."] = { node: "./src/entry0.mjs", default: "./package.json" };
+  p.exports["./metadata"] = { node: "./package.json", default: "./src/entry0.mjs" };
+  p.exports["./fallback"] = { browser: "./package.json", import: "./src/entry0.mjs" };
+  await writeFile(path, JSON.stringify(p));
+  const logs = [], result = await release("check", { root, log: line => logs.push(line) });
+  assert.equal(result.ready, true);
+  for (const suffix of ["", "/metadata", "/fallback"]) {
+    assert.ok(logs.includes(`imported ${definition.name}${suffix}`));
+  }
+}));

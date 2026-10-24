@@ -405,10 +405,12 @@ export async function consumeImports(consumer, artifacts, log = console.log, inc
     const spec = artifact.manifest.name + (entry.subpath === "." ? "" : entry.subpath.slice(1));
     const code = `import {fileURLToPath} from 'node:url';
       const spec = ${JSON.stringify(spec)};
-      if (!fileURLToPath(import.meta.resolve(spec)).startsWith(${JSON.stringify(base + "/")})) throw Error('export resolves outside consumer');
+      const filename = fileURLToPath(import.meta.resolve(spec));
+      if (!filename.startsWith(${JSON.stringify(base + "/")})) throw Error('export resolves outside consumer');
+      const attributes = filename.endsWith('.json') ? {with:{type:'json'}} : {};
       const expectedNode20Rejection = ${expectedNode20Rejection.toString()};
       const manifest = ${JSON.stringify({ name: artifact.manifest.name, engines: artifact.manifest.engines })};
-      try { await import(spec, ${entry.json ? "{with:{type:'json'}}" : "{}"}); console.log('imported ' + spec); }
+      try { await import(spec, attributes); console.log('imported ' + spec); }
       catch (error) {
         if (expectedNode20Rejection(manifest, ${JSON.stringify(entry.subpath)}, error)) console.log('not imported (expected Node 20 rejection): ' + spec + ' needs node:sqlite');
         else throw error;
@@ -452,9 +454,6 @@ export async function checkGenerator(consumer, artifacts, log = console.log) {
       for (const name of ['@kynesyslabs/dacs', '@kynesyslabs/dacs-node']) {
         if (!versions[name] || p.dependencies?.[name] !== versions[name]) throw Error('generated dependency mismatch: ' + mode + ' ' + name);
       }
-      for (const [name, spec] of Object.entries(p.dependencies ?? {})) {
-        if (versions[name] && spec !== versions[name]) throw Error('generated dependency mismatch: ' + mode + ' ' + name);
-      }
       if (mode === 'live-demos' && p.dacs?.generatorVersion !== versions['create-dacs-agent']) throw Error('generated metadata version mismatch');
       console.log('generator project created: ' + mode);
     }`], consumer).trim());
@@ -463,6 +462,10 @@ export async function checkGenerator(consumer, artifacts, log = console.log) {
     const p = JSON.parse(await readFile(join(consumer, `generated-${mode}`, "package.json"), "utf8"));
     try { validateDependencies(p); }
     catch (error) { fail(`generated ${mode}: ${error.message}`); }
+    for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) for (const [name, spec] of Object.entries(p[section] ?? {})) {
+      if (packages.some(d => d.name === name) && spec !== versions[name]) fail(`generated dependency mismatch: ${mode} ${name}`);
+      if (name === "better-sqlite3" && spec !== nativeVersion) fail(`generated native dependency mismatch: ${mode} ${name}`);
+    }
     if (mode === "live-demos" && (p.dependencies?.["better-sqlite3"] !== nativeVersion ||
         nativeVersion !== undefined && (typeof nativeVersion !== "string" || semver.valid(nativeVersion) !== nativeVersion)))
       fail(`generated native dependency mismatch: ${mode} better-sqlite3`);
