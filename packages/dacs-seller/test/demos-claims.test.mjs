@@ -81,6 +81,22 @@ test('missing or null signature verification arguments are malformed, without th
   assert.equal(verifyDemosSignature(null), false);
 });
 
+test('small-order public keys cannot authorize either of two messages with a constant forgery', () => {
+  const signature = Buffer.from('01' + '00'.repeat(63), 'hex').toString('base64url');
+  const points = [
+    '00'.repeat(32), '01' + '00'.repeat(31), 'ec' + 'ff'.repeat(30) + '7f',
+    '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+    'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+    'ed' + 'ff'.repeat(30) + '7f', 'ee' + 'ff'.repeat(30) + '7f',
+  ];
+  for (const point of points) for (const signBit of [0, 128]) {
+    const key = Buffer.from(point, 'hex'); key[31] |= signBit;
+    for (const message of ['authorize payment A', 'authorize payment B']) {
+      assert.equal(verifyDemosSignature({ address: `0x${key.toString('hex')}`, message, signature }), false, `${point}: ${message}`);
+    }
+  }
+});
+
 test('the strict DACS signature predicate accepts only canonical 64-byte base64url', () => {
   const bytes = Buffer.alloc(64, 0xfb), value = bytes.toString('base64url');
   assert.equal(isCanonicalEd25519Signature(value), true);
