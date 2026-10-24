@@ -1,4 +1,4 @@
-# `@kynesyslabs/dacs-seller`
+# Seller source kit
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
@@ -15,11 +15,12 @@ DACS-5 bundle completion and transport-row reclamation are not wired.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
-Requires Node.js 22.13 or later (`node:sqlite`) and the same version of
-`@kynesyslabs/dacs` as a peer.
+Requires Node.js 20.19.x or 22.12+ and a core SDK built from this checkout.
+Run the example from a script in `packages/dacs-seller/`.
 
 ```js
-import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
+import { startSellerHost } from './src/index.mjs';
+import { createOperatorBuyerAccess } from './src/devnet-demo/buyer-access.mjs';
 
 const host = await startSellerHost({
   signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
@@ -120,10 +121,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It fails closed on configuration: unknown options, a missing capability, a
   non-loopback host, a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
-  The private stores also check every ancestor of the data directory: each must
-  be owned by root or by this user and not be group- or world-writable, so the
-  host does not start where `/` belongs to another user (for example some
-  rootless containers or sandboxes).
+  The host checks the data directory's ownership, private mode and real path.
+  The durable and transport stores validate their immediate store directories.
   Job capacity counts saved sessions and active reservations. An unsaved
   reservation is reclaimed only when its holder is proven exited; live or
   unproven holders continue to reserve capacity.
@@ -284,8 +283,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   authenticated index proves non-execution through that snapshot height, the
   journal marks it superseded (and keeps it). It then answers `unsigned`, and the next anchor signs the same evidence
   anew, with a higher nonce. A read that fails, times out (`readTimeoutMs`,
-  10 s by default) or answers anything else never supersedes it. An unknown
-  readback sends nothing and asks nothing.
+  10 s by default) or answers anything else never supersedes it. Timeouts and malformed
+  replies stay held. A complete name/native-address miss can ask only the
+  retained owning journal; the miss alone never authorizes a send.
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
@@ -438,8 +438,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It does not mount the Vet and Agreement context route itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the
   operator delivers to the buyer. The host keeps every issued challenge
-  with its seller state; nothing removes one yet, so the operator issues one
-  only for a buyer that is about to present.
+  with its seller state. Expired unattempted challenges may be reclaimed;
+  accepted presentations retain their exact admission checkpoint for replay.
+  Retired unsigned admissions release active capacity within bounded history.
+  The operator issues challenges only for buyers about to present.
 - The devnet source transport and wallet custody are not part of this
   package (the payment-evidence journal composes the operator's own wallet
   primitives). The kit builders that need them (the devnet artifact
@@ -452,8 +454,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).
 
-The workspace package is marked `private` while its required core exports are
-unreleased. Local tarball installation uses a core built from the same checkout.
+This checkout provides source modules. Build the core from the same checkout
+before importing the seller source kit.
 
 The rail availability checks implement DACS-4 RAV-R1 through RAV-R3 and
 RAV-R5. The seller does not emit the RAV-R4 `errorClass: substrate` field.
