@@ -509,6 +509,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 let SQLite identify empty exec remainders | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 4342294acfd3f71ee5c3f348f08ac542b0596392 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | cf66e34a3816d78a633002b462ff99253850a429 |
+| D11 | fix(client): D11 generate pure payload helpers from provider | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | f121637cb5c6f739597a3b9bf7f1253b61c1ec19 |
+| | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e737b5abec7b991fd5401d943998cd3ce60bc1bc |
 
 ## Complete commit and file inventory
 
@@ -1219,6 +1222,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
 | fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/generate-payload-helpers.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
 
 ## Original moved files
 
