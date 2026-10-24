@@ -122,12 +122,14 @@ for (const [label, make] of [['memory', () => createInMemoryPartyVetStore()], ['
 test('a competing process cannot enter an update callback; killing the writer rolls back and permits retry', { timeout: 10000 }, async t => {
   const path = join(dirFor(t), 'shared.sqlite'), store = openPartyVetStore({ path, busyTimeoutMs: 0 });
   t.after(() => store.close()); await store.update('n', () => ({ n: 0 }));
-  const child = fork(WORKER, ['writer', path], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const child = fork(WORKER, ['writer', path], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: ['--expose-gc'] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
   let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
   const exited = once(child, 'exit');
   const [message] = await Promise.race([once(child, 'message'), exited.then(() => { throw new Error(`writer exited before locking: ${stderr}`); })]);
   assert.equal(message, 'locked');
+  child.send('collect');
+  assert.equal((await once(child, 'message'))[0], 'collected', 'the writer still holds its lock after a garbage collection');
   let entered = false;
   await assert.rejects(store.update('n', row => { entered = true; return { n: row.n + 1 }; }), error => error.code === 'journal-busy' && error.cause instanceof Error);
   assert.equal(entered, false, 'the IMMEDIATE transaction must refuse before the change callback');
