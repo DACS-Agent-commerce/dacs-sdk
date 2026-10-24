@@ -60,3 +60,8 @@ test('extracted digest matches the SDK serializer byte contract', async () => {
  const signed=JSON.parse(serializeTransactionContent({...content,transaction_fee:{network_fee:1,rpc_fee:1,additional_fee:0},gcr_edits:[]},true));
  assert.equal(await helpers.nativePayloadDigest(signed),await helpers.nativePayloadDigest(content));
 });
+test('standalone provider helpers are generated from their maintained source', async () => {
+ const { payloadHelpersSource } = await import('../scripts/generate-payload-helpers.mjs');
+ const source=readFileSync(new URL('../src/public/portal/embedded-wallet/sdk-provider.mjs',import.meta.url),'utf8');
+ assert.equal(readFileSync(new URL('../src/wallet/payload-helpers.mjs',import.meta.url),'utf8'),payloadHelpersSource(source));
+});
