@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {agentFixture} from './helpers/seller-agent-isolated-fixture.mjs';
+import {NOW} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 
 for(const accessModel of ['buyer-only','encrypt-to-buyer','private','restricted','encrypted',{},false])test(`seller refuses non-public delivery access ${JSON.stringify(accessModel)} before publication`,async()=>{
@@ -45,7 +46,7 @@ test('seller caller commits, accepts verified payment and delivers, but signs no
  const w=await agentFixture({lifecycle:true});
  try{
   assert.equal((await w.agent.commit({jobId})).status,'committed');
-  assert.equal(w.store.loadSession(jobId).commitment.committedAt,1800000001000,'CA-8 uses receipt block time, not record/local time');
+  assert.equal(w.store.loadSession(jobId).commitment.committedAt,NOW+2000,'CA-8 uses receipt block time, not record/local time');
   assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
   const writes=w.anchors.writes.length;
   const unsigned=()=>{const session=w.store.loadSession(jobId);assert.equal(session.finalisedAt,undefined);assert.equal(session.bundleHash,undefined);assert.equal(session.sellerBundleSignature,undefined);assert.equal(session.sellerCopy,undefined);};
@@ -84,7 +85,7 @@ test('seller caller requires a finalized valid commitment receipt and its author
  for(const state of ['accepted','unknown']){
   const w=await agentFixture({lifecycle:true});try{w.anchors.controls.state=state;await assert.rejects(w.agent.commit({jobId}),{code:'commitment_failed'});assert.equal(w.store.loadSession(jobId).commitment,undefined);await assert.rejects(w.agent.submitPayment(payment(w)),{code:'not_committed'});}finally{w.close();}
  }
- const w=await agentFixture({lifecycle:true});try{w.anchors.controls.timestamp=1800000000000-70000;await assert.rejects(w.agent.commit({jobId}),{code:'commitment_failed'});}finally{w.close();}
+ const w=await agentFixture({lifecycle:true});try{w.anchors.controls.timestamp=NOW-70000;await assert.rejects(w.agent.commit({jobId}),{code:'commitment_failed'});}finally{w.close();}
 });
 test('retained payment response requires exact evidence address, reference and delivery hash readback',async()=>{
  const w=await agentFixture({lifecycle:true});
@@ -146,4 +147,20 @@ test('early commitment caller requires independent exact buyer CREATE authorizat
 test('exported seller fixture report refuses malformed jobs before deriving terms or hashing',async()=>{
  const w=await agentFixture();
  try{for(const jobId of [undefined,null,'job-0',JOBS[0].toLowerCase()])assert.throws(()=>w.buildReport({agreement:{jobId}}),{code:'job_invalid'});}finally{w.close();}
+});
+
+test('delivered collision-free sessions refuse both finalization operations before any new state or signature',async()=>{
+ const w=await agentFixture({lifecycle:true});try{await w.agent.commit({jobId});assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');const saved=w.agent.durableSessionOf(jobId),writes=w.anchors.writes.length;await assert.rejects(w.agent.bundleRequest({jobId}),NO_ST11);await assert.rejects(w.agent.countersign({jobId,buyerSignature:'TEST'}),NO_ST11);assert.deepEqual(w.agent.durableSessionOf(jobId),saved);assert.equal(w.anchors.writes.length,writes);}finally{w.close();}
+});
+for(const problem of ['absent','changed','unavailable','failed-transfer','payer','ref','deliverableRef','deliveryRef'])test(`retained fixture delivery requires fresh ${problem} readback after restart`,async()=>{
+ const w=await agentFixture({lifecycle:true});try{await w.agent.commit({jobId});assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');await w.reopen();const writes=w.anchors.writes.length;
+ if(['ref','deliverableRef','deliveryRef'].includes(problem)){const target=w.agent.durableSessionOf(jobId).payment[problem].anchor.locator;w.anchors.controls.read=(row,address)=>address===target?{...row,artifact:{...row.artifact,jobId:'TEST-changed'}}:row;}
+ else if(problem==='failed-transfer')w.controls.observation={status:'failed'};
+ else if(problem!=='payer')w.anchors.controls.read=(row,address)=>{if(address!==core.finalityCommitmentAddress(jobId))return row;if(problem==='unavailable')throw new Error('TEST reader unavailable');if(problem==='absent')return{status:'absent'};return{...row,artifact:{...row.artifact,jobId:'TEST-changed'}};};
+ await assert.rejects(w.agent.submitPayment({...payment(w),...problem==='payer'?{payerPayingKey:w.seller.claim}:{}}));assert.equal(w.anchors.writes.length,writes);
+ }finally{w.close();}
+});
+
+test('retained fixture payment succeeds only after unchanged fresh transfer and artifacts verify',async()=>{
+ const w=await agentFixture({lifecycle:true});try{await w.agent.commit({jobId});const answer=await w.agent.submitPayment(payment(w));await w.reopen();assert.deepEqual(await w.agent.submitPayment(payment(w)),answer);}finally{w.close();}
 });

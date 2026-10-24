@@ -10,7 +10,10 @@
 //    §6.3.6 discovery surfaces the operator read for this Listing (core
 //    RevocationSurface[], 1 to MAX_REVOCATION_SURFACES), and
 //    readRevocationMarker(markerAnchor) the RevocationMarker a binding names, or
-//    null. They are readers only: the agent itself decides (DACS-1 RB-4..RB-6,
+//    null. Readers also receive {signal,maxBytes,timeoutMs}: they must cap wire
+//    bytes before JSON decoding and honor cancellation. Bounded raw UTF-8 bytes
+//    or decoded JSON are accepted, with decoded values capped again locally.
+//    They are readers only: the agent itself decides (DACS-1 RB-4..RB-6,
 //    LR-3) with the core SDK's checkListingRevocation, which fetches, hashes and
 //    verifies a bound marker against the Listing signer before `revoked`, and
 //    answers `indeterminate` for a missing, stale, unverified or unreadable
@@ -48,7 +51,7 @@
 //    before any signature. The receipt's writer is not compared with the
 //    record's signer: the Standard does not tie them (SR2-5 binds the writer
 //    the receipt names, not the record's verifier).
-import { ARTIFACT_SEPARATORS, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, admitRawJson, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
@@ -81,7 +84,7 @@ export function sellerSessionPresentationProblem(bundle, listingIdentity) {
   const fixed = ({ presentedAt: _at, sessionNonce: _nonce, presentation: _presentation, ...rest }) => rest;
   if (!same(fixed(bundle), fixed(listingIdentity))) return 'the seller bundle is not a presentation of the Listing identity';
   const proof = bundle.presentation?.kind === 'per-claim' && Array.isArray(bundle.presentation.signatures) && bundle.presentation.signatures.length === 1
-    && bundle.presentation.signatures.find((entry) => entry?.ref === bundle.presentedBy);
+    && bundle.presentation.signatures.find((entry) => sameCanonicalClaimIdentity(entry?.ref, bundle.presentedBy));
   const valid = proof && typeof proof.signature === 'string' && proof.signature.length === 86 && isCanonicalBase64Url(proof.signature) && verifyComponent({
     signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
     signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature },
@@ -119,18 +122,69 @@ export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash,
 // back or verify) refuses as unavailable (503), keeping its cause. `now` is the
 // seller clock, read by the check after the surfaces are read, so a reading
 // stamped by the same clock is never taken for one from the future.
-export async function listingRevocationProblem(admission, { listing, listingPin, jobId, now }) {
-  const unavailable = (reason) => ({ code: 'session_admission_unavailable', status: 503, message: `the Listing revocation check is indeterminate: ${String(reason).slice(0, 160)}` });
+const REVOCATION_READ_LIMITS = Object.freeze({ maxBytes: 64 * 1024, maxValues: 4096, timeoutMs: 10_000 });
+const revocationUnavailable = reason => ({ code: 'session_admission_unavailable', status: 503, message: `the Listing revocation check is indeterminate: ${String(reason).slice(0, 160)}` });
+function boundedRevocationValue(value) {
+  if (value instanceof Uint8Array) return admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+  let remaining = REVOCATION_READ_LIMITS.maxBytes, values = 0;
+  const text = JSON.stringify(value, (key, child) => {
+    if (++values > REVOCATION_READ_LIMITS.maxValues || key.length > remaining || (typeof child === 'string' && child.length > remaining)) throw new RangeError('revocation reply exceeds its byte or value limit');
+    remaining -= Buffer.byteLength(JSON.stringify(key)) + 2;
+    remaining -= child === null || ['string', 'number', 'boolean'].includes(typeof child) ? Buffer.byteLength(JSON.stringify(child)) : 2;
+    if (remaining < 0) throw new RangeError('revocation reply exceeds its byte limit');
+    return child;
+  });
+  if (typeof text !== 'string' || Buffer.byteLength(text) > REVOCATION_READ_LIMITS.maxBytes) throw new RangeError('revocation reply exceeds its byte limit');
+  return admitRawJson(Buffer.from(text), { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+}
+
+const ADMISSION_MAX_LIST_ITEMS=256;
+// Admission capabilities cap wire bytes before decoding and honor this signal.
+// Returned representations also receive independent byte/value/list bounds.
+export async function readAdmissionCapability(admission,method,input){
+  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('admission deadline expired','TimeoutError'));},options.timeoutMs);});
+  try{
+    return await Promise.race([Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
+      if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
+      if(value===undefined)throw new TypeError('admission capability returned no value');
+      const result=boundedRevocationValue(value),pending=[result];let values=0;
+      while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
+      return result;
+    }),deadline]);
+  }finally{clearTimeout(timer);controller.abort();}
+}
+
+export async function listingRevocationProblem(admission, input) {
+  const controller = new AbortController();
+  const options = { signal: controller.signal, maxBytes: REVOCATION_READ_LIMITS.maxBytes, timeoutMs: REVOCATION_READ_LIMITS.timeoutMs };
+  let timer, failure, timedOut = false;
+  const read = async (method, query) => {
+    try {
+      if (controller.signal.aborted) throw new Error('revocation read aborted');
+      const value = await admission[method](query, options);
+      if (controller.signal.aborted) throw new Error('revocation read aborted');
+      return boundedRevocationValue(value);
+    } catch (error) { failure = error; throw error; }
+  };
+  const deadline = new Promise(resolve => { timer = setTimeout(() => { timedOut = true; controller.abort(); resolve(revocationUnavailable('revocation-reader-timeout')); }, options.timeoutMs); });
+  try {
+    const result = await Promise.race([checkRevocationProblem({ readRevocationSurfaces: query => read('readRevocationSurfaces', query), readRevocationMarker: anchor => read('readRevocationMarker', anchor) }, input), deadline]);
+    return !timedOut && failure && result?.status === 503 ? revocationUnavailable(failure?.message ?? failure) : result;
+  } finally { clearTimeout(timer); controller.abort(); }
+}
+
+async function checkRevocationProblem(admission, { listing, listingPin, jobId, now }) {
   let surfaces;
   try { surfaces = await admission.readRevocationSurfaces(structuredClone({ jobId, listingPin })); }
-  catch (error) { return unavailable(`revocation-surfaces-unavailable: ${error?.message ?? error}`); }
-  if (!Array.isArray(surfaces) || surfaces.length === 0 || surfaces.length > MAX_REVOCATION_SURFACES) return unavailable(`revocation-surfaces-malformed (1 to ${MAX_REVOCATION_SURFACES} surfaces)`);
+  catch (error) { return revocationUnavailable(`revocation-surfaces-unavailable: ${error?.message ?? error}`); }
+  if (!Array.isArray(surfaces) || surfaces.length === 0 || surfaces.length > MAX_REVOCATION_SURFACES) return revocationUnavailable(`revocation-surfaces-malformed (1 to ${MAX_REVOCATION_SURFACES} surfaces)`);
   const result = await checkListingRevocation(listing, listingPin.contentHash, { nowMs: now, surfaces,
     readMarker: async (anchor) => admission.readRevocationMarker(structuredClone(anchor)),
     verifyMarkerSignature: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }) });
   if (result.disposition === 'absent') return null;
   if (result.disposition === 'revoked') return { code: 'session_not_admitted', status: 409, message: `the Listing is revoked (${result.reason})` };
-  return unavailable(result.reason);
+  return revocationUnavailable(result.reason);
 }
 
 // The CORE §5.1 receipt states from which a Vet record may be relied on
@@ -166,7 +220,7 @@ export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, 
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
-  if (record.signature.signer !== verifier || ref.signer !== verifier || !isCanonicalBase64Url(record.signature.value)
+  if (!sameCanonicalClaimIdentity(record.signature.signer, verifier) || (ref.signer !== undefined && !sameCanonicalClaimIdentity(ref.signer, verifier)) || !isCanonicalBase64Url(record.signature.value)
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
@@ -175,7 +229,7 @@ export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, 
     strict = await verifyCompositeVerificationRecord(record,
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: invocation.freshness, dealSpecific: invocation.dealSpecific },
       { nowMs: now, resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
-        resolvePublicKey: (signature) => (signature.signer === verifier ? verifier : null), verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
+        resolvePublicKey: (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : null), verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
         verifyAuthorityAttestation: () => 'unresolved' });
   } catch (error) { return `the Vet record does not verify against its requirement: ${String(error?.message ?? error).slice(0, 120)}`; }
   if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;

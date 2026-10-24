@@ -1,18 +1,8 @@
-// Run-time port of http-mcp/src/dacs/demos-sr2-adapter.mjs at DACS-Agent-commerce/frontend
-// 15fdf23: the whole file.
-// OFFLINE integration adapter, not a live Demos writer. Only marked literal
-// loopback reads are permitted. The adapter has no key and never broadcasts.
-// It plans immutable CREATEs, authenticates the exact wallet authorization,
-// and authenticates SDK-wire fixture inclusion and native readback before
-// projecting evidence with the pinned @kynesyslabs/dacs helpers.
-//
-// The original strict skeleton uses the local `sign` interface and a
-// test-owned submitter. A separate explicit storage-anchor handoff may adopt
-// the approved SDK envelope from the frozen wallet's injected journal; this
-// does not loosen the strict skeleton or authorize any live send.
-// The portable SDK receipt says "demos"; its enclosing result always says
-// simulated-fixture, and its proof contains fixture validation data. Nothing
-// here authenticates real validator signatures, consensus, fees or finality.
+// Offline SR-2 fixture readback authenticates exact CREATE authorization,
+// confirmed inclusion and native contents. Literal marked loopback replies
+// establish simulated-fixture evidence only, never real consensus or finality.
+// The adapter owns no key and never broadcasts.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   canonicalize, contentHash, isAnchorReceipt, logicalToStorageProgramName, sha256Hex,
   assertDemosWriteEvidence, decodeDemosAnchorReceiptProof,
@@ -34,6 +24,7 @@ export const DEMOS_SR2_FIXTURE_CHAIN_IDENTITY = sha256Hex('dacs-chatgpt-plugin/d
 // Terminal stage for an explicitly denied, provably unsigned handoff only.
 export const DENIED_UNSIGNED = 'denied-unsigned';
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
+const MAX_NATIVE_CANDIDATES = 32;
 const HASH = /^[0-9a-f]{64}$/;
 const LITERAL_LOOPBACK = new Set(['127.0.0.1', '[::1]']);
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -77,9 +68,9 @@ function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
 }
 
 export class DemosSr2Error extends Error {
-  constructor(code, message) { super(message); this.code = code; }
+  constructor(code, message, options) { super(message, options); this.code = code; if (options?.status !== undefined) this.status = options.status; }
 }
-const reject = (code, message) => { throw new DemosSr2Error(code, message); };
+const reject = (code, message, options) => { throw new DemosSr2Error(code, message, options); };
 
 // Offline journal only. Retaining the same journal across adapter instances,
 // or restoring its serializable snapshot, preserves issued handoffs. A real
@@ -154,13 +145,29 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     if (!readback || canonicalize(readback) !== canonicalize(record)) reject('journal-error', 'the exact adapter stage was not durably retained');
   }
 
+  const readBudget = new AsyncLocalStorage();
+  async function boundedRead(work) {
+    if (readBudget.getStore()) return work();
+    const controller = new AbortController();
+    const cause = new DOMException('SR-2 aggregate read deadline exceeded', 'TimeoutError');
+    let timer;
+    const deadline = new Promise((_, fail) => { timer = setTimeout(() => {
+      controller.abort(cause); fail(new DemosSr2Error('indeterminate', cause.message, { cause }));
+    }, timeoutMs); });
+    try { return await readBudget.run(controller.signal, () => Promise.race([work(), deadline])); }
+    finally { clearTimeout(timer); controller.abort(); }
+  }
+
   async function call(path, body) {
     try {
-      if(sourceCapability) return await sourceCapability.readRpc(path,body);
+      const signal = readBudget.getStore(); signal?.throwIfAborted();
+      if(sourceCapability) return await sourceCapability.readRpc(path,body,{signal,maxBytes:1024*1024,timeoutMs});
       return await fetchBoundedJson(`${base}${path}`, {
         method: body === undefined ? 'GET' : 'POST', body, timeoutMs, maxBytes: 1024 * 1024, expectedOrigin: base,
         fetchImpl: async (url, options) => {
-          const response = await fetchImpl(url, options);
+          const signal = readBudget.getStore(); signal?.throwIfAborted();
+          const response = await fetchImpl(url, { ...options, signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal });
+          signal?.throwIfAborted();
           if (response.headers.get('x-dacs-simulation') !== 'fixture') {
             await response.body?.cancel().catch(() => {});
             reject('indeterminate', 'every SR-2 response must carry the simulation marker');
@@ -170,7 +177,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       });
     } catch (error) {
       if (error instanceof DemosSr2Error) throw error;
-      reject('indeterminate', `SR-2 observation unavailable: ${error.kind ?? 'transport'}`);
+      reject('indeterminate', `SR-2 observation unavailable: ${error.message ?? error.kind ?? 'transport'}`, { cause: error, status: error.status });
     }
   }
   async function nodeCall(message, data) {
@@ -179,10 +186,11 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return answer.response;
   }
   async function chainIdentity() {
+    readBudget.getStore()?.throwIfAborted();
     if(sourceCapability){
       let binding;
       try{binding=await sourceCapability.observeBinding();}
-      catch(error){reject('indeterminate',`source-bound chain identity observation unavailable: ${error?.code??'transport'}`);}
+      catch(error){reject('indeterminate',`source-bound chain identity observation unavailable: ${error?.message??'transport'}`,{cause:error,status:error?.status});}
       const keys=['bindingId','bindingVersion','chainIdentity','connectionId','endpoint','expiresAt','network','observedAt','pinVersion','source','transportAuthority'];
       if(!object(binding)||JSON.stringify(Object.keys(binding).sort())!==JSON.stringify(keys)
         ||typeof binding.connectionId!=='string'||!binding.connectionId||!object(binding.source)||!integer(binding.observedAt)||!integer(binding.expiresAt)||binding.expiresAt<=binding.observedAt) reject('indeterminate','source-bound chain identity observation is malformed');
@@ -197,7 +205,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   }
   async function nativeRead(address) {
     if (!NATIVE_ADDRESS.test(address)) reject('invalid', 'malformed native address');
-    const value = await call(`/storage-program/${address}`);
+    let value;try{value=await call(`/storage-program/${address}`);}catch(error){if(error?.status===404)error.observation='native-address-miss';throw error;}
     if (!object(value) || value.success !== true || value.storageAddress !== address
       || typeof value.owner !== 'string' || typeof value.programName !== 'string') reject('indeterminate', 'native readback lacks an exact address, owner, data or metadata');
     return value;
@@ -205,24 +213,27 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
 
   // Do not guess a nonce-derived physical address for another writer. Search
   // all bounded pages, then authenticate EACH native candidate and its owner.
-  async function resolve(logicalAddress, expectedWriter) {
+  async function resolve(logicalAddress, expectedWriter, nativeAddress) {
     const owner = addressForClaim(expectedWriter);
     const programName = logicalToStorageProgramName(logicalAddress);
     await chainIdentity();
     const candidates = new Map();
-    let complete = false;
-    for (let page = 0; page < 8; page += 1) {
+    let complete = nativeAddress !== undefined;
+    if (complete) { if (!NATIVE_ADDRESS.test(nativeAddress)) reject('invalid', 'malformed supplied native address'); candidates.set(nativeAddress, { programName }); }
+    for (let page = 0; page < 8 && !complete; page += 1) {
       const rows = await nodeCall('searchStoragePrograms', { query: programName, options: { exactMatch: true, limit: 50, offset: page * 50 } });
       if (!Array.isArray(rows) || rows.length > 50) reject('indeterminate', 'malformed name-index page');
       for (const row of rows) {
         if (!object(row) || !NATIVE_ADDRESS.test(row.storageAddress) || typeof row.programName !== 'string') reject('indeterminate', 'malformed name-index candidate');
         if (row.programName === programName) candidates.set(row.storageAddress, row);
+        if (candidates.size > MAX_NATIVE_CANDIDATES) reject('indeterminate', 'native candidate budget exceeded');
       }
       if (rows.length < 50) { complete = true; break; }
     }
     if (!complete) reject('indeterminate', 'name index exceeds the bounded pagination limit');
     const saved = await retained(logicalAddress, expectedWriter);
     if (saved) candidates.set(saved.nativeAddress, { programName });
+    if (candidates.size > MAX_NATIVE_CANDIDATES) reject('indeterminate', 'native candidate budget exceeded');
     const owned = [];
     for (const [address] of candidates) {
       const native = await nativeRead(address);
@@ -303,11 +314,11 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return { status: 'present', artifact: clone(native.data), ...(native.metadata.artifactKind !== undefined ? { artifactKind: native.metadata.artifactKind } : {}), receipt, demosEvidence: evidence, evidenceMode: mode,...(sourceCapability?{networkBinding:clone(sourceCapability.transportBinding),finality:'not-established'}:{}) };
   }
 
-  async function read(logicalAddress, { expectedWriter, expectedArtifactKind, expectedDeliveryBinding, signedProjection } = {}) {
+  async function readCurrent(logicalAddress, { expectedWriter, expectedArtifactKind, expectedDeliveryBinding, signedProjection, nativeAddress } = {}) {
     const projection = signedProjection === undefined ? undefined : clone(signedProjection);
     if (!expectedWriter) reject('writer-required', 'logical readback requires the independently expected writer');
-    const native = await resolve(logicalAddress, expectedWriter);
-    if (!native) return { status: 'absent', evidenceMode: mode };
+    const native = await resolve(logicalAddress, expectedWriter, nativeAddress ?? projection?.content?.to);
+    if (!native) throw Object.assign(new DemosSr2Error('indeterminate','name-index visibility does not establish authenticated absence'),{observation:'name-index-miss'});
     if (expectedArtifactKind !== undefined && native.metadata.artifactKind !== expectedArtifactKind) reject('invalid', 'native readback binds another artifact kind');
     if (expectedDeliveryBinding !== undefined && canonicalize(native.metadata.deliveryBinding) !== canonicalize(expectedDeliveryBinding)) reject('invalid', 'native readback binds another delivery scope');
     const saved = await retained(logicalAddress, expectedWriter);
@@ -320,23 +331,22 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return authenticate(logicalAddress, expectedWriter, native, expectedHash, saved, projection);
   }
 
-  // Current-state half of `read` for a receipt this adapter already
-  // authenticated: the name-index search, native GET, and the data, metadata,
-  // owner and creation-provenance comparison. It skips only the transaction and
-  // block authentication pinned by the receipt's block hash, so it cannot see
-  // a reorg that leaves this exact program in place. `resolve` pins the
-  // owner, program name and logical address; the metadata hash pins the kind.
+  const read = (logicalAddress, options) => boundedRead(() => readCurrent(logicalAddress, options));
+
+  // Reauthenticate current inclusion and native state, then compare every
+  // receipt field while retaining the original observation timestamp.
   async function recheck(receipt, { expectedWriter, signedProjection } = {}) {
-    const proof = decodeDemosAnchorReceiptProof(receipt);
-    const txHash = receipt.transactionRef.value;
-    const projected = signedProjection !== undefined;
-    if (proof.chainIdentity !== expectedIdentity || (projected && signedProjection?.hash !== txHash)) reject('invalid', 'receipt binds another chain or projection');
-    const native = await resolve(receipt.logicalAddress, expectedWriter);
-    if (!native) return { status: 'absent', evidenceMode: mode };
-    if (native.storageAddress !== receipt.nativeAddress
-      || exactHash(native.data) !== proof.nativeRead.valueHash || exactHash(native.metadata) !== proof.nativeRead.metadataHash
-      || !creationProvenanceMatches(native, txHash, Boolean(sourceCapability) && projected)) reject('invalid', 'current native readback differs from the authenticated receipt');
-    return { status: 'present', evidenceMode: mode };
+    return boundedRead(async () => {
+      if (!isAnchorReceipt(receipt) || !expectedWriter || receipt.writer !== expectedWriter) reject('invalid', 'an exact writer-bound receipt is required');
+      const proof = decodeDemosAnchorReceiptProof(receipt);
+      if (proof.chainIdentity !== expectedIdentity || (signedProjection !== undefined && signedProjection?.hash !== receipt.transactionRef.value)) reject('invalid', 'receipt binds another chain or projection');
+      const fresh = await read(receipt.logicalAddress, { expectedWriter, signedProjection, nativeAddress: receipt.nativeAddress });
+      fresh.demosEvidence.nativeRead.observedAt = receipt.observedAt;
+      if (!demosWriteEvidenceBindsReceiptContent(fresh.demosEvidence, receipt.logicalAddress, receipt.contentHash)) reject('invalid', 'receipt content hash differs');
+      const expected = demosWriteEvidenceToAnchorReceipt({ logicalAddress: receipt.logicalAddress, contentHash: receipt.contentHash, writer: expectedWriter, evidence: fresh.demosEvidence });
+      if (canonicalize(expected) !== canonicalize(receipt)) reject('invalid', 'receipt differs from current authenticated evidence');
+      return { status: 'present', evidenceMode: mode };
+    });
   }
 
   async function planWrite(input) {

@@ -5,21 +5,21 @@
 // delivery not done yet), then the delivered answer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { testWallet, NOW, JOB } from './helpers/protocol-fixture.mjs';
+import { fixtureListing } from './fixtures/listings.mjs';
+import * as listingApi from '../src/dacs/listing.mjs';
+import { agreementInput, listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
-import * as seller from '../src/index.mjs';
+import * as transport from '../src/index.mjs';
+const seller={...transport,...listingApi,agreementInput,listingPin};
 import { sellerSessionDelegationSigningBytes } from '../src/dacs/seller-transport-auth.mjs';
 
-function key() {
-  const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
-  return { address: `0x${raw.toString('hex')}`, claim: `did:demos:agent:${raw.toString('hex')}`,
-    sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey),
-    signWallet: (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}` };
-}
+let walletSequence=60;
+function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
 const identityFor = (party, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'payment-retry' });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
@@ -27,24 +27,23 @@ const identityFor = (party, presentedAt) => {
 const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
 
 async function world(t, answers, { proposalAnswers = [{ disposition: 'complete', contribution: null }] } = {}) {
-  const sellerKey = key(), buyerKey = key(), now = Date.now();
-  const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Retry seller', publicEndpoint: 'https://seller.invalid/agent',
-    listingId: 'payment-retry', listingVersion: 1, title: 'Retry report', description: 'Payment retry vectors.', category: 'services.market-report', tags: ['retry'], priceDem: '2.5', notBefore: now - 60000 });
-  const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
-  const jobId = core.generateCanonicalJobId(), buyerBundle = identityFor(buyerKey, now);
+  const sellerKey = key(), buyerKey = key(), now = NOW;
+  const listing=fixtureListing(sellerKey,{now}),pin=listingPin(listing);
+  const jobId = JOB, buyerBundle = identityFor(buyerKey, now);
   const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now })));
   const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
   const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-')));
-  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite') });
+  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [];
   let proposalCalls = 0;
   const facade = { claim: sellerKey.claim, listingPin: pin,
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
+    retainsPaymentClaim:()=>false,
     submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); } };
-  const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store }) });
+  const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:()=>NOW }) });
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
     Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
@@ -55,7 +54,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   };
   const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl,
     authentication: seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
-      resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }) }) });
+      now:()=>NOW,resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }) }) });
   await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
   const claim = { jobId, txHash: 'a1'.repeat(32), payerPayingKey: buyerKey.claim, nativePaymentEvidence: 'sdk-pay-dem-intake-native-evidence/loopback-v1' };
   const pay = async (body = claim) => { try { return await client.submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
@@ -94,9 +93,9 @@ test('a held answer after the evidence checkpoint runs the agent again on a fres
 // Other routes stay read-only; only unstarted payment claims may be released.
 test('the transport store permits retained retries for payment claims and proposals, with payment-only release', (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-store-')));
-  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite') });
+  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const jobId = core.generateCanonicalJobId(), reservation = { disposition: 'uncertain', effectKey: 'TEST-effect', owner: 'TEST-owner' };
+  const jobId = JOB, reservation = { disposition: 'uncertain', effectKey: 'TEST-effect', owner: 'TEST-owner' };
   for (const path of ['/dacs/v1/commitments', '/dacs/v1/commitments/signature', '/dacs/v1/bundles/buyer-copy']) {
     assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), { code: 'peer_reconciliation_invalid' }, path);
     assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { noEffect: true }), { code: 'peer_reconciliation_invalid' }, `${path}: no release either`);
@@ -106,7 +105,7 @@ test('the transport store permits retained retries for payment claims and propos
     assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), (error) => error.code !== 'peer_reconciliation_invalid',
       `${path} passes the guard and is checked against its retained effect`);
   }
-  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), { code: 'peer_reconciliation_invalid' });
+  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), error=>error.code==='peer_reconciliation_conflict');
 });
 
 test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
@@ -128,12 +127,10 @@ test('evidenced payment with a delivery not done yet is retried until the delive
 const THROW = Symbol('throw');
 async function delegatedWorld(t, answers) {
   const sellerKey = key(), buyerKey = key(), sessionKey = key();
-  let time = Date.now();
+  let time = NOW;
   const clock = () => time;
-  const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, time - 1000), displayName: 'Retry seller', publicEndpoint: 'https://seller.invalid/agent',
-    listingId: 'payment-retry-delegated', listingVersion: 1, title: 'Retry report', description: 'Delegated payment retry vectors.', category: 'services.market-report', tags: ['retry'], priceDem: '2.5', notBefore: time - 60000 });
-  const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
-  const jobId = core.generateCanonicalJobId(), buyerBundle = identityFor(buyerKey, time);
+  const listing=fixtureListing(sellerKey,{now:time}),pin=listingPin(listing);
+  const jobId = JOB, buyerBundle = identityFor(buyerKey, time);
   const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: time })));
   const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };

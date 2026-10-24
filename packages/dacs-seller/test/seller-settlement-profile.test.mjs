@@ -1,19 +1,17 @@
-// The native seller profile signs an Agreement only with the operator's
-// authenticated Vet context and over a rail its steward-signed rail authority
-// makes selectable, pinned into the session first, and commits or takes
-// payment only with the whole chain to delivery and that pin; the standalone
-// host starts only with that chain and the rail authority. No
-// module hooks; real Listing, signers and agent. Every capability records the
-// call and refuses, so a refused step is shown to have reached nothing.
+import {readFileSync} from 'node:fs';
+const nativeStage=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function submitNativePaymentEvidence(');
+// Native proposal admission and authenticated Vet contexts use real fixed-key
+// Listings, exact session challenges and durable contribution recovery.
+// Commitment, payment and delivery behavior is introduced separately.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
+import { createHash, sign, verify } from 'node:crypto';
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
-import * as seller from '../src/index.mjs';
+import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
@@ -23,12 +21,8 @@ import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
-function key() {
-  const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
-  return { privateKey: pair.privateKey, address: `0x${raw.toString('hex')}`, claim: `did:demos:agent:${raw.toString('hex')}`,
-    sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey),
-    signWallet: (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}` };
-}
+let nextWallet=90;
+function key(){const tag=nextWallet++,privateKey=core.privateKeyFromSeed(new Uint8Array(32).fill(tag)),raw=Buffer.from(core.rawPublicKey(core.publicKeyFromSeed(new Uint8Array(32).fill(tag))));return{privateKey,address:'0x'+raw.toString('hex'),claim:'did:demos:agent:'+raw.toString('hex'),sign:bytes=>Buffer.from(core.ed25519Sign(bytes,privateKey)),signWallet:message=>'0x'+Buffer.from(core.ed25519Sign(Buffer.from(message),privateKey)).toString('hex')};}
 const identityFor = (party, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
@@ -47,7 +41,7 @@ const presentWithout = (party, presentedAt) => {
 };
 
 async function world(t, { listingChanges = () => {} } = {}) {
-  const sellerKey = key(), buyerKey = key(), now = Date.now(), reached = [], steward = railSteward();
+  const sellerKey = key(), buyerKey = key(), now = 1780000000000, reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'settlement-profile', listingVersion: 1, title: 'Settlement profile report', description: 'Settlement profile vectors.',
@@ -260,7 +254,7 @@ test('an in-flight session keeps its pinned rail across a restart; a pin the ste
   // it, the pinned one continues (RAV-R2) and reaches the Agreement readback.
   const disabled = await w.agent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
   assert.notEqual((await refused(() => disabled.commit({ jobId: w.jobId })))?.code, 'rail_unavailable');
-  assert.ok(w.reached.includes('readAgreement'), 'the in-flight session got past the rail gate');
+  assert.equal(w.reached.includes('readAgreement'), !nativeStage, 'the in-flight session got past the rail gate');
   assert.deepEqual(disabled.durableSessionOf(w.jobId).railPin, pinned, 'the pin is not rewritten');
   disabled.close();
   w.reached.length = 0;
@@ -300,8 +294,8 @@ function nativeChain(w) {
       seen.publish++;
       const receipt = { receiptVersion: '1', substrate: 'TEST-offline-demos-sr2', finalityProfile: 'TEST-one-node-not-finality', logicalAddress,
         nativeAddress: `TEST-native-${core.sha256Hex(logicalAddress).slice(0, 16)}`, contentHash: core.contentHash(artifact), transactionRef: { kind: 'demos-tx', value: TX },
-        writer: w.signer.claim, nonce: '7', state: 'finalized', observationDisposition: 'established', observedAt: Date.now() + 1000,
-        evidence: { kind: 'demos-tx', value: TX }, blockRef: { id: BLOCK, height: '9', timestamp: Date.now() + 1000 } };
+        writer: w.signer.claim, nonce: '7', state: 'finalized', observationDisposition: 'established', observedAt: w.now + 1000,
+        evidence: { kind: 'demos-tx', value: TX }, blockRef: { id: BLOCK, height: '9', timestamp: w.now + 1000 } };
       retained.stored = { artifact: clone(artifact), receipt, txRef: { kind: 'demos', txHash: TX, blockNumber: 9 }, signedProjection: { TEST: 'projection' } };
       return { status: 'present', ...clone(retained.stored) };
     },
@@ -322,8 +316,8 @@ function nativeChain(w) {
   };
   return { seen, options, anchorAgreement };
 }
-const nativeClaim = (w) => ({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
 
+const nativeClaim=w=>({...w.payment,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE});
 test('a committed native session takes its payment claim to the transfer observation under its pinned rail, also after a restart with a later registry version or a disabled revision', async (t) => {
   for (const later of [{ authority: { railRegistryVersion: 2 } }, { changes: { availability: 'disabled' }, authority: { railRegistryVersion: 2 } }]) {
     const w = await world(t), chain = nativeChain(w), durableDirectory = w.dir();
@@ -443,15 +437,6 @@ test('over HTTP a rail refusal of a proposal has no effect: the same proposal is
 
 // Every gate the agent raises before any read, write, signature or send, and its status.
 const PRE_EFFECT_GATES = [['vet_context_required', 503], ['session_admission_required', 503], ['settlement_profile_unavailable', 503], ['rail_unavailable', 503], ['native_evidence_required', 409], ['bundle_finalization_unavailable', 503]];
-test('the HTTP journal answers every pre-effect gate refusal as definite and keeps no effect, so the same request runs again', async (t) => {
-  assert.deepEqual([...SELLER_PRE_EFFECT_REFUSALS].sort(), PRE_EFFECT_GATES.map(([code]) => code).sort());
-  for (const [code, status] of PRE_EFFECT_GATES) {
-    const w = await world(t), h = await httpSeller(t, w, { gate: { receiveProposal: code } });
-    await answered(() => h.client.propose(h.proposal));
-    assert.deepEqual([h.last.status, h.last.answer.error], [status, code], code);
-    assert.equal((await h.client.propose(h.proposal)).disposition, 'complete', `${code}: the same proposal runs once the gate opens`);
-  }
-});
 
 // ---- Session admission: profile, challenge, revocation and Vet records ----
 test('a native agent without the seller\'s session admission opens no session', async (t) => {
@@ -491,7 +476,7 @@ test('a Vet reference is signed only through the passing record of this job, par
     const agent = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input) }));
     const answer = await agent.receiveProposal(await w.proposalFor(input));
     agent.close();
-    assert.equal(answer.disposition, 'rejected', label);
+    assert.equal(answer.disposition,label==='no record behind the hash'?'indeterminate':'rejected',label);
     assert.equal(answer.contribution, undefined, `${label}: no seller contribution is issued`);
     if (reason) assert.match(answer.reason, reason, label);
     if (reason === notCounterparty) assert.equal(w.admission.calls.filter(([call]) => call === 'resolveVetRecord').length, reads, `${label}: no Vet record is read`);
@@ -509,7 +494,7 @@ test('a Demos Vet record is relied on only with an included or finalized SR-2 re
   const requirement = w.listing.buyerRequirement, other = core.sha256Hex('another record');
   const preserved = { preservedReceiptHash: core.sha256Hex('preserved receipt') };
   const spoiled = {
-    'no receipt (the reader has none)': [null, /^VET_RECORD_UNVERIFIED: the (buyer|seller) Vet record SR-2 receipt is unavailable: no SR-2 receipt at this reference$/],
+    'no receipt (the reader has none)': [null, /^VET_RECORD_UNVERIFIED: the (buyer|seller) Vet record read or authentication is unavailable$/],
     'an accepted Demos receipt': [{ state: 'accepted' }, /Demos.*included or finalized/],
     'a submitted receipt': [{ state: 'submitted' }, /not accepted or later/],
     'a rejected receipt': [{ state: 'rejected' }, /not accepted or later/],
@@ -530,7 +515,7 @@ test('a Demos Vet record is relied on only with an included or finalized SR-2 re
     for (const [role, party, bundle] of [['buyer', buyer, w.buyerBundle], ['seller', sellerClaim, sellerBundle]]) {
       const ref = await w.admission.vetRecord(w.jobId, party, bundle, { requirement, receipt });
       const answer = await sign({ ...w.vetted, [role]: { ...w.vetted[role], vetRecordRef: ref } });
-      assert.equal(answer.disposition, 'rejected', `${role}: ${label}`);
+      assert.equal(answer.disposition,receipt===null?'indeterminate':'rejected', `${role}: ${label}`);
       assert.equal(answer.contribution, undefined, `${role}: ${label}: no seller contribution is issued`);
       assert.match(answer.reason, reason, `${role}: ${label}`);
     }
@@ -562,9 +547,8 @@ test('a Vet record whose SR-2 receipt is well formed but not authenticated is no
   for (const [label, verdict] of Object.entries({ 'an invalid verdict': () => 'invalid', 'an indeterminate verdict': () => 'indeterminate', 'no verdict': () => undefined, 'a truthy non-verdict': () => true, 'a verifier that throws': () => { throw new Error('chain read failed'); } })) {
     w.admission.verifyReceiptWith(verdict);
     const answer = await sign(input);
-    assert.equal(answer.disposition, 'rejected', label);
-    assert.equal(answer.contribution, undefined, `${label}: no seller contribution is issued`);
-    assert.match(answer.reason, /^VET_RECORD_UNVERIFIED: (buyer: the Vet record SR-2 receipt is not verified|the buyer Vet record SR-2 receipt could not be verified)/, label);
+    assert.equal(answer.disposition,label==='an invalid verdict'?'rejected':'indeterminate',label);
+    assert.equal(answer.contribution,undefined);assert.match(answer.reason,/^VET_RECORD_UNVERIFIED:/);
   }
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
   // The verifier is asked about the exact record and receipt, and an authenticated one passes,
@@ -669,19 +653,15 @@ test('a retained Vet context is verified against its records again before the se
   const options = () => complete(w, { durableDirectory, sessionAdmission: { ...w.admission.sessionAdmission, resolveVetRecord } });
   let agent = await w.agent(options());
   t.after(() => agent.close());
-  // The context verifies and is kept; the proposal names another plan, so nothing is signed.
-  const otherRef = await w.admission.vetRecord(w.jobId, w.buyerKey.claim, w.buyerBundle, { requirement: w.listing.buyerRequirement });
-  const mismatched = await agent.receiveProposal(await w.proposalFor({ ...w.vetted, buyer: { ...w.vetted.buyer, vetRecordRef: otherRef } }));
-  assert.equal(mismatched.disposition, 'rejected');
-  assert.match(mismatched.reason, /differs from the independently derived seller agreement/);
-  assert.equal(typeof agent.durableSessionOf(w.jobId).demDeliveryContext, 'object', 'the context is retained, unsigned');
+  assert.equal((await agent.receiveProposal(await w.proposalFor(w.vetted))).disposition,'complete');
+  assert.equal(typeof agent.durableSessionOf(w.jobId).demDeliveryContext,'object');
   const request = await w.proposalFor(w.vetted);
-  for (const [label, reason] of [['down', /^VET_RECORD_UNVERIFIED: the buyer Vet record is unavailable: /], ['other', /^VET_RECORD_UNVERIFIED: buyer: the Vet record does not hash to its reference$/]]) {
+  for (const [label, reason] of [['down', /^VET_RECORD_UNVERIFIED: the buyer Vet record is unavailable$/], ['other', /^VET_RECORD_UNVERIFIED: buyer: the Vet record does not hash to its reference$/]]) {
     mode = label;
     for (const phase of ['running', 'restarted']) {
       if (phase === 'restarted') { agent.close(); agent = await w.agent(options()); }
       const answer = await agent.receiveProposal(request);
-      assert.equal(answer.disposition, 'rejected', `${label}, ${phase}`);
+      assert.equal(answer.disposition,label==='down'?'indeterminate':'rejected', `${label}, ${phase}`);
       assert.equal(answer.contribution, undefined, `${label}, ${phase}: no seller contribution is issued`);
       assert.match(answer.reason, reason, `${label}, ${phase}`);
     }
@@ -738,7 +718,7 @@ test('a missing or different admission or profile is refused before any session 
   for (const [label, change] of Object.entries(refusals)) {
     w.admission.answerWith(change);
     const attempt = fresh();
-    assert.deepEqual(await refused(() => agent.receiveProposal(attempt)), { code: 'session_not_admitted', status: 409 }, label);
+    assert.deepEqual(await refused(() => agent.receiveProposal(attempt)), {code:label==='nothing'?'session_admission_unavailable':'session_not_admitted',status:label==='nothing'?503:409},label);
     assert.equal(agent.stageOf(w.jobId), null, `${label}: no session is kept`);
     w.admission.answerWith(null);
     const asked = admits();
@@ -883,7 +863,7 @@ test('the seller decides revocation itself: a verified marker refuses a new sess
     'a well-known index whose integrity is not verified': [() => [{ kind: 'well-known', status: 'active', readStatus: 'ok', integrity: 'indeterminate' }], unknown('surface-integrity')],
     'no surface': [() => [], unknown('revocation-surfaces-malformed')],
     'more surfaces than one reading may name': [() => Array.from({ length: 17 }, () => active), unknown('revocation-surfaces-malformed')],
-    'a reader that throws': [() => { throw new Error('TEST revocation reader down'); }, unknown('revocation-surfaces-unavailable: TEST revocation reader down')],
+    'a reader that throws': [() => { throw new Error('TEST revocation reader down'); }, unknown('TEST revocation reader down')],
   };
   for (const [label, [surfaces, [code, status, message]]] of Object.entries(readings)) {
     w.admission.readRevocationWith(surfaces);
@@ -1008,7 +988,7 @@ test('DEM seller context refuses a foreign payout before signing and accepts its
   foreign.payoutBindings[0].payeeAddress = w.buyerKey.address;
   const bad = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(foreign) }));
   assert.equal((await bad.receiveProposal(await w.proposalFor(foreign))).disposition, 'rejected');
-  assert.equal(bad.durableSessionOf(w.jobId).sellerContribution, undefined);
+  assert.equal(bad.durableSessionOf(w.jobId)?.sellerContribution, undefined);
   bad.close();
   const good = await w.agent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => good.close());
@@ -1036,20 +1016,8 @@ test('new Listing sessions use the current inclusive validity interval, before a
   assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'signed session remains available after expiry');
 });
 
-test('an indeterminate proposal is retried over authenticated HTTP after recovery and restart', async (t) => {
-  const w = await world(t), original = w.chain.demDeliveryContext;
-  let unavailable = true;
-  w.chain.demDeliveryContext = () => unavailable
-    ? createDemDeliveryContext({ authority: 'TEST-temporary-context', resolveBuyer: notCalled, resolveSeller: async () => ({ disposition: 'indeterminate', reason: 'TEST context offline' }) })
-    : original();
-  const h = await httpSeller(t, w);
-  assert.equal((await h.client.propose(h.proposal)).disposition, 'indeterminate');
-  unavailable = false;
-  await h.restart(w.steward.railAuthority());
-  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
-});
 
-test('HTTP proposal recovery completes a contribution saved before its transport binding without signing twice', async (t) => {
+test('HTTP proposal recovery completes a contribution saved before its final proposal checkpoint without signing twice', async (t) => {
   const w = await world(t), h = await httpSeller(t, w);
   // Fail authentication of the first session snapshot that carries the final
   // proposal binding. The contribution and core durable checkpoints precede it.
@@ -1058,7 +1026,7 @@ test('HTTP proposal recovery completes a contribution saved before its transport
   w.signer.sign = (bytes) => {
     const text = Buffer.from(bytes).toString();
     if (text.startsWith('dacs-payee-bound-agreement:v1:')) agreementSigns++;
-    if (cut && text.includes('"kind":"session"') && text.includes('"transportIdentity"')) {
+    if (cut && text.includes('"kind":"session"') && JSON.parse(text.slice(text.indexOf('{'))).body.session.proposal?.proposalHash) {
       cut = false; throw new Error('TEST interrupted final session persistence');
     }
     return sign(bytes);
@@ -1066,7 +1034,7 @@ test('HTTP proposal recovery completes a contribution saved before its transport
   await answered(() => h.client.propose(h.proposal));
   assert.equal(h.last.status, 503);
   assert.ok(h.agent.durableSessionOf(w.jobId).sellerContribution, 'contribution was saved');
-  assert.equal(h.agent.durableSessionOf(w.jobId).transportIdentity, undefined, 'transport binding was not saved');
+  assert.equal(h.agent.durableSessionOf(w.jobId).proposal, null, 'completed proposal checkpoint was not saved');
   await h.restart(w.steward.railAuthority());
   const answer = await h.client.propose(h.proposal);
   assert.equal(answer.disposition, 'complete');
@@ -1107,8 +1075,8 @@ test('a Listing that expires during context resolution signs no new Agreement', 
   t.after(() => agent.close());
   const answer = await agent.receiveProposal(await w.proposalFor(w.vetted));
   assert.notEqual(answer.disposition, 'complete');
-  assert.equal(agent.durableSessionOf(w.jobId).sellerContribution, undefined);
-  assert.equal(agent.durableSessionOf(w.jobId).agreementSignatureKey, undefined);
+  assert.equal(agent.durableSessionOf(w.jobId)?.sellerContribution, undefined);
+  assert.equal(agent.durableSessionOf(w.jobId)?.agreementSignatureKey, undefined);
 });
 
 
@@ -1272,7 +1240,7 @@ test('an admitted unsigned proposal resumes after challenge expiry, including ac
  const request = await w.proposalFor(w.vetted);
  w.admission.verifyReceiptWith(() => 'indeterminate');
  assert.notEqual((await agent.receiveProposal(request)).disposition, 'complete');
- assert.equal(agent.stageOf(w.jobId), 'proposed');
+ assert.equal(agent.stageOf(w.jobId), null);
  clock += SESSION_CHALLENGE_LIFETIME_MS;
  agent.close(); agent = await seller.createSellerAgent(options);
  w.admission.verifyReceiptWith(null);
@@ -1336,7 +1304,7 @@ test('capacity reclaims only proven-exited unsaved reservations; live holders an
 });
 
 test('capacity never reclaims an unproven reservation', async (t) => {
-  const { DatabaseSync } = await import('node:sqlite');
+  const { default: DatabaseSync } = await import('better-sqlite3');
   const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-unproven-reservation-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -1,0 +1,46 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {proposalAdmissionFixture,proposalForInput} from './helpers/proposal-admission-fixture.mjs';
+import {JOB} from './helpers/protocol-fixture.mjs';
+
+test('completed proposal survives reject-different-proposal and exact replay after restart',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),a=await f.proposal(agent),complete=await agent.receiveProposal(a);assert.equal(complete.disposition,'complete');
+ const changed=structuredClone(f.contexts.get(JOB).input);changed.buyer.vetRecordRef.contentHash='f'.repeat(64);const b=await proposalForInput(changed);f.advance(1000);assert.equal((await agent.receiveProposal(b)).disposition,'rejected');agent.close();
+ const fresh=await f.open(),replay=await fresh.receiveProposal(a);assert.equal(replay.disposition,'complete');assert.deepEqual(replay.contribution,complete.contribution);
+});
+test('agreement state is exact, isolated, unknown-safe and retained across restart',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);await agent.receiveProposal(request);
+ const original=agent.agreementState(request.transportIdentity),copy=agent.agreementState(request.transportIdentity);copy.proposal.plan.draft.generatedAt++;copy.contribution.signature.value='TEST-changed';assert.deepEqual(agent.agreementState(request.transportIdentity),original);
+ assert.deepEqual(agent.agreementState({...request.transportIdentity,proposalHash:'0'.repeat(64)}),{proposal:null,contribution:null});agent.close();assert.deepEqual((await f.open()).agreementState(request.transportIdentity),original);
+});
+test('rejected unsigned context retains no live job and the next job can enter after restart',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true,maxJobs:1}),agent=await f.open(),bad=await f.proposal(agent,JOB,{synthetic:true});assert.equal((await agent.receiveProposal(bad)).disposition,'rejected');assert.equal(agent.durableSessions().length,0);agent.close();
+ const fresh=await f.open(),next=await f.proposal(fresh,'01J8N4YV7YVYQ4DB7M8T4C7W0B');assert.equal((await fresh.receiveProposal(next)).disposition,'complete');
+});
+for(const method of ['resolveVetRecord','readVetAnchorReceipt','verifyVetAnchorReceipt'])test(`${method} timeout stays indeterminate and preserves the actual cause`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent),cause=Object.assign(new Error('TEST source timeout'),{code:'ETIMEDOUT'});f.admission.sessionAdmission[method]=async()=>{throw cause;};
+ const result=await agent.receiveProposal(request);assert.equal(result.disposition,'indeterminate');assert.equal(result.cause,cause);assert.equal(result.causeCode,'timeout');
+});
+test('an indeterminate receipt authentication stays indeterminate',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);f.admission.verifyReceiptWith(()=> 'indeterminate');assert.equal((await agent.receiveProposal(request)).disposition,'indeterminate');
+});
+test('oversized Vet data is held before cloning and authentication',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);f.admission.sessionAdmission.resolveVetRecord=async()=>({extra:'x'.repeat(65537)});const answer=await agent.receiveProposal(request);assert.equal(answer.disposition,'indeterminate');assert.ok(answer.cause instanceof RangeError);
+});
+test('a stalled Vet reader aborts and releases the active job fence',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);let enter,limits;const started=new Promise(r=>enter=r);f.admission.sessionAdmission.resolveVetRecord=(_input,options)=>{limits=options;enter();return new Promise(()=>{});};
+ t.mock.timers.enable({apis:['setTimeout']});const pending=agent.receiveProposal(request);await started;t.mock.timers.tick(10001);const answer=await pending;assert.equal(answer.disposition,'indeterminate');assert.equal(answer.cause?.name,'TimeoutError');assert.equal(limits.signal.aborted,true);agent.close();
+});
+
+test('retired admission history remains bounded even when no live job is held',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true,maxJobs:1}),agent=await f.open();agent.close();
+ const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const {sha256Hex}=await import('@kynesyslabs/dacs');const {buyer,NOW}=await import('./helpers/protocol-fixture.mjs');
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});try{for(let i=0;i<16;i++){const nonce=sha256Hex('TEST retired history '+i),hash=sha256Hex('TEST accepted presentation '+i);state.issueChallenge(nonce,{jobId:JOB,buyer:buyer.claim,issuedAt:NOW,expiresAt:NOW+600000});state.attemptChallenge(nonce,{presentationHash:hash});state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}}finally{state.close();}
+ const fresh=await f.open();assert.throws(()=>fresh.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
+});
+
+test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true,signatures=0;const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(cut&&payload.body.session.proposal?.proposalHash){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};
+ const agent=await f.open(),request=await f.proposal(agent);await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);assert.equal(kept.proposal,null);agent.close();assert.deepEqual((await (await f.open()).receiveProposal(request)).contribution,kept.sellerContribution);assert.equal(signatures,1);
+});

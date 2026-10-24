@@ -28,40 +28,37 @@ function processStart(pid){
   if(!/^[0-9]+$/.test(start??''))throw new Error('process start time is unreadable');
   return start;
 }
-// When this machine booted (/proc/stat btime, whole seconds), in milliseconds.
-function bootTime(){
-  const match=/^btime ([0-9]+)$/m.exec(readFileSync('/proc/stat','utf8'));
-  if(!match)throw new Error('boot time is unreadable');
-  return Number(match[1])*1000;
+// Numeric proc paths are exit evidence only when procfs names this PID space.
+function pidMappingKnown(){
+  try{
+    const ids=/^NSpid:\s*(.*)$/m.exec(readFileSync('/proc/self/status','utf8'))?.[1].trim().split(/\s+/);
+    return ids?.length===1&&ids[0]===String(process.pid);
+  }catch{return false;}
 }
 export function currentSellerStateHolder(at=Date.now()){
   return{format:FORMAT,host:hostname(),machineId:readOptional(()=>readFileSync('/etc/machine-id','utf8')),bootId:readOptional(()=>readFileSync('/proc/sys/kernel/random/boot_id','utf8')),
-    pidNamespace:readOptional(()=>readlinkSync('/proc/self/ns/pid')),pid:process.pid,processStart:readOptional(()=>processStart(process.pid)),acquiredAt:at};
+    pidNamespace:readOptional(()=>readlinkSync('/proc/self/ns/pid')),pid:process.pid,processStart:readOptional(()=>processStart('self')),acquiredAt:at};
 }
 const exactHolder=(value)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===FIELDS.length&&FIELDS.every(key=>Object.hasOwn(value,key))
   &&value.format===FORMAT&&Number.isSafeInteger(value.pid)&&value.pid>0&&Number.isSafeInteger(value.acquiredAt)
-  &&['host','machineId','bootId','pidNamespace','processStart'].every(key=>value[key]===null||typeof value[key]==='string');
+  &&['host','machineId','bootId','pidNamespace'].every(key=>value[key]===null||typeof value[key]==='string')
+  &&(value.processStart===null||(typeof value.processStart==='string'&&/^\d{1,20}$/.test(value.processStart)));
 
 // 'gone' only on proof; a live holder (this process included) is 'live';
 // anything that cannot be decided is 'doubt'.
-export function sellerStateHolderState(holder,self=currentSellerStateHolder(),{readStart=processStart,readBootTime=bootTime}={}){
+export function sellerStateHolderState(holder,self=currentSellerStateHolder(),{readStart=processStart,readPidMapping=pidMappingKnown}={}){
   if(!exactHolder(holder))return 'doubt';
   // Proof needs the same machine: its name and identity, both known.
   if(!holder.machineId||holder.machineId!==self.machineId||holder.host!==self.host)return 'doubt';
   if(!holder.bootId||!self.bootId)return 'doubt';
-  // The machine restarted since: every process of that boot is gone. That
-  // holds only for a lock taken before this boot began. One taken since,
-  // under another boot id, comes from another machine with this one's
-  // identity (a cloned VM sharing the directory), which may still run.
-  if(holder.bootId!==self.bootId){
-    let booted;
-    try{booted=readBootTime();}catch{return 'doubt';}
-    return Number.isSafeInteger(booted)&&booted>0&&holder.acquiredAt<booted?'gone':'doubt';
-  }
+  // A cloned machine can share machine identity and disk while still running.
+  if(holder.bootId!==self.bootId)return 'doubt';
   if(!holder.pidNamespace||holder.pidNamespace!==self.pidNamespace||!holder.processStart)return 'doubt';
   let start;
+  try{if(readPidMapping()!==true)return 'doubt';}catch{return 'doubt';}
   try{start=readStart(holder.pid);}
   catch(error){return error?.code==='ENOENT'?'gone':'doubt';}
+  if(typeof start!=='string'||!/^\d{1,20}$/.test(start))return 'doubt';
   // The pid now names a later process: the holder is gone.
   return start===holder.processStart?'live':'gone';
 }
