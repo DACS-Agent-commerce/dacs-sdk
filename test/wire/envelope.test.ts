@@ -41,7 +41,7 @@ it.each(["seller", "jobId", "listingPin"] as const)("refuses a session delegatio
     .rejects.toMatchObject({ code: "peer_delegation_mismatch" });
 });
 
-it("emits no request signature when the endpoint continuation lacks a verified Agreement", async () => {
+async function continuationSigning(path: string) {
   const p = await committedPurchase((listing) => { listing.seller.publicEndpoint = "https://seller.proof.invalid"; });
   const binding = p.scope.binding, local = binding.local, now = p.scope.now, publicEndpoint = "https://seller.proof.invalid";
   const seller = { claim: p.scope.seller, sign: (input: Uint8Array) => ed25519Sign(input, privateKeyFromSeed(SELLER_SEED)) };
@@ -53,11 +53,23 @@ it("emits no request signature when the endpoint continuation lacks a verified A
     readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: binding.profile.chainIdentity }) });
   const x = await wireWorld();
   const payload: wire.WireRequestPayload = { ...x.request, ...p.scope.request, seller: seller.claim, listingPin: p.scope.listingPin,
-    profile: binding.profile, path: "/dacs/v1/payments", expiresAt: now + 30_000 };
+    profile: binding.profile, path, expiresAt: now + 30_000 };
   let calls = 0;
   const buyer = { claim: payload.buyer, sign: (input: Uint8Array) => { calls++; return ed25519Sign(input, privateKeyFromSeed(BUYER_SEED)); } };
-  await expect(wire.signWireEnvelope(payload, { signer: buyer, binding, local, purchaseProfile: binding.profile, endpointProof, publicEndpoint, now,
-    commitment: bytes(p.anchored), agreement: Buffer.from("{}"), signedListing: bytes(p.listing) }))
+  const context = { signer: buyer, binding, local, purchaseProfile: binding.profile, endpointProof, publicEndpoint, now };
+  return { p, payload, context, signatures: () => calls };
+}
+
+it("emits no request signature when the endpoint continuation lacks a verified Agreement", async () => {
+  const { p, payload, context, signatures } = await continuationSigning("/dacs/v1/payments");
+  await expect(wire.signWireEnvelope(payload, { ...context, commitment: bytes(p.anchored), agreement: Buffer.from("{}"), signedListing: bytes(p.listing) }))
     .rejects.toMatchObject({ code: "continuation_agreement_invalid" });
-  expect(calls).toBe(0);
+  expect(signatures()).toBe(0);
 });
+
+it.each(["/dacs/v1/payments", "/dacs/v1/bundles/request", "/dacs/v1/bundles/countersignature"])(
+  "emits no signature for a request on %s that carries no commitment evidence", async (path) => {
+    const { payload, context, signatures } = await continuationSigning(path);
+    await expect(wire.signWireEnvelope(payload, context)).rejects.toMatchObject({ code: "continuation_commitment_invalid", detail: "CONTINUATION-EVIDENCE-REQUIRED" });
+    expect(signatures()).toBe(0);
+  });
