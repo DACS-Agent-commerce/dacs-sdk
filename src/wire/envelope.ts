@@ -13,13 +13,15 @@
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
-import { assertEndpointProof, type EndpointProof } from "./discovery.js";
+import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitment.js";
+import { journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
+import { assertEndpointProof, isContinuingRoute, type EndpointProof } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
-  isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedFields, ownedOrNothing, sameCanonical,
+  isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
   uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
@@ -366,11 +368,11 @@ function admitNewPurchase(request: WireRequestPayload, ready: unknown): void {
  * Listing, for an Agreement both parties signed, valid at its receipt time
  * under the seller's own Listing, its receipt authenticated now (commitment.ts).
  */
-function admitContinuation(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): void {
+async function admitContinuation(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): Promise<void> {
   if (!isContinuingRoute(request.path)) return;
   if (c.commitment === null) fail("peer_agreement_uncommitted", 409);
   if (c.commitment === undefined) fail("seller_commitment_required", 500);
-  commitmentReceiptTime(c.commitment, c.agreement, c.signedListing, c.readCommitmentReceipt, { seller: request.seller, listingPin, now: c.now,
+  await commitmentReceiptTime(c.commitment, c.agreement, c.signedListing, c.readCommitmentReceipt, { binding: c.binding, seller: request.seller, listingPin, now: c.now,
     request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } });
 }
 
@@ -401,10 +403,10 @@ function reserveEffectRequest(request: WireRequestPayload, store: object | null)
 }
 
 /** Every per-request admission an effect needs, in order, then its reservation. */
-function admitEffect(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): WireEffect | null {
+async function admitEffect(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): Promise<WireEffect | null> {
   const store = effectJournal(request, c.requestJournal);
   admitNewPurchase(request, c.ready);
-  admitContinuation(request, c, listingPin);
+  await admitContinuation(request, c, listingPin);
   return reserveEffectRequest(request, store);
 }
 
@@ -435,21 +437,21 @@ export interface CheckedWireRequest {
  * retained. The received body bytes are admitted (CF-5) before their hash is
  * compared, and the admitted body is returned.
  */
-export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): CheckedWireRequest {
+export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<CheckedWireRequest> {
   const c = ownedFields(check, CHECK_FIELDS) as unknown as RequestCheck;
-  assertTp1Binding(c.binding, c.local);
   const listingPin = ownedConfig(c.listingPin, "wire_input_invalid") as ListingPin;
   const retained = c.retained === undefined ? undefined : ownedConfig(c.retained, "seller_retained_agreement_required") as JsonRecord;
   const artifacts = (c.artifacts === undefined ? [] : ownedArtifact(c.artifacts, "wire_input_invalid", 500)) as unknown[];
   if (!Array.isArray(artifacts)) fail("wire_input_invalid", 500);
   // Over 64 KiB is refused as admission refuses it, before the body is copied or anything else is checked.
   const rawBody = ownedBytes(c.rawBody, "wire_input_invalid", 500, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes, code: "bad_json", status: 400 });
+  await assertTp1Binding(c.binding, c.local);
   if (typeof envelope !== "object" || envelope === null || openedBinding(opened, envelope) !== c.binding ||
       envelope.payload?.kind !== "request") fail("peer_request_unverified", 500);
   // openWireEnvelope checked the kept tuple and the request's own; the tuple kept now is checked again.
-  if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding, 500);
+  if (c.purchaseProfile !== null) await assertPurchaseProfile(c.purchaseProfile, c.binding, 500);
   const { payload: request, delegation } = envelope;
-  assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
+  await assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
   const maxLifetimeMs = messageLifetime(c.maxLifetimeMs, "seller_configuration_invalid");
   if (request.seller !== c.seller) fail("peer_audience_wrong");
   if (!isUint(c.now) || request.expiresAt <= c.now || request.expiresAt > c.now + maxLifetimeMs) fail("peer_expired", 408);
@@ -478,17 +480,19 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
     }
   }
   if (!delegation) {
-    return { body, readbackOnly: false, effect: admitEffect(request, c, listingPin) };
+    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin) };
   }
   if (retainedArtifacts.length === 0) fail("peer_delegation_agreement_required", 409);
+  // This frozen copy came only from an authenticated, CF-5-admitted envelope.
+  const admittedDelegation = admitWireJson(Buffer.from(JSON.stringify(delegation)), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401);
   for (const artifact of retainedArtifacts) {
     const deadline = (artifact.terms as JsonRecord | undefined)?.deadline;
     if (!isUint(deadline)) fail("peer_delegation_deadline", 409);
-    verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, deadline: deadline as number });
+    await verifySellerSessionDelegation(admittedDelegation, { binding: c.binding, local: c.local, deadline: deadline as number });
   }
-  verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
+  await verifySellerSessionDelegation(admittedDelegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
   if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
-    return { body, readbackOnly: false, effect: admitEffect(request, c, listingPin) };
+    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin) };
   }
   // An expired delegation, or a request that outlives a live one, authenticates readback only. The buyer
   // picks readback by its own clock, which may run ahead of this one: a read route is answered either way.

@@ -52,11 +52,11 @@ const uncanonical = (value: string) => value.slice(0, -1) + String.fromCharCode(
  * its other members before both parties sign it. `deriveFrom` is the Listing
  * the Agreement is derived from when `l` is one the SDK cannot derive from.
  */
-function world(l: ReturnType<typeof tp1Listing> = { listing: LISTING, pin: PIN },
+async function world(l: ReturnType<typeof tp1Listing> = { listing: LISTING, pin: PIN },
   options: { terms?: Record<string, unknown>; patch?: Record<string, unknown>; generatedAt?: number; deriveFrom?: ReturnType<typeof tp1Listing> } = {}) {
   const buyer = party(), seller = SELLER, session = party();
   const PIN = l.pin;
-  const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
+  const binding = await bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
   const from = options.deriveFrom ?? l;
   const base = signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN, listing: from, generatedAt: options.generatedAt });
@@ -68,36 +68,36 @@ function world(l: ReturnType<typeof tp1Listing> = { listing: LISTING, pin: PIN }
     listingPin: PIN, agreementHash, nonce: n, expiresAt: NOW + 30_000, profile: binding.profile,
   });
   const signed = (payload: unknown, signer: ReturnType<typeof party>, domain: string) => ({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString("base64url") });
-  const direct = (payload: wire.WireRequestPayload) => wire.openWireEnvelope(header(signed(payload, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request)), "request", context);
-  const delegated = (payload: wire.WireRequestPayload) => {
+  const direct = async (payload: wire.WireRequestPayload) => await wire.openWireEnvelope(header(signed(payload, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request)), "request", context);
+  const delegated = async (payload: wire.WireRequestPayload) => {
     const delegation = signed({ version: "1", kind: "seller-session-delegation", buyer: buyer.claim, seller: seller.claim,
       sessionPublicKey: session.key, listingPin: PIN, jobId: JOB, notBefore: NOW - 1000, expiresAt: NOW + 60_000,
       profile: binding.profile }, buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation);
-    return wire.openWireEnvelope(header({ ...signed(payload, session, wire.DACS_SELLER_HTTP_DOMAINS.request), delegation }), "request", { ...context, requireDelegation: true });
+    return await wire.openWireEnvelope(header({ ...signed(payload, session, wire.DACS_SELLER_HTTP_DOMAINS.request), delegation }), "request", { ...context, requireDelegation: true });
   };
   const artifact = { jobId: JOB, listingRef: PIN, parties: [{ role: "buyer", primaryClaim: buyer.claim }, { role: "seller", primaryClaim: seller.claim }], terms: { deadline: NOW + 60_000 } };
   const retained = { jobId: JOB, agreementHash, buyer: buyer.claim, seller: seller.claim };
   const commitment = (options: Partial<Parameters<typeof wireCommitment>[0]> = {}) =>
     wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash, listingPin: PIN, committedAt: NOW - 5000, ...options });
   const check = (path: string, body = "{}") => ({ ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from(body), now: NOW, retained,
-    ready: true, readCommitmentReceipt: validReceipt, commitment: received(commitment()), agreement: received(agreement), signedListing: received(l.listing) });
+    ready: true, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), commitment: received(commitment()), agreement: received(agreement), signedListing: received(l.listing) });
   return { buyer, seller, binding, context, agreement, agreementHash, request, direct, delegated, artifact, retained, commitment, check, pin: PIN, listing: l.listing };
 }
 
 /** A commitment whose record signature is changed after the seller signed it; the receipt still names the record (its hash omits the signature). */
-function resigned(x: ReturnType<typeof world>, signature: Record<string, unknown>) {
+function resigned(x: Awaited<ReturnType<typeof world>>, signature: Record<string, unknown>) {
   const c = x.commitment();
   return { ...c, record: { ...c.record, signature: { ...c.record.signature, ...signature } } };
 }
 
 describe("the seller checks the job's finalized commitment on every payment and delivery route", () => {
-  const modes = (x: ReturnType<typeof world>, path: string) => [
-    ["direct", () => x.direct(x.request(path)), {}],
-    ["delegated", () => x.delegated(x.request(path)), { requireDelegation: true, artifacts: [x.artifact] }],
+  const modes = (x: Awaited<ReturnType<typeof world>>, path: string) => [
+    ["direct", async () => await x.direct(x.request(path)), {}],
+    ["delegated", async () => await x.delegated(x.request(path)), { requireDelegation: true, artifacts: [x.artifact] }],
   ] as const;
 
   /** Every way the commitment evidence is refused, with its own code. */
-  function refusals(x: ReturnType<typeof world>): Array<[string, Record<string, unknown>, string, number]> {
+  function refusals(x: Awaited<ReturnType<typeof world>>): Array<[string, Record<string, unknown>, string, number]> {
     const other = party();
     const value = x.commitment().record.signature.value;
     // The seller's key signs another record: its signature is valid, but not for this one.
@@ -158,45 +158,44 @@ describe("the seller checks the job's finalized commitment on every payment and 
       // CORE §B.7 SIG-6: the buyer's own signature bytes, in a non-canonical encoding.
       ["the Agreement with a non-canonical buyer signature encoding", { agreement: { ...x.agreement, signatures: [{ ...x.agreement.signatures[0]!, value: uncanonical(x.agreement.signatures[0]!.value) }, x.agreement.signatures[1]] } }, "continuation_agreement_invalid", 500],
       ["no receipt reader", { readCommitmentReceipt: undefined }, "commitment_reader_required", 500],
-      ["the reader finds it invalid", { readCommitmentReceipt: () => "invalid" }, "continuation_commitment_invalid", 500],
-      ["the reader cannot tell", { readCommitmentReceipt: () => "indeterminate" }, "commitment_unverified", 503],
-      ["the reader errs", { readCommitmentReceipt: () => "error" }, "commitment_unverified", 503],
-      ["the reader answers later", { readCommitmentReceipt: async () => "valid" }, "commitment_reader_invalid", 500],
+      ["the reader finds it invalid", { readCommitmentReceipt: Object.assign(() => "invalid", { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) }, "continuation_commitment_invalid", 500],
+      ["the reader cannot tell", { readCommitmentReceipt: Object.assign(() => "indeterminate", { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) }, "commitment_unverified", 503],
+      ["the reader errs", { readCommitmentReceipt: Object.assign(() => "error", { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) }, "commitment_unverified", 503],
     ];
   }
 
-  it.each(CONTINUING)("%s refuses missing, pending, forged or foreign evidence before any reservation, direct and delegated", (path) => {
-    const x = world();
+  it.each(CONTINUING)("%s refuses missing, pending, forged or foreign evidence before any reservation, direct and delegated", async (path) => {
+    const x = await world();
     const journals = testJournals();
-    const journal = journals.open();
+    const journal = await journals.open();
     for (const [mode, open, extra] of modes(x, path)) {
       for (const [name, change, code, status] of refusals(x)) {
         const retained = (change.retained ?? x.retained) as typeof x.retained;
-        const opened = change.retained ? (mode === "direct" ? x.direct : x.delegated)({ ...x.request(path), agreementHash: retained.agreementHash }) : open();
+        const opened = change.retained ? await (mode === "direct" ? x.direct : x.delegated)({ ...x.request(path), agreementHash: retained.agreementHash }) : await open();
         // Each refusal is given as received bytes, so it is refused for its own fault, never for not being admitted.
         const given = { ...change, ..."commitment" in change ? { commitment: received(change.commitment) } : {}, ..."agreement" in change ? { agreement: received(change.agreement) } : {} };
-        expect(() => wire.checkWireRequest(opened, { ...x.check(path), ...extra, requestJournal: journal, ...given } as wire.RequestCheck), `${mode}: ${name}`)
+        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(opened, { ...await x.check(path), ...extra, requestJournal: journal, ...given } as wire.RequestCheck)), `${mode}: ${name}`).rejects
           .toThrowError(expect.objectContaining({ code, status }));
       }
       // The reader's own failure keeps its cause.
       const timeout = new Error("receipt lookup timed out");
-      expect(() => wire.checkWireRequest(open(), { ...x.check(path), ...extra, requestJournal: journal, readCommitmentReceipt: () => { throw timeout; } } as wire.RequestCheck)).toThrow(timeout);
+      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await open(), { ...await x.check(path), ...extra, requestJournal: journal, readCommitmentReceipt: Object.assign(() => { throw timeout; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) } as wire.RequestCheck))).rejects.toThrow(timeout);
     }
     expect(journals.reservations()).toHaveLength(0);
     // The seller's own records, read again as bytes, continue the purchase; so do the values the wire admitted from them.
     for (const [mode, open, extra] of modes(x, path)) {
       const given = mode === "direct" ? { commitment: received(x.commitment()), agreement: received(x.agreement) }
         : { commitment: wire.admitWireArtifact(received(x.commitment()) as Buffer), agreement: wire.admitWireArtifact(received(x.agreement) as Buffer) };
-      expect(wire.checkWireRequest(open(), { ...x.check(path), ...extra, requestJournal: journals.open(), ...given } as wire.RequestCheck).readbackOnly).toBe(false);
+      expect((await wire.checkWireRequest(await open(), { ...await x.check(path), ...extra, requestJournal: await journals.open(), ...given } as wire.RequestCheck)).readbackOnly).toBe(false);
     }
     expect(journals.reservations()).toHaveLength(2);
   });
 
-  it("asks the receipt reader every time, with an owned frozen copy of the anchored commitment", () => {
-    const x = world();
+  it("asks the receipt reader every time, with an owned frozen copy of the anchored commitment", async () => {
+    const x = await world();
     const seen: unknown[] = [];
     const reader = (anchored: unknown) => { seen.push(anchored); return "valid"; };
-    for (const path of CONTINUING) wire.checkWireRequest(x.direct(x.request(path)), { ...x.check(path), requestJournal: testJournal(), readCommitmentReceipt: reader });
+    for (const path of CONTINUING) await wire.checkWireRequest(await x.direct(x.request(path)), { ...await x.check(path), requestJournal: testJournal(), readCommitmentReceipt: Object.assign(reader, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) });
     expect(seen).toHaveLength(3);
     for (const anchored of seen) {
       expect(Object.keys(anchored as object).sort()).toEqual(["anchorReceipt", "anchorTxRef", "nativeAddress", "record"]);
@@ -204,20 +203,20 @@ describe("the seller checks the job's finalized commitment on every payment and 
     }
   });
 
-  it("routes that start a purchase and read routes need no commitment", () => {
-    const x = world();
+  it("routes that start a purchase and read routes need no commitment", async () => {
+    const x = await world();
     for (const path of [P.proposals, P.commitments, P.commitmentSignature, P.context, P.state, P.bundleBuyerCopy]) {
-      expect(wire.checkWireRequest(x.direct(x.request(path)), { ...x.check(path), commitment: undefined, agreement: undefined, readCommitmentReceipt: undefined, requestJournal: testJournal() }).readbackOnly).toBe(false);
+      expect((await wire.checkWireRequest(await x.direct(x.request(path)), { ...await x.check(path), commitment: undefined, agreement: undefined, readCommitmentReceipt: undefined, requestJournal: testJournal() })).readbackOnly).toBe(false);
     }
   });
 
-  it("selects only the payee-bound Agreement from the pinned Listing's commit phase before any signature", () => {
-    const x = world();
+  it("selects only the payee-bound Agreement from the pinned Listing's commit phase before any signature", async () => {
+    const x = await world();
     const plainListing = tp1Listing({ seller: SELLER, listingId: "plain", patch: { pipeline: [
       { kind: "negotiate-fixed-price" }, { kind: "commit-agreement" },
       { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" },
     ] } });
-    const plain = world(plainListing);
+    const plain = await world(plainListing);
     const { payeeBoundAgreementVersion: _version, signatures: _signatures, terms, ...rest } = x.agreement as unknown as Record<string, unknown>;
     const { payoutBindings: _payout, ...plainTerms } = terms as Record<string, unknown>;
     const unsigned = { ...rest, agreementVersion: "1", terms: plainTerms };
@@ -229,27 +228,27 @@ describe("the seller checks the job's finalized commitment on every payment and 
     for (const path of CONTINUING) {
       for (const mode of ["direct", "delegated"] as const) {
         const extra = mode === "delegated" ? { requireDelegation: true, artifacts: [x.artifact] } : {};
-        expect(wire.checkWireRequest(x[mode](x.request(path)), { ...x.check(path), ...extra,
-          requestJournal: testJournal(), readCommitmentReceipt: reader }).effect).toMatchObject({ state: "new" });
+        expect((await wire.checkWireRequest(await x[mode](x.request(path)), { ...await x.check(path), ...extra,
+          requestJournal: testJournal(), readCommitmentReceipt: Object.assign(reader, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) })).effect).toMatchObject({ state: "new" });
         // A plain artifact is refused even when signed under its own domain and anchored by the seller.
-        expect(() => wire.checkWireRequest(x[mode]({ ...x.request(path), agreementHash: hash }), { ...x.check(path), ...extra,
+        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await x[mode]({ ...x.request(path), agreementHash: hash }), { ...await x.check(path), ...extra,
           requestJournal: testJournal(), retained: { ...x.retained, agreementHash: hash }, agreement: received(document),
-          commitment: received(x.commitment({ agreementHash: hash })), readCommitmentReceipt: reader }))
+          commitment: received(x.commitment({ agreementHash: hash })), readCommitmentReceipt: Object.assign(reader, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) }))).rejects
           .toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid" }));
       }
       // The pinned Listing selects the artifact before any signature, regardless of a host's phase label.
-      expect(() => wire.checkWireRequest(plain.direct(plain.request(path)), { ...plain.check(path),
+      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await plain.direct(plain.request(path)), { ...await plain.check(path),
         requestJournal: testJournal(), commitment: received(resigned(plain, { value: "A".repeat(86) })),
-        commitPhase: "commit-payee-bound-agreement" } as wire.RequestCheck))
+        commitPhase: "commit-payee-bound-agreement" } as wire.RequestCheck))).rejects
         .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported" }));
     }
     expect(reads).toBe(6);
   });
 
   it("a wire-accepted TP-1 purchase passes seller payment intake's Agreement-type check", async () => {
-    const x = world();
+    const x = await world();
     const committed = x.commitment();
-    expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: testJournal() }).effect)
+    expect((await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal() })).effect)
       .toMatchObject({ state: "new" });
     let listingReads = 0;
     const unexpected = async (): Promise<never> => { throw new Error("unexpected downstream intake call"); };
@@ -271,48 +270,48 @@ describe("the seller checks the job's finalized commitment on every payment and 
     expect(listingReads).toBe(1);
   });
 
-  it("reads the Listing from its own bytes: it must be the one the request, record and Agreement pin, the seller's, and select one fixed-price commitment", () => {
-    const x = world();
+  it("reads the Listing from its own bytes: it must be the one the request, record and Agreement pin, the seller's, and select one fixed-price commitment", async () => {
+    const x = await world();
     const listingRefused = (detail?: string) => expect.objectContaining({ code: "continuation_listing_invalid", status: 500, ...detail ? { detail } : {} });
-    const check = (w: ReturnType<typeof world>, signedListing: unknown, path: string = P.payments) => () =>
-      wire.checkWireRequest(w.direct(w.request(path)), { ...w.check(path), requestJournal: testJournal(), signedListing });
+    const check = (w: Awaited<ReturnType<typeof world>>, signedListing: unknown, path: string = P.payments) => async () =>
+      await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: testJournal(), signedListing });
     const other = party();
-    const cases: Array<[string, ReturnType<typeof world>, unknown]> = [
+    const cases: Array<[string, Awaited<ReturnType<typeof world>>, unknown]> = [
       ["no Listing", x, undefined],
       ["the seller's other Listing", x, received(tp1Listing({ seller: SELLER, listingId: "other-report" }).listing)],
       ["the Listing with one member changed after it was pinned", x, received({ ...LISTING, offering: { ...LISTING.offering, title: "Another report" } })],
       ["the Listing as another version", x, received({ ...LISTING, listingVersion: 2 })],
       ["not a Listing", x, received({ ...LISTING, pipeline: "commit-payee-bound-agreement" })],
       // Pinned by the request, the record and the Agreement, but not the seller's: another party presents it.
-      ["a Listing another party presents", world(tp1Listing({ seller: other, listingId: "not-the-sellers" }), { deriveFrom: tp1Listing({ seller: SELLER, listingId: "not-the-sellers" }) }),
+      ["a Listing another party presents", await world(tp1Listing({ seller: other, listingId: "not-the-sellers" }), { deriveFrom: tp1Listing({ seller: SELLER, listingId: "not-the-sellers" }) }),
         received(tp1Listing({ seller: other, listingId: "not-the-sellers" }).listing)],
     ];
-    for (const [name, w, given] of cases) for (const path of CONTINUING) expect(check(w, given, path), `${name} ${path}`).toThrowError(listingRefused());
+    for (const [name, w, given] of cases) for (const path of CONTINUING) await expect(Promise.resolve().then(await check(w, given, path)), `${name} ${path}`).rejects.toThrowError(listingRefused());
     // Pinned, the seller's, but outside what the SDK gate commits.
     // The Agreement is derived from the seller's valid Listing of the same id, then pins this one.
-    const pinned = (listingId: string, patch: Record<string, unknown>) => {
+    const pinned = async (listingId: string, patch: Record<string, unknown>) => {
       const l = tp1Listing({ seller: SELLER, listingId, patch });
-      return [world(l, { deriveFrom: tp1Listing({ seller: SELLER, listingId }) }), received(l.listing)] as const;
+      return [await world(l, { deriveFrom: tp1Listing({ seller: SELLER, listingId }) }), received(l.listing)] as const;
     };
     for (const [name, [w, given], code] of [
-      ["no deadlineSecAfterCommit", pinned("no-deadline", { terms: {} }), "continuation_listing_invalid"],
-      ["a zero deadlineSecAfterCommit", pinned("zero-deadline", { terms: { deadlineSecAfterCommit: 0 } }), "continuation_listing_invalid"],
-      ["auto-accept", pinned("auto-accept", { terms: { deadlineSecAfterCommit: 600, acceptanceModel: "auto-accept" } }), "continuation_listing_invalid"],
+      ["no deadlineSecAfterCommit", await pinned("no-deadline", { terms: {} }), "continuation_listing_invalid"],
+      ["a zero deadlineSecAfterCommit", await pinned("zero-deadline", { terms: { deadlineSecAfterCommit: 0 } }), "continuation_listing_invalid"],
+      ["auto-accept", await pinned("auto-accept", { terms: { deadlineSecAfterCommit: 600, acceptanceModel: "auto-accept" } }), "continuation_listing_invalid"],
       // A fixed-price Listing that negotiates by RFQ is not a coherent DACS-1 Listing.
-      ["an RFQ negotiation", pinned("rfq", { pipeline: [{ kind: "negotiate-rfq" }, { kind: "commit-payee-bound-agreement" }, { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" }] }), "continuation_listing_invalid"],
+      ["an RFQ negotiation", await pinned("rfq", { pipeline: [{ kind: "negotiate-rfq" }, { kind: "commit-payee-bound-agreement" }, { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" }] }), "continuation_listing_invalid"],
     ] as const) {
-      expect(check(w, given), name).toThrowError(expect.objectContaining({ code, status: 500 }));
+      await expect(Promise.resolve().then(await check(w, given)), name).rejects.toThrowError(expect.objectContaining({ code, status: 500 }));
     }
     // A caller's object, or a copy of an admitted one, is not admitted.
     const admitted = wire.admitWireArtifact(received(LISTING) as Buffer);
-    for (const given of [LISTING, structuredClone(admitted), JSON.stringify(LISTING)]) expect(check(x, given)).toThrowError(listingRefused("ARTIFACT-NOT-ADMITTED"));
-    expect(check(x, Buffer.from(JSON.stringify(LISTING).replace('"dacsVersion":"1"', '"dacsVersion":"1","dacsVersion":"1"')))).toThrowError(listingRefused("DUPLICATE-MEMBER"));
+    for (const given of [LISTING, structuredClone(admitted), JSON.stringify(LISTING)]) await expect(Promise.resolve().then(await check(x, given))).rejects.toThrowError(listingRefused("ARTIFACT-NOT-ADMITTED"));
+    await expect(Promise.resolve().then(await check(x, Buffer.from(JSON.stringify(LISTING).replace('"dacsVersion":"1"', '"dacsVersion":"1","dacsVersion":"1"'))))).rejects.toThrowError(listingRefused("DUPLICATE-MEMBER"));
     // Its exact bytes, or the value admitWireArtifact returned, continue.
-    for (const given of [received(LISTING), admitted]) expect(check(x, given)().effect).toMatchObject({ state: "new" });
+    for (const given of [received(LISTING), admitted]) expect((await await check(x, given)()).effect).toMatchObject({ state: "new" });
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
-  it("verifies the pinned Listing's own signature under the seller's key (DACS-1 §6.3.4) on every continuing route, direct and delegated: the pin omits the signature", () => {
-    const x = world();
+  it("verifies the pinned Listing's own signature under the seller's key (DACS-1 §6.3.4) on every continuing route, direct and delegated: the pin omits the signature", async () => {
+    const x = await world();
     const other = party();
     const journals = testJournals();
     let receipts = 0;
@@ -325,39 +324,39 @@ describe("the seller checks the job's finalized commitment on every payment and 
     const otherListing = tp1Listing({ seller: SELLER, listingId: "other-report" }).pin.contentHash;
     // DACS-1 §6.3.4 permits this second carried claim to sign with its own key.
     const coSigned = tp1Listing({ seller: other, listingId: "co-signed", patch: { seller: { ...LISTING.seller, identity: { ...LISTING.seller.identity, claims: [{ ref: SELLER.claim }, { ref: other.claim }] } } } });
-    const cases: Array<[string, unknown, ReturnType<typeof world>]> = [
+    const cases: Array<[string, unknown, Awaited<ReturnType<typeof world>>]> = [
       ["a signature with one bit changed", resign({ value: flipped(signature.value) }), x],
       ["the seller's signature over another Listing", resign({ value: forged(SELLER, otherListing) }), x],
       ["another key's signature naming the seller", resign({ value: forged(other, x.pin.contentHash) }), x],
       ["another algorithm", resign({ algorithm: "ecdsa-secp256k1" }), x],
-      ["seller bytes falsely attributed to a carried key", { ...coSigned.listing, signature: { ...coSigned.listing.signature, value: forged(SELLER, coSigned.pin.contentHash) } }, world(coSigned)],
+      ["seller bytes falsely attributed to a carried key", { ...coSigned.listing, signature: { ...coSigned.listing.signature, value: forged(SELLER, coSigned.pin.contentHash) } }, await world(coSigned)],
     ];
     for (const [name, listing, w] of cases) {
       const given = received(listing);
       // The tampered Listing keeps its pin: only the signature differs.
       expect(contentHash(listing as never), name).toBe(w.pin.contentHash);
       for (const path of CONTINUING) {
-        for (const [mode, open, extra] of [["direct", () => w.direct(w.request(path)), {}], ["delegated", () => w.delegated(w.request(path)), { requireDelegation: true, artifacts: [w.artifact] }]] as const) {
-          expect(() => wire.checkWireRequest(open(), { ...w.check(path), ...extra, requestJournal: journals.open(), signedListing: given, readCommitmentReceipt: () => { receipts++; return "valid"; } }), `${name} ${mode} ${path}`).toThrowError(refused);
+        for (const [mode, open, extra] of [["direct", async () => await w.direct(w.request(path)), {}], ["delegated", async () => await w.delegated(w.request(path)), { requireDelegation: true, artifacts: [w.artifact] }]] as const) {
+          await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await open(), { ...await w.check(path), ...extra, requestJournal: await journals.open(), signedListing: given, readCommitmentReceipt: Object.assign(() => { receipts++; return "valid"; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) })), `${name} ${mode} ${path}`).rejects.toThrowError(refused);
         }
       }
     }
     expect(journals.reservations()).toEqual([]);
     expect(receipts).toBe(0);
-    const authorized = world(coSigned);
+    const authorized = await world(coSigned);
     for (const path of CONTINUING) {
-      for (const [open, extra] of [[() => authorized.direct(authorized.request(path)), {}],
-        [() => authorized.delegated(authorized.request(path)), { requireDelegation: true, artifacts: [authorized.artifact] }]] as const) {
-        expect(wire.checkWireRequest(open(), { ...authorized.check(path), ...extra, requestJournal: testJournal() }).effect).toMatchObject({ state: "new" });
+      for (const [open, extra] of [[async () => await authorized.direct(authorized.request(path)), {}],
+        [async () => await authorized.delegated(authorized.request(path)), { requireDelegation: true, artifacts: [authorized.artifact] }]] as const) {
+        expect((await wire.checkWireRequest(await open(), { ...await authorized.check(path), ...extra, requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
       }
     }
     // The primary key remains valid too.
     expect(journals.reservations()).toEqual([]);
-    expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journals.open() }).effect).toMatchObject({ state: "new" });
+    expect((await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: await journals.open() })).effect).toMatchObject({ state: "new" });
     expect(journals.reservations()).toHaveLength(1);
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
-  it("refuses an Agreement both parties signed that carries a second discriminator (DACS-3 §8.5) or a priorPaymentDispositionRef under a Listing with no pay-alternative phase (§8.5.2 check 10), on every continuing route", () => {
+  it("refuses an Agreement both parties signed that carries a second discriminator (DACS-3 §8.5) or a priorPaymentDispositionRef under a Listing with no pay-alternative phase (§8.5.2 check 10), on every continuing route", async () => {
     const journals = testJournals();
     const prior = { anchor: { kind: "storage-program", locator: "prior-disposition" }, contentHash: "d".repeat(64) };
     const cases: Array<[string, Parameters<typeof world>[1], string]> = [
@@ -367,9 +366,9 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["a priorPaymentDispositionRef", { terms: { priorPaymentDispositionRef: prior } }, "PRIOR-DISPOSITION"],
     ];
     for (const [name, options, want] of cases) {
-      const w = world(undefined, options);
+      const w = await world(undefined, options);
       for (const path of CONTINUING) {
-        expect(() => wire.checkWireRequest(w.direct(w.request(path)), { ...w.check(path), requestJournal: journals.open() }), `${name} ${path}`)
+        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() })), `${name} ${path}`).rejects
           .toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid", status: 500, ...(want === "continuation_agreement_invalid" ? {} : { detail: want }) }));
       }
     }
@@ -377,23 +376,23 @@ describe("the seller checks the job's finalized commitment on every payment and 
   });
 
   it("signs, opens and admits a request only for a route in the table, never another spelling of one that would skip the commitment check", async () => {
-    const x = world();
+    const x = await world();
     const journals = testJournals();
     for (const alias of ["/dacs/v1/payments/", "/dacs/v1//payments", "/dacs/v1/Payments", "/dacs/v1/payments?x=1", "/dacs/v1/bundles/request/", "/dacs/v1/unknown", "/dacs/v1/agreements/state/"]) {
       // A buyer signs it, and the seller opens it, nowhere.
-      expect(() => x.direct(x.request(alias)), alias).toThrowError(expect.objectContaining({ code: "peer_envelope_invalid" }));
+      await expect(Promise.resolve().then(async () => await x.direct(x.request(alias))), alias).rejects.toThrowError(expect.objectContaining({ code: "peer_envelope_invalid" }));
       await expect(wire.signWireEnvelope(x.request(alias), { signer: x.buyer, binding: x.binding, local: LOCAL, purchaseProfile: x.binding.profile, now: NOW }), alias)
         .rejects.toMatchObject({ code: "peer_envelope_invalid" });
       // A host that serves the alias and passes its raw path is refused for the signed route's path.
       for (const route of CONTINUING) {
-        expect(() => wire.checkWireRequest(x.direct(x.request(route)), { ...x.check(alias), requestJournal: journals.open(), commitment: undefined }), `${alias} for ${route}`)
+        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await x.direct(x.request(route)), { ...await x.check(alias), requestJournal: await journals.open(), commitment: undefined })), `${alias} for ${route}`).rejects
           .toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
       }
     }
     expect(journals.reservations()).toEqual([]);
   });
 
-  it("checks the signed Agreement's terms against the pinned Listing (DACS-3 §8.5.2 checks 1-4) on every continuing route, direct and delegated", () => {
+  it("checks the signed Agreement's terms against the pinned Listing (DACS-3 §8.5.2 checks 1-4) on every continuing route, direct and delegated", async () => {
     // Each Agreement is signed by both parties and committed by the seller's own finalized record: only its terms differ from the Listing's.
     const terms = (signedAgreement({ buyer: party(), seller: SELLER, jobId: JOB, listingPin: PIN }).agreement as unknown as { terms: Record<string, unknown> }).terms;
     const deliverable = terms.deliverable as Record<string, unknown>;
@@ -412,27 +411,27 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["a schemaUrl the Listing does not declare (check 4)", { terms: { deliverable: { ...deliverable, schemaUrl: "https://schema.continuation.invalid/report.json" } } }],
     ];
     for (const [name, change] of cases) {
-      const w = world({ listing: LISTING, pin: PIN }, change);
+      const w = await world({ listing: LISTING, pin: PIN }, change);
       for (const path of CONTINUING) {
         const journals = testJournals();
-        const direct = () => wire.checkWireRequest(w.direct(w.request(path)), { ...w.check(path), requestJournal: journals.open() });
-        const delegated = () => wire.checkWireRequest(w.delegated(w.request(path)), { ...w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: journals.open() } as wire.RequestCheck);
-        expect(direct, `${name} ${path} direct`).toThrowError(termsRefused);
-        expect(delegated, `${name} ${path} delegated`).toThrowError(termsRefused);
+        const direct = async () => await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() });
+        const delegated = async () => await wire.checkWireRequest(await w.delegated(w.request(path)), { ...await w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: await journals.open() } as wire.RequestCheck);
+        await expect(Promise.resolve().then(direct), `${name} ${path} direct`).rejects.toThrowError(termsRefused);
+        await expect(Promise.resolve().then(delegated), `${name} ${path} delegated`).rejects.toThrowError(termsRefused);
         expect(journals.reservations(), `${name} ${path}`).toHaveLength(0);
       }
     }
     // The SDK verifier's own reason is kept as the cause.
-    const w = world({ listing: LISTING, pin: PIN }, cases[0]![1]);
+    const w = await world({ listing: LISTING, pin: PIN }, cases[0]![1]);
     let thrown: unknown;
-    try { wire.checkWireRequest(w.direct(w.request(P.payments)), { ...w.check(P.payments), requestJournal: testJournal() }); } catch (error) { thrown = error; }
+    try { await wire.checkWireRequest(await w.direct(w.request(P.payments)), { ...await w.check(P.payments), requestJournal: testJournal() }); } catch (error) { thrown = error; }
     expect((thrown as Error).cause).toEqual(expect.objectContaining({ message: expect.stringMatching(/price/) }));
     // The Agreement derived from the Listing continues.
-    const derived = world();
-    expect(wire.checkWireRequest(derived.direct(derived.request(P.payments)), { ...derived.check(P.payments), requestJournal: testJournal() }).effect).toMatchObject({ state: "new" });
+    const derived = await world();
+    expect((await wire.checkWireRequest(await derived.direct(derived.request(P.payments)), { ...await derived.check(P.payments), requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
-  it("continues only a TP-1 Listing: fixed DEM pricing, one pay-dem phase, and deliver-storage-program with a storage-program deliverable (DACS-4 §9.6.1)", () => {
+  it("continues only a TP-1 Listing: fixed DEM pricing, one pay-dem phase, and deliver-storage-program with a storage-program deliverable (DACS-4 §9.6.1)", async () => {
     const pipeline = (pay: Array<Record<string, unknown>>, deliver: Array<Record<string, unknown>>) =>
       [{ kind: "negotiate-fixed-price" }, { kind: "commit-payee-bound-agreement" }, ...pay, ...deliver];
     const PAY_DEM = { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } };
@@ -448,13 +447,13 @@ describe("the seller checks the job's finalized commitment on every payment and 
     ];
     for (const [name, patch, code, detail] of cases) {
       const l = tp1Listing({ seller: SELLER, listingId: `shape-${cases.findIndex(([n]) => n === name)}`, patch });
-      const w = world(l);
+      const w = await world(l);
       for (const path of CONTINUING) {
         const journals = testJournals();
-        expect(() => wire.checkWireRequest(w.direct(w.request(path)), { ...w.check(path), requestJournal: journals.open() }), `${name} ${path} direct`)
+        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() })), `${name} ${path} direct`).rejects
           .toThrowError(expect.objectContaining({ code, status: 500, detail }));
-        expect(() => wire.checkWireRequest(w.delegated(w.request(path)), { ...w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: journals.open() } as wire.RequestCheck),
-          `${name} ${path} delegated`).toThrowError(expect.objectContaining({ code, status: 500, detail }));
+        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await w.delegated(w.request(path)), { ...await w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: await journals.open() } as wire.RequestCheck)),
+          `${name} ${path} delegated`).rejects.toThrowError(expect.objectContaining({ code, status: 500, detail }));
         expect(journals.reservations(), `${name} ${path}`).toHaveLength(0);
       }
     }
@@ -463,44 +462,44 @@ describe("the seller checks the job's finalized commitment on every payment and 
     expect(LISTING.pipeline.map((phase) => phase.kind)).toEqual(["negotiate-fixed-price", "commit-payee-bound-agreement", "pay-dem", "deliver-storage-program"]);
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
-  it("re-evaluates DACS-3 §8.5.2 checks 5 and 6 at the receipt time from the seller's own Listing, on every continuing route, direct and delegated", () => {
+  it("re-evaluates DACS-3 §8.5.2 checks 5 and 6 at the receipt time from the seller's own Listing, on every continuing route, direct and delegated", async () => {
     // A Listing that ended ten minutes ago: a purchase committed while it was valid continues; one committed after it ended does not (check 6).
     const notBefore = NOW - 3_600_000, notAfter = NOW - 600_000;
     const ended = tp1Listing({ seller: SELLER, listingId: "ended", validity: { notBefore, notAfter } });
-    const w = world(ended, { generatedAt: notBefore });
+    const w = await world(ended, { generatedAt: notBefore });
     const generatedAt = (w.agreement as unknown as { generatedAt: number }).generatedAt;
     const deadline = (w.agreement as unknown as { terms: { deadline: number } }).terms.deadline;
     expect(deadline).toBe(generatedAt + 600_000);
     const invalid = expect.objectContaining({ code: "continuation_commitment_invalid", status: 500 });
-    const modes = (x: ReturnType<typeof world>, path: string) => [
-      ["direct", () => x.direct(x.request(path)), {}],
-      ["delegated", () => x.delegated(x.request(path)), { requireDelegation: true, artifacts: [{ ...x.artifact, listingRef: x.pin }] }],
+    const modes = (x: Awaited<ReturnType<typeof world>>, path: string) => [
+      ["direct", async () => await x.direct(x.request(path)), {}],
+      ["delegated", async () => await x.delegated(x.request(path)), { requireDelegation: true, artifacts: [{ ...x.artifact, listingRef: x.pin }] }],
     ] as const;
-    const run = (x: ReturnType<typeof world>, path: string, committedAt: number) => modes(x, path).map(([mode, open, extra]) => [mode, () =>
-      wire.checkWireRequest(open(), { ...x.check(path), ...extra, requestJournal: testJournal(), commitment: received(x.commitment({ committedAt })) } as wire.RequestCheck)] as const);
+    const run = (x: Awaited<ReturnType<typeof world>>, path: string, committedAt: number) => modes(x, path).map(([mode, open, extra]) => [mode, async () =>
+      await wire.checkWireRequest(await open(), { ...await x.check(path), ...extra, requestJournal: testJournal(), commitment: received(x.commitment({ committedAt })) } as wire.RequestCheck)] as const);
     // An Agreement generated before the Listing opened (a hand-built one): its commitment before notBefore is refused.
     // Its deadline is within the limit, so only notBefore refuses it.
-    const early = world(ended, { generatedAt: notBefore, patch: { generatedAt: notBefore - 2000 }, terms: { deadline: notBefore + 590_000 } });
+    const early = await world(ended, { generatedAt: notBefore, patch: { generatedAt: notBefore - 2000 }, terms: { deadline: notBefore + 590_000 } });
     // Its deadline at the limit committedAt + deadlineSecAfterCommit, and one millisecond past it (check 5).
-    const atLimit = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 + 600_000 } });
-    const pastLimit = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 + 600_001 } });
+    const atLimit = await world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 + 600_000 } });
+    const pastLimit = await world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 + 600_001 } });
     // Committed at the Agreement's own deadline, and one millisecond after it.
-    const atDeadline = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 } });
-    const pastDeadline = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 999 } });
+    const atDeadline = await world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 } });
+    const pastDeadline = await world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 999 } });
     // Its deadline is after notAfter, so only notAfter decides there.
-    const late = world(ended, { generatedAt: notBefore, terms: { deadline: notAfter + 1000 } });
+    const late = await world(ended, { generatedAt: notBefore, terms: { deadline: notAfter + 1000 } });
     for (const path of CONTINUING) {
-      for (const [mode, check] of run(late, path, notAfter)) expect(check().effect, `${path} ${mode}: at notAfter`).toMatchObject({ state: "new" });
-      for (const [mode, check] of run(late, path, notAfter + 1)) expect(check, `${path} ${mode}: after notAfter`).toThrowError(invalid);
-      for (const [mode, check] of run(w, path, notBefore)) expect(check().effect, `${path} ${mode}: at notBefore`).toMatchObject({ state: "new" });
-      for (const [mode, check] of run(early, path, notBefore - 1)) expect(check, `${path} ${mode}: before notBefore`).toThrowError(invalid);
-      for (const [mode, check] of run(atLimit, path, notBefore + 1000)) expect(check().effect, `${path} ${mode}: deadline at the limit`).toMatchObject({ state: "new" });
-      for (const [mode, check] of run(pastLimit, path, notBefore + 1000)) expect(check, `${path} ${mode}: deadline past the limit`).toThrowError(invalid);
-      for (const [mode, check] of run(atDeadline, path, notBefore + 1000)) expect(check().effect, `${path} ${mode}: committed at the deadline`).toMatchObject({ state: "new" });
-      for (const [mode, check] of run(pastDeadline, path, notBefore + 1000)) expect(check, `${path} ${mode}: committed after the deadline`).toThrowError(invalid);
+      for (const [mode, check] of run(late, path, notAfter)) expect((await check()).effect, `${path} ${mode}: at notAfter`).toMatchObject({ state: "new" });
+      for (const [mode, check] of run(late, path, notAfter + 1)) await expect(Promise.resolve().then(check), `${path} ${mode}: after notAfter`).rejects.toThrowError(invalid);
+      for (const [mode, check] of run(w, path, notBefore)) expect((await check()).effect, `${path} ${mode}: at notBefore`).toMatchObject({ state: "new" });
+      for (const [mode, check] of run(early, path, notBefore - 1)) await expect(Promise.resolve().then(check), `${path} ${mode}: before notBefore`).rejects.toThrowError(invalid);
+      for (const [mode, check] of run(atLimit, path, notBefore + 1000)) expect((await check()).effect, `${path} ${mode}: deadline at the limit`).toMatchObject({ state: "new" });
+      for (const [mode, check] of run(pastLimit, path, notBefore + 1000)) await expect(Promise.resolve().then(check), `${path} ${mode}: deadline past the limit`).rejects.toThrowError(invalid);
+      for (const [mode, check] of run(atDeadline, path, notBefore + 1000)) expect((await check()).effect, `${path} ${mode}: committed at the deadline`).toMatchObject({ state: "new" });
+      for (const [mode, check] of run(pastDeadline, path, notBefore + 1000)) await expect(Promise.resolve().then(check), `${path} ${mode}: committed after the deadline`).rejects.toThrowError(invalid);
       // A deadline ten years out, as a seller-signed record could commit after the gate refused it.
-      for (const [mode, check] of run(world(ended, { generatedAt: notBefore, terms: { deadline: NOW + 10 * 365 * 86_400_000 } }), path, notBefore + 1000)) {
-        expect(check, `${path} ${mode}: deadline ten years out`).toThrowError(invalid);
+      for (const [mode, check] of run(await world(ended, { generatedAt: notBefore, terms: { deadline: NOW + 10 * 365 * 86_400_000 } }), path, notBefore + 1000)) {
+        await expect(Promise.resolve().then(check), `${path} ${mode}: deadline ten years out`).rejects.toThrowError(invalid);
       }
     }
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
@@ -510,24 +509,24 @@ describe("the seller checks the job's finalized commitment on every payment and 
     await expect(commitPurchase(purchase, NOW + 20_000)).rejects.toThrow(/authoritative agreement\/Listing checks/);
     // The same seller-signed, finalized record, as the seller's host reads it back from the chain after a restart.
     const record = wireCommitment({ seller: purchase.seller, buyer: purchase.buyer.claim, jobId: JOB, agreementHash: purchase.agreementHash, listingPin: purchase.pin, committedAt: NOW + 20_000 });
-    const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
+    const binding = await bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
     const at = NOW + 25_000;
     for (const path of CONTINUING) {
       const payload: wire.WireRequestPayload = { version: "1", kind: "request", method: "POST", path, bodyHash: sha256Hex("{}"), jobId: JOB, buyer: purchase.buyer.claim,
         seller: purchase.seller.claim, listingPin: purchase.pin, agreementHash: purchase.agreementHash, nonce: nonce(), expiresAt: at + 30_000, profile: binding.profile };
       const signature = Buffer.from(purchase.buyer.signBytes(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.request + canonicalize(payload)))).toString("base64url");
-      const opened = wire.openWireEnvelope(header({ payload, signature }), "request", { binding, local: LOCAL, purchaseProfile: binding.profile });
-      expect(() => wire.checkWireRequest(opened, { binding, local: LOCAL, purchaseProfile: binding.profile, seller: purchase.seller.claim, listingPin: purchase.pin, method: "POST", path,
+      const opened = await wire.openWireEnvelope(header({ payload, signature }), "request", { binding, local: LOCAL, purchaseProfile: binding.profile });
+      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(opened, { binding, local: LOCAL, purchaseProfile: binding.profile, seller: purchase.seller.claim, listingPin: purchase.pin, method: "POST", path,
         rawBody: Buffer.from("{}"), now: at, retained: { jobId: JOB, agreementHash: purchase.agreementHash, buyer: purchase.buyer.claim, seller: purchase.seller.claim },
-        requestJournal: testJournal(), commitment: received(record), agreement: received(purchase.agreement), signedListing: received(purchase.listing), readCommitmentReceipt: validReceipt }), path)
+        requestJournal: testJournal(), commitment: received(record), agreement: received(purchase.agreement), signedListing: received(purchase.listing), readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) })), path).rejects
         .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid", status: 500 }));
     }
   });
 
-  it("admits the commitment and Agreement from their exact received bytes (CF-5): a caller's object or a copy is refused", () => {
-    const x = world();
+  it("admits the commitment and Agreement from their exact received bytes (CF-5): a caller's object or a copy is refused", async () => {
+    const x = await world();
     const journals = testJournals();
-    const check = (given: Record<string, unknown>) => () => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journals.open(), ...given });
+    const check = (given: Record<string, unknown>) => async () => await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: await journals.open(), ...given });
     const refused = (code: string, detail: string) => expect.objectContaining({ code, status: 500, detail });
     const commitmentText = JSON.stringify(x.commitment()), agreementText = JSON.stringify(x.agreement);
     const record = x.commitment().record;
@@ -538,16 +537,16 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["nesting past 128", Buffer.from(commitmentText.replace('"resumed":false', `"resumed":false,"deep":${"[".repeat(128)}${"]".repeat(128)}`)), "JSON-NESTING-TOO-DEEP"],
     ];
     for (const [name, bytes, detail] of malformed) {
-      expect(check({ commitment: bytes }), name).toThrowError(refused("continuation_commitment_invalid", detail));
-      expect(check({ agreement: Buffer.from(agreementText.replace('"payeeBoundAgreementVersion":"1"', '"payeeBoundAgreementVersion":"1","payeeBoundAgreementVersion":"1"')) }), name)
+      await expect(Promise.resolve().then(await check({ commitment: bytes })), name).rejects.toThrowError(refused("continuation_commitment_invalid", detail));
+      await expect(Promise.resolve().then(await check({ agreement: Buffer.from(agreementText.replace('"payeeBoundAgreementVersion":"1"', '"payeeBoundAgreementVersion":"1","payeeBoundAgreementVersion":"1"')) })), name).rejects
         .toThrowError(refused("continuation_agreement_invalid", "DUPLICATE-MEMBER"));
     }
     // The same evidence as a caller's object, a decoded string, or a copy of an admitted value: nothing shows its bytes were admitted.
     const admitted = wire.admitWireArtifact(Buffer.from(commitmentText));
     for (const given of [x.commitment(), commitmentText, JSON.parse(JSON.stringify(admitted)), structuredClone(admitted)]) {
-      expect(check({ commitment: given })).toThrowError(refused("continuation_commitment_invalid", "ARTIFACT-NOT-ADMITTED"));
+      await expect(Promise.resolve().then(await check({ commitment: given }))).rejects.toThrowError(refused("continuation_commitment_invalid", "ARTIFACT-NOT-ADMITTED"));
     }
-    expect(check({ agreement: x.agreement })).toThrowError(refused("continuation_agreement_invalid", "ARTIFACT-NOT-ADMITTED"));
+    await expect(Promise.resolve().then(await check({ agreement: x.agreement }))).rejects.toThrowError(refused("continuation_agreement_invalid", "ARTIFACT-NOT-ADMITTED"));
     expect(journals.reservations()).toHaveLength(0);
     // Exact bytes, a value admitWireArtifact returned, or part of an admitted body continue.
     const sent = Buffer.from(JSON.stringify({ commitment: x.commitment(), agreement: x.agreement }));
@@ -556,15 +555,15 @@ describe("the seller checks the job's finalized commitment on every payment and 
     expect(Object.isFrozen(answer.agreement)).toBe(true);
     for (const given of [{}, { commitment: admitted, agreement: wire.admitWireArtifact(Buffer.from(agreementText)) }, { commitment: body.commitment, agreement: body.agreement },
       { commitment: answer.commitment, agreement: answer.agreement }]) {
-      expect(check(given)().effect).toMatchObject({ state: "new" });
+      expect((await await check(given)()).effect).toMatchObject({ state: "new" });
     }
     // admitWireArtifact keeps admission's own refusal.
     expect(() => wire.admitWireArtifact(malformed[0]![1])).toThrowError(expect.objectContaining({ code: "wire_artifact_rejected", status: 500, detail: "DUPLICATE-MEMBER" }));
     expect(() => wire.admitWireArtifact(commitmentText as never)).toThrowError(expect.objectContaining({ code: "wire_input_invalid", status: 500 }));
   });
 
-  it("checks the receipt as a CORE §5.1 AnchorReceipt, its transaction as a ChainTxRef, and a receipt time no earlier than the Agreement", () => {
-    const x = world();
+  it("checks the receipt as a CORE §5.1 AnchorReceipt, its transaction as a ChainTxRef, and a receipt time no earlier than the Agreement", async () => {
+    const x = await world();
     const full = x.commitment();
     const { receiptVersion: _v, substrate: _s, finalityProfile: _f, transactionRef: _t, writer: _w, observedAt: _o, evidence: _e, nonce: _n, ...six } = full.anchorReceipt;
     void _v; void _s; void _f; void _t; void _w; void _o; void _e; void _n;
@@ -577,11 +576,11 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["a receipt time before the Agreement was generated", x.commitment({ committedAt: generatedAt - 1 })],
     ];
     for (const [name, commitment] of cases) {
-      expect(() => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: testJournal(), commitment: received(commitment) }), name)
+      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal(), commitment: received(commitment) })), name).rejects
         .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid", status: 500 }));
     }
     // At the Agreement's own time, it continues.
-    expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: testJournal(), commitment: received(x.commitment({ committedAt: generatedAt })) }).effect)
+    expect((await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal(), commitment: received(x.commitment({ committedAt: generatedAt })) })).effect)
       .toMatchObject({ state: "new" });
   });
 
