@@ -38,6 +38,7 @@ const DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS = 30_000;
 const DACS_DEMOS_INCLUDED_STATE = "included";
 const DEMOS_EXECUTED_RECORD_STATUS = "confirmed";
 const DEMOS_FAILED_RECORD_STATUS = "failed";
+const MAX_RETAINED_PAY_DEM_AUDITS = 1024;
 
 type AnyMethod = (...args: never[]) => unknown;
 
@@ -2089,6 +2090,24 @@ function retainedPayDemHash(req: SettleRequest, network: string): string | undef
       prior.value.length === 0 || prior.value.length > 256) {
     throw new DacsError("pay-dem recovery history must contain 1–256 transaction attempts");
   }
+  // Refuse oversized or exotic members before cloning/canonicalizing any payload.
+  for (let index = 0; index < prior.value.length; index += 1) {
+    const attempt = stableDataProperty(prior.value, String(index), "pay-dem recovery attempt").value;
+    if (attempt === null || typeof attempt !== "object" || nodeTypes.isProxy(attempt) ||
+        Array.isArray(attempt) || Reflect.ownKeys(attempt).length !== 3) {
+      throw new DacsError("pay-dem recovery history has a malformed attempt");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(attempt);
+    const hash = descriptors.txHash;
+    const chain = descriptors.chainId;
+    const ok = descriptors.ok;
+    if (!hash || !chain || !ok || !hash.enumerable || !chain.enumerable || !ok.enumerable ||
+        !("value" in hash) || !("value" in chain) || !("value" in ok) ||
+        typeof hash.value !== "string" || (hash.value.length !== 64 && hash.value.length !== 66) ||
+        chain.value !== network || typeof ok.value !== "boolean") {
+      throw new DacsError("pay-dem recovery history has an invalid transaction identity or network");
+    }
+  }
   const attempts = snapshotCanonicalJsonRead(prior.value, "pay-dem recovery history");
   let retained: string | undefined;
   for (const attempt of attempts as unknown[]) {
@@ -2373,6 +2392,7 @@ export function payDemSettle(
     }) satisfies Readonly<SettlementBinding>;
     const previous = operations.get(key);
     const operation = (previous ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      executionAuthority.assertCapability(rail);
       const priorAuthenticated = authenticatedResults.get(key);
       if (
         priorAuthenticated !== undefined &&
@@ -2388,6 +2408,10 @@ export function payDemSettle(
           (!sameRecoveryContext(retainedAudit.context, context) ||
             (suppliedTxHash !== undefined && suppliedTxHash !== retainedAudit.txHash))) {
         throw new DacsError("pay-dem retained audit belongs to different payment terms or transaction; refusing reuse or rebroadcast");
+      }
+      if (retainedAudit === undefined && priorAuthenticated === undefined &&
+          retainedAudits.size >= MAX_RETAINED_PAY_DEM_AUDITS) {
+        throw new DacsError("pay-dem retained audit capacity exhausted; refusing new keys or rebroadcast");
       }
       const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash;
       if (retainedTxHash !== undefined) {
@@ -2436,7 +2460,8 @@ export function payDemSettle(
           if (existing.blockNumber !== undefined && existing.blockNumber !== captured.blockNumber) {
             throw new DacsError("pay-dem retained transaction block conflicts with the rail outcome");
           }
-          if (existing.errorClass === "permanent" && !samePayDemResult(existing, captured)) {
+          if ((existing.errorClass === "permanent" || captured.errorClass === "permanent") &&
+              !samePayDemResult(existing, captured)) {
             throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
           }
         }
@@ -2468,7 +2493,6 @@ export function payDemSettle(
             authenticatedResults.set(key, { context, result: captured });
             return captured;
           };
-      executionAuthority.assertCapability(rail);
       const result = await storeOnce(
         key,
         binding,
