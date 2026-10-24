@@ -47,3 +47,30 @@ it("cancels a late body even when fetch ignores the expired abort signal", async
   expect(fetchRecord).toHaveBeenCalledTimes(1);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([
+  [404, null],
+  [403, "refused"],
+  [500, "connection refused"],
+] as const)("preserves RPC failure %s and its bounded response", async (result, response) => {
+  const fetchRecord = vi.fn<typeof fetch>(async () =>
+    new Response(JSON.stringify({ result, response })));
+  await expect(readDemosTransactionRecord(RPC, HASH, TIMEOUT_MS, fetchRecord))
+    .rejects.toMatchObject({
+      message: `Demos transaction record RPC returned ${result}`,
+      cause: { result, response },
+    });
+  expect(fetchRecord).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each([{}, { result: "404", response: null }, { result: 200 }, []].map((payload) => ({ payload })))(
+  "distinguishes a malformed RPC envelope $payload from a remote failure", async ({ payload }) => {
+    const fetchRecord = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(payload)));
+    await expect(readDemosTransactionRecord(RPC, HASH, TIMEOUT_MS, fetchRecord))
+      .rejects.toMatchObject({
+        message: "Demos transaction record RPC envelope is malformed",
+        cause: payload,
+      });
+  },
+);
