@@ -4,7 +4,7 @@ import { types } from "node:util";
 import type * as WireModule from "../../src/wire/index.js";
 
 type Options = Omit<WireModule.BindTp1Options, "readAuthority"> & Partial<Pick<WireModule.BindTp1Options, "readAuthority">>;
-export const fixtureBinder = (wire: typeof WireModule) => (options: Options): WireModule.Tp1Binding => {
+export const fixtureBinder = (wire: typeof WireModule) => (options: Options): Promise<WireModule.Tp1Binding> => {
   if (!options || typeof options !== "object" || types.isProxy(options)) return wire.bindTp1Profile(options as WireModule.BindTp1Options);
   const descriptors = Object.getOwnPropertyDescriptors(options);
   const record = descriptors.record?.value;
