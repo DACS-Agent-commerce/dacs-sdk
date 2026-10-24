@@ -6,6 +6,7 @@
 // bytes with admitRawJson before anything parses it.
 import { types } from "node:util";
 
+import type { ListingPin } from "../artifacts/types.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { admitRawJson, RawJsonAdmissionError } from "../canonical/rawJson.js";
 import { snapshotCanonicalJsonConfig, snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
@@ -49,10 +50,13 @@ const BASE64URL_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 
 export type JsonRecord = Record<string, unknown>;
 export const isRecord = (v: unknown): v is JsonRecord =>
-  v !== null && typeof v === "object" && !Array.isArray(v);
+  v !== null && typeof v === "object" && !types.isProxy(v) && !Array.isArray(v);
 /** Exactly these own keys, no more, no fewer. */
 export const hasKeys = (v: unknown, expected: readonly string[]): v is JsonRecord =>
-  isRecord(v) && Object.keys(v).length === expected.length && expected.every((k) => Object.hasOwn(v, k));
+  isRecord(v) && Reflect.ownKeys(v).length === expected.length && expected.every((k) => {
+    const descriptor = Object.getOwnPropertyDescriptor(v, k);
+    return descriptor !== undefined && "value" in descriptor;
+  });
 /** The pre-TP-1 shape: exactly `fields` except `profile`. A profile-less message names its own refusal. */
 export const lacksProfile = (v: unknown, fields: readonly string[]): boolean =>
   hasKeys(v, fields.filter((f) => f !== "profile"));
@@ -102,7 +106,7 @@ export function ownedFields<K extends string>(value: unknown, keys: readonly K[]
   for (const key of keys) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor !== undefined && !("value" in descriptor)) return fail("wire_input_invalid", 500);
-    fields[key] = descriptor?.value;
+    Object.defineProperty(fields, key, { value: descriptor?.value, enumerable: true, writable: true, configurable: true });
   }
   return fields;
 }
@@ -121,8 +125,10 @@ export interface ByteLimit {
 export function ownedBytes(value: unknown, code = "wire_input_invalid", status = 500, limit?: ByteLimit): Buffer {
   if (!types.isUint8Array(value)) return fail(code, status);
   if (limit !== undefined && viewByteLength(value) > limit.maxBytes) return fail(limit.code, limit.status, "BYTE-LIMIT-EXCEEDED");
-  const copy = new Uint8Array(value);
-  return Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength);
+  try {
+    const copy = new Uint8Array(value);
+    return Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength);
+  } catch (cause) { return fail(code, status, undefined, cause); }
 }
 /** `method` taken at module load: a later patch of its prototype does not change what it does here. */
 export const uncurry = <A extends unknown[], R>(method: (...args: A) => R) =>
@@ -131,12 +137,9 @@ const viewByteLength = uncurry(
   Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype) as object, "byteLength")!.get as () => number,
 );
 
-export interface ListingPin {
-  listingId: string;
-  version: number;
-  contentHash: string;
-}
+export type { ListingPin } from "../artifacts/types.js";
 
+/** Whether a value is the exact Listing pin tuple with a supported identifier, version and hash. */
 export function isListingPin(pin: unknown): pin is ListingPin {
   return hasKeys(pin, ["listingId", "version", "contentHash"]) &&
     typeof pin.listingId === "string" && pin.listingId.length > 0 && pin.listingId.length <= 128 && !/[^A-Za-z0-9._~-]/.test(pin.listingId) &&
@@ -148,6 +151,7 @@ export function claimKey(claimOrHex: string): string {
   return claimOrHex.startsWith("did:demos:agent:") ? claimOrHex.slice("did:demos:agent:".length) : claimOrHex;
 }
 
+/** Verify an Ed25519 signature over exact bytes; malformed keys or signatures return false. */
 export function verifyEd25519(message: Uint8Array, signature: Uint8Array, keyHex: string): boolean {
   if (!HASH.test(keyHex)) return false;
   try {
@@ -200,16 +204,6 @@ export interface WireSigner {
   sign(bytes: Uint8Array): Uint8Array | string | Promise<Uint8Array | string>;
 }
 
-function assertNfc(value: unknown): void {
-  if (typeof value === "string") {
-    if (value.normalize("NFC") !== value) throw new RawJsonAdmissionError("profile", "WIRE-NON-NFC-STRING");
-  } else if (Array.isArray(value)) {
-    for (const item of value) assertNfc(item);
-  } else if (isRecord(value)) {
-    for (const item of Object.values(value)) assertNfc(item);
-  }
-}
-
 // Every object and array inside a value the wire's own CF-5 admission returned
 // (admitWireArtifact, admitted request and response bodies), frozen. Methods
 // taken at module load (see profile.ts).
@@ -240,15 +234,13 @@ export function isAdmittedValue(value: unknown): boolean {
  * CF-5 admission of one received wire input (D7), before canonicalization,
  * hashing, schema checks or signature verification. admitRawJson refuses
  * malformed UTF-8, BOMs, duplicate member names, out-of-profile numbers and
- * deep nesting. The wire adds one rule: every string value must already be
- * NFC. CF-1 NFC-normalizes values (never member names) when canonicalizing, so
- * without it two different received values could carry one signature.
+ * deep nesting. CF-1 NFC-normalizes values (never member names) later,
+ * when canonicalizing the admitted value for hashing or verification.
  * Whitespace and member order need not be canonical.
  */
 export function admitWireJson(bytes: Uint8Array, maxBytes: number, code: string, status = 400): unknown {
   try {
     const value = admitRawJson(bytes, { maxBytes });
-    assertNfc(value);
     return sealAdmitted(value);
   } catch (error) {
     if (error instanceof RawJsonAdmissionError) return fail(code, status, error.code, error);
