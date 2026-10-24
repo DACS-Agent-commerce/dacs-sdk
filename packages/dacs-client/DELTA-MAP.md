@@ -486,6 +486,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | aa9dbf4fc1e98f055efc5d7690e042dad16f9186 |
+| D11 | fix(client): D11 guard result inspection and preserve unfinished host writes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 6e92f93f88eacacd26f5dd031c64a0c29388eb3f |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 4814964834698bcd72cc3faaf6f2438b8ce35cee |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 74c4ba0638f76b77d45dd45c1260e7e718a8e7af |
 | D11 | fix(client): D11 split the held purchase-state schema prerequisite | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 557ea59e906125decb9c56d5b2322a1d30af3321 |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | ce3bb31eb69d5828748e1d04e797bd10de4ef5f3 |
@@ -1248,6 +1252,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-MAP.md:1` |
