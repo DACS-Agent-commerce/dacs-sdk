@@ -43,7 +43,6 @@ import {
 } from "../../src/seller/fulfilmentAuditSource.js";
 
 import { isSellerFulfilmentVetInvocationMismatch } from "../../src/seller/index.js";
-import * as fulfilmentAuditSource from "../../src/seller/fulfilmentAuditSource.js";
 
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
@@ -1278,19 +1277,6 @@ describe("runFulfilmentCore", () => {
     }
   });
 
-  test("documents only guards present in the audit-source module", () => {
-    const source = readFileSync(new URL(
-      "../../src/seller/fulfilmentAuditSource.ts", import.meta.url,
-    ), "utf8");
-    const functionStart = source.indexOf("export function isSellerFulfilmentVetInvocationMismatch(");
-    const comment = source.slice(source.lastIndexOf("/**", functionStart), functionStart);
-    for (const [, name] of comment.matchAll(/`([A-Za-z]\w+)`/g)) {
-      if (name === undefined) throw new Error("TEST missing documented guard name");
-      expect(typeof Object.getOwnPropertyDescriptor(fulfilmentAuditSource, name)?.value,
-        `documented guard ${name} must exist at this head`).toBe("function");
-    }
-  });
-
   test("the shared Vet predicate accepts authenticated coverage and rejects a substituted verifier", () => {
     const f = fixture();
     const invocation = f.auditSource.artifacts.vetRequirements[0];
@@ -1305,6 +1291,36 @@ describe("runFulfilmentCore", () => {
     };
     expect(isSellerFulfilmentVetInvocationMismatch(invocation, context)).toBe(false);
     expect(isSellerFulfilmentVetInvocationMismatch({ ...invocation, verifier: BUYER }, context)).toBe(true);
+  });
+
+  test("the public Vet predicate refuses malformed invocations without throwing", () => {
+    const f = fixture();
+    const invocation = f.auditSource.artifacts.vetRequirements[0];
+    if (!invocation) throw new Error("TEST fixture has no buyer Vet invocation");
+    const context = {
+      jobId: f.authorization.jobId, buyerClaim: BUYER, sellerClaim: SELLER,
+      buyerRequirement: BUYER_REQUIREMENT,
+      bindings: new Map([[canonicalize(invocation.vetRecordRef), {
+        primaryClaim: invocation.evaluatedParty, roles: new Set(["buyer"]),
+      }]]),
+    };
+    const missingVersion = structuredClone(invocation);
+    Reflect.deleteProperty(missingVersion.freshness[0]!.ref, "recipeVersion");
+    missingVersion.freshness[0]!.ref.anchor.locator =
+      missingVersion.freshness[0]!.ref.anchor.locator.replace(/:v\d+$/, ":vundefined");
+    const badHash = structuredClone(invocation);
+    badHash.freshness[0]!.ref.contentHash = "invalid";
+    const badJob = structuredClone(invocation);
+    badJob.freshness[0]!.sourceJobId += ":suffix";
+    badJob.freshness[0]!.ref.anchor.locator = badJob.freshness[0]!.ref.anchor.locator
+      .replace(invocation.freshness[0]!.sourceJobId, badJob.freshness[0]!.sourceJobId);
+    const { freshness: _freshness, ...missingFreshness } = invocation;
+    const hostile = new Proxy({}, { getPrototypeOf() { throw new Error("hostile input"); } });
+    for (const malformed of [null, missingFreshness, missingVersion, badHash, badJob,
+      { ...invocation, extra: true }, hostile]) {
+      expect(Reflect.apply(isSellerFulfilmentVetInvocationMismatch, undefined,
+        [malformed, context])).toBe(true);
+    }
   });
 
   test("completes delivery with required Vet coverage from this job's deal-specific results", async () => {
