@@ -621,6 +621,47 @@ describe("candidate file shadows and omitted copies", () => {
 });
 
 describe("candidate executable and nested alias lookup", () => {
+  it.each([false, true])("rejects scope-level node_modules hiding a candidate, locked=%s", locked => {
+    const fixture = dependencyPolicyHarness();
+    const scope = "node_modules/@kynesyslabs/node_modules";
+    if (locked) fixture.packages[scope] = { name: "@kynesyslabs/node_modules", version: "1.0.0",
+      resolved: `${CANDIDATE_REGISTRY}/scope.tgz`, integrity: sri(Buffer.from("scope")) };
+    const result = fixture.run(project => {
+      const location = join(project, scope, "@kynesyslabs/dacs");
+      mkdirSync(location, { recursive: true });
+      writeFileSync(join(location, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-wrong" }));
+      writeFileSync(join(location, "index.js"), "module.exports = 'shadow';");
+      if (locked) writeFileSync(join(project, scope, "package.json"), JSON.stringify({ name: "@kynesyslabs/node_modules", version: "1.0.0" }));
+      expect(createRequire(join(project, "node_modules/@kynesyslabs/dacs-node/index.js")).resolve("@kynesyslabs/dacs"))
+        .toBe(join(location, "index.js"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot inspect node_modules inside a scope directory: " + scope);
+  });
+
+  it.each(["optional", "dev", "devOptional"])("follows the installed alias past an omitted %s lock entry", flag => {
+    const fixture = dependencyPolicyHarness();
+    const alias = "node_modules/candidate-alias";
+    const omitted = "node_modules/plugin/node_modules/candidate-alias";
+    fixture.packages["node_modules/plugin"] = { version: "1.0.0", resolved: `${CANDIDATE_REGISTRY}/plugin.tgz`,
+      integrity: sri(Buffer.from("plugin")), optionalDependencies: { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } };
+    fixture.packages[omitted] = { ...fixture.packages["node_modules/@kynesyslabs/dacs"], name: "@kynesyslabs/dacs", [flag]: true };
+    fixture.installed[omitted] = null;
+    fixture.packages[alias] = { name: "other", version: CANDIDATE_VERSION,
+      resolved: `${CANDIDATE_REGISTRY}/other.tgz`, integrity: sri(Buffer.from("other")) };
+    const result = fixture.run(project => {
+      mkdirSync(join(project, "node_modules/plugin"), { recursive: true });
+      mkdirSync(join(project, alias), { recursive: true });
+      writeFileSync(join(project, alias, "package.json"), JSON.stringify({ name: "other", version: CANDIDATE_VERSION }));
+      expect(createRequire(join(project, "node_modules/plugin/index.js")).resolve("candidate-alias/package.json"))
+        .toBe(join(project, alias, "package.json"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: " + alias);
+    fixture.packages[alias] = { ...fixture.packages["node_modules/@kynesyslabs/dacs"], name: "@kynesyslabs/dacs" };
+    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: true } });
+  });
+
   it("accepts an installed candidate's ordinary executable link", () => {
     const fixture = dependencyPolicyHarness();
     expect(fixture.run(project => {
