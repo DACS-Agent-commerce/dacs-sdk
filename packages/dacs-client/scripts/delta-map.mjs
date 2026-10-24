@@ -39,6 +39,12 @@ export function table(data = ledger()) {
     lines.push(`| ${change.delta} | ${change.subject} | Git subject selector (must resolve exactly once after publication checkpoint) |`);
     for(const f of change.files) lines.push(`| | ${locate(f.path)} | ${f.after===null?'deleted':f.after} |`);
   }
+  if (data.mergeSnapshots?.length) {
+    lines.push('', '## Reviewed merge snapshots', '', '| Merge | Parents | File | Parent blobs | Merged blob |', '|---|---|---|---|---|');
+    for (const snapshot of data.mergeSnapshots) for (const file of snapshot.files) {
+      lines.push(`| ${snapshot.commit} | ${snapshot.parents.join(', ')} | ${locate(file.path)} | ${file.parentBlobs.join(', ')} | ${file.after} |`);
+    }
+  }
   const inventory=JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'));
   lines.push('', '## Complete commit and file inventory', '', 'Full hashes below bind completed commits. Unhashed record commits use unique exact subjects to avoid self-referential hashes. Source/test coordinates are generated from baseline-to-current Git hunks, so they name changed ranges at the current head; metadata starts at line 1 and deletions are explicit. The delta sections explain the reason for each group.', '', '| Commit / exact selector | Touched file:line |', '|---|---|');
   for(const c of inventory) for(const path of c.files) lines.push(`| ${c.sha??c.subject} | ${locate(path)} |`);
@@ -50,6 +56,46 @@ export function table(data = ledger()) {
     lines.push(`| \`${f.path}\` | \`${f.sourcePath}\` | ${source} | ${changes.length?`${current?'changed':'deleted'} by ${[...new Set(changes.map(c=>c.delta))].join(', ')}`:'unchanged'} | ${current??'deleted'} |`);
   }
   return publicationText(lines.join('\n')+'\n');
+}
+// Source records form a DAG. A merge may choose a recorded parent blob;
+// synthesizing a different blob requires its own immutable commit/parent pins.
+function terminalBlobs(data, history, failures) {
+  const graph = new Map(git('rev-list', '--parents', BASELINE+'..HEAD').split('\n').map(row => { const [sha,...parents]=row.split(' '); return [sha,parents]; }));
+  const ancestors = new Map();
+  function before(a,b) {
+    if (!ancestors.has(b)) {
+      const found = new Set(), pending = [...(graph.get(b) ?? [])];
+      while (pending.length) { const sha=pending.pop(); if (found.has(sha)) continue; found.add(sha); pending.push(...(graph.get(sha) ?? [])); }
+      ancestors.set(b,found);
+    }
+    return ancestors.get(b).has(a);
+  }
+  const events = new Map(), add = (sha,file) => {
+    const rows=events.get(file.path) ?? []; rows.push({sha,after:file.after}); events.set(file.path,rows);
+  };
+  for (const change of data.changes) {
+    const matches=history.filter(row=>row.subject===change.subject);
+    if (matches.length===1) for (const file of change.files) add(matches[0].sha,file);
+  }
+  const seen = new Set(), at = (rev,path) => { try { return git('rev-parse','--verify',`${rev}:${path}`); } catch { return null; } };
+  for (const snapshot of data.mergeSnapshots ?? []) {
+    const refuse = () => failures.push(`invalid merge snapshot ${snapshot.commit}`);
+    if (seen.has(snapshot.commit)) failures.push(`duplicate merge snapshot ${snapshot.commit}`);
+    seen.add(snapshot.commit);
+    if (!/^[0-9a-f]{40}$/.test(snapshot.commit) || !graph.has(snapshot.commit)
+      || !Array.isArray(snapshot.parents) || snapshot.parents.length!==2
+      || JSON.stringify(snapshot.parents)!==JSON.stringify(graph.get(snapshot.commit))
+      || !Array.isArray(snapshot.files) || snapshot.files.length===0) { refuse(); continue; }
+    const paths = new Set();
+    for (const file of snapshot.files) {
+      if (typeof file.path!=='string' || !/^packages\/dacs-client\/(src|test)\//.test(file.path)
+        || file.path.split('/').some(part=>['','.','..'].includes(part)) || paths.has(file.path)
+        || JSON.stringify(file.parentBlobs)!==JSON.stringify(snapshot.parents.map(parent=>at(parent,file.path)))
+        || file.after!==at(snapshot.commit,file.path) || file.parentBlobs.includes(file.after)) { refuse(); continue; }
+      paths.add(file.path); add(snapshot.commit,file);
+    }
+  }
+  return new Map([...events].map(([path,rows]) => [path,rows.filter(row=>!rows.some(other=>before(row.sha,other.sha))).map(row=>row.after)]));
 }
 export function checkDeltas(packageDir=pkg) {
   const failures=[]; const data=ledger(); const history=commits();
@@ -99,8 +145,9 @@ export function checkDeltas(packageDir=pkg) {
     if(!published&&!files.some(path=>path.startsWith(prefix)))continue;
     if(!item || (item.sha!==null && item.sha!==h.sha) || JSON.stringify([...item.files].sort())!==JSON.stringify(files)) failures.push(`complete commit/file inventory differs for ${h.sha}`);
   }
+  const terminals=terminalBlobs(data,history,failures);
   const originals=JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'),'utf8')).files.map(f=>f.path);
-  const allowed=new Set([...originals,...evidence.deltas.changes.flatMap(c=>c.files.map(f=>f.path)),...data.changes.flatMap(c=>c.files.map(f=>f.path))]);
+  const allowed=new Set([...originals,...evidence.deltas.changes.flatMap(c=>c.files.map(f=>f.path)),...data.changes.flatMap(c=>c.files.map(f=>f.path)),...terminals.keys()]);
   for(const h of history) {
     const changed=git('diff','--no-renames','--name-only',h.sha+'^',h.sha,'--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
     const record=data.changes.find(c=>c.subject===h.subject);
@@ -117,12 +164,12 @@ export function checkDeltas(packageDir=pkg) {
     if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
   }
   for(const path of allowed) {
-    const changes=data.changes.flatMap(c=>c.files.filter(f=>f.path===path));
-    let expected=changes.length?changes.at(-1).after:null;
-    if(!changes.length)try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    let expected=terminals.get(path);
+    if(!expected) { let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{} expected=[baseline]; }
     const rel=path.slice(prefix.length); const local=join(packageDir,rel);
     const actual=existsSync(local)?blob(readFileSync(local)):null;
-    if(actual!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
+    const selected = committed.get(path)?.hash ?? null;
+    if(!expected.includes(selected) || actual!==selected) failures.push(`${path}: current blob differs from enumerated deltas (working bytes must equal HEAD)`);
   }
   if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(data)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
   return {failures,allowed};

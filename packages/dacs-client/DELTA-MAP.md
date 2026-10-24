@@ -1486,6 +1486,20 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 qualify merged diagnostic source | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 qualify merged diagnostic source | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 qualify merged diagnostic source | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
 
 ## Original moved files
 
