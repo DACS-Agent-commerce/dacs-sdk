@@ -246,8 +246,14 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
   const inventory = installedInventory ?? [];
-  const errors = inventory.filter(item => item.link === true && !/\/\.bin\/[^/]+$/.test(item.location))
+  const isBinEntry = item => /\/\.bin\/[^/]+$/.test(item.location);
+  const errors = inventory.filter(item => item.link === true && !isBinEntry(item))
     .map(item => "cannot inspect linked installed packages: " + item.location);
+  // The inventory does not descend into `.bin`, but Node resolves packages from
+  // a `node_modules` directory there. Only a link to a file is an executable;
+  // an entry that may be a directory is not inspected, so it is refused.
+  errors.push(...inventory.filter(item => isBinEntry(item) && item.target === undefined && item.error === undefined)
+    .map(item => "cannot inspect a .bin entry that is not an executable link: " + item.location));
   errors.push(...inventory.filter(item => /(^|\/)node_modules\/@[^/]+\/node_modules$/.test(item.location))
     .map(item => "cannot inspect node_modules inside a scope directory: " + item.location));
   for (const { name, integrity, version } of candidates) {
