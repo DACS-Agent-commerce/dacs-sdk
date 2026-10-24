@@ -428,8 +428,18 @@ export async function checkGenerator(consumer, artifacts, log = console.log) {
         if (versions[name] && spec !== versions[name]) throw Error('generated dependency mismatch: ' + mode + ' ' + name);
       }
       if (mode === 'live-demos' && p.dacs?.generatorVersion !== versions['create-dacs-agent']) throw Error('generated metadata version mismatch');
-      console.log('generator pins verified: ' + mode);
+      console.log('generator project created: ' + mode);
     }`], consumer).trim());
+  const nativeVersion = artifacts.find(a => a.manifest.name === "@kynesyslabs/dacs-node")?.manifest.optionalDependencies?.["better-sqlite3"];
+  for (const mode of ["offline", "live-demos"]) {
+    const p = JSON.parse(await readFile(join(consumer, `generated-${mode}`, "package.json"), "utf8"));
+    try { validateDependencies(p); }
+    catch (error) { fail(`generated ${mode}: ${error.message}`); }
+    if (mode === "live-demos" && (p.dependencies?.["better-sqlite3"] !== nativeVersion ||
+        nativeVersion !== undefined && (typeof nativeVersion !== "string" || semver.valid(nativeVersion) !== nativeVersion)))
+      fail(`generated native dependency mismatch: ${mode} better-sqlite3`);
+    log(`generator pins verified: ${mode}`);
+  }
 }
 
 export async function dryRun(artifacts, log = console.log, execute = run) {
