@@ -52,7 +52,8 @@ async function world(purchase?: AcceptedPurchase) {
   };
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
   const input = { signer: buyer, binding, local: LOCAL, seller: seller.claim, jobId: JOB, path: request.path, text: "{}", job: { listingPin: pin, agreementHash: request.agreementHash, profile: binding.profile }, now: NOW, publicEndpoint: ENDPOINT };
-  return { buyer, seller, session, binding, pin, listing, agreement, request, delegation, discovery, context, input };
+  const delegationScope = { binding, local: LOCAL, seller: seller.claim, listingPin: pin, jobId: JOB, time: NOW };
+  return { buyer, seller, session, binding, pin, listing, agreement, request, delegation, discovery, context, delegationScope, input };
 }
 // Independent wire encoders intentionally do not call the SDK's shape/signing helpers.
 function signed<T>(payload: T, domain: string, signer: w.WireSigner) {
@@ -106,7 +107,7 @@ describe("wire canonical job-ID admission", () => {
     x.buyer.calls = x.seller.calls = 0;
     let effects = 0;
     await refuses(async () => { (await w.openWireEnvelope(requestHeader, "request", x.context)); effects++; }, "peer_envelope_invalid");
-    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), { binding: x.binding, local: LOCAL })), "peer_delegation_invalid");
+    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), x.delegationScope)), "peer_delegation_invalid");
     await refuses(() => w.signSellerSessionDelegation(delegation, x.buyer, x.binding, LOCAL), "peer_delegation_invalid");
     await refuses(async () => (await w.sellerSessionDelegationSigningBytes(delegation, x.binding, LOCAL)), "peer_delegation_invalid");
     await refuses(() => w.wireRequestHash(request), "peer_envelope_invalid");
@@ -129,7 +130,7 @@ describe("wire canonical job-ID admission", () => {
     counted.scopes.length = 0;
     x.buyer.calls = x.session.calls = 0;
     await refuses(async () => (await w.openWireEnvelope(requestHeader, "request", context)), "peer_envelope_invalid", 401);
-    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), { binding: counted.binding, local: LOCAL })), "peer_delegation_invalid", 401);
+    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), { ...x.delegationScope, binding: counted.binding })), "peer_delegation_invalid", 401);
     await refuses(() => w.signSellerSessionDelegation(delegation, x.buyer, counted.binding, LOCAL), "peer_delegation_invalid", 500);
     await refuses(() => w.signWireRequest(input), "peer_envelope_invalid", 500);
     await refuses(() => w.signWireRequest({ ...input, signer: x.session, delegation: canonicalDelegation }), "peer_envelope_invalid", 500);
@@ -165,7 +166,7 @@ describe("wire Listing pins and producer bounds", () => {
     const discoveryBytes = Buffer.from(canonicalize(signed({ ...x.discovery, listings: [pin] }, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller)));
     x.buyer.calls = 0; x.seller.calls = 0;
     await refuses(async () => (await w.openWireEnvelope(requestHeader, "request", x.context)), "peer_envelope_invalid");
-    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), { binding: x.binding, local: LOCAL })), "peer_delegation_invalid");
+    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), x.delegationScope)), "peer_delegation_invalid");
     await refuses(async () => (await w.verifyEndpointProof(discoveryBytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW })), "discovery_invalid");
     await refuses(() => w.signWireEnvelope({ ...x.request, listingPin: pin }, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
     await refuses(() => w.signSellerSessionDelegation({ ...x.delegation, listingPin: pin }, x.buyer, x.binding, LOCAL), "peer_delegation_invalid");
@@ -247,7 +248,7 @@ describe("endpoint proof purchase gate", () => {
       const request = { ...x.request, [role]: x.request[role].replace(/^did:/, "DID:") };
       await refuses(async () => (await w.openWireEnvelope(header(signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context)), "peer_envelope_invalid");
       const delegation = { ...x.delegation, [role]: x.delegation[role].replace(/^did:/, "DID:") };
-      await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer))), { binding: x.binding, local: LOCAL })), "peer_delegation_invalid");
+      await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer))), x.delegationScope)), "peer_delegation_invalid");
     }
     const document = signed({ ...x.discovery, seller: x.seller.claim.replace(/^did:/, "DID:") }, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller);
     await refuses(async () => (await w.verifyEndpointProof(Buffer.from(canonicalize(document)), { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW })), "discovery_invalid");
@@ -277,7 +278,7 @@ describe("endpoint proof purchase gate", () => {
       }
       x.buyer.calls = x.seller.calls = 0;
       await refuses(async () => (await w.openWireEnvelope(header(envelope), "request", x.context)), "peer_envelope_invalid");
-      await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), { binding: x.binding, local: LOCAL })), "peer_delegation_invalid");
+      await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), x.delegationScope)), "peer_delegation_invalid");
       await refuses(() => w.signWireEnvelope(request, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
       await refuses(() => w.signSellerSessionDelegation(delegation, x.buyer, x.binding, LOCAL), "peer_delegation_invalid");
       await refuses(async () => (await w.sellerSessionDelegationSigningBytes(delegation, x.binding, LOCAL)), "peer_delegation_invalid");
@@ -501,7 +502,7 @@ describe("wire format discriminators", () => {
   it("accepts each control: delegation, delegated request, discovery, request and response", async () => {
     const x = (await world());
     const delegation = signed(x.delegation, D.delegation, x.buyer);
-    expect((await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: x.binding, local: LOCAL })).kind).toBe("seller-session-delegation");
+    expect((await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), x.delegationScope)).kind).toBe("seller-session-delegation");
     expect((await w.openWireEnvelope(header({ ...signed(x.request, D.request, x.session), delegation }), "request", { ...x.context, requireDelegation: true })).delegation).toEqual(delegation);
     const endpointProof = (await verifyProof(x, Buffer.from(canonicalize(signed(x.discovery, D.discovery, x.seller)))));
     x.session.calls = 0;
@@ -524,7 +525,7 @@ describe("wire format discriminators", () => {
     const endpointProof = (await verifyProof(x, Buffer.from(canonicalize(signed(x.discovery, D.discovery, x.seller)))));
     x.buyer.calls = x.session.calls = x.seller.calls = 0;
     let effects = 0;
-    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding: x.binding, local: LOCAL })), "peer_delegation_invalid");
+    await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), x.delegationScope)), "peer_delegation_invalid");
     await refuses(async () => { (await w.openWireEnvelope(delegatedHeader, "request", { ...x.context, requireDelegation: true })); effects++; }, "peer_delegation_invalid");
     await refuses(() => w.signWireRequest({ ...x.input, signer: x.session, delegation, endpointProof }), "peer_delegation_invalid");
     await refuses(() => w.signSellerSessionDelegation(payload, x.buyer, x.binding, LOCAL), "peer_delegation_invalid");

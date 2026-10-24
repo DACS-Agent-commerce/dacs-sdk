@@ -35,7 +35,7 @@ it("requires received byte admission, including for duplicate members and rounde
   f.payload.notBefore = Number.MAX_SAFE_INTEGER - 60_000;
   f.payload.expiresAt = Number.MAX_SAFE_INTEGER;
   const rounded = bytes(signed(f.payload)).toString().replace(String(Number.MAX_SAFE_INTEGER), "9007199254740991.1");
-  await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(Buffer.from(rounded), { ...f.scope, time: undefined })))
+  await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(Buffer.from(rounded), f.scope)))
     .rejects.toMatchObject({ code: "peer_delegation_invalid" });
 });
 
@@ -92,4 +92,29 @@ it("permits exactly 24 hours, refusing a longer lifetime or a different profile 
   Object.assign(document.payload, { profile: { ...f.payload.profile, revision: "TP-2" } });
   await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(bytes(document), f.scope)))
     .rejects.toMatchObject({ code: "tp1_profile_revision_unknown" });
+});
+
+it.each(["seller", "jobId", "listingPin", "time"] as const)("refuses a scope without %s, so no scope check is skipped", async (field) => {
+  const f = await fixture(), scope: Partial<wire.DelegationScope> = { ...f.scope };
+  delete scope[field];
+  await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(bytes(signed(f.payload)), scope as wire.DelegationScope)))
+    .rejects.toMatchObject({ code: "wire_input_invalid", status: 500 });
+});
+
+it.each(["buyer", "seller", "jobId", "listingPin", "time", "deadline", "allowExpired"] as const)("refuses a scope whose %s is undefined", async (field) => {
+  const f = await fixture();
+  await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(bytes(signed(f.payload)), { ...f.scope, [field]: undefined })))
+    .rejects.toMatchObject({ code: "wire_input_invalid", status: 500 });
+});
+
+it.each(["no", 0, null, 1])("refuses a non-boolean allowExpired (%s) even for a delegation that has expired", async (allowExpired) => {
+  const f = await fixture();
+  await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(bytes(signed(f.payload)), { ...f.scope, time: f.payload.expiresAt, allowExpired: allowExpired as unknown as boolean })))
+    .rejects.toMatchObject({ code: "wire_input_invalid", status: 500 });
+});
+
+it("verifies for readback without a clock only when allowExpired says so", async () => {
+  const f = await fixture(), scope: Partial<wire.DelegationScope> = { ...f.scope, allowExpired: true };
+  delete scope.time;
+  expect(await wire.verifySellerSessionDelegation(bytes(signed(f.payload)), scope as wire.DelegationScope)).toEqual(f.payload);
 });
