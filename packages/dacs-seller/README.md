@@ -19,7 +19,8 @@ Requires Node.js 22.13 or later (`node:sqlite`) and the same version of
 `@kynesyslabs/dacs` as a peer.
 
 ```js
-import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
+import { startSellerHost } from './src/index.mjs';
+import { createOperatorBuyerAccess } from './src/devnet-demo/buyer-access.mjs';
 
 const host = await startSellerHost({
   signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
@@ -52,21 +53,25 @@ const host = await startSellerHost({
 // host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
 
-`buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
-`buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
-build the signed Listing; a wallet signs the returned messages. A buyer
-builds its presentation with `buildUnsignedIdentityBundle({ address,
-presentedAt, sessionNonce })`, where `sessionNonce` is the challenge the
-seller issued. `createPaymentEvidenceWalletJournal` composes the payment
-evidence anchor and `reconcilePaymentEvidence` from the operator's wallet
-(below).
-`validateListing` reads a Listing through the core SDK and resolves its rail
-from a `railAuthority` (or, for tests only, `simulatedFixture: true`). The other root
-exports are the parts the host composes, for operators who compose their own:
-`createSellerAgent`, `createSellerHttpHandler`, `createSellerTransportStore`,
-`createSellerTransportServerAuth` and the buyer side `createSellerAgentClient`
-and `createSellerTransportClientAuth`. The kit's other modules are reachable
-by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
+Imports in this README are paths inside this directory: it has no package
+manifest yet, so `@kynesyslabs/dacs-seller` cannot be installed or imported by
+name. `src/dacs/listing.mjs` exports `buildUnsignedIdentityBundle`,
+`attachIdentityPresentation`, `buildListingDraft`, `listingSigningMessage` and
+`attachListingSignature`, which build the signed Listing; a wallet signs the
+returned messages. A buyer builds its presentation with
+`buildUnsignedIdentityBundle({ address, presentedAt, sessionNonce })`, where
+`sessionNonce` is the challenge the seller issued.
+`createPaymentEvidenceWalletJournal` composes the payment evidence anchor and
+`reconcilePaymentEvidence` from the operator's wallet (below).
+`validateSellerListing` (`src/dacs/rail-authority.mjs`) reads a Listing
+through the core SDK and resolves its rail from a `railAuthority` (or, for
+tests only, `simulatedFixture: true`). `createSellerAgent` is exported by
+`src/dacs/seller-agent.mjs`.
+The root `src/index.mjs` exports `startSellerHost`, `createSellerHttpHandler`,
+`createSellerAgentClient`, `createSellerTransportStore`,
+`createSellerTransportServerAuth`, `createSellerTransportClientAuth` and
+`createPaymentEvidenceWalletJournal`. The kit's other modules are reachable by
+path; they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
 recovery. It must synchronously return identical JSON for the same Agreement,
@@ -178,7 +183,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the call, leaves a record with no CREATE, and only the capability can tell
   that from a CREATE it signed and lost. Its `read` returns
   `provenUnsignedAbsence(reason)` (from
-  `@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs`)
+  `src/dacs/native-dem-delivery-consumer.mjs`)
   exactly when it can prove no signed CREATE for the address was sent or
   remains available to send; the agent then asks again, and the paid order is
   delivered with one CREATE. Any other answer (a miss, a lagging name index,
