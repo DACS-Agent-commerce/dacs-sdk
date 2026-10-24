@@ -1449,6 +1449,38 @@
     {"delta":"D11","subject":"fix(client): D11 preserve callback fencing and private savepoints","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"14f4c3c17024e108f9196e0f1d68223b542d2f69","after":"ea871900d025e7310e2a35b95a626da101ca9edd"},{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"4342294acfd3f71ee5c3f348f08ac542b0596392","after":"ea1a50eb65b26e6e66b96e30f6dbde26976b8586"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"cf66e34a3816d78a633002b462ff99253850a429","after":"a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6"},{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"aca495eb87c54f557b02a7a2ce5d5b2882f1ce83","after":"aa9dbf4fc1e98f055efc5d7690e042dad16f9186"}]},
     {
       "delta": "D11",
+      "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": null,
+          "after": "557ea59e906125decb9c56d5b2322a1d30af3321"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-state-schema.test.mjs",
+          "before": null,
+          "after": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share buyer schema with the database fixture",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "4fd59007caab514e62aaf8b58505c1ab72af7d21",
+          "after": "a454605da7223935b8e8417722828049bf904eaf"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-state-schema.test.mjs",
+          "before": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3",
+          "after": "940e94f63ffc2a65f42ea03bf262fb42fc200525"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
       "subject": "delta(client): D11 split 04 inject buyer seams behind the action hold",
       "files": [
         {
@@ -1540,22 +1572,6 @@
     },
     {
       "delta": "D11",
-      "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
-          "before": null,
-          "after": "557ea59e906125decb9c56d5b2322a1d30af3321"
-        },
-        {
-          "path": "packages/dacs-client/test/purchase-state-schema.test.mjs",
-          "before": null,
-          "after": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
       "subject": "fix(client): D11 omit unimplemented diagnostic factory options",
       "files": [
         {
@@ -1567,22 +1583,6 @@
           "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
           "before": "a2cd8b437ac464174f10834f7870b960966d0393",
           "after": "4abceff4d2f43e41f00707479962c194ca06070f"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
-      "subject": "fix(client): D11 share buyer schema with the database fixture",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
-          "before": "4fd59007caab514e62aaf8b58505c1ab72af7d21",
-          "after": "a454605da7223935b8e8417722828049bf904eaf"
-        },
-        {
-          "path": "packages/dacs-client/test/purchase-state-schema.test.mjs",
-          "before": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3",
-          "after": "940e94f63ffc2a65f42ea03bf262fb42fc200525"
         }
       ]
     },
@@ -1672,6 +1672,100 @@
     {"delta":"D11","subject":"fix(client): D11 retain explicit observation disposition","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"f4db211d40294b6cbdb7937dbc7765374443cf18","after":"9050fd47c365e95cf63295837070a311a48111da"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"73808dae810ad137fd226f9e0f9fe7a33763a3c5","after":"3d124286ec49346c6a72fb0d8e15086ef06d3632"}]},
     {
       "delta": "D11",
+      "subject": "fix(client): D11 add passive native observation and reader cancellation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e",
+          "after": "94c556aad197e8987a38ef8fa48ec514c776c60a"
+        },
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "306f583fa3a05fe470893f8d604131681ada172f",
+          "after": "557fedfd8a745c4ad4d83972d9739708db6f8948"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "ecab598d2695975c776aaddd6038e71db5432f6f",
+          "after": "2f4304e950690763a6cf44a074d74be8c66d9b5b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
+          "before": null,
+          "after": "bcedb48f8aadebb64ebe42f910a6c9d90128e07e"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": null,
+          "after": "eee757ac92a1d6b163a362c7edb9b0894f0654ad"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share the cancellable passive observation deadline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "557fedfd8a745c4ad4d83972d9739708db6f8948",
+          "after": "dad306f9b723c185815fbb41b63ab6d56f135a8b"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "eee757ac92a1d6b163a362c7edb9b0894f0654ad",
+          "after": "03e4731889a75769c2f2b429d2a99fbb89f10baf"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 enforce passive read deadlines and consistent transfer facts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "94c556aad197e8987a38ef8fa48ec514c776c60a",
+          "after": "eec990d9a159949d76de6835c5a2553a507b1250"
+        },
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "dad306f9b723c185815fbb41b63ab6d56f135a8b",
+          "after": "1a0af8b42041b4f02f3de51cd6b854b959d91f7e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "2f4304e950690763a6cf44a074d74be8c66d9b5b",
+          "after": "d3db777e0eb9eb3de32f7480512c30049ba8f907"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "03e4731889a75769c2f2b429d2a99fbb89f10baf",
+          "after": "1dec9cb232b14799e41ade73d4a637b0212cbb18"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 bound later passive binding and canonical body reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "d3db777e0eb9eb3de32f7480512c30049ba8f907",
+          "after": "7c52736459700578f31e4223dc7c1fae4528b275"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
+          "before": "bcedb48f8aadebb64ebe42f910a6c9d90128e07e",
+          "after": "630f67cd493c31464a65b27db6c3eb3f5fe0a8c1"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "1dec9cb232b14799e41ade73d4a637b0212cbb18",
+          "after": "47763286db946e57755aec2a43523eb3215a1276"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
       "subject": "delta(client): D11 split 06 authenticate read-only purchase diagnostics",
       "files": [
         {
@@ -1693,6 +1787,69 @@
           "path": "packages/dacs-client/test/host-observations.test.mjs",
           "before": "05af633db6d7e5bd8d18a40f23e9afef0dae01ef",
           "after": "19b146062f39f1a7163573b3913e962f34f671d1"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep diagnostic readers passive and preserve error codes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "101829cfc9443886330fb9cfd9c60798e9e5533f",
+          "after": "29247a830041995bed6ab28c39de18ff986d021c"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-reader.test.mjs",
+          "before": null,
+          "after": "4d6125730c234a34f8ae969c9d7299e55621e3a3"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "2a76678b52961a67d4ebdd8b276ebbee6354e465",
+          "after": "2ed8e9cf194d953890836e04ed79a5a219fccd2b"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep all diagnostic readers passive and project retained fields",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4dcf3fff5fa6f16aaac8a9d87df51d1a72cc0e14",
+          "after": "9d6a339ad2226afeea539b3e06277fac0e64c8f6"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-reader.test.mjs",
+          "before": "4d6125730c234a34f8ae969c9d7299e55621e3a3",
+          "after": "99154dd18992f65e0a498a9e2be1064fffa08a14"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "038451763d3b32832380d800fd814d0cb21939b7",
+          "after": "bd7f7cc507a40c8d76ad523382073fb1ccd95d29"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "ef6723b2e7509c38a37fee121912cfc7c197895a",
+          "after": "ef6723b2e7509c38a37fee121912cfc7c197895a"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 reconcile the observation-limit diagnostic merge",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "eda3e9fe0b741cf378c61df1fad749965cf9f073",
+          "after": "eda3e9fe0b741cf378c61df1fad749965cf9f073"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05",
+          "after": "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05"
         }
       ]
     },
@@ -1755,126 +1912,6 @@
     },
     {
       "delta": "D11",
-      "subject": "fix(client): D11 add passive native observation and reader cancellation",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/chain.mjs",
-          "before": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e",
-          "after": "94c556aad197e8987a38ef8fa48ec514c776c60a"
-        },
-        {
-          "path": "packages/dacs-client/src/util/http.mjs",
-          "before": "306f583fa3a05fe470893f8d604131681ada172f",
-          "after": "557fedfd8a745c4ad4d83972d9739708db6f8948"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "ecab598d2695975c776aaddd6038e71db5432f6f",
-          "after": "2f4304e950690763a6cf44a074d74be8c66d9b5b"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
-          "before": null,
-          "after": "bcedb48f8aadebb64ebe42f910a6c9d90128e07e"
-        },
-        {
-          "path": "packages/dacs-client/test/passive-observation.test.mjs",
-          "before": null,
-          "after": "eee757ac92a1d6b163a362c7edb9b0894f0654ad"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
-      "subject": "fix(client): D11 share the cancellable passive observation deadline",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/util/http.mjs",
-          "before": "557fedfd8a745c4ad4d83972d9739708db6f8948",
-          "after": "dad306f9b723c185815fbb41b63ab6d56f135a8b"
-        },
-        {
-          "path": "packages/dacs-client/test/passive-observation.test.mjs",
-          "before": "eee757ac92a1d6b163a362c7edb9b0894f0654ad",
-          "after": "03e4731889a75769c2f2b429d2a99fbb89f10baf"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
-      "subject": "fix(client): D11 keep diagnostic readers passive and preserve error codes",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/purchases.mjs",
-          "before": "101829cfc9443886330fb9cfd9c60798e9e5533f",
-          "after": "29247a830041995bed6ab28c39de18ff986d021c"
-        },
-        {
-          "path": "packages/dacs-client/test/diagnostic-reader.test.mjs",
-          "before": null,
-          "after": "4d6125730c234a34f8ae969c9d7299e55621e3a3"
-        },
-        {
-          "path": "packages/dacs-client/test/host-observations.test.mjs",
-          "before": "2a76678b52961a67d4ebdd8b276ebbee6354e465",
-          "after": "2ed8e9cf194d953890836e04ed79a5a219fccd2b"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
-      "subject": "fix(client): D11 enforce passive read deadlines and consistent transfer facts",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/chain.mjs",
-          "before": "94c556aad197e8987a38ef8fa48ec514c776c60a",
-          "after": "eec990d9a159949d76de6835c5a2553a507b1250"
-        },
-        {
-          "path": "packages/dacs-client/src/util/http.mjs",
-          "before": "dad306f9b723c185815fbb41b63ab6d56f135a8b",
-          "after": "1a0af8b42041b4f02f3de51cd6b854b959d91f7e"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "2f4304e950690763a6cf44a074d74be8c66d9b5b",
-          "after": "d3db777e0eb9eb3de32f7480512c30049ba8f907"
-        },
-        {
-          "path": "packages/dacs-client/test/passive-observation.test.mjs",
-          "before": "03e4731889a75769c2f2b429d2a99fbb89f10baf",
-          "after": "1dec9cb232b14799e41ade73d4a637b0212cbb18"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
-      "subject": "fix(client): D11 keep all diagnostic readers passive and project retained fields",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/purchases.mjs",
-          "before": "4dcf3fff5fa6f16aaac8a9d87df51d1a72cc0e14",
-          "after": "9d6a339ad2226afeea539b3e06277fac0e64c8f6"
-        },
-        {
-          "path": "packages/dacs-client/test/diagnostic-reader.test.mjs",
-          "before": "4d6125730c234a34f8ae969c9d7299e55621e3a3",
-          "after": "99154dd18992f65e0a498a9e2be1064fffa08a14"
-        },
-        {
-          "path": "packages/dacs-client/test/host-observations.test.mjs",
-          "before": "038451763d3b32832380d800fd814d0cb21939b7",
-          "after": "bd7f7cc507a40c8d76ad523382073fb1ccd95d29"
-        },
-        {
-          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
-          "before": "ef6723b2e7509c38a37fee121912cfc7c197895a",
-          "after": "ef6723b2e7509c38a37fee121912cfc7c197895a"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
       "subject": "fix(client): D11 document exact public interfaces and test the packed journal",
       "files": [
         {
@@ -1891,43 +1928,6 @@
           "path": "packages/dacs-client/test/public-api.test.mjs",
           "before": "5f2ef3b4e30101b70f88e665ded5485f77764da9",
           "after": "c074963573ad7c710ca3b873a44105bbec0c1946"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
-      "subject": "fix(client): D11 reconcile the observation-limit diagnostic merge",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/purchases.mjs",
-          "before": "eda3e9fe0b741cf378c61df1fad749965cf9f073",
-          "after": "eda3e9fe0b741cf378c61df1fad749965cf9f073"
-        },
-        {
-          "path": "packages/dacs-client/test/host-observations.test.mjs",
-          "before": "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05",
-          "after": "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05"
-        }
-      ]
-    },
-    {
-      "delta": "D11",
-      "subject": "fix(client): D11 bound later passive binding and canonical body reads",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "d3db777e0eb9eb3de32f7480512c30049ba8f907",
-          "after": "7c52736459700578f31e4223dc7c1fae4528b275"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
-          "before": "bcedb48f8aadebb64ebe42f910a6c9d90128e07e",
-          "after": "630f67cd493c31464a65b27db6c3eb3f5fe0a8c1"
-        },
-        {
-          "path": "packages/dacs-client/test/passive-observation.test.mjs",
-          "before": "1dec9cb232b14799e41ade73d4a637b0212cbb18",
-          "after": "47763286db946e57755aec2a43523eb3215a1276"
         }
       ]
     }
@@ -1968,6 +1968,65 @@
       ]
     },
     {
+      "commit": "9d124121acd0415df51f5dd35c09e98c77e1bf9a",
+      "parents": [
+        "ba61cf5b840e1e9d4192665f8a3335c23005fdbd",
+        "e2a7882e3b38cd49ce980869cfe51a819661402b"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "parentBlobs": [
+            "eda3e9fe0b741cf378c61df1fad749965cf9f073",
+            "9050fd47c365e95cf63295837070a311a48111da"
+          ],
+          "after": "7ac41a6e4f20480403f32993a28954b42217f3e4"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "parentBlobs": [
+            "718f49eefd6863ed5ae3d6c7124a8dd3cc472a05",
+            "3d124286ec49346c6a72fb0d8e15086ef06d3632"
+          ],
+          "after": "6575800a2095f41ac8f5a350d37f0925be6f5d9d"
+        }
+      ]
+    },
+    {
+      "commit": "ba61cf5b840e1e9d4192665f8a3335c23005fdbd",
+      "parents": [
+        "0875a40ae4176f8d914b58f23bfd21c146f5b49b",
+        "0b03491e50a221730c206d914882ea085e22e79d"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "parentBlobs": [
+            "eb7c37692bdd5da4ac476e6791a35172f404212e",
+            "ea871900d025e7310e2a35b95a626da101ca9edd"
+          ],
+          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
+        }
+      ]
+    },
+    {
+      "commit": "96584d881a24f3ef11d47fa15c610404bd721c02",
+      "parents": [
+        "f6427e7acf38ee8949644cb709a03d9e41f2ee51",
+        "0b03491e50a221730c206d914882ea085e22e79d"
+      ],
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "parentBlobs": [
+            "eb7c37692bdd5da4ac476e6791a35172f404212e",
+            "ea871900d025e7310e2a35b95a626da101ca9edd"
+          ],
+          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
+        }
+      ]
+    },
+    {
       "commit": "3ad09a07d7129eeb1007c5f07014818ecfe721d3",
       "parents": [
         "1db565d700663d1d23449943002298d6c4eda038",
@@ -1996,23 +2055,6 @@
       "commit": "1db565d700663d1d23449943002298d6c4eda038",
       "parents": [
         "d05d43d5ca20fbac6a25db822450c75e2db29d9e",
-        "0b03491e50a221730c206d914882ea085e22e79d"
-      ],
-      "files": [
-        {
-          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-          "parentBlobs": [
-            "eb7c37692bdd5da4ac476e6791a35172f404212e",
-            "ea871900d025e7310e2a35b95a626da101ca9edd"
-          ],
-          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
-        }
-      ]
-    },
-    {
-      "commit": "96584d881a24f3ef11d47fa15c610404bd721c02",
-      "parents": [
-        "f6427e7acf38ee8949644cb709a03d9e41f2ee51",
         "0b03491e50a221730c206d914882ea085e22e79d"
       ],
       "files": [
