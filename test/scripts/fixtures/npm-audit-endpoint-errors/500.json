@@ -1,0 +1,33 @@
+{
+  "message": "500 Internal Server Error - POST http://127.0.0.1:36931/-/npm/v1/security/audits/quick - internal",
+  "method": "POST",
+  "uri": "http://127.0.0.1:36931/-/npm/v1/security/audits/quick",
+  "headers": {
+    "content-type": [
+      "application/json"
+    ],
+    "date": [
+      "Mon, 12 Oct 2026 22:46:43 GMT"
+    ],
+    "connection": [
+      "keep-alive"
+    ],
+    "keep-alive": [
+      "timeout=5"
+    ],
+    "transfer-encoding": [
+      "chunked"
+    ],
+    "x-fetch-attempts": [
+      "1"
+    ]
+  },
+  "statusCode": 500,
+  "body": {
+    "error": "internal"
+  },
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}

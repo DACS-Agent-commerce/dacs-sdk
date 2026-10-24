@@ -1,0 +1,31 @@
+{
+  "message": "403 Forbidden - POST http://127.0.0.1:40455/-/npm/v1/security/audits/quick",
+  "method": "POST",
+  "uri": "http://127.0.0.1:40455/-/npm/v1/security/audits/quick",
+  "headers": {
+    "content-type": [
+      "text/plain"
+    ],
+    "date": [
+      "Mon, 12 Oct 2026 22:54:05 GMT"
+    ],
+    "connection": [
+      "keep-alive"
+    ],
+    "keep-alive": [
+      "timeout=5"
+    ],
+    "transfer-encoding": [
+      "chunked"
+    ],
+    "x-fetch-attempts": [
+      "1"
+    ]
+  },
+  "statusCode": 403,
+  "body": "Forbidden",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "message": "network timeout at: http://127.0.0.1:35745/-/npm/v1/security/audits/quick",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}
