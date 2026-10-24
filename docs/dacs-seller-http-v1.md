@@ -855,96 +855,14 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 The plugin capture does not contain the codes in the rows above from
 `seller_retained_agreement_required` down; they are new in this SDK.
 
-## Vectors, fixtures and checks
+## Current checks and planned compatibility evidence
 
-- `vectors/dacs-seller-http-v1.json` (203 vectors, from
-  `scripts/wire/generate-wire-vectors.mjs`): valid and invalid envelopes,
-  expired and wrong-scope delegations, wrong domain, wrong and missing profile,
-  the profile tuple (a correctly signed message, request, response, delegation
-  or discovery document, naming TP-1's identifier and base with a missing,
-  unknown or later revision; identifier and base alone; twelve case,
-  whitespace and type variants of `"TP-1"`; an extra member; a duplicated
-  revision; the tuple kept for the purchase omitted, pre-revision or naming
-  another revision or chain, at the seller, the buyer and the buyer's signer;
-  the seller's kept tuple differing at its opening only or at its check only,
-  and omitted or naming another revision at its signer and at the generic
-  envelope signer, where `null` signs an answer to a new purchase but no
-  request; and the exact tuple, kept and for a new purchase),
-  mismatched endpoint proof, response binding (principal, identity, request
-  hash, status, body, expiry, lifetime), an answer signed by a
-  buyer-delegated session key and carrying its delegation (at the buyer, and
-  at `openWireEnvelope` with `requireDelegation`), an answer given a
-  delegation at the generic signer, the request's method and path
-  binding, a required delegation missing at the seller's opening only or at
-  its check only, the delegation's buyer, seller, Listing and job scope (including a
-  delegation another wallet signed under a request naming the buyer), the
-  delegated request's Agreement checks (job, Listing, the buyer and seller
-  parties found by role, deadline), the host's retained job, Agreement hash
-  and parties (another hash for a direct and a delegated request, another
-  job, another buyer for a direct and a delegated request, another seller,
-  a record without parties, none given), a delegated request to a seller
-  that does not require one, a Listing endpoint with a path, a missing envelope header, a request expiring exactly at the
-  seller's clock, an overlong lifetime override, the identity gate (the SDK's own
-  approval list, a caller's own list, and the tests' replacement list), and
-  CF-5 raw-input negatives named explicitly for the header, the request body,
-  the response body and the discovery document (duplicate keys, malformed
-  UTF-8, non-NFC strings, invalid numeric tokens). `signing/*` vectors show
-  both signers refuse duplicate keys, non-NFC strings and invalid numeric
-  tokens with zero signatures; malformed UTF-8 has no signing case, because
-  both signers take the body as a string. Other `signing/*` vectors show the
-  delegation and discovery signers refuse an unsupported delegation `version`
-  or `kind`, discovery `format`, or a `transport` other than exactly
-  `["dacs-seller-http/v1"]`, with zero signatures;
-  `test/wire/admission.test.ts` signs those cases, and request and response
-  `version`, `kind` and `method` variants, correctly and requires each
-  receiver to refuse them before any purchase signature. At every verification entry point,
-  a forged binding (a plain object carrying only the vector's profile) and a
-  changed connection are refused, and `checkWireRequest` refuses a decoded,
-  copied or differently bound envelope. `view` vectors pass the approved
-  record, the actor's connection, a delegation's payload, or a signer's
-  payload or request, as a Proxy or with an accessor whose answer changes
-  after n reads. The replay requires the same refusal, with zero signatures,
-  for every n from 0 to 16. In `signing/request-delegation-edited-while-signing`
-  a session signer edits the caller's delegation while it signs, and the header
-  must still embed the verified delegation. `test/wire/networkIdentity.test.ts`
-  does the same at every exported entry point that takes a caller-built input,
-  with a Proxy and a getter.
-  Each negative names the check that refuses it, and
-  `test/wire/vectors.test.ts` checks that each received revision vector is
-  correctly signed by its party, so only the profile gate can refuse it.
-- The original-behaviour capture in `test/wire/fixtures/`: the plugin
-  implementation has no static wire fixture (its wire tests generate wallets
-  per run), so this file is a **capture** of the unmodified original module's
-  behaviour,
-  made by `scripts/wire/capture-plugin-wire-fixture.mjs`, with provenance (git
-  blob ids of the three source files, the vendored SDK tarball's SHA-256). It
-  has immutable captured messages; a test pins the whole file's SHA-256. The SDK is compared against it.
-  Neither fixture records which `dacs-sdk` build the capture ran against: it
-  was the pre-revision wire code, committed as `f96b5d5` (`src/wire` is unchanged
-  through `3037e0c` except one comment). The capture script calls
-  `bindTp1Profile` with its own approval list, which the current API refuses, so
-  it no longer runs against the current SDK. Its descriptive text was redacted
-  for publication and the fixture metadata re-pinned; the original capture's
-  generator hash is retained as `captureSha256`. A recapture needs a new script version and a new fixture
-  name.
-- The TP-1 adaptation next to it in `test/wire/fixtures/`: a separately
-  identified adaptation of that capture with the enumerated D6 changes
-  (D6-1..D6-4). **It is not verbatim.** Its profile has no `revision`, so the
-  SDK now refuses its messages (`tp1_profile_revision_missing`) under their
-  valid signatures; its messages stay unchanged as that pre-revision case.
-- The TP-1 revision adaptation next to them in `test/wire/fixtures/`:
-  derived from the capture and that adaptation by
-  `scripts/wire/adapt-tp1-revision-fixture.mjs`, with D6-5 (the `revision`
-  member) added. The first adaptation's keys were discarded, so four new
-  run-time keys replace them one for one (K-1, recorded in the file) and every
-  message is re-signed by the substitute of the key that signed it. It records
-  no original-module verdicts: the original module was not run on it. **It is
-  not verbatim.** `test/wire/originalFixture.test.ts` compares the SDK against
-  the capture through it, with K-1 undone, and pins all three files and the
-  adapter script by SHA-256.
-- Keys in all of these were generated at run time and discarded; the files hold
-  public keys and signatures only. Every identity record in them is synthetic
-  and labelled so; none is the approved record.
+Current admission, identity, envelope and response checks are in
+`test/wire/admission.test.ts`, `test/wire/networkIdentity.test.ts`,
+`test/wire/envelope.test.ts` and `test/wire/response.test.ts`.
+Compatibility vectors, original-plugin captures, adaptations, generators and
+hash-pinning comparison tests are planned for later stack slices. This prefix
+contains none of that evidence and makes no verified plugin-parity claim.
 
 ### TP-1 reader restriction and purchase gates
 
@@ -973,13 +891,13 @@ read routes.
 
 ## Host validation requirements
 
-The transport capture comparisons supply host-owned Agreement context and a
-test request journal separately from the immutable captured messages.
+The host supplies its own retained Agreement context and a restart-qualified
+request journal separately from received wire messages.
 These host requirements apply to both direct and delegated effect requests;
-acceptance of a captured signature alone does not authorize repeating an effect.
+acceptance of a signature alone does not authorize repeating an effect.
 The retained job and Agreement comparison is enforced by `checkWireRequest`
 itself on every request. The only store is the request journal above
 (`openWireRequestJournal`). No host journal, and no process-local set, is
-accepted. The composition qualification gate above covers what the host
+accepted. Composition qualification must cover what the host
 adds around it: durable local storage, reconciling on `recover`, and
 recording each outcome with `completeWireEffect`.
