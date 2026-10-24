@@ -1428,6 +1428,55 @@
     },
     {"delta":"D11","subject":"fix(client): D11 bound host observation serialization before allocation","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"da5b40ae3a41302de3391ecc32fd71e84271bcc5","after":"496cab2a82edadd5043e76243d0c6e070e6ec9c2"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"0af1586bc61b3a59509d361eebe3644f36d40150","after":"dbf2160e35246b96feb7612e10bc38c0bde93d9b"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"e1ee6a0855e0955fba14cda7d1ae14aa02248fa6","after":"e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"}]},
     {"delta":"D11","subject":"fix(client): D11 preserve observation byte-limit refusal reasons","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"496cab2a82edadd5043e76243d0c6e070e6ec9c2","after":"f4db211d40294b6cbdb7937dbc7765374443cf18"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"dbf2160e35246b96feb7612e10bc38c0bde93d9b","after":"73808dae810ad137fd226f9e0f9fe7a33763a3c5"}]},
-    {"delta":"D11","subject":"fix(client): D11 retain explicit observation disposition","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"f4db211d40294b6cbdb7937dbc7765374443cf18","after":"9050fd47c365e95cf63295837070a311a48111da"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"73808dae810ad137fd226f9e0f9fe7a33763a3c5","after":"3d124286ec49346c6a72fb0d8e15086ef06d3632"}]}
+    {"delta":"D11","subject":"fix(client): D11 retain explicit observation disposition","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"f4db211d40294b6cbdb7937dbc7765374443cf18","after":"9050fd47c365e95cf63295837070a311a48111da"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"73808dae810ad137fd226f9e0f9fe7a33763a3c5","after":"3d124286ec49346c6a72fb0d8e15086ef06d3632"}]},
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 add passive native observation and reader cancellation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e",
+          "after": "94c556aad197e8987a38ef8fa48ec514c776c60a"
+        },
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "306f583fa3a05fe470893f8d604131681ada172f",
+          "after": "557fedfd8a745c4ad4d83972d9739708db6f8948"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "ecab598d2695975c776aaddd6038e71db5432f6f",
+          "after": "2f4304e950690763a6cf44a074d74be8c66d9b5b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
+          "before": null,
+          "after": "bcedb48f8aadebb64ebe42f910a6c9d90128e07e"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": null,
+          "after": "eee757ac92a1d6b163a362c7edb9b0894f0654ad"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share the cancellable passive observation deadline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "557fedfd8a745c4ad4d83972d9739708db6f8948",
+          "after": "dad306f9b723c185815fbb41b63ab6d56f135a8b"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "eee757ac92a1d6b163a362c7edb9b0894f0654ad",
+          "after": "03e4731889a75769c2f2b429d2a99fbb89f10baf"
+        }
+      ]
+    },
+    {"delta":"D11","subject":"fix(client): D11 enforce passive read deadlines and consistent transfer facts","files":[{"path":"packages/dacs-client/src/dacs/chain.mjs","before":"94c556aad197e8987a38ef8fa48ec514c776c60a","after":"eec990d9a159949d76de6835c5a2553a507b1250"},{"path":"packages/dacs-client/src/util/http.mjs","before":"dad306f9b723c185815fbb41b63ab6d56f135a8b","after":"1a0af8b42041b4f02f3de51cd6b854b959d91f7e"},{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"2f4304e950690763a6cf44a074d74be8c66d9b5b","after":"d3db777e0eb9eb3de32f7480512c30049ba8f907"},{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"03e4731889a75769c2f2b429d2a99fbb89f10baf","after":"1dec9cb232b14799e41ade73d4a637b0212cbb18"}]},
+    {"delta":"D11","subject":"fix(client): D11 bound later passive binding and canonical body reads","files":[{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"d3db777e0eb9eb3de32f7480512c30049ba8f907","after":"7c52736459700578f31e4223dc7c1fae4528b275"},{"path":"packages/dacs-client/test/helpers/passive-native-world.mjs","before":"bcedb48f8aadebb64ebe42f910a6c9d90128e07e","after":"630f67cd493c31464a65b27db6c3eb3f5fe0a8c1"},{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"1dec9cb232b14799e41ade73d4a637b0212cbb18","after":"47763286db946e57755aec2a43523eb3215a1276"}]}
 ]
 }

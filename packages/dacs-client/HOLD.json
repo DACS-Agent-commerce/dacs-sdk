@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "312c5b0e173a1d4e3d131c828a970ab63318312d"
+        "blob": "00fd0a1d73df6ab8931f2cad6aa38d87a93e4dd2"
       },
       "DELTA-LEDGER.json": {
-        "blob": "f3f14dba419c8fb77523ed2cdc5838f99192a224"
+        "blob": "008d1f2b3377bb29e88d6b1181013bb39e8f03f5"
       },
       "DELTA-MAP.md": {
-        "blob": "e09bde72ffa6bff7760d6715c9c29e3a96082cc6"
+        "blob": "d31b83f469e71755f3c5035c6c43756511b8c6c9"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "191cb957a6af0effba0a7f0fdd4babbe6a039b20"
+        "blob": "532c3a38ca7f07de3f91c0d5ce7186694f396b36"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1100,7 +1100,7 @@
         "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
-        "blob": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"
+        "blob": "eec990d9a159949d76de6835c5a2553a507b1250"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
@@ -1244,7 +1244,7 @@
         "blob": "470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3"
       },
       "src/util/http.mjs": {
-        "blob": "306f583fa3a05fe470893f8d604131681ada172f"
+        "blob": "1a0af8b42041b4f02f3de51cd6b854b959d91f7e"
       },
       "src/util/ids.mjs": {
         "blob": "6cb275e260df92ea17a4dd7c2417206a7ed7cc2a"
@@ -1259,7 +1259,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "ecab598d2695975c776aaddd6038e71db5432f6f"
+        "blob": "7c52736459700578f31e4223dc7c1fae4528b275"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
@@ -1504,6 +1504,9 @@
       "test/helpers/party-vet-fixture.mjs": {
         "blob": "7734d2e4d975a99a9bd05b9d5c9cb1202e060409"
       },
+      "test/helpers/passive-native-world.mjs": {
+        "blob": "630f67cd493c31464a65b27db6c3eb3f5fe0a8c1"
+      },
       "test/helpers/portal-auto-dom.mjs": {
         "blob": "f7711a43162e316b145aa9de78850fab53462484"
       },
@@ -1623,6 +1626,9 @@
       },
       "test/native-supersession-unavailable.test.mjs": {
         "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
+      },
+      "test/passive-observation.test.mjs": {
+        "blob": "47763286db946e57755aec2a43523eb3215a1276"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"

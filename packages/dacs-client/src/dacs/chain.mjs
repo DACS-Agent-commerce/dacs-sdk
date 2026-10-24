@@ -2,12 +2,12 @@
 //
 // Provenance: the RPC surface follows Community dacs-directory@074f040
 // src/catalog/chain.ts (GET {rpc}/storage-program/{stor-…}) and the SDK's
-// createPayDemSellerObserver nodeCall protocol (POST {rpc} {method:"nodeCall",
+// observePayDemTransferCore nodeCall protocol (POST {rpc} {method:"nodeCall",
 // params:[{message,data}]} -> {result:200,response}). Transfer observation is
 // delegated to the SDK's observePayDemTransferCore.
-import { createPayDemSellerObserver } from '@kynesyslabs/dacs/seller';
+import { observePayDemTransferCore } from '@kynesyslabs/dacs/seller';
 import { DEMOS_CCI_RESPONSE_LIMITS, assertDemosCciResponseBounds } from '@kynesyslabs/dacs/identity';
-import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
+import { fetchBoundedJson, OutboundError, observeWithDeadline } from '../util/http.mjs';
 import { normalizeDemosAddress } from '../signatures.mjs';
 
 const LOCATOR = /^stor-[0-9a-f]{40}$/;
@@ -85,9 +85,9 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return response;
   };
 
-  function nodePayload(message, data, fetcher = observingFetch) {
+  function nodePayload(message, data, fetcher = observingFetch, { signal } = {}) {
     return fetchBoundedJson(base, {
-      fetchImpl: fetcher,
+      fetchImpl: fetcher, signal,
       method: 'POST',
       body: { method: 'nodeCall', params: [{ message, data }] },
       timeoutMs,
@@ -96,8 +96,8 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     });
   }
 
-  async function nodeCall(message, data) {
-    const payload = await nodePayload(message, data);
+  async function nodeCall(message, data, options) {
+    const payload = await nodePayload(message, data, observingFetch, options);
     if (!payload || payload.result !== 200 || !Object.hasOwn(payload, 'response')) {
       throw new OutboundError('unavailable', `Demos RPC ${message} returned a non-200 result`);
     }
@@ -107,13 +107,14 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // One block read with this answer's own simulation marker. A non-200 answer
   // is no block (some nodes answer block zero with an error); a failed
   // request still throws.
-  async function blockRead(blockNumber) {
+  async function blockRead(blockNumber, options) {
     let marked = false;
     const payload = await nodePayload('getBlockByNumber', { blockNumber }, async (input, init) => {
       const response = await observingFetch(input, init);
       marked = Boolean(response.headers.get(SIMULATION_HEADER));
       return response;
-    });
+    }, options);
+    options?.signal?.throwIfAborted();
     const answered = isRecord(payload) && payload.result === 200 && Object.hasOwn(payload, 'response');
     return { block: answered && isRecord(payload.response) ? payload.response : null, marked };
   }
@@ -125,13 +126,13 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // simulated fixture without a real chain identity and is reported as such.
   // This is one RPC's answer: it exposes a wrong network behind an honest RPC,
   // not a dishonest RPC. Nothing here is carried in a signed transaction.
-  async function networkIdentity() {
-    const zero = await blockRead(0);
+  async function networkIdentity(options = {}) {
+    const zero = await blockRead(0, options);
     if (loopback && zero.marked) return { mode: 'simulated-fixture', identity: null };
     const genesisNumber = zero.block ? zero.block.number ?? zero.block.id : undefined;
     let identity = zero.block && (genesisNumber === undefined || genesisNumber === 0) ? chainIdentityOf(zero.block.hash) : null;
     if (!identity) {
-      const { block } = await blockRead(1);
+      const { block } = await blockRead(1, options);
       if (block?.number === 1 && block.status === 'confirmed' && typeof block.hash === 'string' && block.hash.trim() && isRecord(block.content)) {
         identity = chainIdentityOf(block.content.previousHash);
       }
@@ -174,8 +175,8 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return nonceFromNode(response);
   }
 
-  async function getTransaction(hash) {
-    return nodeCall('getTxByHash', { hash });
+  async function getTransaction(hash, options) {
+    return nodeCall('getTxByHash', { hash }, options);
   }
 
   // Exact account balance in OS, read as the deployment's
@@ -242,7 +243,18 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return payload;
   }
 
-  const observer = createPayDemSellerObserver({ rpc: base, timeoutMs, maxResponseBytes: 4 * 1024 * 1024, fetchImpl: observingFetch });
+  async function observeTransfer(hash, options = {}) {
+    return observeWithDeadline(async ({ signal }) => {
+      const readOptions = { ...options, signal };
+      const result = await observePayDemTransferCore(hash, {
+        getTransactionStatus: hash => nodeCall('getTransactionStatus', { hash }, readOptions),
+        getTxByHash: hash => nodeCall('getTxByHash', { hash }, readOptions),
+        getBlockByNumber: blockNumber => nodeCall('getBlockByNumber', { blockNumber }, readOptions),
+      });
+      signal.throwIfAborted();
+      return result;
+    }, { timeoutMs, signal: options.signal });
+  }
 
   return {
     network,
@@ -260,6 +272,6 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     getTransactionFees,
     getTransaction,
     getIdentities,
-    observeTransfer: (hash) => observer.observeDemosTransfer(hash),
+    observeTransfer,
   };
 }
