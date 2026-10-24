@@ -168,7 +168,12 @@ function registrySourceSpec(value) {
       { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js");
     npmPackageArg = createRequire(npmEntry)("npm-package-arg");
   }
-  try { return npmPackageArg.resolve("dependency", value).registry === true; } catch { return false; }
+  try {
+    const parsed = npmPackageArg.resolve("dependency", value);
+    // Older npm parsers (npm 10.8) read `npm:node_modules` as an alias with no
+    // package name instead of refusing it.
+    return parsed.registry === true && (parsed.type !== "alias" || typeof parsed.subSpec?.name === "string");
+  } catch { return false; }
 }
 
 // The run's own registry: HTTPS, or the loopback Verdaccio the acceptance
