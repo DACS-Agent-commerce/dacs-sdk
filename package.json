@@ -120,7 +120,7 @@
     "release:check": "node scripts/check-release-packages.mjs",
     "release:dry-run": "node scripts/release-dry-run.mjs",
     "release:test:native": "DACS_RELEASE_NATIVE_INTEGRATION=1 node --test --test-concurrency=1 --test-name-pattern=\"native sqlite integration\" test/scripts/release-checks.test.mjs",
-    "release:test": "node --test --test-concurrency=1 test/scripts/release-checks.test.mjs test/scripts/release-identity.test.mjs",
+    "release:test": "node --test --test-concurrency=1 test/scripts/release-*.test.mjs",
     "release:set:publish": "node scripts/publish-release-set.mjs"
   },
   "publishConfig": {
@@ -168,6 +168,7 @@
     "semver": "7.7.4",
     "typescript": "^5",
     "viem": "^2.55.19",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "yaml": "2.8.3"
   }
 }
