@@ -214,6 +214,7 @@ const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (
 // Trusted seller state retains terminal ownership; unknown state retains challenges.
 const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
+const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
 export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now() }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
@@ -225,8 +226,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0 ||
       directory.uid !== process.getuid?.() || realpathSync(parent) !== parent) throw new Error('transport store needs a private, real host-local directory');
   try {
-    const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    closeSync(fd);
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600));
   } catch (error) { if (error.code !== 'EEXIST') throw error; }
   const file = lstatSync(path);
   if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || file.uid !== process.getuid?.()) throw new Error('transport store file must be private and regular');
@@ -383,7 +383,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (body.scope.jobId !== p.jobId) fail('peer_job_mismatch', 409);
       }
       // The admission table is created inside this transaction; it exists only after a commit.
-      const reservation = transaction(() => {
+      return transaction(() => {
         const creates = p.path === CONTEXT && !admissions();
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
@@ -392,7 +392,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           if (previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
           // A definite earlier no-effect answer belongs to its own nonce,
           // even if a fresh attempt of the same command later succeeds.
-          if (previous.response !== null && previous.status < 500) return { disposition: 'cached', status: previous.status, text: previous.response };
+          if (previous.response !== null && (previous.status < 500 || previous.effect === NO_EFFECT_KEY)) return { disposition: 'cached', status: previous.status, text: previous.response };
           const effect = get('SELECT * FROM peer_effects WHERE effect = ?', previous.effect);
           if (effect?.state === 'complete') return { disposition: 'cached', status: effect.status, text: effect.response };
           if (effect) return { disposition: 'uncertain', effectKey: effect.effect, owner: effect.owner };
@@ -445,7 +445,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           LEFT JOIN peer_effects e ON e.effect = n.effect WHERE r.expires_at <= ?
           AND (e.state = 'complete' OR (e.state = 'retry' AND n.response IS NOT NULL) OR (e.effect IS NULL AND n.response IS NOT NULL))`;
         const expired = get('SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time).n;
-        if (get('SELECT COUNT(*) AS n FROM peer_nonces').n - expired >= maxRecords) fail('peer_store_capacity', 503);
+        if (get('SELECT COUNT(*) AS n FROM peer_nonces').n - expired >= maxRecords ||
+            get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
+              OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${reclaimable}))`, time, time - nonceWindowMs, time).n >= maxRecords) fail('peer_store_capacity', 503);
         if (get('SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE buyer = ? AND created_at > ?', p.buyer, time - nonceWindowMs).n >= maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
         const neededJobs = !job && !contextStep && !retained ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
         const emptyJobs = reclaimableJobs(neededJobs);
@@ -490,7 +492,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (!READ_ROUTES.has(p.path) && !occupied) run('INSERT INTO peer_slots VALUES (?, ?)', slot, effectKey);
         return { disposition: 'perform', effectKey, owner, readOnly: READ_ROUTES.has(p.path) };
       }, dryRun);
-      return reservation;
     },
     // Read-only: 'start' when reserve would start new work for this request,
     // 'known' when it would answer from the journal (cached or uncertain); a
@@ -525,7 +526,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (!current || current.owner !== reservation.owner || current.state !== 'pending') fail('peer_store_conflict', 503);
-        run('UPDATE peer_nonces SET status = ?, response = ? WHERE effect = ? AND response IS NULL', status, text, reservation.effectKey);
+        run('UPDATE peer_nonces SET status = ?, response = ?, effect = ? WHERE effect = ? AND response IS NULL', status, text, noEffect || reservation.readOnly ? NO_EFFECT_KEY : reservation.effectKey, reservation.effectKey);
         if (noEffect || reservation.readOnly) {
           const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
           // A definite no-effect answer started nothing: its admission record goes too.
@@ -565,7 +566,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
             // The context step is bound by its admission record, the other steps by the job's Agreement row.
             (request.path === CONTEXT ? !admissions() || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
               : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
-        run('UPDATE peer_nonces SET status = ?, response = ? WHERE effect = ? AND (response IS NULL OR status >= 500)', status, text, reservation.effectKey);
+        run('UPDATE peer_nonces SET status = ?, response = ?, effect = ? WHERE effect = ? AND (response IS NULL OR status >= 500)', status, text, noEffect || READ_ROUTES.has(request.path) ? NO_EFFECT_KEY : reservation.effectKey, reservation.effectKey);
         if (noEffect || READ_ROUTES.has(request.path)) {
           const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
           run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
