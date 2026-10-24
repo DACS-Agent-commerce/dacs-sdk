@@ -142,6 +142,19 @@ describe("journal publication and recovery regression cases", () => {
     expect(() => openWireRequestJournal(directory)).toThrowError(refused("DIRECTORY-UNSAFE"));
     expect(names(directory)).toEqual([]);
   }, 30000);
+  it("refuses a directory reached through a symbolic link, so a retargeted link cannot hide retained state", () => {
+    const first = journalDirectory(), second = journalDirectory(), parent = journalDirectory();
+    const link = join(parent, "current"), ancestor = join(parent, "ancestor");
+    fs.symlinkSync(first, link);
+    fs.symlinkSync(parent, ancestor);
+    fs.mkdirSync(join(parent, "real"), { mode: 0o700 });
+    expect(() => openWireRequestJournal(link)).toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid" }));
+    for (const alias of [`${link}/`, join(ancestor, "real"), `${first}/../${second.split("/").pop()}`]) {
+      expect(() => openWireRequestJournal(alias)).toThrowError(refused("DIRECTORY-ALIAS"));
+    }
+    expect(names(first)).toEqual([]);
+    expect(openWireRequestJournal(first).directory).toBe(first);
+  }, 30000);
   it.each([NaN, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])("invalid clock %s issues no attempt", (at) => {
     const { journal, directory } = setup(() => at);
     expect(() => reserve(journal)).toThrowError(expect.objectContaining({ code: "seller_configuration_invalid", status: 500, detail: "JOURNAL-CLOCK" }));
