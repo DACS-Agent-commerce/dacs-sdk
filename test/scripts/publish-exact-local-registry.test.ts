@@ -594,6 +594,37 @@ describe("exact local registry publisher", () => {
     expect(registry.calls).toHaveLength(0);
   });
 
+  it.each(["checksum", "name"])("rejects a smuggled manifest behind an ambiguous %s header before publishing", async kind => {
+    const { archivePath } = candidate();
+    const hidden = gunzipSync(packTarball({ "package/package.json": '{"name":"hidden","version":"9.9.9"}' }));
+    const archive = gunzipSync(packTarball({
+      "package/package.json": '{"name":"example","version":"1.0.0"}',
+      "package/payload": hidden.toString("utf8"),
+    }));
+    const header = archive.subarray(1024, 1536);
+    if (kind === "name") header.write("package/x\0\n" + "a".repeat(88) + "/", 0, 100);
+    header.fill(32, 148, 156);
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    header.write(kind === "checksum" ? checksum.toString(8).padStart(8, "0")
+      : checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+    writeFileSync(archivePath, gzipSync(archive));
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/packed tarball/);
+    expect(registry.calls).toHaveLength(0);
+  });
+
+  it.each([0, 345].flatMap(start => ["\n", "\r", "\u2028", "\u2029", "hidden"].map(suffix => ({ start, suffix }))))(
+    "rejects nonzero padding after a NUL in tar path field $start ($suffix)", ({ start, suffix }) => {
+      const archive = gunzipSync(packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}' }));
+      const name = start === 0 ? "package/package.json" : "";
+      archive.write(name + "\0" + suffix, start);
+      archive.fill(32, 148, 156);
+      const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
+      archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+      expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
+    });
+
   it("rejects a prefix alias with nonstandard ustar version bytes", () => {
     const first = gunzipSync(packTarball({ "package/package.json": '{"name":"first","version":"1.0.0"}' }));
     const second = gunzipSync(packTarball({ "package/package.json": '{"name":"other","version":"9.9.9"}' }));
