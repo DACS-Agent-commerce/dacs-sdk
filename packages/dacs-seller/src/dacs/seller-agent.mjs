@@ -15,6 +15,7 @@ import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem
 import { nativeDemDeliveryConfig } from './native-dem-delivery-consumer.mjs';
 import { agreementTerms, agreementInput, contributionVerifier, listingPin, protocolSupport } from './purchase-protocol.mjs';
 
+/** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
   constructor(code, message, status = 422, options = {}) {
     super(message,options);
