@@ -144,3 +144,15 @@ test('registering SQL callbacks is refused during guards', t => {
   const db=world(t);
   withSqliteStatementGuard(db,()=>{},()=>assert.throws(()=>db.function('TEST_callback',()=>1), /SQL callbacks/));
 });
+
+test('exec preserves native NUL and BOM empty remainders after a write', t=>{
+  for(const tail of ['\0 SELECT invalid_column','\ufeff','\ufeff /* unfinished']){
+    const native=world(t),guarded=world(t),sql="INSERT INTO records VALUES ('TEST-tail');"+tail;
+    nativeExec.call(native,sql);
+    withSqliteStatementGuard(guarded,()=>{},()=>{
+      guarded.exec(sql);
+      guarded.exec('\0 SELECT invalid_column');
+    });
+    assert.deepEqual(guarded.prepare('SELECT id FROM records').all(),native.prepare('SELECT id FROM records').all());
+  }
+});
