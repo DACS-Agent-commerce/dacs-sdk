@@ -438,6 +438,22 @@ test("required public exports reject unusable runtime trees in manifest and stri
   }
 });
 
+test("required public exports refuse targets Node cannot import, such as source maps", () => {
+  for (const target of ["./dist/index.js.map", "./dist/index.d.ts.map", "./dist/index.node", "./dist/index"]) {
+    const p = manifest(); p.exports["."] = { import: target };
+    assert.throws(() => validateManifest(p, core), /runtime.*export/);
+  }
+  const p = manifest(); p.exports["."] = { import: "./dist/index.mjs" };
+  assert.doesNotThrow(() => validateManifest(p, core));
+});
+
+test("lock file resolutions with a query, fragment or escape cannot name a supplied tarball", () => {
+  const allowed = [{ name: core.name, tarball: "/tmp/expected.tgz" }];
+  for (const resolved of ["file:../other.tgz?/../expected.tgz", "file:../other.tgz#/../expected.tgz", "file:../other%2f../expected.tgz"]) {
+    assert.throws(() => validateLock({ packages: { [`node_modules/${core.name}`]: { resolved } } }, allowed, "/tmp/consumer"), /ambiguous local file/);
+  }
+});
+
 test("admitted required subpaths resolve and import in Node", async () => {
   const root = await mkdtemp(join(tmpdir(), "dacs-required-imports-"));
   try {
