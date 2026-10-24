@@ -3,6 +3,9 @@
 // only supports x402 evidence anchoring. This DEM transport uses its canonical
 // hashing primitives, with a separate buyer/seller Ed25519 signing callback.
 import { createPublicKey, randomBytes, verify } from 'node:crypto';
+import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute } from 'node:path';
+import DatabaseSync from 'better-sqlite3';
 import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
@@ -36,6 +39,7 @@ export const SELLER_CONTEXT_CHALLENGE_PATH = CONTEXT + '/challenge';
 export const SELLER_CONTEXT_SCOPE_KEYS = Object.freeze(['source', 'wallet', 'jobId', 'buyer', 'buyerBundleHash', 'seller', 'listingPin', 'rail', 'payee', 'price', 'generatedAt']);
 export const sellerContextChallengeScope = (value) => { requireJobId(value?.jobId); const { buyerBundleHash, ...scope } = value; return scope; };
 export const sellerContextScopeHash = (scope) => { requireJobId(scope?.jobId); return sha256Hex(canonicalize(scope)); };
+const READ_ROUTES = new Set([STATE, '/dacs/v1/bundles/buyer-copy']);
 const exact = (a, b) => canonicalize(a) === canonicalize(b);
 const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const keys = (v, expected) => record(v) && Object.keys(v).length === expected.length && expected.every((k) => Object.hasOwn(v, k));
@@ -202,6 +206,402 @@ function validateBody(p, body) {
         !exact(plan.requiredSigners, [{ role: 'buyer', party: p.buyer }, { role: 'seller', party: p.seller }])) fail('peer_proposal_mismatch', 409);
   }
   if (p.path === PAYMENT && (body.payerPayingKey !== p.buyer || typeof body.txHash !== 'string' || !/^(?:0x)?[0-9a-fA-F]{64}$/.test(body.txHash))) fail('peer_payment_mismatch', 409);
+}
+
+// Durable intent precedes effects; ambiguous work stays fenced across restart.
+// Lazy context admissions own pre-Agreement jobs and their unpaid-start limits.
+const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (job TEXT PRIMARY KEY, buyer TEXT NOT NULL, seller TEXT NOT NULL,
+  listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL)`;
+
+// Trusted seller state retains terminal ownership; unknown state retains challenges.
+const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
+const CHALLENGE_RATE_WINDOW_MS = 3600000;
+const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
+export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now() }) {
+  if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
+  if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
+  if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
+  if (!uint(maxContextRecords) || maxContextRecords === 0) throw new Error('positive context capacity required');
+  if (![maxNoncesPerBuyerPerWindow, nonceWindowMs].every(n => uint(n) && n > 0)) throw new Error('positive nonce limits required');
+  const parent = dirname(path);
+  const directory = lstatSync(parent);
+  if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0 ||
+      directory.uid !== process.getuid?.() || realpathSync(parent) !== parent) throw new Error('transport store needs a private, real host-local directory');
+  try {
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600));
+  } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const file = lstatSync(path);
+  if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || file.uid !== process.getuid?.()) throw new Error('transport store file must be private and regular');
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 1000');
+  db.exec(`CREATE TABLE IF NOT EXISTS peer_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS peer_jobs (job TEXT PRIMARY KEY, context TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS peer_effects (effect TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL, status INTEGER, response TEXT);
+    CREATE TABLE IF NOT EXISTS peer_effect_jobs (effect TEXT PRIMARY KEY, job TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS peer_slots (slot TEXT PRIMARY KEY, effect TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS peer_transactions (tx TEXT PRIMARY KEY, job TEXT NOT NULL, effect TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS peer_nonces (nonce TEXT PRIMARY KEY, request_hash TEXT NOT NULL, effect TEXT NOT NULL, status INTEGER, response TEXT);
+    CREATE TABLE IF NOT EXISTS peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS peer_context_challenges (nonce TEXT PRIMARY KEY, job TEXT NOT NULL, buyer TEXT NOT NULL, scope TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, attempted INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
+    CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
+    CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
+  // rollback: always roll back (classify's read-only run of reserve).
+  function transaction(fn, rollback = false) {
+    db.exec('BEGIN IMMEDIATE');
+    try { const result = fn(); db.exec(rollback ? 'ROLLBACK' : 'COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  const get = (sql, ...args) => db.prepare(sql).get(...args);
+  const run = (sql, ...args) => db.prepare(sql).run(...args);
+  // Legacy nonce rows did not carry expiry. Keep them for one full maximum
+  // request lifetime from upgrade before considering safe reclamation.
+  transaction(() => {
+    const time = now();
+    for (const { nonce } of db.prepare('SELECT nonce FROM peer_nonces WHERE nonce NOT IN (SELECT nonce FROM peer_nonce_retention)').all()) {
+      run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, nonce.slice(0, nonce.lastIndexOf(':')), time, time + 60000);
+    }
+  });
+  const admissions = () => Boolean(get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'peer_context_admissions'"));
+  // Legacy slots identify mutating effects. Legacy reads have no job identity;
+  // any such unmapped effect conservatively prevents job-row reclamation.
+  transaction(() => {
+    run("INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, substr(slot, 1, instr(slot, ':') - 1) FROM peer_slots WHERE instr(slot, ':') > 0");
+    if (admissions()) run('INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, job FROM peer_context_admissions');
+  });
+  function reclaimableJobs(needed, jobId) {
+    // One global legacy check, then indexed anti-joins rather than one set of
+    // table scans per job. The slot range is exactly the job + ':' prefix and
+    // uses the slot primary key, including for older rows without a mapping.
+    if (!needed || get('SELECT 1 FROM peer_effects e WHERE NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.effect = e.effect) LIMIT 1')) return [];
+    return db.prepare(`SELECT j.job FROM peer_jobs j WHERE
+      ${jobId === undefined ? '' : 'j.job = ? AND '}
+      NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
+      AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
+      AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
+      ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
+      LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
+  }
+  // Plan reclamation with reads only. Full-capacity refusals must execute no
+  // mutations, even ones a transaction could roll back. Only terminal context
+  // effects may leave retention; unresolved effects and live requests fence it.
+  function reclaimableContexts(time) {
+    if (!admissions()) return [];
+    const needed = Math.max(0, get('SELECT COUNT(*) AS n FROM peer_context_admissions').n - maxContextRecords + 1);
+    if (!needed) return [];
+    const rows = [];
+    for (const row of db.prepare(`SELECT a.job, a.effect FROM peer_context_admissions a
+      JOIN peer_effects e ON e.effect = a.effect WHERE a.admitted_at <= ? AND e.state = 'complete'
+      AND NOT EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
+        WHERE n.effect = a.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))`).iterate(time - CHALLENGE_RATE_WINDOW_MS, time, time - nonceWindowMs)) {
+      if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: row.job }))) rows.push(row);
+      if (rows.length === needed) break;
+    }
+    return rows;
+  }
+  function reclaimContexts(rows) {
+    for (const row of rows) {
+      run('DELETE FROM peer_nonce_retention WHERE nonce IN (SELECT nonce FROM peer_nonces WHERE effect = ?)', row.effect);
+      run('DELETE FROM peer_nonces WHERE effect = ?', row.effect);
+      run('DELETE FROM peer_slots WHERE effect = ?', row.effect);
+      run('DELETE FROM peer_effect_jobs WHERE effect = ?', row.effect);
+      run('DELETE FROM peer_effects WHERE effect = ?', row.effect);
+      run('DELETE FROM peer_context_admissions WHERE effect = ?', row.effect);
+    }
+  }
+  return {
+    issueContextChallenge(request, scope, { maxPerBuyer = 5, maxGlobal = 12, admit } = {}) {
+      requireJobId(request?.jobId);
+      requireJobId(scope?.jobId);
+      if (request.jobId !== scope.jobId) fail('peer_job_mismatch', 409);
+      return transaction(() => {
+        const time = now(), hash = sellerContextScopeHash(scope);
+        if (!uint(time)) fail('peer_clock_invalid', 503);
+        if (![maxPerBuyer, maxGlobal].every(n => uint(n) && n > 0)) fail('context_challenge_limits_invalid', 503);
+        if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
+        const prior = get('SELECT * FROM peer_context_challenges WHERE job = ? AND buyer = ? AND scope = ? AND attempted = 0 AND expires_at > ?', request.jobId, request.buyer, hash, time);
+        if (prior) return { sessionNonce: prior.nonce, expiresAt: prior.expires_at };
+        if (get('SELECT COUNT(*) AS n FROM peer_context_challenges WHERE issued_at > ?', time - CHALLENGE_RATE_WINDOW_MS).n >= maxGlobal) fail('context_challenge_limit', 429);
+        if (get('SELECT COUNT(*) AS n FROM peer_context_challenges WHERE buyer = ? AND issued_at > ?', request.buyer, time - CHALLENGE_RATE_WINDOW_MS).n >= maxPerBuyer) fail('buyer_context_challenge_limit', 429);
+        // Keep every issued/consumed row through session termination (SN-4),
+        // and through its rate window. Inspect first: a refused issuance must
+        // execute no mutation, including cleanup that would later roll back.
+        const needed = Math.max(0, get('SELECT COUNT(*) AS n FROM peer_context_challenges').n - maxChallenges + 1);
+        const reclaimable = [];
+        if (needed) for (const row of db.prepare('SELECT nonce, job, buyer FROM peer_context_challenges WHERE expires_at <= ? AND issued_at <= ?').iterate(time, time - CHALLENGE_RATE_WINDOW_MS)) {
+          if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: row.job }))) reclaimable.push(row);
+          if (reclaimable.length === needed) break;
+        }
+        if (reclaimable.length < needed) fail('context_challenge_capacity', 503);
+        const retired = reclaimableContexts(time);
+        if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
+        if (typeof admit !== 'function') fail('peer_context_unadmitted', 503);
+        admit({ starts: (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0 });
+        for (const row of reclaimable) run('DELETE FROM peer_context_challenges WHERE nonce = ?', row.nonce);
+        const sessionNonce = randomBytes(32).toString('hex'), expiresAt = time + 60000;
+        run('INSERT INTO peer_context_challenges VALUES (?, ?, ?, ?, ?, ?, 0)', sessionNonce, request.jobId, request.buyer, hash, time, expiresAt);
+        return { sessionNonce, expiresAt };
+      });
+    },
+    // Called after transport authentication, before admission or presentation validation.
+    // Consumption commits even when proof verification subsequently refuses.
+    attemptContextPresentation(request, body) {
+      requireJobId(request?.jobId);
+      requireJobId(body?.scope?.jobId);
+      const problem = transaction(() => {
+        const nonce = body.buyerIdentityBundle?.sessionNonce;
+        if (typeof nonce !== 'string' || !HASH.test(nonce)) return 'context_challenge_mismatch';
+        const row = get('SELECT * FROM peer_context_challenges WHERE nonce = ?', nonce);
+        if (!row) return 'context_challenge_mismatch';
+        if (row.attempted) return 'context_challenge_consumed';
+        run('UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', row.nonce);
+        try {
+          if (row.job !== request.jobId || row.buyer !== request.buyer || row.scope !== sellerContextScopeHash(sellerContextChallengeScope(body.scope))) return 'context_challenge_mismatch';
+        } catch { return 'context_challenge_mismatch'; }
+        if (row.expires_at <= now()) return 'context_challenge_expired';
+        return null;
+      });
+      if (problem) fail(problem, 409);
+    },
+    bind({ seller, listingPin }) {
+      const config = canonicalize({ storeVersion: '1', seller, listingPin });
+      transaction(() => {
+        const stored = get('SELECT value FROM peer_meta WHERE key = ?', 'config');
+        if (stored && stored.value !== config) throw new Error('transport store belongs to another seller, Listing or schema');
+        if (!stored) run('INSERT INTO peer_meta VALUES (?, ?)', 'config', config);
+      });
+    },
+    // journaledOnly (an expired session delegation): read routes, replays of
+    // an earlier nonce and the exact effect already journaled for this job
+    // (cached answer, or uncertain -> read-only reconciliation) are allowed.
+    // Anything that would start a new effect is refused before any insert.
+    // admit({starts}) is required when a context request starts new work and
+    // runs only then, inside this transaction: starts(since, buyer?) counts
+    // admission records newer than `since`. It returns the admission time or
+    // throws a refusal, which rolls back every row of this request.
+    reserve(p, body, { journaledOnly = false, admit = null, dryRun = false } = {}) {
+      requireJobId(p?.jobId);
+      if (p.path === CONTEXT) {
+        requireJobId(body?.scope?.jobId);
+        if (body.scope.jobId !== p.jobId) fail('peer_job_mismatch', 409);
+      }
+      // The admission table is created inside this transaction; it exists only after a commit.
+      return transaction(() => {
+        const creates = p.path === CONTEXT && !admissions();
+        const requestHash = sha256Hex(canonicalize(p));
+        const nonce = `${p.buyer}:${p.nonce}`;
+        const previous = get('SELECT * FROM peer_nonces WHERE nonce = ?', nonce);
+        if (previous) {
+          if (previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
+          // A definite earlier no-effect answer belongs to its own nonce,
+          // even if a fresh attempt of the same command later succeeds.
+          if (previous.response !== null && (previous.status < 500 || previous.effect === NO_EFFECT_KEY)) return { disposition: 'cached', status: previous.status, text: previous.response };
+          const effect = get('SELECT * FROM peer_effects WHERE effect = ?', previous.effect);
+          if (effect?.state === 'complete') return { disposition: 'cached', status: effect.status, text: effect.response };
+          if (effect) return { disposition: 'uncertain', effectKey: effect.effect, owner: effect.owner };
+          if (previous.response !== null) return { disposition: 'cached', status: previous.status, text: previous.response };
+          return { disposition: 'uncertain' };
+        }
+        const context = canonicalize(requestIdentity(p));
+        const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
+        const contextStep = p.path === CONTEXT;
+        // The context step is checked against the job's parties and pin only:
+        // its agreementHash slot is the context scope hash, not the Agreement.
+        const parties = (value) => { const { agreementHash, ...rest } = value; return canonicalize(rest); };
+        if (job && (contextStep ? parties(JSON.parse(job.context)) !== parties(requestIdentity(p)) : job.context !== context)) fail('peer_job_conflict', 409);
+        // Before the Agreement the job belongs to the buyer of its admission record.
+        const admitted = admissions() ? get('SELECT buyer, seller, listing_pin FROM peer_context_admissions WHERE job = ?', p.jobId) : null;
+        if (admitted && (admitted.buyer !== p.buyer || admitted.seller !== p.seller || admitted.listing_pin !== canonicalize(p.listingPin))) fail('peer_job_conflict', 409);
+        const effectKey = effectIdentity(p);
+        if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
+        // The SDK buyer coordinator reconciles before publishing a proposal.
+        // An unadmitted job has no authenticated state to disclose or reserve.
+        const unknownState = !job && p.path === STATE;
+        if (!job && p.path !== PROPOSAL && !contextStep && !unknownState) fail('peer_unknown_job', 404);
+        const slot = `${p.jobId}:${p.path}`;
+        const occupied = READ_ROUTES.has(p.path) ? null : get('SELECT effect FROM peer_slots WHERE slot = ?', slot);
+        if (occupied && occupied.effect !== effectKey) fail('peer_operation_conflict', 409);
+        const existing = get('SELECT * FROM peer_effects WHERE effect = ?', effectKey);
+        // Fresh nonces for retained effects are read-only, including uncertainty.
+        // The exception is an effect the agent answered as not final yet
+        // (finish with retry): it runs again under the same effect and slot, so
+        // the agent's own retained work decides, and another body still conflicts.
+        // Running it again is new work (it may sign and send): under an expired
+        // delegation (journaledOnly) it answers its last journaled answer instead.
+        let retained = unknownState
+          ? { disposition: 'cached', status: 200, text: '{"proposal":null,"contribution":null}' }
+          : existing?.state === 'retry' && journaledOnly ? { disposition: 'cached', status: existing.status, text: existing.response } : null;
+        const retry = existing?.state === 'retry' && !contextStep;
+        if (existing && !retry && !retained) retained = existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
+        const time = now();
+        if (!uint(time)) fail('peer_clock_invalid', 503);
+        const retired = [];
+        if (!retained && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+        if (contextStep && !retained) {
+          if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+          retired.push(...reclaimableContexts(time));
+          if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
+        }
+        // Only expired completed/no-effect nonces are reclaimable. Unknown or
+        // pending effects remain fenced, even after request expiry.
+        const reclaimable = `SELECT n.nonce FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
+          LEFT JOIN peer_effects e ON e.effect = n.effect WHERE r.expires_at <= ?
+          AND (e.state = 'complete' OR (e.state = 'retry' AND n.response IS NOT NULL) OR (e.effect IS NULL AND n.response IS NOT NULL))`;
+        const expired = get('SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time).n;
+        if (get('SELECT COUNT(*) AS n FROM peer_nonces').n - expired >= maxRecords ||
+            get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
+              OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${reclaimable}))`, time, time - nonceWindowMs, time).n >= maxRecords) fail('peer_store_capacity', 503);
+        if (get('SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE buyer = ? AND created_at > ?', p.buyer, time - nonceWindowMs).n >= maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
+        const neededJobs = !job && !contextStep && !retained ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
+        const emptyJobs = reclaimableJobs(neededJobs);
+        if (emptyJobs.length < neededJobs) fail('peer_job_capacity', 503);
+        let admittedAt = null;
+        if (contextStep && !existing) {
+          const starts = (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0;
+          admittedAt = typeof admit === 'function' ? admit({ starts }) : null;
+          if (!uint(admittedAt)) fail('peer_context_unadmitted', 503);
+        }
+        if (p.path === PAYMENT && !retained) {
+          const tx = body.txHash.replace(/^0x/, '').toLowerCase();
+          const claimed = get('SELECT job, effect FROM peer_transactions WHERE tx = ?', tx);
+          // A transport claim is not SB-2 authority. Competing jobs must reach
+          // authenticated payment intake so it can suspend the collision group.
+          if (!dryRun && !claimed) run('INSERT INTO peer_transactions VALUES (?, ?, ?)', tx, p.jobId, effectKey);
+        }
+        // Dry admission checks execute no INSERT, UPDATE, DELETE or DDL.
+        if (dryRun) return retained ?? { disposition: 'perform' };
+        reclaimContexts(retired);
+        for (const jobId of emptyJobs) run('DELETE FROM peer_jobs WHERE job = ?', jobId);
+        run('DELETE FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time);
+        // Keep the rate counters for the full rate window, even when the nonce
+        // itself has expired and was pruned.
+        run('DELETE FROM peer_nonce_retention WHERE expires_at <= ? AND created_at <= ? AND nonce NOT IN (SELECT nonce FROM peer_nonces)', time, time - nonceWindowMs);
+        if (creates) db.exec(CONTEXT_ADMISSIONS);
+        if (!job && !contextStep && !retained) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
+        run('INSERT INTO peer_nonces VALUES (?, ?, ?, NULL, NULL)', nonce, requestHash, effectKey);
+        run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, p.buyer, time, p.expiresAt);
+        if (retained) {
+          if (retained.disposition === 'cached') run('UPDATE peer_nonces SET status = ?, response = ? WHERE nonce = ?', retained.status, retained.text, nonce);
+          return retained;
+        }
+        if (contextStep) run('INSERT INTO peer_context_admissions VALUES (?, ?, ?, ?, ?, ?, ?)', p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), p.agreementHash, effectKey, admittedAt);
+        const owner = randomBytes(24).toString('hex');
+        if (retry) {
+          run('UPDATE peer_effects SET owner = ?, state = ?, status = NULL, response = NULL WHERE effect = ?', owner, 'pending', effectKey);
+          return { disposition: 'perform', effectKey, owner, readOnly: false, retried: true };
+        }
+        run('INSERT INTO peer_effects VALUES (?, ?, ?, NULL, NULL)', effectKey, owner, 'pending');
+        run('INSERT INTO peer_effect_jobs VALUES (?, ?)', effectKey, p.jobId);
+        if (!READ_ROUTES.has(p.path) && !occupied) run('INSERT INTO peer_slots VALUES (?, ?)', slot, effectKey);
+        return { disposition: 'perform', effectKey, owner, readOnly: READ_ROUTES.has(p.path) };
+      }, dryRun);
+    },
+    // Read-only: 'start' when reserve would start new work for this request,
+    // 'known' when it would answer from the journal (cached or uncertain); a
+    // conflicting or readback-only request throws reserve's own refusal. It is
+    // reserve's own decision in a transaction that is always rolled back, so
+    // it writes nothing and cannot disagree with reserve.
+    classify(p, body, { journaledOnly = false, admit = () => 0 } = {}) {
+      return this.reserve(p, body, { journaledOnly, admit, dryRun: true }).disposition === 'perform' ? 'start' : 'known';
+    },
+    // The context step's pre-Agreement admission record for a job, or null:
+    // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
+    contextAdmission(jobId) {
+      requireJobId(jobId);
+      const row = admissions() ? get('SELECT * FROM peer_context_admissions WHERE job = ?', jobId) : null;
+      return row ? { jobId: row.job, buyer: row.buyer, seller: row.seller, listingPin: JSON.parse(row.listing_pin), scopeHash: row.scope_hash, effect: row.effect, admittedAt: row.admitted_at } : null;
+    },
+    // The journaled answer of a job's completed context step, or null:
+    // {status, text} of its admission record's effect once that is complete.
+    contextAnswer(jobId) {
+      requireJobId(jobId);
+      const row = admissions() ? get("SELECT e.status, e.response FROM peer_context_admissions a JOIN peer_effects e ON e.effect = a.effect WHERE a.job = ? AND e.state = 'complete'", jobId) : null;
+      return row ? { status: row.status, text: row.response } : null;
+    },
+    // noEffect: a definite answer that started nothing (its rows go). retry:
+    // an answer the agent marks as not final yet (a 200 answer, or a refusal
+    // of a claim whose work the agent retains); its effect stays bound to its
+    // slot and runs again on a fresh nonce (reserve). Otherwise complete.
+    finish(reservation, status, text, { noEffect = false, retry = false } = {}) {
+      if (!uint(status) || status < 200 || status > 599) fail('peer_response_invalid', 503);
+      if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_response_too_large', 503);
+      if (retry && (noEffect || reservation.readOnly || !uint(status))) fail('peer_store_conflict', 503);
+      transaction(() => {
+        const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
+        if (!current || current.owner !== reservation.owner || current.state !== 'pending') fail('peer_store_conflict', 503);
+        run('UPDATE peer_nonces SET status = ?, response = ?, effect = ? WHERE effect = ? AND response IS NULL', status, text, noEffect || reservation.readOnly ? NO_EFFECT_KEY : reservation.effectKey, reservation.effectKey);
+        if (noEffect || reservation.readOnly) {
+          const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
+          // A definite no-effect answer started nothing: its admission record goes too.
+          if (admissions()) run('DELETE FROM peer_context_admissions WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_slots WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_transactions WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
+          // The binding was provisional until an effect existed. Keep it if
+          // any other live/read/uncertain effect still refers to this job.
+          if (identity && reclaimableJobs(1, identity.job).length) run('DELETE FROM peer_jobs WHERE job = ?', identity.job);
+        } else {
+          run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : status >= 500 ? 'uncertain' : 'complete', status, text, reservation.effectKey);
+        }
+      });
+    },
+    // The host may resolve only the SAME retained operation, after its seller
+    // reducer has authenticated durable context and fresh native readback. No
+    // reservation, slot or transaction is released; no expired intent retries.
+    // retry (payments and proposals): the agent resumed its durable operation.
+    // A payment claim runs again from its retained work, or its start when
+    // it ended before the work checkpoint,
+    // and it is not final yet; the effect goes back to `retry`, as finish would
+    // leave it, so the next claim runs it again under the same slot.
+    // noEffect (payments only): the claim ended before the agent's work
+    // checkpoint with a definite answer that kept nothing; its effect, slot
+    // and transaction go, as finish's noEffect, so another claim can start.
+    reconcile(reservation, request, status, text, { retry = false, noEffect = false } = {}) {
+      requireJobId(request?.jobId);
+      if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
+      if ((noEffect && request.path !== PAYMENT) || (retry && request.path !== PAYMENT && request.path !== '/dacs/v1/agreements/proposals')) fail('peer_reconciliation_invalid', 503);
+      if (retry && noEffect) fail('peer_reconciliation_invalid', 503);
+      transaction(() => {
+        const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
+        if (reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
+            !current || current.owner !== reservation.owner || !['pending', 'uncertain'].includes(current.state) ||
+            // The context step is bound by its admission record, the other steps by the job's Agreement row.
+            (request.path === CONTEXT ? !admissions() || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
+              : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
+        run('UPDATE peer_nonces SET status = ?, response = ?, effect = ? WHERE effect = ? AND (response IS NULL OR status >= 500)', status, text, noEffect || READ_ROUTES.has(request.path) ? NO_EFFECT_KEY : reservation.effectKey, reservation.effectKey);
+        if (noEffect || READ_ROUTES.has(request.path)) {
+          const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_slots WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_transactions WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
+          if (identity && reclaimableJobs(1, identity.job).length) run('DELETE FROM peer_jobs WHERE job = ?', identity.job);
+          return;
+        }
+        run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : 'complete', status, text, reservation.effectKey);
+      });
+    },
+    // The context step only: an uncertain step (finished with its 503) whose
+    // route reconciliation proved that a shutdown cut it before anything of it
+    // was signed or sent (seller-context-route.mjs reconcile) runs again, under
+    // a fresh owner, as the same effect of the same admission record. Only one
+    // retry can take it: a step pending again (running, or crashed mid-run)
+    // stays fenced. Its earlier nonces keep their 503 until it completes.
+    resume(reservation, request) {
+      requireJobId(request?.jobId);
+      return transaction(() => {
+        const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
+        if (request.path !== CONTEXT || reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
+            !current || current.owner !== reservation.owner || current.state !== 'uncertain' || !admissions() ||
+            get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey) fail('peer_reconciliation_conflict', 503);
+        const owner = randomBytes(24).toString('hex');
+        run('UPDATE peer_effects SET owner = ?, state = ?, status = NULL, response = NULL WHERE effect = ?', owner, 'pending', reservation.effectKey);
+        return { disposition: 'perform', effectKey: reservation.effectKey, owner, readOnly: false, resumed: true };
+      });
+    },
+    close: () => db.close(),
+    journaledOnlyReserve: true,
+  };
 }
 
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
