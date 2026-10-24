@@ -1383,6 +1383,42 @@ describe("candidate executable and nested alias lookup", () => {
     expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/dist/node_modules`);
   });
 
+  it.each([
+    ["dist/node_modules/foo/node_modules", "dist/node_modules/foo/node_modules"],
+    ["a/node_modules/b/dist/node_modules", "a/node_modules/b/dist/node_modules"],
+  ])("rejects a candidate hidden in %s below a package that is not a candidate", (directory, reported) => {
+    const fixture = dependencyPolicyHarness();
+    const plugin = "node_modules/plugin";
+    const result = fixture.run(project => {
+      const holder = join(project, plugin, directory, "@kynesyslabs/dacs");
+      mkdirSync(holder, { recursive: true });
+      writeFileSync(join(project, plugin, "package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+      writeFileSync(join(holder, "index.js"), "module.exports = 'shadow';");
+      const importer = join(project, plugin, directory, "..", "index.js");
+      expect(createRequire(importer).resolve("@kynesyslabs/dacs")).toBe(join(holder, "index.js"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/${reported}`);
+  });
+
+  it("rejects a candidate behind a linked scope directory in node_modules inside a package that is not a candidate", () => {
+    const fixture = dependencyPolicyHarness();
+    const plugin = "node_modules/plugin";
+    const result = fixture.run(project => {
+      const target = join(project, "scope-target");
+      mkdirSync(join(target, "dacs"), { recursive: true });
+      mkdirSync(join(project, plugin, "dist/node_modules"), { recursive: true });
+      writeFileSync(join(project, plugin, "package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(target, "dacs/package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+      writeFileSync(join(target, "dacs/index.js"), "module.exports = 'shadow';");
+      symlinkSync(target, join(project, plugin, "dist/node_modules/@kynesyslabs"));
+      expect(createRequire(join(project, plugin, "dist/index.js")).resolve("@kynesyslabs/dacs")).toBe(join(target, "dacs/index.js"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/dist/node_modules`);
+  });
+
   it("rejects a candidate file shadow in node_modules inside a package that is not a candidate", () => {
     const fixture = dependencyPolicyHarness();
     const result = fixture.run(project => {
