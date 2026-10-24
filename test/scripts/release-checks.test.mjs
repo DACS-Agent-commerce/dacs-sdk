@@ -128,8 +128,10 @@ async function sourceTree(root, version = "0.1.0-alpha.0") {
         export const CREATE_DACS_AGENT_VERSION = ${JSON.stringify(version)};
         export async function createDacsAgentProject({targetDirectory, mode}) {
           await fs.mkdir(targetDirectory);
+          const native = JSON.parse(await fs.readFile(process.cwd() + '/node_modules/@kynesyslabs/dacs-node/package.json', 'utf8')).optionalDependencies?.['better-sqlite3'];
           await fs.writeFile(targetDirectory + '/package.json', JSON.stringify({
-            dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION, '@kynesyslabs/dacs-node': CREATE_DACS_AGENT_VERSION},
+            dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION, '@kynesyslabs/dacs-node': CREATE_DACS_AGENT_VERSION,
+              ...(mode === 'live-demos' && native ? {'better-sqlite3': native} : {})},
             ...(mode === 'live-demos' ? {dacs: {generatorVersion: CREATE_DACS_AGENT_VERSION}} : {})
           }));
         }`;
@@ -904,3 +906,60 @@ test("wildcard captures obey the same URL and subpath rules as literal exports",
     assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", `dist/${capture}.js`]), /export target|export subpath/);
   }
 });
+
+async function generatorConsumer(root, damage = "") {
+  const artifacts = [core, packages[1], packages[4]].map(definition => ({ manifest: manifest(definition) }));
+  artifacts[1].manifest.optionalDependencies = { "better-sqlite3": "12.6.2" };
+  const directory = join(root, "node_modules", packages[4].name);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "package.json"), JSON.stringify({ ...manifest(packages[4]), exports: "./index.js" }));
+  await writeFile(join(directory, "index.js"), `
+    import { mkdir, writeFile } from 'node:fs/promises';
+    export const CREATE_DACS_AGENT_VERSION = '0.1.0-alpha.0';
+    export async function createDacsAgentProject({targetDirectory, mode}) {
+      const p = {
+        dependencies: {'@kynesyslabs/dacs': CREATE_DACS_AGENT_VERSION, '@kynesyslabs/dacs-node': CREATE_DACS_AGENT_VERSION,
+          ...(mode === 'live-demos' ? {'better-sqlite3': '12.6.2'} : {})},
+        ...(mode === 'live-demos' ? {dacs: {generatorVersion: CREATE_DACS_AGENT_VERSION}} : {})
+      };
+      ${damage}
+      await mkdir(targetDirectory, {recursive: true});
+      await writeFile(targetDirectory + '/package.json', JSON.stringify(p));
+    }
+  `);
+  return artifacts;
+}
+
+test("generated dependency maps obey registry policy in every section and mode", () => fixture(async root => {
+  const valid = await generatorConsumer(root);
+  await assert.doesNotReject(checkGenerator(root, valid, () => {}));
+  for (const mode of ["offline", "live-demos"]) {
+    for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "overrides", "resolutions"]) {
+      for (const spec of ["file:/tmp/owner-source", `npm:${core.name}@0.1.0-alpha.0`]) {
+        const artifacts = await generatorConsumer(root,
+          `if (mode === ${JSON.stringify(mode)}) (p[${JSON.stringify(section)}] ??= {}).other = ${JSON.stringify(spec)};`);
+        await assert.rejects(checkGenerator(root, artifacts, () => {}), /non-registry dependency/);
+      }
+    }
+  }
+}));
+
+for (const spec of [undefined, "9.9.9"]) {
+  test(`live generated native pin rejects ${spec === undefined ? "an omitted dependency" : "a version differing from the Node artifact"}`, () => fixture(async root => {
+    const damage = spec === undefined ? "delete p.dependencies['better-sqlite3'];" :
+      `p.dependencies['better-sqlite3'] = ${JSON.stringify(spec)};`;
+    const artifacts = await generatorConsumer(root, `if (mode === 'live-demos') { ${damage} }`);
+    await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+  }));
+}
+
+test("live generated driver requires the exact qualified optional pin", () => fixture(async root => {
+  const artifacts = await generatorConsumer(root);
+  delete artifacts[1].manifest.optionalDependencies;
+  await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+  artifacts[1].manifest.optionalDependencies = { "better-sqlite3": "^12.6.2" };
+  await assert.rejects(checkGenerator(root, artifacts, () => {}), /generated native dependency mismatch/);
+  artifacts[1].manifest.optionalDependencies["better-sqlite3"] = "11.8.1";
+  await generatorConsumer(root, "if (mode === 'live-demos') p.dependencies['better-sqlite3'] = '11.8.1';");
+  await assert.doesNotReject(checkGenerator(root, artifacts, () => {}));
+}));
