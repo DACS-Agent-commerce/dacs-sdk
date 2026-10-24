@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const modulePath = "../../scripts/registry-container-disposition.mjs";
-const { registryContainerDisposition, registryAuditDriftDisposition, extractPolicyFindings, RELEASE_VERSION } = await import(modulePath);
+const { classifyPolicyChecks, registryContainerDisposition, registryAuditDriftDisposition, extractPolicyFindings, RELEASE_VERSION } = await import(modulePath);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -57,6 +57,30 @@ describe("complete acceptance evidence regressions", () => {
       const summary = passing(); Object.assign(summary.securityGate, { findings: { ...summary.securityGate.findings, ...extracted } });
       expect(registryContainerDisposition(summary).exitCode).toBe(3);
     }
+  });
+
+  describe("baseline match of a prohibited image package", () => {
+    const location = "node_modules/typescript";
+    const locked = { version: "5.9.2", integrity: "sha512-fixture" };
+    const baseline = { policyFindings: { productionImageDependencies: [{ name: "typescript", location, ...locked }] } };
+    const classifyImage = (installed: { name: string; version: string }) => {
+      const files: Record<string, string> = {
+        "generated-package-lock.json": JSON.stringify({ packages: { "": { dependencies: { typescript: "5.9.2" } }, [location]: locked } }),
+        "runtime-image-policy.json": JSON.stringify({ typescriptPresent: true, rubicSdkPresent: false }),
+        "runtime-image-inventory.json": JSON.stringify({ schema: "dacs-runtime-image-inventory/v1", packages: [{ location, ...installed }] }),
+      };
+      const summary = passing();
+      summary.docker.policy.typescriptPresent = true; summary.docker.policy.productionDependencyPolicyPassed = false;
+      Object.assign(summary.securityGate, { productionImageDependencyPolicyPassed: false,
+        findings: { ...summary.securityGate.findings, ...extractPolicyFindings((name: string) => files[name]) } });
+      return classifyPolicyChecks(summary, baseline).productionImage;
+    };
+    it("accepts the locked typescript copy the baseline records", () => {
+      expect(classifyImage({ name: "typescript", version: "5.9.2" })).toBe("baseline");
+    });
+    it("blocks another package installed at the baselined typescript location", () => {
+      expect(classifyImage({ name: "extra-runtime-package", version: "1.0.0" })).toBe("blocked");
+    });
   });
 
   it.each(["gitDependencies", "engine", "lockSbom", "physicalSbom"])("rejects missing %s evidence despite success flags", key => {
