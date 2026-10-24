@@ -130,9 +130,9 @@ function sqliteTransaction(db, fn) {
       db.exec(`SAVEPOINT ${savepoint}`);
       opened = true;
       state.barrier = state.guard.blockCommit();
-      const result = transactionResult(db, withSqliteStatementGuard(db, () => {
-        if (!fenced.has(db) && !state.guard.present()) throw new Error('purchase transaction ended');
-      }, fn));
+      const result = withSqliteStatementGuard(db, () => {
+        if (!state.guard.present()) throw new Error('purchase transaction ended');
+      }, () => transactionResult(db, fn()));
       state.guard.check();
       state.barrier.return();
       state.barrier = null;
@@ -150,8 +150,9 @@ function sqliteTransaction(db, fn) {
       if (!state.barrier && !fenced.has(db) && state.guard.present()) state.barrier = state.guard.blockCommit();
     }
   }
-  // Probe with BEGIN before creating any TEMP objects. A host transaction
-  // must be refused without installing guards that its ROLLBACK would erase.
+  // Refuse unfinished host writers without rolling back their implicit work.
+  db.exec('SAVEPOINT dacs_purchase_host_probe; RELEASE dacs_purchase_host_probe');
+  // Refuse explicit host transactions before creating any TEMP objects.
   db.exec('BEGIN IMMEDIATE');
   db.exec('ROLLBACK');
   const guard = writeGuard(db);
@@ -163,9 +164,9 @@ function sqliteTransaction(db, fn) {
     guard.start();
     state = { guard, barrier: guard.blockCommit() };
     active.set(db, state);
-    const result = transactionResult(db, withSqliteStatementGuard(db, () => {
-      if (!fenced.has(db) && !guard.present()) throw new Error('purchase transaction ended');
-    }, fn));
+    const result = withSqliteStatementGuard(db, () => {
+      if (!guard.present()) throw new Error('purchase transaction ended');
+    }, () => transactionResult(db, fn()));
     guard.check();
     state.barrier.return();
     state.barrier = null;
