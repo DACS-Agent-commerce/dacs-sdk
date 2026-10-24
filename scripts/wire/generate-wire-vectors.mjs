@@ -232,10 +232,10 @@ const vectors = [
   R("request/cf5-header-duplicate-member", "CF-5 duplicate member", { header: duplicateHeader }, no("wire_json_rejected", "DUPLICATE-MEMBER")),
   R("request/cf5-header-malformed-utf8", "CF-5 UTF-8", { header: malformedHeader.header, server: { listingPin: { ...LISTING_PIN, listingId: malformedHeader.serverListingId } } }, no("wire_json_rejected", "INVALID-UTF8")),
   R("request/cf5-header-invalid-number", "CF-5 number", { header: bigNumberHeader }, no("wire_json_rejected", "NUMBER-OUTSIDE-DACS-MAGNITUDE")),
-  R("request/cf5-header-non-nfc", "wire NFC", { header: nfdHeader.header, server: { listingPin: { ...LISTING_PIN, listingId: nfdHeader.serverListingId } } }, no("wire_json_rejected", "WIRE-NON-NFC-STRING")),
+  R("request/cf5-header-non-nfc", "ASCII Listing ID", { header: nfdHeader.header, server: { listingPin: { ...LISTING_PIN, listingId: nfdHeader.serverListingId } } }, no("peer_envelope_invalid")),
   R("request/cf5-body-duplicate-member", "CF-5 duplicate member", bodyCase(enc(`{"jobId":"${JOB_ID}","jobId":"${JOB_ID}"}`)), no("bad_json", "DUPLICATE-MEMBER")),
   R("request/cf5-body-malformed-utf8", "CF-5 UTF-8", bodyCase(malformedBody), no("bad_json", "INVALID-UTF8")),
-  R("request/cf5-body-non-nfc", "wire NFC", bodyCase(enc(`{"jobId":"${JOB_ID}","note":"café"}`)), no("bad_json", "WIRE-NON-NFC-STRING")),
+  R("request/cf5-body-non-nfc", "CF-5 preserves received string values", bodyCase(enc(`{"jobId":"${JOB_ID}","note":"café"}`)), ok),
   R("request/cf5-body-invalid-number", "CF-5 number", bodyCase(enc(`{"jobId":"${JOB_ID}","amount":9007199254740993}`)), no("bad_json", "NUMBER-OUTSIDE-DACS-MAGNITUDE")),
   // The verifier's own TP-1 binding: an object that only carries the profile is
   // not a binding, and a changed connection invalidates the real one. Each
@@ -266,9 +266,9 @@ const vectors = [
   G("delegation/forged-binding", "SDK binding required", { delegation, verifier: { forgedBinding: { profile } } }, no("tp1_binding_required")),
   G("delegation/local-binding-changed", "verifier's current connection (delegation)", { delegation, verifier: { local: SELLER_CHANGED } }, no("tp1_local_binding_changed")),
   // `view`: the replay passes the delegation's payload as a Proxy whose expiresAt answers its own value for
-  // the first n reads and `after` from then on, for every n from 0 to 16. The verifier copies the delegation once and
-  // refuses a Proxy outright, so the expectation holds for every n; without the copy it differs between n.
-  G("delegation/payload-changes-between-reads", "delegation owned copy", { delegation, view: { of: "delegation.payload", as: "proxy", field: "expiresAt", after: NOW - 500 } }, no("peer_delegation_invalid")),
+  // the first n reads and `after` from then on, for every n from 0 to 16. Such a caller object
+  // has no CF-5 admission authority and is refused before any accessor or Proxy trap.
+  G("delegation/payload-changes-between-reads", "CF-5 delegation input", { delegation, view: { of: "delegation.payload", as: "proxy", field: "expiresAt", after: NOW - 500 } }, no("peer_delegation_invalid", "ARTIFACT-NOT-ADMITTED")),
 
   S("response/valid", null, { request, header: resp(response) }, ok),
   S("response/old-domain", "response signature domain", { request, header: resp(response, { domain: OLD.request }) }, no("peer_signature_invalid")),
@@ -278,7 +278,7 @@ const vectors = [
   S("response/profile-revision-missing", "profile revision present", { request, header: resp({ ...response, profile: preRevisionProfile }) }, no("tp1_profile_revision_missing")),
   S("response/profile-revision-unknown", "profile revision defined", { request, header: resp({ ...response, profile: revised("TP-1 ") }) }, no("tp1_profile_revision_unknown")),
   // The request the buyer kept for the purchase names a pre-revision tuple: refused before the answer is opened.
-  S("response/kept-request-revision-missing", "purchase tuple kept (buyer)", { request: { ...request, profile: preRevisionProfile }, header: resp(response) }, no("tp1_purchase_profile_mismatch")),
+  S("response/kept-request-revision-missing", "retained request shape", { request: { ...request, profile: preRevisionProfile }, header: resp(response) }, no("peer_envelope_invalid")),
   S("response/wrong-status", "response status binding", { request, header: resp(response), status: 201 }, no("peer_response_mismatch")),
   S("response/wrong-body", "response body binding", { request, header: resp(response), body: b64(enc('{"status":"other"}')) }, no("peer_response_mismatch")),
   S("response/other-signer", "response signature key", { request, header: resp(response, { signer: other.signer }) }, no("peer_signature_invalid")),
@@ -293,7 +293,7 @@ const vectors = [
   S("response/lifetime-over-60s", "response lifetime", { request, header: resp({ ...response, expiresAt: NOW + 60_001 }) }, no("peer_response_mismatch")),
   S("response/cf5-duplicate-member", "CF-5 duplicate member", { request, ...responseBodyCase(enc('{"status":"committed","status":"committed"}')) }, no("response_json_rejected", "DUPLICATE-MEMBER")),
   S("response/cf5-malformed-utf8", "CF-5 UTF-8", { request, ...responseBodyCase(malformedResponseBody) }, no("response_json_rejected", "INVALID-UTF8")),
-  S("response/cf5-non-nfc", "wire NFC", { request, ...responseBodyCase(enc('{"status":"committed","note":"café"}')) }, no("response_json_rejected", "WIRE-NON-NFC-STRING")),
+  S("response/cf5-non-nfc", "CF-5 preserves received string values", { request, ...responseBodyCase(enc('{"status":"committed","note":"café"}')) }, ok),
   S("response/cf5-invalid-number", "CF-5 number", { request, ...responseBodyCase(enc('{"status":"committed","amount":9007199254740993}')) }, no("response_json_rejected", "NUMBER-OUTSIDE-DACS-MAGNITUDE")),
   S("response/forged-binding", "SDK binding required", { request, header: resp(response), verifier: { forgedBinding: { profile } } }, no("tp1_binding_required")),
   S("response/local-binding-changed", "verifier's current connection (open)", { request, header: resp(response), verifier: { local: BUYER_CHANGED } }, no("tp1_local_binding_changed")),
@@ -316,7 +316,7 @@ const vectors = [
   V("discovery/issued-in-future", "discovery issuedAt skew", { document: disc({ ...discovery, issuedAt: NOW + 60_001 }) }, no("discovery_expired")),
   V("discovery/cf5-duplicate-member", "CF-5 duplicate member", { document: discoveryDuplicate }, no("discovery_json_rejected", "DUPLICATE-MEMBER")),
   V("discovery/cf5-malformed-utf8", "CF-5 UTF-8", discoveryMalformed, no("discovery_json_rejected", "INVALID-UTF8")),
-  V("discovery/cf5-non-nfc", "wire NFC", discoveryNonNfc, no("discovery_json_rejected", "WIRE-NON-NFC-STRING")),
+  V("discovery/cf5-non-nfc", "ASCII Listing ID", discoveryNonNfc, no("discovery_invalid")),
   // Signed and then edited, so the signature check refuses it too: only the
   // order of checks makes admission the one that names it.
   V("discovery/cf5-invalid-number", "CF-5 number", { document: discoveryBigNumber }, no("discovery_json_rejected", "NUMBER-OUTSIDE-DACS-MAGNITUDE")),
@@ -325,18 +325,18 @@ const vectors = [
 
   // A producer applies its peer's admission profile before it signs (D7): the
   // buyer's signWireRequest and the seller's signWireResponse refuse these
-  // bodies with zero signatures. Malformed UTF-8 has no case here: both take
+  // invalid bodies with zero signatures; decomposed string values are accepted. Malformed UTF-8 has no case here: both take
   // the body as a string.
   P("signing/request-valid", null, { producer: "request", body: b64(enc(BODY)) }, ok),
   P("signing/request-listing-x402", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { rail: "pay-x402" } }, no("listing_unsupported")),
   P("signing/request-listing-metered", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { pricingKind: "metered" } }, no("listing_unsupported")),
   P("signing/request-listing-input", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { buyerRequestInput: true } }, no("listing_unsupported")),
   P("signing/request-cf5-duplicate-member", "outgoing request body admission", { producer: "request", body: b64(enc(`{"jobId":"${JOB_ID}","jobId":"${JOB_ID}"}`)) }, no("outgoing_body_rejected", "DUPLICATE-MEMBER")),
-  P("signing/request-cf5-non-nfc", "outgoing request body admission", { producer: "request", body: b64(enc(`{"jobId":"${JOB_ID}","note":"cafe\u0301"}`)) }, no("outgoing_body_rejected", "WIRE-NON-NFC-STRING")),
+  P("signing/request-cf5-non-nfc", "CF-5 preserves outgoing body values", { producer: "request", body: b64(enc(`{"jobId":"${JOB_ID}","note":"cafe\u0301"}`)) }, ok),
   P("signing/request-cf5-invalid-number", "outgoing request body admission", { producer: "request", body: b64(enc(`{"jobId":"${JOB_ID}","amount":9007199254740993}`)) }, no("outgoing_body_rejected", "NUMBER-OUTSIDE-DACS-MAGNITUDE")),
   P("signing/response-valid", null, { producer: "response", request, body: b64(enc(RESPONSE_TEXT)) }, ok),
   P("signing/response-cf5-duplicate-member", "outgoing response body admission", { producer: "response", request, body: b64(enc('{"status":"committed","status":"committed"}')) }, no("outgoing_body_rejected", "DUPLICATE-MEMBER")),
-  P("signing/response-cf5-non-nfc", "outgoing response body admission", { producer: "response", request, body: b64(enc('{"status":"committed","note":"cafe\u0301"}')) }, no("outgoing_body_rejected", "WIRE-NON-NFC-STRING")),
+  P("signing/response-cf5-non-nfc", "CF-5 preserves outgoing body values", { producer: "response", request, body: b64(enc('{"status":"committed","note":"cafe\u0301"}')) }, ok),
   P("signing/response-cf5-invalid-number", "outgoing response body admission", { producer: "response", request, body: b64(enc('{"status":"committed","amount":9007199254740993}')) }, no("outgoing_body_rejected", "NUMBER-OUTSIDE-DACS-MAGNITUDE")),
   // The other signers that take a caller-built payload, signing plain data once (the replay sets the signer's own claim).
   P("signing/envelope-valid", null, { producer: "envelope", payload: request }, ok),

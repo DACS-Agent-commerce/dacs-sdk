@@ -66,7 +66,7 @@ function signedMessage(v: Vector): { domain: string; party: string; payload: Rec
 const rawKey = (claim: string) => createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(claim.slice(-64), "hex")]), format: "der", type: "spki" });
 
 function bind(local: unknown) {
-  return withTestApproval(file.identity.testApprovedRecordDigests, () => bindTp1Fixture({ record: file.identity.record, local }));
+  return withTestApproval(file.identity.testApprovedRecordDigests, async () => (await bindTp1Fixture({ record: file.identity.record, local })));
 }
 
 /** A signer made for one vector; it counts its calls and its key is discarded. */
@@ -85,7 +85,7 @@ function countingSigner() {
  */
 async function delegatedRequestEditedWhileSigning(input: Record<string, any>, text: string): Promise<void> {
   const local = file.localBindings.buyer;
-  const binding = bind(local);
+  const binding = (await bind(local));
   const wallet = countingSigner(), session = countingSigner();
   const genuine = await wire.signSellerSessionDelegation({
     version: "1", kind: "seller-session-delegation", buyer: wallet.claim, sessionPublicKey: session.claim.slice("did:demos:agent:".length),
@@ -106,7 +106,7 @@ async function delegatedRequestEditedWhileSigning(input: Record<string, any>, te
   const { header } = await signRequestWithProof({ signer: editing, binding, local, path: input.path, jobId: file.job.jobId, text, seller: file.parties.seller, job: jobFor(input) as WireModule.WireJobContext, delegation, now: file.now, publicEndpoint: file.vectors.find((v: Vector) => v.id === "discovery/valid").input.listing.publicEndpoint }, b(file.vectors.find((v: Vector) => v.id === "discovery/valid").input.document));
   const embedded = JSON.parse(b(header).toString("utf8")).delegation;
   if (!isDeepStrictEqual(embedded, genuine)) throw new Error("the header embeds a delegation other than the one verified");
-  wire.openWireEnvelope(header, "request", { binding: bind(file.localBindings.seller), local: file.localBindings.seller, purchaseProfile: file.identity.profile, requireDelegation: true });
+  (await wire.openWireEnvelope(header, "request", { binding: (await bind(file.localBindings.seller)), local: file.localBindings.seller, purchaseProfile: file.identity.profile, requireDelegation: true }));
   if (wallet.calls !== 1 || session.calls !== 1) throw new Error(`signers were called ${wallet.calls} and ${session.calls} time(s)`);
 }
 
@@ -122,33 +122,33 @@ async function produce(input: Record<string, any>): Promise<void> {
   try {
     if (input.producer === "request-eligibility") {
       const local = file.localBindings.buyer;
-      const binding = bind(local);
+      const binding = (await bind(local));
       const discovery = file.vectors.find((v: Vector) => v.id === "discovery/valid").input;
-      const endpointProof = wire.verifyEndpointProof(b(discovery.document), {
+      const endpointProof = (await wire.verifyEndpointProof(b(discovery.document), {
         listing: discovery.listing, binding, local, now: file.now,
         readListingEligibility: (scope) => ({ ...(readFixtureListingEligibility(scope) as Record<string, unknown>), ...input.eligibility }),
-      });
+      }));
       await wire.signWireRequest({ signer, binding, local, path: input.path, jobId: file.job.jobId, text,
         seller: file.parties.seller, job: jobFor(input) as WireModule.WireJobContext,
         endpointProof, publicEndpoint: discovery.listing.publicEndpoint, now: file.now });
     } else if (input.producer === "request") {
       const local = file.localBindings.buyer;
-      await signRequestWithProof({ signer, binding: bind(local), local, path: input.path, jobId: file.job.jobId, text, seller: file.parties.seller, job: jobFor(input) as WireModule.WireJobContext, now: file.now, publicEndpoint: file.vectors.find((v: Vector) => v.id === "discovery/valid").input.listing.publicEndpoint }, b(file.vectors.find((v: Vector) => v.id === "discovery/valid").input.document));
+      await signRequestWithProof({ signer, binding: (await bind(local)), local, path: input.path, jobId: file.job.jobId, text, seller: file.parties.seller, job: jobFor(input) as WireModule.WireJobContext, now: file.now, publicEndpoint: file.vectors.find((v: Vector) => v.id === "discovery/valid").input.listing.publicEndpoint }, b(file.vectors.find((v: Vector) => v.id === "discovery/valid").input.document));
     } else if (input.producer === "response") {
       const local = file.localBindings.seller;
-      await wire.signWireResponse(subject({ ...input.request, seller: signer.claim }), 200, text, { signer, binding: bind(local), local, now: file.now, ...kept(input, "purchaseProfile") } as unknown as WireModule.EnvelopeSigningContext & { now: number });
+      await wire.signWireResponse(subject({ ...input.request, seller: signer.claim }), 200, text, { signer, binding: (await bind(local)), local, now: file.now, ...kept(input, "purchaseProfile") } as unknown as WireModule.EnvelopeSigningContext & { now: number });
     } else if (input.producer === "envelope") {
       const local = file.localBindings.buyer;
-      const binding = bind(local);
+      const binding = (await bind(local));
       const discovery = file.vectors.find((v: Vector) => v.id === "discovery/valid").input;
-      const endpointProof = wire.verifyEndpointProof(b(discovery.document), { readListingEligibility: readFixtureListingEligibility, listing: discovery.listing, binding, local, now: file.now });
+      const endpointProof = (await wire.verifyEndpointProof(b(discovery.document), { readListingEligibility: readFixtureListingEligibility, listing: discovery.listing, binding, local, now: file.now }));
       await wire.signWireEnvelope(subject({ ...input.payload }), { signer, binding, local, ...kept(input, "purchaseProfile"), endpointProof, publicEndpoint: discovery.listing.publicEndpoint, now: file.now } as unknown as WireModule.EnvelopeSigningContext, input.delegation);
     } else if (input.producer === "delegation") {
       const local = file.localBindings.buyer;
-      await wire.signSellerSessionDelegation(subject({ ...input.payload, buyer: signer.claim }), signer, bind(local), local);
+      await wire.signSellerSessionDelegation(subject({ ...input.payload, buyer: signer.claim }), signer, (await bind(local)), local);
     } else if (input.producer === "discovery") {
       const local = file.localBindings.seller;
-      await wire.signDiscoveryDocument(subject({ ...input.payload, seller: signer.claim }), signer, bind(local), local);
+      await wire.signDiscoveryDocument(subject({ ...input.payload, seller: signer.claim }), signer, (await bind(local)), local);
     } else throw new Error(`unknown producer ${input.producer}`);
   } catch (error) {
     if (signer.calls !== 0) throw new Error(`${input.producer} signer was called ${signer.calls} time(s) before refusing`);
@@ -162,9 +162,9 @@ async function produce(input: Record<string, any>): Promise<void> {
  * for the actor's own connection; `verifier.forgedBinding` is a plain object
  * passed instead, and `verifier.local` a changed connection.
  */
-function verifier(input: Record<string, any>, local: unknown): { binding: WireModule.Tp1Binding; local: unknown } {
+async function verifier(input: Record<string, any>, local: unknown): Promise<{ binding: WireModule.Tp1Binding; local: unknown }> {
   if (input.verifier?.forgedBinding) return { binding: input.verifier.forgedBinding, local };
-  return { binding: bind(local), local: input.verifier?.local ?? local };
+  return { binding: (await bind(local)), local: input.verifier?.local ?? local };
 }
 
 async function run(v: Vector): Promise<Record<string, unknown>> {
@@ -172,48 +172,48 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
   switch (v.kind) {
     case "request": {
       const own = file.localBindings.seller;
-      const { binding, local } = verifier(input, own);
+      const { binding, local } = (await verifier(input, own));
       const rawBody = b(input.body);
-      const opened = wire.openWireEnvelope(input.header, "request", { binding, local, requireDelegation: input.requireDelegation, ...kept(input, "purchaseProfile") } as unknown as WireModule.OpenEnvelopeOptions);
+      const opened = (await wire.openWireEnvelope(input.header, "request", { binding, local, requireDelegation: input.requireDelegation, ...kept(input, "purchaseProfile") } as unknown as WireModule.OpenEnvelopeOptions));
       // checkSubject: what reaches checkWireRequest instead of the opened envelope.
       const subject = input.checkSubject === "decoded-header" ? JSON.parse(rawBodyText(input.header))
         : input.checkSubject === "copy" ? { ...opened } : opened;
       // retained: the job, Agreement hash and parties the seller host kept (the file's job); a vector may give another, or "omitted".
       const retained = input.retained === "omitted" ? undefined
         : input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller };
-      const { readbackOnly } = wire.checkWireRequest(subject, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained,
+      const { readbackOnly } = (await wire.checkWireRequest(subject, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained,
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
         method: input.method ?? "POST", path: input.path, rawBody, now: file.now,
         requireDelegation: Object.hasOwn(input, "checkRequireDelegation") ? input.checkRequireDelegation : input.requireDelegation,
-        binding: input.checkSubject === "other-binding" ? bind(own) : binding, local: input.checkLocal ?? own,
+        binding: input.checkSubject === "other-binding" ? (await bind(own)) : binding, local: input.checkLocal ?? own,
         ...(input.maxLifetimeMs === undefined ? {} : { maxLifetimeMs: input.maxLifetimeMs }), ...(input.artifacts === undefined ? {} : { artifacts: input.artifacts }),
         ...keptAtCheck(input),
-      } as unknown as WireModule.RequestCheck);
+      } as unknown as WireModule.RequestCheck));
       return readbackOnly ? { ok: true, readbackOnly } : { ok: true };
     }
     case "delegation":
-      wire.verifySellerSessionDelegation(input.delegation, {
-        ...verifier(input, file.localBindings.seller), buyer: file.parties.buyer, seller: file.parties.seller,
+      (await wire.verifySellerSessionDelegation(v.id === "delegation/payload-changes-between-reads" ? input.delegation : Buffer.from(JSON.stringify(input.delegation)), {
+        ...(await verifier(input, file.localBindings.seller)), buyer: file.parties.buyer, seller: file.parties.seller,
         listingPin: file.job.listingPin, jobId: file.job.jobId, time: file.now, ...input.scope,
-      });
+      }));
       return { ok: true };
     case "response":
       // requireDelegation: the answer is opened as a host calling the exported verifier with that flag would.
       if (input.requireDelegation) {
-        wire.openWireEnvelope(input.header, "response", { ...verifier(input, file.localBindings.buyer), purchaseProfile: input.request.profile, principal: input.request.seller, requireDelegation: true });
+        (await wire.openWireEnvelope(input.header, "response", { ...(await verifier(input, file.localBindings.buyer)), purchaseProfile: input.request.profile, principal: input.request.seller, requireDelegation: true }));
         return { ok: true };
       }
-      wire.verifyWireResponse(input.request, { header: input.header, status: input.status, body: b(input.body), now: file.now, ...verifier(input, file.localBindings.buyer) });
+      (await wire.verifyWireResponse(input.request, { header: input.header, status: input.status, body: b(input.body), now: file.now, ...(await verifier(input, file.localBindings.buyer)) }));
       return { ok: true };
     case "discovery":
-      wire.verifyEndpointProof(b(input.document), { readListingEligibility: readFixtureListingEligibility, listing: input.listing, now: file.now, ...verifier(input, file.localBindings.buyer) });
+      (await wire.verifyEndpointProof(b(input.document), { readListingEligibility: readFixtureListingEligibility, listing: input.listing, now: file.now, ...(await verifier(input, file.localBindings.buyer)) }));
       return { ok: true };
     case "binding": {
       const { gate, approvedRecordDigests, view: _view, local = file.localBindings.buyer, ...options } = input;
       // "test-approval": the vector's list stands in for the SDK's (approval.ts).
-      if (gate === "test-approval") withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ ...options, local } as WireModule.BindTp1Options));
+      if (gate === "test-approval") await withTestApproval(approvedRecordDigests, async () => (await bindTp1Fixture({ ...options, local } as WireModule.BindTp1Options)));
       // "public": no test approval is active; any vector list is passed in as a caller might try.
-      else if (gate === "public") bindTp1Fixture({ ...options, ...(approvedRecordDigests ? { approvedRecordDigests } : {}), local } as WireModule.BindTp1Options);
+      else if (gate === "public") (await bindTp1Fixture({ ...options, ...(approvedRecordDigests ? { approvedRecordDigests } : {}), local } as WireModule.BindTp1Options));
       else throw new Error(`unknown gate ${gate}`);
       return { ok: true };
     }

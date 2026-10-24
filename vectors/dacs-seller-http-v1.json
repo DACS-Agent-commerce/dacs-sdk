@@ -1644,7 +1644,7 @@
     {
       "id": "request/cf5-header-non-nfc",
       "kind": "request",
-      "check": "wire NFC",
+      "check": "ASCII Listing ID",
       "input": {
         "path": "/dacs/v1/commitments",
         "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
@@ -1660,8 +1660,7 @@
       },
       "expect": {
         "ok": false,
-        "code": "wire_json_rejected",
-        "detail": "WIRE-NON-NFC-STRING"
+        "code": "peer_envelope_invalid"
       }
     },
     {
@@ -1699,7 +1698,7 @@
     {
       "id": "request/cf5-body-non-nfc",
       "kind": "request",
-      "check": "wire NFC",
+      "check": "CF-5 preserves received string values",
       "input": {
         "path": "/dacs/v1/commitments",
         "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIiwibm90ZSI6ImNhZmXMgSJ9",
@@ -1707,9 +1706,7 @@
         "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiI5N2FjOTdhOGFmMmIxMWFhMGM0NWFiNDdiZjYwYzQxOGEzMjViMjc1NmQzMzZiZmFmYTdmZTM3ZTdmNjdiM2ExIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6IkZ5U2hnTk5RSms4aFBCbzJBUlpHbThCdWI2MDU0NlE3N3lzNl9kcXFYUzlfX3pmZEY5TWFQQjBhLU5jbFZSVUhzQXdOemhaM1h4MUhVT1pja0I1dkNRIn0"
       },
       "expect": {
-        "ok": false,
-        "code": "bad_json",
-        "detail": "WIRE-NON-NFC-STRING"
+        "ok": true
       }
     },
     {
@@ -2503,7 +2500,7 @@
     {
       "id": "delegation/payload-changes-between-reads",
       "kind": "delegation",
-      "check": "delegation owned copy",
+      "check": "CF-5 delegation input",
       "input": {
         "scope": {},
         "delegation": {
@@ -2540,7 +2537,8 @@
       },
       "expect": {
         "ok": false,
-        "code": "peer_delegation_invalid"
+        "code": "peer_delegation_invalid",
+        "detail": "ARTIFACT-NOT-ADMITTED"
       }
     },
     {
@@ -2818,7 +2816,7 @@
     {
       "id": "response/kept-request-revision-missing",
       "kind": "response",
-      "check": "purchase tuple kept (buyer)",
+      "check": "retained request shape",
       "input": {
         "status": 200,
         "body": "eyJzdGF0dXMiOiJjb21taXR0ZWQifQ",
@@ -2850,7 +2848,7 @@
       },
       "expect": {
         "ok": false,
-        "code": "tp1_purchase_profile_mismatch"
+        "code": "peer_envelope_invalid"
       }
     },
     {
@@ -3327,7 +3325,7 @@
     {
       "id": "response/cf5-non-nfc",
       "kind": "response",
-      "check": "wire NFC",
+      "check": "CF-5 preserves received string values",
       "input": {
         "status": 200,
         "body": "eyJzdGF0dXMiOiJjb21taXR0ZWQiLCJub3RlIjoiY2FmZcyBIn0",
@@ -3359,9 +3357,7 @@
         "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiI2ZTI2MTBmOTkxNWZkOTYxNjc5NWVmNWI1NWQ3ZmRkY2YwMWQwNDFiMDljYzQ1NTMwMWQwY2FmNTliZGI2NDQyIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTI2MDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXNwb25zZSIsImxpc3RpbmdQaW4iOnsiY29udGVudEhhc2giOiI5N2IyNmQxYmNiMTczOWVkMjI1OWE2NjQ2YmJiM2E4MDQ3ZDYwYzhjMWY2MzRmYzlmZDBmZmQyMWU1OTIxOGI2IiwibGlzdGluZ0lkIjoid2lyZS1maXh0dXJlLXJlcG9ydCIsInZlcnNpb24iOjF9LCJtZXRob2QiOiJQT1NUIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWCIsInBhdGgiOiIvZGFjcy92MS9jb21taXRtZW50cyIsInByb2ZpbGUiOnsiYmFzZSI6ImQ0NWMwYTI5MjAwNmIyZmQyZTQwZDJkYmUwY2Q3ZWQ1MThhZDBmMjAiLCJjaGFpbklkZW50aXR5IjoiMDYxNWNlNjk0Mzg4YzkyYzYzMWRmNDA0MjQ1ZTM2M2VlNTU2NzNiZWFjYTA0MTc0NmI1OTIzMmU3MmFmMWI0NCIsImlkIjoiZGFjcy10ZXN0bmV0LXRwMSIsInBpblZlcnNpb24iOiJzeW50aGV0aWMtdGVzdC1vbmx5LzEiLCJyZXZpc2lvbiI6IlRQLTEifSwicmVxdWVzdEhhc2giOiI3ZGFhOTQ0MDcwZGEzYjBmOWZkZDg2Njk1YmJhNWMxNTNiOGE4NjVmYThkYTNiNDYwNjJmMDI2M2YwMGI5Y2M3Iiwic2VsbGVyIjoiZGlkOmRlbW9zOmFnZW50OjJkNDYyNTc1ZmZhN2JiN2Y1NGViY2IyYzczZTFiMDZlYzBjNzhkNDRkOGQ3ZDU1ZDk1MGM4MGRhMDk1MDFjNjEiLCJzdGF0dXMiOjIwMCwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoidl9ienItald5VG04SDI2NVBIVjRES1RweW1nclRKZjY2SEZNenpkRFJFQWxreGFRemNGQ0tjeWJnb1czaHdJcDRSZHpHRGxPaHJuMnBUT2Q3cUljQkEifQ"
       },
       "expect": {
-        "ok": false,
-        "code": "response_json_rejected",
-        "detail": "WIRE-NON-NFC-STRING"
+        "ok": true
       }
     },
     {
@@ -3861,7 +3857,7 @@
     {
       "id": "discovery/cf5-non-nfc",
       "kind": "discovery",
-      "check": "wire NFC",
+      "check": "ASCII Listing ID",
       "input": {
         "listing": {
           "seller": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61",
@@ -3876,8 +3872,7 @@
       },
       "expect": {
         "ok": false,
-        "code": "discovery_json_rejected",
-        "detail": "WIRE-NON-NFC-STRING"
+        "code": "discovery_invalid"
       }
     },
     {
@@ -4044,16 +4039,14 @@
     {
       "id": "signing/request-cf5-non-nfc",
       "kind": "signing",
-      "check": "outgoing request body admission",
+      "check": "CF-5 preserves outgoing body values",
       "input": {
         "path": "/dacs/v1/commitments",
         "producer": "request",
         "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIiwibm90ZSI6ImNhZmXMgSJ9"
       },
       "expect": {
-        "ok": false,
-        "code": "outgoing_body_rejected",
-        "detail": "WIRE-NON-NFC-STRING"
+        "ok": true
       }
     },
     {
@@ -4152,7 +4145,7 @@
     {
       "id": "signing/response-cf5-non-nfc",
       "kind": "signing",
-      "check": "outgoing response body admission",
+      "check": "CF-5 preserves outgoing body values",
       "input": {
         "path": "/dacs/v1/commitments",
         "producer": "response",
@@ -4184,9 +4177,7 @@
         "body": "eyJzdGF0dXMiOiJjb21taXR0ZWQiLCJub3RlIjoiY2FmZcyBIn0"
       },
       "expect": {
-        "ok": false,
-        "code": "outgoing_body_rejected",
-        "detail": "WIRE-NON-NFC-STRING"
+        "ok": true
       }
     },
     {
