@@ -9,7 +9,7 @@ import { Readable } from "node:stream";
 import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
-const { installBoundedNpmHttp, readBoundedResponse, responseBudget, NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_AUDIT_MAX_BYTES } = require("../../scripts/bounded-npm-http.cjs");
+const { installBoundedNpmHttp, readBoundedResponse, responseBudget, NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_JSON_MAX_ENTRIES } = require("../../scripts/bounded-npm-http.cjs");
 const modulePath = "../../scripts/bounded-command.mjs";
 const { runBoundedCommand } = await import(modulePath);
 const response = (chunks: Buffer[], headers = {}) => Object.assign(Readable.from(chunks), { headers });
@@ -37,8 +37,32 @@ describe("inert bounded npm HTTP admission", () => {
     expect(await readBoundedResponse(response([archive]), 1024)).toEqual(archive);
     await expect(readBoundedResponse(response([gzipSync(Buffer.alloc(8192))]), 1024)).rejects.toThrow("ELIMIT");
   });
+  it("admits a locked native archive expanding above 64 MiB with its exact compressed bytes", async () => {
+    // The source lock's uws archive expands to 117.6 MB.
+    const archive = gzipSync(Buffer.alloc(128 * 1024 * 1024));
+    const pending = Object.assign(new EventEmitter(), { path: "/native/-/native.tgz", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const admitted = new Promise<Buffer>((resolve, reject) => {
+      pending.once("error", reject);
+      pending.once("response", async (stream: Readable) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        resolve(Buffer.concat(chunks));
+      });
+    });
+    transport.request().emit("response", response([archive]));
+    expect(await admitted).toEqual(archive);
+  });
+
+  it("keeps separate finite wire and unpacked archive bounds", async () => {
+    const archive = gzipSync(Buffer.alloc(2048));
+    expect(await readBoundedResponse(response([archive]), 1024, false, 4096)).toEqual(archive);
+    await expect(readBoundedResponse(response([gzipSync(Buffer.alloc(8192))]), 1024, false, 4096)).rejects.toThrow("ELIMIT");
+    await expect(readBoundedResponse(response([Buffer.alloc(1025)]), 1024, false, 4096)).rejects.toThrow("ELIMIT");
+  });
   it("bounds decoded JSON list sizes", async () => {
-    await expect(readBoundedResponse(response([Buffer.from(JSON.stringify(Array(100001).fill(0)))], { "content-type": "application/json" }), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
+    await expect(readBoundedResponse(response([Buffer.from(JSON.stringify(Array(NPM_JSON_MAX_ENTRIES + 1).fill(0)))], { "content-type": "application/json" }), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
   });
   it("terminates a stalled HTTP request at its explicit total deadline", () => {
     const pending = Object.assign(new EventEmitter(), { path: "/fixture", destroy: (error: Error) => pending.emit("error", error) });

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
-const { readBoundedResponse, NPM_METADATA_MAX_BYTES, NPM_AUDIT_MAX_BYTES } = require("../../scripts/bounded-npm-http.cjs");
+const { readBoundedResponse, NPM_METADATA_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_JSON_MAX_ENTRIES } = require("../../scripts/bounded-npm-http.cjs");
 const response = (value: unknown, contentType?: string) => Object.assign(Readable.from([Buffer.from(JSON.stringify(value))]),
   { headers: contentType ? { "content-type": contentType } : {} });
 const finished = (child: ReturnType<typeof spawn>) => new Promise<{ code: number | null; output: string; error: string }>((resolve, reject) => {
@@ -18,14 +18,14 @@ describe("request-driven npm JSON limits", () => {
   it.each([undefined, "text/plain", "application/json"])("bounds lists and depth regardless of Content-Type %s", async header => {
     let deep: unknown = {}; for (let i = 0; i < 130; i++) deep = { child: deep };
     for (const maximum of [NPM_METADATA_MAX_BYTES, NPM_AUDIT_MAX_BYTES]) {
-      for (const body of [Array(100001).fill(0), deep]) await expect(readBoundedResponse(response(body, header), maximum)).rejects.toThrow("ELIMIT");
+      for (const body of [Array(NPM_JSON_MAX_ENTRIES + 1).fill(0), deep]) await expect(readBoundedResponse(response(body, header), maximum)).rejects.toThrow("ELIMIT");
     }
   });
-  it.each([undefined, "text/plain"])("delivers successful npm packument bytes with Content-Type %s", async header => {
+  it.each([undefined, "text/plain"])("delivers a successful large generator packument with Content-Type %s", async header => {
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-success-"));
     const server = createServer((_request, reply) => {
       reply.writeHead(200, header ? { "content-type": header } : {});
-      reply.end(JSON.stringify({ name: "fixture", "dist-tags": { latest: "1.2.3" }, versions: { "1.2.3": { name: "fixture", version: "1.2.3" } } }));
+      reply.end(JSON.stringify({ name: "fixture", "dist-tags": { latest: "1.2.3" }, versions: { "1.2.3": { name: "fixture", version: "1.2.3" } }, history: Array(600_000).fill(0), readme: "x".repeat(16 * 1024 * 1024) }));
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     try {

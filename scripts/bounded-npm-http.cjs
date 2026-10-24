@@ -4,14 +4,17 @@ const https = require("node:https");
 const { PassThrough } = require("node:stream");
 const { brotliDecompressSync, gunzipSync, inflateSync } = require("node:zlib");
 const { syncBuiltinESMExports } = require("node:module");
-const NPM_METADATA_MAX_BYTES = 8 * 1024 * 1024;
+// Full TypeScript metadata exceeds 15 MiB and 540,000 aggregate JSON entries.
+const NPM_METADATA_MAX_BYTES = 32 * 1024 * 1024;
 const NPM_TARBALL_MAX_BYTES = 64 * 1024 * 1024;
+// Locked native archives (uws) expand beyond the compressed wire budget.
+const NPM_TARBALL_MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
 const NPM_AUDIT_MAX_BYTES = 16 * 1024 * 1024;
 const NPM_HTTP_TIMEOUT_MS = 15_000;
-const NPM_JSON_MAX_ENTRIES = 100_000, NPM_JSON_MAX_DEPTH = 128;
+const NPM_JSON_MAX_ENTRIES = 1_000_000, NPM_JSON_MAX_DEPTH = 128;
 const limitError = () => Object.assign(new Error("ELIMIT npm HTTP response byte limit exceeded"), { code: "ELIMIT" });
 
-/** Returns the encoded and decoded budget for an npm request path. */
+/** Returns the HTTP response byte budget for an npm request path. */
 function responseBudget(path) {
   if (/\/-\/npm\/v1\/security\//.test(path)) return NPM_AUDIT_MAX_BYTES;
   return /\.(?:tgz|tar\.gz)(?:\?|$)/.test(path) ? NPM_TARBALL_MAX_BYTES : NPM_METADATA_MAX_BYTES;
@@ -38,7 +41,7 @@ function decodeBounded(bytes, decode, maximum) {
 }
 
 /** Buffers bounded encoded bytes, then bounded decompression; throws ELIMIT before downstream decoding. */
-async function readBoundedResponse(response, maximum, json = true) {
+async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum) {
   if (Number(response.headers["content-length"]) > maximum) throw limitError();
   const chunks = [];
   let length = 0;
@@ -55,7 +58,7 @@ async function readBoundedResponse(response, maximum, json = true) {
   if (bytes.length > maximum) throw limitError();
   // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
   // Validate expansion without changing the exact archive bytes npm hashes.
-  if (bytes[0] === 0x1f && bytes[1] === 0x8b) decodeBounded(bytes, gunzipSync, maximum);
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) decodeBounded(bytes, gunzipSync, archiveMaximum);
   if (json) validateJsonLists(bytes);
   return bytes;
 }
@@ -72,7 +75,9 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
       pending.once("error", () => { failed = true; cancel(timer); });
       pending.emit = function (event, response, ...rest) {
         if (event !== "response") return emit.call(this, event, response, ...rest);
-        readBoundedResponse(response, responseBudget(pending.path), responseBudget(pending.path) !== NPM_TARBALL_MAX_BYTES).then(bytes => {
+        const maximum = responseBudget(pending.path);
+        readBoundedResponse(response, maximum, maximum !== NPM_TARBALL_MAX_BYTES,
+          maximum === NPM_TARBALL_MAX_BYTES ? NPM_TARBALL_MAX_UNPACKED_BYTES : maximum).then(bytes => {
           cancel(timer);
           if (failed) return;
           const admitted = new PassThrough();
@@ -96,5 +101,5 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
   syncBuiltinESMExports();
 }
 module.exports = { responseBudget, readBoundedResponse, installBoundedNpmHttp,
-  NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_HTTP_TIMEOUT_MS };
+  NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_HTTP_TIMEOUT_MS, NPM_JSON_MAX_ENTRIES };
 if (process.env.DACS_BOUNDED_NPM_HTTP === "1") installBoundedNpmHttp();
