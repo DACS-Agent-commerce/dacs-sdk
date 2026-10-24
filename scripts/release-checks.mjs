@@ -17,17 +17,24 @@ function registrySpec(value) {
   } catch { return false; }
 }
 const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const targets = value => typeof value === "string" ? [value] :
-  value && typeof value === "object" ? Object.values(value).flatMap(targets) : [];
 const fail = message => { throw new Error(message); };
 const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function entryTargets(p) {
+  return ["bin", "main", "types"].flatMap(field => {
+    if (!Object.hasOwn(p, field)) return [];
+    const paths = field === "bin" && record(p[field]) ? Object.values(p[field]) : [p[field]];
+    if (paths.some(path => typeof path !== "string" || !path)) fail(`invalid ${field} target`);
+    return paths;
+  });
+}
 
 function exportTargets(value) {
   if (value === null || value === undefined) return [];
   if (typeof value === "string") {
     let decoded;
     try { decoded = decodeURIComponent(value.slice(2)); } catch { fail(`invalid export target: ${value}`); }
-    if (!value.startsWith("./") || /%2f|%5c/i.test(value) || decoded.includes("\\") ||
+    if (!value.startsWith("./") || /[%?#]/.test(value) || decoded.includes("\\") ||
         decoded.split("/").some(segment => /^(\.{1,2}|node_modules)$/i.test(segment))) fail(`invalid export target: ${value}`);
     return [value];
   }
@@ -41,7 +48,11 @@ function exportTargets(value) {
 function exportMap(value) {
   if (typeof value === "string" || Array.isArray(value) || value === null) return { ".": value };
   if (value && Object.keys(value).length && Object.keys(value).every(key => !key.startsWith("."))) return { ".": value };
-  return value ?? {};
+  const map = value ?? {};
+  for (const key of Object.keys(map)) if (key !== "." && (!key.startsWith("./") ||
+    /[%?#\\]/.test(key) || key.split("*").length > 2 ||
+    key.slice(2).split("/").some(segment => /^(|\.{1,2}|node_modules)$/i.test(segment)))) fail(`invalid export subpath: ${key}`);
+  return map;
 }
 
 function dependencyTargets(value, nested, path = "") {
@@ -76,7 +87,7 @@ function validateDependencies(p) {
 function validateInternalPins(p, version) {
   const errors = [];
   for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
-    for (const name of packages.map(d => d.name)) if (p[section]?.[name] && p[section][name] !== version) errors.push(`internal dependency must use exact release version: ${name}`);
+    for (const name of packages.map(d => d.name)) if (Object.hasOwn(p[section] ?? {}, name) && p[section][name] !== version) errors.push(`internal dependency must use exact release version: ${name}`);
   }
   if (errors.length) fail(errors.join("\n"));
 }
@@ -99,8 +110,9 @@ export function validateArtifactSet(artifacts, planned = false) {
 function manifestProblems(p, definition) {
   return collectProblems([
     () => validateDependencies(p),
-    () => exportTargets(p.exports),
-    () => { if (p.private === true) fail("private package is not releasable"); },
+    () => Object.values(exportMap(p.exports)).flatMap(exportTargets),
+    () => entryTargets(p),
+    () => { if (Object.hasOwn(p, "private") && p.private !== false) fail("private package is not releasable"); },
     () => validateReleaseIdentity(p, definition.name),
     () => {
       const version = typeof p.version === "string" && semver.parse(p.version);
@@ -149,7 +161,7 @@ export function publicEntries(p, files) {
     for (const capture of captures) {
       const subpath = key.replace("*", capture);
       if (effectiveKey(subpath) !== key) continue;
-      const concrete = paths.map(target => target.replaceAll("*", capture));
+      const concrete = paths.flatMap(target => exportTargets(target.replaceAll("*", capture)));
       for (const target of concrete) if (!files.includes(target.slice(2))) fail(`missing packed target: ${target} (${subpath})`);
       entries.set(subpath, { subpath, json: concrete.some(t => t.endsWith(".json")) });
     }
@@ -162,7 +174,7 @@ export function validateFiles(definition, p, files) {
     if (isAbsolute(file) || file.split("/").some(s => s === ".." || s === ".") || file.includes("\\")) fail(`invalid packed path: ${file}`);
     if (!definition.allow.some(glob => pattern(glob).test(file))) fail(`outside allow-list: ${file}`);
   }
-  const required = ["./package.json", ...exportTargets(p.exports), ...targets(p.bin), ...targets(p.main), ...targets(p.types)];
+  const required = ["./package.json", ...exportTargets(p.exports), ...entryTargets(p)];
   for (const target of required) {
     const path = target.startsWith("./") ? target.slice(2) : target;
     if (path.split("/").some(s => s === ".." || s === ".") || isAbsolute(path) || path.includes("\\")) fail(`invalid export target: ${target}`);
@@ -175,6 +187,7 @@ export function validateFiles(definition, p, files) {
 export function validateLock(lock, artifacts, consumer = ".", omitOptional = false) {
   if (!record(lock?.packages)) fail("lock requires a packages map");
   const allowed = new Map(artifacts.map(({ name, tarball }) => [name, resolve(tarball)]));
+  const installed = new Set();
   for (const [name, value] of Object.entries(lock.packages)) {
     if (!record(value)) fail(`invalid lock entry: ${name}`);
     const resolution = typeof value.resolved === "string" ? value.resolved : "";
@@ -188,10 +201,14 @@ export function validateLock(lock, artifacts, consumer = ".", omitOptional = fal
     // npm records optional dependency metadata even with --omit=optional.
     // It is not installed; internal identities above must still use our tarballs.
     const omitted = omitOptional && value.optional === true;
+    if (artifact && !omitted) for (const p of internal) {
+      if (name === `node_modules/${p.name}` || name.endsWith(`/node_modules/${p.name}`)) installed.add(p.name);
+    }
     // Bundled children are extracted from a separately qualified parent tarball.
     const parent = name.slice(0, name.lastIndexOf("/node_modules/"));
     const bundled = value.inBundle === true && parent !== name && record(lock.packages[parent]);
     if (value.link || (!omitted && name && !(bundled && !resolution) && !artifact && !registry)) fail(`installed local link or non-registry resolution: ${name}`);
   }
+  for (const name of allowed.keys()) if (!installed.has(name)) fail(`missing installed artifact in lock: ${name}`);
 }
 
