@@ -462,7 +462,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 reject SQL callbacks with quoted function names | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
-| D11 | fix(client): D11 preserve compact guarded SQLite records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refuse unowned statements while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 2d4843812322f511ac816fee299dfde349c90df7 |
 
 ## Complete commit and file inventory
 
@@ -1096,6 +1098,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
