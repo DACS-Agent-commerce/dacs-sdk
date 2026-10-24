@@ -36,24 +36,24 @@ describe("wire boundary regression cases", () => {
     expect(x.buyer.calls).toBe(0);
   });
   it("response status is integer 200..599 and the request hash is independently required", async () => {
-    const x = wireWorld();
+    const x = (await wireWorld());
     for (const status of [199, 200.5, "200"]) {
       const p = { ...x.request, kind: "response", requestHash: wire.wireRequestHash(x.request), status } as any;
       await expect(wire.signWireResponse(x.request, status as number, "{}", { ...x.context, signer: x.seller, now: NOW })).rejects.toMatchObject({ code: "peer_envelope_invalid" });
-      refuses(() => wire.openWireEnvelope(encodeHeader(x.signed(p, x.seller, wire.DACS_SELLER_HTTP_DOMAINS.response)), "response", { ...x.context, principal: x.seller.claim }), "peer_envelope_invalid");
+      (await refuses(async () => (await wire.openWireEnvelope(encodeHeader(x.signed(p, x.seller, wire.DACS_SELLER_HTTP_DOMAINS.response)), "response", { ...x.context, principal: x.seller.claim })), "peer_envelope_invalid"));
     }
     const badHash = { ...x.request, kind: "response", status: 200, requestHash: "bad" } as any;
     expect(wire.isWirePayload(badHash, "response")).toBe(false);
-    refuses(() => wire.wireEnvelopeSigningBytes(badHash), "peer_envelope_invalid");
+    (await refuses(() => wire.wireEnvelopeSigningBytes(badHash), "peer_envelope_invalid"));
     await expect(wire.signWireEnvelope(badHash, { ...x.context, signer: x.seller })).rejects.toMatchObject({ code: "peer_envelope_invalid" });
     expect(x.seller.calls).toBe(0);
     const header = await wire.signWireResponse(x.request, 599, "{}", { ...x.context, signer: x.seller, now: NOW, lifetimeMs: 1 });
-    expect(wire.openWireEnvelope(header, "response", { ...x.context, principal: x.seller.claim }).payload.status).toBe(599);
-    expect(wire.verifyWireResponse(x.request, { ...x.context, header, status: 599, body: Buffer.from("{}"), now: NOW }).principal).toBe(x.seller.claim);
+    expect((await wire.openWireEnvelope(header, "response", { ...x.context, principal: x.seller.claim })).payload.status).toBe(599);
+    expect((await wire.verifyWireResponse(x.request, { ...x.context, header, status: 599, body: Buffer.from("{}"), now: NOW })).principal).toBe(x.seller.claim);
     const request = await wire.signWireRequest({ ...x.input, lifetimeMs: 1 });
     expect(request.payload.expiresAt).toBe(NOW + 1);
     expect(messageLifetime(1, "bad", 60_000)).toBe(1);
-    refuses(() => messageLifetime(0, "bad", 60_000), "bad");
+    (await refuses(() => messageLifetime(0, "bad", 60_000), "bad"));
     await expect(wire.signWireRequest({ ...x.input, lifetimeMs: 0 })).rejects.toBeInstanceOf(TypeError);
   });
   it("encoded header bounds and unused bits are enforced independently of decoded JSON size", async () => {
@@ -177,22 +177,22 @@ it("the producer includes signature bytes in the inclusive 4096-character header
   expect(x.session.calls).toBe(0);
 });
 it("delegation readback exactly at expiry has its own future expiry and cannot start an effect", async () => {
-  const x = wireWorld();
+  const x = (await wireWorld());
   const d = await wire.signSellerSessionDelegation(x.delegation, x.buyer, x.binding, x.local);
   for (const path of [wire.DACS_SELLER_HTTP_PATHS.state, wire.DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, wire.DACS_SELLER_HTTP_PATHS.commitments]) {
     const sent = await wire.signWireRequest({ ...x.input, signer: x.session, delegation: d, path, now: d.payload.expiresAt });
     expect(sent.payload.expiresAt).toBe(d.payload.expiresAt + 30_000);
-    const opened = wire.openWireEnvelope(sent.header, "request", x.context);
-    const invoke = () => wire.checkWireRequest(opened, { ...x.context, now: d.payload.expiresAt, seller: x.seller.claim, listingPin: x.pin,
+    const opened = (await wire.openWireEnvelope(sent.header, "request", x.context));
+    const invoke = async () => (await wire.checkWireRequest(opened, { ...x.context, now: d.payload.expiresAt, seller: x.seller.claim, listingPin: x.pin,
       method: "POST", path, rawBody: Buffer.from("{}"), retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim },
-      artifacts: [{ jobId: x.request.jobId, listingRef: x.pin, parties: [{ role: "buyer", primaryClaim: x.buyer.claim }, { role: "seller", primaryClaim: x.seller.claim }], terms: { deadline: d.payload.expiresAt } }] });
-    if (wire.isReadRoute(path)) expect(invoke()).toMatchObject({ readbackOnly: true, effect: null });
-    else expect(invoke).toThrowError(expect.objectContaining({ code: "peer_delegation_expired" }));
+      artifacts: [{ jobId: x.request.jobId, listingRef: x.pin, parties: [{ role: "buyer", primaryClaim: x.buyer.claim }, { role: "seller", primaryClaim: x.seller.claim }], terms: { deadline: d.payload.expiresAt } }] }));
+    if (wire.isReadRoute(path)) expect((await invoke())).toMatchObject({ readbackOnly: true, effect: null });
+    else await expect(Promise.resolve().then(invoke)).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_expired" }));
   }
 });
 it("delegated buyer signing preserves trusted reader errors and 500/503 WireError identity and cause", async () => {
   for (const error of [new Error("reader timeout"), new wire.WireError("reader_failed", 500, "detail", new Error("cause")), new wire.WireError("reader_pending", 503, "detail", new Error("cause"))]) {
-    const x = wireWorld(), d = await wire.signSellerSessionDelegation(x.delegation, x.buyer, x.binding, x.local);
+    const x = (await wireWorld()), d = await wire.signSellerSessionDelegation(x.delegation, x.buyer, x.binding, x.local);
     const cause = error.cause, category = (error as wire.WireError).category;
     x.failAuthority(error); x.session.calls = 0;
     await expect(wire.signWireRequest({ ...x.input, signer: x.session, delegation: d })).rejects.toBe(error);
@@ -200,11 +200,11 @@ it("delegated buyer signing preserves trusted reader errors and 500/503 WireErro
   }
 });
 it("a receiver window of exactly 1ms admits a live request, and zero is refused", async () => {
-  const x = wireWorld(), path = wire.DACS_SELLER_HTTP_PATHS.state;
+  const x = (await wireWorld()), path = wire.DACS_SELLER_HTTP_PATHS.state;
   const sent = await wire.signWireRequest({ ...x.input, path, lifetimeMs: 1 });
-  const opened = wire.openWireEnvelope(sent.header, "request", x.context);
+  const opened = (await wire.openWireEnvelope(sent.header, "request", x.context));
   const check = { ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW,
     retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } };
-  expect(wire.checkWireRequest(opened, { ...check, maxLifetimeMs: 1 })).toMatchObject({ readbackOnly: false, effect: null });
-  expect(() => wire.checkWireRequest(opened, { ...check, maxLifetimeMs: 0 })).toThrowError(expect.objectContaining({ code: "seller_configuration_invalid" }));
+  expect((await wire.checkWireRequest(opened, { ...check, maxLifetimeMs: 1 }))).toMatchObject({ readbackOnly: false, effect: null });
+  await expect(Promise.resolve().then(async () => (await wire.checkWireRequest(opened, { ...check, maxLifetimeMs: 0 })))).rejects.toThrowError(expect.objectContaining({ code: "seller_configuration_invalid" }));
 });

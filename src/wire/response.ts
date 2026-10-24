@@ -39,10 +39,10 @@ import {
  * from that copy.
  */
 export async function signWireResponse(supplied: WireRequestPayload, status: number, text: string, ctx: EnvelopeSigningContext & { now: number; lifetimeMs?: number }): Promise<string> {
-  const { signer, binding, local, purchaseProfile, now, lifetimeMs: override, maxLifetimeMs: window } = ownedFields(ctx, ["signer", "binding", "local", "purchaseProfile", "now", "lifetimeMs", "maxLifetimeMs"]) as Partial<EnvelopeSigningContext & { now: number; lifetimeMs: number; maxLifetimeMs: unknown }>;
-  assertTp1Binding(binding, local);
-  if (purchaseProfile !== null) assertPurchaseProfile(purchaseProfile, binding, 500);
+  const { signer, binding, local, purchaseProfile, now, lifetimeMs: override, maxLifetimeMs: window } = ownedFields(ctx, ["signer", "binding", "local", "purchaseProfile", "now", "lifetimeMs", "maxLifetimeMs"]) as EnvelopeSigningContext & { now: number; lifetimeMs: number; maxLifetimeMs: unknown };
   const request = ownedArtifact(supplied, "peer_envelope_invalid", 500) as WireRequestPayload;
+  await assertTp1Binding(binding, local);
+  if (purchaseProfile !== null) await assertPurchaseProfile(purchaseProfile, binding, 500);
   const requestHash = wireRequestHash(request);
   // maxLifetimeMs is checkWireRequest's acceptance window, never an answer's lifetime: a context that names it is refused.
   if (window !== undefined) fail("seller_configuration_invalid", 500);
@@ -117,14 +117,14 @@ const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "co
 
 /**
  * A wire refusal of the buyer's own delegation keeps its code and detail with
- * status 500 (`permanent`). A 500 or 503 refusal, and any error a trusted
- * reader throws, passes unchanged, so its cause is kept.
+ * status 500 (`permanent`) and the original error as cause. A 500 or 503
+ * refusal, or a non-WireError reader failure, passes unchanged.
  */
-function ownDelegation<T>(verify: () => T): T {
+async function ownDelegation<T>(verify: () => Promise<T>): Promise<T> {
   try {
-    return verify();
+    return await verify();
   } catch (error) {
-    if (error instanceof WireError && error.status !== 500 && error.status !== 503) fail(error.code, 500, error.detail);
+    if (error instanceof WireError && error.status !== 500 && error.status !== 503) fail(error.code, 500, error.detail, error);
     throw error;
   }
 }
@@ -140,9 +140,10 @@ function ownDelegation<T>(verify: () => T): T {
 export async function signWireRequest(supplied: WireRequestInput): Promise<{ payload: WireRequestPayload; header: string }> {
   const input = ownedFields(supplied, REQUEST_INPUT_FIELDS) as unknown as WireRequestInput;
   const { binding, signer, local, now } = input;
-  assertTp1Binding(binding, local);
   const job = ownedConfig(input.job, "wire_input_invalid") as WireJobContext;
-  assertPurchaseProfile(job?.profile, binding, 500);
+  const delegation = input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid", 500) as SellerSessionDelegation : null;
+  await assertTp1Binding(binding, local);
+  await assertPurchaseProfile(job?.profile, binding, 500);
   if (!isCanonicalJobId(input.jobId)) fail("peer_envelope_invalid", 500);
   const claim = signer.claim;
   const lifetimeMs = input.lifetimeMs ?? DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs;
@@ -152,11 +153,10 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   if (Buffer.byteLength(input.text) > DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes) fail("body_too_large", 500);
   const bytes = admitOutgoingBody(input.text, DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes);
   // The buyer's own delegation: a refusal of it is this host's fault (500), never the seller's.
-  const delegation = input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid", 500) as SellerSessionDelegation : null;
   let buyer = claim;
   let delegatedUntil: number | null = null;
   if (delegation) {
-    const d = ownDelegation(() => verifySellerSessionDelegation(delegation, { binding, local, seller: input.seller, listingPin: job.listingPin, jobId: input.jobId, time: now, allowExpired: true, ...(job.deadline === undefined ? {} : { deadline: job.deadline }) }));
+    const d = await ownDelegation(() => verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { binding, local, seller: input.seller, listingPin: job.listingPin, jobId: input.jobId, time: now, allowExpired: true, ...(job.deadline === undefined ? {} : { deadline: job.deadline }) }));
     if (claim !== `did:demos:agent:${d.sessionPublicKey}`) throw new TypeError("session signing key differs from the buyer delegation");
     buyer = d.buyer;
     delegatedUntil = d.expiresAt;
@@ -172,7 +172,7 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   };
   // Validate the complete payload before checking the purchase effect gate.
   wireRequestHash(payload);
-  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing });
+  await assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing });
   return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing }, delegation) };
 }
 
@@ -203,15 +203,15 @@ export interface ReceivedWireResponse {
  * buyer's record of the purchase: its tuple must be the buyer's binding's, and
  * the answer must carry both. The body is admitted before it is hashed.
  */
-export function verifyWireResponse(suppliedRequest: WireRequestPayload, suppliedReceived: ReceivedWireResponse): WireResponseReceipt {
+export async function verifyWireResponse(suppliedRequest: WireRequestPayload, suppliedReceived: ReceivedWireResponse): Promise<WireResponseReceipt> {
   const received = ownedFields(suppliedReceived, ["header", "status", "body", "now", "binding", "local"]) as unknown as ReceivedWireResponse;
-  assertTp1Binding(received.binding, received.local);
   const request = ownedArtifact(suppliedRequest, "peer_envelope_invalid", 500) as WireRequestPayload;
-  assertPurchaseProfile(request?.profile, received.binding, 500);
   const expectedRequestHash = wireRequestHash(request);
   // Over 512 KiB is refused as admission refuses it, before the body is copied or the header is read.
   const responseBytes = ownedBytes(received.body, "wire_input_invalid", 500, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes, code: "response_json_rejected", status: 502 });
-  const { payload: response, authenticationHash } = openWireEnvelope(received.header, "response", { binding: received.binding, local: received.local, purchaseProfile: request.profile, principal: request.seller });
+  await assertTp1Binding(received.binding, received.local);
+  await assertPurchaseProfile(request?.profile, received.binding, 500);
+  const { payload: response, authenticationHash } = await openWireEnvelope(received.header, "response", { binding: received.binding, local: received.local, purchaseProfile: request.profile, principal: request.seller });
   const body = admitWireResponseBody(responseBytes);
   const { kind, bodyHash, expiresAt, requestHash, status, ...identity } = response;
   const { kind: _k, bodyHash: _b, expiresAt: _e, ...expected } = request;
