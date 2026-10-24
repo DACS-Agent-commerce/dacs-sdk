@@ -3,6 +3,9 @@ import { mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+vi.mock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>() }));
+import * as fs from "node:fs";
+
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>() }));
 import * as child from "node:child_process";
 import { qualifyJournalRestart } from "../../src/wire/journalRestart.js";
@@ -35,7 +38,7 @@ it.each(["missing", "changed", "oversized"])("refuses %s retained publication be
     if (Array.isArray(argv) && argv[2] === "verify") {
       const probe = join(path, readdirSync(path).find((name) => name.startsWith("probe-")) ?? "missing");
       if (fault === "missing") unlinkSync(probe);
-      else writeFileSync(probe, fault === "changed" ? "changed" : "x".repeat(4097));
+      else writeFileSync(probe, fault === "changed" ? "x".repeat(32) : "x".repeat(4097));
     }
     return actual(...args);
   });
@@ -74,11 +77,62 @@ it("refuses a filesystem that allows replacing a publication", () => {
     if (Array.isArray(argv) && argv[2] === "verify") {
       const modified = [...argv];
       modified[1] = `const faultyFs = require("node:fs"), originalLink = faultyFs.linkSync;
-        faultyFs.linkSync = (from, to) => { if (faultyFs.existsSync(to)) faultyFs.unlinkSync(to); originalLink(from, to); };\n` + modified[1];
+        faultyFs.linkSync = (from, to) => { faultyFs.writeFileSync(${JSON.stringify(join(path, "hook-called"))}, "yes"); if (faultyFs.existsSync(to)) faultyFs.unlinkSync(to); originalLink(from, to); };\n` + modified[1];
       return actual(args[0], modified, args[2]);
     }
     return actual(...args);
   });
   expect(() => qualifyJournalRestart(path)).toThrowError(refused);
+  expect(fs.readFileSync(join(path, "hook-called"), "utf8")).toBe("yes");
+  expect(readdirSync(path)).toEqual(["hook-called"]);
+});
+
+
+it("refuses replacement of the published pathname during the exclusive retry", () => {
+  const path = directory(), actual = child.spawnSync;
+  vi.spyOn(child, "spawnSync").mockImplementation((...args: Parameters<typeof child.spawnSync>) => {
+    const argv = args[1];
+    if (!Array.isArray(argv) || argv[2] !== "verify") return actual(...args);
+    const modified = [...argv];
+    modified[1] = `const faultyFs = require("node:fs"), originalLink = faultyFs.linkSync;
+      faultyFs.linkSync = (from, to) => {
+        faultyFs.writeFileSync(from + ".replace", "x".repeat(32));
+        faultyFs.renameSync(from + ".replace", to);
+        originalLink(from, to);
+      };\n` + modified[1];
+    return actual(args[0], modified, args[2]);
+  });
+  expect(() => qualifyJournalRestart(path)).toThrowError(refused);
   expect(readdirSync(path)).toEqual([]);
+});
+
+it("retains the actual child filesystem failure diagnostic", () => {
+  const path = directory(), actual = child.spawnSync;
+  vi.spyOn(child, "spawnSync").mockImplementation((...args: Parameters<typeof child.spawnSync>) => {
+    const argv = args[1];
+    if (Array.isArray(argv) && argv[2] === "verify") unlinkSync(String(argv[5]));
+    return actual(...args);
+  });
+  expect(() => qualifyJournalRestart(path)).toThrowError(expect.objectContaining({
+    ...{ code: "seller_replay_guard_invalid", detail: "RESTART-NOT-QUALIFIED" },
+    cause: expect.objectContaining({ message: expect.stringContaining("ENOENT") }),
+  }));
+});
+
+it.each([true, false])("attempts both cleanups and preserves primary failure when present (%s)", (primary) => {
+  const path = directory(), actual = child.spawnSync;
+  const cause = Object.assign(new Error("probe deadline"), { code: "ETIMEDOUT" });
+  const cleanup = Object.assign(new Error("cleanup denied"), { code: "EACCES" });
+  vi.spyOn(child, "spawnSync").mockImplementation((...args: Parameters<typeof child.spawnSync>) => {
+    const argv = args[1];
+    if (primary && Array.isArray(argv) && argv[2] === "verify") {
+      return { pid: 0, output: [], stdout: "", stderr: "", status: null, signal: "SIGTERM", error: cause };
+    }
+    return actual(...args);
+  });
+  const remove = vi.spyOn(fs, "unlinkSync").mockImplementation(() => { throw cleanup; });
+  expect(() => qualifyJournalRestart(path)).toThrowError(expect.objectContaining(primary
+    ? { code: "seller_replay_guard_invalid", cause, cleanupErrors: [cleanup, cleanup] }
+    : { code: "seller_replay_guard_invalid", cause: expect.any(AggregateError) }));
+  expect(remove).toHaveBeenCalledTimes(2);
 });
