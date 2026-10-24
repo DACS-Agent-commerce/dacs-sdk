@@ -939,22 +939,7 @@
   },
   {"sha":null,"subject":"fix(client): D11 enforce passive read deadlines and consistent transfer facts","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/dacs/chain.mjs","packages/dacs-client/src/util/http.mjs","packages/dacs-client/src/wallet/devnet-native-transport.mjs","packages/dacs-client/test/passive-observation.test.mjs"]},
   {"sha":null,"subject":"fix(client): D11 bound later passive binding and canonical body reads","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/wallet/devnet-native-transport.mjs","packages/dacs-client/test/helpers/passive-native-world.mjs","packages/dacs-client/test/passive-observation.test.mjs"]},
-  {
-    "sha": null,
-    "subject": "delta(client): D11 split 06 authenticate read-only purchase diagnostics",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/README.md",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
-      "packages/dacs-client/src/purchases.mjs",
-      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
-      "packages/dacs-client/test/host-observations.test.mjs"
-    ]
-  },
+  {"sha":null,"subject":"delta(client): D11 split 06 authenticate read-only purchase diagnostics","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/README.md","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/dacs/protocol-purchases.mjs","packages/dacs-client/src/purchases.mjs","packages/dacs-client/test/diagnostic-store-regressions.test.mjs","packages/dacs-client/test/host-observations.test.mjs"]},
   {
     "sha": null,
     "subject": "fix(client): D11 keep diagnostic readers passive and preserve error codes",
@@ -971,6 +956,7 @@
   },
   {"sha":null,"subject":"fix(client): D11 keep all diagnostic readers passive and project retained fields","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/purchases.mjs","packages/dacs-client/test/diagnostic-reader.test.mjs","packages/dacs-client/test/host-observations.test.mjs"]},
   {"sha":null,"subject":"fix(client): D11 reconcile the observation-limit diagnostic merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 qualify merged diagnostic source","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
   {
     "sha": null,
     "subject": "fix(client): D11 bind reviewed merge snapshots to immutable parents",
