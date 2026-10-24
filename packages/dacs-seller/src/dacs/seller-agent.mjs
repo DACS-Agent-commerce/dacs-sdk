@@ -2,7 +2,7 @@ import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
-import { canonicalize, commitFixedPriceAgreement, contentHash, createInMemoryFencedSessionStore, fixedPriceAgreementLogicalAddress, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, commitFixedPriceAgreement, contentHash, isListing, createInMemoryFencedSessionStore, fixedPriceAgreementLogicalAddress, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
@@ -14,8 +14,9 @@ import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-jo
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
 import { nativeDemDeliveryConfig, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
-import { agreementInput, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, listingPin, protocolSupport } from './purchase-protocol.mjs';
+import { agreementTerms, agreementInput, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, listingPin, protocolSupport } from './purchase-protocol.mjs';
 
+/** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
   constructor(code, message, status = 422, options = {}) {
     super(message,options);
@@ -737,3 +738,30 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     throw error;
   }
 }
+
+/** Build a deterministic report from the Agreement, its exact Listing and settlement ID.
+ * Throws SellerAgentError for a malformed job or mismatched Listing. */
+export function buildReport({ agreement, listing, settlementId }) {
+  if (!isCanonicalJobId(agreement?.jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+  if (!isListing(listing) || contentHash(listing) !== agreement.listingRef?.contentHash) {
+    throw new SellerAgentError('listing_invalid', 'Listing does not match the Agreement');
+  }
+  const terms = agreementTerms(agreement);
+  return {
+    reportVersion: '1',
+    kind: 'dacs-chatgpt-plugin/fixture-test-report',
+    jobId: agreement.jobId,
+    agreementHash: contentHash(agreement),
+    listing: { ...agreement.listingRef },
+    title: listing.offering.title,
+    settlementId,
+    body: [
+      `Deterministic fixture report for job ${agreement.jobId}.`,
+      `Listing ${terms.listing.listingId}@v${terms.listing.version}, price ${terms.price.amount} DEM.`,
+      'SIMULATED offline fixture content; not a real market report.',
+    ],
+  };
+}
+
+export { canonicalSignature } from './fixture-anchors.mjs';
+export { proposalTimeProblem } from './seller-proposal-time.mjs';
