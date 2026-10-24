@@ -507,6 +507,87 @@ export function isSellerFulfilmentVetInvocationMismatch(
   }
 }
 
+const MAX_PARTY_VET_INVOCATIONS = 2;
+const MAX_VET_REQUIREMENT_MEMBERS = 64;
+const MAX_VET_INVOCATION_RESULTS = 64;
+
+/**
+ * Why the Vet requirement invocations a seller would carry into its delivery
+ * audit source are not ones the fulfilment core accepts, or null: the strict
+ * invocation shape, exactly one invocation per distinct party Vet record, and
+ * `isSellerFulfilmentVetInvocationMismatch` for each. Returns a refusal for
+ * malformed or over-limit invocation sets; never throws.
+ * Authenticate the SessionRecord roster separately; supply its bundle hashes
+ * when parties share a Vet record, and validate the orchestrator role. This checks invocation
+ * coverage before signing, not every delivery precondition.
+ */
+export function sellerFulfilmentVetRequirementsViolation(
+  vetRequirements: unknown,
+  input: {
+    jobId: string;
+    buyer: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
+    seller: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
+    buyerRequirement: unknown;
+  },
+): string | null {
+  try {
+    if (!Array.isArray(vetRequirements) || vetRequirements.length > MAX_PARTY_VET_INVOCATIONS ||
+        !hasExactJcsView(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
+      return "the Vet requirement invocations are not the strict audit-source shape";
+    }
+    for (const entry of vetRequirements) {
+      const groups = entry.requirement.oneOf ?? [];
+      const members = entry.requirement.required.length +
+        groups.reduce((count, group) => count + group.length, 0);
+      if (groups.length > MAX_VET_REQUIREMENT_MEMBERS || members > MAX_VET_REQUIREMENT_MEMBERS ||
+          entry.freshness.length + entry.dealSpecific.length > MAX_VET_INVOCATION_RESULTS) {
+        return "the Vet requirement invocations exceed the requirement or result limit";
+      }
+    }
+    canonicalize({ artifacts: { vetRequirements } });
+    const bindings = new Map<string, { primaryClaim: string; bundleHash?: string; roles: Set<string> }>();
+    for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
+      if (!hasExactJcsView(party.vetRecordRef) ||
+          !isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
+        return `the ${role} Vet reference or claim is malformed`;
+      }
+      const key = canonicalize(party.vetRecordRef);
+      const existing = bindings.get(key);
+      if (existing && (existing.primaryClaim !== party.primaryClaim ||
+          typeof existing.bundleHash !== "string" || !HASH_RE.test(existing.bundleHash) ||
+          existing.bundleHash !== party.bundleHash)) {
+        return "one Vet record cannot represent different authenticated party identities";
+      }
+      if (existing) existing.roles.add(role);
+      else bindings.set(key, { primaryClaim: party.primaryClaim, bundleHash: party.bundleHash, roles: new Set([role]) });
+    }
+    const partyRefs = [...new Map([input.buyer, input.seller].map((party) =>
+      [canonicalize(party.vetRecordRef), party.vetRecordRef])).values()];
+    if (!hasNoDuplicateContentHashes(partyRefs)) {
+      return "distinct party Vet references share one content hash";
+    }
+    const invocationRefs = vetRequirements.map((entry) => entry.vetRecordRef);
+    if (vetRequirements.length !== bindings.size || !hasNoDuplicateRefs(invocationRefs) ||
+        !invocationRefs.every((ref) => bindings.has(canonicalize(ref)))) {
+      return "the Vet requirement invocations are not exactly one per party Vet record";
+    }
+    const context = {
+      jobId: input.jobId,
+      buyerClaim: input.buyer.primaryClaim,
+      sellerClaim: input.seller.primaryClaim,
+      buyerRequirement: input.buyerRequirement,
+      bindings,
+    };
+    if (vetRequirements.some((entry) => isSellerFulfilmentVetInvocationMismatch(entry, context))) {
+      return "a Vet requirement invocation differs from its party, counterparty verifier, " +
+        "address, requirement or covered results";
+    }
+    return null;
+  } catch {
+    return "the Vet requirement invocations are not canonicalizable";
+  }
+}
+
 /** Hash of every canonical audit-source byte retained in a V2 handoff. */
 export function sellerFulfilmentAuditSourceHash(
   source: Readonly<SellerFulfilmentAuditSourceV1>,
