@@ -23,7 +23,7 @@ function signer() {
 async function world(change: Record<string, unknown> = {}) {
   const buyer = signer(), seller = signer();
   const local = { endpoint: "https://rpc.eligibility.invalid/", transportAuthority: "test", connectionId: "1" };
-  const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
+  const binding = await bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
   const selected = {
     pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-payee-bound-agreement", rail: "pay-dem",
     delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output,
@@ -36,7 +36,7 @@ async function world(change: Record<string, unknown> = {}) {
       displayName: "Fixture seller", publicEndpoint: "https://seller.eligibility.invalid" },
     offering: { title: "Report", description: "Fixture report", category: "data.test", tags: [], deliverable: { kind: "storage-program" } },
     buyerRequirement: { requirementVersion: "1", required: [] },
-    pipeline: [{ kind: selected.negotiation }, { kind: selected.commitPhase ?? "commit-payee-bound-agreement" }, { kind: selected.rail }, { kind: "deliver-storage-program" }],
+    pipeline: [{ kind: selected.negotiation }, ...(selected.commitPhase === undefined ? [] : [{ kind: selected.commitPhase }]), { kind: selected.rail }, { kind: "deliver-storage-program" }],
     pricing: selected.pricingKind === "metered" ? { kind: "metered", unitPrice: { amount: "1", currency: "DEM" }, unit: "request" } :
       { kind: selected.pricingKind, price: { amount: "1", currency: "DEM" } },
     acceptedRails: [{ railId: selected.rail }], terms: {}, validity: { notBefore: NOW - 1000, notAfter: NOW + 60_000 },
@@ -55,7 +55,10 @@ async function world(change: Record<string, unknown> = {}) {
   const readListingEligibility: wire.ListingEligibilityReader = (scope) => {
     expect(contentHash(signedListing)).toBe(scope.listingPin.contentHash);
     expect(verifyArtifact("dacs-listing:v1:", signedListing, Buffer.from(signedListing.signature.value, "base64url"), seller.publicKey)).toBe(true);
-    return { ...eligibility, pricingKind: signedListing.pricing.kind, negotiation: signedListing.pipeline[0]!.kind, rail: signedListing.pipeline[2]!.kind };
+    return { ...eligibility, pricingKind: signedListing.pricing.kind,
+      negotiation: signedListing.pipeline.find((phase) => phase.kind.startsWith("negotiate-"))?.kind,
+      commitPhase: signedListing.pipeline.find((phase) => phase.kind.startsWith("commit-"))?.kind,
+      rail: signedListing.pipeline.find((phase) => phase.kind.startsWith("pay-"))?.kind };
   };
   const document = await wire.signDiscoveryDocument({
     format: "dacs-seller-discovery/v1", profile: binding.profile, seller: seller.claim, publicEndpoint: listing.publicEndpoint,
@@ -64,7 +67,7 @@ async function world(change: Record<string, unknown> = {}) {
   }, seller, binding, local);
   const request = { signer: buyer, binding, local, now: NOW, publicEndpoint: listing.publicEndpoint, seller: seller.claim,
     path: "/dacs/v1/commitments", jobId: JOB, text: "{}", job: { listingPin: listing.listingPin, agreementHash: "a".repeat(64), profile: binding.profile } };
-  return { buyer, seller, local, binding, listing, document, eligibility, readListingEligibility, request };
+  return { buyer, seller, local, binding, listing, signedListing, document, eligibility, readListingEligibility, request };
 }
 
 describe("authenticated Listing eligibility before purchase signing", () => {
@@ -91,7 +94,7 @@ describe("authenticated Listing eligibility before purchase signing", () => {
     const w = await world(change as Record<string, unknown>);
     const readListingEligibility = w.readListingEligibility;
     await expect(Promise.resolve().then(async () => {
-      const endpointProof = wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW, readListingEligibility });
+      const endpointProof = (await wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW, readListingEligibility }));
       await wire.signWireRequest({ ...w.request, endpointProof });
     })).rejects.toMatchObject({ code: "listing_unsupported" });
     expect(w.buyer.calls).toBe(0);
@@ -101,13 +104,13 @@ describe("authenticated Listing eligibility before purchase signing", () => {
 it("requires an authenticated reader and binds its decision to the exact seller, endpoint and content hash", async () => {
   const w = await world();
   const options = { listing: w.listing, binding: w.binding, local: w.local, now: NOW };
-  expect(() => wire.verifyEndpointProof(w.document, options as any)).toThrowError(expect.objectContaining({ code: "listing_eligibility_required" }));
+  await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(w.document, options as any)))).rejects.toThrowError(expect.objectContaining({ code: "listing_eligibility_required" }));
   for (const change of [
     { seller: w.buyer.claim }, { publicEndpoint: `${w.listing.publicEndpoint}/` },
     { listingPin: { ...w.listing.listingPin, contentHash: "d".repeat(64) } },
     { listingPin: { ...w.listing.listingPin, version: 2 } },
   ]) {
-    expect(() => wire.verifyEndpointProof(w.document, { ...options, readListingEligibility: () => ({ ...w.eligibility, ...change }) }))
+    await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(w.document, { ...options, readListingEligibility: () => ({ ...w.eligibility, ...change }) })))).rejects
       .toThrowError(expect.objectContaining({ code: "listing_eligibility_mismatch" }));
   }
   expect(w.buyer.calls).toBe(0);
@@ -116,7 +119,7 @@ it("requires an authenticated reader and binds its decision to the exact seller,
 it.each(["request", "envelope"])("rechecks authenticated eligibility immediately before %s signing", async (entry) => {
   const w = await world();
   let decision: unknown = w.eligibility;
-  const endpointProof = wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW, readListingEligibility: () => decision });
+  const endpointProof = (await wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW, readListingEligibility: () => decision }));
   const signed = await wire.signWireRequest({ ...w.request, endpointProof });
   expect(w.buyer.calls).toBe(1);
   decision = { ...w.eligibility, rail: "pay-x402" };
@@ -131,8 +134,8 @@ it("accepts an explicitly configured pure deterministic synchronous module and p
   const w = await world();
   const decision = { ...w.eligibility, service: { kind: "pure-synchronous-text-module", configured: true, pure: true, deterministic: true, synchronous: true } };
   let failure: Error | undefined;
-  const endpointProof = wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW,
-    readListingEligibility: () => { if (failure) throw failure; return decision; } });
+  const endpointProof = (await wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW,
+    readListingEligibility: () => { if (failure) throw failure; return decision; } }));
   await wire.signWireRequest({ ...w.request, endpointProof });
   failure = new Error("authenticated Listing read timed out");
   await expect(wire.signWireRequest({ ...w.request, endpointProof })).rejects.toBe(failure);
@@ -141,18 +144,18 @@ it("accepts an explicitly configured pure deterministic synchronous module and p
 
 it.each([null, {}, { ...wire.TP1_CAPABILITIES }, Promise.resolve(null)])("fails closed on a malformed reader decision (%s)", async (decision) => {
   const w = await world();
-  expect(() => wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW, readListingEligibility: () => decision }))
+  await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW, readListingEligibility: () => decision })))).rejects
     .toThrowError(expect.objectContaining({ code: "listing_unsupported" }));
   expect(w.buyer.calls).toBe(0);
 });
 
 it.each([
-  ["not yet valid", { notBefore: NOW + 1 }], ["expired", { expiresAt: NOW }],
+  ["not yet valid", { notBefore: NOW + 1 }], ["expired", { expiresAt: NOW - 1 }],
   ["ambiguous expiry", { expiresAt: null }],
 ])("refuses a %s authenticated Listing decision", async (_label, change) => {
   const w = await world();
-  expect(() => wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW,
-    readListingEligibility: () => ({ ...w.eligibility, ...change }) }))
+  await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW,
+    readListingEligibility: () => ({ ...w.eligibility, ...change }) })))).rejects
     .toThrowError(expect.objectContaining({ code: "listing_unsupported" }));
   expect(w.buyer.calls).toBe(0);
 });
@@ -160,12 +163,12 @@ it.each([
 it("supplies an immutable source scope and refuses decisions that disappear after proof creation", async () => {
   const w = await world();
   let current: unknown = w.eligibility;
-  const endpointProof = wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW,
+  const endpointProof = (await wire.verifyEndpointProof(w.document, { listing: w.listing, binding: w.binding, local: w.local, now: NOW,
     readListingEligibility: (scope) => {
       expect(Object.isFrozen(scope)).toBe(true);
       expect(Object.isFrozen(scope.listingPin)).toBe(true);
       return current;
-    } });
+    } }));
   current = null;
   await expect(wire.signWireRequest({ ...w.request, endpointProof })).rejects.toMatchObject({ code: "listing_unsupported" });
   expect(w.buyer.calls).toBe(0);
@@ -215,15 +218,15 @@ describe("public endpoint rule: an HTTPS origin, no credentials, path, query or 
       transport: ["dacs-seller-http/v1"], listings: [w.listing.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 60_000 };
     const signature = Buffer.from(w.seller.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.discovery + canonicalize(payload)))).toString("base64url");
     let reads = 0;
-    expect(() => wire.verifyEndpointProof(Buffer.from(canonicalize({ payload, signature })), { listing: { ...w.listing, publicEndpoint: "https://seller.eligibility.invalid" },
-      binding: w.binding, local: w.local, now: NOW, readListingEligibility: () => { reads++; return w.eligibility; } }))
+    await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(Buffer.from(canonicalize({ payload, signature })), { listing: { ...w.listing, publicEndpoint: "https://seller.eligibility.invalid" },
+      binding: w.binding, local: w.local, now: NOW, readListingEligibility: () => { reads++; return w.eligibility; } })))).rejects
       .toThrowError(expect.objectContaining({ code: "discovery_invalid" }));
     expect([reads, w.buyer.calls]).toEqual([0, 0]);
   });
 
   it.each(refused.filter((v): v is string => typeof v === "string" && v.length < 2048))("refuses %j as the verified Listing's endpoint and as a discovery endpoint, before any signature", async (publicEndpoint) => {
     const w = await world(), sellerCalls = w.seller.calls;
-    expect(() => wire.verifyEndpointProof(w.document, { listing: { ...w.listing, publicEndpoint }, binding: w.binding, local: w.local, now: NOW, readListingEligibility: w.readListingEligibility }))
+    await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(w.document, { listing: { ...w.listing, publicEndpoint }, binding: w.binding, local: w.local, now: NOW, readListingEligibility: w.readListingEligibility })))).rejects
       .toThrowError(expect.objectContaining({ code: "wire_input_invalid" }));
     await expect(wire.signDiscoveryDocument({
       format: "dacs-seller-discovery/v1", profile: w.binding.profile, seller: w.seller.claim, publicEndpoint,
@@ -232,4 +235,11 @@ describe("public endpoint rule: an HTTPS origin, no credentials, path, query or 
     }, w.seller, w.binding, w.local)).rejects.toMatchObject({ code: "discovery_invalid" });
     expect([w.seller.calls - sellerCalls, w.buyer.calls]).toEqual([0, 0]);
   });
+});
+
+
+it("omits an absent commitment phase from authenticated bytes and derives the projection from that pipeline", async () => {
+  const w = await world({ commitPhase: undefined });
+  expect(w.signedListing.pipeline.some((phase) => phase.kind.startsWith("commit-"))).toBe(false);
+  expect(w.readListingEligibility({ ...w.listing, now: NOW })).toHaveProperty("commitPhase", undefined);
 });
