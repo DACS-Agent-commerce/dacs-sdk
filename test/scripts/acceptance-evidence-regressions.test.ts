@@ -10,7 +10,7 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const passing = () => ({
   schema: "dacs-registry-container-acceptance/v1", complete: true, packageVersion: RELEASE_VERSION,
-  generatedTestsPassed: true, functionalPassed: true, docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
+  generatedTestsPassed: true, functionalPassed: true, docker: { policy: { schema: "dacs-runtime-image-policy/v1", typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true } },
   audit: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0, observedAdvisories: [] as string[], unlistedAdvisories: [] as string[], directAdvisories: [] as string[] },
   securityGate: { passed: true, registryDependencyPolicyPassed: true, productionImageDependencyPolicyPassed: true,
     engineStrictExitCode: 0, auditExitCode: 0, lockSbomExitCode: 0, physicalSbomExitCode: 0,
@@ -20,6 +20,45 @@ const passing = () => ({
       lockSbom: { exitCode: 0, code: null, problems: [] }, physicalSbom: { exitCode: 0, code: null, problems: [] } } },
 });
 describe("complete acceptance evidence regressions", () => {
+  it.each(["typescriptPresent", "rubicSdkPresent", "productionDependencyPolicyPassed"])(
+    "rejects missing or contradictory image policy %s in API and CLI", field => {
+      const root = mkdtempSync(join(tmpdir(), "dacs-image-policy-")); roots.push(root);
+      const input = join(root, "summary.json");
+      const check = (summary: ReturnType<typeof passing>, expected: number) => {
+        expect(registryContainerDisposition(summary).exitCode).toBe(expected);
+        writeFileSync(input, JSON.stringify(summary));
+        expect(spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", input],
+          { cwd: repoRoot, encoding: "utf8" }).status).toBe(expected);
+      };
+      check(passing(), 0);
+      for (const value of [undefined, null, "false", field !== "productionDependencyPolicyPassed"]) {
+        const summary = passing(); Object.assign(summary.docker.policy, { [field]: value });
+        check(summary, 3);
+      }
+    });
+
+  it.each(["typescript", "rubic-sdk"])("retains prohibited image package %s despite absent or false policy flags", name => {
+    for (const flag of [undefined, false]) for (const nested of [false, true]) {
+      const location = nested ? `node_modules/parent/node_modules/${name}` : `node_modules/${name}`;
+      const item = { name, location, version: "1.0.0" };
+      const parent = { name: "parent", location: "node_modules/parent", version: "1.0.0" };
+      const files: Record<string, string> = {
+        "generated-package-lock.json": JSON.stringify({ packages: {
+          "": { dependencies: { [nested ? "parent" : name]: "1.0.0" } },
+          ...(nested ? { [parent.location]: { ...parent, dependencies: { [name]: "1.0.0" } } } : {}),
+          [location]: { version: "1.0.0", integrity: "sha512-fixture" },
+        } }),
+        "runtime-image-policy.json": JSON.stringify({ typescriptPresent: flag, rubicSdkPresent: flag }),
+        "runtime-image-inventory.json": JSON.stringify({ schema: "dacs-runtime-image-inventory/v1", packages: nested ? [parent, item] : [item] }),
+      };
+      const extracted = extractPolicyFindings((filename: string) => files[filename]);
+      expect(extracted.productionImageInventory).toMatchObject({ scanComplete: true, missing: [], errors: [] });
+      expect(extracted.productionImageDependencies).toEqual([{ ...item, integrity: "sha512-fixture" }]);
+      const summary = passing(); Object.assign(summary.securityGate, { findings: { ...summary.securityGate.findings, ...extracted } });
+      expect(registryContainerDisposition(summary).exitCode).toBe(3);
+    }
+  });
+
   it.each(["gitDependencies", "engine", "lockSbom", "physicalSbom"])("rejects missing %s evidence despite success flags", key => {
     const summary = passing(); Reflect.deleteProperty(summary.securityGate.findings, key);
     expect(registryContainerDisposition(summary).exitCode).toBe(3);
