@@ -76,11 +76,11 @@ test("wildcard exports enumerate packed files, JSON exports carry their type, em
 });
 
 test("consumer lock refuses links and directory dependencies but admits the input tarballs", () => {
-  const allowed = ["/tmp/core.tgz"];
-  assert.doesNotThrow(() => validateLock({ packages: { "node_modules/core": { resolved: "file:/tmp/core.tgz" } } }, allowed));
-  assert.doesNotThrow(() => validateLock({ packages: { "node_modules/core": { resolved: "file:../core.tgz" } } }, allowed, "/tmp/consumer"));
+  const allowed = [{ name: core.name, tarball: "/tmp/core.tgz" }];
+  assert.doesNotThrow(() => validateLock({ packages: { [`node_modules/${core.name}`]: { resolved: "file:/tmp/core.tgz" } } }, allowed));
+  assert.doesNotThrow(() => validateLock({ packages: { [`node_modules/${core.name}`]: { resolved: "file:../core.tgz" } } }, allowed, "/tmp/consumer"));
   for (const value of [{ link: true }, { resolved: "file:../core" }, { resolved: "workspace:*" }]) {
-    assert.throws(() => validateLock({ packages: { "node_modules/core": value } }, allowed), /link|local/);
+    assert.throws(() => validateLock({ packages: { [`node_modules/${core.name}`]: value } }, allowed), /link|local|internal.*tarball/);
   }
 });
 
@@ -190,9 +190,9 @@ test("wildcard exports pair every condition with the same concrete subpath", () 
 test("nested internal lock entries must resolve to supplied tarballs", () => {
   const name = `node_modules/${packages[1].name}/node_modules/${core.name}`;
   for (const resolved of ["https://registry.npmjs.org/@kynesyslabs/dacs/-/dacs-0.1.0-alpha.0.tgz", undefined, "file:/tmp/other.tgz"]) {
-    assert.throws(() => validateLock({ packages: { [name]: { resolved } } }, ["/tmp/core.tgz"]), /internal.*tarball/);
+    assert.throws(() => validateLock({ packages: { [name]: { resolved } } }, [{ name: core.name, tarball: "/tmp/core.tgz" }]), /internal.*tarball/);
   }
-  assert.doesNotThrow(() => validateLock({ packages: { [name]: { resolved: "file:/tmp/core.tgz" } } }, ["/tmp/core.tgz"]));
+  assert.doesNotThrow(() => validateLock({ packages: { [name]: { resolved: "file:/tmp/core.tgz" } } }, [{ name: core.name, tarball: "/tmp/core.tgz" }]));
 });
 
 async function changeManifest(root, definition, damage) {
@@ -390,4 +390,106 @@ test("strict artifact inventory admits exactly the five public identities", () =
   ]) assert.throws(() => validateArtifactSet(damaged, true), /all five/);
   assert.throws(() => validateArtifactSet(artifacts.map((a, i) => i === 2 ?
     { ...a, manifest: { ...a.manifest, private: true } } : a), true), /private package/);
+});
+
+test("dependency maps reject malformed sections and leaves", () => {
+  for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "overrides", "resolutions"]) {
+    for (const value of [null, 42, [], "1.0.0", true]) {
+      assert.throws(() => validateManifest({ ...manifest(), [section]: value }, core), /dependency/);
+    }
+    for (const value of [null, 42, [], true, ["1.0.0"]]) {
+      assert.throws(() => validateManifest({ ...manifest(), [section]: { external: value } }, core), /dependency/);
+    }
+  }
+  for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+    assert.throws(() => validateManifest({ ...manifest(), [section]: { external: { nested: "1.0.0" } } }, core), /dependency/);
+  }
+  for (const section of ["overrides", "resolutions"]) {
+    assert.doesNotThrow(() => validateManifest({ ...manifest(), [section]: { outer: { ".": "1.0.0", inner: "^2.0.0" } } }, core));
+    assert.throws(() => validateManifest({ ...manifest(), [section]: { outer: { inner: null } } }, core), /dependency/);
+  }
+});
+
+test("export trees reject malformed conditions even with a valid fallback", () => {
+  const def = packages[4];
+  for (const invalid of [42, true, false, { import: 42, default: "./dist/index.js" }, ["./dist/index.js", false]]) {
+    const p = { ...manifest(def), exports: { ".": invalid } };
+    assert.throws(() => validateManifest(p, def), /export/);
+    assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js"]), /export/);
+  }
+  const p = { ...manifest(def), exports: { ".": { browser: null, import: "./dist/index.js" }, "./private": null } };
+  assert.doesNotThrow(() => validateManifest(p, def));
+  assert.doesNotThrow(() => validateFiles(def, p, ["package.json", "dist/index.js"]));
+});
+
+test("export targets reject encoded forbidden segments in actual npm pack inventories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-export-policy-"));
+  try {
+    const def = packages[4];
+    for (const segment of ["%2e%2e", "%2E", "%6eode_modules", "node%5fmodules", "%2f", "%5C"]) {
+      const target = `./dist/${segment}/index.js`;
+      const p = { ...manifest(def), exports: { ".": target }, files: ["dist"] };
+      await mkdir(join(root, "dist", segment), { recursive: true });
+      await writeFile(join(root, target), "export {};\n");
+      await writeFile(join(root, "package.json"), JSON.stringify(p));
+      const packed = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--dry-run", "--json"], { cwd: root, encoding: "utf8" }));
+      const files = packed[0].files.map(file => file.path);
+      assert.ok(files.includes(target.slice(2)));
+      assert.throws(() => validateManifest(p, def), /export target/);
+      assert.throws(() => validateFiles(def, p, files), /export target/);
+    }
+    for (const target of ["./dist/node_modules/index.js", "./dist/NODE_MODULES/index.js", "dist/index.js"]) {
+      assert.throws(() => validateManifest({ ...manifest(def), exports: target }, def), /export target/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("artifact versions agree and strict mode requires the planned version", () => {
+  const artifacts = packages.map(definition => ({ manifest: { ...manifest(definition), version: plannedVersion }, releasable: true }));
+  assert.doesNotThrow(() => validateArtifactSet(artifacts, true));
+  assert.throws(() => validateArtifactSet(artifacts.map((a, i) => i ? a :
+    { ...a, manifest: { ...a.manifest, version: "9.9.9" } })), /release versions differ/);
+  assert.throws(() => validateArtifactSet(artifacts.map(a =>
+    ({ ...a, manifest: { ...a.manifest, version: "9.9.9" } })), true), /release versions differ/);
+});
+
+test("every runtime dependency section requires exact internal release pins", () => {
+  for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+    for (const definition of packages) {
+      const p = { ...manifest(packages[4]), [section]: { [definition.name]: "0.1.0-alpha.0" } };
+      assert.doesNotThrow(() => validateArtifactSet([{ manifest: p }]));
+      for (const spec of ["^0.1.0-alpha.0", "*", "next", "9.9.9"]) {
+        assert.throws(() => validateArtifactSet([{ manifest: { ...p, [section]: { [definition.name]: spec } } }]), /exact release version/);
+      }
+    }
+  }
+});
+
+test("internal lock identities must each resolve to their own supplied artifact", () => {
+  const artifacts = [{ name: core.name, tarball: "/tmp/core.tgz" }, { name: packages[2].name, tarball: "/tmp/client.tgz" }];
+  for (const prefix of ["", "node_modules/outer/"]) {
+    const location = `${prefix}node_modules/${core.name}`;
+    assert.doesNotThrow(() => validateLock({ packages: { [location]: { resolved: "file:/tmp/core.tgz" } } }, artifacts));
+    assert.throws(() => validateLock({ packages: { [location]: { resolved: "file:/tmp/client.tgz" } } }, artifacts), /internal.*tarball/);
+  }
+  assert.throws(() => validateLock({ packages: { "node_modules/compat": { name: core.name, resolved: "file:/tmp/client.tgz" } } }, artifacts), /internal.*tarball/);
+});
+
+test("lock evidence requires package maps and installed resolutions with explicit metadata exceptions", () => {
+  for (const packages of [undefined, null, [], 42]) {
+    assert.throws(() => validateLock({ packages }, []), /lock.*packages/);
+  }
+  for (const entry of [{}, { resolved: "" }, { resolved: null }, { resolved: 42 }, null, []]) {
+    assert.throws(() => validateLock({ packages: { "node_modules/external": entry } }, []), /resolution|lock.*entry/);
+  }
+  assert.doesNotThrow(() => validateLock({ packages: { "": { name: "consumer", version: "1.0.0" } } }, []));
+  assert.doesNotThrow(() => validateLock({ packages: { "node_modules/optional": { optional: true } } }, [], ".", true));
+  assert.throws(() => validateLock({ packages: { "node_modules/external": { optional: true } } }, []), /resolution/);
+  const bundled = { packages: {
+    "node_modules/outer": { resolved: "https://registry.npmjs.org/outer/-/outer-1.0.0.tgz" },
+    "node_modules/outer/node_modules/inner": { version: "1.0.0", inBundle: true },
+  } };
+  assert.doesNotThrow(() => validateLock(bundled, []));
+  delete bundled.packages["node_modules/outer"];
+  assert.throws(() => validateLock(bundled, []), /resolution/);
 });
