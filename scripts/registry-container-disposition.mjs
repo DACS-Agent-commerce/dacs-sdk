@@ -622,9 +622,7 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   return { scanComplete: errors.length === 0, errors, unexpected, missing };
 }
 
-// Records each security-gate finding with its observed identity (lock path,
-// version, integrity, engine range, npm problem line); the baseline compares
-// them by rule (see gitIdentity below).
+// Records observed identities for comparison with the baseline rules below.
 export function extractPolicyFindings(readInput) {
   const read = name => boundedEvidenceText(readInput(name));
   const json = name => JSON.parse(read(name) ?? "null");
@@ -650,13 +648,14 @@ export function extractPolicyFindings(readInput) {
   let inventory = null;
   try { inventory = json("runtime-image-inventory.json"); } catch { /* unreadable: the inventory is incomplete */ }
   const { unexpected, ...imageInventory } = runtimeImageInventoryFindings(inventory, lock);
-  // The two packages the policy names, then every other image package outside
-  // the production closure.
+  // Retain prohibited packages even when they match the production closure.
   const named = [["typescript", image.typescriptPresent], ["rubic-sdk", image.rubicSdkPresent]]
-    .filter(([, present]) => present === true)
-    .map(([name]) => packages[`node_modules/${name}`]
-      ? { name, location: `node_modules/${name}`, ...identity(`node_modules/${name}`) }
-      : { name, location: null, version: null, integrity: null });
+    .flatMap(([name, present]) => {
+      const copies = (Array.isArray(inventory?.packages) ? inventory.packages : [])
+        .filter(item => item?.name === name || item?.location === `node_modules/${name}`);
+      return copies.length ? copies.map(({ location, version }) => ({ name, location, ...identity(location), version }))
+        : present === true ? [{ name, location: null, version: null, integrity: null }] : [];
+    });
   const productionImageDependencies = [...named,
     ...unexpected.filter(item => !named.some(known => known.location === item.location))];
   return {
@@ -672,12 +671,8 @@ export function extractPolicyFindings(readInput) {
   };
 }
 
-// The baseline keeps each finding's observed version and integrity as evidence,
-// but matches it by rule: lock location, dependency field and spec, required
-// engine range, and npm's problem line with installed versions elided. The
-// consumer installs without a lockfile, so a patch release of a package that
-// keeps the same rule stays baseline-only; a new package, location, spec or
-// range still blocks.
+// Baseline rules match location, dependency spec and engine range; SBOM rules
+// elide installed versions so patch releases alone do not create new rules.
 const sameIdentity = (keys) => (item, known) => keys.every(key => JSON.stringify(item?.[key]) === JSON.stringify(known?.[key]));
 const packageName = (spec) => typeof spec === "string" ? spec.replace(/(?<=.)@[^@]*$/, "") : spec;
 const gitIdentity = sameIdentity(["location", "field", "value"]);
@@ -689,20 +684,23 @@ const sbomProblemRule = (line) => typeof line === "string" ? line
   .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,]+/, "$1@*")
   .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@\S+$/, "$1@*") : line;
 const sbomIdentity = (item, known) => typeof item === "string" && sbomProblemRule(item) === sbomProblemRule(known);
-// Non-empty, and every finding is recorded in the baseline exactly.
 const allListed = (items, known, same) => Array.isArray(items) && items.length > 0 && Array.isArray(known) &&
   items.every(item => known.some(entry => same(item, entry)));
 
-// Each security-gate check is "passed", "baseline" (fails only with findings
-// recorded in the #191 baseline) or "blocked" (anything else, fail closed).
+// Classifies each check as passed, baseline-only or blocked, failing closed.
 export function classifyPolicyChecks(summary, baseline) {
   const gate = summary?.securityGate ?? {};
   const findings = gate.findings ?? {};
   const known = baseline?.policyFindings ?? {};
   const engine = findings.engine;
   const inventory = findings.productionImageInventory;
-  // The image's package set must be read in full and hold the whole required
-  // closure; a package outside it is a production-image finding (above).
+  const image = summary?.docker?.policy;
+  const imageRead = typeof image?.productionDependencyPolicyPassed === "boolean" &&
+    image.productionDependencyPolicyPassed === gate.productionImageDependencyPolicyPassed &&
+    [["typescript", image.typescriptPresent], ["rubic-sdk", image.rubicSdkPresent]].every(([name, present]) =>
+      typeof present === "boolean" && Array.isArray(findings.productionImageDependencies) &&
+      present === findings.productionImageDependencies.some(item => item?.name === name));
+  // Require a complete inventory and the whole required production closure.
   const inventoryRead = inventory?.scanComplete === true && Array.isArray(inventory.missing) &&
     inventory.missing.length === 0 && Array.isArray(inventory.errors) && inventory.errors.length === 0;
   const sbom = (exitCode, observed, knownProblems) => exitCode === 0
@@ -713,7 +711,7 @@ export function classifyPolicyChecks(summary, baseline) {
     registryDependency: gate.registryDependencyPolicyPassed === true
       ? (Array.isArray(findings.gitDependencies) && findings.gitDependencies.length === 0 ? "passed" : "blocked")
       : gate.registryDependencyPolicyPassed === false && allListed(findings.gitDependencies, known.gitDependencies, gitIdentity) ? "baseline" : "blocked",
-    productionImage: !inventoryRead ? "blocked" : gate.productionImageDependencyPolicyPassed === true
+    productionImage: !inventoryRead || !imageRead ? "blocked" : gate.productionImageDependencyPolicyPassed === true
       ? (Array.isArray(findings.productionImageDependencies) && findings.productionImageDependencies.length === 0 ? "passed" : "blocked")
       : gate.productionImageDependencyPolicyPassed === false && allListed(findings.productionImageDependencies, known.productionImageDependencies, imageIdentity) ? "baseline" : "blocked",
     engineStrict: gate.engineStrictExitCode === 0
