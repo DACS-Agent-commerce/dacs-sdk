@@ -168,3 +168,24 @@ test('exec preserves native NUL and BOM empty remainders after a write', t=>{
     assert.deepEqual(guarded.prepare('SELECT id FROM records').all(),native.prepare('SELECT id FROM records').all());
   }
 });
+for (const sql of ["SELECT * FROM pragma_integrity_check('checked')", "SELECT * FROM pragma_quick_check('checked')", 'ALTER TABLE checked ADD COLUMN y CHECK (chk(y))']) {
+  test(`virtual-table programs cannot run application callbacks inside a guard: ${sql}`, t => {
+    const db = world(t);
+    let armed = false, calls = 0;
+    db.function('chk', value => {
+      if (!armed) return value;
+      calls++;
+      try { nativeExec.call(db, "INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')"); } catch { /* the conflict rolls the transaction back */ }
+      nativeRun.call(write);
+      return 1;
+    });
+    db.exec("CREATE TABLE checked(x CHECK (chk(x))); INSERT INTO checked VALUES (1); INSERT INTO records VALUES ('TEST-existing'); BEGIN");
+    const write = db.prepare("INSERT INTO records VALUES ('TEST-escaped')");
+    armed = true;
+    withSqliteStatementGuard(db, () => { if (!db.isTransaction) throw Error('TEST-ended'); }, () => {
+      assert.throws(() => db.prepare(sql).all(), /SQL callbacks/);
+    });
+    assert.equal(calls, 0);
+    assert.equal(db.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n, 0);
+  });
+}
