@@ -119,7 +119,7 @@
     "release:set:verify": "node scripts/verify-release-set.mjs",
     "release:check": "node scripts/check-release-packages.mjs",
     "release:dry-run": "node scripts/release-dry-run.mjs",
-    "release:test": "node --test --test-concurrency=1 test/scripts/release-checks.test.mjs",
+    "release:test": "node --test --test-concurrency=1 test/scripts/release-checks.test.mjs test/scripts/release-identity.test.mjs",
     "release:set:publish": "node scripts/publish-release-set.mjs"
   },
   "publishConfig": {
