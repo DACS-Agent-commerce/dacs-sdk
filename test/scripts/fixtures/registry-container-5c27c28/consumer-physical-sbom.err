@@ -1,0 +1,4 @@
+npm error code ESBOMPROBLEMS
+npm error invalid: bip39@3.1.2, 3.1.0 required by @multiversx/sdk-core@13.17.2
+npm error invalid: node-fetch@2.7.0, 2.6.7 required by @near-js/providers@0.2.3
+npm error A complete log of this run can be found in: /root/.npm/_logs/2026-10-15T08_35_03_718Z-debug-0.log
