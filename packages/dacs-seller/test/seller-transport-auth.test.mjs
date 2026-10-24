@@ -44,6 +44,13 @@ function world({ delegated = false, context = false, time = 1000, grant = delega
 }
 const encoded = (envelope) => Buffer.from(canonicalize(envelope)).toString('base64url');
 
+test('all server sessions require a store that promises journal-only reservation', () => {
+  for (const requireDelegation of [false, true]) for (const capability of [undefined, false, 'true']) {
+    const store = { journaledOnlyReserve: capability, bind() {}, finish() {}, reserve: () => ({ disposition: 'perform' }) };
+    assert.throws(() => createSellerTransportServerAuth({ sellerSigner: seller, listingPin: pin, store, requireDelegation }), /configuration is invalid/);
+  }
+});
+
 test('request and response signatures bind the exact body, status and request', async () => {
   const w = world(), asked = await w.request(); w.validate(asked);
   const text = '{"TEST":"answer"}', header = await w.server.responseHeader(asked.request, 200, text);
