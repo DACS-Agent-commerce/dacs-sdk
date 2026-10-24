@@ -37,9 +37,10 @@ export async function wireWorld() {
   const options = { binding, local, now: NOW, listing: { seller: seller.claim, publicEndpoint, listingPin: pin }, readListingEligibility: readFixtureListingEligibility };
   const proof = await wire.verifyEndpointProof(document(), options);
   const context = { binding, local, purchaseProfile: binding.profile };
+  const delegationScope = { binding, local, seller: seller.claim, listingPin: pin, jobId: JOB, time: NOW };
   const input = { signer: buyer, binding, local, now: NOW, endpointProof: proof, publicEndpoint, path: request.path,
     jobId: JOB, text: "{}", seller: seller.claim, job: { listingPin: pin, agreementHash: request.agreementHash, profile: binding.profile } };
-  return { buyer, seller, session, binding, local, pin, request, delegation, discovery, signed, document, options, proof, context, input,
+  return { buyer, seller, session, binding, local, pin, request, delegation, discovery, signed, document, options, proof, context, delegationScope, input,
     failAuthority: (error: Error) => { authorityError = error; }, reads: () => participantReads, revoke: () => { revoke = true; } };
 }
 export const encodeHeader = (value: unknown) => Buffer.from(canonicalize(value)).toString("base64url");
