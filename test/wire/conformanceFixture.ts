@@ -6,7 +6,7 @@ import { seededParty } from "./commitmentFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 export const NOW = Date.UTC(2026, 9, 18);
 export const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
-export function wireWorld() {
+export async function wireWorld() {
   const buyer = seededParty(61), seller = seededParty(62), session = seededParty(63);
   const local = { endpoint: "https://rpc.sweep.invalid/", transportAuthority: "test", connectionId: "1" };
   let participantReads = 0, revoke = false;
@@ -21,7 +21,7 @@ export function wireWorld() {
         profile: revoke && scope.sessionId === "dacs-seller-discovery/v1" ? { ...profile, revision: "revoked" } : profile,
         modules: wire.TESTNET_PROFILE_TP1.tuple })) };
   };
-  const binding = fixtureBinder(wire)({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local, readAuthority });
+  const binding = await fixtureBinder(wire)({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local, readAuthority });
   const pin = { listingId: "sweep", version: 1, contentHash: "c".repeat(64) };
   const request: wire.WireRequestPayload = { version: "1", kind: "request", method: "POST", path: wire.DACS_SELLER_HTTP_PATHS.commitments,
     bodyHash: sha256Hex("{}"), jobId: JOB, buyer: buyer.claim, seller: seller.claim, listingPin: pin,
@@ -35,7 +35,7 @@ export function wireWorld() {
     signature: Buffer.from(who.signBytes(Buffer.from(domain + canonicalize(payload)))).toString("base64url") });
   const document = (payload: unknown = discovery) => Buffer.from(canonicalize(signed(payload, seller, wire.DACS_SELLER_HTTP_DOMAINS.discovery)));
   const options = { binding, local, now: NOW, listing: { seller: seller.claim, publicEndpoint, listingPin: pin }, readListingEligibility: readFixtureListingEligibility };
-  const proof = wire.verifyEndpointProof(document(), options);
+  const proof = await wire.verifyEndpointProof(document(), options);
   const context = { binding, local, purchaseProfile: binding.profile };
   const input = { signer: buyer, binding, local, now: NOW, endpointProof: proof, publicEndpoint, path: request.path,
     jobId: JOB, text: "{}", seller: seller.claim, job: { listingPin: pin, agreementHash: request.agreementHash, profile: binding.profile } };
