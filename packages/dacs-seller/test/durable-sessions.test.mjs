@@ -44,6 +44,16 @@ test('cleanup contention preserves the original action error', async t => {
   await assert.rejects(f.store.withJob(JOB, () => { blocker.exec('BEGIN IMMEDIATE'); throw cause; }), error => error === cause);
   blocker.exec('ROLLBACK'); f.store.close(); blocker.close();
 });
+test('cleanup contention preserves falsy action failures', async t => {
+  const f = await durableFixture(t), blocker = connect(f.path);
+  try {
+    for (const cause of [undefined, null, false, 0, '']) {
+      try {
+        await assert.rejects(f.store.withJob(JOB, () => { blocker.exec('BEGIN IMMEDIATE'); throw cause; }), error => Object.is(error, cause));
+      } finally { blocker.exec('ROLLBACK'); }
+    }
+  } finally { blocker.close(); f.store.close(); }
+});
 test('capacity, canonical IDs and active acquisition ownership fail closed', async t => {
   const f = await durableFixture(t, { maxJobs: 1 });
   await assert.rejects(f.store.withJob('bad:job', () => {}), e => e.code === 'seller_state_job_invalid');
