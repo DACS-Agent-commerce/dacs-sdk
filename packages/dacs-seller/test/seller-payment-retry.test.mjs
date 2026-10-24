@@ -105,7 +105,7 @@ test('the transport store permits retained retries for payment claims and propos
     assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), (error) => error.code !== 'peer_reconciliation_invalid',
       `${path} passes the guard and is checked against its retained effect`);
   }
-  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), { code: 'peer_reconciliation_invalid' });
+  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), error=>error.code==='peer_reconciliation_conflict');
 });
 
 test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
