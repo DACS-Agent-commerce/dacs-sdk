@@ -2573,7 +2573,6 @@ export async function verifySellerPaymentIntake(
       if (observed.status === "invalid") return reject("demos-transfer-invalid");
       return indeterminate(`demos-${observed.status}`);
     }
-    if (observed.execution === undefined) return indeterminate("demos-execution-unconfirmed");
     const observedPayer = normalizeDemosNativeAddress(observed.payer);
     const observedPayee = normalizeDemosNativeAddress(observed.payee);
     if (
@@ -2597,6 +2596,7 @@ export async function verifySellerPaymentIntake(
       return reject("payment-before-finalized-commitment");
     }
     if (observed.includedAt > agreement.terms.deadline) return reject("payment-after-deadline");
+    if (observed.execution === undefined) return indeterminate("demos-execution-unconfirmed");
     const settlementId = canonicalSellerSettlementId({ kind: "demos", txHash: observed.txHash });
     if (!settlementId) return verifierError("malformed-settlement-identity");
     const evidenceInput: SellerPaymentEvidenceInput = {

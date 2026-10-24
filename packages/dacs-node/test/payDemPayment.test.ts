@@ -1246,6 +1246,8 @@ describe("native DEM buyer payment track", () => {
     ["unknown", { execution: "unknown" }],
     ["null", { execution: null }],
     ["boolean", { execution: true }],
+    ["missing with invalid payee", { payee: "a".repeat(64) }],
+    ["missing with invalid fee", { networkFeeOs: "NaN" }],
   ] as const)("reconciles after notice queue failure with %s execution evidence", async (_label, attestation) => {
     const databasePath = join(root(), "buyer.sqlite");
     const first = await open(databasePath);
@@ -1311,7 +1313,6 @@ describe("native DEM buyer payment track", () => {
     const reconcile = vi.fn(async ({ prepared }) => ({
       status: "completed" as const,
       settlement: {
-        ...attestation,
         ok: true,
         txHash: prepared!.txHash,
         chainId: "demos",
@@ -1322,6 +1323,7 @@ describe("native DEM buyer payment track", () => {
         txRefKind: "demos" as const,
         amountOs: AUTHORITY.amountOs,
         networkFeeOs: "1000000000",
+        ...attestation,
       },
     }));
     const publishNotice = vi.fn();
@@ -1358,7 +1360,9 @@ describe("native DEM buyer payment track", () => {
       expect(publishNotice).not.toHaveBeenCalled();
       expect(walletReconcile).not.toHaveBeenCalled();
       expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
-        .toMatchObject({ state: "indeterminate" });
+        .toMatchObject({ state: "indeterminate", reasonCode:
+          _label === "missing" || _label === "undefined"
+            ? "pay-dem-chain-execution-unconfirmed" : "effect-reconciliation-unavailable" });
       return;
     }
     expect(walletReconcile).toHaveBeenCalledTimes(1);

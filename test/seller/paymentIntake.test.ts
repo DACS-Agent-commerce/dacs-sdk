@@ -842,6 +842,21 @@ describe("verifySellerPaymentIntake", () => {
     },
   );
 
+  it.each([
+    ["hash", { txHash: "cc".repeat(32) }, "demos-transfer-party-or-identity-mismatch"],
+    ["payer", { payer: "cc".repeat(32) }, "demos-transfer-party-or-identity-mismatch"],
+    ["payee", { payee: "cc".repeat(32) }, "demos-transfer-party-or-identity-mismatch"],
+    ["amount", { amountOs: "NaN" }, "payment-amount-mismatch"],
+    ["early inclusion", { includedAt: 0 }, "payment-before-finalized-commitment"],
+    ["late inclusion", { includedAt: Number.MAX_SAFE_INTEGER }, "payment-after-deadline"],
+  ] as const)("rejects conflicting %s even without execution evidence", async (_label, conflict, reason) => {
+    const ctx = makeContext("pay-dem");
+    ctx.demosObservation = { ...ctx.demosObservation, ...conflict, execution: undefined };
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", fulfilment: "none", reason,
+    });
+  });
+
   it.each(["absent", "undefined"])("holds an included observation with %s execution before claiming delivery", async (field) => {
     const ctx = makeContext("pay-dem");
     const store = ctx.deps.receiptStore;
