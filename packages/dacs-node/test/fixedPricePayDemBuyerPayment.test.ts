@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { observePayDemTransferCore } from "@kynesyslabs/dacs";
 
 import {
   createDacsFixedPricePayDemBuyerReconciliationV1,
@@ -61,10 +62,12 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
     expect(observe).not.toHaveBeenCalled();
   });
 
-  it("recovers only the exact included transfer", async () => {
+  it("recovers only the exact executed transfer", async () => {
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(
       vi.fn(async () => ({
         status: "included" as const,
+        execution: "executed" as const,
+        nonce: prepared.nonce,
         txHash: prepared.txHash,
         payer: payment.payer,
         payee: payment.payee,
@@ -76,6 +79,7 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
     await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
       status: "completed",
       settlement: {
+        execution: "executed",
         ok: true,
         txHash: prepared.txHash,
         chainId: "demos",
@@ -89,6 +93,122 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
       },
     });
   });
+
+  it.each([
+    ["failed", { execution: "failed" }],
+    ["unknown", { execution: "unknown" }],
+    ["missing", {}],
+    ["undefined", { execution: undefined }],
+    ["null", { execution: null }],
+    ["boolean", { execution: true }],
+    ["record status", { execution: "confirmed" }],
+  ] as const)("holds an included transfer with %s execution evidence", async (_label, evidence) => {
+    const observe = vi.fn(async () => ({
+      status: "included" as const,
+      txHash: prepared.txHash,
+      payer: payment.payer,
+      payee: payment.payee,
+      amountOs: payment.amountOs,
+      blockNumber: 42,
+      includedAt: 1_000,
+      ...evidence,
+    }));
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(observe as never);
+
+    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+      status: "indeterminate",
+      reasonCode: "pay-dem-chain-execution-unconfirmed",
+    });
+    expect(observe).toHaveBeenCalledExactlyOnceWith(prepared.txHash);
+  });
+
+  it.each([
+    ["hash", { txHash: "a".repeat(64) }],
+    ["payer", { payer: "a".repeat(64) }],
+    ["payee", { payee: "a".repeat(64) }],
+    ["amount", { amountOs: "NaN" }],
+    ["nonce", { nonce: prepared.nonce + 1 }],
+  ] as const)("rejects conflicting %s before missing execution evidence", async (_label, conflict) => {
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(async () => ({
+      status: "included", nonce: prepared.nonce, txHash: prepared.txHash,
+      payer: payment.payer, payee: payment.payee, amountOs: payment.amountOs,
+      blockNumber: 42, includedAt: 1_000, ...conflict,
+    }));
+    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+      status: "operator-action", reasonCode: "pay-dem-chain-observation-conflict",
+    });
+  });
+
+  it.each([
+    ["confirmed", "7", "completed"],
+    ["confirmed", "8", "operator-action"],
+    ["confirmed", undefined, "operator-action"],
+    ["included", "7", "indeterminate"],
+    ["finalized", "7", "indeterminate"],
+    ["failed", "7", "operator-action"],
+  ] as const)("reconciles default observer record %s nonce %s as %s", async (recordStatus, nonce, status) => {
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1((hash) =>
+      observePayDemTransferCore(hash, {
+        getTransactionStatus: async () => ({ state: "included", blockNumber: 42 }),
+        getTxByHash: async () => ({
+          hash: prepared.txHash,
+          status: recordStatus,
+          blockNumber: 42,
+          content: {
+            type: "native",
+            ...(nonce === undefined ? {} : { nonce }),
+            from: payment.payer,
+            to: payment.payee,
+            amount: payment.amountOs,
+            data: ["native", {
+              nativeOperation: "send",
+              args: [payment.payee, payment.amountOs],
+            }],
+          },
+        }),
+        getBlockByNumber: async () => ({
+          number: 42,
+          status: "confirmed",
+          content: { timestamp: 1, ordered_transactions: [prepared.txHash] },
+        }),
+      }),
+    );
+
+    const result = await reconcile({ payment, prepared, fence } as never);
+    expect(result.status).toBe(status);
+    if (status === "completed") {
+      expect(result).toMatchObject({ settlement: {
+        ok: true,
+        txHash: prepared.txHash,
+        payer: payment.payer,
+        payee: payment.payee,
+        amountOs: payment.amountOs,
+        networkFeeOs: "1000000000",
+        blockNumber: 42,
+        finality: { model: "bft-final" },
+      } });
+    } else {
+      expect(result).not.toHaveProperty("settlement");
+      expect(result).toHaveProperty("reasonCode", status === "indeterminate"
+        ? "pay-dem-chain-execution-unconfirmed" : nonce === "8"
+          ? "pay-dem-chain-observation-conflict" : "pay-dem-prepared-transfer-invalid");
+    }
+  });
+
+  it.each([undefined, null, "7", 8, -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects a custom execution attestation with missing or conflicting nonce %j", async (nonce) => {
+      const observe = vi.fn(async () => ({
+        status: "included", execution: "executed", nonce,
+        txHash: prepared.txHash, payer: payment.payer, payee: payment.payee,
+        amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_000,
+      }));
+      const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(observe as never);
+      await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+        status: "operator-action", reasonCode: "pay-dem-chain-observation-conflict",
+      });
+      expect(observe).toHaveBeenCalledExactlyOnceWith(prepared.txHash);
+    },
+  );
 
   it("never treats a temporarily missing prepared hash as proof of absence", async () => {
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(
@@ -104,6 +224,8 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(
       vi.fn(async () => ({
         status: "included" as const,
+        execution: "executed" as const,
+        nonce: prepared.nonce,
         txHash: prepared.txHash,
         payer: payment.payer,
         payee: "a".repeat(64),

@@ -130,6 +130,14 @@ function safeUint(value: unknown): number | null {
     : null;
 }
 
+function recordNonce(value: unknown): number | null {
+  if (typeof value === "string" && INTEGER_RE.test(value)) {
+    const parsed = Number(value);
+    return safeUint(parsed);
+  }
+  return safeUint(value);
+}
+
 function positiveIntegerString(value: string): string | null {
   if (!INTEGER_RE.test(value)) return null;
   try {
@@ -399,8 +407,17 @@ export async function observePayDemTransferCore(
     return invalid("confirmed block timestamp is malformed");
   }
 
+  const nonce = recordNonce(content.nonce);
+  if (transaction.status === "confirmed" && nonce === null) {
+    return invalid("confirmed transaction has no valid signed nonce");
+  }
+
   return {
     status: "included",
+    // Only the confirmed transaction record proves execution. The other
+    // accepted inclusion labels retain their legacy observation shape.
+    ...(transaction.status === "confirmed" && nonce !== null
+      ? { execution: "executed" as const, nonce } : {}),
     txHash: requestedHash,
     payer,
     payee,

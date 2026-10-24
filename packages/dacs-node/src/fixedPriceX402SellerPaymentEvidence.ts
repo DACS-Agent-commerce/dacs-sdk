@@ -682,7 +682,8 @@ export function createDacsFixedPricePayDemSellerPaymentEvidenceV1(
             } catch {
               amountOs = undefined;
             }
-            if (observed.status !== "included" || buyerKey === null || sellerKey === null ||
+            if (observed.status !== "included" || observed.execution !== "executed" ||
+                buyerKey === null || sellerKey === null ||
                 amountOs === undefined || observed.txHash !== identity.txHash ||
                 observed.blockNumber !== identity.blockNumber ||
                 observed.includedAt !== identity.includedAt ||
