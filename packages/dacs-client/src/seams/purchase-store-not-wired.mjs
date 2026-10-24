@@ -120,8 +120,8 @@ function sqliteTransaction(db, fn) {
   const { DatabaseSync } = require('node:sqlite');
   if (!(db instanceof DatabaseSync) || fenced.has(db) || typeof fn !== 'function' || nonSynchronous(fn)) throw new NotWiredError('purchase-store-not-wired');
   if (active.has(db)) {
-    const state = active.get(db), depth = ++state.depth;
-    const savepoint = `dacs_purchase_${depth}`;
+    const state = active.get(db);
+    const savepoint = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
     let opened = false;
     try {
       state.guard.check();
@@ -147,7 +147,6 @@ function sqliteTransaction(db, fn) {
       }
       throw error;
     } finally {
-      state.depth--;
       if (!state.barrier && !fenced.has(db) && state.guard.present()) state.barrier = state.guard.blockCommit();
     }
   }
@@ -162,7 +161,7 @@ function sqliteTransaction(db, fn) {
     db.exec('BEGIN IMMEDIATE');
     begun = true;
     guard.start();
-    state = { depth: 0, guard, barrier: guard.blockCommit() };
+    state = { guard, barrier: guard.blockCommit() };
     active.set(db, state);
     const result = transactionResult(db, withSqliteStatementGuard(db, () => {
       if (!fenced.has(db) && !guard.present()) throw new Error('purchase transaction ended');

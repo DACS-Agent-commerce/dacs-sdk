@@ -647,22 +647,6 @@
   },
   {
     "sha": null,
-    "subject": "delta(client): D11 split 03 add the concrete SQLite transaction adapter",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
-      "packages/dacs-client/test/helpers/store-crash-worker.mjs",
-      "packages/dacs-client/test/store-atomicity.test.mjs",
-      "packages/dacs-client/test/store-host-boundary.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
     "subject": "fix(client): D11 cover provenance acceptance and repair records",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -702,20 +686,6 @@
   },
   {
     "sha": null,
-    "subject": "fix(client): D11 guard every SQLite callback statement after rollback",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
-      "packages/dacs-client/test/store-atomicity.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
     "subject": "fix(client): D11 retain guarded SQLite in the package closure",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -723,19 +693,6 @@
       "packages/dacs-client/HOLD.json",
       "packages/dacs-client/package.json",
       "packages/dacs-client/scripts/check-hold.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/purchase-state-schema.mjs",
-      "packages/dacs-client/test/purchase-state-schema.test.mjs"
     ]
   },
   {
@@ -762,18 +719,6 @@
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/src/util/guarded-sqlite.mjs",
       "packages/dacs-client/test/guarded-sqlite.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 cover retained native exec rollback on reopen",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/test/store-atomicity.test.mjs"
     ]
   },
   {
@@ -805,45 +750,6 @@
   },
   {
     "sha": null,
-    "subject": "fix(client): D11 classify native constraints and rebuild renamed table guards",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-      "packages/dacs-client/test/store-host-boundary.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 share buyer schema with the database fixture",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
-      "packages/dacs-client/test/purchase-state-schema.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 track cached host statements before transactions",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
-      "packages/dacs-client/test/store-host-boundary.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
     "subject": "fix(client): D11 keep rollback guard vectors portable to the Node floor",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -869,6 +775,19 @@
   },
   {
     "sha": null,
+    "subject": "fix(client): D11 reject SQL callbacks with quoted function names",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/guarded-sqlite.mjs",
+      "packages/dacs-client/test/guarded-sqlite.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
     "subject": "fix(client): D11 generate pure payload helpers from provider",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -879,6 +798,77 @@
       "packages/dacs-client/scripts/generate-payload-helpers.mjs",
       "packages/dacs-client/src/wallet/payload-helpers.mjs",
       "packages/dacs-client/test/d11-import-boundary.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 03 add the concrete SQLite transaction adapter",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/helpers/store-crash-worker.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs",
+      "packages/dacs-client/test/store-host-boundary.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 guard every SQLite callback statement after rollback",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 cover retained native exec rollback on reopen",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs"
+    ]
+  },
+  {"sha":null,"subject":"fix(client): D11 classify native constraints and rebuild renamed table guards","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/seams/purchase-store-not-wired.mjs","packages/dacs-client/test/store-host-boundary.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 track cached host statements before transactions","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/seams/purchase-store-not-wired.mjs","packages/dacs-client/test/store-host-boundary.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 preserve callback fencing and private savepoints","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/seams/purchase-store-not-wired.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs","packages/dacs-client/test/store-atomicity.test.mjs"]},
+  {
+    "sha": null,
+    "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/purchase-state-schema.mjs",
+      "packages/dacs-client/test/purchase-state-schema.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 share buyer schema with the database fixture",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+      "packages/dacs-client/test/purchase-state-schema.test.mjs"
     ]
   }
 ]
