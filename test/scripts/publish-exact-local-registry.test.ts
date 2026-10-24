@@ -307,6 +307,34 @@ describe("exact local registry publisher", () => {
     await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry })).resolves.toBeDefined();
   });
 
+  it.each([false, true])("accepts Verdaccio's empty contributors addition (retry: %s)", async retry => {
+    const { archivePath, bytes } = candidate();
+    const registry = fakeRegistry(published => {
+      const packument = onlyCandidate(published);
+      Object.assign(packument.versions[published.manifest.version]!, { contributors: [] });
+      return packument;
+    });
+    if (retry) await registry.publish(readPackedManifest(bytes), bytes, {});
+    const publish = retry ? async () => { throw Object.assign(new Error("already published"), { statusCode: 409 }); }
+      : registry.publish;
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry, publish }))
+      .resolves.toBeDefined();
+  });
+
+  it.each([undefined, [], ["different contributor"]])("rejects changing packed contributors to %j", async contributors => {
+    const { archivePath } = candidate();
+    writeFileSync(archivePath, packTarball({ "package/package.json": JSON.stringify({
+      name: "example", version: "1.0.0", contributors: ["packed contributor"],
+    }) }));
+    const registry = fakeRegistry(published => {
+      const packument = onlyCandidate(published);
+      Object.assign(packument.versions[published.manifest.version]!, { contributors });
+      return packument;
+    });
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/metadata/);
+  });
+
   it("verifies the real npm client's published metadata and an ordinary conflict on retry", async () => {
     const { archivePath, bytes, name, version } = candidate();
     let packument: ReturnType<typeof onlyCandidate> | undefined;
@@ -546,6 +574,25 @@ describe("exact local registry publisher", () => {
       }
       expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
     });
+
+  it.each(["regular", "directory", "NUL-prefixed"])("rejects a nonzero tar linkname on a %s entry before publishing", async kind => {
+    const { archivePath } = candidate();
+    const hidden = gunzipSync(packTarball({ "package/package.json": '{"name":"hidden","version":"9.9.9"}' }));
+    const archive = gunzipSync(packTarball({
+      "package/payload": kind === "directory" ? "" : hidden.toString("utf8"),
+      "package/package.json": '{"name":"example","version":"1.0.0"}',
+    }));
+    if (kind === "directory") archive.write("5", 156);
+    archive.write("hidden", kind === "NUL-prefixed" ? 251 : 157);
+    archive.fill(32, 148, 156);
+    const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
+    archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+    writeFileSync(archivePath, gzipSync(archive));
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/packed tarball/);
+    expect(registry.calls).toHaveLength(0);
+  });
 
   it("rejects a prefix alias with nonstandard ustar version bytes", () => {
     const first = gunzipSync(packTarball({ "package/package.json": '{"name":"first","version":"1.0.0"}' }));
