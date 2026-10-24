@@ -6,15 +6,15 @@ import { execFileSync } from 'node:child_process';
 import { createPublicKey, randomUUID, verify } from 'node:crypto';
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import DatabaseSync from 'better-sqlite3';
 import { isMainThread } from 'node:worker_threads';
-import { canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { verifyFixtureRecord } from './fixture-anchors.mjs';
 
 const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => canonicalize(a) === canonicalize(b);
-const fail = (code) => { throw new SellerRecoveryError(code); };
+const fail = (code, cause) => { throw new SellerRecoveryError(code, { cause }); };
 // A job lock row's owner is `<pid>:<process>:<acquired ms>:<acquisition>`,
 // then `:<namespace>` where this host names this process's boot and start.
 // `<process>` is made once per realm and shared by every copy of this module
@@ -137,12 +137,12 @@ function leaseState(dir, id) {
   let probe;
   try {
     if (!privateEntry(lstatSync(holderFile(dir, id)), 'isFile')) return 'unchecked';
-    probe = new DatabaseSync(holderFile(dir, id), { readOnly: true });
+    probe = new DatabaseSync(holderFile(dir, id), { readonly: true });
     probe.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY');
     probe.exec('BEGIN EXCLUSIVE');
     probe.exec('ROLLBACK');
     return 'free';
-  } catch (error) { return error?.errcode === 5 ? 'held' : 'unchecked'; } finally { try { probe?.close(); } catch { /* the answer stands */ } }
+  } catch (error) { return error?.errcode === 5 || error?.code === 'SQLITE_BUSY' ? 'held' : 'unchecked'; } finally { try { probe?.close(); } catch { /* the answer stands */ } }
 }
 // Why a row is, or is not, reclaimable. Only 'exited' is: its holder ran on
 // this boot of this kernel, so its lease is in this kernel's lock table, that
@@ -181,7 +181,7 @@ let identityWarned = false;
 const running = new AsyncLocalStorage();
 
 export class SellerRecoveryError extends Error {
-  constructor(code) { super(code); this.code = code; this.status = 503; }
+  constructor(code, options) { super(code, options); this.code = code; this.status = 503; }
 }
 
 export const DEFAULT_SELLER_MAX_JOBS = 10000;
@@ -194,27 +194,39 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || realpathSync(dir) !== dir) fail('seller_state_directory_unsafe');
   const path = join(dir, 'seller-state.sqlite');
+  let created = false;
   try {
     lstatSync(path);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     if (readdirSync(dir).length) fail('seller_state_missing_database');
     const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    closeSync(fd);
+    closeSync(fd); created = true;
   }
   const file = lstatSync(path);
   if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid?.() || (file.mode & 0o077)) fail('seller_state_file_unsafe');
+  if (!created && file.size === 0) fail('seller_state_corrupt');
   takeLease(dir);
   const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(signer.claim.slice(16), 'hex')]), format: 'der', type: 'spki' });
   const db = new DatabaseSync(path);
   const owned = new Map(); // jobId -> { owner, revision } for this store's held locks
   const pin = clone(listingPin);
   db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000');
-  db.exec(`CREATE TABLE IF NOT EXISTS seller_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_jobs (job TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_effects (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_settlements (id TEXT PRIMARY KEY, job TEXT NOT NULL, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`);
+  const schema = [
+    'CREATE TABLE seller_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    'CREATE TABLE seller_jobs (job TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL)',
+    'CREATE TABLE seller_effects (id TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    'CREATE TABLE seller_settlements (id TEXT PRIMARY KEY, job TEXT NOT NULL, value TEXT NOT NULL)',
+    'CREATE TABLE seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL)',
+  ];
+  let needsEffects = false;
+  try {
+    if (created) db.exec(schema.join(';'));
+    const actual = db.prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.sql);
+    const sorted = tables => [...tables].sort((a,b) => a.split(' ')[2].localeCompare(b.split(' ')[2]));
+    needsEffects = !created && same(actual, sorted(schema.filter(sql => !/seller_(effects|settlements) /.test(sql))));
+    if (!needsEffects && !same(actual, sorted(schema))) fail('seller_state_corrupt');
+  } catch (error) { db.close(); throw error; }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
   function transaction(fn) {
@@ -241,7 +253,8 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   try {
     const config = get('SELECT value FROM seller_meta WHERE key=?', 'context');
     if (config) verified(config.value, 'context', 'context');
-    else if (get('SELECT COUNT(*) AS n FROM seller_jobs').n || get('SELECT COUNT(*) AS n FROM seller_effects').n || get('SELECT COUNT(*) AS n FROM seller_settlements').n) fail('seller_state_corrupt');
+    else if (!created) fail('seller_state_corrupt');
+    if (needsEffects) transaction(() => db.exec(schema.filter(sql => /seller_(effects|settlements) /.test(sql)).join(';')));
     const fencedStore = await createFsFencedSessionStore({ dir: join(dir, 'sdk-agreements') });
     const receiptStore = await createFsSellerReceiptStore({ dir: join(dir, 'sdk-receipts') });
     function load(jobId) {
@@ -256,6 +269,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       return row ? verified(row.value, 'effect', id) : null;
     }
     function putEffect(id, value) { run('INSERT INTO seller_effects VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value', id, authenticated('effect', id, value)); }
+    const scopedJob = () => { const scope = running.getStore(); return scope?.api === api ? scope.jobId : fail('seller_state_fenced'); };
     // Called inside each job-scoped write transaction (an effect's intent and
     // its completion record alike) and as the last check before each effect:
     // the caller must be running this store's acquisition of `jobId`, and the
@@ -267,7 +281,6 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       if (get('SELECT owner FROM seller_locks WHERE job=?', jobId)?.owner !== held.owner) fail('seller_state_fenced');
       return held;
     }
-    const scopedJob = () => { const scope = running.getStore(); return scope?.api === api ? scope.jobId : fail('seller_state_fenced'); };
     // One line per row and interval when withJob() stays busy on a row that
     // nothing here proves alive or gone; it names the job and the reason only.
     const noticed = new Map(); // `<job> <owner>` -> last notice (ms)
@@ -295,12 +308,43 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           try {
             const stat = lstatSync(holderFile(dir, id));
             if (!privateEntry(stat, 'isFile') || stat.mtimeMs >= performance.timeOrigin - PRUNE_MIN_AGE_MS) continue;
-            probe = new DatabaseSync(holderFile(dir, id), { readOnly: true });
+            probe = new DatabaseSync(holderFile(dir, id), { readonly: true });
             probe.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE');
             unlinkSync(holderFile(dir, id));
           } catch { /* held, unreadable or gone: kept */ } finally { try { probe?.close(); } catch { /* removed or kept either way */ } }
         }
       });
+    }
+    // Callback adapters must enforce maxBytes before decoding their wire reply.
+    const ANCHOR_READ_BYTES = 1024 * 1024, ANCHOR_READ_TIMEOUT_MS = 10000;
+    async function readAnchorRecord(anchors, address) {
+      const controller = new AbortController();
+      let timer;
+      const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+        const cause = new DOMException('anchor read timed out', 'TimeoutError'); controller.abort(cause); reject(cause);
+      }, ANCHOR_READ_TIMEOUT_MS); });
+      try {
+        const raw = await Promise.race([Promise.resolve().then(() => anchors.read(address, { signal: controller.signal, maxBytes: ANCHOR_READ_BYTES, timeoutMs: ANCHOR_READ_TIMEOUT_MS })), deadline]);
+        let budget = ANCHOR_READ_BYTES;
+        const text = raw instanceof Uint8Array ? raw : JSON.stringify(raw, (key, value) => {
+          budget -= key.length + 1 + (typeof value === 'string' ? value.length : 0);
+          if (budget < 0) throw new Error('anchor read exceeds decoded budget');
+          return value;
+        });
+        if (typeof text === 'string' && Buffer.byteLength(text) > ANCHOR_READ_BYTES) throw new Error('anchor read exceeds byte limit');
+        const record = admitRawJson(text instanceof Uint8Array ? text : Buffer.from(text), { maxBytes: ANCHOR_READ_BYTES });
+        if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.status !== 'string') throw new Error('malformed anchor read');
+        return record;
+      } finally { clearTimeout(timer); controller.abort(); }
+    }
+    const pendingReleases = new Map();
+    function release(jobId, owner) {
+      run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, owner);
+      if (owned.get(jobId)?.owner === owner) owned.delete(jobId);
+      pendingReleases.delete(jobId);
+    }
+    function releasePending() {
+      for (const [jobId, owner] of pendingReleases) release(jobId, owner);
     }
     const api = {
       fencedStore,
@@ -326,7 +370,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       loadSession: (jobId) => load(jobId)?.session ?? null,
       saveSession(session) {
         const jobId = session.jobId;
-        transaction(() => {
+        const committed = transaction(() => {
           const held = fence(jobId);
           const previous = load(jobId);
           if ((previous?.revision ?? 0) !== held.revision) fail('seller_state_fenced');
@@ -334,11 +378,13 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           const revision = held.revision + 1;
           const value = authenticated('session', jobId, { revision, session });
           run('INSERT INTO seller_jobs VALUES (?,?,?) ON CONFLICT(job) DO UPDATE SET revision=excluded.revision,value=excluded.value', jobId, revision, value);
-          held.revision = revision;
+          return { held, revision };
         });
+        committed.held.revision = committed.revision;
       },
       async withJob(jobId, action) {
         if (!isCanonicalJobId(jobId)) fail('seller_state_job_invalid');
+        releasePending();
         // One acquisition per job per store, even after its row was released.
         if (owned.has(jobId)) fail('seller_state_busy');
         const owner = `${process.pid}:${PROCESS}:${Date.now()}:${randomUUID()}${NAMESPACE ? `:${NAMESPACE.ns}.${NAMESPACE.boot}.${NAMESPACE.start}` : ''}`;
@@ -375,9 +421,12 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         });
         owned.set(jobId, { owner, revision });
         if (reclaimed) process.stderr.write(`seller-state: reclaimed the lock on job ${jobId} left by a process that has exited\n`);
-        try { return await running.run({ api, jobId, owner }, () => action(load(jobId)?.session ?? null)); } finally {
-          run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, owner);
-          owned.delete(jobId);
+        let actionError;
+        try { return await running.run({ api, jobId, owner }, () => action(load(jobId)?.session ?? null)); }
+        catch (error) { actionError = error; throw error; }
+        finally {
+          try { release(jobId, owner); }
+          catch (error) { pendingReleases.set(jobId, owner); if (!actionError) throw error; }
         }
       },
       inspectLocks: () => db.prepare('SELECT job,owner,pid FROM seller_locks ORDER BY job').all().map((row) => {
@@ -432,7 +481,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           const previous = row ? verified(row.value, 'settlement', settlementId) : null;
           if (previous && row.job !== previous.job) fail('seller_state_corrupt');
           const claims = previous?.claims ?? (previous ? [{ jobId: previous.job }] : []);
-          if (!claims.some(c => c.jobId === jobId)) claims.push({ jobId, ...(claim ? { claim } : {}) });
+          if (claim === null) return claims.length === 1 && claims[0].jobId === jobId && Number.isSafeInteger(claims[0].phaseIndex);
+          if (!Number.isSafeInteger(claim.phaseIndex) || claim.phaseIndex < 0) fail('seller_state_binding_invalid');
+          if (!claims.some(c => c.jobId === jobId && c.phaseIndex === claim.phaseIndex)) claims.push({ jobId, phaseIndex: claim.phaseIndex, claim });
           const value = { job: previous?.job ?? jobId, claims };
           run('INSERT OR REPLACE INTO seller_settlements VALUES (?,?,?)', settlementId, value.job, authenticated('settlement', settlementId, value));
           return claims.length === 1;
@@ -443,7 +494,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         if (!row) return null;
         const retained = verified(row.value, 'settlement', settlementId);
         if (row.job !== retained.job) fail('seller_state_corrupt');
-        return (retained.claims?.length ?? 1) === 1 ? retained.job : null;
+        return retained.claims?.length === 1 && Number.isSafeInteger(retained.claims[0].phaseIndex) ? retained.job : null;
       },
       // CORE SN-1..SN-4: the seller's own challenge ledger. An issued nonce is
       // kept with its job, buyer and lifetime before any presentation exists;
@@ -458,6 +509,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // The challenge as it was before this attempt (null when never issued);
       // the attempt is kept only when it is the first.
       attemptChallenge(nonce, attempt) {
+        if (!attempt || typeof attempt !== 'object' || Array.isArray(attempt) || typeof attempt.presentationHash !== 'string' || !/^[0-9a-f]{64}$/.test(attempt.presentationHash)) fail('seller_challenge_attempt_invalid');
         return transaction(() => {
           const prior = effect(`session-challenge:${nonce}`);
           if (prior?.kind !== 'session-challenge') return null;
@@ -529,24 +581,17 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
             if (!same(binding, value)) fail('seller_effect_conflict');
             return false;
           }
-          putEffect(id, { ...value, state: 'intent' });
           return true;
         });
         if (perform) {
-          let writerSignature, receipt;
-          try { writerSignature = authorize(); } catch { fail('seller_anchor_reconciliation_required'); }
-          // Checked again last, with nothing awaited between it and the write.
+          let writerSignature;
+          try { writerSignature = authorize(); } catch (error) { fail('seller_anchor_reconciliation_required', error); }
+          transaction(() => { fence(jobId); if (effect(id)) fail('seller_state_busy'); putEffect(id, { ...value, state: 'intent' }); });
+          // Retain the exact intended scope before the external write. Once an
+          // outcome is uncertain, retries only read; never submit a second time.
           fence(jobId);
-          try { receipt = await anchors.write({ logicalAddress, artifact, writer: signer.claim, writerSignature }); } catch { fail('seller_anchor_reconciliation_required'); }
-          const record = { status: 'present', artifact, receipt };
-          if (verifyFixtureRecord(record, { logicalAddress, expectedWriter: signer.claim }) !== 'valid') fail('seller_anchor_reconciliation_required');
-          // Fenced: a holder that lost its row during the write records
-          // nothing, and the retained intent leaves the write to readback.
-          transaction(() => {
-            fence(jobId);
-            putEffect(id, { ...value, state: 'complete', receipt });
-          });
-          return receipt;
+          try { await anchors.write({ logicalAddress, artifact: clone(value.artifact), writer: signer.claim, writerSignature }); }
+          catch (error) { fail('seller_anchor_reconciliation_required', error); }
         }
         // A signed state snapshot is historical context, not anchor proof. Both
         // completed and uncertain anchors must be read and authenticated again.
@@ -558,7 +603,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         const scoped = running.getStore()?.api === api;
         if (scoped) transaction(() => fence(prior.jobId));
         let record;
-        try { record = await anchors.read(prior.logicalAddress); } catch { fail('seller_anchor_reconciliation_required'); }
+        try { record = await readAnchorRecord(anchors, prior.logicalAddress); } catch (error) { fail('seller_anchor_reconciliation_required', error); }
         if (record.status !== 'present') fail('seller_anchor_reconciliation_required');
         if (!same(record.artifact, prior.artifact) || verifyFixtureRecord(record, { logicalAddress: prior.logicalAddress, expectedWriter: signer.claim }) !== 'valid') fail('seller_anchor_reconciliation_invalid');
         // Inside an acquisition the update is fenced like every job-scoped
@@ -582,13 +627,13 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         const outcomes = [];
         for (const row of rows) {
           const retained = verified(row.value, 'effect', row.id);
-          if (retained.kind !== 'anchor' || retained.jobId !== jobId || retained.state === 'complete') continue;
+          if (retained.kind !== 'anchor' || retained.jobId !== jobId) continue;
           try { await api.reconcileAnchor(row.id, anchors); outcomes.push({ address: retained.logicalAddress, status: 'present-authenticated' }); }
           catch (error) { outcomes.push({ address: retained.logicalAddress, status: 'held', reason: error.code }); }
         }
         return { status: outcomes.some((v) => v.status === 'held') ? 'held' : 'reconciled', outcomes };
       },
-      close: () => { if (owned.size) fail('seller_state_busy'); db.close(); },
+      close: () => { releasePending(); if (owned.size) fail('seller_state_busy'); db.close(); },
     };
     try { pruneLeases(); } catch { /* the database is busy: a later open prunes */ }
     if (!NAMESPACE && !identityWarned) {

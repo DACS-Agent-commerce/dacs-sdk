@@ -30,20 +30,42 @@ export const escapeJson = (value) => escapeText(JSON.stringify(value));
 // are written.
 const prepare = (value, key) => (value && typeof value === 'object' && typeof value.toJSON === 'function' ? value.toJSON(key) : value);
 const omitted = (value) => value === undefined || typeof value === 'function' || typeof value === 'symbol';
+function* quotedPieces(value) {
+  yield { text: '"' };
+  for (const char of value) yield { text: JSON.stringify(char).slice(1, -1) };
+  yield { text: '"' };
+}
+function* childPieces(value) {
+  let first = true;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      if (!first) yield { text: ',' }; first = false;
+      yield { value: prepare(value[index], String(index)) };
+    }
+  } else for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    const child = prepare(value[key], key);
+    if (omitted(child)) continue;
+    if (!first) yield { text: ',' }; first = false;
+    yield { iterator: quotedPieces(key) }; yield { text: ':' }; yield { value: child };
+  }
+}
 function jsonText(value, limit) {
   let out = '';
   const todo = [{ value: prepare(value, '') }];
   while (todo.length && out.length <= limit) {
-    const { text, value: item } = todo.pop();
+    const frame = todo.pop();
+    if (frame.iterator) {
+      const next = frame.iterator.next();
+      if (!next.done) todo.push(frame, next.value);
+      continue;
+    }
+    const { text, value: item } = frame;
     if (text !== undefined) { out += text; continue; }
+    if (typeof item === 'string') { todo.push({ iterator: quotedPieces(item) }); continue; }
     if (item === null || typeof item !== 'object') { out += omitted(item) ? 'null' : JSON.stringify(item); continue; }
     const array = Array.isArray(item);
-    const children = array ? Array.from(item, (child, i) => [null, prepare(child, String(i))])
-      : Object.keys(item).map((key) => [key, prepare(item[key], key)]).filter(([, child]) => !omitted(child));
-    todo.push({ text: array ? ']' : '}' });
-    for (let i = children.length - 1; i >= 0; i--) {
-      todo.push({ value: children[i][1] }, { text: `${i ? ',' : ''}${array ? '' : `${JSON.stringify(children[i][0])}:`}` });
-    }
+    todo.push({ text: array ? ']' : '}' }, { iterator: childPieces(item) });
     out += array ? '[' : '{';
   }
   return out;
@@ -53,8 +75,11 @@ export function sellerData(value) {
   if (value === undefined || value === null) return value;
   // A code point is at most two UTF-16 units, so twice the bound is enough text.
   const json = typeof value === 'string' ? null : jsonText(value, 2 * SELLER_DATA_MAX);
-  const points = [...(json ?? value)];
-  const truncated = points.length > SELLER_DATA_MAX;
-  const line = truncated ? escapeJson(points.slice(0, SELLER_DATA_MAX).join('')) : json === null ? escapeJson(value) : escapeText(json);
+  const points = []; let truncated = false;
+  for (const point of json ?? value) {
+    if (points.length === SELLER_DATA_MAX) { truncated = true; break; }
+    points.push(point);
+  }
+  const line = truncated ? escapeJson(points.join('')) : json === null ? escapeJson(value) : escapeText(json);
   return { label: SELLER_DATA_LABEL, text: `${SELLER_DATA_BEGIN}\n${line}\n${SELLER_DATA_END}`, truncated };
 }

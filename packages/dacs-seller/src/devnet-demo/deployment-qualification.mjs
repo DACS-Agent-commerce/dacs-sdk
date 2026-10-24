@@ -8,6 +8,7 @@ export async function assertQualifiedDeployment(source) {
   const pin=source?.pins?.deployment;
   if(!pin || pin.dirty!==false || !QUALIFIED_NODE_COMMITS.includes(pin.commit)
     || !/^[a-f0-9]{64}$/.test(pin.artifactSha256??'')
+    || !Array.isArray(pin.qualifiedOperations)
     || !['fee','nonce','broadcast','confirmation'].every(key=>pin.qualifiedOperations?.includes(key))
     || typeof source.verifyDeployment!=='function' || await source.verifyDeployment(structuredClone(pin))!==true) {
     throw Object.assign(new Error('native writes require a verified clean deployment artifact and qualified write profile'),{code:'deployment_unqualified'});

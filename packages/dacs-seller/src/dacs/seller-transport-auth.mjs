@@ -407,11 +407,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.
         // An unadmitted job has no authenticated state to disclose or reserve.
-        if (!job && p.path === STATE) {
-          const text = '{"proposal":null,"contribution":null}';
-          return { disposition: 'cached', status: 200, text };
-        }
-        if (!job && p.path !== PROPOSAL && !contextStep) fail('peer_unknown_job', 404);
+        const unknownState = !job && p.path === STATE;
+        if (!job && p.path !== PROPOSAL && !contextStep && !unknownState) fail('peer_unknown_job', 404);
         const slot = `${p.jobId}:${p.path}`;
         const occupied = READ_ROUTES.has(p.path) ? null : get('SELECT effect FROM peer_slots WHERE slot = ?', slot);
         if (occupied && occupied.effect !== effectKey) fail('peer_operation_conflict', 409);
@@ -422,13 +419,16 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         // the agent's own retained work decides, and another body still conflicts.
         // Running it again is new work (it may sign and send): under an expired
         // delegation (journaledOnly) it answers its last journaled answer instead.
-        if (existing?.state === 'retry' && journaledOnly) return { disposition: 'cached', status: existing.status, text: existing.response };
+        let retained = unknownState
+          ? { disposition: 'cached', status: 200, text: '{"proposal":null,"contribution":null}' }
+          : existing?.state === 'retry' && journaledOnly ? { disposition: 'cached', status: existing.status, text: existing.response } : null;
         const retry = existing?.state === 'retry' && !contextStep;
-        if (existing && !retry) return existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
+        if (existing && !retry && !retained) retained = existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
         const time = now();
         if (!uint(time)) fail('peer_clock_invalid', 503);
         const retired = [];
-        if (contextStep) {
+        if (!job && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+        if (contextStep && !retained) {
           if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
           if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
@@ -441,7 +441,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const expired = get('SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time).n;
         if (get('SELECT COUNT(*) AS n FROM peer_nonces').n - expired >= maxRecords) fail('peer_store_capacity', 503);
         if (get('SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE buyer = ? AND created_at > ?', p.buyer, time - nonceWindowMs).n >= maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
-        const neededJobs = !job && !contextStep ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
+        const neededJobs = !job && !contextStep && !retained ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
         const emptyJobs = reclaimableJobs(neededJobs);
         if (emptyJobs.length < neededJobs) fail('peer_job_capacity', 503);
         let admittedAt = null;
@@ -450,7 +450,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           admittedAt = typeof admit === 'function' ? admit({ starts }) : null;
           if (!uint(admittedAt)) fail('peer_context_unadmitted', 503);
         }
-        if (p.path === PAYMENT) {
+        if (p.path === PAYMENT && !retained) {
           const tx = body.txHash.replace(/^0x/, '').toLowerCase();
           const claimed = get('SELECT job, effect FROM peer_transactions WHERE tx = ?', tx);
           // A transport claim is not SB-2 authority. Competing jobs must reach
@@ -458,7 +458,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           if (!dryRun && !claimed) run('INSERT INTO peer_transactions VALUES (?, ?, ?)', tx, p.jobId, effectKey);
         }
         // Dry admission checks execute no INSERT, UPDATE, DELETE or DDL.
-        if (dryRun) return { disposition: 'perform' };
+        if (dryRun) return retained ?? { disposition: 'perform' };
         reclaimContexts(retired);
         for (const jobId of emptyJobs) run('DELETE FROM peer_jobs WHERE job = ?', jobId);
         run('DELETE FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time);
@@ -466,9 +466,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         // itself has expired and was pruned.
         run('DELETE FROM peer_nonce_retention WHERE expires_at <= ? AND created_at <= ? AND nonce NOT IN (SELECT nonce FROM peer_nonces)', time, time - nonceWindowMs);
         if (creates) db.exec(CONTEXT_ADMISSIONS);
-        if (!job && !contextStep) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
+        if (!job && !contextStep && !retained) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
         run('INSERT INTO peer_nonces VALUES (?, ?, ?, NULL, NULL)', nonce, requestHash, effectKey);
         run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, p.buyer, time, p.expiresAt);
+        if (retained) {
+          if (retained.disposition === 'cached') run('UPDATE peer_nonces SET status = ?, response = ? WHERE nonce = ?', retained.status, retained.text, nonce);
+          return retained;
+        }
         if (contextStep) run('INSERT INTO peer_context_admissions VALUES (?, ?, ?, ?, ?, ?, ?)', p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), p.agreementHash, effectKey, admittedAt);
         const owner = randomBytes(24).toString('hex');
         if (retry) {
@@ -597,6 +601,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > 60000) throw new Error('seller transport configuration is invalid');
   if (typeof requireDelegation !== 'boolean' || (requireDelegation && store.journaledOnlyReserve !== true)) throw new Error('seller delegation configuration is invalid');
   const delegations = new WeakMap();
+  const authenticatedRequests = new WeakMap();
   // Requests authenticated by an expired delegation; the store admits them
   // only for readback of effects already journaled for the job.
   const readbackOnly = new WeakSet();
@@ -626,8 +631,18 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     // True for a request its expired session delegation admits only to read
     // back already journaled effects: its reconciliation runs read only.
     readbackOnly: (request) => readbackOnly.has(request),
-    readRequest: (header) => verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) }),
+    readRequest(header) {
+      const request = verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) });
+      authenticatedRequests.set(request, canonicalize(request));
+      return request;
+    },
     validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody }) {
+      const authenticated = authenticatedRequests.get(request);
+      if (authenticated === undefined) fail('peer_request_unauthenticated');
+      let current;
+      try { current = canonicalize(request); }
+      catch (cause) { throw new SellerTransportError('peer_request_mismatch', 401, { cause }); }
+      if (!payloadValid(request, 'request') || current !== authenticated) fail('peer_request_mismatch');
       requireJobId(request?.jobId);
       if (request.seller !== sellerSigner.claim) fail('peer_audience_wrong');
       if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
@@ -636,11 +651,19 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       // timeout/unknown answer, never proof that the operation was refused.
       if (!uint(time) || request.expiresAt <= time || request.expiresAt > time + maxLifetimeMs) fail('peer_expired', 408);
       if (!exact(request.listingPin, pin)) fail('peer_listing_mismatch', 409);
-      validateBody(request, body);
+      let admittedBody;
+      try {
+        admittedBody = admitRawJson(rawBody);
+        if (!exact(admittedBody, body)) fail('peer_body_mismatch', 409);
+      } catch (cause) {
+        if (cause instanceof SellerTransportError) throw cause;
+        throw new SellerTransportError('peer_body_invalid', 409, { cause });
+      }
+      validateBody(request, admittedBody);
       const delegation = delegations.get(request);
       if (requireDelegation && !delegation) fail('peer_delegation_required');
       if (delegation) {
-        const draft = body.proposal?.plan?.draft;
+        const draft = admittedBody.proposal?.plan?.draft;
         for (const artifact of [draft, agreement].filter((value) => value != null)) {
           if (artifact.jobId !== request.jobId || !exact(artifact.listingRef, pin) ||
               artifact.parties?.find((party) => party.role === 'buyer')?.primaryClaim !== request.buyer ||
@@ -656,7 +679,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
           if (request.expiresAt > delegation.payload.expiresAt) fail('peer_delegation_expired', 408);
         } else readbackOnly.add(request);
       }
-      onAuthenticatedBody?.();
+      onAuthenticatedBody?.(admittedBody);
+      return admittedBody;
     },
     async responseHeader(request, status, text) {
       requireJobId(request?.jobId);
