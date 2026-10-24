@@ -41,6 +41,10 @@ function requireContextJob(request, body) {
   requireJobId(body?.scope?.jobId);
 }
 
+function savedDisposition(text) {
+  try { return JSON.parse(text)?.disposition; } catch { return null; }
+}
+
 function bundleAuthentic(bundle) {
   try {
     if (!isIdentityBundle(bundle) || bundle.claims.length !== 1 || bundle.claims[0].ref !== bundle.presentedBy) return false;
@@ -117,6 +121,16 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     if (!Number.isSafeInteger(scope.generatedAt) || Math.abs(scope.generatedAt - now()) > GENERATED_AT_SKEW_MS) return 'context_generated_at';
     return null;
   }
+  // A saved present answer is reported again only once both Vet records read
+  // back and verify, as in reconcile; otherwise nothing is reported and the
+  // saved step stays as it is.
+  async function verifiedReplay(body, reservation) {
+    if (reservation.disposition !== 'cached' || reservation.status !== 200 || savedDisposition(reservation.text) !== 'present') return reservation;
+    let answer = null;
+    try { answer = await recover(structuredClone(body)); } catch (cause) { throw new Error('the saved context answer could not be verified again', { cause }); }
+    if (answer?.disposition !== 'present') throw new Error('the saved context answer\'s Vet records no longer verify; it was not reported');
+    return reservation;
+  }
   const attempted=new WeakSet();
   const consume=(request,body,store)=>{
     if(attempted.has(request))return;
@@ -137,7 +151,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       if (request.jobId !== body.scope.jobId) refuse('peer_job_mismatch');
       const problem = scopeProblem(body, true);
       if (problem) refuse(problem);
-      try { assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') refuse('buyer_access_closed'); throw error; }
+      try { await assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') refuse('buyer_access_closed'); throw error; }
       if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) refuse('context_job_unknown');
       return store.issueContextChallenge(request, body.scope, { maxPerBuyer: limits.maxStartsPerBuyerPerHour, maxGlobal: limits.maxStartsPerHour, admit: admitStart(request) });
     }),
@@ -149,10 +163,10 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       let kind;
       try { kind = store.classify(request, body); }
       catch (error) { consume(request, body, store); throw error; }
-      if (kind !== 'start') return store.reserve(request, body);
+      if (kind !== 'start') return verifiedReplay(body, store.reserve(request, body));
 
       consume(request, body, store);
-      try { assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') await refused(request, 'buyer_access_closed'); throw error; }
+      try { await assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') await refused(request, 'buyer_access_closed'); throw error; }
       if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) await refused(request, 'context_job_unknown');
       // Check every start limit before even a policy hold or refusal log.
       store.classify(request, body, { admit: admitStart(request) });
@@ -208,7 +222,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     resume: (reservation, request, store, { writes }) => oneAtATime(store, async () => {
       requireJobId(request?.jobId);
       if (typeof store?.resume !== 'function') return null;
-      try { assertBuyerAccess(request.buyer); } catch { return null; }
+      try { await assertBuyerAccess(request.buyer); } catch { return null; }
       if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) return null;
       const hold = randomUUID();
       if ((await admitWrites({ jobId: request.jobId, effect: reservation.effectKey, writes, hold })) !== null) return null;
