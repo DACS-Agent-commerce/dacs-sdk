@@ -19,6 +19,8 @@ function registrySpec(value) {
       !(parsed.type === "alias" && packages.some(p => p.name === spec.name));
   } catch { return false; }
 }
+// Node can load these from an export target; maps, declarations and other files cannot be imported.
+const runtimeTarget = /\.(?:[cm]?js|json)$/;
 const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const fail = message => { throw new Error(message); };
 const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -164,7 +166,7 @@ function manifestProblems(p, definition) {
       const value = exportMap(p.exports)[key];
       if (!value) fail(`missing public export ${key}`);
       const target = importTarget(value);
-      if (!target || /\.d\.[cm]?ts$/.test(target)) fail(`runtime target required for public export ${key}`);
+      if (!target || !runtimeTarget.test(target)) fail(`runtime target required for public export ${key}`);
     }),
   ]);
 }
@@ -242,6 +244,8 @@ export function validateLock(lock, artifacts, consumer = ".", omitOptional = fal
   for (const [name, value] of Object.entries(lock.packages)) {
     if (!record(value)) fail(`invalid lock entry: ${name}`);
     const resolution = typeof value.resolved === "string" ? value.resolved : "";
+    // npm does not read a query, fragment or escape in a file path the way a path resolver does.
+    if (resolution.startsWith("file:") && /[?#%]/.test(resolution)) fail(`ambiguous local file resolution: ${name}`);
     const path = resolution.startsWith("file:") ? resolve(consumer, resolution.slice(5)) : null;
     const internal = packages.filter(p => value.name === p.name || name === `node_modules/${p.name}` || name.endsWith(`/node_modules/${p.name}`));
     if (internal.some(p => allowed.get(p.name) !== path)) fail(`internal package must resolve to supplied tarball: ${name}`);
