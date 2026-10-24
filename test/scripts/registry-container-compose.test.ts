@@ -95,7 +95,7 @@ const envIndex = args.indexOf("--env-file");
 const envFile = envIndex < 0 ? path.join(path.dirname(file), ".env") : args[envIndex + 1];
 process.stdout.write(fs.readFileSync(envFile, "utf8") || "rendered config\\n");
 `, { mode: 0o700 });
-    const env = { bounded_support: join(process.cwd(), "scripts"), COMMAND_TIMEOUT_SECONDS: "1800", acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: `${bin}:/usr/bin:/bin` };
+    const env = { bounded_support: join(process.cwd(), "scripts"), COMMAND_TIMEOUT_SECONDS: "1800", acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: [bin, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter) };
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], { encoding: "utf8", env });
     expect(result.status, result.stderr).toBe(0);
     const artifact = readFileSync(join(root, "compose.rendered.yaml"), "utf8");
