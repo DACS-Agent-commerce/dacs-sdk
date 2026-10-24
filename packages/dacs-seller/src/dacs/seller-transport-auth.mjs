@@ -433,7 +433,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const time = now();
         if (!uint(time)) fail('peer_clock_invalid', 503);
         const retired = [];
-        if (!job && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+        if (!retained && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
         if (contextStep && !retained) {
           if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
