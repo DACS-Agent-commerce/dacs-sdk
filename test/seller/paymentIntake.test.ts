@@ -851,6 +851,7 @@ describe("verifySellerPaymentIntake", () => {
     ["late inclusion", { includedAt: Number.MAX_SAFE_INTEGER }, "payment-after-deadline"],
   ] as const)("rejects conflicting %s even without execution evidence", async (_label, conflict, reason) => {
     const ctx = makeContext("pay-dem");
+    if (ctx.demosObservation.status !== "included") throw new Error("expected included fixture");
     ctx.demosObservation = { ...ctx.demosObservation, ...conflict, execution: undefined };
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
       disposition: "rejected", fulfilment: "none", reason,
