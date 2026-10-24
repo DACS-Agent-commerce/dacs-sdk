@@ -575,3 +575,11 @@ test('simultaneous first opens serialize initialization and retain one journal I
   assert.equal(results[0].journalId, results[1].journalId);
   assert.deepEqual(await Promise.all(exits), [0, 0]);
 });
+
+test('a first open that cannot get the writer lock in time is refused as wallet_journal_busy', (t) => {
+  const w = wallet(t), holder = new DatabaseSync(w.path);
+  chmodSync(w.path, 0o600);
+  holder.exec('BEGIN IMMEDIATE');
+  t.after(() => holder.close());
+  assert.throws(() => w.open(), { code: 'wallet_journal_busy' });
+});
