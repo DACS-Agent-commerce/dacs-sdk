@@ -751,7 +751,7 @@ function writeSummary(overrides: Record<string, string> = {}) {
     "audit-policy.json": JSON.stringify({ schema: "dacs-registry-audit-policy/v1",
       observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [], directAdvisories: [] }),
     "runtime-image-policy.json": JSON.stringify({ schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
-      productionDependencyPolicyPassed: true }),
+      typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true }),
     "policy-findings.json": JSON.stringify(baselineOnlySummary().securityGate.findings),
     "release-provenance.json": JSON.stringify({ version: CANDIDATE_VERSION }),
     "engine-strict.exit-code": "0\n",
@@ -979,7 +979,7 @@ describe("registry/container evidence", () => {
       ["audit-policy.json", { schema: "dacs-registry-audit-policy/v1",
         observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }],
       ["runtime-image-policy.json", { schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
-        productionDependencyPolicyPassed: true }],
+        typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true }],
       ["policy-findings.json", { schema: "dacs-registry-policy-findings/v1", gitDependencies: [],
         productionImageInventory: completeInventory }],
     ];
