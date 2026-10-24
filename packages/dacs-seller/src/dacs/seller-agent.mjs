@@ -1,11 +1,12 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
-import { isCanonicalEd25519Signature } from './demos-claims.mjs';
+import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
+import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
-import { contentHash, isListing, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle } from '@kynesyslabs/dacs';
+import { contentHash, isListing, canonicalize, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, sha256Hex } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
-import { sessionAdmissionConfig, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
+import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
@@ -15,8 +16,8 @@ import { agreementTerms, listingPin, protocolSupport } from './purchase-protocol
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
-  constructor(code, message, status = 422) {
-    super(message);
+  constructor(code, message, status = 422, options = {}) {
+    super(message,options);
     this.code = code;
     this.status = status;
   }
@@ -25,10 +26,10 @@ export class SellerAgentError extends Error {
 // (lower case, without `0x`): the transport admits either form.
 const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
 
-// Staged internal construction and authenticated retained reads. Proposal,
-// commitment, payment and delivery methods are introduced separately.
+// Staged internal proposal admission and authenticated retained reads.
+// Proposal signing, commitment, payment and delivery remain unavailable.
 const MAX_CHALLENGES_PER_JOB=16;
-export async function createSellerAgent({ signer, listing, anchors, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');
@@ -45,6 +46,15 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   if (contextRequest !== null && typeof contextRequest !== 'function') throw new Error('contextRequest must be a function');
   const support = protocolSupport(listing);
   if (!support.supported) throw new Error(`unsupported Listing: ${support.reasons.join('; ')}`);
+  const access=operatorBuyerAccessConfig(buyerAccess);
+  const assertBuyer=(buyer,jobId,{proposal=false}={})=>{
+    if(!access){
+      if(nativeArtifactAnchor?.source==='dacs-devnet-demo-native-artifacts/v1')throw new SellerAgentError('buyer_access_closed','operator buyerAccess capability is missing',409);
+      return;
+    }
+    try{if(proposal)access.assertWallet(addressForClaim(buyer));else access.assertSellerWallet(addressForClaim(buyer),jobId);}
+    catch(error){if(error.code==='buyer_access_closed')throw new SellerAgentError(error.code,error.message,409);throw error;}
+  };
   const claim = signer.claim;
   const nativeEvidence = nativePaymentEvidenceConfig(nativePaymentEvidence);
   const deliveryContext = demDeliveryContextConfig(demDeliveryContext);
@@ -81,6 +91,22 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   if (settlementChain && !isPaymentEvidenceWalletJournalPair(nativeEvidence.anchorEvidence, reconcilePaymentEvidence)) {
     throw new TypeError('the native settlement profile takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
   }
+  // Checked before any session, signature, read or write. These profile gates
+  // (and native_evidence_required, bundle_finalization_unavailable) are
+  // seller-http.mjs SELLER_PRE_EFFECT_REFUSALS: definite no-effect refusals.
+  const assertVetContext = () => {
+    if (nativeProfile && !deliveryContext) throw new SellerAgentError('vet_context_required', 'the native seller profile signs an Agreement only with the authenticated Vet context (demDeliveryContext)', 503);
+  };
+  const assertSessionAdmission = () => {
+    if (nativeProfile && !admission) throw new SellerAgentError('session_admission_required', 'the native seller profile opens a session only under the seller\'s session admission (profile, challenge, revocation and Vet records)', 503);
+  };
+  // RAV-R1..R3, R5 against the session's own pin (a new session's pin before it
+  // is retained). Fixture sessions carry none and use the simulated rail.
+  const assertRailPin = (railPin, sessionState) => {
+    if (!nativeProfile) return;
+    const verdict = rail.evaluate(railPin, sessionState);
+    if (verdict.decision !== 'pass') throw new SellerAgentError('rail_unavailable', `the ${sessionState === 'new' ? 'selected' : 'pinned'} ${DEM_RAIL.railId} rail is not usable: ${verdict.decision} (${verdict.reason})`, 503);
+  };
   const schemaUrl = listing.offering.deliverable.schemaUrl;
   const verifySchema = deliverySchemaVerifier?.verify?.bind(deliverySchemaVerifier);
   if (nativeProfile && schemaUrl !== undefined &&
@@ -119,7 +145,15 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       if (memoryChallenges.has(nonce)) throw new SellerAgentError('seller_challenge_taken', 'this nonce was issued before', 409);
       memoryChallenges.set(nonce, { kind: 'session-challenge', ...structuredClone(value), attempt: null });
     },
-  };
+    attemptChallenge: (nonce, attempt) => {
+      const prior = memoryChallenges.get(nonce);
+      if (!prior) return null;
+      const before = structuredClone(prior);
+      if (prior.attempt === null) prior.attempt = structuredClone(attempt);
+      return before;
+    },
+    admitChallenge: (nonce, presentationHash, accepted) => { const prior = memoryChallenges.get(nonce); if (prior?.attempt?.presentationHash === presentationHash) prior.attempt={...prior.attempt,admitted:true,...accepted===undefined?{}:{accepted:structuredClone(accepted)}}; },
+  }; // proposalHash -> contribution
   const hasSettlementCredit = (id, jobId) => !durable || durable.settlementJob(id) === jobId;
   const assertSettlementCredit = (jobId) => {
     // A read snapshot can predate intake, and another holder can discover a
@@ -182,6 +216,84 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   }
 
   // ---- DACS-3: proposal -> seller contribution ----
+  async function receiveProposal({ transportIdentity, buyerIdentityBundle }) {
+    const jobId = transportIdentity?.jobId;
+    if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+    assertVetContext();
+    assertSessionAdmission();
+    const existing = sessions.get(jobId);
+    // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
+    // signed definition pinned before the Agreement is signed. The pin is in
+    // flight only from a successful retained seller signature: until then
+    // every attempt, a retry after a rejection or a crash
+    // included, selects again under the current authority as a new session.
+    // The Agreement names only the rail id and version, so a new pin never
+    // changes what is signed. The rail is the seller's own state, read before
+    // the presentation is looked at: a `rail_unavailable` refusal consumes no
+    // challenge.
+    const inFlight = Boolean(existing?.sellerContribution || (existing?.agreementSignatureKey &&
+      durable?.signature(existing.agreementSignatureKey).disposition === 'present'));
+    // DACS-1 §6.3.4 step 3 is a current read-time gate, independent of the
+    // historical admission retained for payment intake. Both endpoints count.
+    const assertListingCurrent = () => {
+      const at = now();
+      if (at < listing.validity?.notBefore || (listing.validity?.notAfter !== undefined && at > listing.validity.notAfter)) {
+        throw new SellerAgentError('session_not_admitted', 'the Listing is outside its validity interval', 409);
+      }
+    };
+    if (!inFlight) assertListingCurrent();
+    const railPin = nativeProfile ? (inFlight ? existing.railPin : rail.pin()) : undefined;
+    assertRailPin(railPin, inFlight ? 'in-flight' : 'new');
+    // CORE SN-4: a presentation attempt for a new session (not yet signed
+    // under its pin) consumes the challenge its bundle carries, durably and
+    // before the attempt is validated (its signature, buyer and job binding
+    // included), a refused attempt too; only that exact presentation, once
+    // admitted, continues. A session in flight continues without one.
+    const newSession = nativeProfile && !inFlight;
+    const nonce = buyerIdentityBundle?.sessionNonce;
+    let presentationHash = null;
+    try { presentationHash = sha256Hex(canonicalize(buyerIdentityBundle)); } catch { /* a malformed attempt still consumes its challenge */ }
+    // DACS-1 §6.3.2: a presentation for a new session that carries no session
+    // nonce is refused. It names no challenge, so it consumes none.
+    if (newSession && (typeof nonce !== 'string' || nonce === '')) throw new SellerAgentError('session_not_admitted', 'the presentation carries no session nonce (DACS-1 §6.3.2)', 409);
+    const issued = newSession ? challenges.attemptChallenge(nonce, { jobId, presentationHash, attemptedAt: now(), admitted: false }) : null;
+    if (!isIdentityBundle(buyerIdentityBundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
+    assertBuyer(buyerIdentityBundle.presentedBy,jobId,{proposal:true});
+    const bundleHash = identityBundleHash(buyerIdentityBundle);
+    if (nativeProfile && existing && canonicalize(existing.buyerBundle) !== canonicalize(buyerIdentityBundle)) throw new SellerAgentError('session_not_admitted', 'the presentation differs from the retained accepted presentation', 409);
+    authenticateBuyerBundle(buyerIdentityBundle);
+    if (!sameCanonicalClaimIdentity(transportIdentity.buyer,buyerIdentityBundle.presentedBy)) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
+    if (existing && existing.buyerBundleHash !== bundleHash) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
+    // A new session is admitted before anything of it is kept, read, signed or sent.
+    if (newSession) {
+      // CORE SN-1..SN-3: the bundle's sessionNonce must be a challenge this
+      // seller issued for this job and buyer (issueSessionChallenge), not expired
+      // on first admission. DACS-1 §6.3.2 reverifies the retained accepted
+      // presentation on retry; it does not accept its consumed nonce anew.
+      const challengeProblem = !issued ? 'the presentation nonce is not a challenge this seller issued'
+        : issued.jobId !== jobId || !sameCanonicalClaimIdentity(issued.buyer,buyerIdentityBundle.presentedBy) ? 'the presentation nonce is a challenge issued for another job or buyer'
+          : issued.attempt !== null && !(issued.attempt.presentationHash === presentationHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
+            : issued.attempt === null && !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
+      if (challengeProblem) throw new SellerAgentError('session_not_admitted', challengeProblem, 409);
+      // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
+      // checkListingRevocation) over the operator's readings; only `absent` opens.
+      const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
+      if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
+      const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: bundleHash, sessionNonce: nonce,
+        seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
+      const accepted=issued.attempt?.admitted===true?issued.attempt.accepted:null;
+      if(issued.attempt?.admitted===true&&(!accepted||accepted.buyerBundleHash!==bundleHash||canonicalize(accepted.buyerBundle??null)!==canonicalize(buyerIdentityBundle)))throw new SellerAgentError('session_admission_unavailable','the retained accepted presentation is incomplete or differs',503);
+      let answer;
+      try { answer = accepted?structuredClone(accepted.admission):await readAdmissionCapability(admission,'admit',query); }
+      catch (cause) { throw new SellerAgentError('session_admission_unavailable', 'the seller session admission is unavailable', 503,{cause}); }
+      const problem = sessionAdmissionProblem(answer, query);
+      if (problem) throw new SellerAgentError(accepted?'session_admission_unavailable':'session_not_admitted', problem, accepted?503:409);
+      if(!accepted)challenges.admitChallenge(nonce, presentationHash,{buyerBundle:structuredClone(buyerIdentityBundle),buyerBundleHash:bundleHash,admission:structuredClone(answer),admittedAt:now()});
+    }
+    if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
+    else if (railPin && !inFlight) existing.railPin = railPin;
+    throw new SellerAgentError("proposal_not_assembled", "proposal signing is not assembled", 503);
+  }
   const api = {
     assertSettlementCredit,
     claim,
