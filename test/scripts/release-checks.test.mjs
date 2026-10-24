@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm, readFile, readdir, cp, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
   packages, plannedVersion, validateManifest, validateFiles, publicEntries,
@@ -600,5 +600,98 @@ test("wildcard captures obey the same URL and subpath rules as literal exports",
   const p = { ...manifest(def), exports: { ".": "./dist/index.js", "./feature/*": "./dist/*.js" } };
   for (const capture of ["a%20b", "index#v1", "index?v1", "node_modules/internal"]) {
     assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", `dist/${capture}.js`]), /export target|export subpath/);
+  }
+});
+
+test("wildcard exports preserve dollar tokens in literal filenames and Node imports", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-export-dollars-"));
+  try {
+    const def = packages[4], p = { ...manifest(def), exports: {
+      ".": "./dist/index.js", "./feature/*": "./dist/*.js",
+    } };
+    const captures = ["a$&b", "a$`b", "a$'b", "a$$b", "a*b"];
+    const files = ["package.json", "dist/index.js", ...captures.map(c => `dist/${c}.js`)];
+    validateManifest(p, def);
+    validateFiles(def, p, files);
+    const subpaths = publicEntries(p, files).map(e => e.subpath);
+    for (const capture of captures) assert.ok(subpaths.includes(`./feature/${capture}`), capture);
+    const installed = join(root, "node_modules", p.name);
+    await mkdir(join(installed, "dist"), { recursive: true });
+    await writeFile(join(installed, "package.json"), JSON.stringify(p));
+    for (const file of files.filter(f => f.endsWith(".js"))) await writeFile(join(installed, file), "export const ready = true;\n");
+    const specs = captures.map(c => `${p.name}/feature/${c}`);
+    execFileSync(process.execPath, ["--input-type=module", "-e",
+      `for (const spec of ${JSON.stringify(specs)}) if (!(await import(spec)).ready) throw Error(spec);`], { cwd: root });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("expanded wildcard subpaths reject forbidden segments", () => {
+  const def = packages[4];
+  for (const [key, target, file] of [
+    ["./node_*", "./dist/*.js", "dist/modules/a.js"],
+    ["./feature/*", "./dist/prefix*.js", "dist/prefix/a.js"],
+    ["./feature/*/a", "./dist/*suffix.js", "dist/nested/suffix.js"],
+  ]) {
+    const p = { ...manifest(def), exports: { ".": "./dist/index.js", [key]: target } };
+    validateManifest(p, def);
+    assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", file]), /invalid export subpath/);
+    assert.throws(() => publicEntries(p, ["dist/index.js", file]), /invalid export subpath/);
+  }
+});
+
+test("required public exports reject unusable runtime trees in manifest and strict admission", () => {
+  const js = "./dist/runtime.js", types = "./dist/runtime.d.ts";
+  for (const definition of packages) for (const key of definition.requiredExports) {
+    for (const target of [[], {}, [null], { types }, { browser: js }, { require: js },
+      { node: null, default: js }, { node: { types }, default: null }, [null, { types }],
+      { default: types, import: js }, { import: { types } }, { import: [] }]) {
+      const p = manifest(definition); p.exports[key] = target;
+      assert.throws(() => validateManifest(p, definition), /missing public export|runtime.*export/);
+      const artifacts = packages.map(d => ({ manifest: { ...manifest(d), version: plannedVersion }, releasable: true }));
+      artifacts[packages.indexOf(definition)].manifest.exports[key] = target;
+      assert.throws(() => validateArtifactSet(artifacts, true), /missing public export|runtime.*export/);
+    }
+  }
+});
+
+test("admitted required subpaths resolve and import in Node", async () => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-required-imports-"));
+  try {
+    for (const definition of packages) {
+      const p = manifest(definition), files = members(p);
+      validateManifest(p, definition); validateFiles(definition, p, files);
+      const installed = join(root, "node_modules", p.name);
+      for (const file of files) {
+        await mkdir(dirname(join(installed, file)), { recursive: true });
+        await writeFile(join(installed, file), file === "package.json" ? JSON.stringify(p) :
+          file.endsWith(".d.ts") ? "export declare const ready: boolean;\n" : "export const ready = true;\n");
+      }
+      const specs = definition.requiredExports.map(key => p.name + (key === "." ? "" : key.slice(1)));
+      execFileSync(process.execPath, ["--input-type=module", "-e", `for (const spec of ${JSON.stringify(specs)}) {
+        import.meta.resolve(spec); if (!(await import(spec)).ready) throw Error(spec);
+      }`], { cwd: root });
+    }
+    const def = packages[4], installed = join(root, "node_modules", def.name);
+    for (const target of ["./dist/entry0.js", [null, { types: "./dist/entry0.d.ts" }, "./dist/entry0.js"],
+      { browser: null, node: { types: "./dist/entry0.d.ts" }, default: "./dist/entry0.js" },
+      { node: { import: "./dist/entry0.js" }, default: null },
+      { "node-addons": "./dist/entry0.js", default: null }]) {
+      const p = { ...manifest(def), exports: { ".": target } };
+      validateManifest(p, def);
+      await writeFile(join(installed, "package.json"), JSON.stringify(p));
+      execFileSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(p.name)});`], { cwd: root });
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("non-strict artifact admission rejects unknown and duplicate identities and invalid release identity", () => {
+  const artifacts = packages.map(definition => ({ manifest: manifest(definition) }));
+  assert.doesNotThrow(() => validateArtifactSet(artifacts.slice(0, 1)));
+  const unknown = { manifest: { ...manifest(), name: "unlisted-sixth" } };
+  for (const damaged of [[unknown], [...artifacts, unknown], [artifacts[0], artifacts[0]], [...artifacts, artifacts[0]]]) {
+    assert.throws(() => validateArtifactSet(damaged), /unknown|duplicate|identit/);
+  }
+  for (const damage of [{ license: "UNLICENSED" }, { repository: {} }, { publishConfig: { access: "restricted" } }]) {
+    assert.throws(() => validateArtifactSet([{ manifest: { ...manifest(), ...damage } }]), /identity|publish policy/);
   }
 });
