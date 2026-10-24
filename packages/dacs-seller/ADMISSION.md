@@ -110,10 +110,18 @@ Retained context starts have an independent total cap, `maxContextRecords`, defa
 
 Capacity lookup work is bounded by retained rows with indexed effect/job references. Opening an existing store creates indexes on peer_effect_jobs(job), peer_transactions(job) and peer_nonces(effect). Job reclamation checks legacy unmapped effects once, then selects only the needed unused jobs through indexed anti-joins, including an indexed slot-prefix check. Context reclamation runs only when capacity needs space and stops after enough trusted terminal contexts; below capacity it reads no old sessions. At a full context cap with no terminal sessions it may inspect every retained context once; D12 must supply a bounded synchronous job-state lookup. T17–T18 verify 10,000-row query plans, constant SQL statement counts, early stopping and zero-mutation refusal; T20 keeps legacy reference fences. These focused bounds do not qualify the missing public host.
 
-Standalone validation is available through `npm run seller:test` and the stock
-SDK `npm test` command. The entry point runs the isolated D5 files, bilateral
-Vet authority and receipt checks, exact-byte HTTP admission, native nonce and
-deployment qualification checks, durable settlement collisions.
+Run the seller checks from the repository root after building the core:
+
+```sh
+npm run build
+node --experimental-vm-modules --test --test-concurrency=1 packages/dacs-seller/test/*.test.mjs
+```
+
+The stock `npm test` command runs the SDK's TypeScript Vitest tests; the seller
+MJS checks use the separate Node command above. Complete seller validation is
+blocked by unresolved custody/issuance dependencies and the supersession restart
+vector (`wallet_journal_conflict`). This stack has no complete seller-suite pass.
+Use focused affected files during development; CI runs the complete seller set.
 
 Native publication requires `pins.deployment` at the supported node source commit
 `61b8e75aa8db5e408c49e1c3a89db4d673f45578` (the fee, nonce, broadcast and
