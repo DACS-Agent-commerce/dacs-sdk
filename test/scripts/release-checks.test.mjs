@@ -236,6 +236,17 @@ test("a damaged packed manifest does not poison the following extraction directo
   assert.equal(result.artifacts.length, 4);
 }));
 
+test("a package whose archive filename repeats another's cannot replace an archive already accepted", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const generator = packages.find(p => p.name === "create-dacs-agent");
+  await changeManifest(root, generator, { name: core.name });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.errors.some(e => e.startsWith("create-dacs-agent: ")), result.errors.join("\n"));
+  const accepted = result.artifacts.find(a => a.definition === core);
+  assert.ok(accepted);
+  assert.deepEqual(execute("tar", ["-tzf", accepted.tarball], root).trim().split("\n").map(path => path.slice(8)).filter(path => path && !path.endsWith("/")).sort(), [...accepted.files].sort());
+}));
+
 test("lock checks distinguish omitted optional metadata from installed dependencies", () => {
   const lock = { packages: { "node_modules/external": {
     optional: true, resolved: "git+ssh://example.invalid/external.git#commit",
