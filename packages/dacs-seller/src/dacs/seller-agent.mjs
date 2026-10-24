@@ -1308,9 +1308,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   async function reconcileTransport({ request, body, rawBody, readOnly = false }) {
-    const held = (reason) => ({ disposition: 'indeterminate', reason });
+    const held=(reason,cause)=>{const out={disposition:'indeterminate',reason};if(cause){out.causeCode=cause?.cause?.name==='TimeoutError'?'timeout':'reader';Object.defineProperty(out,'cause',{value:cause});}return out;};
     const same = (a, b) => canonicalize(a) === canonicalize(b);
     const session = sessions.get(request.jobId);
+    const readAnchors={read:address=>readAdmissionCapability(anchors,'read',address)};
     // A proposal interrupted at any persistence boundary resumes through the
     // durable responder, whose authenticated checkpoints and signOnce govern
     // every signature/publication. The HTTP cache cannot seal an unfinished
@@ -1323,8 +1324,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           sha256Hex(rawBody) !== request.bodyHash || !same(JSON.parse(Buffer.from(rawBody).toString('utf8')), body)) return held('seller_transport_context_mismatch');
       try {
         const answer = await receiveProposal(body);
-        return { disposition: answer.disposition === 'complete' ? 'present' : 'retry', value: answer };
-      } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate'); }
+        if(answer.disposition==='complete')return{disposition:'present',value:answer};
+        if(['waiting','indeterminate'].includes(answer.disposition))return{disposition:'retry',value:answer};
+        const retained=durable?.loadSession(request.jobId)??sessions.get(request.jobId);
+        if(answer.disposition==='rejected'&&!retained?.agreementSignatureKey&&!retained?.sellerContribution&&!retained?.commitment)return{disposition:'no-effect',value:answer};
+        return held('seller_proposal_work_retained');
+      } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate',error); }
     }
     if (!session?.transportIdentity || request.method !== 'POST' || request.jobId !== (body.transportIdentity?.jobId ?? body.jobId) ||
         request.seller !== claim || request.buyer !== session.buyerBundle.presentedBy || !same(request.listingPin, pin) ||
@@ -1337,21 +1342,19 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const address = fixedPriceAgreementLogicalAddress(request.jobId);
       let agreementRecord, agreementRef = fixtureRef(address, request.agreementHash), native = null;
       if (agreementAnchor) {
-        const projection = body.signedProjection ?? session.agreementSignedProjection;
-        const read = await agreementAnchor.readAgreement({ logicalAddress: address, writer: request.buyer, agreementHash: request.agreementHash, ...(projection === undefined ? {} : { signedProjection: projection }) });
-        if (read.disposition !== 'present' || contentHash(read.artifact) !== request.agreementHash) throw new SellerAgentError('seller_agreement_readback_required', 'exact authenticated native Agreement is unavailable', 503);
-        agreementRecord = { artifact: read.artifact };
-        agreementRef = read.ref;
-        native = read.native;
+        const projection=body.signedProjection??session.agreementSignedProjection;
+        const read=await readBuyerAgreement(address,request.buyer,request.agreementHash,projection);
+        if(contentHash(read.agreement)!==request.agreementHash)throw new SellerAgentError('agreement_substituted','authenticated Agreement differs',422,{cause:read});
+        agreementRecord={artifact:read.agreement};agreementRef=read.ref;native=read.native;
       } else {
-        agreementRecord = await anchors.read(address);
+        agreementRecord = await readAnchors.read(address);
         if (verifyFixtureRecord(agreementRecord, { logicalAddress: address, expectedWriter: request.buyer }) !== 'valid' ||
             contentHash(agreementRecord.artifact) !== request.agreementHash) throw new SellerAgentError('seller_agreement_readback_required', 'exact authenticated Agreement is unavailable', 503);
       }
       const logicalAddress=finalityCommitmentAddress(request.jobId);
       const record = nativeArtifactAnchor
         ? await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true})
-        : await durable.readAnchor({ jobId: request.jobId, logicalAddress, anchors });
+        : await durable.readAnchor({ jobId: request.jobId, logicalAddress, anchors:readAnchors });
       if(nativeArtifactAnchor && record.status!=='present') refuse();
       const reader = commitmentReader(anchors, claim);
       const finalized = await commitFixedPriceAgreement({
@@ -1362,7 +1365,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: refuse },
       }, {
         resolve: () => ({ disposition: 'present', anchored: { record: record.artifact, nativeAddress: record.receipt.nativeAddress, anchorTxRef: nativeArtifactAnchor?record.txRef:fixtureTxRef(record.receipt), anchorReceipt: record.receipt } }),
-        verifyAnchorReceipt: nativeArtifactAnchor ? async(anchored)=>nativeArtifactAnchor.verifyReceipt({logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:record.signedProjection}) : reader.verifyAnchorReceipt,
+        verifyAnchorReceipt: nativeArtifactAnchor ? async(anchored)=>readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:record.signedProjection,fresh:true}) : reader.verifyAnchorReceipt,
         submit: refuse,
       }, commitmentVerifier);
       if (!finalized.resumed || finalized.recordKind !== 'finality') refuse();
@@ -1397,9 +1400,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           permit.status !== 'available' || !same(permit.claim.authorization, authorization) ||
           permit.claim.jobId !== request.jobId || durable.settlementJob(intake.settlementId) !== request.jobId) refuse();
       const terms = agreementTerms(session.agreement);
-      const paymentRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: paymentEvidenceAddress(request.jobId, terms.rail, terms.paymentPhaseIndex), anchors });
-      const deliverable = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliverableAddress(request.jobId), anchors });
-      const deliveryRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliveryEvidenceAddress(request.jobId), anchors });
+      const paymentRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: paymentEvidenceAddress(request.jobId, terms.rail, terms.paymentPhaseIndex), anchors:readAnchors });
+      const deliverable = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliverableAddress(request.jobId), anchors:readAnchors });
+      const deliveryRecord = await durable.readAnchor({ jobId: request.jobId, logicalAddress: deliveryEvidenceAddress(request.jobId), anchors:readAnchors });
+      const freshIntake=await verifySellerPaymentIntake({jobId:request.jobId,phaseIndex:terms.paymentPhaseIndex,railId:terms.rail,payerPayingKey:body.payerPayingKey,receipt:{kind:'pay-dem',txHash:body.txHash}},intakeDepsFor(request.jobId));
+      if(freshIntake.disposition!=='verified'||freshIntake.settlementId!==intake.settlementId)refuse();
       const observed = { txHash: intake.settlementIdentity.txHash, blockNumber: intake.settlementIdentity.blockNumber };
       const evidence = await verifyPaymentEvidence({ agreement: session.agreement, record: paymentRecord, observed });
       const delivery = await verifyDelivery({ agreement: session.agreement, deliverable, evidenceRecord: deliveryRecord });
@@ -1411,29 +1416,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (session.payment && !same(session.payment, recovered)) refuse();
       if (!session.payment) { session.payment = recovered; session.stage = 'delivered'; persist(session); }
       return publicPayment(session);
-    }
-    async function bundle() {
-      await payment();
-      if (!Number.isSafeInteger(session.finalisedAt)) refuse();
-      const facts = sessionFacts(session);
-      const plan = await bundleSigningPlan(facts);
-      const retained = durable.signature(`signature:${sha256Hex(plan.payload)}`);
-      const signature = session.sellerBundleSignature ?? (retained.disposition === 'present' ? retained.value : null);
-      if (!signature || (session.bundleHash && session.bundleHash !== plan.bundleHash) ||
-          !verifyComponent({ signedBytes: Buffer.from(plan.payload), signature: { algorithm: 'ed25519', signer: claim, value: signature } })) refuse();
-      if (!session.sellerBundleSignature) { session.bundleHash = plan.bundleHash; session.sellerBundleSignature = signature; persist(session); }
-      return { jobId: request.jobId, finalisedAt: session.finalisedAt, bundleHash: plan.bundleHash, sellerSignature: signature };
-    }
-    async function sellerCopy(buyerSignature) {
-      await bundle();
-      if (!session.countersignatureWork || session.countersignatureWork.buyerSignature !== canonicalSignature(buyerSignature)) refuse();
-      const { copies, problems } = await assembleBundleCopies(sessionFacts(session), { buyer: buyerSignature, seller: session.sellerBundleSignature });
-      if (problems.length) refuse();
-      const address = bundleAddress(request.jobId, 'seller');
-      const record = await durable.readAnchor({ jobId: request.jobId, logicalAddress: address, anchors });
-      if (!same(record.artifact, copies.sellerCopy)) refuse();
-      if (!session.sellerCopy) { session.sellerCopy = json(copies.sellerCopy); session.stage = 'seller-copy-anchored'; persist(session); }
-      return { status: 'seller-copy-anchored', address, bundleHash: session.bundleHash };
     }
     try {
       switch (request.path) {
@@ -1482,6 +1464,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             // so a corrected claim reaches payment intake.
             // Either run can sign and send: never under an expired delegation.
             if (readOnly) return held('peer_delegation_expired: a payment claim runs again only under a live session delegation');
+            assertNativePaymentHandler();
             const answer = work
               ? await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence })
               : await submitPayment({ jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, nativePaymentEvidence: body.nativePaymentEvidence });
@@ -1496,17 +1479,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         case '/dacs/v1/bundles/request':
         case '/dacs/v1/bundles/countersignature':
           return held('bundle_finalization_unavailable');
-        case '/dacs/v1/bundles/buyer-copy': {
-          await sellerCopy(session.countersignatureWork?.buyerSignature);
-          const record = await anchors.read(bundleAddress(request.jobId, 'buyer'));
-          const check = await verifyAnchoredCopy({ record, role: 'buyer', jobId: request.jobId, writer: request.buyer, expectedHash: session.bundleHash, ownCopy: session.sellerCopy });
-          if (check.status !== 'verified') return held('seller_buyer_copy_readback_required');
-          if (session.stage !== 'copies-exchanged') { session.stage = 'copies-exchanged'; persist(session); }
-          return present(check);
-        }
+        case '/dacs/v1/bundles/buyer-copy': return held('bundle_finalization_unavailable');
         default: return held('seller_transport_reconciliation_unsupported');
       }
-    } catch (error) { return held(error.code ?? 'seller_readback_indeterminate'); }
+    } catch (error) { return held(error.code ?? 'seller_readback_indeterminate',error); }
   }
 
   // Seller-owned recovery seam, deliberately not an HTTP route. It resumes
