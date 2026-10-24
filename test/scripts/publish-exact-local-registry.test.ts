@@ -675,8 +675,25 @@ describe("exact local registry publisher", () => {
       .toThrow(/packed tarball/);
   });
 
-  it.each(["duplicate payload", "file then directory", "directory then file", "file then child", "child then file"])(
-    "rejects ambiguous archive paths: %s", kind => {
+  it.each([
+    "package/c:package.json", "package/C:package.json", "package/PACKAGE.JSON",
+    "package/package.json.", "package/package.json ", "package/sub./hidden.js",
+    "package/sub /hidden.js", "package/sub/c:payload.js", "package/index.js:payload",
+  ])("rejects extraction aliases before publishing: %s", async alias => {
+    const { archivePath } = candidate();
+    writeFileSync(archivePath, packTarball({
+      "package/package.json": '{"name":"example","version":"1.0.0"}',
+      [alias]: '{"name":"hidden","version":"9.9.9"}',
+    }));
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/packed tarball/);
+    expect(registry.calls).toHaveLength(0);
+  });
+
+  it.each(["duplicate payload", "file then directory", "directory then file", "file then child", "child then file"]
+    .flatMap(kind => [false, true].map(caseAlias => ({ kind, caseAlias }))))(
+    "rejects ambiguous archive paths: $kind (case alias: $caseAlias)", ({ kind, caseAlias }) => {
       const manifest = gunzipSync(packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}' }));
       const entry = (name: string, body: string, directory = false) => {
         const tar = gunzipSync(packTarball({ [name]: body }));
@@ -688,11 +705,12 @@ describe("exact local registry publisher", () => {
         return tar.subarray(0, -1024);
       };
       const file = entry("package/index.js", "module.exports = 1;");
-      const paths = kind === "duplicate payload" ? [file, entry("package/index.js", "module.exports = 2;")]
-        : kind === "file then directory" ? [file, entry("package/index.js/", "", true)]
-        : kind === "directory then file" ? [entry("package/index.js/", "", true), file]
-        : kind === "file then child" ? [file, entry("package/index.js/child.js", "code")]
-        : [entry("package/index.js/child.js", "code"), file];
+      const conflictPath = caseAlias ? "package/INDEX.JS" : "package/index.js";
+      const paths = kind === "duplicate payload" ? [file, entry(conflictPath, "module.exports = 2;")]
+        : kind === "file then directory" ? [file, entry(conflictPath + "/", "", true)]
+        : kind === "directory then file" ? [entry(conflictPath + "/", "", true), file]
+        : kind === "file then child" ? [file, entry(conflictPath + "/child.js", "code")]
+        : [entry(conflictPath + "/child.js", "code"), file];
       expect(() => readPackedManifest(gzipSync(Buffer.concat([
         manifest.subarray(0, -1024), ...paths, Buffer.alloc(1024),
       ])))).toThrow(/packed tarball/);
