@@ -126,16 +126,16 @@ test('a rollback in one exec batch is checked before the second statement', t =>
   });
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n,0);
 });
-for(const separate of [false,true])test(`SQL callbacks cannot use retained writers across rollback, separate=${separate}`, t => {
+for(const functionName of ['expire_and_write','expire_and_write(','expire_and_write(0)']) for(const separate of [false,true])test(`SQL callbacks cannot use retained writers across rollback, name=${functionName}, separate=${separate}`, t => {
   const db=world(t), other=separate?world(t):db;
   other.exec("INSERT INTO records VALUES ('TEST-existing'); BEGIN");
   const write=other.prepare("INSERT INTO records VALUES ('TEST-escaped')");
-  db.function('expire_and_write',()=>{
+  db.function(functionName,()=>{
     try{nativeExec.call(other,"INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')");}catch{}
     nativeRun.call(write); return 1;
   });
   const run=()=>withSqliteStatementGuard(other,()=>{if(other.isTransaction===false)throw Error('TEST-ended');},()=>{
-    assert.throws(()=>db.prepare('SELECT expire_and_write()').get(), /SQL callbacks/);
+    assert.throws(()=>db.prepare('SELECT '+JSON.stringify(functionName)+'()').get(), /SQL callbacks/);
   });
   if(separate)withSqliteStatementGuard(db,()=>{},run);else run();
   assert.equal(other.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n,0);

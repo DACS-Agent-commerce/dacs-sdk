@@ -19,9 +19,12 @@ function execute(fn, db, sql) {
     const functions = new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
       .filter(row => !row.builtin).map(row => row.name.toLowerCase()));
     const program = nativeAll.call(nativePrepare.call(db, `EXPLAIN ${sql}`));
-    if (program.some(row => /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)$/.test(row.opcode)
-      && functions.has(String(row.p4).replace(/\(.*$/, '').toLowerCase()))) {
-      throw new TypeError('SQL callbacks are unsupported by the statement guard');
+    if (program.some(row => {
+      if (!/^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)\d*$/.test(row.opcode)) return false;
+      const name = /^([\s\S]*)\(-?\d+\)$/.exec(String(row.p4));
+      return !name || functions.has(name[1].toLowerCase());
+    })) {
+      throw new TypeError('SQL callbacks or unrecognized function opcodes are unsupported by the statement guard');
     }
   }
   const frame = callbacks.find(frame => frame.db === db);
