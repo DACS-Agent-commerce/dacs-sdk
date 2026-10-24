@@ -145,3 +145,24 @@ test('the actual transfer reader enforces a deadline when fetch ignores abort', 
   for(let i=0;i<100;i++)await Promise.resolve();
   assert.equal(error?.kind,'timeout');await read;
 });
+
+test('the passive deadline also bounds a binding fence after included readback', async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  let active=false,stall=false,entered,release,error;
+  const reached=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  const w=passiveNativeWorld({
+    onFetch:(message,_signal,data)=>{if(active&&message==='getBlockByNumber'&&data.blockNumber===7)stall=true;},
+    onFence:()=>{if(stall){entered();return gate;}}
+  });
+  await w.seed();active=true;
+  const before=await w.journal.entries();
+  const read=w.source.chainReader().observePassiveTransfer(HASH).catch(cause=>{error=cause;});
+  await reached;t.mock.timers.tick(10000);
+  for(let i=0;i<100;i++)await Promise.resolve();
+  try {assert.equal(error?.kind,'timeout');assert.deepEqual(await w.journal.entries(),before);assert.deepEqual(w.writes,[]);}
+  finally {
+    release();await read;await w.source.close();
+    for(let i=0;i<100;i++)await Promise.resolve();
+    assert.equal(w.held(),false);
+  }
+});
