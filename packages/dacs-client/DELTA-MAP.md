@@ -521,6 +521,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | f1e6076cb72330b0bfed0ede94455e39d360272d |
 | D11 | fix(client): D11 reconcile adapter initialization merge | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | eb7c37692bdd5da4ac476e6791a35172f404212e |
+| D11 | fix(client): D11 qualify merged transaction source | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 78994cc83d1c0bbe3065bec8852ea8b37f8d1988 |
 
 ## Complete commit and file inventory
 
@@ -1260,6 +1262,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 qualify merged transaction source | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 qualify merged transaction source | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
