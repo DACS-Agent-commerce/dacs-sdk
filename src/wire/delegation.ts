@@ -9,12 +9,13 @@
 // `dacs-chatgpt-plugin:seller-session-delegation:v1:`, the payload carries the
 // TP-1 `profile`, and the bytes are produced and verified only under a current
 // TP-1 binding.
+import { types } from "node:util";
 import { canonicalize } from "../canonical/jcs.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
-  claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields,
+  admitWireJson, isAdmittedValue, ownedBytes, claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields,
   sameCanonical, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
@@ -43,7 +44,7 @@ const FIELDS = ["version", "kind", "buyer", "sessionPublicKey", "seller", "listi
 function payloadBytes(p: unknown, status = 401): Buffer {
   if (!hasKeys(p, FIELDS) || p.version !== "1" || p.kind !== "seller-session-delegation" ||
       !isClaim(p.buyer) || !isClaim(p.seller) || p.buyer === p.seller ||
-      typeof p.sessionPublicKey !== "string" || !HASH.test(p.sessionPublicKey) || !isListingPin(p.listingPin) ||
+      typeof p.sessionPublicKey !== "string" || !HASH.test(p.sessionPublicKey) || p.sessionPublicKey === claimKey(p.buyer) || p.sessionPublicKey === claimKey(p.seller) || !isListingPin(p.listingPin) ||
       !isCanonicalJobId(p.jobId) || !isUint(p.notBefore) || !isUint(p.expiresAt) || p.expiresAt <= p.notBefore ||
       p.expiresAt - p.notBefore > DACS_SELLER_HTTP_LIMITS.maxDelegationLifetimeMs || !isTp1WireProfile(p.profile)) {
     return fail("peer_delegation_invalid", status);
@@ -52,12 +53,12 @@ function payloadBytes(p: unknown, status = 401): Buffer {
 }
 
 /** One owned copy of the payload, checked against the current binding, and the bytes signed for that copy. */
-function ownedSigning(supplied: unknown, binding: Tp1Binding, local: unknown): { payload: SellerSessionDelegationPayload; bytes: Buffer } {
-  assertTp1Binding(binding, local);
+async function ownedSigning(supplied: unknown, binding: Tp1Binding, local: unknown): Promise<{ payload: SellerSessionDelegationPayload; bytes: Buffer }> {
   const payload = ownedArtifact(supplied, "peer_delegation_invalid", 500) as SellerSessionDelegationPayload;
-  assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
+  await assertTp1Binding(binding, local);
+  await assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
   const bytes = payloadBytes(payload, 500);
-  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
+  await assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   return { payload, bytes };
 }
 
@@ -66,17 +67,17 @@ function ownedSigning(supplied: unknown, binding: Tp1Binding, local: unknown): {
  * side's current TP-1 binding, so a missing or unapproved identity yields no
  * message to sign. The payload is copied once; the bytes are the copy's.
  */
-export function sellerSessionDelegationSigningBytes(payload: SellerSessionDelegationPayload, binding: Tp1Binding, local: unknown): Buffer {
-  return ownedSigning(payload, binding, local).bytes;
+export async function sellerSessionDelegationSigningBytes(payload: SellerSessionDelegationPayload, binding: Tp1Binding, local: unknown): Promise<Buffer> {
+  return (await ownedSigning(payload, binding, local)).bytes;
 }
 
 /** Signs one owned copy of the payload and returns that copy: the payload returned is the one signed. */
 export async function signSellerSessionDelegation(supplied: SellerSessionDelegationPayload, walletSigner: WireSigner, binding: Tp1Binding, local: unknown): Promise<SellerSessionDelegation> {
-  const { payload, bytes } = ownedSigning(supplied, binding, local);
+  const { payload, bytes } = await ownedSigning(supplied, binding, local);
   if (walletSigner.claim !== payload.buyer) fail("peer_delegation_invalid", 500);
-  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
+  await assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const signature = await walletSigner.sign(bytes);
-  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
+  await assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   return { payload, signature: walletSignatureBytes(typeof signature === "string" ? signature : Buffer.from(signature).toString("base64url")).toString("base64url") };
 }
 
@@ -102,21 +103,24 @@ export interface DelegationScope {
  * Listing pin copied; the delegation is copied once and every check reads that
  * copy, so the payload returned is the one whose signature verified.
  */
-export function verifySellerSessionDelegation(supplied: unknown, scope: DelegationScope): SellerSessionDelegationPayload {
+export async function verifySellerSessionDelegation(supplied: unknown, scope: DelegationScope): Promise<SellerSessionDelegationPayload> {
   const { binding, local, buyer, seller, listingPin: suppliedPin, jobId, time, deadline, allowExpired = false } =
     ownedFields(scope, ["binding", "local", "buyer", "seller", "listingPin", "jobId", "time", "deadline", "allowExpired"]) as Partial<DelegationScope>;
-  assertTp1Binding(binding, local);
   const listingPin = suppliedPin === undefined ? undefined : ownedConfig(suppliedPin, "wire_input_invalid");
-  const delegation = ownedArtifact(supplied, "peer_delegation_invalid");
+  const admitted = types.isUint8Array(supplied)
+    ? admitWireJson(ownedBytes(supplied, "peer_delegation_invalid", 401, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxHeaderLength, code: "peer_delegation_invalid", status: 401 }), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401)
+    : isAdmittedValue(supplied) ? supplied : fail("peer_delegation_invalid", 401, "ARTIFACT-NOT-ADMITTED");
+  const delegation = ownedArtifact(admitted, "peer_delegation_invalid");
+  await assertTp1Binding(binding, local);
   if (!hasKeys(delegation, ["payload", "signature"])) return fail("peer_delegation_invalid");
   const p = delegation.payload as SellerSessionDelegationPayload;
   if (lacksProfile(p, FIELDS)) fail("tp1_profile_missing", 409);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
-  if (hasKeys(p, FIELDS)) assertPeerProfile(p.profile, binding as Tp1Binding);
+  if (hasKeys(p, FIELDS)) await assertPeerProfile(p.profile, binding as Tp1Binding);
   const bytes = payloadBytes(p);
   if (!verifyEd25519(bytes, walletSignatureBytes(delegation.signature), claimKey(p.buyer))) fail("peer_delegation_signature_invalid");
   // The trusted reader is asked only about a delegation the buyer's wallet signed.
-  assertTp1Authority(binding as Tp1Binding, local, [p.buyer, p.seller], p.jobId);
+  await assertTp1Authority(binding as Tp1Binding, local, [p.buyer, p.seller], p.jobId);
   if ((buyer !== undefined && p.buyer !== buyer) || (seller !== undefined && p.seller !== seller) ||
       (listingPin !== undefined && !sameCanonical(p.listingPin, listingPin)) || (jobId !== undefined && p.jobId !== jobId)) {
     fail("peer_delegation_mismatch", 409);
