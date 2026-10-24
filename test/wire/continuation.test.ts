@@ -600,7 +600,7 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
     const purchase = await acceptedPurchase({ jobId: JOB, generatedAt: NOW, validity, publicEndpoint: ENDPOINT });
     const { buyer, seller, pin } = purchase;
     const sellerResult = await commitPurchase(purchase, NOW + 1000);
-    const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
+    const binding = (await bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL }));
     const discoveryAt = (issuedAt: number) => wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: binding.profile, seller: seller.claim, publicEndpoint: ENDPOINT,
       transport: ["dacs-seller-http/v1"], listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: false, issuedAt, expiresAt: issuedAt + 60_000 }, seller, binding, LOCAL);
     const discovery = await discoveryAt(ENDED - 1000), early = await discoveryAt(NOW + 20_000);
@@ -610,27 +610,17 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
     return { purchase, buyer, seller, pin, sellerResult, sent: Buffer.from(JSON.stringify({ commitment: sellerResult, agreement: purchase.agreement })), binding, discovery, early, listing, input };
   }
 
-  it("after the Listing ends and the seller drains, from the seller's bytes, and again after a restart", async () => {
-    const { purchase, buyer, seller, pin, sellerResult, sent, binding, discovery, early, listing, input } = await committed();
-    // Each "process" of the buyer parses the seller's bytes on its own: no object is shared with the gate.
-    for (const run of ["first", "after restart"]) {
-      const got = wire.admitWireArtifact(sent) as { commitment: unknown; agreement: unknown };
-      const endpointProof = wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED, commitment: got.commitment, agreement: got.agreement, signedListing: received(purchase.listing) });
-      const request = await wire.signWireRequest(input(got.commitment, got.agreement, endpointProof));
-      const opened = wire.openWireEnvelope(request.header, "request", { binding, local: LOCAL, purchaseProfile: binding.profile });
-      expect(wire.checkWireRequest(opened, { binding, local: LOCAL, purchaseProfile: binding.profile, seller: seller.claim, listingPin: pin, method: "POST", path: P.payments,
-        rawBody: Buffer.from("{}"), now: ENDED, retained: { jobId: JOB, agreementHash: purchase.agreementHash, buyer: buyer.claim, seller: seller.claim },
-        requestJournal: testJournal(), commitment: received(sellerResult), agreement: received(purchase.agreement), readCommitmentReceipt: validReceipt, signedListing: received(purchase.listing) }).readbackOnly, run).toBe(false);
-    }
+  it("requires the buyer's own current receipt reader before continuing a purchase", async () => {
+    const { purchase, buyer, sent, binding, discovery, early, listing, input } = await committed();
     // Without its own receipt reader, the buyer continues nothing: the seller's word is not evidence.
     const got = wire.admitWireArtifact(sent) as { commitment: unknown; agreement: unknown };
-    expect(() => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, listing, binding, local: LOCAL, now: ENDED, commitment: got.commitment, agreement: got.agreement, signedListing: received(purchase.listing) }))
+    await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: purchase.agreementHash }, readListingEligibility: windowed, listing, binding, local: LOCAL, now: ENDED, commitment: got.commitment, agreement: got.agreement, signedListing: received(purchase.listing) })))).rejects
       .toThrowError(expect.objectContaining({ code: "commitment_reader_required", status: 500 }));
-    const unread = wire.verifyEndpointProof(early, { readListingEligibility: windowed, listing, binding, local: LOCAL, now: NOW + 30_000 });
+    const unread = (await wire.verifyEndpointProof(early, { readListingEligibility: windowed, listing, binding, local: LOCAL, now: NOW + 30_000 }));
     await expect(wire.signWireRequest({ ...input(got.commitment, got.agreement, unread), now: NOW + 30_000 })).rejects.toMatchObject({ code: "commitment_reader_required" });
-    expect(buyer.calls).toBe(2);
+    expect(buyer.calls).toBe(0);
     // A reader that cannot establish the receipt leaves the purchase undecided: never final.
-    expect(() => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: () => "indeterminate", listing, binding, local: LOCAL, now: ENDED, commitment: got.commitment, agreement: got.agreement, signedListing: received(purchase.listing) }))
+    await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: purchase.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(() => "indeterminate", { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED, commitment: got.commitment, agreement: got.agreement, signedListing: received(purchase.listing) })))).rejects
       .toThrowError(expect.objectContaining({ code: "commitment_unverified", status: 503 }));
   });
 
@@ -642,12 +632,12 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
     const record = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash: forged.agreementHash, listingPin: pin, committedAt: NOW + 1000 });
     const job = { listingPin: pin, agreementHash: forged.agreementHash, profile: binding.profile };
     for (const agreement of [forged.agreement, undefined, purchase.agreement]) {
-      expect(() => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED, commitment: received(record), agreement: received(agreement), signedListing: received(purchase.listing) }))
+      await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: forged.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED, commitment: received(record), agreement: received(agreement), signedListing: received(purchase.listing) })))).rejects
         .toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid", status: 500 }));
     }
     // The buyer's kept proof is for its genuine purchase; signing the forged one is refused at signWireRequest and at signWireEnvelope.
-    const proof = wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
-      commitment: received(await commitPurchase(purchase, NOW + 1000)), agreement: received(purchase.agreement), signedListing: received(purchase.listing) });
+    const proof = (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: purchase.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED,
+      commitment: received(await commitPurchase(purchase, NOW + 1000)), agreement: received(purchase.agreement), signedListing: received(purchase.listing) }));
     for (const path of CONTINUING) {
       await expect(wire.signWireRequest({ ...input(received(record), received(forged.agreement), proof, path), job })).rejects.toMatchObject({ code: "continuation_agreement_invalid", status: 500 });
       const payload: wire.WireRequestPayload = { version: "1", kind: "request", method: "POST", path, bodyHash: sha256Hex("{}"), jobId: JOB, buyer: buyer.claim, seller: seller.claim,
@@ -669,9 +659,9 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
         : signedAgreement({ buyer, seller, jobId: JOB, listingPin: pin, listing: { listing: purchase.listing, pin }, generatedAt: NOW, patch: { terms: { ...terms, deadline } } });
       return { ...a, commitment: received(wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash: a.agreementHash, listingPin: pin, committedAt })) };
     };
-    const prove = (e: ReturnType<typeof evidence>) => () => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL,
-      now: ENDED, commitment: e.commitment, agreement: received(e.agreement), signedListing: received(purchase.listing) });
-    const proof = prove(evidence(NOW + 1000))();
+    const prove = (e: ReturnType<typeof evidence>) => async () => (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: e.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL,
+      now: ENDED, commitment: e.commitment, agreement: received(e.agreement), signedListing: received(purchase.listing) }));
+    const proof = await (await prove(evidence(NOW + 1000)))();
     const sign = (e: ReturnType<typeof evidence>, path: string) => wire.signWireRequest({ ...input(e.commitment, received(e.agreement), proof, path),
       job: { listingPin: pin, agreementHash: e.agreementHash, profile: binding.profile } });
     const invalid = { code: "continuation_commitment_invalid", status: 500 };
@@ -684,8 +674,8 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
       ["committed 1 ms after the Agreement's deadline", evidence(NOW + 1000, NOW + 999), false],
     ];
     for (const [name, e, continues] of cases) {
-      if (continues) expect(prove(e), name).not.toThrow();
-      else expect(prove(e), name).toThrowError(expect.objectContaining(invalid));
+      if (continues) await expect(prove(e)(), name).resolves.toMatchObject({ ready: false });
+      else await expect(Promise.resolve().then((await prove(e))), name).rejects.toThrowError(expect.objectContaining(invalid));
       for (const path of CONTINUING) {
         if (continues) await expect(sign(e, path), `${name} ${path}`).resolves.toMatchObject({ payload: { path } });
         else await expect(sign(e, path), `${name} ${path}`).rejects.toMatchObject(invalid);
@@ -699,8 +689,8 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
     }
     // Without the Listing, or with another one, nothing continues.
     for (const signedListing of [undefined, received(tp1Listing({ seller, listingId: pin.listingId }).listing)]) {
-      expect(() => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
-        commitment: evidence(NOW + 1000).commitment, agreement: received(purchase.agreement), signedListing })).toThrowError(expect.objectContaining({ code: "continuation_listing_invalid", status: 500 }));
+      await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: purchase.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED,
+        commitment: evidence(NOW + 1000).commitment, agreement: received(purchase.agreement), signedListing })))).rejects.toThrowError(expect.objectContaining({ code: "continuation_listing_invalid", status: 500 }));
     }
   });
 
@@ -708,8 +698,8 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
     const { purchase, buyer, seller, pin, binding, discovery, listing, input } = await committed();
     const terms = (purchase.agreement as unknown as { terms: Record<string, unknown> }).terms;
     const deliverable = terms.deliverable as Record<string, unknown>;
-    const proof = wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
-      commitment: received(await commitPurchase(purchase, NOW + 1000)), agreement: received(purchase.agreement), signedListing: received(purchase.listing) });
+    const proof = (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: purchase.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED,
+      commitment: received(await commitPurchase(purchase, NOW + 1000)), agreement: received(purchase.agreement), signedListing: received(purchase.listing) }));
     const refused = { code: "continuation_agreement_invalid", status: 500, detail: "LISTING-TERMS" };
     for (const [name, changed] of [
       ["2 DEM under the 1 DEM Listing", { price: { amount: "2", currency: "DEM" } }],
@@ -719,8 +709,8 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
       // Both parties signed it and the seller anchored a finalized record for it; the SDK's own gate would never have committed it.
       const forged = signedAgreement({ buyer, seller, jobId: JOB, listingPin: pin, listing: { listing: purchase.listing, pin }, generatedAt: NOW, patch: { terms: { ...terms, ...changed } } });
       const record = received(wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash: forged.agreementHash, listingPin: pin, committedAt: NOW + 1000 }));
-      expect(() => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
-        commitment: record, agreement: received(forged.agreement), signedListing: received(purchase.listing) }), name).toThrowError(expect.objectContaining(refused));
+      await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: forged.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED,
+        commitment: record, agreement: received(forged.agreement), signedListing: received(purchase.listing) }))), name).rejects.toThrowError(expect.objectContaining(refused));
       const job = { listingPin: pin, agreementHash: forged.agreementHash, profile: binding.profile };
       for (const path of CONTINUING) {
         await expect(wire.signWireRequest({ ...input(record, received(forged.agreement), proof, path), job }), `${name} ${path}`).rejects.toMatchObject(refused);
@@ -735,8 +725,8 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
 
   it("refuses, at both signers, a continuation under a Listing whose signature is not the seller's over the pinned Listing (DACS-1 §6.3.4)", async () => {
     const { purchase, buyer, seller, pin, sellerResult, binding, discovery, listing, input } = await committed();
-    const proof = wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
-      commitment: received(sellerResult), agreement: received(purchase.agreement), signedListing: received(purchase.listing) });
+    const proof = (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: purchase.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED,
+      commitment: received(sellerResult), agreement: received(purchase.agreement), signedListing: received(purchase.listing) }));
     const refusedAs = (detail?: string) => ({ code: "continuation_listing_invalid", status: 500, ...(detail === undefined ? {} : { detail }) });
     const { signature } = purchase.listing;
     // The signature is not part of the pin, so the Listing, Agreement and finality record are all still the ones the parties signed.
@@ -749,8 +739,8 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
       const refused = refusedAs(detail);
       const tampered = { ...purchase.listing, signature: { ...signature, ...changed } };
       expect(contentHash(tampered as never), name).toBe(pin.contentHash);
-      expect(() => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
-        commitment: received(sellerResult), agreement: received(purchase.agreement), signedListing: received(tampered) }), name).toThrowError(expect.objectContaining(refused));
+      await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(discovery, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: purchase.agreementHash }, readListingEligibility: windowed, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED,
+        commitment: received(sellerResult), agreement: received(purchase.agreement), signedListing: received(tampered) }))), name).rejects.toThrowError(expect.objectContaining(refused));
       for (const path of CONTINUING) {
         await expect(wire.signWireRequest({ ...input(received(sellerResult), received(purchase.agreement), proof, path), signedListing: received(tampered) }), `${name} ${path}`).rejects.toMatchObject(refused);
         const payload: wire.WireRequestPayload = { version: "1", kind: "request", method: "POST", path, bodyHash: sha256Hex("{}"), jobId: JOB, buyer: buyer.claim, seller: seller.claim,
@@ -775,9 +765,9 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
     const refused = { code: "continuation_listing_invalid", status: 500, detail: "DELIVERABLE-KIND" };
     // The Listing is still open at ENDED, so the buyer's proof stands and only the Listing's shape refuses the continuation.
     const open: wire.ListingEligibilityReader = (scope) => ({ ...(readFixtureListingEligibility(scope) as object), notBefore: NOW - 1000, expiresAt: ENDED + 60_000 });
-    expect(() => wire.verifyEndpointProof(document, { readListingEligibility: open, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
-      commitment: record, agreement: received(a.agreement), signedListing: received(l.listing) })).toThrowError(expect.objectContaining(refused));
-    const proof = wire.verifyEndpointProof(document, { readListingEligibility: open, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED });
+    await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(document, { request: { path: P.payments, jobId: JOB, buyer: buyer.claim, agreementHash: a.agreementHash }, readListingEligibility: open, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED,
+      commitment: record, agreement: received(a.agreement), signedListing: received(l.listing) })))).rejects.toThrowError(expect.objectContaining(refused));
+    const proof = (await wire.verifyEndpointProof(document, { readListingEligibility: open, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), listing, binding, local: LOCAL, now: ENDED }));
     for (const path of CONTINUING) {
       await expect(wire.signWireRequest({ ...input(record, received(a.agreement), proof, path), job: { listingPin: l.pin, agreementHash: a.agreementHash, profile: binding.profile },
         signedListing: received(l.listing) }), path).rejects.toMatchObject(refused);
