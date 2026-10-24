@@ -431,12 +431,60 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` | ecab598d2695975c776aaddd6038e71db5432f6f |
 | | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | 32c65aec6b18cde12321600f9eb1c6ba4e439cae |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 3c96ca8c5a47dcb88862af46324df331961d153e |
+| D11 | fix(client): D11 share wallet payload identity and test import isolation | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` | 59a2fd307756d036f813edd17dec2fa8be23e68f |
+| | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | e9ec2d2e168a27c87ac04b1df345cf6bd8de0242 |
+| | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e1085f274e14f20b87335189155f76284fd3b92a |
+| D11 | fix(client): D11 add inert guarded SQLite statement execution | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b69c3e30476cb097d782da1c27d0b936ebf2641e |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 147a5481e0d8783c9d7c929b76b32417839185a8 |
+| D11 | fix(client): D11 preserve native guarded SQL argument errors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b481d335f5d260dafa236b520c0b4c1b21269164 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e38a86a1fabd4f8767da17a18416e73529b2ee55 |
+| D11 | fix(client): D11 fence retained native SQL execution functions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f377b3dd6895e2ad1f02bedddc9eb18177f9eb57 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 8173b4c5b350f1a39a3b6bad62e8343f3e688258 |
+| D11 | fix(client): D11 restore standalone provider and strengthen import vectors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` | b7183e63a75b68cda34c2b30a4d532963794b13f |
+| | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | 3df4a602a8fba8bcdaba2a75919aeebd53f1a46d |
+| | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 7cbf9eb0efa87e4b197e8d320a9080363465ef61 |
+| D11 | fix(client): D11 fence SQLite callbacks and preserve exec semantics | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f68603bd3f057c2bf42c8670dd6cb6d52cf05db4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e547911cd3385e9eed8337be4b655bc424c82aaf |
+| D11 | fix(client): D11 keep rollback guard vectors portable to the Node floor | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ef1915ddcdc37b96297aed4492ed04fd6009b724 |
+| D11 | fix(client): D11 let SQLite identify empty exec remainders | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 4342294acfd3f71ee5c3f348f08ac542b0596392 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | cf66e34a3816d78a633002b462ff99253850a429 |
+| D11 | fix(client): D11 reject SQL callbacks with quoted function names | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
+| D11 | fix(client): D11 generate pure payload helpers from provider | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | f121637cb5c6f739597a3b9bf7f1253b61c1ec19 |
+| | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e737b5abec7b991fd5401d943998cd3ce60bc1bc |
 | D11 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | c202d2b701edc2a536b34d860bdb7317cfed6d77 |
 | | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | f19662c277f9bcc86145487d72230cdfbdde2d50 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 8560f9547739573a5f2c8c32c27a085fbd59370d |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 18c6e3c74c2817a1c38f58676eb2053d76398ebb |
+| D11 | fix(client): D11 guard every SQLite callback statement after rollback | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | dea888ee7f7906fc011ccb8e69319cf00f036c85 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 00357c230e040c7a2658f717f72e172eedcc8b44 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 7fb6c88ed1400bffc509fc23453150bf78519cbe |
+| D11 | fix(client): D11 cover retained native exec rollback on reopen | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | aca495eb87c54f557b02a7a2ce5d5b2882f1ce83 |
+| D11 | fix(client): D11 classify native constraints and rebuild renamed table guards | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | f80619dee3a06bfc04b11247821e8f1d5dd82bad |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 0cae28f8588f2e4d35350d4f009ddfa58e84abc4 |
+| D11 | fix(client): D11 track cached host statements before transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
+| D11 | fix(client): D11 preserve callback fencing and private savepoints | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | ea871900d025e7310e2a35b95a626da101ca9edd |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | aa9dbf4fc1e98f055efc5d7690e042dad16f9186 |
 | D11 | delta(client): D11 split 04 inject buyer seams behind the action hold | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:1`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:21`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:35`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:66`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:69`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:72` | 9bff8dcef805bb2b8d291452aa5245b43fb28eed |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:24`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:51`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:258`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:266`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:270`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:343`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:434`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:493`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:560`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:671`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:695`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:870`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1116`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1159`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1314`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1320` | d523e721e629c2f2e3164fed45065d24f87aee3f |
@@ -465,22 +513,11 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` | a91f8018335cd08180669ba04b8312608b046d8a |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 05af633db6d7e5bd8d18a40f23e9afef0dae01ef |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 36cf0c10d71208afda5d52f6aef02adc0121da62 |
-| D11 | fix(client): D11 share wallet payload identity and test import isolation | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` | 59a2fd307756d036f813edd17dec2fa8be23e68f |
-| | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | e9ec2d2e168a27c87ac04b1df345cf6bd8de0242 |
-| | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e1085f274e14f20b87335189155f76284fd3b92a |
 | D11 | fix(client): D11 retain validated observation snapshots and cover native refusal | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:50`, `packages/dacs-client/src/purchases.mjs:73`, `packages/dacs-client/src/purchases.mjs:166`, `packages/dacs-client/src/purchases.mjs:283`, `packages/dacs-client/src/purchases.mjs:401`, `packages/dacs-client/src/purchases.mjs:418`, `packages/dacs-client/src/purchases.mjs:463`, `packages/dacs-client/src/purchases.mjs:482`, `packages/dacs-client/src/purchases.mjs:488`, `packages/dacs-client/src/purchases.mjs:590`, `packages/dacs-client/src/purchases.mjs:695`, `packages/dacs-client/src/purchases.mjs:715`, `packages/dacs-client/src/purchases.mjs:725`, `packages/dacs-client/src/purchases.mjs:775`, `packages/dacs-client/src/purchases.mjs:810`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:895`, `packages/dacs-client/src/purchases.mjs:908`, `packages/dacs-client/src/purchases.mjs:916`, `packages/dacs-client/src/purchases.mjs:918`, `packages/dacs-client/src/purchases.mjs:920`, `packages/dacs-client/src/purchases.mjs:942`, `packages/dacs-client/src/purchases.mjs:971`, `packages/dacs-client/src/purchases.mjs:978`, `packages/dacs-client/src/purchases.mjs:1104`, `packages/dacs-client/src/purchases.mjs:1117`, `packages/dacs-client/src/purchases.mjs:1119`, `packages/dacs-client/src/purchases.mjs:1125`, `packages/dacs-client/src/purchases.mjs:1169`, `packages/dacs-client/src/purchases.mjs:1176`, `packages/dacs-client/src/purchases.mjs:1194`, `packages/dacs-client/src/purchases.mjs:1203`, `packages/dacs-client/src/purchases.mjs:1210`, `packages/dacs-client/src/purchases.mjs:1217` | 8494a56749dee2fa254d8fb025e681cf7f70ccd2 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | f213a2cfade904c48b9515355f49fb5a7a89d9fd |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | b2db7b91c5e1e6de55edde544c2b5d078c1f3978 |
 | | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` | 3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc |
-| D11 | fix(client): D11 add inert guarded SQLite statement execution | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b69c3e30476cb097d782da1c27d0b936ebf2641e |
-| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 147a5481e0d8783c9d7c929b76b32417839185a8 |
-| D11 | fix(client): D11 guard every SQLite callback statement after rollback | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | dea888ee7f7906fc011ccb8e69319cf00f036c85 |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 00357c230e040c7a2658f717f72e172eedcc8b44 |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 7fb6c88ed1400bffc509fc23453150bf78519cbe |
 | D11 | fix(client): D11 split the held purchase-state schema prerequisite | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 557ea59e906125decb9c56d5b2322a1d30af3321 |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | ce3bb31eb69d5828748e1d04e797bd10de4ef5f3 |
@@ -498,30 +535,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 03e4731889a75769c2f2b429d2a99fbb89f10baf |
 | D11 | fix(client): D11 remove trailing observation fixture whitespace | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 0af1586bc61b3a59509d361eebe3644f36d40150 |
-| D11 | fix(client): D11 preserve native guarded SQL argument errors | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b481d335f5d260dafa236b520c0b4c1b21269164 |
-| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e38a86a1fabd4f8767da17a18416e73529b2ee55 |
-| D11 | fix(client): D11 fence retained native SQL execution functions | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f377b3dd6895e2ad1f02bedddc9eb18177f9eb57 |
-| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 8173b4c5b350f1a39a3b6bad62e8343f3e688258 |
-| D11 | fix(client): D11 cover retained native exec rollback on reopen | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | aca495eb87c54f557b02a7a2ce5d5b2882f1ce83 |
-| D11 | fix(client): D11 restore standalone provider and strengthen import vectors | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` | b7183e63a75b68cda34c2b30a4d532963794b13f |
-| | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | 3df4a602a8fba8bcdaba2a75919aeebd53f1a46d |
-| | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 7cbf9eb0efa87e4b197e8d320a9080363465ef61 |
-| D11 | fix(client): D11 fence SQLite callbacks and preserve exec semantics | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f68603bd3f057c2bf42c8670dd6cb6d52cf05db4 |
-| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e547911cd3385e9eed8337be4b655bc424c82aaf |
-| D11 | fix(client): D11 classify native constraints and rebuild renamed table guards | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | f80619dee3a06bfc04b11247821e8f1d5dd82bad |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 0cae28f8588f2e4d35350d4f009ddfa58e84abc4 |
 | D11 | fix(client): D11 share buyer schema with the database fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | a454605da7223935b8e8417722828049bf904eaf |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | 940e94f63ffc2a65f42ea03bf262fb42fc200525 |
-| D11 | fix(client): D11 track cached host statements before transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
 | D11 | fix(client): D11 reconcile held buyer seam merge provenance | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 9fa8ce3f7c831bd65179dc99a9e70877349c1f6d |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d697a51b58d0e71ab9992bcd0f17272c85c28f5f |
@@ -539,8 +555,6 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:13`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:21`, `packages/dacs-client/src/util/http.mjs:24`, `packages/dacs-client/src/util/http.mjs:27`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:36`, `packages/dacs-client/src/util/http.mjs:38`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:45`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:54`, `packages/dacs-client/src/util/http.mjs:62`, `packages/dacs-client/src/util/http.mjs:67`, `packages/dacs-client/src/util/http.mjs:88`, `packages/dacs-client/src/util/http.mjs:112` | 1a0af8b42041b4f02f3de51cd6b854b959d91f7e |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` | d3db777e0eb9eb3de32f7480512c30049ba8f907 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 1dec9cb232b14799e41ade73d4a637b0212cbb18 |
-| D11 | fix(client): D11 keep rollback guard vectors portable to the Node floor | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ef1915ddcdc37b96297aed4492ed04fd6009b724 |
 | D11 | fix(client): D11 preserve observation byte-limit refusal reasons | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:50`, `packages/dacs-client/src/purchases.mjs:73`, `packages/dacs-client/src/purchases.mjs:166`, `packages/dacs-client/src/purchases.mjs:283`, `packages/dacs-client/src/purchases.mjs:401`, `packages/dacs-client/src/purchases.mjs:418`, `packages/dacs-client/src/purchases.mjs:463`, `packages/dacs-client/src/purchases.mjs:482`, `packages/dacs-client/src/purchases.mjs:488`, `packages/dacs-client/src/purchases.mjs:590`, `packages/dacs-client/src/purchases.mjs:695`, `packages/dacs-client/src/purchases.mjs:715`, `packages/dacs-client/src/purchases.mjs:725`, `packages/dacs-client/src/purchases.mjs:775`, `packages/dacs-client/src/purchases.mjs:810`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:895`, `packages/dacs-client/src/purchases.mjs:908`, `packages/dacs-client/src/purchases.mjs:916`, `packages/dacs-client/src/purchases.mjs:918`, `packages/dacs-client/src/purchases.mjs:920`, `packages/dacs-client/src/purchases.mjs:942`, `packages/dacs-client/src/purchases.mjs:971`, `packages/dacs-client/src/purchases.mjs:978`, `packages/dacs-client/src/purchases.mjs:1104`, `packages/dacs-client/src/purchases.mjs:1117`, `packages/dacs-client/src/purchases.mjs:1119`, `packages/dacs-client/src/purchases.mjs:1125`, `packages/dacs-client/src/purchases.mjs:1169`, `packages/dacs-client/src/purchases.mjs:1176`, `packages/dacs-client/src/purchases.mjs:1194`, `packages/dacs-client/src/purchases.mjs:1203`, `packages/dacs-client/src/purchases.mjs:1210`, `packages/dacs-client/src/purchases.mjs:1217` | f4db211d40294b6cbdb7937dbc7765374443cf18 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 73808dae810ad137fd226f9e0f9fe7a33763a3c5 |
@@ -548,12 +562,6 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` | 7c52736459700578f31e4223dc7c1fae4528b275 |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | 630f67cd493c31464a65b27db6c3eb3f5fe0a8c1 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 47763286db946e57755aec2a43523eb3215a1276 |
-| D11 | fix(client): D11 let SQLite identify empty exec remainders | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 4342294acfd3f71ee5c3f348f08ac542b0596392 |
-| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | cf66e34a3816d78a633002b462ff99253850a429 |
-| D11 | fix(client): D11 generate pure payload helpers from provider | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | f121637cb5c6f739597a3b9bf7f1253b61c1ec19 |
-| | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e737b5abec7b991fd5401d943998cd3ce60bc1bc |
 
 ## Complete commit and file inventory
 
@@ -1099,6 +1107,89 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` |
 | delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
 | delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
+| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/package.json:1` |
+| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
+| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/generate-payload-helpers.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
+| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1109,6 +1200,43 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1145,20 +1273,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 05 validate retained host transfer observations | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` |
 | delta(client): D11 split 05 validate retained host transfer observations | `packages/dacs-client/test/host-observations.test.mjs:1` |
 | delta(client): D11 split 05 validate retained host transfer observations | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1168,26 +1282,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/test/host-observations.test.mjs:1` |
 | fix(client): D11 retain validated observation snapshots and cover native refusal | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/package.json:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1225,48 +1319,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 remove trailing observation fixture whitespace | `packages/dacs-client/test/host-observations.test.mjs:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1274,13 +1326,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
 | fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 | fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1313,12 +1358,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:13`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:21`, `packages/dacs-client/src/util/http.mjs:24`, `packages/dacs-client/src/util/http.mjs:27`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:36`, `packages/dacs-client/src/util/http.mjs:38`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:45`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:54`, `packages/dacs-client/src/util/http.mjs:62`, `packages/dacs-client/src/util/http.mjs:67`, `packages/dacs-client/src/util/http.mjs:88`, `packages/dacs-client/src/util/http.mjs:112` |
 | fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` |
 | fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 | fix(client): D11 preserve observation byte-limit refusal reasons | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 preserve observation byte-limit refusal reasons | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 preserve observation byte-limit refusal reasons | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1334,21 +1373,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` |
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/generate-payload-helpers.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
 
 ## Original moved files
 
