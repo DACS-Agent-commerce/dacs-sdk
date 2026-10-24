@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 export type { DemosFailedRecordProof } from "./settlementFailure.js";
 import {
@@ -546,6 +547,7 @@ interface DurableSettlementOutcomeBase {
   ok: boolean;
   errorClass?: "permanent";
   failureProofJson?: string;
+  executionAuthenticated?: true;
   networkFeeOs?: string;
   blockNumber?: number;
   txRefKind?: string;
@@ -899,6 +901,7 @@ function durableSettlementCheckpointData(
     payee: outcome.payee,
     ok: outcome.ok,
   };
+  if (outcome.executionAuthenticated === true) data.executionAuthenticated = true;
   if (outcome.errorClass !== undefined) data.errorClass = outcome.errorClass;
   if (outcome.failureProofJson !== undefined) data.failureProofJson = outcome.failureProofJson;
   if (outcome.networkFeeOs !== undefined) data.networkFeeOs = outcome.networkFeeOs;
@@ -2139,6 +2142,7 @@ function durableSettlementOutcome(
   return {
     outcomeSource: "rail-result",
     ...binding,
+    ...(ok && isNativeSettlement(binding) ? { executionAuthenticated: true as const } : {}),
     txHash: result.txHash,
     chainId: result.chainId,
     payer: result.payer,
@@ -2184,6 +2188,7 @@ function sameSettlementOutcome(
     left.payer === right.payer &&
     left.payee === right.payee &&
     left.ok === right.ok &&
+    left.executionAuthenticated === right.executionAuthenticated &&
     left.errorClass === right.errorClass &&
     left.failureProofJson === right.failureProofJson &&
     left.networkFeeOs === right.networkFeeOs &&
@@ -2218,7 +2223,7 @@ function canReauthenticateNativeSuccess(
     (prior.txRefKind === undefined || prior.txRefKind === next.txRefKind) &&
     (prior.networkFeeOs === undefined || next.networkFeeOs === undefined ||
       prior.networkFeeOs === next.networkFeeOs) &&
-    (next.ok || next.errorClass === "permanent");
+    (next.ok || (prior.executionAuthenticated !== true && next.errorClass === "permanent"));
 }
 
 function sameAuthenticatedEvidenceOutcome(
@@ -2424,6 +2429,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "ok",
         "errorClass",
         "failureProofJson",
+        "executionAuthenticated",
         "networkFeeOs",
         "finalityModel",
         "finalityBlocks",
@@ -2445,6 +2451,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         typeof payee !== "string" ||
         payee.length === 0 ||
         payee.trim() !== payee ||
+        (data.executionAuthenticated !== undefined &&
+          (data.executionAuthenticated !== true || !ok || !isNativeSettlement(binding))) ||
         (data.networkFeeOs !== undefined &&
           (typeof data.networkFeeOs !== "string" ||
             !/^(?:0|[1-9][0-9]*)$/.test(data.networkFeeOs))) ||
@@ -2498,6 +2506,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           payer,
           payee,
           ok,
+          ...(data.executionAuthenticated === true ? { executionAuthenticated: true as const } : {}),
           ...(data.errorClass === "permanent" && typeof data.failureProofJson === "string"
             ? { errorClass: "permanent" as const, failureProofJson: data.failureProofJson } : {}),
           ...(typeof data.networkFeeOs === "string" ? { networkFeeOs: data.networkFeeOs } : {}),
@@ -2640,7 +2649,8 @@ function isValidSettlementOutcomeProgression(
     }
     return (
       sameSettlementOutcome(prior.outcome, next.outcome) ||
-      (!next.outcome.ok && canReauthenticateNativeSuccess(prior.outcome, next.outcome)) ||
+      (canReauthenticateNativeSuccess(prior.outcome, next.outcome) &&
+        (!next.outcome.ok || sameSettlementOutcome({ ...prior.outcome, executionAuthenticated: true }, next.outcome))) ||
       (sameSettlementBinding(prior.outcome, next.outcome) &&
         prior.outcome.ok === false &&
         prior.outcome.errorClass !== "permanent" &&
@@ -2832,11 +2842,116 @@ async function recordSessionOutcome(
   }
 }
 
+const NATIVE_SESSION_LEASE_MS = 30_000;
+const NATIVE_SESSION_RENEW_MS = 10_000;
+
+/** Hold native settlement decisions and publication under one renewable store lease. */
+function createNativeSettlementFence() {
+  const owner = randomUUID();
+  let active: { store: SessionStore; jobId: string; now: () => number; revision: number } | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let lost: unknown;
+  let queue = Promise.resolve();
+  const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
+    const pending = queue.then(operation);
+    queue = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
+  const check = async (): Promise<void> => {
+    if (lost !== undefined) throw lost;
+    if (!active) return;
+    const loaded = await active.store.load(active.jobId);
+    if (loaded.status !== "ok" || loaded.record.lease?.owner !== owner ||
+        loaded.record.lease.expiresAt <= active.now() || loaded.record.revision !== active.revision) {
+      throw new CounterpartyError("native session settlement fence lost or revision changed");
+    }
+  };
+  return {
+    protect(store: SessionStore | undefined): SessionStore | undefined {
+      if (!store) return undefined;
+      return {
+        ...store,
+        transition: (input) => !active ? store.transition(input) : serialize(async () => {
+          await check();
+          const result = await store.transition({ ...input, owner, expectedRevision: active?.revision ?? input.expectedRevision });
+          if (result.ok && active) {
+            if (result.record.revision !== active.revision + 1 || result.record.lease?.owner !== owner) {
+              throw new CounterpartyError("native session settlement fence lost during mutation");
+            }
+            active.revision = result.record.revision;
+          }
+          return result;
+        }),
+        claimCheckpoint: (input) => !active ? store.claimCheckpoint(input) : serialize(async () => {
+          await check();
+          const result = await store.claimCheckpoint({ ...input, owner });
+          if (result.ok && active) {
+            if (result.record.revision !== active.revision + 1 || result.record.lease?.owner !== owner) {
+              throw new CounterpartyError("native session settlement fence lost during mutation");
+            }
+            active.revision = result.record.revision;
+          }
+          return result;
+        }),
+      };
+    },
+    async start(store: SessionStore, jobId: string, now: () => number): Promise<void> {
+      const acquired = await store.acquireLease({ jobId, owner, ttlMs: NATIVE_SESSION_LEASE_MS, now: now() });
+      if (!acquired.ok || !acquired.record) {
+        throw new CounterpartyError("native session settlement fence is held by another worker");
+      }
+      active = { store, jobId, now, revision: acquired.record.revision };
+      timer = setInterval(() => {
+        void serialize(async () => {
+          await check();
+          if (!active) return;
+          const renewed = await store.acquireLease({ jobId, owner, ttlMs: NATIVE_SESSION_LEASE_MS, now: now() });
+          if (!renewed.ok || !renewed.record || renewed.record.revision !== active.revision + 1) {
+            throw new CounterpartyError("native session settlement fence renewal failed");
+          }
+          active.revision = renewed.record.revision;
+        }).catch((cause: unknown) => { lost = cause; });
+      }, NATIVE_SESSION_RENEW_MS);
+      timer.unref();
+    },
+    assertCurrent: () => serialize(check),
+    async release(): Promise<void> {
+      clearInterval(timer);
+      await serialize(async () => {
+        if (!active) return;
+        const loaded = await active.store.load(active.jobId);
+        if (loaded.status === "ok" && loaded.record.lease?.owner === owner) {
+          await active.store.transition({ jobId: active.jobId, owner,
+            expectedRevision: loaded.record.revision, lease: null, now: active.now() });
+        }
+        active = undefined;
+      });
+    },
+  };
+}
+
 export async function runSessionCore(
   listingRef: string,
   inputTerms: SessionTerms,
   inputDeps: SessionDeps,
   resumeJobId?: string,
+): Promise<SessionResult> {
+  const fence = createNativeSettlementFence();
+  try {
+    const result = await runSessionCoreWithFence(listingRef, inputTerms, inputDeps, resumeJobId, fence);
+    await fence.assertCurrent();
+    return result;
+  } finally {
+    await fence.release().catch(() => undefined);
+  }
+}
+
+async function runSessionCoreWithFence(
+  listingRef: string,
+  inputTerms: SessionTerms,
+  inputDeps: SessionDeps,
+  resumeJobId: string | undefined,
+  fence: ReturnType<typeof createNativeSettlementFence>,
 ): Promise<SessionResult> {
   // Capture every caller-controlled callback/scalar without invoking accessors.
   // A mutable dependency bag must not be able to switch an authenticator,
@@ -3397,7 +3512,9 @@ export async function runSessionCore(
       snapshotCanonicalJson(built, `publication for "${name}"`),
     );
     const builtCanonical = canonicalize(built);
+    await fence.assertCurrent();
     const rawRef = await deps.anchor(name, publication);
+    await fence.assertCurrent();
     const ref = protocolString(rawRef, `anchor result for "${name}"`, {
       allowColon: true,
     });
@@ -4034,7 +4151,7 @@ export async function runSessionCore(
   // fail CLOSED on untrustworthy durable state, and reject a replayed agreement
   // hash. `create` binds the hash atomically and THROWS on a cross-session reuse,
   // so a replayed deal aborts here — before any call to `settle`.
-  const store = runtime.sessionStore;
+  const store = fence.protect(runtime.sessionStore);
   if (store) {
     const loaded = await store.load(jobId);
     if (loaded.status === "corrupt" || loaded.status === "unsupported") {
@@ -4066,6 +4183,10 @@ export async function runSessionCore(
         `agreement hash for ${jobId} is bound to ${bound.boundTo} (anti-replay); refusing to settle`,
       );
     }
+  }
+
+  if (runtime.sessionStore && terms.price.rail === "pay-dem" && terms.price.asset === "DEM") {
+    await fence.start(runtime.sessionStore, jobId, runtime.nowMs);
   }
 
   /**
@@ -4172,7 +4293,8 @@ export async function runSessionCore(
           (outcome.supersedesTxHash === prior.outcome.txHash &&
             outcome.supersedesChainId === prior.outcome.chainId));
       if (!canResolveAmbiguous &&
-          !(!outcome.ok && canReauthenticateNativeSuccess(prior.outcome, outcome))) {
+          !(canReauthenticateNativeSuccess(prior.outcome, outcome) &&
+            (!outcome.ok || sameSettlementOutcome({ ...prior.outcome, executionAuthenticated: true }, outcome)))) {
         throw new CounterpartyError(
           `could not record settlement outcome for ${jobId}: existing outcome conflicts with ${outcome.txHash}`,
         );
@@ -4259,6 +4381,7 @@ export async function runSessionCore(
       ...settleRequest,
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
     };
+    await fence.assertCurrent();
     const recovered = snapshotSettleResult(
       await deps.resumeSettlement(
         deepFreezeJson(
@@ -4314,8 +4437,9 @@ export async function runSessionCore(
       // execution. Observation time or optional fee echoes need not be rebuilt.
       await bindSettlementTransaction(prior);
       // A slower audit cannot reuse a claim another worker has invalidated.
-      await completeSettlement(prior, "settled");
-      return prior;
+      const authenticated = { ...prior, executionAuthenticated: true as const };
+      await completeSettlement(authenticated, "settled");
+      return authenticated;
     }
     // A transaction without successful execution or a bound terminal failure
     // remains ambiguous. Bind it for anti-replay and retain unresolved intent
@@ -4433,6 +4557,7 @@ export async function runSessionCore(
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
         } else {
+          await fence.assertCurrent();
           const pay = snapshotSettleResult(
             await deps.settle(
               deepFreezeJson(
