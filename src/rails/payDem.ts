@@ -329,8 +329,7 @@ export interface DemosTransferResult {
  */
 export const TERMINAL_INCLUDED = new Set([DACS_DEMOS_INCLUDED_STATE]);
 
-/** Minimal structural view of the native-transfer client this rail depends on. */
-/** Native transfer seam; custom implementations are refused before transfer. */
+/** Factory-internal native-transfer seam, exported for type compatibility; custom clients are refused. */
 export interface DemosNativeClient {
   /** The payer's Demos address. */
   address: string;
@@ -482,6 +481,7 @@ function captureRecoveryContext(
   });
 }
 
+/** @internal Factory implementation; caller-supplied clients cannot carry SDK authority. */
 export function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
@@ -818,6 +818,7 @@ export interface PayDemRail {
   /** The buyer's Demos address. */
   readonly address: string;
   /**
+   * Only rails returned by createPayDemRail are accepted by payDemSettle.
    * Settle one payment. Success requires reading the transaction record and
    * verifying literal `confirmed` status, hash, nonce, inclusion block, payer,
    * payee and amount, then returning `execution: "executed"`. Status-index
@@ -2497,7 +2498,8 @@ export function payDemSettle(
           );
         }
         const reconciled = capturePayDemReconciliation(recovered, context);
-        if (captured.errorClass === "permanent" && !samePayDemResult(captured, reconciled)) {
+        if ((captured.errorClass === "permanent" || reconciled.errorClass === "permanent") &&
+            !samePayDemResult(captured, reconciled)) {
           throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
         }
         if (

@@ -125,6 +125,26 @@ describe("terminal failed Demos record", () => {
     expect(submit).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses to demote a stored executed success to permanent failure on bridge restart", async () => {
+    const log = createInMemorySettlementLog();
+    const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
+      payee: `did:demos:agent:${payee}`, expectedPayee: payee,
+      jobId: "failure-proof", phaseIndex: 0 };
+    const submit = vi.fn(async (): Promise<PayDemRailResult> => ({
+      ok: true, execution: "executed", txHash, payer, payee, chainId: "demos",
+      blockNumber: 42, finality: { model: "bft-final" }, txRefKind: "demos",
+    }));
+    await payDemSettle({ address: payer, settle: submit }, {},
+      { store: createIdempotencyStore(log) })(request);
+    const restarted = payDemSettle({ address: payer, settle: submit }, {}, {
+      store: createIdempotencyStore(log),
+      reconcile: async () => ({ ...failure, ok: false, errorClass: "permanent",
+        failureProof: proof, amountOs: proof.amountOs }),
+    });
+    await expect(restarted(request)).rejects.toThrow(/contradicted a permanent/);
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["missing", undefined], ["wrong amount", { ...proof, amountOs: "1" }],
     ["wrong hash", { ...proof, txHash: "cd".repeat(32) }],
