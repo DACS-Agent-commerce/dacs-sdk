@@ -23,7 +23,9 @@ function exchange(handler,{text='{}',header,url=SELLER_CONTEXT_PATH,headers={},m
  const res={destroyed:false,writableEnded:false,headersSent:false,writeHead(status,h){this.status=status;this.headers=h;this.headersSent=true},end(text){this.text=text;this.writableEnded=true;}};
  const pending=handler(req,res);queueMicrotask(()=>{for(const chunk of chunks??[text])req.write(chunk);req.end()});return Promise.resolve(pending).then(()=>res);
 }
-async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},maxNoncesPerBuyerPerWindow=120,releaseFails=false,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=async body=>({disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}}),...http}={}){
+// A present context answer; as recover it reads back and verifies both Vet records.
+const presentContext=async body=>({disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}});
+async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},maxNoncesPerBuyerPerWindow=120,releaseFails=false,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
  const seller=key(),buyer=key(),other=key(),listing=fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
  const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,maxNoncesPerBuyerPerWindow,now:()=>time});t.after(()=>store.close());
@@ -57,4 +59,4 @@ async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},m
 }
 
 
-export {JOBS,T,key,bundleFor,exchange,world};
+export {JOBS,T,key,bundleFor,exchange,presentContext,world};
