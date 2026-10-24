@@ -65,14 +65,28 @@ let publicCount = 0;
 const out = [];
 const log = (line) => { out.push(line); console.log(line); };
 
-// Throws unless `path` exists at `commit` in the checkout for `repo` and `lines`, if given, lies inside it.
+// Preserve Git's captured diagnostic in every public and private failure path.
+const diagnostic = (error) => {
+  const stderr = error?.stderr?.toString().trim();
+  return stderr ? `${error.message}\n${stderr}` : String(error?.message ?? error);
+};
+const git = (dir, args) => execFileSync("git", ["-C", dir, ...args], {
+  encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+});
+// Every citation names a blob at a resolved commit and a required line range.
 const show = (repo, commit, path, lines) => {
   const dir = repos[repo];
   if (!dir) throw new Error(`no checkout given for ${repo}`);
-  const text = execFileSync("git", ["-C", dir, "show", `${commit}:${path}`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).split("\n");
-  if (lines === undefined) return [];
-  const [from, to = from] = String(lines).split("-").map(Number);
-  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 1 || to < from || to > text.length - 1) throw new Error(`lines ${lines} outside the file (${text.length - 1} lines)`);
+  if (typeof commit !== "string" || !commit.trim()) throw new Error("nonempty commit required");
+  if (typeof path !== "string" || !path) throw new Error("nonempty blob path required");
+  if (typeof lines !== "string" || !/^[1-9]\d*(?:-[1-9]\d*)?$/.test(lines)) throw new Error("lines must be N or N-N");
+  const revision = git(dir, ["rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`]).trim();
+  const object = `${revision}:${path}`;
+  if (git(dir, ["cat-file", "-t", object]).trim() !== "blob") throw new Error("citation path must name a blob");
+  const text = git(dir, ["cat-file", "blob", object]).split("\n");
+  if (text.at(-1) === "") text.pop();
+  const [from, to = from] = lines.split("-").map(Number);
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || to < from || to > text.length) throw new Error(`lines ${lines} outside the file (${text.length} lines)`);
   const shown = [];
   for (let n = from; n <= to; n += 1) shown.push(`        ${n}: ${text[n - 1].slice(0, 160)}`);
   return shown;
@@ -99,19 +113,19 @@ for (const e of entries) {
       for (const line of shown) log(line);
     } catch (error) {
       failures += 1;
-      log(`FAIL  ${where}: ${String(error.message).split("\n")[0]}`);
+      log(`FAIL  ${where}: ${diagnostic(error)}`);
     }
     continue;
   }
   publicCount += 1;
   const where = `${e.owner}: ${e.repo} ${e.commit}:${e.path}:${e.lines}`;
   try {
-    const shown = show(e.repo, e.commit, e.path, e.lines ?? "");
+    const shown = show(e.repo, e.commit, e.path, e.lines);
     log(`ok    ${where}`);
     for (const line of shown) log(line);
   } catch (error) {
     failures += 1;
-    log(`FAIL  ${where}: ${String(error.message).split("\n")[0]}`);
+    log(`FAIL  ${where}: ${diagnostic(error)}`);
   }
 }
 // The private file also holds coordinates the documents and src/wire comments no
@@ -127,7 +141,7 @@ if (privateEntries) {
       log(`ok    private ${id} (not a register evidence entry): ${entry.citations.length} citation(s)`);
     } catch (error) {
       extraFailures += 1;
-      log(`FAIL  private ${id}: ${String(error.message).split("\n")[0]}`);
+      log(`FAIL  private ${id}: ${diagnostic(error)}`);
     }
   }
 }

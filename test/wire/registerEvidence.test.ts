@@ -44,13 +44,17 @@ describe("check-register-evidence.mjs on a synthetic register", () => {
       const at = join(dir, repo);
       mkdirSync(at);
       writeFileSync(join(at, "a.txt"), `${repo} one\n${repo} two\n${repo} three\n${repo} four\n`);
+      mkdirSync(join(at, "sub"));
+      writeFileSync(join(at, "sub/a.txt"), "nested\n");
+      writeFileSync(join(at, "unterminated.txt"), "one\ntwo");
+      writeFileSync(join(at, "single.txt"), "only line");
       const git = (...a: string[]) => {
         const r = spawnSync("git", ["-C", at, "-c", "user.name=synthetic", "-c", "user.email=synthetic@example.invalid", "-c", "commit.gpgsign=false", ...a], { encoding: "utf8" });
         if (r.status !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr}`);
         return r.stdout.trim();
       };
       git("init", "-q");
-      git("add", "a.txt");
+      git("add", "a.txt", "sub/a.txt", "unterminated.txt", "single.txt");
       git("commit", "-q", "-m", "synthetic");
       commits[repo] = git("rev-parse", "HEAD");
     }
@@ -71,6 +75,48 @@ describe("check-register-evidence.mjs on a synthetic register", () => {
     writeFileSync(join(dir, "private-missing-prov-02.json"), JSON.stringify({ entries: { "prov-01": cite("1-2"), "prov-03": cite("3") } }));
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const runCitation = (patch: Record<string, unknown>, privateMode?: "cited" | "extra") => {
+    const citation = { repo: "dacs-sdk", commit: commits.sdk, path: "a.txt", lines: "1", ...patch };
+    const evidence = privateMode ? [{ ...PRIVATE, provenance: "prov-01" }] : [citation];
+    const file = join(dir, "case-register.json"), privateAt = join(dir, "case-private.json");
+    writeFileSync(file, JSON.stringify({ rows: [{ id: "R", evidence }], qualification: [] }));
+    if (privateMode) writeFileSync(privateAt, JSON.stringify({ entries: {
+      "prov-01": { citations: [privateMode === "cited" ? citation : { ...citation, lines: "1" }] },
+      ...(privateMode === "extra" ? { "prov-02": { citations: [citation] } } : {}),
+    } }));
+    return check(["--register", file, "--dacs-sdk", join(dir, "sdk")], privateMode ? privateAt : undefined);
+  };
+  it.each(["", null, ":", "HEAD^{tree}", "HEAD:a.txt"])("rejects non-commit citation revision %j", commit => {
+    const run = runCitation({ commit });
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("FAIL");
+  });
+  it("rejects a directory citation instead of reading Git's tree listing", () => {
+    const run = runCitation({ path: "sub" });
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("blob");
+  });
+  it.each(["1-2-999999", "1-1-garbage", [1], 1, "", "1-", "-1", "1.0", " 1", "01", "0", "5", "2-1", "9007199254740992", null, undefined])(
+    "rejects malformed or out-of-range line citation %j", lines => {
+      expect(runCitation({ lines }).status).toBe(1);
+    });
+  it.each([["a.txt", "4", "sdk four"], ["unterminated.txt", "2", "two"], ["single.txt", "1", "only line"]])(
+    "counts the final line with or without a newline in %s", (path, lines, expected) => {
+      const run = runCitation({ path, lines });
+      expect(run.status).toBe(0);
+      expect(run.stdout).toContain(expected);
+    });
+  it.each(["cited", "extra"] as const)("rejects a missing line range in %s private citations", mode => {
+    const run = runCitation({ lines: undefined }, mode);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain(mode === "extra" ? "FAIL  private" : "FAIL  R");
+  });
+  it.each([{ commit: "missing-citation-commit" }, { path: "missing-citation-file" }])("preserves Git's failure diagnostic for %j", patch => {
+    const run = runCitation(patch);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("fatal:");
+  });
 
   it("input unset: exits 2, prints SKIP for each private entry and names them all in its last line", () => {
     const run = check(args());
