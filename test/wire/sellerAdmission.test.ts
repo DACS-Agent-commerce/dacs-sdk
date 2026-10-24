@@ -1,3 +1,4 @@
+import * as wireDiscovery from "../../src/wire/discovery.js";
 import { expect, it } from "vitest";
 import { readdirSync } from "node:fs";
 import { sha256Hex } from "../../src/canonical/hash.js";
@@ -26,7 +27,7 @@ async function fixture(path: string = "/dacs/v1/payments") {
   return { p, journal, open, check, reservations };
 }
 
-it.each(wire.CONTINUING_PATHS)("%s requires the verified Agreement before reserving any effect", async (path) => {
+it.each(wireDiscovery.CONTINUING_PATHS)("%s requires the verified Agreement before reserving any effect", async (path) => {
   const f = await fixture(path), opened = await f.open();
   for (const agreement of [undefined, Buffer.from("{}"), bytes({ ...f.p.agreement, signatures: [] })]) {
     await expect(Promise.resolve().then(() => wire.checkWireRequest(opened, { ...f.check, agreement })))

@@ -1,3 +1,4 @@
+import * as wireValidate from "../../src/wire/validate.js";
 import { expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/jcs.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/ed25519.js";
@@ -26,7 +27,7 @@ it("requires received byte admission, including for duplicate members and rounde
   await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(document, f.scope)))
     .rejects.toMatchObject({ code: "peer_delegation_invalid", detail: "ARTIFACT-NOT-ADMITTED" });
   const admitted = wire.admitWireArtifact(bytes({ delegation: document }));
-  if (!wire.isRecord(admitted)) throw new Error("invalid admitted fixture");
+  if (!wireValidate.isRecord(admitted)) throw new Error("invalid admitted fixture");
   expect(await wire.verifySellerSessionDelegation(admitted.delegation, f.scope)).toEqual(f.payload);
   const duplicate = bytes(document).toString().replace(`"jobId":"${JOB}"`, `"jobId":"invalid","jobId":"${JOB}"`);
   await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(Buffer.from(duplicate), f.scope)))
@@ -40,7 +41,7 @@ it("requires received byte admission, including for duplicate members and rounde
 
 it.each([BUYER, SELLER])("refuses a party-controlled session key at producer and receiver (%s)", async (party) => {
   const f = await fixture();
-  f.payload.sessionPublicKey = wire.claimKey(party);
+  f.payload.sessionPublicKey = wireValidate.claimKey(party);
   await expect(wire.signSellerSessionDelegation(f.payload, f.signer, f.binding, f.local)).rejects.toMatchObject({ code: "peer_delegation_invalid" });
   await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(bytes(signed(f.payload)), f.scope)))
     .rejects.toMatchObject({ code: "peer_delegation_invalid" });

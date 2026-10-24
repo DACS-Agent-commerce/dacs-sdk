@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import * as w from "../../src/wire/index.js";
 import { isListingPin } from "../../src/wire/validate.js";
+import { isContinuingRoute } from "../../src/wire/discovery.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournal, testJournals } = journalFixture(fixtureWire);
@@ -301,7 +302,7 @@ describe("a purchase the buyer already committed continues while the seller drai
   const COMMITTED = NOW + 1000, ENDED = NOW + 120_000;
   const CONTINUING = ["/dacs/v1/payments", "/dacs/v1/bundles/request", "/dacs/v1/bundles/countersignature", "/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"] as const;
   /** The routes among them that need the job's commitment to be signed at all; the others are readback. */
-  const EVIDENCE_ROUTES = CONTINUING.filter(w.isContinuingRoute), READBACK = CONTINUING.filter((path) => !w.isContinuingRoute(path));
+  const EVIDENCE_ROUTES = CONTINUING.filter(isContinuingRoute), READBACK = CONTINUING.filter((path) => !isContinuingRoute(path));
   /** Routes that start or commit a purchase: never continued, with or without the job's commitment. */
   const STARTING = ["/dacs/v1/agreements/proposals", "/dacs/v1/commitments", "/dacs/v1/commitments/signature", "/dacs/v1/agreements/context"] as const;
   const windowed: w.ListingEligibilityReader = (scope) => ({ ...(readFixtureListingEligibility(scope) as object), notBefore: NOW - 1000, expiresAt: NOW + 60_000 });

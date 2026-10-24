@@ -15,6 +15,9 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 - **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
 - **Presence oracle update:** see [adoption scope and remaining runtime boundary](./docs/presence-conformance-adoption.md).
+- **Testnet release:** see [About the DACS testnet release](./docs/about-the-testnet-release.md) for what it is in plain
+  terms, and the [TP-1 declaration](./docs/testnet-profile-tp1.md) for the ways it is known to fall short of the
+  Standard so far (composition checks qualify and complete that list).
 
 ## Layering
 
@@ -556,8 +559,14 @@ state remains the finality authority; an `included`, `confirmed`, or `finalized`
 transaction-body label is accepted only when that status and confirmed-block
 membership agree. RPC time and decoded JSON size are bounded (15 seconds and
 64 MiB by default, both configurable), including the potentially larger
-confirmed-block response. The native-send payload disambiguates the denomination
-fork:
+confirmed-block response.
+
+For TP-1, this description does not establish rejection of an `included`
+transfer whose execution failed: [L2 in the TP-1 declaration](docs/testnet-profile-tp1.md#live-use-rules-tp-1-does-not-meet)
+currently covers the buyer rail only, and a composition review must separately
+qualify the seller observer before delivery.
+
+The native-send payload disambiguates the denomination fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's

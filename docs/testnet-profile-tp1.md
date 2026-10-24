@@ -1,11 +1,10 @@
 # Testnet profile TP-1 (`dacs-testnet-tp1`)
 
 > **Status: proposed; composition qualification pending.** This declaration and
-> the planned machine-readable register are
+> the [machine-readable register](../conformance/tp1-register.json) are
 > approved only after composition checks qualify the exact composition of the moved
 > seller and client packages against the base below. The library implementation
-> choices are implemented in [the internal wire source](../src/wire/index.ts);
-> the standalone wire contract is planned;
+> choices are recorded in the [wire contract](dacs-seller-http-v1.md#implementation-decisions-and-release-scope);
 > library merge does not qualify or release that composition. The identity binding
 > below (the profile tuple inside every signed message) is approved, on
 > 2026-10-15 at 21:23Z, as proposed.
@@ -23,7 +22,7 @@ testnet, which Standard revision they are measured against, and every known
 way they fall short of it. It is not a DACS release and makes no conformance
 claim for live use. Only gaps with a user-visible label in the table below promise that label.
 The machine-readable record is `TESTNET_PROFILE_TP1` in
-[the internal `src/wire/profile.ts`](../src/wire/profile.ts). The package wire entry point is pending.
+`@kynesyslabs/dacs/wire` (compiled [profile record](../dist/wire/profile.js)).
 
 ## Profile
 
@@ -34,7 +33,7 @@ The machine-readable record is `TESTNET_PROFILE_TP1` in
 | Base | Proposed reference revision: DACS-Standard `next` `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, subject to Composition qualification; tuple CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5 (`spec/PROFILE.md:43-50` at `d45c0a2`) |
 | Network | Demos testnet only. approved identity record `dacs-demos-testnet-identity/2026-10-20`, approved by the owner on 2026-10-20: chain identity `d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc`, pin version `dacs-demos-testnet-identity/2026-10-20`, source kind `confirmed-block-one-predecessor`. The wire refuses unapproved identities before signing, including the previous record `dacs-demos-testnet-identity/2026-10-15`; broadcast refusal in the intended composition is not checked (see "Blocked" below) |
 | Capability | FP-DEM with these restrictions: `negotiate-fixed-price`, `pay-dem`, delivery through Demos storage at `dacs4:deliverable:{jobId}` (`spec/DACS-4-SETTLE.md:839` at `d45c0a2`); `fixed-text` and explicitly configured pure, deterministic, synchronous text modules only, in the bounded UTF-8 report envelope the buyer plugins produce and read today (at most 16,384 characters, synchronous only: `TP1_CAPABILITIES` in `src/wire/profile.ts`, pinned by `test/wire/wire.test.ts`; that the plugins' producer accepts only this is taken from the plugin implementation and not yet independently checked, composition checks qualify it); no buyer request input. Any other Listing is refused before approval or signing; buyers provide an authenticated, content-hash-bound `readListingEligibility` decision to `verifyEndpointProof` before approval, and the wire rechecks selected terms before each request signature |
-| Wire | `dacs-seller-http/v1` ([internal routes](../src/wire/routes.ts); standalone contract planned): buyer-initiated HTTPS, discovery at `/.well-known/dacs-seller.json` |
+| Wire | [`dacs-seller-http/v1`](dacs-seller-http-v1.md): buyer-initiated HTTPS, discovery at `/.well-known/dacs-seller.json` |
 | Claims | `did:demos:agent:<64 lowercase hex>` for both parties |
 
 The approved record is `TP1_APPROVED_IDENTITY_RECORD` in `src/wire/profile.ts`.
@@ -61,7 +60,7 @@ approved on 2026-10-15 at 16:41Z) named the chain node2 served until its
 `d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc`. The owner
 approved that identity on 2026-10-20. The SDK's approval list names only the
 new record, so a binding to the previous record is refused
-(`tp1_identity_unapproved`) before any signature. The planned register will retain the previous record. Its fallback text said nodes
+(`tp1_identity_unapproved`) before any signature. The register retains the previous record under `network.previousRecords`. Its fallback text said nodes
 "do not serve block 0"; only the numeric argument is refused, and the new
 record's text says so.
 
@@ -70,14 +69,14 @@ Node inspection baseline: `kynesyslabs/node` commit
 reports `dirty: true`, so this commit is an inspection baseline only; it does
 not identify what node2 runs.
 The timestamped, read-only node2 request/response fixtures and SHA-256 manifest
-are planned for a later evidence slice; they are not included at this prefix.
+are in the [current observation manifest](../conformance/tp1-node-observations/manifest-2026-10-20.json).
 On 2026-10-20 the deployment reported branch `stabilisation`,
 `builtAt: 2026-10-20T11:09:32Z`, and **`dirty: true`**. No deployment
 artifact digest or overlay was supplied. This source commit is an immutable
 inspection baseline, not a pin of the deployment's executable bytes; node
 composition qualification remains open until those bytes can be identified.
 The 2026-10-18 captures of the previous chain are kept unchanged as history
-(historical manifest pending). That build
+([historical manifest](../conformance/tp1-node-observations/manifest.json)). That build
 reported source commit `61b8e75aa8db5e408c49e1c3a89db4d673f45578`,
 `builtAt: 2026-10-14T16:45:24Z` and `dirty: true`; a read-only
 `getNetworkInfo` on 2026-10-19 reported the same commit rebuilt at
@@ -145,8 +144,8 @@ composition against the base and record every difference in the register.
   so a case, whitespace or type variant, or a later revision's name, is
   unknown. This binding was approved on 2026-10-15 at 21:23Z, as proposed;
   `TESTNET_PROFILE_TP1.identityBinding` records it. Current regression coverage is
-  [approvedIdentity.test.ts](../test/wire/approvedIdentity.test.ts);
-  register and compatibility vectors are planned for later slices.
+  `test/wire/approvedIdentity.test.ts` in the repository. The register and
+  [compatibility vectors](../vectors/dacs-seller-http-v1.json) accompany this package.
 - **Signing domains.** The wire signs under new SDK wire domains
   `dacs-seller-http:v1:{request,response,delegation,discovery}:`. They are
   distinct from the Standard's artifact signature domains (CORE §B.7 at

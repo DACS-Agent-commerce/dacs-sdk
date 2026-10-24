@@ -1,3 +1,4 @@
+import * as wireValidate from "../../src/wire/validate.js";
 // A seller worker in its own process, for test/wire/requestJournal.test.ts. It
 // binds, opens and checks the given signed requests against the shipped
 // durable journal in the given directory, opened at startup as a seller host
@@ -18,12 +19,12 @@ async function runJournalWorker(): Promise<void> {
     const { DACS_WIRE_JOURNAL_INPUT: inputPath, DACS_WIRE_JOURNAL_RESULT: resultPath, DACS_WIRE_JOURNAL_GO: go, DACS_WIRE_JOURNAL_CRASH: crash } = process.env;
     if (!inputPath || !resultPath) throw new Error("child worker configuration is missing");
     const input: unknown = JSON.parse(readFileSync(inputPath, "utf8"));
-    if (!wire.isRecord(input) || typeof input.journal !== "string" || !wire.isUint(input.journalNow) || !wire.isUint(input.now) ||
-        !wire.isClaim(input.seller) || !wire.isListingPin(input.listingPin) || !Array.isArray(input.requests) || input.requests.length > 64 ||
-        (input.leaseMs !== undefined && !wire.isUint(input.leaseMs))) throw new Error("invalid journal worker fixture");
+    if (!wireValidate.isRecord(input) || typeof input.journal !== "string" || !wireValidate.isUint(input.journalNow) || !wireValidate.isUint(input.now) ||
+        !wireValidate.isClaim(input.seller) || !wireValidate.isListingPin(input.listingPin) || !Array.isArray(input.requests) || input.requests.length > 64 ||
+        (input.leaseMs !== undefined && !wireValidate.isUint(input.leaseMs))) throw new Error("invalid journal worker fixture");
     const retained = input.retained;
-    if (!wire.hasKeys(retained, ["jobId", "agreementHash", "buyer", "seller"]) || typeof retained.jobId !== "string" ||
-        !wire.isHash(retained.agreementHash) || !wire.isClaim(retained.buyer) || !wire.isClaim(retained.seller)) throw new Error("invalid retained worker fixture");
+    if (!wireValidate.hasKeys(retained, ["jobId", "agreementHash", "buyer", "seller"]) || typeof retained.jobId !== "string" ||
+        !wireValidate.isHash(retained.agreementHash) || !wireValidate.isClaim(retained.buyer) || !wireValidate.isClaim(retained.seller)) throw new Error("invalid retained worker fixture");
     const kept = { jobId: retained.jobId, agreementHash: retained.agreementHash, buyer: retained.buyer, seller: retained.seller };
     const binding = await fixtureBinder(wire)({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: input.local });
     const context = { binding, local: binding.local, purchaseProfile: binding.profile };
@@ -37,7 +38,7 @@ async function runJournalWorker(): Promise<void> {
     };
     // Opened before the start signal, so racing workers meet at the reservation.
     const opened = await Promise.all(input.requests.map(async (request: unknown) => {
-      if (!wire.isRecord(request) || typeof request.path !== "string" || typeof request.header !== "string" || typeof request.body !== "string") throw new Error("invalid worker request");
+      if (!wireValidate.isRecord(request) || typeof request.path !== "string" || typeof request.header !== "string" || typeof request.body !== "string") throw new Error("invalid worker request");
       return { path: request.path, body: request.body, envelope: await wire.openWireEnvelope(request.header, "request", context) };
     }));
     let completed = false;
