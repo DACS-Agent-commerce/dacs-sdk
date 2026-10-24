@@ -3,6 +3,7 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/d
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sign } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { privateKeyFromSeed, publicKeyFromSeed } from '@kynesyslabs/dacs';
 import { addressForClaim, claimForAddress, decodeSignature, normalizeDemosAddress, verifyDemosSignature, isCanonicalEd25519Signature, DemosClaimFormatError } from '../src/dacs/demos-claims.mjs';
 
@@ -97,7 +98,7 @@ test('CREATE payload binds the exact artifact, logical address and public zero-s
       metadata: { logicalAddress: 'TEST-logical' }, acl: { mode: 'public' }, salt: '', storageLocation: 'onchain' }],
     nonce, timestamp: 42, transaction_fee: { network_fee: 0, rpc_fee: 0, additional_fee: 0, rpc_address: null } },
     signature: null, hash: '', status: '', blockNumber: null });
-  assert.equal(payload.content.data[1].data, signedListing);
+  assert.deepEqual(payload.content.data[1].data, signedListing);
   payload.content.transaction_fee.network_fee = 1;
   assert.equal(buildStorageProgramCreatePayload(validCreate()).content.transaction_fee.network_fee, 0);
 });
@@ -134,4 +135,63 @@ test('CREATE refuses missing and malformed write inputs before exposing a wallet
     { logicalAddress: 7 }, { signedListing: undefined }, { signedListing: null }, { signedListing: [] },
     { storageAddress: deriveStorageAddress(validCreate().from, 'other', 7) }, { salt: 7 },
   ]) assert.throws(() => buildStorageProgramCreatePayload({ ...validCreate(), ...change }), TypeError);
+});
+
+const createInput = (signedListing) => {
+  const from = `0x${'ab'.repeat(32)}`, programName = 'TEST-bounded-artifact', nonce = 1;
+  return { from, programName, nonce, timestamp: 42, logicalAddress: 'TEST-logical', signedListing,
+    storageAddress: deriveStorageAddress(from, programName, nonce) };
+};
+
+test('signature verification refuses lone surrogates rather than verifying replacement bytes', () => {
+  const pair = testKeyPair();
+  const address = `0x${pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex')}`;
+  const message = 'pay-to:\ufffd';
+  const signature = sign(null, Buffer.from(message), pair.privateKey).toString('base64url');
+  assert.equal(verifyDemosSignature({ address, message, signature }), true);
+  for (const surrogate of ['\ud800', '\udfff']) {
+    assert.equal(verifyDemosSignature({ address, message: `pay-to:${surrogate}`, signature }), false);
+  }
+});
+
+test('CREATE snapshots the canonical artifact before caller mutations', () => {
+  const signedListing = { listingId: 'before', offering: { text: 'original' }, tags: ['first'] };
+  const expected = structuredClone(signedListing);
+  const payload = buildStorageProgramCreatePayload(createInput(signedListing));
+  signedListing.listingId = 'after'; signedListing.offering.text = 'changed'; signedListing.tags.push('later');
+  assert.deepEqual(payload.content.data[1].data, expected);
+  assert.notEqual(payload.content.data[1].data, signedListing);
+});
+
+test('CREATE enforces the 16,384-byte canonical listing boundary including UTF-8 expansion', () => {
+  const capacity = 16_384 - Buffer.byteLength(JSON.stringify({ text: '' }));
+  const listing = { text: 'é'.repeat(Math.floor(capacity / 2)) + 'x'.repeat(capacity % 2) };
+  assert.equal(Buffer.byteLength(JSON.stringify(listing)), 16_384);
+  assert.doesNotThrow(() => buildStorageProgramCreatePayload(createInput(listing)));
+  listing.text += 'x';
+  assert.throws(() => buildStorageProgramCreatePayload(createInput(listing)), /size|byte|large/i);
+});
+
+test('CREATE enforces the Demos storage 64-level JSON nesting boundary', () => {
+  const nested = (levels) => {
+    let value = {};
+    for (let level = 1; level < levels; level++) value = { child: value };
+    return value;
+  };
+  assert.doesNotThrow(() => buildStorageProgramCreatePayload(createInput(nested(64))));
+  assert.throws(() => buildStorageProgramCreatePayload(createInput(nested(65))), /depth|nest/i);
+});
+
+for (const [label, make] of [
+  ['bigint', () => ({ amount: 1n })], ['NaN', () => ({ amount: NaN })],
+  ['infinity', () => ({ amount: Infinity })],
+  ['cycle', () => { const value = {}; value.self = value; return value; }],
+  ['accessor', () => Object.defineProperty({}, 'amount', { enumerable: true, get() { throw new Error('TEST accessor'); } })],
+]) test(`CREATE refuses non-JSON artifact values: ${label}`, () => {
+  assert.throws(() => buildStorageProgramCreatePayload(createInput(make())));
+});
+
+test('CI runs the seller Node regression files', () => {
+  const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /run: node --test --test-concurrency=1 packages\/dacs-seller\/test\/\*\.test\.mjs/);
 });
