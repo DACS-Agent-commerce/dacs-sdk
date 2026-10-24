@@ -375,3 +375,20 @@ it.each([
   expect(isReadableFinalityCommitmentRecord(purchase.anchored.record)).toBe(true);
   expect(await check(purchase)).toBe(COMMITTED_AT);
 });
+
+
+it("uses the same verified binding when the caller replaces scope during authority validation", async () => {
+  const purchase = await committedPurchase();
+  const otherChain = "f".repeat(64);
+  const reader = Object.assign(() => "valid", { chainIdentity: otherChain });
+  const pending = check(purchase, reader);
+  purchase.scope.binding = { ...purchase.scope.binding,
+    profile: { ...purchase.scope.binding.profile, chainIdentity: otherChain } };
+  await expect(pending).rejects.toMatchObject({ code: "commitment_reader_chain_mismatch" });
+});
+
+it("accepts authenticated seller scope with advisory ClaimReference parameters", async () => {
+  const purchase = await committedPurchase();
+  purchase.scope.seller = `${SELLER}?network=testnet`;
+  expect(await check(purchase)).toBe(COMMITTED_AT);
+});

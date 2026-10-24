@@ -31,7 +31,7 @@ import { assertTp1Binding, type Tp1Binding } from "./profile.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   admitWireJson, cloneJson, deepFreeze, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,
-  sameCanonical, verifyEd25519, claimKey, type JsonRecord, type ListingPin,
+  sameCanonical, verifyEd25519, type JsonRecord, type ListingPin,
 } from "./validate.js";
 
 /** The most bytes one commitment or Agreement document may have (the response body bound). */
@@ -293,8 +293,9 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreeme
  */
 export async function commitmentReceiptTime(value: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: CommitmentScope): Promise<number> {
   if (typeof reader !== "function" || types.isProxy(reader)) fail("commitment_reader_required", 500);
-  await assertTp1Binding(scope.binding, scope.binding?.local);
-  const chainIdentity = scope.binding.profile.chainIdentity;
+  const binding = scope.binding;
+  await assertTp1Binding(binding, binding?.local);
+  const chainIdentity = binding.profile.chainIdentity;
   const readerChain = Object.getOwnPropertyDescriptor(reader, "chainIdentity");
   if (!readerChain || !("value" in readerChain) || readerChain.value !== chainIdentity) fail("commitment_reader_chain_mismatch", 500);
   // DACS-3 §8.5.2 check 9 and CA-5/CA-7: the pinned Listing's own phase selects the Agreement type before any
@@ -318,7 +319,8 @@ export async function commitmentReceiptTime(value: unknown, agreement: unknown, 
       typeof signature.value !== "string" || !SIGNATURE.test(signature.value) ||
       Buffer.from(signature.value, "base64url").toString("base64url") !== signature.value) invalid();
   const signed = Buffer.from(`${FINALITY_COMMITMENT_DOMAIN}${contentHash(record)}`, "utf8");
-  if (!verifyEd25519(signed, Buffer.from(signature.value as string, "base64url"), claimKey(scope.seller))) invalid();
+  const sellerKey = canonicalDemosAgentPublicKey(scope.seller);
+  if (sellerKey === null || !verifyEd25519(signed, Buffer.from(signature.value as string, "base64url"), Buffer.from(sellerKey).toString("hex"))) invalid();
   // CA-6 says who committed; CA-7 that both parties agreed to what was committed.
   const { agreement: committed, generatedAt, deadline } = assertCommittedAgreement(agreement, record);
   const receipt = c.anchorReceipt as JsonRecord;
