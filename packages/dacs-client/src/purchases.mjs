@@ -945,6 +945,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     const exceeded = new RangeError('chain observation exceeds its byte limit');
     try {
       let used = 0;
+      const hasSourceDisposition = value != null && Object.hasOwn(value, 'sourceDisposition');
       const containers = new WeakMap();
       const charge = amount => { used += amount; if (used > MAX_TRANSFER_OBSERVATION_BYTES) throw exceeded; };
       const stringBytes = text => {
@@ -967,6 +968,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       });
       if (typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TRANSFER_OBSERVATION_BYTES) return invalid('chain observation exceeds its byte limit');
       value = JSON.parse(bytes);
+      if (hasSourceDisposition && !Object.hasOwn(value, 'sourceDisposition')) return invalid('chain observation omitted its source disposition');
     } catch (error) { return invalid(error === exceeded ? exceeded.message : 'chain observation must be JSON serializable'); }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('chain observation must be an object');
     if (!['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
