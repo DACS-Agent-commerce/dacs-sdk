@@ -244,10 +244,10 @@ test('a kept CREATE that can still land, is pending, or cannot be read is never 
     assert.equal(answer.txHash, kept, label);
     return answer;
   };
-  // Nonce not overtaken: it can still be executed; the state is not even read.
+  // Nonce not overtaken: absence cannot supersede a CREATE that can still land.
   w.faults.broadcast.push('drop');
   await expectLive('account nonce below the kept nonce');
-  assert.deepEqual(w.calls.reads, ['nonce']);
+  assert.deepEqual(w.calls.reads, ['nonce', 'state']);
   w.other();
   w.chain.pending.push(kept);
   w.faults.broadcast.push('drop');
@@ -502,7 +502,7 @@ test('a superseded named attempt cannot broadcast or answer for its live success
 });
 
 
-for (const method of ['anchorEvidence', 'reconcilePaymentEvidence']) test(`an applied CREATE is retained without duplicate broadcasts on ${method}`, async (t) => {
+for (const method of ['anchorEvidence', 'reconcilePaymentEvidence']) for (const nonce of ['current', 'stale', 'unavailable']) test(`an applied CREATE is retained without duplicate broadcasts on ${method} with ${nonce} nonce`, async (t) => {
   const w = wallet(t);
   const broadcast = async ({ signedTransaction, txHash }) => {
     assert.equal(w.chain.applied.includes(txHash), false, 'the node rejects duplicate applied hashes');
@@ -510,10 +510,14 @@ for (const method of ['anchorEvidence', 'reconcilePaymentEvidence']) test(`an ap
     // A qualified broadcaster lands this transaction once.
     w.chain.applied.push(txHash); w.chain.accountNonce = w.chain.signed[txHash];
   };
-  let journal = w.open({ broadcast });
+  const open = () => w.open({ broadcast, ...(nonce === 'current' ? {} : { readAccountNonce: async () => {
+    if (nonce === 'unavailable') throw new Error('TEST nonce unavailable');
+    return 0;
+  } }) });
+  let journal = open();
   const first = await journal.anchorEvidence(w.input());
   assert.equal(first.status, 'submitted');
-  journal.close(); journal = w.open({ broadcast });
+  journal.close(); journal = open();
   t.after(() => journal.close());
   assert.deepEqual(await journal[method](w.input()), { status: 'applied', txHash: first.txHash });
   assert.equal(w.calls.sign, 1);
