@@ -8,7 +8,7 @@ const { classifyPolicyChecks, registryAuditDriftDisposition, registryContainerDi
 const baseline = JSON.parse(readFileSync("scripts/registry-container-audit-baseline.json", "utf8"));
 const counts = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
 const summary = () => ({ schema: "dacs-registry-container-acceptance/v1", complete: true, packageVersion: RELEASE_VERSION,
-  functionalPassed: true, generatedTestsPassed: true, docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
+  functionalPassed: true, generatedTestsPassed: true, docker: { policy: { schema: "dacs-runtime-image-policy/v1", typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true } },
   audit: { ...counts, observedAdvisories: [], unlistedAdvisories: [], directAdvisories: [] },
   securityGate: { passed: true, auditExitCode: 0, registryDependencyPolicyPassed: true, productionImageDependencyPolicyPassed: true,
     engineStrictExitCode: 0, lockSbomExitCode: 0, physicalSbomExitCode: 0,
