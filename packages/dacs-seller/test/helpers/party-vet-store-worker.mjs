@@ -15,9 +15,10 @@ if (mode === 'init-crash') {
   const db = new DatabaseSync(path);
   db.exec('BEGIN IMMEDIATE');
   db.prepare('UPDATE jobs SET value = ? WHERE key = ?').run('{"n":99}', 'n');
+  // The parent kills this process while its write is uncommitted. The handler
+  // keeps the connection reachable: a collected connection closes and drops its write lock.
+  process.on('message', () => { globalThis.gc(); process.send(db.inTransaction ? 'collected' : 'lost'); });
   process.send('locked');
-  // The parent kills this process while its write is uncommitted.
-  process.on('message', () => {});
 } else {
   const store = mode === 'reject-memory' ? createInMemoryPartyVetStore() : openPartyVetStore({ path });
   await assert.rejects(store.update('job', async () => { throw new Error('TEST rejected change'); }), { code: 'journal-invalid' });
