@@ -1,11 +1,11 @@
 import test from 'node:test';
-import {createHash} from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-const { createSellerTransportStore, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
+const { createSellerTransportClientAuth, createSellerTransportServerAuth, createSellerTransportStore, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
 const buyer = 'did:demos:agent:' + 'a'.repeat(64), seller = 'did:demos:agent:' + 'b'.repeat(64);
 const HOUR = 3600000;
 const jid = label => '0' + createHash('sha256').update(String(label)).digest('hex').slice(0,25).toUpperCase();
@@ -628,4 +628,55 @@ test('an exact pre-admission state nonce keeps its null answer after a proposal 
   assert.equal(w.store.reserve(request(w, 1, { path: '/dacs/v1/agreements/state', nonce: 'other-unadmitted' }), {}).disposition, 'cached');
   assert.equal(w.count('peer_jobs'), 1);
   assert.equal(w.store.reserve({ ...read, nonce: 'fresh-read' }, {}).disposition, 'perform');
+});
+
+
+for (const reconcile of [false, true]) test(`definite no-effect 503 nonce survives later work and reopen (reconcile=${reconcile})`, t => {
+  const w = world(t, { maxRecords: 5 }), first = request(w, 0);
+  const refused = '{ "error": "refused before work" }', completed = '{ "result": "later work" }';
+  w.store.finish(w.store.reserve(first, {}), 503, refused, { noEffect: true }); w.reopen();
+  const next = { ...first, nonce: 'later' }, reservation = w.store.reserve(next, {});
+  assert.equal(reservation.disposition, 'perform');
+  assert.deepEqual(w.store.reserve(first, {}), { disposition: 'cached', status: 503, text: refused });
+  if (reconcile) {
+    w.store.finish(reservation, 503, '{"error":"unknown"}'); w.reopen();
+    const uncertain = w.store.reserve(next, {});
+    w.store.reconcile(uncertain, next, 200, completed);
+  } else w.store.finish(reservation, 200, completed);
+  w.reopen();
+  assert.deepEqual(w.store.reserve(first, {}), { disposition: 'cached', status: 503, text: refused });
+  assert.deepEqual(w.store.reserve(next, {}), { disposition: 'cached', status: 200, text: completed });
+});
+
+test('global nonce capacity bounds full-window counters for distinct authenticated short-lived buyers', async t => {
+  const w = world(t, { maxRecords: 1, nonceWindowMs: HOUR }), start = w.now();
+  const signer = seed => {
+    const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), Buffer.alloc(32, seed)]), format: 'der', type: 'pkcs8' });
+    const raw = createPublicKey(privateKey).export({ format: 'der', type: 'spki' }).subarray(12).toString('hex');
+    return { claim: `did:demos:agent:${raw}`, sign: bytes => sign(null, bytes, privateKey) };
+  };
+  const sellerSigner = signer(200), listingPin = request(w, 0).listingPin;
+  const attempt = async (seed, allowed) => {
+    const buyerSigner = signer(seed), jobId = jid(`quota-${seed}`), agreementHash = 'e'.repeat(64);
+    const body = { transportIdentity: { jobId, buyer: buyerSigner.claim, seller: sellerSigner.claim, agreementHash } };
+    const rawBody = Buffer.from(JSON.stringify(body)), path = '/dacs/v1/agreements/state';
+    const client = createSellerTransportClientAuth({ buyerSigner, seller: sellerSigner.claim, resolveJob: () => ({ listingPin, agreementHash }), now: w.now,
+      lifetimeMs: 1, nonce: () => Buffer.alloc(24, seed).toString('base64url') });
+    const server = createSellerTransportServerAuth({ sellerSigner, listingPin, store: w.store, now: w.now });
+    const signed = await client.request(path, body, rawBody), p = server.readRequest(signed.header);
+    server.validate(p, { method: 'POST', path, body, rawBody });
+    if (allowed) assert.equal(server.store.reserve(p, body).disposition, 'cached');
+    else noMutations(() => {
+      assert.throws(() => server.store.classify(p, body), { code: 'peer_store_capacity', status: 503 });
+      assert.throws(() => server.store.reserve(p, body), { code: 'peer_store_capacity', status: 503 });
+    });
+    assert.equal(w.count('peer_nonce_retention'), 1);
+    assert.equal(w.count('peer_nonces'), 1);
+  };
+  await attempt(1, true);
+  for (let seed = 2; seed <= 32; seed++) { w.advance(2); w.reopen(); await attempt(seed, false); }
+  w.advance(HOUR - (w.now() - start) - 1); w.reopen();
+  await attempt(33, false);
+  w.advance(1); w.reopen();
+  await attempt(34, true);
 });
