@@ -673,6 +673,34 @@
   },
   {
     "sha": null,
+    "subject": "fix(client): D11 restore standalone provider and strengthen import vectors",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "packages/dacs-client/test/d11-import-boundary.test.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 generate pure payload helpers from provider",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/generate-payload-helpers.mjs",
+      "packages/dacs-client/src/wallet/payload-helpers.mjs",
+      "packages/dacs-client/test/d11-import-boundary.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
     "subject": "fix(client): D11 add inert guarded SQLite statement execution",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -721,85 +749,11 @@
       "packages/dacs-client/test/guarded-sqlite.test.mjs"
     ]
   },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 restore standalone provider and strengthen import vectors",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
-      "packages/dacs-client/test/d11-import-boundary.test.mjs",
-      "packages/dacs-client/test/d11-seam-parameters.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 fence SQLite callbacks and preserve exec semantics",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/util/guarded-sqlite.mjs",
-      "packages/dacs-client/test/guarded-sqlite.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 keep rollback guard vectors portable to the Node floor",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/test/guarded-sqlite.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 let SQLite identify empty exec remainders",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/util/guarded-sqlite.mjs",
-      "packages/dacs-client/test/guarded-sqlite.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 reject SQL callbacks with quoted function names",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/util/guarded-sqlite.mjs",
-      "packages/dacs-client/test/guarded-sqlite.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 generate pure payload helpers from provider",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/scripts/generate-payload-helpers.mjs",
-      "packages/dacs-client/src/wallet/payload-helpers.mjs",
-      "packages/dacs-client/test/d11-import-boundary.test.mjs"
-    ]
-  },
+  {"sha":null,"subject":"fix(client): D11 fence SQLite callbacks and preserve exec semantics","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 keep rollback guard vectors portable to the Node floor","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 let SQLite identify empty exec remainders","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 reject SQL callbacks with quoted function names","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/guarded-sqlite.mjs","packages/dacs-client/test/guarded-sqlite.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 preserve compact guarded SQLite records","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
   {
     "sha": null,
     "subject": "delta(client): D11 split 03 add the concrete SQLite transaction adapter",
@@ -858,19 +812,7 @@
       "packages/dacs-client/test/purchase-state-schema.test.mjs"
     ]
   },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 share buyer schema with the database fixture",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
-      "packages/dacs-client/test/purchase-state-schema.test.mjs"
-    ]
-  },
+  {"sha":null,"subject":"fix(client): D11 share buyer schema with the database fixture","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/test/helpers/purchase-integrity-database.mjs","packages/dacs-client/test/purchase-state-schema.test.mjs"]},
   {
     "sha": null,
     "subject": "delta(client): D11 split 04 inject buyer seams behind the action hold",
@@ -912,40 +854,9 @@
       "packages/dacs-client/test/d11-seam-parameters.test.mjs"
     ]
   },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 reconcile held buyer seam merge provenance",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 resolve duplicate schema import after stack merge",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 reconcile adapter initialization merge",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs"
-    ]
-  },
+  {"sha":null,"subject":"fix(client): D11 reconcile held buyer seam merge provenance","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 resolve duplicate schema import after stack merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/test/helpers/purchase-integrity-database.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 reconcile adapter initialization merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
   {
     "sha": null,
     "subject": "delta(client): D11 split 05 validate retained host transfer observations",
@@ -1025,51 +936,9 @@
       "packages/dacs-client/test/passive-observation.test.mjs"
     ]
   },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 enforce passive read deadlines and consistent transfer facts",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/dacs/chain.mjs",
-      "packages/dacs-client/src/util/http.mjs",
-      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-      "packages/dacs-client/test/passive-observation.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 bound later passive binding and canonical body reads",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-      "packages/dacs-client/test/helpers/passive-native-world.mjs",
-      "packages/dacs-client/test/passive-observation.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "delta(client): D11 split 06 authenticate read-only purchase diagnostics",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/README.md",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
-      "packages/dacs-client/src/purchases.mjs",
-      "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
-      "packages/dacs-client/test/host-observations.test.mjs"
-    ]
-  },
+  {"sha":null,"subject":"fix(client): D11 enforce passive read deadlines and consistent transfer facts","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/dacs/chain.mjs","packages/dacs-client/src/util/http.mjs","packages/dacs-client/src/wallet/devnet-native-transport.mjs","packages/dacs-client/test/passive-observation.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 bound later passive binding and canonical body reads","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/wallet/devnet-native-transport.mjs","packages/dacs-client/test/helpers/passive-native-world.mjs","packages/dacs-client/test/passive-observation.test.mjs"]},
+  {"sha":null,"subject":"delta(client): D11 split 06 authenticate read-only purchase diagnostics","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/README.md","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/dacs/protocol-purchases.mjs","packages/dacs-client/src/purchases.mjs","packages/dacs-client/test/diagnostic-store-regressions.test.mjs","packages/dacs-client/test/host-observations.test.mjs"]},
   {
     "sha": null,
     "subject": "fix(client): D11 keep diagnostic readers passive and preserve error codes",
@@ -1084,29 +953,6 @@
       "packages/dacs-client/test/host-observations.test.mjs"
     ]
   },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 keep all diagnostic readers passive and project retained fields",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs",
-      "packages/dacs-client/src/purchases.mjs",
-      "packages/dacs-client/test/diagnostic-reader.test.mjs",
-      "packages/dacs-client/test/host-observations.test.mjs"
-    ]
-  },
-  {
-    "sha": null,
-    "subject": "fix(client): D11 reconcile the observation-limit diagnostic merge",
-    "files": [
-      "packages/dacs-client/DELTA-COMMITS.json",
-      "packages/dacs-client/DELTA-LEDGER.json",
-      "packages/dacs-client/DELTA-MAP.md",
-      "packages/dacs-client/HOLD.json",
-      "packages/dacs-client/scripts/check-hold.mjs"
-    ]
-  }
+  {"sha":null,"subject":"fix(client): D11 keep all diagnostic readers passive and project retained fields","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/purchases.mjs","packages/dacs-client/test/diagnostic-reader.test.mjs","packages/dacs-client/test/host-observations.test.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 reconcile the observation-limit diagnostic merge","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]}
 ]
