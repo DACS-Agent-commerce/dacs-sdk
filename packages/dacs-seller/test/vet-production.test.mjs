@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
-import { JOB, seller } from './helpers/protocol-fixture.mjs';
+import { JOB, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 
 test('staged Vet factory refuses before any signer, anchor or row operation',()=>{
@@ -44,4 +44,10 @@ test('counterparty deadline aborts a never-settling reader',async t=>{
 
 for(const state of ['accepted','included'])test(`seller-only ${state} receipt cannot close a staged Vet`,async()=>{
  const f=productionFixture();f.controls.receiptStateFor=address=>address===compositeVerificationAddress(JOB,seller.claim)?state:'finalized';f.controls.receiptVerdict='valid';await assert.rejects(f.run(),e=>e.code==='seller_vet_receipt_invalid');f.base.close();
+});
+test('a buyer Vet kept for a retry is not reused once its receipt no longer qualifies',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();f.controls.failCounterpartySave=true;
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),/counterparty checkpoint lost/);
+ f.controls.receiptStateFor=address=>address===compositeVerificationAddress(JOB,buyer.claim)?'accepted':'finalized';
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='party_vet_unavailable');assert.equal(f.local.writes.length,1);f.base.close();
 });
