@@ -19,10 +19,11 @@ export async function signRequestWithProof(input: Omit<WireRequestInput, "endpoi
     publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [input.job.listingPin],
     capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: input.now, expiresAt: input.now + 60_000,
   }, seller!, input.binding, input.local);
-  const endpointProof = wire.verifyEndpointProof(bytes, {
+  const endpointProof = (await wire.verifyEndpointProof(bytes, {
     readListingEligibility: readFixtureListingEligibility,
+    readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: input.binding.profile.chainIdentity }),
     listing: { seller: input.seller, publicEndpoint, listingPin: input.job.listingPin },
     binding: input.binding, local: input.local, now: input.now,
-  });
+  }));
   return wire.signWireRequest({ ...input, endpointProof, publicEndpoint });
 }
