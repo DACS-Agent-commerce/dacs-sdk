@@ -23,8 +23,8 @@ export async function stagedProvider(config){
 export async function recordFor(input,signer=buyer,decision='pass',claim=signer.claim){
  return signComponentArtifact({recordVersion:'1',jobId:input.jobId,evaluatedParty:input.identityBundle.presentedBy,bundleHash:identityBundleHash(input.identityBundle),requirementHash:sha256Hex(canonicalize(input.requirement)),freshness:[],supplementary:[],dealSpecific:[],overallDecision:decision,generatedAt:NOW},ARTIFACT_SEPARATORS.CompositeVerificationRecord,{signer:claim,algorithm:'ed25519',sign:signer.signBytes});
 }
-export function productionFixture(){
- const base=createInMemoryPartyVetStore(),local=localAnchor({now:()=>NOW}),seen=[],issued=new Map(),evaluations=new Map();let nonceSequence=0;
+export function productionFixture(options={}){
+ const base=createInMemoryPartyVetStore(options),local=localAnchor({now:()=>NOW}),seen=[],issued=new Map(),evaluations=new Map();let nonceSequence=0;
  const controls={nonce:null,wrongSigner:false,qualifiedSigner:false,decision:'pass',receiptState:'finalized',receiptVerdict:null,failCounterpartySave:false,relayOnly:false,signs:0};
  const store={...base,update:(key,change)=>base.update(key,(old,rows)=>{const next=change(old,rows);if(controls.failCounterpartySave&&!old?.counterpartyRecord&&next?.counterpartyRecord){controls.failCounterpartySave=false;throw new Error('TEST counterparty checkpoint lost');}return next;})};
  const listing=fixtureListing(seller,{now:NOW}),pin=listingPin(listing);
@@ -34,8 +34,8 @@ export function productionFixture(){
  const evaluationKey=input=>sha256Hex(canonicalize([input.jobId,identityBundleHash(input.identityBundle),sha256Hex(canonicalize(input.requirement))]));
  const consumed=new Set();
  const counterparty={
-  issueChallenge:async({jobId})=>{const sessionNonce=controls.nonce??sha256Hex('TEST nonce '+jobId+ ++nonceSequence);issued.set(sessionNonce,jobId);return{issuer:buyer.claim,seller:seller.claim,jobId,sessionNonce,expiresAt:NOW+60000};},
-  readRecord:async input=>{const record=evaluations.get(evaluationKey(input));if(record)return{status:'present',record:structuredClone(record)};return issued.get(input.identityBundle.sessionNonce)===input.jobId&&!consumed.has(input.identityBundle.sessionNonce)?{status:'unattempted',issuer:buyer.claim,jobId:input.jobId,bundleHash:identityBundleHash(input.identityBundle),requirementHash:sha256Hex(canonicalize(input.requirement))}:{status:'indeterminate'};},
+  issueChallenge:async({jobId})=>{const sessionNonce=controls.nonce??sha256Hex('TEST nonce '+jobId+ ++nonceSequence);issued.set(`${jobId}/${sessionNonce}`,true);return{issuer:buyer.claim,seller:seller.claim,jobId,sessionNonce,expiresAt:NOW+60000};},
+  readRecord:async input=>{const record=evaluations.get(evaluationKey(input));if(record)return{status:'present',record:structuredClone(record)};return issued.has(`${input.jobId}/${input.identityBundle.sessionNonce}`)&&!consumed.has(input.identityBundle.sessionNonce)?{status:'unattempted',issuer:buyer.claim,jobId:input.jobId,bundleHash:identityBundleHash(input.identityBundle),requirementHash:sha256Hex(canonicalize(input.requirement))}:{status:'indeterminate'};},
   evaluate:async input=>{const nonce=input.identityBundle.sessionNonce;if(consumed.has(nonce))throw new Error('TEST buyer challenge already consumed');consumed.add(nonce);seen.push(structuredClone(input));const signer=controls.wrongSigner?seller:buyer;const record=await recordFor(input,signer,controls.decision,controls.qualifiedSigner?signer.claim+'?region=GB':signer.claim);evaluations.set(evaluationKey(input),record);return record;},
  };
  const config={anchor,wallet:{claim:seller.claim,signBytes:bytes=>{controls.signs++;return seller.signBytes(bytes);}},listing,store,counterparty,now:()=>NOW,log:()=>{}};
