@@ -609,18 +609,44 @@ record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The bridge adds the exact
+`settlementStore`, and `reconcile`. The rail's timing bounds
+`inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
+`nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
+`payDem` to `createPayDemRail` unchanged; see
+[the pay-dem execution gate](./docs/pay-dem-execution.md) for what the rail
+requires of the node's transaction record after inclusion. The bridge adds the exact
 `(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
-`PayDemSettlementRecoveryContext` and must return either an exact
-`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
-when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Even authoritative absence does not revoke a
+`PayDemSettlementRecoveryContext` and returns one of three outcomes: an exact
+`PayDemReconciledSettlement` (including the observed `amountOs` and
+`execution: "executed"` after authenticating the confirmed record and its
+`gcr_edits` debiting the payer and crediting the payee that amount); a bound
+`PayDemReconciledFailure` with `ok: false`, `errorClass: "permanent"`, the exact
+`amountOs` and `failureProof` after authenticating a terminal failed record; or
+`null` only when authoritative observation proves no transfer for that tuple
+landed. Each terminal record must bind the retained hash, signed nonce,
+inclusion block, payer, payee and OS amount. Status-index `included` alone is
+not enough (#338), and neither is a `confirmed` record with absent or empty
+`gcr_edits`, which the node applies as a no-op. Unproven, non-final or
+conflicting observations must throw. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory
 recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+carrying `priorAttempts` bypasses the submit-capable idempotency claim entirely,
+even when its rail log is empty. All retained native attempts must name the same
+hash and network (at most 256 entries). The reconciler receives that canonical
+hash as `context.txHash`; it must load the original prepared-transfer journal and
+authenticate its signed nonce and payment tuple, throwing if the journal is
+missing or conflicting. Retained recovery also requires `readOutcome(key, binding)`
+on the settlement store (and `readOutcome(key)` on its backing log). This read
+must return the immutable recorded outcome or `null` without claiming or renewing
+a generation. The bridge checks the exact payment binding and transaction
+identity before and after the execution read. Conflicting history, cached
+identities, blocks or permanent proofs withhold a result without an outcome write
+or another debit. Missing lookup support fails closed; `null` never grants submit
+authority. Repeat audits always reread execution. Every request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and
