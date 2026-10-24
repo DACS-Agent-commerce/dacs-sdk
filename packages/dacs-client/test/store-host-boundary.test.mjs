@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 
 function world(t) {
@@ -109,3 +112,26 @@ test('constructing the adapter tracks host statements before its first transacti
   `],{encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
 });
+
+for (const warm of [false, true]) {
+  test(`refusing an unfinished host writer preserves its iterator and durable row, warm=${warm}`, t => {
+    const dir = mkdtempSync(join(tmpdir(), 'dacs-host-writer-')), path = join(dir, 'state.sqlite');
+    const db = new DatabaseSync(path), store = createSqlitePurchaseStore();
+    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+    db.exec('CREATE TABLE records(id TEXT PRIMARY KEY)');
+    const rows = () => db.prepare('SELECT id FROM records ORDER BY id').all().map(row => row.id);
+    if (warm) store.transaction(db, () => {});
+    const iterator = db.prepare("INSERT INTO records VALUES ('TEST-host') RETURNING id").iterate();
+    assert.equal(iterator.next().value.id, 'TEST-host');
+    let called = false;
+    assert.throws(() => store.transaction(db, () => { called = true; }));
+    assert.equal(called, false);
+    assert.equal(iterator.next().done, true);
+    assert.deepEqual(rows(), ['TEST-host']);
+    const reopened = new DatabaseSync(path);
+    try { assert.equal(reopened.prepare('SELECT id FROM records').get().id, 'TEST-host'); }
+    finally { reopened.close(); }
+    store.transaction(db, () => db.exec("INSERT INTO records VALUES ('TEST-retry')"));
+    assert.deepEqual(rows(), ['TEST-host', 'TEST-retry']);
+  });
+}
