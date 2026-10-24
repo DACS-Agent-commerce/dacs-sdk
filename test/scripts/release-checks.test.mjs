@@ -226,6 +226,15 @@ test("a shipped module with an unresolved import fails from the clean consumer",
 }));
 
 
+test("a public export that exits its importer is refused even with a zero exit status", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  const path = join(root, "build.mjs");
+  await writeFile(path, (await readFile(path, "utf8")) + "\nfs.appendFileSync('dist/entry0.js', 'process.exit(0);');");
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  result.artifacts = result.artifacts.filter(a => a.manifest.name !== "create-dacs-agent");
+  await assert.rejects(consume(result.artifacts, join(root, "scratch"), () => {}), /did not finish importing/);
+}));
+
 test("all five packages enforce the existing release identity and publish policy", () => {
   for (const definition of packages) {
     for (const damage of [
