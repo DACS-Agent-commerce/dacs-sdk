@@ -117,9 +117,9 @@ for (const kind of ['conflict', 'trigger']) {
     assert.equal(finished, true);
     assert.ok(outerError);
     assert.match(innerError.message, kind === 'conflict' ? /UNIQUE constraint/ : /TEST-trigger-rollback/);
-    assert.throws(() => db.prepare('SELECT 1'), /closed|not open/i, 'recovery failure closes the connection before returning the inner error');
+    assert.throws(() => db.prepare('SELECT 1'), /closed|not open|transaction ended/i, 'recovery failure closes the connection before returning the inner error');
     assert.match(directError?.message ?? '', /closed|not open|finalized/i);
-    assert.match(execError?.message ?? '', /closed|not open/i);
+    assert.match(execError?.message ?? '', /closed|not open|transaction ended/i);
     assert.equal(nestedError?.code, 'client_not_wired');
     assert.equal(called, false);
     const reopened = new DatabaseSync(path);
@@ -185,7 +185,7 @@ for (const depth of ['outer', 'nested']) for (const kind of ['conflict', 'trigge
       return 'TEST-caught';
     };
     assert.throws(() => store.transaction(db, () => depth === 'nested' ? store.transaction(db, body) : body()));
-    if (depth === 'nested') assert.throws(() => db.prepare('SELECT 1'), /closed|not open/i);
+    if (depth === 'nested') assert.throws(() => db.prepare('SELECT 1'), /closed|not open|transaction ended/i);
     else {
       assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
       assert.equal(store.transaction(db, () => 'TEST-retry'), 'TEST-retry');
@@ -331,4 +331,33 @@ test('nested callbacks cannot roll back a guessed package savepoint and return s
     }), 'TEST-success');
   });
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
+});
+
+for (const nested of [false, true]) for (const target of ['schema', 'fts']) {
+  test(`callback result getters remain guarded through rollback and reopen: nested=${nested}, target=${target}`, t => {
+    const { db, path } = database(t), store = createSqlitePurchaseStore();
+    db.exec("CREATE VIRTUAL TABLE search USING fts5(body); INSERT INTO search VALUES ('TEST-retained')");
+    const body = () => ({ get then() {
+      db.exec('ROLLBACK; ' + (target === 'fts' ? 'DELETE FROM search' : "CREATE TABLE escaped(id TEXT); INSERT INTO escaped VALUES ('TEST-escaped')"));
+      return undefined;
+    } });
+    assert.throws(() => store.transaction(db, () => nested ? store.transaction(db, body) : body()));
+    const reopened = new DatabaseSync(path);
+    try {
+      assert.equal(reopened.prepare('SELECT count(*) n FROM search').get().n, 1);
+      assert.equal(reopened.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n, 0);
+    } finally { reopened.close(); }
+  });
+}
+test('a fenced handle reopened inside a catching nested callback cannot autocommit', t => {
+  const { db, path } = database(t), store = createSqlitePurchaseStore();
+  db.exec("INSERT INTO records VALUES ('TEST-existing')");
+  assert.throws(() => store.transaction(db, () => store.transaction(db, () => {
+    assert.throws(() => store.transaction(db, () => db.exec("INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')")), /UNIQUE/);
+    db.open();
+    assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST-escaped')"), /transaction ended/);
+  })));
+  const reopened = new DatabaseSync(path);
+  try { assert.deepEqual(reopened.prepare('SELECT id FROM records').all().map(row => row.id), ['TEST-existing']); }
+  finally { reopened.close(); }
 });
