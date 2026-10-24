@@ -28,8 +28,8 @@ execution before delivery.
   revision of the Standard.
 - **The TP-1 declaration** is where the release says how it measures up: which
   Standard revision it follows, what it does, and the ways it is known to
-  fall short so far (composition checks qualify and complete that list). It has two parts: the [declaration](testnet-profile-tp1.md) and the
-  machine-readable [register](../conformance/tp1-register.json). This page is
+  fall short so far (composition checks qualify and complete that list). The [declaration](testnet-profile-tp1.md) is available here; its
+  machine-readable register is planned for a later slice. This page is
   the plain-language summary. Where they differ, the declaration is right.
 
 Building the release also showed places where the Standard itself could be
