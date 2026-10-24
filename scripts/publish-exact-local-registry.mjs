@@ -44,17 +44,27 @@ export function readPackedManifest(tarball) {
       break;
     }
     const field = (start, length) => header.subarray(start, start + length).toString("utf8").replace(/\0.*$/s, "");
+    const pathField = (start, length) => {
+      const bytes = header.subarray(start, start + length);
+      const terminator = bytes.indexOf(0);
+      if (terminator !== -1 && bytes.subarray(terminator).some(byte => byte !== 0)) {
+        throw new Error("packed tarball has nonzero path padding");
+      }
+      return field(start, length);
+    };
     const octal = (start, length) => {
       const text = field(start, length).trim();
       if (!/^[0-7]+$/.test(text)) throw new Error("packed tarball has a malformed entry size or checksum");
       return Number.parseInt(text, 8);
     };
     const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
-    if (octal(148, 8) !== checksum || !header.subarray(257, 265).equals(Buffer.from("ustar\0" + "00"))) {
+    // node-tar reads 12 checksum bytes: terminate before it reaches the typeflag.
+    if (!/^ *[0-7]+[\0 ]/.test(header.subarray(148, 156).toString("utf8")) ||
+        octal(148, 8) !== checksum || !header.subarray(257, 265).equals(Buffer.from("ustar\0" + "00"))) {
       throw new Error("packed tarball has an invalid ustar header or checksum");
     }
-    const prefix = field(345, 155);
-    const name = (prefix ? prefix + "/" : "") + field(0, 100);
+    const prefix = pathField(345, 155);
+    const name = (prefix ? prefix + "/" : "") + pathField(0, 100);
     const size = octal(124, 12);
     const type = field(156, 1);
     const body = offset + TAR_BLOCK_BYTES;
