@@ -31,7 +31,7 @@ import { assertTp1Binding, type Tp1Binding } from "./profile.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   admitWireJson, cloneJson, deepFreeze, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,
-  sameCanonical, verifyEd25519, claimKey, type JsonRecord, type ListingPin,
+  sameCanonical, verifyEd25519, type JsonRecord, type ListingPin,
 } from "./validate.js";
 
 /** The most bytes one commitment or Agreement document may have (the response body bound). */
@@ -40,7 +40,7 @@ export const MAX_WIRE_ARTIFACT_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBy
 /**
  * CF-5 admission of one external DACS document (a commitment, an Agreement)
  * from its exact received bytes: UTF-8, duplicate members, the number profile,
- * nesting depth and NFC values, before anything parses it. Returns it frozen
+ * nesting depth, before CF-1 normalizes values during canonicalization. Returns it frozen
  * and recorded, so the continuation checks accept it as admitted. A refusal is
  * `wire_artifact_rejected` (500) with the admission's own code as its detail.
  */
@@ -120,8 +120,7 @@ interface CommittedListing {
 const TP1_PAY_PHASE = "pay-dem";
 const TP1_DELIVERY_PHASE = "deliver-storage-program";
 const TP1_DELIVERABLE_KIND = "storage-program";
-const TP1_PHASES = ["negotiate-fixed-price", TP1_COMMIT_PHASE, TP1_PAY_PHASE, TP1_DELIVERY_PHASE];
-const TP1_RECEIPT_SUBSTRATE = "demos:testnet";
+const TP1_PHASE_SEQUENCE = ["negotiate-fixed-price", TP1_COMMIT_PHASE, TP1_PAY_PHASE, TP1_DELIVERY_PHASE];
 
 /**
  * DACS-1 §6.3.4: a Listing verifier reconstructs `dacs-listing:v1:` followed
@@ -159,7 +158,8 @@ function assertListingSignature(listing: Listing): void {
  * (`continuation_phase_unsupported` otherwise). Its other phases must be
  * TP-1's: exactly one pay phase, `pay-dem` (`continuation_phase_unsupported`,
  * detail `PAY-PHASE`), and exactly one delivery phase,
- * `deliver-storage-program` (detail `DELIVERY-PHASE`). That delivery
+ * `deliver-storage-program` (detail `DELIVERY-PHASE`), in precisely that four-phase
+ * order with no additional phases (detail `PIPELINE`). That delivery
  * validates a `storage-program` deliverable (DACS-4 §9.6.1 step 1), so the
  * Listing's DeliverableSpec must be one (`continuation_listing_invalid`,
  * detail `DELIVERABLE-KIND`); its pricing must be fixed, in DEM (detail
@@ -172,7 +172,7 @@ function committedListing(value: unknown, scope: CommitmentScope): CommittedList
   if (!isListing(listing) || !isListingPin(scope.listingPin)) return listingInvalid();
   const pin = scope.listingPin;
   if (listing.listingId !== pin.listingId || listing.listingVersion !== pin.version || contentHash(listing) !== pin.contentHash) listingInvalid();
-  if (listing.seller.identity.presentedBy !== scope.seller) listingInvalid();
+  if (!sameCanonicalClaimIdentity(listing.seller.identity.presentedBy, scope.seller)) listingInvalid();
   assertListingSignature(listing);
   const kinds = listing.pipeline.map((phase) => phase.kind as string);
   const negotiate = kinds.flatMap((kind, i) => (kind.startsWith("negotiate-") ? [i] : []));
@@ -182,7 +182,7 @@ function committedListing(value: unknown, scope: CommitmentScope): CommittedList
   const pays = kinds.filter((kind) => kind.startsWith("pay-")), deliveries = kinds.filter((kind) => kind.startsWith("deliver-"));
   if (pays.length !== 1 || pays[0] !== TP1_PAY_PHASE) fail("continuation_phase_unsupported", 500, "PAY-PHASE");
   if (deliveries.length !== 1 || deliveries[0] !== TP1_DELIVERY_PHASE) fail("continuation_phase_unsupported", 500, "DELIVERY-PHASE");
-  if (kinds.some((kind) => !TP1_PHASES.includes(kind))) fail("continuation_phase_unsupported", 500, "PIPELINE-PHASE");
+  if (kinds.length !== TP1_PHASE_SEQUENCE.length || kinds.some((kind, i) => kind !== TP1_PHASE_SEQUENCE[i])) fail("continuation_phase_unsupported", 500, "PIPELINE");
   if (listing.offering.deliverable.kind !== TP1_DELIVERABLE_KIND) fail("continuation_listing_invalid", 500, "DELIVERABLE-KIND");
   if (listing.pricing.kind !== "fixed" || listing.pricing.price.currency !== "DEM") fail("continuation_listing_invalid", 500, "TP1-PRICING");
   const seconds = listing.terms.deadlineSecAfterCommit;
@@ -246,13 +246,14 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreeme
   const parties = agreement.parties as JsonRecord[];
   const claims = [parties.find((p) => p.role === "buyer")?.primaryClaim, parties.find((p) => p.role === "seller")?.primaryClaim];
   const recordParties = record.parties as unknown[];
-  if (claims[0] !== recordParties[0] || claims[1] !== recordParties[1]) agreementInvalid();
+  if (!sameCanonicalClaimIdentity(claims[0], recordParties[0]) || !sameCanonicalClaimIdentity(claims[1], recordParties[1])) agreementInvalid();
   const signed = Buffer.from(`${ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument}${hash}`, "utf8");
   const signatures = agreement.signatures as JsonRecord[];
   for (const claim of claims as string[]) {
-    const found = signatures.filter((s) => s.party === claim);
-    if (found.length !== 1 || found[0]!.algorithm !== "ed25519") agreementInvalid();
-    if (!verifyEd25519(signed, Buffer.from(found[0]!.value as string, "base64url"), claimKey(claim))) agreementInvalid();
+    const found = signatures.filter((s) => sameCanonicalClaimIdentity(s.party, claim));
+    const key = canonicalDemosAgentPublicKey(claim);
+    if (found.length !== 1 || found[0]!.algorithm !== "ed25519" || key === null) return agreementInvalid();
+    if (!verifyEd25519(signed, Buffer.from(found[0]!.value as string, "base64url"), Buffer.from(key).toString("hex"))) agreementInvalid();
   }
   return { agreement, generatedAt: agreement.generatedAt, deadline: (agreement.terms as JsonRecord).deadline };
 }
@@ -292,8 +293,9 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreeme
  */
 export async function commitmentReceiptTime(value: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: CommitmentScope): Promise<number> {
   if (typeof reader !== "function" || types.isProxy(reader)) fail("commitment_reader_required", 500);
-  assertTp1Binding(scope.binding, scope.binding?.local);
-  const chainIdentity = scope.binding.profile.chainIdentity;
+  const binding = scope.binding;
+  await assertTp1Binding(binding, binding?.local);
+  const chainIdentity = binding.profile.chainIdentity;
   const readerChain = Object.getOwnPropertyDescriptor(reader, "chainIdentity");
   if (!readerChain || !("value" in readerChain) || readerChain.value !== chainIdentity) fail("commitment_reader_chain_mismatch", 500);
   // DACS-3 §8.5.2 check 9 and CA-5/CA-7: the pinned Listing's own phase selects the Agreement type before any
@@ -305,19 +307,20 @@ export async function commitmentReceiptTime(value: unknown, agreement: unknown, 
   const record = c.record as JsonRecord;
   if (!isReadableFinalityCommitmentRecord(record) || record.pattern !== "fixed-price" || !isUint(record.createdAt) ||
       !isCanonicalJobId(record.jobId) || !isHash(record.agreementHash) || !isListingPin(record.listingRef) ||
-      !Array.isArray(record.parties) || record.parties.length !== 2 || !isClaim(record.parties[0])) invalid();
+      !Array.isArray(record.parties) || record.parties.length !== 2) invalid();
   const jobId = record.jobId as string;
   const want = scope.request;
   if (!want || !isCanonicalJobId(want.jobId) || !isHash(want.agreementHash) || !isClaim(want.buyer) ||
       jobId !== want.jobId || record.agreementHash !== want.agreementHash || !sameCanonical(record.listingRef, scope.listingPin) ||
-      (record.parties as unknown[])[0] !== want.buyer || (record.parties as unknown[])[1] !== scope.seller) invalid();
+      !sameCanonicalClaimIdentity((record.parties as unknown[])[0], want.buyer) || !sameCanonicalClaimIdentity((record.parties as unknown[])[1], scope.seller)) invalid();
   // TP-1's orchestrator is the seller (G3): only its key signs the job's commitment.
   const signature = record.signature as JsonRecord;
-  if (!hasKeys(signature, ["algorithm", "signer", "value"]) || signature.algorithm !== "ed25519" || signature.signer !== scope.seller ||
+  if (!hasKeys(signature, ["algorithm", "signer", "value"]) || signature.algorithm !== "ed25519" || !sameCanonicalClaimIdentity(signature.signer, scope.seller) ||
       typeof signature.value !== "string" || !SIGNATURE.test(signature.value) ||
       Buffer.from(signature.value, "base64url").toString("base64url") !== signature.value) invalid();
   const signed = Buffer.from(`${FINALITY_COMMITMENT_DOMAIN}${contentHash(record)}`, "utf8");
-  if (!verifyEd25519(signed, Buffer.from(signature.value as string, "base64url"), claimKey(scope.seller))) invalid();
+  const sellerKey = canonicalDemosAgentPublicKey(scope.seller);
+  if (sellerKey === null || !verifyEd25519(signed, Buffer.from(signature.value as string, "base64url"), Buffer.from(sellerKey).toString("hex"))) invalid();
   // CA-6 says who committed; CA-7 that both parties agreed to what was committed.
   const { agreement: committed, generatedAt, deadline } = assertCommittedAgreement(agreement, record);
   const receipt = c.anchorReceipt as JsonRecord;
