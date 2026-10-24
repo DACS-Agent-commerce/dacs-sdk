@@ -576,6 +576,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` | 7c52736459700578f31e4223dc7c1fae4528b275 |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | 630f67cd493c31464a65b27db6c3eb3f5fe0a8c1 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 47763286db946e57755aec2a43523eb3215a1276 |
+| D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | acd00b6505dca812acfa411da3cb9538a5956b55 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | eedc7797a49fc7635cb1600db68fb1dc0d9ea74f |
 
 ## Complete commit and file inventory
 
@@ -1430,6 +1433,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1050` |
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
 | fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
