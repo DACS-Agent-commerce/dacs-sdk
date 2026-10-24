@@ -2,6 +2,11 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const callbacks = [];
+const FUNCTION_OPCODE = /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)\d*$/;
+// Virtual tables (including pragma_*() and ALTER TABLE checks) compile and run
+// SQL while the statement runs, so EXPLAIN cannot show the functions they call.
+const VIRTUAL_TABLE_OPCODE = /^V(Begin|Check|Column|Create|Destroy|Filter|InitIn|Next|Open|Rename|Update)$/;
+const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function opcodes are unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap();
 let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll;
 function check() {
@@ -21,7 +26,7 @@ function execute(fn, db, sql) {
   // program cannot be inspected: refuse it while any guarded connection has
   // application functions it might call.
   if (!db && callbacks.some(frame => applicationFunctions(frame.db).size > 0)) {
-    throw new TypeError('SQL callbacks or unrecognized function opcodes are unsupported by the statement guard');
+    throw new TypeError(REFUSED_PROGRAM);
   }
   // EXPLAIN includes trigger programs. Application functions (including
   // overrides of built-ins) cannot run while native writers are enabled.
@@ -29,11 +34,12 @@ function execute(fn, db, sql) {
     const functions = applicationFunctions(db);
     const program = nativeAll.call(nativePrepare.call(db, `EXPLAIN ${sql}`));
     if (program.some(row => {
-      if (!/^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)\d*$/.test(row.opcode)) return false;
+      if (functions.size > 0 && VIRTUAL_TABLE_OPCODE.test(row.opcode)) return true;
+      if (!FUNCTION_OPCODE.test(row.opcode)) return false;
       const name = /^([\s\S]*)\(-?\d+\)$/.exec(String(row.p4));
       return !name || functions.has(name[1].toLowerCase());
     })) {
-      throw new TypeError('SQL callbacks or unrecognized function opcodes are unsupported by the statement guard');
+      throw new TypeError(REFUSED_PROGRAM);
     }
   }
   const frame = callbacks.find(frame => frame.db === db);
@@ -111,7 +117,9 @@ function install(db) {
  * The synchronous callback's result/error is preserved; guard errors stop SQL.
  * Native methods remain unrestricted outside guarded callbacks. Predicates
  * may inspect SQLite themselves; those probes bypass recursive checking.
- * SQL callback execution/registration is unsupported during guards. Statements
+ * SQL callback execution/registration is unsupported during guards, and so are
+ * virtual tables (pragma_*() functions) on a connection with application
+ * functions, because their SQL is compiled while the statement runs. Statements
  * prepared before installation can only read while a guard is active, and are
  * refused when the guarded connection has application functions.
  * This stops stale code from writing through ordinary or captured native
