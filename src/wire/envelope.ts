@@ -486,12 +486,13 @@ export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPaylo
   if (retainedArtifacts.length === 0) fail("peer_delegation_agreement_required", 409);
   // This frozen copy came only from an authenticated, CF-5-admitted envelope.
   const admittedDelegation = admitWireJson(Buffer.from(JSON.stringify(delegation)), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401);
+  const scope = { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true };
   for (const artifact of retainedArtifacts) {
     const deadline = (artifact.terms as JsonRecord | undefined)?.deadline;
     if (!isUint(deadline)) fail("peer_delegation_deadline", 409);
-    await verifySellerSessionDelegation(admittedDelegation, { binding: c.binding, local: c.local, deadline: deadline as number });
+    await verifySellerSessionDelegation(admittedDelegation, { ...scope, deadline: deadline as number });
   }
-  await verifySellerSessionDelegation(admittedDelegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
+  await verifySellerSessionDelegation(admittedDelegation, scope);
   if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
     return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin) };
   }
