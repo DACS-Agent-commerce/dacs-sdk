@@ -104,7 +104,7 @@ it("awaits an asynchronous Listing decision and keeps the cause of its rejection
   const f = await proofFixture();
   const readListingEligibility = async (scope: Parameters<wire.ListingEligibilityReader>[0]) => readFixtureListingEligibility(scope);
   const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility });
-  await wire.assertEndpointProof(proof, f.scope);
+  await wireDiscovery.assertEndpointProof(proof, f.scope);
   const cause = new Error("listing store timeout");
   const failing = async () => { throw cause; };
   await expect(wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility: failing })).rejects.toBe(cause);
@@ -116,7 +116,7 @@ it.each([wire.DACS_SELLER_HTTP_PATHS.payments, wire.DACS_SELLER_HTTP_PATHS.bundl
     const request = { ...f.continuation.request, path };
     const proof = await wire.verifyEndpointProof(f.document(), f.options);
     const refused = { code: "continuation_commitment_invalid", detail: "CONTINUATION-EVIDENCE-REQUIRED" };
-    await expect(wire.assertEndpointProof(proof, { ...f.scope, request })).rejects.toMatchObject(refused);
+    await expect(wireDiscovery.assertEndpointProof(proof, { ...f.scope, request })).rejects.toMatchObject(refused);
     await expect(wire.verifyEndpointProof(f.document(), { ...f.options, request })).rejects.toMatchObject(refused);
   });
 
