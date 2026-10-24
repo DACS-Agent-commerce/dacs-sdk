@@ -20,6 +20,23 @@ const escapePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const targets = value => typeof value === "string" ? [value] :
   value && typeof value === "object" ? Object.values(value).flatMap(targets) : [];
 const fail = message => { throw new Error(message); };
+const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function exportTargets(value) {
+  if (value === null || value === undefined) return [];
+  if (typeof value === "string") {
+    let decoded;
+    try { decoded = decodeURIComponent(value.slice(2)); } catch { fail(`invalid export target: ${value}`); }
+    if (!value.startsWith("./") || /%2f|%5c/i.test(value) || decoded.includes("\\") ||
+        decoded.split("/").some(segment => /^(\.{1,2}|node_modules)$/i.test(segment))) fail(`invalid export target: ${value}`);
+    return [value];
+  }
+  if (Array.isArray(value) || record(value)) {
+    if (!Array.isArray(value) && Object.keys(value).some(key => /^\d+$/.test(key))) fail("invalid export condition");
+    return Object.values(value).flatMap(exportTargets);
+  }
+  fail("invalid export target type");
+}
 
 function exportMap(value) {
   if (typeof value === "string" || Array.isArray(value) || value === null) return { ".": value };
@@ -27,9 +44,14 @@ function exportMap(value) {
   return value ?? {};
 }
 
-function dependencyTargets(value, path = "") {
-  return typeof value === "string" ? [[path, value]] : value && typeof value === "object" ?
-    Object.entries(value).flatMap(([key, child]) => dependencyTargets(child, path ? `${path}/${key}` : key)) : [];
+function dependencyTargets(value, nested, path = "") {
+  if (!record(value)) fail(`malformed dependency map: ${path}`);
+  return Object.entries(value).flatMap(([key, child]) => {
+    const name = path ? `${path}/${key}` : key;
+    if (typeof child === "string") return [[name, child]];
+    if (nested && record(child)) return dependencyTargets(child, true, name);
+    fail(`malformed dependency value: ${name}`);
+  });
 }
 
 function collectProblems(checks) {
@@ -40,12 +62,13 @@ function collectProblems(checks) {
 
 function validateDependencies(p) {
   const errors = [];
-  for (const section of sections) for (let [path, value] of dependencyTargets(p[section])) {
+  for (const section of sections) for (let [path, value] of Object.hasOwn(p, section) ?
+    dependencyTargets(p[section], ["overrides", "resolutions"].includes(section), section) : []) {
     if (section === "overrides" && value.startsWith("$")) {
       const name = value.slice(1);
       value = p.dependencies?.[name] ?? p.devDependencies?.[name] ?? p.optionalDependencies?.[name];
     }
-    if (!registrySpec(value)) errors.push(`non-registry dependency in ${section}: ${value} (${path})`);
+    if (!registrySpec(value)) errors.push(`non-registry dependency in ${section}: ${value} (${path.slice(section.length + 1)})`);
   }
   if (errors.length) fail(errors.join("\n"));
 }
@@ -76,6 +99,7 @@ export function validateArtifactSet(artifacts, planned = false) {
 function manifestProblems(p, definition) {
   return collectProblems([
     () => validateDependencies(p),
+    () => exportTargets(p.exports),
     () => { if (p.private === true) fail("private package is not releasable"); },
     () => validateReleaseIdentity(p, definition.name),
     () => {
@@ -110,7 +134,7 @@ export function publicEntries(p, files) {
     .sort((a, b) => b.indexOf("*") - a.indexOf("*") || b.length - a.length)[0];
   for (const [key, value] of Object.entries(map)) {
     if (value === null) continue;
-    const paths = targets(value);
+    const paths = exportTargets(value);
     if (!paths.length) fail(`missing export target ${key}`);
     const captures = new Set();
     if (key.includes("*")) {
@@ -138,7 +162,7 @@ export function validateFiles(definition, p, files) {
     if (isAbsolute(file) || file.split("/").some(s => s === ".." || s === ".") || file.includes("\\")) fail(`invalid packed path: ${file}`);
     if (!definition.allow.some(glob => pattern(glob).test(file))) fail(`outside allow-list: ${file}`);
   }
-  const required = ["./package.json", ...targets(p.exports), ...targets(p.bin), ...targets(p.main), ...targets(p.types)];
+  const required = ["./package.json", ...exportTargets(p.exports), ...targets(p.bin), ...targets(p.main), ...targets(p.types)];
   for (const target of required) {
     const path = target.startsWith("./") ? target.slice(2) : target;
     if (path.split("/").some(s => s === ".." || s === ".") || isAbsolute(path) || path.includes("\\")) fail(`invalid export target: ${target}`);
@@ -148,19 +172,26 @@ export function validateFiles(definition, p, files) {
   publicEntries(p, files);
 }
 
-export function validateLock(lock, tarballs, consumer = ".", omitOptional = false) {
-  const allowed = new Set(tarballs.map(path => resolve(path)));
-  for (const [name, value] of Object.entries(lock.packages ?? {})) {
-    const artifact = value.resolved?.startsWith("file:") && allowed.has(resolve(consumer, value.resolved.slice(5)));
-    const internal = packages.some(p => value.name === p.name || name === `node_modules/${p.name}` || name.endsWith(`/node_modules/${p.name}`));
-    if (internal && !artifact) fail(`internal package must resolve to supplied tarball: ${name}`);
+export function validateLock(lock, artifacts, consumer = ".", omitOptional = false) {
+  if (!record(lock?.packages)) fail("lock requires a packages map");
+  const allowed = new Map(artifacts.map(({ name, tarball }) => [name, resolve(tarball)]));
+  for (const [name, value] of Object.entries(lock.packages)) {
+    if (!record(value)) fail(`invalid lock entry: ${name}`);
+    const resolution = typeof value.resolved === "string" ? value.resolved : "";
+    const path = resolution.startsWith("file:") ? resolve(consumer, resolution.slice(5)) : null;
+    const internal = packages.filter(p => value.name === p.name || name === `node_modules/${p.name}` || name.endsWith(`/node_modules/${p.name}`));
+    if (internal.some(p => allowed.get(p.name) !== path)) fail(`internal package must resolve to supplied tarball: ${name}`);
+    const artifact = internal.length > 0 && internal.every(p => allowed.get(p.name) === path);
     // External install resolutions must be registry tarballs, never links or git/path specs.
     let registry = false;
-    try { registry = new URL(value.resolved).origin === "https://registry.npmjs.org"; } catch {}
+    try { registry = new URL(resolution).origin === "https://registry.npmjs.org"; } catch {}
     // npm records optional dependency metadata even with --omit=optional.
     // It is not installed; internal identities above must still use our tarballs.
     const omitted = omitOptional && value.optional === true;
-    if (value.link || (!omitted && name && value.resolved && !artifact && !registry)) fail(`installed local link or non-registry resolution: ${name}`);
+    // Bundled children are extracted from a separately qualified parent tarball.
+    const parent = name.slice(0, name.lastIndexOf("/node_modules/"));
+    const bundled = value.inBundle === true && parent !== name && record(lock.packages[parent]);
+    if (value.link || (!omitted && name && !(bundled && !resolution) && !artifact && !registry)) fail(`installed local link or non-registry resolution: ${name}`);
   }
 }
 
