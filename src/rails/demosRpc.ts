@@ -95,9 +95,15 @@ export async function readDemosTransactionRecord(
           throw new Error(`Demos transaction record returned HTTP ${response.status}`);
         }
         const payload = await readBoundedDemosJson(response, DEMOS_TRANSACTION_RECORD_MAX_BYTES, controller.signal);
-        if (payload === null || typeof payload !== "object" ||
-            !("result" in payload) || payload.result !== 200 || !("response" in payload)) {
-          throw new Error("Demos transaction record RPC response is unavailable or malformed");
+        if (payload === null || typeof payload !== "object" || Array.isArray(payload) ||
+            !("result" in payload) || typeof payload.result !== "number" ||
+            !Number.isInteger(payload.result) || !("response" in payload)) {
+          throw new Error("Demos transaction record RPC envelope is malformed", { cause: payload });
+        }
+        if (payload.result !== 200) {
+          throw new Error(`Demos transaction record RPC returned ${payload.result}`, {
+            cause: { result: payload.result, response: payload.response },
+          });
         }
         return payload.response;
       })(),
