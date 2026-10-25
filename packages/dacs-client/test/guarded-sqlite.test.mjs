@@ -189,7 +189,7 @@ for (const sql of ["SELECT * FROM pragma_integrity_check('checked')", "SELECT * 
     assert.equal(db.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n, 0);
   });
 }
-for (const kind of ['accessor', 'proxy']) {
+for (const kind of ['accessor', 'proxy', 'function accessor', 'callable proxy']) {
   test(`named bindings that run code are refused before the writable fence opens: ${kind}`, t => {
     const db = world(t);
     db.exec('BEGIN; CREATE TEMP TABLE test_live(id)');
@@ -197,9 +197,13 @@ for (const kind of ['accessor', 'proxy']) {
     const insert = db.prepare('INSERT INTO records VALUES ($id)');
     let reads = 0;
     const read = () => { reads++; nativeExec.call(db, 'ROLLBACK'); return 'TEST-escaped'; };
-    const bindings = kind === 'accessor'
-      ? { get $id() { return read(); } }
-      : new Proxy({ $id: 'TEST-value' }, { get: read });
+    const functionWithAccessor = () => Object.defineProperty(() => {}, '$id', { enumerable: true, get: read });
+    const bindings = {
+      accessor: () => ({ get $id() { return read(); } }),
+      proxy: () => new Proxy({ $id: 'TEST-value' }, { get: read }),
+      'function accessor': functionWithAccessor,
+      'callable proxy': () => new Proxy(() => {}, { get: read, ownKeys: () => ['$id'], getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true, value: 'TEST-value' }) }),
+    }[kind]();
     withSqliteStatementGuard(db, () => { if (!live.get()) throw Error('TEST-ended'); }, () => {
       assert.throws(() => insert.run(bindings), /named bindings/);
     });
@@ -214,4 +218,19 @@ test('plain named and positional bindings still run under a guard', t => {
     db.prepare('INSERT INTO records VALUES (?)').run('TEST-positional');
   });
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
+});
+test('bundled SQLite extension functions do not count as application callbacks', t => {
+  const db = world(t), earlier = nativePrepare.call(db, 'SELECT 1 AS value');
+  withSqliteStatementGuard(db, () => {}, () => {
+    assert.equal(earlier.get().value, 1);
+    assert.equal(db.prepare("SELECT count(*) n FROM pragma_table_info('records')").get().n, 1);
+    assert.equal(db.prepare("SELECT count(*) n FROM json_each('[1,2]')").get().n, 2);
+  });
+});
+test('an application override of a bundled extension function is still refused', t => {
+  const db = world(t);
+  db.function('geopoly_bbox', { deterministic: true }, value => value);
+  withSqliteStatementGuard(db, () => {}, () => {
+    assert.throws(() => db.prepare("SELECT geopoly_bbox('[[0,0],[1,0],[1,1]]')").get(), /SQL callbacks/);
+  });
 });
