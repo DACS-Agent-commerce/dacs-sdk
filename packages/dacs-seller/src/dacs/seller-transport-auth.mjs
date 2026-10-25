@@ -270,18 +270,29 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     run("INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, substr(slot, 1, instr(slot, ':') - 1) FROM peer_slots WHERE instr(slot, ':') > 0");
     if (admissions()) run('INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, job FROM peer_context_admissions');
   });
-  function reclaimableJobs(needed, jobId) {
-    // One global legacy check, then indexed anti-joins rather than one set of
-    // table scans per job. The slot range is exactly the job + ':' prefix and
-    // uses the slot primary key, including for older rows without a mapping.
+  function reclaimableJobs(needed, jobId, time) {
+    // Unmapped legacy effects fence all reclamation; empty bindings need no terminal evidence.
     if (!needed || get('SELECT 1 FROM peer_effects e WHERE NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.effect = e.effect) LIMIT 1')) return [];
-    return db.prepare(`SELECT j.job FROM peer_jobs j WHERE
+    const jobs = db.prepare(`SELECT j.job FROM peer_jobs j WHERE
       ${jobId === undefined ? '' : 'j.job = ? AND '}
       NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
       ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
       LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
+    if (time === undefined || jobs.length === needed) return jobs;
+    // Complete terminal jobs retire only after every nonce and context retention window.
+    for (const { job } of db.prepare(`SELECT job FROM peer_jobs j WHERE NOT EXISTS (
+      SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = j.job
+      AND (e.state IS NULL OR e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n
+        LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = m.effect
+        AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))
+      ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job AND a.admitted_at > ?)' : ''}`)
+      .iterate(time, time - nonceWindowMs, ...(admissions() ? [time - CHALLENGE_RATE_WINDOW_MS] : []))) {
+      if (!jobs.includes(job) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: job }))) jobs.push(job);
+      if (jobs.length === needed) break;
+    }
+    return jobs;
   }
   // Plan reclamation with reads only. Full-capacity refusals must execute no
   // mutations, even ones a transaction could roll back. Only terminal context
@@ -304,11 +315,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     for (const row of rows) {
       run('DELETE FROM peer_nonce_retention WHERE nonce IN (SELECT nonce FROM peer_nonces WHERE effect = ?)', row.effect);
       run('DELETE FROM peer_nonces WHERE effect = ?', row.effect);
-      run('DELETE FROM peer_slots WHERE effect = ?', row.effect);
-      run('DELETE FROM peer_effect_jobs WHERE effect = ?', row.effect);
-      run('DELETE FROM peer_effects WHERE effect = ?', row.effect);
-      run('DELETE FROM peer_context_admissions WHERE effect = ?', row.effect);
+      deleteEffect(row.effect);
     }
+  }
+  function deleteEffect(effect) {
+    for (const table of ['peer_effects', 'peer_slots', 'peer_transactions', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
   }
   return {
     issueContextChallenge(request, scope, { maxPerBuyer = 5, maxGlobal = 12, admit } = {}) {
@@ -454,8 +465,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
               OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${reclaimable}))`, time, time - nonceWindowMs, time).n >= maxRecords) fail('peer_store_capacity', 503);
         if (get('SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE buyer = ? AND created_at > ?', p.buyer, time - nonceWindowMs).n >= maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
         const neededJobs = !job && !contextStep && !retained ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
-        const emptyJobs = reclaimableJobs(neededJobs);
-        if (emptyJobs.length < neededJobs) fail('peer_job_capacity', 503);
+        const retiredJobs = reclaimableJobs(neededJobs, undefined, time);
+        if (retiredJobs.length < neededJobs) fail('peer_job_capacity', 503);
         let admittedAt = null;
         if (contextStep && !existing) {
           const starts = (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0;
@@ -472,7 +483,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         // Dry admission checks execute no INSERT, UPDATE, DELETE or DDL.
         if (dryRun) return retained ?? { disposition: 'perform' };
         reclaimContexts(retired);
-        for (const jobId of emptyJobs) run('DELETE FROM peer_jobs WHERE job = ?', jobId);
+        for (const jobId of retiredJobs) {
+          reclaimContexts(db.prepare('SELECT effect FROM peer_effect_jobs WHERE job = ?').all(jobId));
+          run('DELETE FROM peer_jobs WHERE job = ?', jobId);
+        }
         run('DELETE FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time);
         // Keep the rate counters for the full rate window, even when the nonce
         // itself has expired and was pruned.
@@ -497,11 +511,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         return { disposition: 'perform', effectKey, owner, readOnly: READ_ROUTES.has(p.path) };
       }, dryRun);
     },
-    // Read-only: 'start' when reserve would start new work for this request,
-    // 'known' when it would answer from the journal (cached or uncertain); a
-    // conflicting or readback-only request throws reserve's own refusal. It is
-    // reserve's own decision in a transaction that is always rolled back, so
-    // it writes nothing and cannot disagree with reserve.
+    // Read-only reserve: 'start' for new work, 'known' for journaled answers;
+    // conflicts throw reserve's refusal. No mutations run; the transaction rolls back.
     classify(p, body, { journaledOnly = false, admit = () => 0 } = {}) {
       return this.reserve(p, body, { journaledOnly, admit, dryRun: true }).disposition === 'perform' ? 'start' : 'known';
     },
@@ -512,8 +523,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       const row = admissions() ? get('SELECT * FROM peer_context_admissions WHERE job = ?', jobId) : null;
       return row ? { jobId: row.job, buyer: row.buyer, seller: row.seller, listingPin: JSON.parse(row.listing_pin), scopeHash: row.scope_hash, effect: row.effect, admittedAt: row.admitted_at } : null;
     },
-    // The journaled answer of a job's completed context step, or null:
-    // {status, text} of its admission record's effect once that is complete.
+    // The completed context step's journaled {status, text}, or null.
     contextAnswer(jobId) {
       requireJobId(jobId);
       const row = admissions() ? get("SELECT e.status, e.response FROM peer_context_admissions a JOIN peer_effects e ON e.effect = a.effect WHERE a.job = ? AND e.state = 'complete'", jobId) : null;
@@ -533,14 +543,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         run('UPDATE peer_nonces SET status = ?, response = ?, effect = ? WHERE effect = ? AND response IS NULL', status, text, noEffect || reservation.readOnly ? NO_EFFECT_KEY : reservation.effectKey, reservation.effectKey);
         if (noEffect || reservation.readOnly) {
           const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
-          // A definite no-effect answer started nothing: its admission record goes too.
-          if (admissions()) run('DELETE FROM peer_context_admissions WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_slots WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_transactions WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
-          // The binding was provisional until an effect existed. Keep it if
-          // any other live/read/uncertain effect still refers to this job.
+          deleteEffect(reservation.effectKey);
+          // Release a provisional binding only when no other effect still refers to it.
           if (identity && reclaimableJobs(1, identity.job).length) run('DELETE FROM peer_jobs WHERE job = ?', identity.job);
         } else {
           run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : status >= 500 ? 'uncertain' : 'complete', status, text, reservation.effectKey);
@@ -571,10 +575,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         run('UPDATE peer_nonces SET status = ?, response = ?, effect = ? WHERE effect = ? AND (response IS NULL OR status >= 500)', status, text, noEffect || READ_ROUTES.has(request.path) ? NO_EFFECT_KEY : reservation.effectKey, reservation.effectKey);
         if (noEffect || READ_ROUTES.has(request.path)) {
           const identity = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_slots WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_transactions WHERE effect = ?', reservation.effectKey);
-          run('DELETE FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
+          deleteEffect(reservation.effectKey);
           if (identity && reclaimableJobs(1, identity.job).length) run('DELETE FROM peer_jobs WHERE job = ?', identity.job);
           return;
         }
