@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contentHash } from '@kynesyslabs/dacs';
+import { contentHash, deriveFixedPriceAgreement, createFixedPriceAgreementSigningPlan, createFixedPriceAgreementSignatureContribution, finalizeFixedPriceAgreementContributions } from '@kynesyslabs/dacs';
 import { fetchBoundedJson, OutboundError } from '../src/util/http.mjs';
 import { createImmutableReadbacks } from '../src/util/immutable-readbacks.mjs';
 import { sellerData, SELLER_DATA_MAX, SELLER_DATA_BEGIN, SELLER_DATA_END } from '../src/mcp/seller-content.mjs';
 import { cutText } from '../src/util/text.mjs';
 import { OperationError } from '../src/operations.mjs';
 import { sellerRecordsPurchaseResolver, sellerHeldEvidenceJobs, sellerHoldNotice } from '../src/devnet-demo/seller-purchase-source.mjs';
-import { buyer, protocolFixture, NOW, JOB } from './helpers/protocol-fixture.mjs';
+import { buyer, seller, protocolFixture, NOW, JOB } from './helpers/protocol-fixture.mjs';
+import { fixtureIdentityBundle } from './fixtures/listings.mjs';
+import { agreementInput, contributionVerifier } from '../src/dacs/purchase-protocol.mjs';
 
 const URL = 'https://seller.example/read';
 for (const maxBytes of [undefined, NaN, Infinity, 0, -1, 1.5, 10000001]) test(`HTTP refuses byte budget ${maxBytes} before fetching`, async () => {
@@ -70,8 +72,17 @@ test('grapheme cuts stop iterating after the requested output boundary', () => {
   assert.equal(cutText('A👩‍💻e\u0301Z', 5), 'A'); assert.equal(cutText('A👩‍💻e\u0301Z', 6), 'A👩‍💻');
 });
 
-async function purchaseWorld() {
+async function purchaseWorld({ buyerClaim = buyer.claim } = {}) {
   const f = await protocolFixture();
+  if (buyerClaim !== buyer.claim) {
+    const qualifiedBuyer = { ...buyer, claim: buyerClaim };
+    f.buyerBundle = fixtureIdentityBundle(qualifiedBuyer, NOW - 1000);
+    f.draft = deriveFixedPriceAgreement(agreementInput({ jobId: JOB, listing: f.listing, buyerBundle: f.buyerBundle, generatedAt: NOW }));
+    const plan = createFixedPriceAgreementSigningPlan(f.draft);
+    const contributions = await Promise.all([['buyer', qualifiedBuyer], ['seller', seller]].map(([role, wallet]) =>
+      createFixedPriceAgreementSignatureContribution(plan, role, { party: wallet.claim, algorithm: 'ed25519', sign: wallet.signBytes })));
+    f.agreement = await finalizeFixedPriceAgreementContributions(plan, contributions, contributionVerifier);
+  }
   const session = { jobId: JOB, agreement: f.agreement, agreementHash: contentHash(f.agreement), proposal: { plan: { draft: f.draft } },
     proposalAdmission: { observedAt: NOW }, buyerBundle: f.buyerBundle, nativeEvidenceWork: { intake: { disposition: 'verified', fulfilment: 'claim', jobId: JOB } } };
   let allowed = true, at = NOW + 1;
@@ -82,6 +93,40 @@ async function purchaseWorld() {
 test('seller-only state never opens pre-payment policy without buyer cancellation authority', async () => {
   const w = await purchaseWorld(); delete w.session.agreement; delete w.session.nativeEvidenceWork;
   assert.equal((await sellerRecordsPurchaseResolver(w.options)(JOB)).prePaymentOpen, false);
+});
+
+test('closed access refuses a qualified Agreement buyer before observing payment', async () => {
+  const w = await purchaseWorld({ buyerClaim: buyer.claim + '?network=demos' });
+  let accessCalls = 0, observations = 0;
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options,
+    buyerAccess: () => ({ allowsWallet: address => { accessCalls++; assert.equal(address, buyer.address); return false; } }),
+    observePayment: query => { observations++; return { disposition: 'verified', jobId: query.jobId, agreementHash: query.agreementHash, observedAt: query.observedAt }; },
+  });
+  assert.equal(await resolve(JOB), false);
+  assert.equal(accessCalls, 1); assert.equal(observations, 0);
+});
+
+for (const presenter of ['qualified', 'bare']) test(`allowed qualified Agreement buyer matches its ${presenter} presenter by canonical identity`, async () => {
+  const claim = buyer.claim + '?network=demos', w = await purchaseWorld({ buyerClaim: claim });
+  if (presenter === 'bare') w.session.buyerBundle.presentedBy = buyer.claim;
+  let accessCalls = 0;
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options, buyerAccess: () => ({ allowsWallet: address => { accessCalls++; assert.equal(address, buyer.address); return true; } }) });
+  const projection = await resolve(JOB);
+  assert.equal(projection.buyer, claim); assert.equal(projection.prePaymentOpen, false); assert.equal(accessCalls, 1);
+});
+
+for (const [label, mutate] of [
+  ['missing buyer bundle', session => { delete session.buyerBundle; }],
+  ['missing presenter', session => { delete session.buyerBundle.presentedBy; }],
+  ['another presenter', session => { session.buyerBundle.presentedBy = seller.claim; }],
+  ['malformed presenter', session => { session.buyerBundle.presentedBy = 'TEST invalid'; }],
+  ['missing Agreement buyer', session => { session.agreement.parties = session.agreement.parties.filter(party => party.role !== 'buyer'); }],
+  ['malformed Agreement buyer', session => { session.agreement.parties.find(party => party.role === 'buyer').primaryClaim = 'TEST invalid'; session.buyerBundle.presentedBy = 'TEST invalid'; }],
+]) test(`purchase projection refuses ${label} before access or payment observation`, async () => {
+  const w = await purchaseWorld(); w.session.agreement = structuredClone(w.session.agreement); mutate(w.session);
+  const unexpected = () => { assert.fail('invalid buyer must be refused first'); };
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options, buyerAccess: unexpected, observePayment: unexpected });
+  assert.equal(await resolve(JOB), false);
 });
 
 test('a saved verified intake or settlement ID is indeterminate without a fresh payment observer', async () => {
