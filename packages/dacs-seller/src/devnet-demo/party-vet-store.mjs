@@ -166,6 +166,7 @@ export function openPartyVetStore({ path, mode, busyTimeoutMs = 1000, ...options
   if (mode !== 'create' && mode !== 'open') fail('journal-invalid', "mode must be explicitly 'create' or 'open'");
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || path.startsWith('file:')) fail('journal-invalid', 'an explicit absolute party Vet store path is required');
   path = resolve(path);
+  if (path !== path.trim()) fail('journal-invalid', 'the party Vet store path must not have surrounding whitespace');
   admitPath(path);
   bounded('busyTimeoutMs', busyTimeoutMs, 0, 10_000);
   const limits = limitsFor(options);
