@@ -712,13 +712,12 @@ export function extractPolicyFindings(read) {
   };
 }
 
-// Baseline Git and image identities pin archive version and integrity. Engine
-// rules pin ranges; SBOM rules elide patch versions in their problem text.
+// Baseline Git, engine and image identities pin archive version and integrity;
+// engine ones also pin the required range. SBOM rules elide patch versions in
+// their problem text.
 const sameIdentity = (keys) => (item, known) => keys.every(key => JSON.stringify(item?.[key]) === JSON.stringify(known?.[key]));
-const packageName = (spec) => typeof spec === "string" ? spec.replace(/(?<=.)@[^@]*$/, "") : spec;
 const gitIdentity = sameIdentity(["location", "field", "value", "version", "integrity"]);
-const engineIdentity = (item, known) => typeof item?.package === "string" &&
-  packageName(item.package) === packageName(known?.package) && sameIdentity(["location", "required"])(item, known);
+const engineIdentity = sameIdentity(["package", "location", "integrity", "required"]);
 const imageIdentity = sameIdentity(["name", "location", "version", "integrity"]);
 const sbomProblemRule = (line) => typeof line === "string" ? line
   .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,]+/, "$1@*")

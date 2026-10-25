@@ -842,6 +842,22 @@ describe("baseline Git and image archive identities", () => {
       expect(classify({ ...known, ...change }), JSON.stringify(change)).toEqual({ check: "blocked", exit: 3 });
     }
   });
+
+  it("pins the recorded version and integrity of engine findings at the same location and range", () => {
+    const known = baseline.policyFindings.engineViolations[0];
+    const classify = (violation: Record<string, unknown>) => {
+      const summary = baselineOnlySummary();
+      summary.securityGate.engineStrictExitCode = 1;
+      summary.securityGate.findings.engine = { exitCode: 1, code: "EBADENGINE", scanComplete: true,
+        violations: [violation], reportedPackage: violation.package };
+      return { check: classifyPolicyChecks(summary, baseline).engineStrict, exit: registryContainerDisposition(summary, baseline).exitCode };
+    };
+    expect(classify(known)).toEqual({ check: "baseline", exit: 4 });
+    for (const change of [{ package: known.package.replace(/@[^@]*$/, "@99.0.0") },
+      { integrity: sri(Buffer.from("different archive")) }, { integrity: undefined }]) {
+      expect(classify({ ...known, ...change }), JSON.stringify(change)).toEqual({ check: "blocked", exit: 3 });
+    }
+  });
 });
 
 // A candidate is declared and installed under its own name only, so an alias
