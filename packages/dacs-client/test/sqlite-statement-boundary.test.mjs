@@ -219,12 +219,13 @@ test('plain named and positional bindings still run under a guard', t => {
   });
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
 });
-test('bundled SQLite extension functions do not count as application callbacks', t => {
+test('unowned statements and virtual tables are refused even without visible application functions', t => {
   const db = world(t), earlier = nativePrepare.call(db, 'SELECT 1 AS value');
   withSqliteStatementGuard(db, () => {}, () => {
-    assert.equal(earlier.get().value, 1);
-    assert.equal(db.prepare("SELECT count(*) n FROM pragma_table_info('records')").get().n, 1);
-    assert.equal(db.prepare("SELECT count(*) n FROM json_each('[1,2]')").get().n, 2);
+    assert.throws(() => earlier.get(), /SQL callbacks/);
+    assert.throws(() => db.prepare("SELECT count(*) n FROM pragma_table_info('records')").get(), /SQL callbacks/);
+    assert.throws(() => db.prepare("SELECT count(*) n FROM json_each('[1,2]')").get(), /SQL callbacks/);
+    assert.equal(db.prepare('SELECT 1 AS value').get().value, 1);
   });
 });
 test('an application override of a bundled extension function is still refused', t => {
