@@ -261,6 +261,25 @@ describe("installation closure", () => {
     expect(closure.errors).toEqual(["bundled lock entry is not in the archive of the package bundling it: node_modules/bundler/node_modules/missing"]);
   });
 
+  it.each(["optional", "dev", "devOptional"])("refuses omitted %s entries still carried by an installed archive", flag => {
+    for (const name of ["child", "@scope/child"]) {
+      const location = `node_modules/parent/node_modules/${name}`;
+      const install = simulatedInstall({
+        "node_modules/parent": [{}, { "package.json": manifest("parent"),
+          [`node_modules/${name}/package.json`]: manifest(name), [`node_modules/${name}/index.js`]: "" }],
+        [location]: [{ inBundle: true, [flag]: true }, null],
+      });
+      expect(install.closure().errors).toEqual([]);
+      expect(install.differences()).toEqual([]);
+      rmSync(join(install.project, location), { recursive: true });
+      const closure = install.closure();
+      expect(closure.entries.get(location)?.present).toBe(false);
+      expect(closure.errors).toEqual([
+        `cannot derive the installed files of ${location}: omitted entry is in the archive of node_modules/parent`,
+      ]);
+    }
+  });
+
   it("refuses a lock entry that another package's archive also writes", () => {
     const install = simulatedInstall({
       "node_modules/a": [{ version: "1.0.0" }, { "package.json": manifest("a"), "node_modules/b/package.json": manifest("b") }],
@@ -455,6 +474,38 @@ describe("installation closure of real npm installations", () => {
       expect(JSON.parse(readFileSync(join(project, "node_modules/parent/node_modules/child/package.json"), "utf8")).name).toBe("child");
       const closure = installationClosure(project, lock, (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity));
       expect(closure.errors).toContain("cannot derive the installed files of node_modules/parent: package has an npm-shrinkwrap.json");
+    } finally { await server.close(); }
+  }, 60_000);
+
+  it.each([false, true])("derives an installed optional bundle or explicitly refuses its omission, omit=%s", async omit => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const bundled = { optionalDependencies: { child: "1.0.0" }, bundleDependencies: ["child"] };
+    const archive = packTarball({ "package.json": manifest("parent", "1.0.0", bundled),
+      "node_modules/child/package.json": manifest("child"), "node_modules/child/index.js": "module.exports = 'child';\n" });
+    const server = await serveArchives(new Map([["parent", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { parent: "1.0.0" } };
+      const location = "node_modules/parent/node_modules/child";
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/parent": {
+        version: "1.0.0", resolved: `${server.registry}/parent.tgz`, integrity: sri(archive), ...bundled,
+      }, [location]: { version: "1.0.0", inBundle: true, optional: true } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      writeFileSync(join(project, ".npmrc"), `omit=${omit ? "optional" : ""}\n`);
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      const closure = installationClosure(project, lock, (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity));
+      expect(closure.entries.get(location)?.present).toBe(!omit);
+      if (omit) {
+        expect(() => readFileSync(join(project, location, "package.json"))).toThrow();
+        expect(closure.errors).toEqual([
+          `cannot derive the installed files of ${location}: omitted entry is in the archive of node_modules/parent`,
+        ]);
+      } else {
+        expect(closure.errors).toEqual([]);
+        expect(installationDifferences(project, closure)).toEqual([]);
+      }
     } finally { await server.close(); }
   }, 60_000);
 
