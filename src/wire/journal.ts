@@ -5,13 +5,9 @@
 // written under a temporary name, synced, and published with link() (atomic, and exclusive: of workers
 // racing on one name exactly one publishes it), and the directory synced before the call returns. No other
 // user can rename or replace the directory or any directory above it, so the path cannot be swapped under a publish.
-//
-// Each effect is a durable state machine keyed by its operation (one per
-// seller, job and route; the caller computes it). The first attempt also
-// records the operation's binding (the tuple, buyer and Agreement hash it was
-// first reserved under), and every later request for the operation must carry
-// the same one: a job whose retained Agreement, buyer or tuple changed gets
-// peer_operation_mismatch (409), never a second effect.
+// Each effect is a durable state machine keyed by its operation (one per seller, job and route; the caller
+// computes it). The first attempt records the operation's binding (profile, buyer and Agreement hash); every
+// later request must carry the same one, or gets peer_operation_mismatch (409), never a second effect.
 //   no attempt         -> attempt 0 is published: "new" (run the effect)
 //   attempt n live     -> "pending" (seller_effect_pending, 503: retry later)
 //   attempt n ended    -> attempt n+1 is published: "recover" (an earlier
@@ -196,9 +192,7 @@ function isSignableText(text: string): boolean {
   try {
     const body = admitWireJson(Buffer.from(text, "utf8"), DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes, "outcome_text_rejected", 500);
     return body !== null && typeof body === "object" && !Array.isArray(body);
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 function isOutcome(value: unknown): value is WireEffectOutcome {
@@ -227,7 +221,6 @@ function fromStored(value: unknown): WireEffectOutcome | null {
 
 function readOutcome(store: Store, operationId: string): WireEffectOutcome {
   const record = readRecord(store, outcomeName(operationId), OUTCOME_FILE_BYTES);
-  // An outcome is published whole (link), so a malformed one was not written by this journal.
   const outcome = hasKeys(record, ["operationId", "attempt", "outcome"]) && record.operationId === operationId ? fromStored(record.outcome) : null;
   return outcome ?? corrupt("STORE-OUTCOME-INVALID");
 }
@@ -266,6 +259,14 @@ function assertPathNotReplaceable(directory: string): void {
   }
 }
 
+/** Make durable the entry of the journal directory and of every ancestor this user could have created (those it owns). */
+function syncPathEntries(directory: string): void {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  for (let path = directory; dirname(path) !== path; path = dirname(path)) {
+    if (uid === undefined || lstatSync(dirname(path)).uid === uid) syncDirectory(dirname(path));
+  }
+}
+
 function now(store: Store): number {
   const at = store.clock();
   if (!isUint(at)) fail("seller_configuration_invalid", 500, "JOURNAL-CLOCK");
@@ -275,13 +276,12 @@ function now(store: Store): number {
 /**
  * Open the journal in `directory`: an existing absolute directory, not a symbolic link and reached through none
  * (the path is its own real path), owned by this process's user and writable by no one else, on storage that keeps data across a reboot (not tmpfs or
- * ramfs), under ancestors no other user can change (root-owned, or a root-owned sticky one); a call after the path names another directory
+ * ramfs), under ancestors no other user can change (root-owned, or a root-owned sticky one), whose own entries are then synced; a call after the path names another directory
  * fails. Before it is returned, an exclusive publish is tried twice on it: the second must be refused. A publisher
  * then exits before a fresh process checks retained bytes and exclusive retry. Failure, or Windows (no directory
  * sync), is `seller_replay_guard_invalid` (500). Every worker on the host opens the same directory.
  */
 export function openWireRequestJournal(directory: string, options: WireRequestJournalOptions = {}): WireRequestJournal {
-  // Windows cannot open a directory to sync it, so a publish there is not durable.
   if (process.platform === "win32") fail("seller_replay_guard_invalid", 500, "PLATFORM-UNSUPPORTED");
   if (typeof directory !== "string" || !isAbsolute(directory) || directory.includes("\0")) fail("seller_replay_guard_invalid", 500, "DIRECTORY-NOT-ABSOLUTE");
   const fields = ownedFields(options, ["leaseMs", "clock"]);
@@ -293,6 +293,7 @@ export function openWireRequestJournal(directory: string, options: WireRequestJo
   if (realpathSync(directory) !== directory) fail("seller_replay_guard_invalid", 500, "DIRECTORY-ALIAS");
   assertPathNotReplaceable(directory);
   if (VOLATILE_FILESYSTEM_TYPES.has(BigInt.asUintN(32, statfsSync(directory, { bigint: true }).type))) fail("seller_replay_guard_invalid", 500, "DIRECTORY-VOLATILE");
+  syncPathEntries(directory);
   const store: Store = { directory, identity: lstatSync(directory, { bigint: true }), leaseMs: leaseMs as number, clock: clock as () => number };
   const probe = `probe-${randomBytes(16).toString("hex")}`;
   const first = publish(store, probe, "{}"), second = publish(store, probe, "{}");
@@ -306,8 +307,7 @@ export function openWireRequestJournal(directory: string, options: WireRequestJo
 }
 
 /** The store behind a handle openWireRequestJournal returned; anything else is refused before it is used. */
-export function journalStore(journal: unknown): object {
-  // WeakMap.get answers undefined for anything that is not an object.
+export function journalStore(journal: unknown): object { // WeakMap.get answers undefined for anything that is not an object.
   const store = storeGet(stores, journal as object);
   if (!store) fail("seller_replay_guard_required", 500);
   return store as object;
