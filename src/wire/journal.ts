@@ -25,7 +25,7 @@
 // records one and no attempt starts after it. Every request's nonce key is
 // published too: the same signed request again is peer_request_replayed (409).
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, statfsSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 import { qualifyJournalRestart } from "./journalRestart.js";
@@ -83,6 +83,7 @@ export interface EffectReservation {
 /** An operation stops after this many superseded attempts and needs an operator. Clean null ends do not count. */
 export const MAX_EFFECT_ATTEMPTS = 16;
 const SMALL_FILE_BYTES = 4096;
+const VOLATILE_FILESYSTEM_TYPES = new Set([0x01021994n, 0x858458f6n]); // tmpfs, ramfs: empty after a reboot, whatever is synced
 const OUTCOME_FILE_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes * 2 + SMALL_FILE_BYTES;
 
 type Store = { directory: string; identity: { dev: bigint; ino: bigint }; leaseMs: number; clock: () => number };
@@ -273,8 +274,8 @@ function now(store: Store): number {
 
 /**
  * Open the journal in `directory`: an existing absolute directory, not a symbolic link and reached through none
- * (the path is its own real path), owned by this process's user and writable by no one else, under ancestors no
- * other user can change (root-owned, or a root-owned sticky one); a call after the path names another directory
+ * (the path is its own real path), owned by this process's user and writable by no one else, on storage that keeps data across a reboot (not tmpfs or
+ * ramfs), under ancestors no other user can change (root-owned, or a root-owned sticky one); a call after the path names another directory
  * fails. Before it is returned, an exclusive publish is tried twice on it: the second must be refused. A publisher
  * then exits before a fresh process checks retained bytes and exclusive retry. Failure, or Windows (no directory
  * sync), is `seller_replay_guard_invalid` (500). Every worker on the host opens the same directory.
@@ -291,6 +292,7 @@ export function openWireRequestJournal(directory: string, options: WireRequestJo
   // Every later call resolves the path again, so a link anywhere in it (or a trailing slash, `..`) could be retargeted to an empty directory.
   if (realpathSync(directory) !== directory) fail("seller_replay_guard_invalid", 500, "DIRECTORY-ALIAS");
   assertPathNotReplaceable(directory);
+  if (VOLATILE_FILESYSTEM_TYPES.has(BigInt.asUintN(32, statfsSync(directory, { bigint: true }).type))) fail("seller_replay_guard_invalid", 500, "DIRECTORY-VOLATILE");
   const store: Store = { directory, identity: lstatSync(directory, { bigint: true }), leaseMs: leaseMs as number, clock: clock as () => number };
   const probe = `probe-${randomBytes(16).toString("hex")}`;
   const first = publish(store, probe, "{}"), second = publish(store, probe, "{}");
