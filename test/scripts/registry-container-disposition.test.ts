@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -153,7 +153,7 @@ function packTarball(files: Record<string, string>) {
 // Runs the dependency-policy command the script runs against a generated
 // consumer whose lock initially names the exact packed candidate tarballs,
 // as release-provenance.json records them.
-function dependencyPolicyHarness() {
+function dependencyPolicyHarness(candidateManifest: Record<string, unknown> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
   scratch.push(directory);
   const packages: Record<string, Record<string, unknown>> = {};
@@ -161,7 +161,7 @@ function dependencyPolicyHarness() {
   const packed: Record<string, Record<string, string>> = {};
   for (const name of ["dacs", "dacs-node"]) {
     packed[`@kynesyslabs/${name}`] = {
-      "package.json": JSON.stringify({ name: `@kynesyslabs/${name}`, version: CANDIDATE_VERSION }),
+      "package.json": JSON.stringify({ name: `@kynesyslabs/${name}`, version: CANDIDATE_VERSION, ...candidateManifest }),
       "index.js": `module.exports = "${name}";\n`,
     };
     const bytes = packTarball(packed[`@kynesyslabs/${name}`]!);
@@ -272,6 +272,28 @@ describe("registry/container evidence", () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("not a regular file: index.js");
+  });
+
+  it("rejects an installed candidate file that is a hard link", () => {
+    const { run } = dependencyPolicyHarness();
+    const result = run(project => linkSync(join(project, "node_modules/@kynesyslabs/dacs/index.js"),
+      join(project, "node_modules/@kynesyslabs/dacs/alias.js")));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("hard link: alias.js");
+  });
+
+  it("rejects an installed candidate with a directory the tarball does not hold", () => {
+    const { run } = dependencyPolicyHarness();
+    const result = run(project => mkdirSync(join(project, "node_modules/@kynesyslabs/dacs-node/dist")));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("(unexpected directory: dist)");
+  });
+
+  it.each(["preinstall", "install", "postinstall"])("rejects a candidate whose tarball declares a %s script", script => {
+    const { run } = dependencyPolicyHarness({ scripts: { [script]: "node setup.js" } });
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`candidate package runs code when installed (${script}): @kynesyslabs/dacs`);
   });
 
   it("accepts the dependencies npm installs inside a candidate directory", () => {
@@ -800,6 +822,24 @@ describe("candidate alias lookup through dependency maps", () => {
         expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: " + location);
       }
     });
+  it.each(["dacs", "dacs-node"])("rejects a %s alias declared only by an installed package's own manifest", name => {
+    const fixture = dependencyPolicyHarness();
+    const alias = "node_modules/candidate-alias";
+    fixture.packages["node_modules/plugin"] = { name: "plugin", version: "1.0.0",
+      resolved: `${CANDIDATE_REGISTRY}/plugin.tgz`, integrity: sri(Buffer.from("plugin")),
+      dependencies: { "candidate-alias": `npm:other@${CANDIDATE_VERSION}` } };
+    fixture.packages[alias] = { name: "other", version: CANDIDATE_VERSION,
+      resolved: `${CANDIDATE_REGISTRY}/other.tgz`, integrity: sri(Buffer.from("other")) };
+    const result = fixture.run(project => {
+      mkdirSync(join(project, "node_modules/plugin"), { recursive: true });
+      writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ name: "plugin", version: "1.0.0",
+        dependencies: { "candidate-alias": `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}` } }));
+      mkdirSync(join(project, alias), { recursive: true });
+      writeFileSync(join(project, alias, "package.json"), JSON.stringify({ name: "other", version: CANDIDATE_VERSION }));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: " + alias);
+  });
   it("accepts an alias that retains the exact candidate identity and bytes", () => {
     const fixture = dependencyPolicyHarness();
     fixture.manifest.dependencies = Object.assign({}, fixture.manifest.dependencies, { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` });
