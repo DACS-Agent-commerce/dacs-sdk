@@ -49,7 +49,7 @@ test('automatic rollback protects legal sqlite-prefixed host tables and retains 
   assert.throws(() => store.transaction(db, () => {
     assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records(id) VALUES ('existing')"), /UNIQUE/);
     assert.throws(() => insert.run('after'), /transaction ended/);
-  }), { code: 'client_not_wired' });
+  }), { code: 'purchase_store_transaction_ended' });
   assert.equal(db.prepare('SELECT count(*) n FROM sqliteCache').get().n, 0);
   insert.run('outside');
   store.transaction(db, () => insert.run('retry'));
@@ -65,7 +65,7 @@ for (const nested of [false, true]) {
       insert.run('before');
       return Promise.resolve().then(() => { continued = true; insert.run('after'); });
     };
-    assert.throws(() => store.transaction(db, () => nested ? store.transaction(db, body) : body()), { code: 'client_not_wired' });
+    assert.throws(() => store.transaction(db, () => nested ? store.transaction(db, body) : body()), { code: 'purchase_store_async_result' });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(continued, true);
     assert.throws(() => insert.run('outside'), /closed|not open|finalized/i);
@@ -92,7 +92,7 @@ test('guards are reused at host scale and refresh for added or recreated tables'
     assert.throws(() => store.transaction(db, () => {
       assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records(id) VALUES ('existing')"), /UNIQUE/);
       assert.throws(() => db.exec("INSERT INTO added VALUES ('after')"), /transaction ended/);
-    }), { code: 'client_not_wired' });
+    }), { code: 'purchase_store_transaction_ended' });
     assert.equal(db.prepare('SELECT count(*) n FROM added').get().n, 0);
   }
   db.exec("INSERT INTO added VALUES ('outside')");
@@ -112,7 +112,7 @@ for (const [name, ddl, seed, write] of [
       for (const execute of [() => db.exec(write), () => prepared.run(), () => prepared.get(), () => prepared.all(), () => [...prepared.iterate()]]) {
         assert.throws(execute, /transaction ended/);
       }
-    }), { code: 'client_not_wired' });
+    }), { code: 'purchase_store_transaction_ended' });
     const reopened = new DatabaseSync(path);
     try {
       assert.equal(reopened.prepare('SELECT count(*) n FROM search').get().n, 1);
@@ -130,7 +130,7 @@ test('detach and reattach of the same file retains transaction protection', t =>
   assert.throws(() => store.transaction(db, () => {
     assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records(id) VALUES ('TEST-existing')"), /UNIQUE/);
     assert.throws(() => db.exec("INSERT INTO aux.extra VALUES ('TEST-after')"), /transaction ended/);
-  }), { code: 'client_not_wired' });
+  }), { code: 'purchase_store_transaction_ended' });
   const reopened = new DatabaseSync(`${path}.aux`);
   try { assert.equal(reopened.prepare('SELECT count(*) n FROM extra').get().n, 0); }
   finally { reopened.close(); }
@@ -237,7 +237,7 @@ test('public watch refuses a host promise before its continuation can persist an
   const transition = world.ops.transition.bind(world.ops);
   world.ops.transition = (...args) => Promise.resolve().then(() => transition(...args));
   const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true, now: () => ABSENT.checkedAt });
-  assert.throws(() => watch.observe(op, ABSENT), { code: 'client_not_wired' });
+  assert.throws(() => watch.observe(op, ABSENT), { code: 'purchase_store_async_result' });
   await new Promise(resolve => setImmediate(resolve));
   const reopened = openWorld(path);
   try { assert.deepEqual(reopened.snapshot('delivery'), before); }
