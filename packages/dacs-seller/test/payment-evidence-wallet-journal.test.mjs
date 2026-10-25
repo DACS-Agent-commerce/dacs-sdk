@@ -12,13 +12,15 @@ import { fileURLToPath } from 'node:url';
 import { createPaymentEvidenceWalletJournal } from '../src/index.mjs';
 import { isPaymentEvidenceWalletJournalPair } from '../src/dacs/payment-evidence-wallet-journal.mjs';
 import { evidenceInput, newWalletChainState, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
 const CRASH_CHILD = fileURLToPath(new URL('./helpers/payment-evidence-wallet-crash.mjs', import.meta.url));
 
 // A wallet over one account on a chain with the node's nonce rule
-// (helpers/payment-evidence-wallet-chain.mjs). `calls.signed` lists the hash of
-// each signature signCreate answered, in order. `file: true` keeps the chain in
-// a file; `reload()` reads it again after another process changed it.
+// (helpers/payment-evidence-wallet-chain.mjs), signing with the pinned SDK.
+// `calls.signed` lists the hash of each signature signCreate answered, in
+// order, and `calls.signedContents` its signed content. `file: true` keeps the
+// chain in a file; `reload()` reads it again after another process changed it.
 function wallet(t, { file = false } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-journal-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -26,7 +28,7 @@ function wallet(t, { file = false } = {}) {
   if (chainFile) writeFileSync(chainFile, JSON.stringify(newWalletChainState()));
   let node = walletChain({ file: chainFile });
   const reload = () => { node = walletChain({ file: chainFile }); return node; };
-  const path = join(dir, 'journal.sqlite'), calls = { sign: 0, signed: [], broadcast: [], reads: [] }, faults = { sign: [], broadcast: [], nonce: [], state: [] };
+  const path = join(dir, 'journal.sqlite'), calls = { sign: 0, signed: [], signedContents: [], broadcast: [], reads: [] }, faults = { sign: [], broadcast: [], nonce: [], state: [] };
   const input = (extra = {}) => evidenceInput(node.claim, extra);
   const open = (extra = {}) => createPaymentEvidenceWalletJournal({ path, readTimeoutMs: 200,
     signCreate: async (asked) => {
@@ -34,9 +36,10 @@ function wallet(t, { file = false } = {}) {
       const fault = faults.sign.shift();
       if (fault === 'throw') throw new Error('TEST wallet failed before signing');
       if (fault === 'malformed') return { signedTransaction: '', txHash: 'not-a-hash' };
-      if (fault === 'no-nonce') { const { nonce: _nonce, ...answer } = node.signCreate(asked); return answer; }
-      const answer = node.signCreate(asked, fault === 'stale-nonce' ? { nonce: 1 } : typeof fault === 'object' ? fault : {});
+      if (fault === 'no-nonce') { const { nonce: _nonce, ...answer } = await node.signCreate(asked); return answer; }
+      const answer = await node.signCreate(asked, fault === 'stale-nonce' ? { nonce: 1 } : typeof fault === 'object' ? fault : {});
       calls.signed.push(answer.txHash);
+      calls.signedContents.push(JSON.parse(answer.signedTransaction).content);
       return answer;
     },
     broadcast: async ({ signedTransaction, txHash: hash }) => {
@@ -131,7 +134,7 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
   t.after(() => journal.close());
   for (const [label, change, message] of [['a txHash the bytes do not hash to', { txHash: 'a7'.repeat(32) }, /does not hash to its txHash/],
     ['a nonce the bytes do not carry', { claimedNonce: 9 }, /carries another nonce/], ['other evidence', { artifact: { TEST: 'other evidence' } }, /not this evidence's storage CREATE/],
-    ['another writer\'s address', { from: `0x${'b8'.repeat(32)}` }, /not this evidence's storage CREATE|not signed by the writer/],
+    ['another writer\'s address', { edit: (content) => { content.from = content.from_ed25519_address = `0x${'b8'.repeat(32)}`; } }, /not signed by the writer/],
     ['a signature that does not verify', { signature: `0x${'00'.repeat(64)}` }, /not signed by the writer/]]) {
     w.faults.sign.push(change);
     await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message }, label);
@@ -184,30 +187,35 @@ test('a signed CREATE the node or the readback would refuse is not kept: exact p
   assert.equal(w.calls.broadcast.length, 1);
 });
 
-test('a CREATE signed with the SDK node fee, execution edits and source binding is kept and sent', async (t) => {
+// What the pinned SDK's Demos.sign really signs for the evidence CREATE: before
+// and after the node's denomination fork (number or string amount, fees and
+// balance edits), with the node's fee or the SDK's own, for a storage fee of one
+// and of two 10240-byte chunks, and with the SR-2 source binding the signer adds
+// before signing. Each is kept and sent as signed, and the SDK regenerates its
+// edits and bytes (the node's check), so the journal refuses none the node takes.
+const NODE_FEE = { networkFee: 2, rpcFee: 3 }, TWO_CHUNK_ARTIFACT = { artifact: { TEST: 'e'.repeat(12_000) } };
+for (const [label, sign, extra] of [
+  ['before the denomination fork, with the SDK fee', {}],
+  ['before the denomination fork, with the node fee', { nodeFee: NODE_FEE }],
+  ['after the denomination fork, with the SDK fee', { postFork: true }],
+  ['after the denomination fork, with the node fee', { postFork: true, nodeFee: NODE_FEE }],
+  ['for a two-chunk artifact before the denomination fork', {}, TWO_CHUNK_ARTIFACT],
+  ['for a two-chunk artifact after the denomination fork', { postFork: true, nodeFee: NODE_FEE }, TWO_CHUNK_ARTIFACT],
+  ['with the SR-2 source binding', { nodeFee: NODE_FEE, prepare: (content) => {
+    Object.assign(content, { network: 'TEST-network', chainIdentity: 'TEST-chain' }); content.data[1].metadata.networkBinding = { network: 'TEST-network' };
+  } }],
+]) test(`the CREATE the SDK signs ${label} is kept and sent as signed`, async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
-  w.faults.sign.push({ edit: (content) => { Object.assign(content, { network: 'TEST-network', chainIdentity: 'TEST-chain' }); content.data[1].metadata.networkBinding = { network: 'TEST-network' }; } });
-  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
-  const kept = await journal.readSignedProjection(w.input());
-  assert.equal(kept.content.gcr_edits.length, 4);
-  assert.equal(kept.content.transaction_fee.network_fee, 2);
-  assert.equal(w.calls.broadcast.length, 1);
-});
-
-test('a CREATE signed after the denomination fork, with a string zero amount and string fees, is kept and sent', async (t) => {
-  const w = wallet(t), journal = w.open();
-  t.after(() => journal.close());
-  w.faults.sign.push({ edit: (content) => {
-    content.amount = '0';
-    content.transaction_fee = { network_fee: '2000000000', rpc_fee: '3000000000', additional_fee: '0', rpc_address: null };
-  } });
-  const { status, txHash } = await journal.anchorEvidence(w.input());
+  w.faults.sign.push(sign);
+  const { status, txHash } = await journal.anchorEvidence(w.input(extra));
   assert.equal(status, 'submitted');
-  assert.equal((await journal.readSignedProjection(w.input())).content.amount, '0');
-  assert.equal(w.calls.broadcast.length, 1);
+  const kept = await journal.readSignedProjection(w.input(extra));
+  assert.equal(JSON.stringify(kept), w.calls.broadcast[0], 'the exact signed projection is broadcast');
+  assert.equal(kept.content.amount, sign.postFork ? '0' : 0);
+  assert.equal(await sdkRegeneratesSignedCreate(kept.content), true, 'the SDK regenerates its edits and bytes');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input(extra))).txHash, txHash);
   assert.equal(w.calls.sign, 1);
-  assert.equal((await journal.reconcilePaymentEvidence(w.input())).txHash, txHash);
 });
 
 test('the pair check names only one journal\'s own anchorEvidence and reconcilePaymentEvidence', async (t) => {
@@ -423,39 +431,72 @@ test('overlapping retries across handles reuse the winning signature and answer'
   assert.equal(new Set(w.calls.broadcast).size, 1);
 });
 
+// CREATEs the SDK never signs, each the SDK's own signed CREATE changed by a
+// hostile signer that hashes and signs its change. NODE marks those the node
+// refuses as well: the SDK regenerates other edits or other hashed bytes from
+// them (sdkRegeneratesSignedCreate), so keeping one would rebroadcast bytes that
+// can never land. POST_FORK changes the SDK's post-fork CREATE instead.
+const NODE = { node: true }, NODE_POST_FORK = { node: true, postFork: true };
 const hostileCreateEdits = [
   ['a missing timestamp', (content) => { delete content.timestamp; }],
   ['an invalid timestamp', (content) => { content.timestamp = 'TEST'; }],
   ['a negative timestamp', (content) => { content.timestamp = -1; }],
   ['an amount', (content) => { content.amount = 7; }],
-  ['a string amount other than zero', (content) => { content.amount = '7'; }],
+  ['a string amount other than zero', (content) => { content.amount = '7'; }, NODE],
+  // The node fee as the SDK writes it: network and rpc fee, no additional fee
+  // and no rpc address, as numbers before the fork and canonical strings after it.
   ['no node fee', (content) => { delete content.transaction_fee; }],
-  ['no execution edits', (content) => { delete content.gcr_edits; }],
-  ['empty execution edits', (content) => { content.gcr_edits = []; }],
-  ['an empty node fee', (content) => { content.transaction_fee = {}; }],
+  ['an empty node fee', (content) => { content.transaction_fee = {}; }, NODE],
   ['a negative node fee amount', (content) => { content.transaction_fee.network_fee = -1; }],
-  ['a non-decimal node fee string', (content) => { content.transaction_fee.rpc_fee = '1e9'; }],
+  ['a non-decimal node fee string', (content) => { content.transaction_fee.rpc_fee = '1e9'; }, NODE],
   ['a node fee with another rpc address type', (content) => { content.transaction_fee.rpc_address = 7; }],
-  ['an empty execution edit', (content) => { content.gcr_edits = [{}]; }],
-  ['a rollback execution edit', (content) => { content.gcr_edits[0].isRollback = true; }],
-  ['an execution edit of another type', (content) => { content.gcr_edits[0].type = 'identity'; }],
-  ['a balance edit of another account', (content) => { content.gcr_edits[0].account = `0x${'b8'.repeat(32)}`; }],
-  ['a storage program edit of another target', (content) => { content.gcr_edits[1].target = `stor-${'c4'.repeat(20)}`; }],
-  ['no storage program edit', (content) => { content.gcr_edits.splice(1, 1); }],
-  ['two storage program edits', (content) => { content.gcr_edits.push({ ...content.gcr_edits[1] }); }],
-  ['a private ACL', (content) => { content.data[1].acl.mode = 'private'; }],
-  ['off-chain storage', (content) => { content.data[1].storageLocation = 'offchain'; }],
-  ['an unknown storage location', (content) => { content.data[1].storageLocation = 'TEST-invalid'; }],
+  ['a node fee with an rpc address', (content) => { content.transaction_fee.rpc_address = `0x${'b8'.repeat(32)}`; }],
+  ['an additional fee', (content) => { content.transaction_fee.additional_fee = 1; }],
+  ['a node fee member the SDK does not write', (content) => { content.transaction_fee.TEST = 0; }],
+  ['a string node fee before the fork', (content) => { content.transaction_fee.network_fee = '2'; }, NODE],
+  ['a number node fee after the fork', (content) => { content.transaction_fee.network_fee = 2; }, NODE_POST_FORK],
+  ['a node fee string with a leading zero after the fork', (content) => { content.transaction_fee.rpc_fee = '00'; }, NODE_POST_FORK],
+  // The execution edits the SDK generates: the storage fee burn, the storage
+  // program, the gas burn and the nonce increment by 1, in that order.
+  ['no execution edits', (content) => { delete content.gcr_edits; }, NODE],
+  ['empty execution edits', (content) => { content.gcr_edits = []; }, NODE],
+  ['only the storage program edit', (content) => { content.gcr_edits = [content.gcr_edits[1]]; }, NODE],
+  ['only the storage program edit after the fork', (content) => { content.gcr_edits = [content.gcr_edits[1]]; }, NODE_POST_FORK],
+  ['no nonce edit', (content) => { content.gcr_edits.splice(3, 1); }, NODE],
+  ['no balance edits', (content) => { content.gcr_edits = content.gcr_edits.filter((edit) => edit.type !== 'balance'); }, NODE],
+  ['a nonce edit that adds 2', (content) => { content.gcr_edits[3].amount = 2; }, NODE],
+  ['a nonce edit that adds the string 1 after the fork', (content) => { content.gcr_edits[3].amount = '1'; }, NODE_POST_FORK],
+  ['a nonce edit that removes', (content) => { content.gcr_edits[3].operation = 'remove'; }, NODE],
+  ['balance edits that add', (content) => { for (const edit of content.gcr_edits) if (edit.type === 'balance') edit.operation = 'add'; }, NODE],
+  ['an extra balance edit', (content) => { content.gcr_edits.push({ ...content.gcr_edits[2] }); }, NODE],
+  ['another storage fee', (content) => { content.gcr_edits[0].amount = 2; }, NODE],
+  ['another gas burn after the fork', (content) => { content.gcr_edits[2].amount = '2000000000'; }, NODE_POST_FORK],
+  ['a number balance edit amount after the fork', (content) => { content.gcr_edits[0].amount = 1; }, NODE_POST_FORK],
+  ['the execution edits in another order', (content) => { content.gcr_edits.reverse(); }, NODE],
+  ['an execution edit naming a transaction', (content) => { content.gcr_edits[3].txhash = 'a7'.repeat(32); }, NODE],
+  ['a storage program edit of other variables', (content) => { content.gcr_edits[1].context.data.variables.acl = { mode: 'private' }; }, NODE],
+  ['an execution edit member the SDK does not write', (content) => { content.gcr_edits[3].TEST = true; }, NODE],
+  ['an empty execution edit', (content) => { content.gcr_edits = [{}]; }, NODE],
+  ['a rollback execution edit', (content) => { content.gcr_edits[0].isRollback = true; }, NODE],
+  ['an execution edit of another type', (content) => { content.gcr_edits[0].type = 'identity'; }, NODE],
+  ['a balance edit of another account', (content) => { content.gcr_edits[0].account = `0x${'b8'.repeat(32)}`; }, NODE],
+  ['a storage program edit of another target', (content) => { content.gcr_edits[1].target = `stor-${'c4'.repeat(20)}`; }, NODE],
+  ['no storage program edit', (content) => { content.gcr_edits.splice(1, 1); }, NODE],
+  ['two storage program edits', (content) => { content.gcr_edits.push({ ...content.gcr_edits[1] }); }, NODE],
+  ['a private ACL', (content) => { content.data[1].acl.mode = 'private'; }, NODE],
+  ['off-chain storage', (content) => { content.data[1].storageLocation = 'offchain'; }, NODE],
+  ['an unknown storage location', (content) => { content.data[1].storageLocation = 'TEST-invalid'; }, NODE],
   ['an extra execution field', (content) => { content.TEST = true; }],
-  ['an extra operation field', (content) => { content.data[1].TEST = true; }],
-  ['an extra metadata field', (content) => { content.data[1].metadata.TEST = true; }],
+  ['an extra operation field', (content) => { content.data[1].TEST = true; }, NODE],
+  ['an extra metadata field', (content) => { content.data[1].metadata.TEST = true; }, NODE],
 ];
-for (const [label, edit] of hostileCreateEdits) test(`refuses ${label} before retention and a corrected signer recovers`, async (t) => {
+for (const [label, edit, { node = false, postFork = false } = {}] of hostileCreateEdits) test(`refuses ${label} before retention and a corrected signer recovers`, async (t) => {
   const w = wallet(t), journal = w.open(); t.after(() => journal.close());
-  w.faults.sign.push({ edit });
+  w.faults.sign.push({ edit, postFork });
   await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid' });
   assert.equal(await journal.readSignedProjection(w.input()), null);
   assert.equal(w.calls.broadcast.length, 0);
+  if (node) assert.equal(await sdkRegeneratesSignedCreate(w.calls.signedContents[0]), false, 'the node refuses it too');
   assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
 });
 
@@ -510,8 +551,8 @@ test('a journal that kept the CREATE answers an attempt that threw without namin
 
 test('a multibyte signed transaction beyond the wire byte limit is not retained or broadcast', async (t) => {
   const w = wallet(t), node = walletChain({ state: w.chain });
-  const journal = w.open({ signCreate(asked) {
-    const answer = node.signCreate(asked);
+  const journal = w.open({ async signCreate(asked) {
+    const answer = await node.signCreate(asked);
     const projection = JSON.parse(answer.signedTransaction);
     projection.content.data[1].data.TEST = '🙂'.repeat(300_000);
     answer.signedTransaction = JSON.stringify(projection);

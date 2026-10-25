@@ -19,7 +19,7 @@ if (cut === 'initialize') {
   };
 }
 const journal = createPaymentEvidenceWalletJournal({ path,
-  signCreate: async (input) => { const answer = node.signCreate(input); if (cut === 'signed') await die(); return answer; },
+  signCreate: async (input) => { const answer = await node.signCreate(input); if (cut === 'signed') await die(); return answer; },
   broadcast: async ({ txHash }) => { if (cut === 'kept') await die(); node.land(txHash); if (cut === 'sent') await die(); },
   readAccountNonce: async () => node.accountNonce(),
   readTransactionState: async ({ txHash }) => node.transactionState(txHash) });
