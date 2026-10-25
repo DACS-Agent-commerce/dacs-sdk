@@ -19,9 +19,11 @@
 //
 // createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
 //   readAccountNonce, readTransactionState, now, readTimeoutMs }):
-//  - path: absolute path of the journal's SQLite file, in a private directory
-//    owned by this user (created 0600 when missing);
-//  - signCreate(input) -> { signedTransaction, txHash, nonce }: signs, and must
+//  - path: absolute path of the journal's SQLite file (created 0600 when
+//    missing), in a directory owned by this user that no one else can write,
+//    reached through no symbolic link and no ancestor others can write (a
+//    sticky one such as /tmp excepted); anything else is refused;
+//  - signCreate(input, { signal }) -> { signedTransaction, txHash, nonce }: signs, and must
 //    not send, the storage CREATE for input ({ logicalAddress, artifact, writer,
 //    artifactKind, jobId, receiptContentHash }); nonce is the transaction's
 //    account nonce (a positive safe integer). signedTransaction is the JSON of
@@ -38,10 +40,12 @@
 //    writer's address (`from` and `from_ed25519_address`), with the writer's
 //    Ed25519 signature over the hash as 0x and lower-case hex. Its amount is 0,
 //    its ACL public and its storage on-chain; the node fee and execution edits
-//    the SDK adds (`transaction_fee`, `gcr_edits`) are required and not
+//    the SDK adds are required in the SDK's shape (`transaction_fee`:
+//    three fee amounts and an rpc address; `gcr_edits`: the balance, nonce and one
+//    storage program edit of the writer, none a rollback) and otherwise not
 //    compared, as the node regenerates the edits. Anything else is
 //    refused (wallet_sign_invalid), and nothing is kept or sent;
-//  - broadcast({ signedTransaction, txHash }): sends exactly these bytes. The
+//  - broadcast({ signedTransaction, txHash }, { signal }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
 //  - readAccountNonce() -> a non-negative safe integer, or an authenticated
 //    { nonce, blockHeight } snapshot from the qualified wallet reader;
@@ -52,7 +56,11 @@
 //    transaction index (including failed transactions) on the same chain.
 //    Its coverage must reach the nonce snapshot's blockHeight. A bare nonce
 //    or an unfenced absence keeps the original signed CREATE alive.
-//  Each read is given readTimeoutMs (default 10 s) to answer.
+//  Each read, signCreate and broadcast is given readTimeoutMs (default 10 s) to
+//  settle, and is passed { signal } to stop at the deadline. A signCreate that
+//  does not (wallet_sign_timeout) keeps nothing and frees the journal; a
+//  broadcast that does not (wallet_broadcast_timeout) leaves the kept CREATE
+//  live for reconcilePaymentEvidence, which answers `pending` for it.
 // Returns { anchorEvidence, reconcilePaymentEvidence, readSignedProjection,
 // journalId, close }: the first goes into createNativePaymentEvidenceConsumer,
 // the second is the host option. createSellerAgent (and so startSellerHost)
@@ -71,8 +79,8 @@
 // it is never answered `unsigned`. A superseded named attempt with a live successor is
 // refused as wallet_journal_stale_attempt; reconcile the successor separately.
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, lstatSync, openSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { closeSync, constants, lstatSync, openSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
@@ -91,6 +99,10 @@ const OPERATION_MEMBERS = new Set(['operation', 'storageAddress', 'programName',
 const METADATA_MEMBERS = new Set(['logicalAddress', 'artifactKind', 'contentHash', 'envelopeHash', 'networkBinding']);
 // Zero as the SDK signs it: a number before the node's denomination fork, the string "0" after it.
 const ZERO_AMOUNTS = [0, '0'];
+// A fee amount as the SDK signs it: a non-negative number before the denomination fork, a decimal string after it.
+const FEE_AMOUNT = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0) || (typeof value === 'string' && /^[0-9]+$/.test(value));
+// The execution edits demosdk 4.0.16 generates for a storage CREATE: the gas burn, the storage program, the nonce.
+const EDIT_TYPES = new Set(['balance', 'storageProgram', 'nonce']);
 // The only attempt outcome that proves no CREATE was signed, so nothing was sent.
 const PRE_SIGNING_FAILURE = 'failed-before-signing';
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
@@ -117,6 +129,15 @@ export function paymentEvidenceWalletJournalOf(anchorEvidence) {
 // (demos-sr2-adapter.mjs authenticate) reads back as this evidence: kept
 // otherwise, they could never land, and while their nonce is not overtaken
 // they would never be superseded.
+// Why the node fee and execution edits are not those the SDK signs for this CREATE, or null.
+function feeAndEditsProblem(content, from, storageAddress) {
+  const fee = content.transaction_fee, edits = content.gcr_edits;
+  if (!object(fee) || !['network_fee', 'rpc_fee', 'additional_fee'].every((key) => FEE_AMOUNT(fee[key])) || (fee.rpc_address !== null && typeof fee.rpc_address !== 'string')) return 'has no valid node fee';
+  if (!Array.isArray(edits) || edits.length === 0 || !edits.every((edit) => object(edit) && EDIT_TYPES.has(edit.type) && edit.isRollback === false
+      && (edit.type === 'storageProgram' ? edit.target === storageAddress : edit.account === from))
+      || edits.filter((edit) => edit.type === 'storageProgram').length !== 1) return 'has no valid execution edits, so the node cannot execute it';
+  return null;
+}
 function signedCreateProblem(answer, input) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
@@ -143,12 +164,22 @@ function signedCreateProblem(answer, input) {
   buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress: input.logicalAddress,
     signedListing: input.artifact, nonce: answer.nonce, timestamp: content.timestamp });
   // The signer adds the node's fee and the execution edits the node regenerates and compares (demosdk sign), so
-  // those are not compared here; the members around them are the zero-value public on-chain CREATE.
+  // only their shape is checked; the members around them are the zero-value public on-chain CREATE.
   if (!Object.keys(content).every((key) => CONTENT_MEMBERS.has(key)) || !Object.keys(op).every((key) => OPERATION_MEMBERS.has(key))
       || !Object.keys(metadata).every((key) => METADATA_MEMBERS.has(key))) return 'carries a member a storage CREATE does not';
   if (!ZERO_AMOUNTS.includes(content.amount) || !object(op.acl) || Object.keys(op.acl).join() !== 'mode' || op.acl.mode !== 'public' || op.storageLocation !== 'onchain') return 'is not the public zero-value on-chain CREATE';
-  if (!object(content.transaction_fee) || !Array.isArray(content.gcr_edits) || content.gcr_edits.length === 0) return 'has no node fee and execution edits, so the node cannot execute it';
-  return null;
+  return feeAndEditsProblem(content, from, storageAddress);
+}
+
+// Refuses a journal path whose directory another user could write to: they could unlink or replace the file and with it the kept signatures.
+function assertPrivateDirectory(directory) {
+  if (realpathSync(directory) !== directory) throw new TypeError('the wallet journal directory must be a real path without symbolic links');
+  for (let current = directory; ; current = dirname(current)) {
+    const { uid, mode } = lstatSync(current), own = current !== directory || uid === process.getuid?.();
+    // Others may write only a sticky ancestor (/tmp), where they cannot remove what they do not own.
+    if (!own || ((mode & 0o022) !== 0 && (current === directory || (mode & 0o1000) === 0))) throw new TypeError(`the wallet journal directory ${current} must be owned by this user and not writable by others`);
+    if (dirname(current) === current) return;
+  }
 }
 
 export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
@@ -156,6 +187,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
   if (typeof readAccountNonce !== 'function' || typeof readTransactionState !== 'function') throw new TypeError('the wallet journal needs readAccountNonce and readTransactionState, to tell a kept CREATE that can no longer be executed');
   if (!Number.isSafeInteger(readTimeoutMs) || readTimeoutMs < 1) throw new TypeError('the wallet journal readTimeoutMs must be a positive integer');
+  assertPrivateDirectory(dirname(path));
   try { closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)); }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
   const file = lstatSync(path);
@@ -224,16 +256,23 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     const live = kept.find((row) => row.superseded_at === null);
     return { live: live ? { signedTransaction: live.signed_transaction, txHash: live.tx_hash, nonce: Number(live.nonce) } : null, highestNonce: kept.length ? Number(kept.at(-1).nonce) : 0 };
   };
-  // A wallet read with a deadline: a throw, a timeout or an answer of another shape is null.
-  const read = async (call, accept) => {
+  // Every wallet call has readTimeoutMs to settle. A call that does not is told to stop (its AbortSignal) and rejected with timedOut().
+  const withDeadline = async (call, timedOut) => {
+    const controller = new AbortController();
     let timer;
     try {
-      const answer = await Promise.race([Promise.resolve().then(call), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), readTimeoutMs); })]);
-      const value = accept(answer);
+      return await Promise.race([Promise.resolve().then(() => call(controller.signal)), new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(timedOut()); }, readTimeoutMs); })]);
+    } finally { clearTimeout(timer); }
+  };
+  // A wallet read with a deadline: a throw, a timeout or an answer of another shape is null.
+  const read = async (call, accept) => {
+    try {
+      const value = accept(await withDeadline(() => call(), () => new Error('timed out')));
       return value === null ? { cause: 'answered no valid value' } : { value };
     } catch (error) { return { cause: reason(error) }; }
-    finally { clearTimeout(timer); }
   };
+  const sendSigned = ({ signedTransaction, txHash }) => withDeadline((signal) => broadcast({ signedTransaction, txHash }, { signal }),
+    () => Object.assign(new Error(`broadcasting the kept signed CREATE ${txHash} did not settle in ${readTimeoutMs} ms; its fate is not known`), { code: 'wallet_broadcast_timeout' }));
   // Read the nonce snapshot before the transaction index. The latter must
   // have indexed at least that snapshot, closing the nonce-before-tx-row race.
   async function fate(signed) {
@@ -270,7 +309,8 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
   async function prepareAnchor(input) {
     let { live: signed, highestNonce, applied } = await liveFor(input);
     if (!signed) {
-      const answer = await signCreate(structuredClone(input));
+      const answer = await withDeadline((signal) => signCreate(structuredClone(input), { signal }),
+        () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
       const problem = signedCreateProblem(answer, input);
@@ -286,7 +326,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
   }
   async function anchorEvidence(input) {
     const signed = await locked(() => prepareAnchor(input));
-    if (!signed.applied) await broadcast({ signedTransaction: signed.signedTransaction, txHash: signed.txHash });
+    if (!signed.applied) await sendSigned(signed);
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
   }
 
@@ -328,7 +368,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       return { status: 'unsigned', ...(prior ? { txHash: typeof named === 'string' ? named : prior.tx_hash } : {}), reason: superseded?.reason ?? 'the wallet journal keeps no live signed CREATE for this address' };
     }
     if (applied) return { status: 'applied', txHash: signed.txHash };
-    try { await broadcast({ signedTransaction: signed.signedTransaction, txHash: signed.txHash }); }
+    try { await sendSigned(signed); }
     catch (error) { return { status: 'pending', txHash: signed.txHash, reason: `the same signed CREATE was not broadcast again: ${reason(error)}` }; }
     return { status: 'rebroadcast', txHash: signed.txHash, ...(unread ? { reason: unread } : {}) };
   }
