@@ -1395,6 +1395,9 @@
     {"delta":"D11","subject":"fix(client): D11 identify concrete purchase store refusals","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"d71e144f24bc40914191b1cf9cd63225c21a3038","after":"8b6ad846e858bbb85516f185076069981808daee"},{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"bccc86590f36056cb352f4cff077c1671845831f","after":"4ea366779d54eaad3bd2ca0b1cc36ba6a893db33"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"00357c230e040c7a2658f717f72e172eedcc8b44","after":"e57d6756201c7169e9ecf80fa299b491855c6d9f"},{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"77cf094cdddb8ffd4131013d42e15eb58f2fe8a6","after":"026edca5593e825f73f5526fbbf64b0571d151bd"},{"path":"packages/dacs-client/test/store-refusal-errors.test.mjs","before":null,"after":"a41ff025877d600e4d9213600d642213d61dd7a2"}]},
     {"delta":"D11","subject":"fix(client): D11 assert the enclosing transaction refusal","files":[{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"026edca5593e825f73f5526fbbf64b0571d151bd","after":"834da95ce983a23387840cc0049572d522f9a440"}]},
     {"delta":"D11","subject":"fix(client): D11 record the 03a split integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 normalize the extracted lease and checkpoint probes","files":[{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"bccc86590f36056cb352f4cff077c1671845831f","after":"011865d7d581630937628b776c829f0fdce48607"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03b lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03c lease formatting integration","files":[{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"927a43435424ea2b8ee1a11f7d2d47eb350139fc","after":"927a43435424ea2b8ee1a11f7d2d47eb350139fc"}]}
   ]
 }
