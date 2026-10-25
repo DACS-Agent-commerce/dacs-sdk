@@ -87,4 +87,3 @@ export function sqliteWriteLease(db) {
   guard.refresh();
   return guard;
 }
-

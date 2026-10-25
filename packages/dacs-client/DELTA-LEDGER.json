@@ -1499,6 +1499,12 @@
     {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 04 checkpoint check integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 05 checkpoint check integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 05a checkpoint check integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 05a checkpoint check integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 normalize the extracted lease and checkpoint probes","files":[{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"bccc86590f36056cb352f4cff077c1671845831f","after":"011865d7d581630937628b776c829f0fdce48607"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03b lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03c lease formatting integration","files":[{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"927a43435424ea2b8ee1a11f7d2d47eb350139fc","after":"927a43435424ea2b8ee1a11f7d2d47eb350139fc"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03a lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 04 lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 05 lease formatting integration","files":[]}
   ]
 }
