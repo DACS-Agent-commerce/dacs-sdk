@@ -188,8 +188,9 @@ function moduleRoots(location, files) {
  * entry without a sha512 integrity, such as a Git dependency, is `unverified`), `carried` (each
  * module an archive holds below a node_modules of its own that no lock entry installs, with its name
  * and package.json) and `errors` (entries whose installed files cannot be derived, including
- * packages with npm-shrinkwrap.json, missing command files and command targets with CRLF
- * shebangs that npm rewrites when creating executable links). */
+ * omitted entries still carried by an installed archive, packages with npm-shrinkwrap.json,
+ * missing command files and command targets with CRLF shebangs that npm rewrites when creating
+ * executable links). */
 export function installationClosure(project, lock, readArchive) {
   const entries = new Map();
   const roots = new Map();
@@ -219,6 +220,9 @@ export function installationClosure(project, lock, readArchive) {
     } catch (error) { errors.push(`cannot derive the installed files of ${location}: ${error.message}`); }
   }
   for (const [location, record] of entries) {
+    if (!record.present && roots.has(location)) {
+      errors.push(`cannot derive the installed files of ${location}: omitted entry is in the archive of ${roots.get(location).owner}`);
+    }
     // A bundled entry is one of the modules its bundling package's archive holds.
     if (record.entry.inBundle === true && record.present) {
       const module = roots.get(location);
