@@ -411,11 +411,23 @@ function reserveEffectRequest(request: WireRequestPayload, store: object | null)
     binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wireRequestHash(request) });
 }
 
+/**
+ * The host's receipt reader can take time, and the request and delegation may expire, or the connection lose its
+ * authority, while it runs. Both are checked again, at the check's start plus the time elapsed since, just before the reservation.
+ */
+async function assertStillAuthorized(request: WireRequestPayload, c: RequestCheck, delegationExpiresAt: number | null, elapsedMs: number): Promise<void> {
+  const at = c.now + elapsedMs;
+  if (request.expiresAt <= at) fail("peer_expired", 408);
+  if (delegationExpiresAt !== null && delegationExpiresAt <= at) fail("peer_delegation_expired", 408);
+  await assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
+}
+
 /** Every per-request admission an effect needs, in order, then its reservation. */
-async function admitEffect(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): Promise<WireEffect | null> {
+async function admitEffect(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin, delegationExpiresAt: number | null, startedAt: number): Promise<WireEffect | null> {
   const store = effectJournal(request, c.requestJournal);
   admitNewPurchase(request, c.ready);
   await admitContinuation(request, c, listingPin);
+  if (store !== null) await assertStillAuthorized(request, c, delegationExpiresAt, performance.now() - startedAt);
   return reserveEffectRequest(request, store);
 }
 
@@ -447,6 +459,7 @@ export interface CheckedWireRequest {
  * compared, and the admitted body is returned.
  */
 export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<CheckedWireRequest> {
+  const startedAt = performance.now();
   const c = ownedFields(check, CHECK_FIELDS) as unknown as RequestCheck;
   const listingPin = ownedConfig(c.listingPin, "wire_input_invalid") as ListingPin;
   const retained = c.retained === undefined ? undefined : ownedConfig(c.retained, "seller_retained_agreement_required") as JsonRecord;
@@ -489,7 +502,7 @@ export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPaylo
     }
   }
   if (!delegation) {
-    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin) };
+    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin, null, startedAt) };
   }
   if (retainedArtifacts.length === 0) fail("peer_delegation_agreement_required", 409);
   // This frozen copy came only from an authenticated, CF-5-admitted envelope.
@@ -502,7 +515,7 @@ export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPaylo
   }
   await verifySellerSessionDelegation(admittedDelegation, scope);
   if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
-    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin) };
+    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin, delegation.payload.expiresAt, startedAt) };
   }
   // An expired delegation, or a request that outlives a live one, authenticates readback only. The buyer
   // picks readback by its own clock, which may run ahead of this one: a read route is answered either way.
