@@ -1,34 +1,30 @@
 // The seller's request journal: the only store seller admission reserves effects in.
 //
-// A journal a host supplies cannot be shown to survive a restart from inside one process, so the wire takes
-// none. It ships this one: a local directory, shared by every worker on the host, in which each file is
-// written under a temporary name, synced, and published with link() (atomic, and exclusive: of workers
-// racing on one name exactly one publishes it), and the directory synced before the call returns. No other
-// user can rename or replace the directory or any directory above it, so the path cannot be swapped under a publish.
-// Each effect is a durable state machine keyed by its operation (one per seller, job and route; the caller
-// computes it). The first attempt records the operation's binding (profile, buyer and Agreement hash); every
-// later request must carry the same one, or gets peer_operation_mismatch (409), never a second effect.
+// A journal a host supplies cannot be shown to survive a restart from inside one process, so the wire takes none. It ships this one: a local directory, shared by
+// every worker on the host, in which each file is written under a temporary name, synced, and published with link() (atomic, and exclusive: of workers racing on
+// one name exactly one publishes it), and the directory synced before the call returns. No other user can rename or replace the directory or any directory above
+// it, so the path cannot be swapped under a publish. Each effect is a durable state machine keyed by its operation (one per seller, job and route, derived here
+// from those three, never from a request body). The first attempt records the operation's binding (profile, buyer and Agreement hash); every later request must
+// carry the same one, or gets peer_operation_mismatch (409), never a second effect.
 //   no attempt         -> attempt 0 is published: "new" (run the effect)
 //   attempt n live     -> "pending" (seller_effect_pending, 503: retry later)
-//   attempt n ended    -> attempt n+1 is published: "recover" (an earlier
-//                         attempt may have acted: reconcile first)
+//   attempt n ended    -> attempt n+1 is published: "recover" (an earlier attempt may have acted: reconcile first)
 //   outcome published  -> "completed" (re-sign the stored outcome; no effect)
-// Attempt n ends exactly once, by publishing its end entry: completeWireEffect
-// publishes it with the attempt's outcome (or null), and a request that finds
-// the lease run out publishes it as superseded. Whichever is published first
-// stands. Attempt n+1 is published only after an end with no outcome, and the
-// outcome only after the attempt's own end, so a superseded attempt never
-// records one and no attempt starts after it. Every request's nonce key is
-// published too: the same signed request again is peer_request_replayed (409).
+// Attempt n ends exactly once, by publishing its end entry: completeWireEffect publishes it with the attempt's outcome (or null), and a request that finds the
+// lease run out publishes it as superseded. Whichever is published first stands. Attempt n+1 is published only after an end with no outcome, and the outcome
+// only after the attempt's own end, so a superseded attempt never records one and no attempt starts after it. An attempt is issued only if its lease still runs
+// when its publication is done. Every request's nonce key is published too: the same signed request again is peer_request_replayed (409).
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, statfsSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 import { qualifyJournalRestart } from "./journalRestart.js";
 
+import { sha256Hex } from "../canonical/hash.js";
 import { canonicalize } from "../canonical/jcs.js";
-import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
-import { admitWireJson, deepFreeze, fail, hasKeys, isHash, isRecord, isUint, ownedFields, uncurry, type JsonRecord } from "./validate.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from "./routes.js";
+import { admitWireJson, deepFreeze, fail, hasKeys, isClaim, isHash, isRecord, isUint, ownedFields, uncurry, type JsonRecord } from "./validate.js";
 
 /** The outcome an effect handler answered with: what a repeat of its operation is answered with again. */
 export interface WireEffectOutcome {
@@ -39,15 +35,11 @@ export interface WireEffectOutcome {
 }
 
 /**
- * What checkWireRequest returns for an effect route. `new`: no attempt of this
- * operation has run; run the effect, then completeWireEffect. `recover`: an
- * earlier attempt's lease ended with no outcome, and this one now holds the
- * operation alone until `leaseUntil`; that attempt may have acted, so check
- * the effect's own source of truth (the chain, the delivery store) before
- * acting, then completeWireEffect. `completed`: the operation already has its
- * outcome; answer with it (signed again for this request) and run nothing.
- * The outcome is the answer this seller gave, not a new reading: where it
- * states chain or delivery state, check that again at its source first.
+ * What seller admission returns for an effect route. `new`: no attempt of this operation has run; run the effect, then completeWireEffect. `recover`: an
+ * earlier attempt's lease ended with no outcome, and this one now holds the operation alone until `leaseUntil`; that attempt may have acted, so check the
+ * effect's own source of truth (the chain, the delivery store) before acting, then completeWireEffect. `completed`: the operation already has its outcome;
+ * answer with it (signed again for this request) and run nothing. The outcome is the answer this seller gave, not a new reading: where it states chain or
+ * delivery state, check that again at its source first.
  */
 export type WireEffect =
   | { readonly state: "new" | "recover"; readonly operationId: string; readonly attempt: number; readonly leaseUntil: number }
@@ -69,8 +61,10 @@ export interface WireRequestJournalOptions {
 export interface EffectReservation {
   /** SHA-256 of {buyer, seller, profile, nonce}. */
   key: string;
-  /** SHA-256 of {seller, jobId, path}: fixed for the job and route. */
-  operationId: string;
+  /** The seller's claim, the Agreement's job and the effect route: the operation is derived from these, never from the request body. */
+  seller: string;
+  jobId: string;
+  path: string;
   /** SHA-256 of {profile, buyer, agreementHash}: recorded with attempt 0 and compared on every later request. */
   binding: string;
   requestHash: string;
@@ -259,11 +253,11 @@ function assertPathNotReplaceable(directory: string): void {
   }
 }
 
-/** Make durable the entry of the journal directory and of every ancestor this user could have created (those it owns). */
+/** Make durable the entry of the journal directory and of every ancestor this user created: each directory it owns is named in its parent, whoever owns that. */
 function syncPathEntries(directory: string): void {
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
   for (let path = directory; dirname(path) !== path; path = dirname(path)) {
-    if (uid === undefined || lstatSync(dirname(path)).uid === uid) syncDirectory(dirname(path));
+    if (uid === undefined || lstatSync(path).uid === uid) syncDirectory(dirname(path));
   }
 }
 
@@ -274,12 +268,11 @@ function now(store: Store): number {
 }
 
 /**
- * Open the journal in `directory`: an existing absolute directory, not a symbolic link and reached through none
- * (the path is its own real path), owned by this process's user and writable by no one else, on storage that keeps data across a reboot (not tmpfs or
- * ramfs), under ancestors no other user can change (root-owned, or a root-owned sticky one), whose own entries are then synced; a call after the path names another directory
- * fails. Before it is returned, an exclusive publish is tried twice on it: the second must be refused. A publisher
- * then exits before a fresh process checks retained bytes and exclusive retry. Failure, or Windows (no directory
- * sync), is `seller_replay_guard_invalid` (500). Every worker on the host opens the same directory.
+ * Open the journal in `directory`: an existing absolute directory, not a symbolic link and reached through none (the path is its own real path), owned by this
+ * process's user and writable by no one else, on storage that keeps data across a reboot (not tmpfs or ramfs), under ancestors no other user can change
+ * (root-owned, or a root-owned sticky one), whose own entries are then synced; a call after the path names another directory fails. Before it is returned, an
+ * exclusive publish is tried twice on it: the second must be refused. A publisher then exits before a fresh process checks retained bytes and exclusive retry.
+ * Failure, or Windows (no directory sync), is `seller_replay_guard_invalid` (500). Every worker on the host opens the same directory.
  */
 export function openWireRequestJournal(directory: string, options: WireRequestJournalOptions = {}): WireRequestJournal {
   if (process.platform === "win32") fail("seller_replay_guard_invalid", 500, "PLATFORM-UNSUPPORTED");
@@ -313,17 +306,26 @@ export function journalStore(journal: unknown): object { // WeakMap.get answers 
   return store as object;
 }
 
-function issue(store: Store, effect: WireEffect & { attempt: number }): WireEffect {
+/** Issue an attempt only while its lease still runs: publishing takes syncs, and a lapsed attempt may already be superseded. */
+function issue(store: Store, effect: Exclude<WireEffect, { state: "completed" }>): WireEffect {
+  if (now(store) >= effect.leaseUntil) fail("seller_effect_pending", 503);
   const frozen = deepFreeze(effect);
   issuedSet(issued, frozen, { store, operationId: effect.operationId, attempt: effect.attempt });
   return frozen;
 }
 
+/** The operation of an effect: one per seller, job and route, so no request body names another. */
+function operationOf({ seller, jobId, path }: EffectReservation): string {
+  if (!isClaim(seller) || !isCanonicalJobId(jobId) || !DACS_SELLER_HTTP_ROUTES.some((r) => r.path === path && r.auth === "signed" && r.effect === "effect")) fail("wire_input_invalid", 500);
+  return sha256Hex(canonicalize({ seller, jobId, path }));
+}
+
 /** Reserve one effect request (envelope.ts): its nonce key, then its operation's next state. */
 export function reserveEffect(storeHandle: object, reservation: EffectReservation): WireEffect {
   const store = storeHandle as Store;
-  const { key, operationId, binding, requestHash } = reservation;
-  if (!isHash(key) || !isHash(operationId) || !isHash(binding) || !isHash(requestHash)) fail("wire_input_invalid", 500);
+  const { key, binding, requestHash } = reservation;
+  if (!isHash(key) || !isHash(binding) || !isHash(requestHash)) fail("wire_input_invalid", 500);
+  const operationId = operationOf(reservation);
   if (!publish(store, `k-${key}`, canonicalize({ key, operationId, binding, requestHash }))) fail("peer_request_replayed", 409);
   const at = now(store);
   const lease = (attempt: number, superseded = 0) => canonicalize({ operationId, attempt, requestHash, leaseUntil: at + store.leaseMs, binding, superseded });
@@ -371,15 +373,13 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
 }
 
 /**
- * Record the end of an effect attempt that reserveEffect issued (`new` or `recover`), on the journal it was
- * issued from. `outcome` is the answer the handler signed: a later request for the same operation is answered
- * with it and runs no effect, so its text must be a body the wire can sign: a JSON object CF-5 admission admits,
- * in well-formed UTF-8 (`wire_input_invalid`, detail `OUTCOME-INVALID`, before anything is published). It is
- * published once: the same outcome again is accepted, another is `seller_effect_conflict` (500). `null` ends an
- * attempt that caused no effect and will cause none (for example, a payment not yet visible), so the next request
- * recovers at once instead of after the lease. Clean null ends do not spend MAX_EFFECT_ATTEMPTS; only superseded
- * attempts do. An attempt whose lease ran out and that a later request ended first is `seller_effect_superseded`
- * (500), and records nothing: its successor reconciles. Call it only after the effect's own write is durable.
+ * Record the end of an effect attempt that reserveEffect issued (`new` or `recover`), on the journal it was issued from. `outcome` is the answer the handler
+ * signed: a later request for the same operation is answered with it and runs no effect, so its text must be a body the wire can sign: a JSON object CF-5
+ * admission admits, in well-formed UTF-8 (`wire_input_invalid`, detail `OUTCOME-INVALID`, before anything is published). It is published once: the same outcome
+ * again is accepted, another is `seller_effect_conflict` (500). `null` ends an attempt that caused no effect and will cause none (for example, a payment not yet
+ * visible), so the next request recovers at once instead of after the lease. Clean null ends do not spend MAX_EFFECT_ATTEMPTS; only superseded attempts do. An
+ * attempt whose lease ran out and that a later request ended first is `seller_effect_superseded` (500), and records nothing: its successor reconciles. Call it
+ * only after the effect's own write is durable.
  */
 export function completeWireEffect(journal: WireRequestJournal, effect: WireEffect, outcome: WireEffectOutcome | null): void {
   const store = journalStore(journal) as Store;
