@@ -1541,6 +1541,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the 06 checkpoint check integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 06b checkpoint check integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 06c checkpoint check integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 06a checkpoint check integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 06a checkpoint check integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 07 checkpoint check integration","files":[]}
   ]
 }
