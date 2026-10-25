@@ -50,8 +50,9 @@ describe("packed archive files", () => {
   const valid: TarEntry = { name: "package/package.json", body: manifest("a") };
   const complete = tarArchive([valid]);
   it.each([
-    ["entry data cut short", complete.subarray(0, 520), "truncated packed tarball"],
-    ["entry padding cut short", complete.subarray(0, 600), "truncated packed tarball"],
+    ["entry data cut short", complete.subarray(0, 520), "truncated packed tarball entry"],
+    ["entry padding cut short", complete.subarray(0, 600), "truncated packed tarball entry"],
+    ["a size field that is not octal", tarArchive([{ ...valid, size: "0000000009x" }]), "malformed size"],
     ["no end-of-archive block", complete.subarray(0, 1024), "no end-of-archive block"],
     ["a header with a bad checksum", Buffer.concat([complete.subarray(0, 148), Buffer.from("0000000\0"), complete.subarray(156)]),
       "bad checksum"],

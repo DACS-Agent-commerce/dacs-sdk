@@ -73,7 +73,7 @@ function renameGitignores(files) {
  * entry path without the first component, as npm extracts it) to its bytes. Directory, link and
  * device entries are skipped, as npm skips them. Throws on an archive that is truncated, unpacks to
  * more than MAX_UNPACKED_ARCHIVE_BYTES or holds more than MAX_ARCHIVE_ENTRIES entries, a header with
- * a bad checksum, an unsupported entry type, an escaping or duplicate path, or no package.json. */
+ * a bad checksum or size, an unsupported entry type, an escaping or duplicate path, or no package.json. */
 export function packedFiles(archive) {
   const tar = gunzipSync(archive, { maxOutputLength: MAX_UNPACKED_ARCHIVE_BYTES });
   const files = new Map();
@@ -85,8 +85,9 @@ export function packedFiles(archive) {
     if (entries === MAX_ARCHIVE_ENTRIES) throw new Error(`packed tarball has more than ${MAX_ARCHIVE_ENTRIES} entries`);
     if (!validChecksum(header)) throw new Error("packed tarball header has a bad checksum");
     const size = tarNumber(header, TAR_SIZE);
+    if (!Number.isSafeInteger(size)) throw new Error("packed tarball entry has a malformed size");
     const next = offset + TAR_BLOCK + Math.ceil(size / TAR_BLOCK) * TAR_BLOCK;
-    if (!(size >= 0) || next > tar.length) throw new Error("truncated packed tarball");
+    if (next > tar.length) throw new Error("truncated packed tarball entry");
     const data = tar.subarray(offset + TAR_BLOCK, offset + TAR_BLOCK + size);
     offset = next;
     const type = String.fromCharCode(header[TAR_TYPE] || 48);
