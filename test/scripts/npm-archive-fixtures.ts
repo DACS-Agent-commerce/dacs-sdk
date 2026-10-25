@@ -10,14 +10,14 @@ import { gzipSync } from "node:zlib";
 
 export const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 
-/** One tar entry: `type` defaults to a file ("0"); `pax` precedes it with a pax header. */
-export type TarEntry = { name: string; body?: string; type?: string; pax?: Record<string, string> };
+/** One tar entry: `type` defaults to a file ("0"); `pax` precedes it with a pax header; `size` replaces its size field. */
+export type TarEntry = { name: string; body?: string; type?: string; pax?: Record<string, string>; size?: string };
 
-function tarHeader(name: string, size: number, type: string) {
+function tarHeader(name: string, size: number, type: string, sizeField = size.toString(8).padStart(11, "0")) {
   const header = Buffer.alloc(512);
   header.write(name, 0);
   header.write("0000644\0", 100);
-  header.write(size.toString(8).padStart(11, "0") + "\0", 124);
+  header.write(sizeField + "\0", 124);
   header.write("        ", 148);
   header.write(type, 156);
   header.write("ustar\0" + "00", 257);
@@ -25,14 +25,14 @@ function tarHeader(name: string, size: number, type: string) {
   return header;
 }
 
-function tarBlocks(name: string, body: Buffer, type: string) {
-  return [tarHeader(name, body.length, type), body, Buffer.alloc((512 - (body.length % 512)) % 512)];
+function tarBlocks(name: string, body: Buffer, type: string, sizeField?: string) {
+  return [tarHeader(name, body.length, type, sizeField), body, Buffer.alloc((512 - (body.length % 512)) % 512)];
 }
 
 /** An uncompressed tar of `entries`, ending in the two zero blocks of a complete archive. */
 export function tarArchive(entries: TarEntry[]) {
   const blocks: Buffer[] = [];
-  for (const { name, body = "", type = "0", pax } of entries) {
+  for (const { name, body = "", type = "0", pax, size } of entries) {
     if (pax) {
       const records = Object.entries(pax).map(([key, value]) => {
         const record = ` ${key}=${value}\n`;
@@ -42,7 +42,7 @@ export function tarArchive(entries: TarEntry[]) {
       }).join("");
       blocks.push(...tarBlocks("PaxHeader", Buffer.from(records), "x"));
     }
-    blocks.push(...tarBlocks(name.slice(0, 100), Buffer.from(body), type));
+    blocks.push(...tarBlocks(name.slice(0, 100), Buffer.from(body), type, size));
   }
   return Buffer.concat([...blocks, Buffer.alloc(1024)]);
 }
