@@ -1,0 +1,76 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DIAGNOSTIC_LIMITS, DIAGNOSTIC_OMITTED, projectDiagnostic, projectDiagnosticOperation } from '../src/diagnostic-projection.mjs';
+
+const REPLAY = 'TEST-replay-material';
+
+test('projection omits values deeper than the depth limit', () => {
+  let nested = 'TEST-leaf';
+  for (let level = 0; level <= DIAGNOSTIC_LIMITS.depth; level++) nested = { nested };
+  let cursor = projectDiagnostic(nested);
+  for (let level = 0; level < DIAGNOSTIC_LIMITS.depth; level++) cursor = cursor.nested;
+  assert.equal(cursor, DIAGNOSTIC_OMITTED);
+});
+
+test('projection keeps a long list to its limit and marks the omission', () => {
+  const list = projectDiagnostic(Array.from({ length: DIAGNOSTIC_LIMITS.collectionItems + 5 }, (_, index) => index));
+  assert.equal(list.length, DIAGNOSTIC_LIMITS.collectionItems + 1);
+  assert.equal(list.at(-1), DIAGNOSTIC_OMITTED);
+});
+
+test('projection replaces a record with too many fields', () => {
+  const record = Object.fromEntries(Array.from({ length: DIAGNOSTIC_LIMITS.collectionItems + 1 }, (_, index) => [`field${index}`, index]));
+  assert.equal(projectDiagnostic({ record }).record, DIAGNOSTIC_OMITTED);
+});
+
+test('projection replaces a string over the string limit and keeps one at the limit', () => {
+  const projected = projectDiagnostic({ atLimit: 'a'.repeat(DIAGNOSTIC_LIMITS.stringChars), over: 'a'.repeat(DIAGNOSTIC_LIMITS.stringChars + 1) });
+  assert.equal(projected.atLimit.length, DIAGNOSTIC_LIMITS.stringChars);
+  assert.equal(projected.over, DIAGNOSTIC_OMITTED);
+});
+
+test('projection spends one shared output budget across many mid-sized strings', () => {
+  const strings = Array.from({ length: DIAGNOSTIC_LIMITS.collectionItems }, () => 'y'.repeat(DIAGNOSTIC_LIMITS.stringChars));
+  const projected = projectDiagnostic({ first: strings, second: strings, third: strings });
+  assert.ok(JSON.stringify(projected).length <= DIAGNOSTIC_LIMITS.outputChars);
+  assert.equal(projected.third.at(-1), DIAGNOSTIC_OMITTED);
+});
+
+test('projection stays within the output limit for wide, deep and escaped content', () => {
+  const escaped = '"\n\u0000'.repeat(DIAGNOSTIC_LIMITS.stringChars / 3 | 0);
+  const wide = Array.from({ length: DIAGNOSTIC_LIMITS.collectionItems }, () => ({ key: Array.from({ length: DIAGNOSTIC_LIMITS.collectionItems }, () => escaped) }));
+  assert.ok(JSON.stringify(projectDiagnostic({ wide, again: wide })).length <= DIAGNOSTIC_LIMITS.outputChars);
+});
+
+test('projection never copies signing or replay keys at any depth', () => {
+  const saved = { id: 'TEST-id', payload: REPLAY, nested: { message: REPLAY, deeper: [{ signature: REPLAY, planned: REPLAY, keep: 'TEST-kept' }] }, payloadHash: 'TEST-hash' };
+  const projected = projectDiagnostic(saved);
+  assert.doesNotMatch(JSON.stringify(projected), new RegExp(REPLAY));
+  assert.deepEqual(projected, { id: 'TEST-id', nested: { deeper: [{ keep: 'TEST-kept' }] }, payloadHash: 'TEST-hash' });
+});
+
+test('projection drops host objects, functions and unsafe numbers and keeps own __proto__ keys as data', () => {
+  const saved = JSON.parse('{"__proto__": {"polluted": true}, "ok": 1}');
+  const projected = projectDiagnostic({ saved, date: new Date(0), call() {}, big: 1n, nan: NaN, plain: [null, true, 'TEST'] });
+  assert.deepEqual(Object.keys(projected).sort(), ['plain', 'saved']);
+  assert.equal(Object.getPrototypeOf(projected.saved), Object.prototype);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(projected.saved, '__proto__').value, { polluted: true });
+  assert.equal(projected.saved.polluted, undefined);
+  assert.deepEqual(projected.plain, [null, true, 'TEST']);
+});
+
+test('operation projection keeps the listed state fields and returns a fresh copy', () => {
+  const operation = { id: 'TEST-op', status: 'approved', terms: { price: { amountOs: '1' } },
+    state: { unlisted: { value: 1 }, preparedVerification: { evidence: { chainMode: 'TEST' } },
+      protocol: { stage: 'delivered', revision: 2, planned: { agreementMessage: REPLAY }, buyerBundle: { payload: REPLAY }, identity: { message: REPLAY },
+        sessionDelegation: { signature: REPLAY }, claim: { id: 'TEST-claim' } } } };
+  const projected = projectDiagnosticOperation(operation);
+  assert.deepEqual(projected, { id: 'TEST-op', status: 'approved', terms: { price: { amountOs: '1' } },
+    state: { preparedVerification: { evidence: { chainMode: 'TEST' } }, protocol: { stage: 'delivered', revision: 2, claim: { id: 'TEST-claim' } } } });
+  projected.state.protocol.stage = 'TEST-changed';
+  assert.equal(operation.state.protocol.stage, 'delivered');
+});
+
+test('operation projection of a non-record state yields an empty state', () => {
+  assert.deepEqual(projectDiagnosticOperation({ id: 'TEST-op', state: 'TEST-not-a-record' }), { id: 'TEST-op', state: {} });
+});
