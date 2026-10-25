@@ -1505,6 +1505,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the 03c lease formatting integration","files":[{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"927a43435424ea2b8ee1a11f7d2d47eb350139fc","after":"927a43435424ea2b8ee1a11f7d2d47eb350139fc"}]},
     {"delta":"D11","subject":"fix(client): D11 record the 03a lease formatting integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 04 lease formatting integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 05 lease formatting integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 05 lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 05a lease formatting integration","files":[]}
   ]
 }
