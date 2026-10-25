@@ -133,7 +133,8 @@ function demosNode() {
     content.from_ed25519_address = owner;
     // What demosdk 4.0.16 sign adds to a storage CREATE: the node's fee and the execution edits.
     content.transaction_fee = { network_fee: 2, rpc_fee: 3, additional_fee: 0, rpc_address: null };
-    content.gcr_edits = ['balance', 'storageProgram', 'balance', 'nonce'].map((type) => ({ type, account: owner, isRollback: false }));
+    content.gcr_edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: owner, amount: 1 }, { type: 'storageProgram', target: storageAddress, isRollback: false },
+      { type: 'balance', operation: 'remove', isRollback: false, account: owner, amount: 1 }, { type: 'nonce', operation: 'add', account: owner, amount: 1, isRollback: false }];
     const hash = core.sha256Hex(JSON.stringify(content)), signed = { hash, content, signature: { type: 'ed25519', data: writer.signWallet(hash) } };
     pending.set(hash, { owner, nonce, apply: () => {
       include(signed);
