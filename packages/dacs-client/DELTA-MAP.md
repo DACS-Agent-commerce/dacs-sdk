@@ -623,6 +623,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 add bounded diagnostic projections | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 4d3bc5b10835cef9f1026c109293c2bf14c2afa7 |
 | | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 8fb8e91c7d1439f3013548378394fa788236fdb0 |
+| D11 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
 
 ## Complete commit and file inventory
 
@@ -1573,6 +1576,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
 | fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
