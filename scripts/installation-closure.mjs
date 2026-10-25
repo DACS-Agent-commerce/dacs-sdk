@@ -43,20 +43,26 @@ const validChecksum = header => tarNumber(header, TAR_CHECKSUM) ===
 const isEscapingPath = path => path.split("/").some(part => part === "" || part === "." || part === "..");
 const fileDigest = bytes => createHash("sha256").update(bytes).digest("base64");
 
-// The `path` record of a pax extended header, which npm writes for names that
-// do not fit a ustar header.
-function paxPath(data) {
-  let path;
+// The path and size of a PAX extended header. Equal size records from older
+// npm archives are supported; size overrides are refused explicitly.
+function paxFields(data) {
+  const fields = {};
   for (let offset = 0; offset < data.length;) {
     const space = data.indexOf(" ", offset);
     const length = Number.parseInt(data.toString("utf8", offset, space), 10);
     if (space < 0 || !(length > 0) || offset + length > data.length) throw new Error("malformed pax header in the packed tarball");
     const record = data.toString("utf8", space + 1, offset + length - 1);
-    if (record.startsWith("path=")) path = record.slice("path=".length);
-    if (record.startsWith("size=")) throw new Error("unsupported pax size in the packed tarball");
+    if (record.startsWith("path=")) fields.path = record.slice("path=".length);
+    if (record.startsWith("size=")) {
+      const size = record.slice("size=".length);
+      if (!/^(0|[1-9][0-9]*)$/.test(size) || !Number.isSafeInteger(Number(size))) {
+        throw new Error("malformed pax size in the packed tarball");
+      }
+      fields.size = Number(size);
+    }
     offset += length;
   }
-  return path;
+  return fields;
 }
 
 // npm installs a .gitignore as .npmignore, unless the archive holds that .npmignore.
@@ -73,11 +79,13 @@ function renameGitignores(files) {
  * entry path without the first component, as npm extracts it) to its bytes. Directory, link and
  * device entries are skipped, as npm skips them. Throws on an archive that is truncated, unpacks to
  * more than MAX_UNPACKED_ARCHIVE_BYTES or holds more than MAX_ARCHIVE_ENTRIES entries, a header with
- * a bad checksum or size, an unsupported entry type, an escaping or duplicate path, or no package.json. */
+ * a bad checksum or size, a PAX size override, an unsupported entry type, an escaping or duplicate
+ * path, or no package.json. PAX sizes equal to the file header size are supported. */
 export function packedFiles(archive) {
   const tar = gunzipSync(archive, { maxOutputLength: MAX_UNPACKED_ARCHIVE_BYTES });
   const files = new Map();
   let longName;
+  let paxSize;
   for (let offset = 0, entries = 0; ; entries += 1) {
     if (offset + TAR_BLOCK > tar.length) throw new Error("truncated packed tarball: no end-of-archive block");
     const header = tar.subarray(offset, offset + TAR_BLOCK);
@@ -91,8 +99,15 @@ export function packedFiles(archive) {
     const data = tar.subarray(offset + TAR_BLOCK, offset + TAR_BLOCK + size);
     offset = next;
     const type = String.fromCharCode(header[TAR_TYPE] || 48);
-    if (type === "x") { longName = paxPath(data) ?? longName; continue; }
+    if (type === "x") {
+      const fields = paxFields(data);
+      longName = fields.path ?? longName;
+      paxSize = fields.size ?? paxSize;
+      continue;
+    }
     if (type === "L") { longName = data.toString("utf8").replace(/\0.*$/s, ""); continue; }
+    if (paxSize !== undefined && paxSize !== size) throw new Error("pax size differs from the entry header in the packed tarball");
+    paxSize = undefined;
     const prefix = header.toString("latin1", ...TAR_MAGIC) === USTAR_MAGIC ? tarText(header, TAR_PREFIX) : "";
     const name = longName ?? (prefix ? `${prefix}/` : "") + tarText(header, TAR_NAME);
     longName = undefined;
@@ -173,7 +188,8 @@ function moduleRoots(location, files) {
  * entry without a sha512 integrity, such as a Git dependency, is `unverified`), `carried` (each
  * module an archive holds below a node_modules of its own that no lock entry installs, with its name
  * and package.json) and `errors` (entries whose installed files cannot be derived, including
- * command targets with CRLF shebangs that npm rewrites when creating executable links). */
+ * packages with npm-shrinkwrap.json and command targets with CRLF shebangs that npm rewrites
+ * when creating executable links). */
 export function installationClosure(project, lock, readArchive) {
   const entries = new Map();
   const roots = new Map();
@@ -193,6 +209,7 @@ export function installationClosure(project, lock, readArchive) {
     if (sha512Digest(entry.integrity) === null) { record.unverified = true; continue; }
     try {
       const files = packedFiles(readArchive(location, entry));
+      if (entry.hasShrinkwrap === true || files.has("npm-shrinkwrap.json")) throw new Error("package has an npm-shrinkwrap.json");
       for (const [path, bytes] of files) {
         if (/^#![^\n]+\r\n/.test(bytes.toString("utf8"))) crlfCommands.add(`${location}/${path}`);
       }
@@ -244,13 +261,22 @@ function binLinks(entries) {
 function expectedPaths(closure) {
   const files = new Map([[HIDDEN_LOCKFILE, null]]);
   const unverified = new Set();
+  const omittedScopes = [];
   for (const [location, record] of closure.entries) {
+    if (!record.present && posix.basename(posix.dirname(location)).startsWith("@")) omittedScopes.push(`${location}/`);
     if (record.present && record.unverified) unverified.add(location);
     for (const [path, digest] of record.present ? record.files ?? [] : []) files.set(`${location}/${path}`, digest);
   }
   const links = binLinks(closure.entries);
+  // npm replaces extracted files/directories at generated command paths with
+  // links. Only those final links belong to a completed installation.
+  for (const path of files.keys()) {
+    for (let parent = path; parent !== "."; parent = posix.dirname(parent)) {
+      if (links.has(parent)) { files.delete(path); break; }
+    }
+  }
   const directories = new Set();
-  for (const path of [...files.keys(), ...links.keys(), ...unverified]) {
+  for (const path of [...files.keys(), ...links.keys(), ...unverified, ...omittedScopes]) {
     for (let parent = posix.dirname(path); parent !== "."; parent = posix.dirname(parent)) directories.add(parent);
   }
   return { files, links, unverified, directories };
@@ -274,7 +300,8 @@ export function installationDifferences(project, closure) {
     for (const item of items.sort((a, b) => a.name < b.name ? -1 : 1)) {
       const path = `${directory}/${item.name}`;
       seen.add(path);
-      if (item.isDirectory() && (unverified.has(path) || directories.has(path))) visit(path, unverified.has(path));
+      if (links.has(path) && !item.isSymbolicLink()) differences.push("expected executable link: " + path);
+      else if (item.isDirectory() && (unverified.has(path) || directories.has(path))) visit(path, unverified.has(path));
       else if (opaque && item.isDirectory() && item.name !== "node_modules") visit(path, true);
       else if (opaque && item.isFile()) continue;
       else if (item.isSymbolicLink() && links.has(path)) {

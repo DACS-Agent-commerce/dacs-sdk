@@ -49,6 +49,10 @@ describe("packed archive files", () => {
 
   const valid: TarEntry = { name: "package/package.json", body: manifest("a") };
   const complete = tarArchive([valid]);
+  it("accepts a PAX size equal to the file header size", () => {
+    const archive = gzipSync(tarArchive([{ ...valid, pax: { size: String(Buffer.byteLength(valid.body ?? "")) } }]));
+    expect(text(packedFiles(archive))).toEqual({ "package.json": valid.body });
+  });
   it.each([
     ["entry data cut short", complete.subarray(0, 520), "truncated packed tarball entry"],
     ["entry padding cut short", complete.subarray(0, 600), "truncated packed tarball entry"],
@@ -61,7 +65,8 @@ describe("packed archive files", () => {
     ["an empty path segment", tarArchive([valid, { name: "package//double.js" }]), "escapes the package"],
     ["an absolute path", tarArchive([valid, { name: "/package/absolute.js" }]), "escapes the package"],
     ["a duplicate path", tarArchive([valid, valid]), "duplicate packed tarball entry"],
-    ["a pax size record", tarArchive([valid, { name: "package/sized.js", pax: { size: "1" } }]), "unsupported pax size"],
+    ["a differing pax size record", tarArchive([valid, { name: "package/sized.js", pax: { size: "1" } }]), "pax size differs from the entry header"],
+    ["a malformed pax size record", tarArchive([valid, { name: "package/sized.js", pax: { size: "1x" } }]), "malformed pax size"],
     ["no package.json", tarArchive([{ name: "package/index.js" }]), "no package.json"],
   ])("refuses an archive with %s", (_form, tar, message) => {
     expect(() => packedFiles(gzipSync(tar))).toThrow(message);
@@ -186,6 +191,21 @@ describe("installation closure", () => {
     ]);
   });
 
+  it.each(["file", "directory"])("refuses an interrupted bundled command link replaced by an archive %s", kind => {
+    const install = simulatedInstall({
+      "node_modules/parent": [{}, { "package.json": manifest("parent"),
+        "node_modules/child/package.json": manifest("child"), "node_modules/child/cli.js": "",
+        [kind === "file" ? "node_modules/.bin/child" : "node_modules/.bin/child/packed.js"]: "packed command" }],
+      "node_modules/parent/node_modules/child": [{ inBundle: true, bin: { child: "cli.js" } }, null],
+    });
+    const path = "node_modules/parent/node_modules/.bin/child";
+    expect(install.closure().errors).toEqual([]);
+    expect(install.differences()).toContain("expected executable link: " + path);
+    rmSync(join(install.project, path), { recursive: true });
+    symlinkSync("../child/cli.js", join(install.project, path));
+    expect(install.differences()).toEqual([]);
+  });
+
   it("lists a module an archive carries in node_modules of its own, which no lock entry names", () => {
     const install = simulatedInstall({
       "node_modules/@x/node_modules": [{ version: "1.0.0" }, { "package.json": manifest("@x/node_modules"),
@@ -286,7 +306,9 @@ describe("installation closure of real npm installations", () => {
     ["parent", packTarball({ "package.json": manifest("parent", "1.0.0", { dependencies: { child: "2.0.0" } }) })],
     ["child-1", packTarball({ "package.json": manifest("child", "1.0.0") })],
     ["child-2", packTarball({ "package.json": manifest("child", "2.0.0", { bin: { child: "bin.js" } }), "bin.js": "" })],
-    ["@scope/pkg", packTarball({ "package.json": manifest("@scope/pkg") })],
+    ["@scope/pkg", gzipSync(tarArchive([{ name: "package/package.json", body: manifest("@scope/pkg"),
+      pax: { size: String(Buffer.byteLength(manifest("@scope/pkg"))) } }]))],
+    ["@skipped/optional", packTarball({ "package.json": manifest("@skipped/optional", "1.0.0", { os: [`!${process.platform}`] }) })],
     ["skipped-optional", packTarball({ "package.json": manifest("skipped-optional", "1.0.0", { os: [`!${process.platform}`] }) })],
     ["bundler", packTarball({ "package.json": manifest("bundler", "1.0.0", { dependencies: { bundled: "1.0.0" }, bundleDependencies: ["bundled"] }),
       "node_modules/bundled/package.json": manifest("bundled"), "node_modules/bundled/index.js": "" })],
@@ -307,7 +329,8 @@ describe("installation closure of real npm installations", () => {
         if (!bytes) throw new Error("no fixture archive " + archive);
         return { version, resolved: `${server.registry}/${encodeURIComponent(archive)}.tgz`, integrity: sri(bytes), ...fields };
       };
-      const root = { name: "consumer", version: "1.0.0", dependencies, optionalDependencies: { "skipped-optional": "1.0.0" } };
+      const root = { name: "consumer", version: "1.0.0", dependencies,
+        optionalDependencies: { "skipped-optional": "1.0.0", "@skipped/optional": "1.0.0" } };
       const lock = { name: "consumer", version: "1.0.0", lockfileVersion: 3, requires: true, packages: {
         "": root,
         "node_modules/@kynesyslabs/dacs": entry("@kynesyslabs/dacs", "0.1.0-test"),
@@ -319,6 +342,7 @@ describe("installation closure of real npm installations", () => {
         "node_modules/child": entry("child-1", "1.0.0"),
         "node_modules/@scope/pkg": entry("@scope/pkg", "1.0.0"),
         "node_modules/skipped-optional": entry("skipped-optional", "1.0.0", { optional: true, os: [`!${process.platform}`] }),
+        "node_modules/@skipped/optional": entry("@skipped/optional", "1.0.0", { optional: true, os: [`!${process.platform}`] }),
         "node_modules/bundler": entry("bundler", "1.0.0", { dependencies: { bundled: "1.0.0" }, bundleDependencies: ["bundled"] }),
         "node_modules/bundler/node_modules/bundled": { version: "1.0.0", inBundle: true },
       } };
@@ -338,7 +362,42 @@ describe("installation closure of real npm installations", () => {
     expect(derived.errors).toEqual([]);
     expect(installationDifferences(project, derived)).toEqual([]);
     expect(derived.entries.get("node_modules/skipped-optional")?.present).toBe(false);
+    expect(derived.entries.get("node_modules/@skipped/optional")?.present).toBe(false);
     expect([...derived.carried.keys()]).toEqual(["node_modules/fixture-plugin/dist/node_modules/@kynesyslabs/dacs"]);
+  }, 60_000);
+
+  it("allows an omitted scope directory but refuses files within it", async () => {
+    const { project, closure } = await installFixture();
+    expect(installationDifferences(project, closure())).toEqual([]);
+    writeFileSync(join(project, "node_modules/@skipped/extra.js"), "outside the archives");
+    expect(installationDifferences(project, closure())).toEqual(["unexpected file: node_modules/@skipped/extra.js"]);
+  }, 60_000);
+
+  it("explicitly refuses a real npm installation expanded from a package shrinkwrap", async () => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const child = packTarball({ "package.json": manifest("child") });
+    const fixtureArchives = new Map([["child", child]]);
+    const server = await serveArchives(fixtureArchives);
+    try {
+      const childEntry = { version: "1.0.0", resolved: `${server.registry}/child.tgz`, integrity: sri(child) };
+      const parent = packTarball({ "package.json": manifest("parent", "1.0.0", { dependencies: { child: "1.0.0" } }),
+        "npm-shrinkwrap.json": JSON.stringify({ lockfileVersion: 3, packages: {
+          "": { dependencies: { child: "1.0.0" } }, "node_modules/child": childEntry,
+        } }) });
+      fixtureArchives.set("parent", parent);
+      const root = { name: "consumer", version: "1.0.0", dependencies: { parent: "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/parent": {
+        version: "1.0.0", resolved: `${server.registry}/parent.tgz`, integrity: sri(parent), hasShrinkwrap: true,
+      } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(JSON.parse(readFileSync(join(project, "node_modules/parent/node_modules/child/package.json"), "utf8")).name).toBe("child");
+      const closure = installationClosure(project, lock, (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity));
+      expect(closure.errors).toContain("cannot derive the installed files of node_modules/parent: package has an npm-shrinkwrap.json");
+    } finally { await server.close(); }
   }, 60_000);
 
   it("finds a file added below an installed package after installation", async () => {
