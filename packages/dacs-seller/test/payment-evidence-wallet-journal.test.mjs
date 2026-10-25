@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
-import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import DatabaseSync from 'better-sqlite3';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -432,6 +432,17 @@ const hostileCreateEdits = [
   ['no node fee', (content) => { delete content.transaction_fee; }],
   ['no execution edits', (content) => { delete content.gcr_edits; }],
   ['empty execution edits', (content) => { content.gcr_edits = []; }],
+  ['an empty node fee', (content) => { content.transaction_fee = {}; }],
+  ['a negative node fee amount', (content) => { content.transaction_fee.network_fee = -1; }],
+  ['a non-decimal node fee string', (content) => { content.transaction_fee.rpc_fee = '1e9'; }],
+  ['a node fee with another rpc address type', (content) => { content.transaction_fee.rpc_address = 7; }],
+  ['an empty execution edit', (content) => { content.gcr_edits = [{}]; }],
+  ['a rollback execution edit', (content) => { content.gcr_edits[0].isRollback = true; }],
+  ['an execution edit of another type', (content) => { content.gcr_edits[0].type = 'identity'; }],
+  ['a balance edit of another account', (content) => { content.gcr_edits[0].account = `0x${'b8'.repeat(32)}`; }],
+  ['a storage program edit of another target', (content) => { content.gcr_edits[1].target = `stor-${'c4'.repeat(20)}`; }],
+  ['no storage program edit', (content) => { content.gcr_edits.splice(1, 1); }],
+  ['two storage program edits', (content) => { content.gcr_edits.push({ ...content.gcr_edits[1] }); }],
   ['a private ACL', (content) => { content.data[1].acl.mode = 'private'; }],
   ['off-chain storage', (content) => { content.data[1].storageLocation = 'offchain'; }],
   ['an unknown storage location', (content) => { content.data[1].storageLocation = 'TEST-invalid'; }],
@@ -630,4 +641,50 @@ test('a first open that cannot get the writer lock in time is refused as wallet_
   holder.exec('BEGIN IMMEDIATE');
   t.after(() => holder.close());
   assert.throws(() => w.open(), { code: 'wallet_journal_busy' });
+});
+
+// Every wallet call has a deadline: a signer that never settles must not hold
+// the journal's writer lock, and a broadcast that never settles leaves the kept
+// CREATE live for reconcile.
+test('a signCreate that never settles is refused at the deadline: nothing is kept and the journal answers again', async (t) => {
+  const w = wallet(t), node = walletChain({ state: w.chain });
+  let stopped = false;
+  const hung = w.open({ signCreate: (_input, { signal }) => { signal.addEventListener('abort', () => { stopped = true; }); return new Promise(() => {}); } });
+  const other = w.open();
+  t.after(() => { hung.close(); other.close(); });
+  await assert.rejects(hung.anchorEvidence(w.input()), { code: 'wallet_sign_timeout' });
+  assert.ok(stopped, 'the signer is told to stop');
+  assert.equal((await hung.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'the same handle is not wedged');
+  assert.equal((await other.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'another handle is not locked out');
+  assert.equal(await hung.readSignedProjection(w.input()), null, 'nothing was kept');
+  assert.equal(node.chain.signed && Object.keys(w.chain.signed).length, 0, 'nothing was signed');
+  assert.equal((await other.anchorEvidence(w.input())).status, 'submitted');
+});
+
+test('a broadcast that never settles is a timeout that keeps the signed CREATE; reconcile answers pending for it', async (t) => {
+  const w = wallet(t);
+  let stopped = false;
+  const journal = w.open({ broadcast: (_sent, { signal }) => { signal.addEventListener('abort', () => { stopped = true; }); return new Promise(() => {}); } });
+  t.after(() => journal.close());
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_broadcast_timeout' });
+  assert.ok(stopped, 'the broadcast is told to stop');
+  const kept = await journal.readSignedProjection(w.input());
+  assert.ok(kept, 'the signed CREATE is kept');
+  const answer = await journal.reconcilePaymentEvidence(w.input());
+  assert.deepEqual([answer.status, answer.txHash], ['pending', kept.hash]);
+  assert.equal(w.calls.sign, 1, 'never signed again');
+});
+
+test('a journal in a directory others can write, or reached through a symbolic link, is refused before a file is made', (t) => {
+  const w = wallet(t), open = (path) => createPaymentEvidenceWalletJournal({ path, readTimeoutMs: 200, signCreate() {}, broadcast() {}, readAccountNonce() {}, readTransactionState() {} });
+  const shared = join(w.dir, 'shared'), linked = join(w.dir, 'linked');
+  mkdirSync(shared); chmodSync(shared, 0o777);
+  symlinkSync(w.dir, linked);
+  assert.throws(() => open(join(shared, 'journal.sqlite')), /not writable by others/);
+  chmodSync(shared, 0o770);
+  assert.throws(() => open(join(shared, 'journal.sqlite')), /not writable by others/, 'a writable group is not private either');
+  assert.throws(() => open(join(linked, 'journal.sqlite')), /without symbolic links/);
+  assert.equal(existsSync(join(shared, 'journal.sqlite')), false, 'no file was made');
+  chmodSync(shared, 0o700);
+  open(join(shared, 'journal.sqlite')).close();
 });
