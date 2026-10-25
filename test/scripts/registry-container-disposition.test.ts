@@ -1741,7 +1741,7 @@ async function registryInstallation(directory: string, archives: Record<string, 
   const served = new Map(Object.entries(archives));
   const provenance = { version: CANDIDATE_VERSION, packages: {} as Record<string, { integrity: string }> };
   for (const name of DUAL_RAIL_DEPENDENCIES) {
-    const archive = packTarball({ "package.json": packageJson(name, CANDIDATE_VERSION), "index.js": `module.exports = ${JSON.stringify(name)};\n` });
+    const archive = archives[name] ?? packTarball({ "package.json": packageJson(name, CANDIDATE_VERSION), "index.js": `module.exports = ${JSON.stringify(name)};\n` });
     served.set(name, archive);
     if (CANDIDATES.includes(name)) {
       writeFileSync(join(directory, releaseFile(name)), archive);
@@ -1782,6 +1782,38 @@ describe("dependency policy over npm ci installations", () => {
     const { policy } = await registryInstallation(temporaryDirectory(), {}, {});
     expect(policy.status, policy.stderr).toBe(0);
   }, 60_000);
+
+  it.each(CANDIDATES.flatMap(name => ["name", "version"].map(field => [name, field] as const)))(
+    "refuses a %s release archive with the wrong manifest %s despite matching provenance and lock", async (name, field) => {
+      const directory = temporaryDirectory();
+      const archive = packTarball({ "package.json": packageJson(name, CANDIDATE_VERSION, { [field]: field === "name" ? "other" : "0.0.0-old" }),
+        "index.js": "module.exports = 'incorrect-release';" });
+      const { project, policy } = await registryInstallation(directory, { [name]: archive }, {});
+      expect(JSON.parse(readFileSync(join(project, `node_modules/${name}/package.json`), "utf8"))[field])
+        .toBe(field === "name" ? "other" : "0.0.0-old");
+      expect(policy.status).not.toBe(0);
+      expect(policy.stderr).toContain(`packed candidate manifest does not match the release: ${name}@${CANDIDATE_VERSION}`);
+      expect(existsSync(join(directory, "report.json"))).toBe(false);
+    }, 60_000);
+
+  it.each(CANDIDATES.flatMap(name => [CANDIDATE_VERSION, "0.0.0-old"].map(version => [name, version] as const)))(
+    "refuses bundled %s@%s claiming the release archive's integrity", async (name, version) => {
+      const directory = temporaryDirectory();
+      const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION, { bundleDependencies: [name] }),
+        "index.js": `module.exports = require(${JSON.stringify(name)});`,
+        [`node_modules/${name}/package.json`]: packageJson(name, version),
+        [`node_modules/${name}/index.js`]: "module.exports = 'bundled-copy';" });
+      const location = `node_modules/plugin/node_modules/${name}`;
+      const { project, policy } = await registryInstallation(directory, { plugin }, {
+        "node_modules/plugin": ["plugin", {}], [location]: [name, { inBundle: true }],
+      }, { dependencies: { plugin: CANDIDATE_VERSION } });
+      const loaded = spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" });
+      expect(loaded.status, loaded.stderr).toBe(0);
+      expect(loaded.stdout).toBe("bundled-copy\n");
+      expect(policy.status).not.toBe(0);
+      expect(policy.stderr).toContain("candidate package has no independently verified release archive: " + location);
+      expect(existsSync(join(directory, "report.json"))).toBe(false);
+    }, 60_000);
 
   it.each(["identity", "alias"])("refuses a SHA-1 registry archive hiding a candidate %s", async form => {
     const directory = temporaryDirectory();
