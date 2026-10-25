@@ -57,3 +57,13 @@ for(const [party,address,code] of [['buyer',()=>compositeVerificationAddress(JOB
  f.controls.receiptStateFor=asked=>asked===address()?'accepted':'finalized';
  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code===code);assert.equal(f.local.writes.length,2);f.base.close();
 });
+// A receipt that is not final yet is a wait: the step is retried, never kept as a terminal failure.
+for(const state of ['accepted','included'])for(const provider of ['same','fresh'])test(`a ${state} receipt for the written Vet finalizes on a retry with a ${provider} provider`,async()=>{
+ const clean=productionFixture();await clean.run();const signs=clean.controls.signs;clean.base.close();
+ const f=productionFixture(),p=await f.provider(),input=f.input(),run=()=>(provider==='same'?Promise.resolve(p):f.provider()).then(use=>use.jobVet(input.scope,input.buyerIdentityBundle,()=>true));
+ f.controls.receiptState=state;f.controls.receiptVerdict='valid';
+ await assert.rejects(run());await assert.rejects(run(),/./,'still not final: still a wait');
+ f.controls.receiptState='finalized';
+ const result=await run();assert.equal(result.sellerVet.record.overallDecision,'pass');
+ assert.equal(f.local.writes.length,2,'the retry rereads the same intent');assert.equal(f.controls.signs,signs,'nothing is signed twice');f.base.close();
+});
