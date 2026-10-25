@@ -1114,7 +1114,8 @@ it("non-DEM payment phase fails PAY-PHASE with otherwise coherent signed terms",
     .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported", detail: "PAY-PHASE" }));
 }, 60_000);
 it("a fully signed open-ended Listing continues at seller and buyer", async () => {
-  const l = tp1Listing({ seller: SELLER, validity: { notBefore: NOW - 600_000 } }), x = (await world(l));
+  const l = tp1Listing({ seller: SELLER, publicEndpoint: ENDPOINT, validity: { notBefore: NOW - 600_000 } }), x = (await world(l));
+  expect(l.listing.validity).not.toHaveProperty("notAfter");
   const discovery = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: x.binding.profile,
     seller: SELLER.claim, publicEndpoint: ENDPOINT, transport: ["dacs-seller-http/v1"], listings: [l.pin], capabilities: wire.TP1_CAPABILITIES,
     ready: false, issuedAt: NOW, expiresAt: NOW + 60_000 }, SELLER, x.binding, LOCAL);
