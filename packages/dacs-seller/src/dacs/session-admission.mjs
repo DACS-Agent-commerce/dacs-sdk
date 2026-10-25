@@ -83,7 +83,7 @@ export function sellerSessionPresentationProblem(bundle, listingIdentity) {
   if (!isIdentityBundle(bundle)) return 'the seller bundle is not an IdentityBundle';
   const fixed = ({ presentedAt: _at, sessionNonce: _nonce, presentation: _presentation, ...rest }) => rest;
   if (!same(fixed(bundle), fixed(listingIdentity))) return 'the seller bundle is not a presentation of the Listing identity';
-  const proof = bundle.presentation?.kind === 'per-claim' && Array.isArray(bundle.presentation.signatures) && bundle.presentation.signatures.length === 1
+  const proof = bundle.presentation?.kind === 'per-claim' && Array.isArray(bundle.presentation.signatures)
     && bundle.presentation.signatures.find((entry) => sameCanonicalClaimIdentity(entry?.ref, bundle.presentedBy));
   const valid = proof && typeof proof.signature === 'string' && proof.signature.length === 86 && isCanonicalBase64Url(proof.signature) && verifyComponent({
     signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
