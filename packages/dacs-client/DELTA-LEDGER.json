@@ -1502,6 +1502,10 @@
     {"delta":"D11","subject":"fix(client): D11 record the 05 split integration","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"6c029aa8aa4cb0bfbc38c1c345be3adf1d0fd344","after":"6c029aa8aa4cb0bfbc38c1c345be3adf1d0fd344"},{"path":"packages/dacs-client/test/purchase-executed-only.test.mjs","before":"5a2a00254d003a77105c64e5f60b05372a5dbf3f","after":"5a2a00254d003a77105c64e5f60b05372a5dbf3f"}]},
     {"delta":"D11","subject":"fix(client): D11 assert the watch result refusal","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"6c029aa8aa4cb0bfbc38c1c345be3adf1d0fd344","after":"8cf441713b5fb8df9e0698eabfe571c79d0f68cb"}]},
     {"delta":"D11","subject":"fix(client): D11 record the 05a split integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 06 split integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 06 split integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 04 checkpoint check integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 05 checkpoint check integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 05a checkpoint check integration","files":[]}
   ]
 }
