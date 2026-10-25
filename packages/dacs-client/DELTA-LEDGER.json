@@ -1498,6 +1498,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the 05a split integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 04 checkpoint check integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 05 checkpoint check integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 05 checkpoint check integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 05a checkpoint check integration","files":[]}
   ]
 }
