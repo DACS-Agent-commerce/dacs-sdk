@@ -1463,6 +1463,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
