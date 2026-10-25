@@ -1,8 +1,10 @@
 import { createRequire } from 'node:module';
 import { types } from 'node:util';
+import { retireSqliteHandle, isSqliteHandleRetired } from './sqlite-write-lease.mjs';
 
 const require = createRequire(import.meta.url);
 const callbacks = [];
+const DEFERRED_BODY = /^\[object (?:Async|Generator|AsyncGenerator)Function\]$/;
 const FUNCTION_OPCODE = /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)\d*$/;
 // Virtual tables (including pragma_*() and ALTER TABLE checks) compile and run
 // SQL while the statement runs, so EXPLAIN cannot show the functions they call.
@@ -11,10 +13,19 @@ const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function 
 const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap(), registrations = new WeakMap();
 let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll, bundledExtensions, bundledExtensionNames;
+function synchronousResult(db, result) {
+  if (typeof result?.then === 'function') {
+    retireSqliteHandle(db);
+    // Observe rejection without executing a user-provided thenable body.
+    if (types.isPromise(result)) Promise.prototype.then.call(result, undefined, () => {});
+    throw new TypeError('statement guard callbacks must return a synchronous result');
+  }
+  return result;
+}
 function check() {
   if (checking) return;
   checking = true;
-  try { for (const { predicate } of callbacks) predicate(); }
+  try { for (const { db, predicate } of callbacks) synchronousResult(db, predicate()); }
   finally { checking = false; }
 }
 // Reading a binding object can run caller code (accessors, proxy traps), and
@@ -51,19 +62,16 @@ function rememberRegistration(db, name) {
 function execute(fn, db, sql) {
   check();
   if (checking || callbacks.length === 0) return fn();
-  // A statement prepared before installation has no known owner, so its
-  // program cannot be inspected: refuse it while any guarded connection has
-  // application functions it might call.
-  if (!db && callbacks.some(frame => applicationFunctions(frame.db).size > 0)) {
-    throw new TypeError(REFUSED_PROGRAM);
-  }
+  // Earlier statements have no known owner or inspectable program. Even an
+  // apparently bundled function may be an indistinguishable application override.
+  if (!db) throw new TypeError(REFUSED_PROGRAM);
   // EXPLAIN includes trigger programs. Application functions (including
   // overrides of built-ins) cannot run while native writers are enabled.
   if (db && sql) {
     const functions = applicationFunctions(db);
     const program = nativeAll.call(nativePrepare.call(db, `EXPLAIN ${sql}`));
     if (program.some(row => {
-      if (functions.size > 0 && VIRTUAL_TABLE_OPCODE.test(row.opcode)) return true;
+      if (VIRTUAL_TABLE_OPCODE.test(row.opcode)) return true;
       if (!FUNCTION_OPCODE.test(row.opcode)) return false;
       const name = /^([\s\S]*)\(-?\d+\)$/.exec(String(row.p4));
       return !name || functions.has(name[1].toLowerCase()) || bundledExtensionNames.has(name[1].toLowerCase());
@@ -72,8 +80,7 @@ function execute(fn, db, sql) {
     }
   }
   const frame = callbacks.find(frame => frame.db === db);
-  // Statements predating installation have no known owner. They retain the
-  // read-only fence; never open a different connection on their behalf.
+  // Only a guarded connection's frame may open its writable fence.
   if (!frame?.writable) return fn();
   try {
     nativeExec.call(db, 'PRAGMA query_only=OFF');
@@ -159,20 +166,23 @@ function install(db) {
  * during guards, because reading them runs caller code after the last liveness
  * check.
  * SQL callback execution/registration is unsupported during guards, and so are
- * virtual tables (pragma_*() functions) on a connection with application
- * functions, because their SQL is compiled while the statement runs. Statements
- * prepared before installation can only read while a guard is active, and are
- * refused when the guarded connection has application functions.
+ * virtual tables (pragma_*() functions), because their SQL is compiled while
+ * the statement runs. Statements and iterators prepared before installation
+ * are refused while a guard is active because their programs cannot be inspected.
  * An application function that shares the name and arity of a bundled FTS,
  * RTREE or GEOPOLY function looks identical to it, so calls to those bundled
- * functions are refused by name under a guard. Such an override registered
- * before this module was first used is not seen as an application function, so
- * virtual tables and earlier prepared statements are not refused on its account.
+ * functions are refused by name under a guard, even if registered before this
+ * module was first used. A promise result permanently retires the connection
+ * before a continuation can use its retained statements.
  * This stops stale code from writing through ordinary or captured native
  * writers. It does not stop code that deliberately holds a native exec and
  * clears query_only; that needs a native authorizer, which Node 22 lacks.
  */
 export function withSqliteStatementGuard(db, predicate, fn) {
+  if ([predicate, fn].some(callback => typeof callback !== 'function' || DEFERRED_BODY.test(Object.prototype.toString.call(callback)))) {
+    throw new TypeError('the statement guard predicate and body must be synchronous functions');
+  }
+  if (isSqliteHandleRetired(db)) throw new TypeError('the statement guard connection is retired');
   install(db);
   const saved = nativeGet.call(nativePrepare.call(db, 'PRAGMA query_only')).query_only;
   const parent = callbacks.find(frame => frame.db === db);
@@ -181,7 +191,10 @@ export function withSqliteStatementGuard(db, predicate, fn) {
   // code that holds a native exec can clear the flag itself.
   nativeExec.call(db, 'PRAGMA query_only=ON');
   callbacks.push({ db, predicate, writable: parent ? parent.writable : saved === 0 });
-  try { check(); return fn(); }
+  try {
+    check();
+    return synchronousResult(db, fn());
+  }
   finally {
     callbacks.pop();
     try { nativeExec.call(db, `PRAGMA query_only=${saved}`); } catch { /* A retired handle stays closed. */ }
