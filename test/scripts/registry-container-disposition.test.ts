@@ -9,7 +9,7 @@ import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-f
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { RELEASE_VERSION, classifyAcceptanceFailure, failureSummary, classifyPolicyChecks, classifyRegistryAudit, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines, candidateIntegrityErrors } = await import(dispositionModulePath);
+const { RELEASE_VERSION, classifyAcceptanceFailure, failureSummary, classifyPolicyChecks, classifyRegistryAudit, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const repoRoot = resolve(import.meta.dirname, "../..");
