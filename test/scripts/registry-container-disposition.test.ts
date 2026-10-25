@@ -2223,6 +2223,33 @@ it("pins the recorded pqcrypto image version while accepting its recorded metada
   expect(classifyPolicyChecks(summary("9.0.0"), baseline).productionImage).toBe("blocked");
 });
 
+describe("baseline Git and image archive identities", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  it.each([
+    ["Git", "gitDependencies", "registryDependencyPolicyPassed", "registryDependency"],
+    ["typescript", "productionImageDependencies", "productionImageDependencyPolicyPassed", "productionImage"],
+    ["pqcrypto", "productionImageDependencies", "productionImageDependencyPolicyPassed", "productionImage"],
+  ] as const)("pins the recorded version and integrity of %s findings at the same location", (name, group, flag, check) => {
+    const known = name === "Git" ? baseline.policyFindings[group][0]
+      : baseline.policyFindings[group].find((entry: { name: string }) => entry.name === name);
+    const classify = (finding: Record<string, unknown>) => {
+      const summary = baselineOnlySummary();
+      summary.securityGate[flag] = false;
+      summary.securityGate.findings[group] = [finding];
+      if (check === "productionImage") {
+        summary.docker.policy.productionDependencyPolicyPassed = false;
+        summary.docker.policy.typescriptPresent = name === "typescript";
+      }
+      return { check: classifyPolicyChecks(summary, baseline)[check], exit: registryContainerDisposition(summary, baseline).exitCode };
+    };
+    expect(classify(known)).toEqual({ check: "baseline", exit: 4 });
+    for (const change of [{ version: "9.9.9" }, { integrity: sri(Buffer.from("different archive")) },
+      { version: undefined }, { integrity: undefined }]) {
+      expect(classify({ ...known, ...change }), JSON.stringify(change)).toEqual({ check: "blocked", exit: 3 });
+    }
+  });
+});
+
 describe("declared candidate alias authentication", () => {
   const aliasOf = (name: string) => `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}`;
   const other = { "package.json": packageJson("other", CANDIDATE_VERSION) };
