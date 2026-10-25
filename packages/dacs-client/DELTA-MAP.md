@@ -620,6 +620,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e1ee6a0855e0955fba14cda7d1ae14aa02248fa6 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 23418eab2fc9cfc3dc517ae7ff822dbcd4345340 |
+| D11 | fix(client): D11 add bounded diagnostic projections | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 4d3bc5b10835cef9f1026c109293c2bf14c2afa7 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 8fb8e91c7d1439f3013548378394fa788236fdb0 |
 
 ## Complete commit and file inventory
 
@@ -1563,6 +1566,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 move the public diagnostic service out of the capability checks | `packages/dacs-client/test/diagnostic-reader.test.mjs` (deleted) |
 | fix(client): D11 move the public diagnostic service out of the capability checks | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 move the public diagnostic service out of the capability checks | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
 
 ## Original moved files
 
