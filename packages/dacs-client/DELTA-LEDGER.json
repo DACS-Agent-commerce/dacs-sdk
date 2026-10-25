@@ -1534,6 +1534,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the 06c split integration","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"eb48afdc8553f1ffb9a9b394474056e6eb2e140d","after":"eb48afdc8553f1ffb9a9b394474056e6eb2e140d"}]},
     {"delta":"D11","subject":"fix(client): D11 record the 06a split integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 07 split integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 08 split integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 08 split integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 09 split integration","files":[]}
   ]
 }
