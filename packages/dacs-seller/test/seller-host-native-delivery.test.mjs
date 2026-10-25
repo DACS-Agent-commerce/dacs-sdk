@@ -27,6 +27,7 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/d
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
+import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
 const deliveryStaged=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function runSdkDeliveryReady');
 const assertDeliveryStage=(answer,w)=>{if(deliveryStaged){assert.equal(answer.delivery.status,'held');assert.equal(w.effects.deliverySubmit.length,0);}else assert.ok(['held','delivery-ready','delivered'].includes(answer.delivery.status));};
@@ -75,7 +76,10 @@ function demosNode() {
     const number = blocks.length;
     blocks.push({ number, status: 'confirmed', hash: core.sha256Hex(`TEST-block:${number}:${tx.hash}`), content: { timestamp: clock, ordered_transactions: [tx.hash] },
       validation_data: { simulated: true, chainIdentity: ID } });
-    txs.set(tx.hash, { ...clone(tx), status: 'confirmed', blockNumber: number });
+    // As node 61b8e75 keeps an executed transaction: each execution edit the signer left blank names it.
+    const executed = { ...clone(tx), status: 'confirmed', blockNumber: number };
+    for (const edit of executed.content.gcr_edits ?? []) if (edit.txhash === '') edit.txhash = tx.hash;
+    txs.set(tx.hash, executed);
   };
   const nodeCall = (message, data) => {
     switch (message) {
@@ -134,10 +138,14 @@ function demosNode() {
     const metadata = { logicalAddress, contentHash: (artifactKind === 'Deliverable' ? core.sha256Hex(core.canonicalize(artifact)) : core.contentHash(artifact)), envelopeHash: core.sha256Hex(core.canonicalize(artifact)), artifactKind, ...(deliveryBinding ? { deliveryBinding: clone(deliveryBinding) } : {}) };
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
-    // What demosdk 4.0.16 sign adds to a storage CREATE: the node's fee and the execution edits.
+    // What demosdk 4.0.16 sign adds to a storage CREATE (checked against the SDK below): the node's fee, and the
+    // execution edits its GCRGeneration writes before the hash exists: the storage fee burn (1 DEM per started
+    // 10240 bytes of the program's JSON), the storage program, the gas burn and the nonce increment.
     content.transaction_fee = { network_fee: 2, rpc_fee: 3, additional_fee: 0, rpc_address: null };
-    content.gcr_edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: owner, amount: 1 }, { type: 'storageProgram', target: storageAddress, isRollback: false },
-      { type: 'balance', operation: 'remove', isRollback: false, account: owner, amount: 1 }, { type: 'nonce', operation: 'add', account: owner, amount: 1, isRollback: false }];
+    const op = content.data[1], storageFee = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data)) / 10_240));
+    content.gcr_edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: owner, txhash: '', amount: storageFee },
+      { type: 'storageProgram', target: storageAddress, isRollback: false, txhash: '', context: { operation: 'CREATE_STORAGE_PROGRAM', sender: owner, data: { variables: clone(op), metadata: clone(op.metadata) } } },
+      { type: 'balance', account: owner, operation: 'remove', amount: 1, txhash: '', isRollback: false }, { type: 'nonce', operation: 'add', account: owner, amount: 1, txhash: '', isRollback: false }];
     const hash = core.sha256Hex(JSON.stringify(content)), signed = { hash, content, signature: { type: 'ed25519', data: writer.signWallet(hash) } };
     pending.set(hash, { owner, nonce, apply: () => {
       include(signed);
@@ -1305,6 +1313,14 @@ for(const damage of ['proof','order','deliveryReady','ambiguous'])test(`authenti
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
   const first=await world(t),second=await world(t);
   assert.notEqual((await first.purchase()).jobId,(await second.purchase()).jobId);
+});
+
+test('the fixture node signs storage CREATEs with the fee and execution edits the pinned SDK writes', async () => {
+  const node = demosNode(), writer = key(12);
+  for (const artifact of [{ TEST: 'evidence' }, { TEST: 'e'.repeat(12_000) }]) {
+    const { content } = node.create(writer, { logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:2', artifact, artifactKind: 'SettlementEvidence' }, { land: false });
+    assert.equal(await sdkRegeneratesSignedCreate(content), true, `${Buffer.byteLength(JSON.stringify(artifact))} bytes`);
+  }
 });
 
 test('deterministic fixture transfers advance the payer nonce',()=>{
