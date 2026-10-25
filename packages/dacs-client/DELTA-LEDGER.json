@@ -1403,6 +1403,7 @@
     {"delta":"D11","subject":"fix(client): D11 assert the enclosing transaction refusal","files":[{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"026edca5593e825f73f5526fbbf64b0571d151bd","after":"834da95ce983a23387840cc0049572d522f9a440"}]},
     {"delta":"D11","subject":"fix(client): D11 record the 03a split integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 04 split integration","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"bcbc66ea3a869596598efa05e0aa1aeff721464d","after":"bcbc66ea3a869596598efa05e0aa1aeff721464d"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"9ae489487e07d4a3f7fe02285cf594c8bc565f53","after":"9ae489487e07d4a3f7fe02285cf594c8bc565f53"},{"path":"packages/dacs-client/test/purchase-executed-only.test.mjs","before":"498f20be5b423d6328ffb0031d71d4e3d8233c43","after":"55210180f3e09b6b8aa1286ddffda7fd1fdb92ea"}]},
-    {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 04 checkpoint check integration","files":[]}
   ]
 }
