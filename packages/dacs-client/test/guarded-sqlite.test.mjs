@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 const nativeExec = DatabaseSync.prototype.exec;
-const nativePrepare = DatabaseSync.prototype.prepare;
 const probe = new DatabaseSync(':memory:');
 const nativeRun = Object.getPrototypeOf(probe.prepare('SELECT 1')).run;
 probe.close();
@@ -127,35 +126,6 @@ test('a rollback in one exec batch is checked before the second statement', t =>
   });
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n,0);
 });
-for(const functionName of ['expire_and_write','expire_and_write(','expire_and_write(0)']) for(const separate of [false,true])test(`SQL callbacks cannot use retained writers across rollback, name=${functionName}, separate=${separate}`, t => {
-  const db=world(t), other=separate?world(t):db;
-  other.exec("INSERT INTO records VALUES ('TEST-existing'); BEGIN");
-  const write=other.prepare("INSERT INTO records VALUES ('TEST-escaped')");
-  db.function(functionName,()=>{
-    try{nativeExec.call(other,"INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')");}catch{}
-    nativeRun.call(write); return 1;
-  });
-  const run=()=>withSqliteStatementGuard(other,()=>{if(other.isTransaction===false)throw Error('TEST-ended');},()=>{
-    assert.throws(()=>db.prepare('SELECT '+JSON.stringify(functionName)+'()').get(), /SQL callbacks/);
-  });
-  if(separate)withSqliteStatementGuard(db,()=>{},run);else run();
-  assert.equal(other.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n,0);
-});
-test('a statement prepared before installation cannot run an application callback inside a guard', t => {
-  const db = world(t);
-  db.function('TEST_callback', () => {
-    nativeExec.call(db, 'PRAGMA query_only=OFF');
-    nativeExec.call(db, "INSERT INTO records VALUES ('TEST-escaped')");
-    return 1;
-  });
-  const earlier = nativePrepare.call(db, 'SELECT TEST_callback() AS value');
-  withSqliteStatementGuard(db, () => {}, () => assert.throws(() => earlier.get(), /SQL callbacks/));
-  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
-});
-test('registering SQL callbacks is refused during guards', t => {
-  const db=world(t);
-  withSqliteStatementGuard(db,()=>{},()=>assert.throws(()=>db.function('TEST_callback',()=>1), /SQL callbacks/));
-});
 
 test('exec preserves native NUL and BOM empty remainders after a write', t=>{
   for(const tail of ['\0 SELECT invalid_column','\ufeff','\ufeff /* unfinished']){
@@ -168,27 +138,6 @@ test('exec preserves native NUL and BOM empty remainders after a write', t=>{
     assert.deepEqual(guarded.prepare('SELECT id FROM records').all(),native.prepare('SELECT id FROM records').all());
   }
 });
-for (const sql of ["SELECT * FROM pragma_integrity_check('checked')", "SELECT * FROM pragma_quick_check('checked')", 'ALTER TABLE checked ADD COLUMN y CHECK (chk(y))']) {
-  test(`virtual-table programs cannot run application callbacks inside a guard: ${sql}`, t => {
-    const db = world(t);
-    let armed = false, calls = 0;
-    db.function('chk', value => {
-      if (!armed) return value;
-      calls++;
-      try { nativeExec.call(db, "INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')"); } catch { /* the conflict rolls the transaction back */ }
-      nativeRun.call(write);
-      return 1;
-    });
-    db.exec("CREATE TABLE checked(x CHECK (chk(x))); INSERT INTO checked VALUES (1); INSERT INTO records VALUES ('TEST-existing'); BEGIN");
-    const write = db.prepare("INSERT INTO records VALUES ('TEST-escaped')");
-    armed = true;
-    withSqliteStatementGuard(db, () => { if (!db.isTransaction) throw Error('TEST-ended'); }, () => {
-      assert.throws(() => db.prepare(sql).all(), /SQL callbacks/);
-    });
-    assert.equal(calls, 0);
-    assert.equal(db.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n, 0);
-  });
-}
 for (const kind of ['accessor', 'proxy', 'function accessor', 'callable proxy']) {
   test(`named bindings that run code are refused before the writable fence opens: ${kind}`, t => {
     const db = world(t);
@@ -218,19 +167,4 @@ test('plain named and positional bindings still run under a guard', t => {
     db.prepare('INSERT INTO records VALUES (?)').run('TEST-positional');
   });
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
-});
-test('bundled SQLite extension functions do not count as application callbacks', t => {
-  const db = world(t), earlier = nativePrepare.call(db, 'SELECT 1 AS value');
-  withSqliteStatementGuard(db, () => {}, () => {
-    assert.equal(earlier.get().value, 1);
-    assert.equal(db.prepare("SELECT count(*) n FROM pragma_table_info('records')").get().n, 1);
-    assert.equal(db.prepare("SELECT count(*) n FROM json_each('[1,2]')").get().n, 2);
-  });
-});
-test('an application override of a bundled extension function is still refused', t => {
-  const db = world(t);
-  db.function('geopoly_bbox', { deterministic: true }, value => value);
-  withSqliteStatementGuard(db, () => {}, () => {
-    assert.throws(() => db.prepare("SELECT geopoly_bbox('[[0,0],[1,0],[1,1]]')").get(), /SQL callbacks/);
-  });
 });

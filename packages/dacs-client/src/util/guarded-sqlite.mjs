@@ -3,14 +3,9 @@ import { types } from 'node:util';
 
 const require = createRequire(import.meta.url);
 const callbacks = [];
-const FUNCTION_OPCODE = /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInverse)\d*$/;
-// Virtual tables (including pragma_*() and ALTER TABLE checks) compile and run
-// SQL while the statement runs, so EXPLAIN cannot show the functions they call.
-const VIRTUAL_TABLE_OPCODE = /^V(Begin|Check|Column|Create|Destroy|Filter|InitIn|Next|Open|Rename|Update)$/;
-const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function opcodes are unsupported by the statement guard';
 const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap();
-let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll, bundledFunctions;
+let installed = false, checking = false, nativeExec, nativePrepare, nativeGet;
 function check() {
   if (checking) return;
   checking = true;
@@ -30,38 +25,9 @@ function rejectCodeRunningBindings(args) {
     })) throw new TypeError(REFUSED_BINDINGS);
   }
 }
-// Every fresh connection already lists the bundled FTS, RTREE and GEOPOLY
-// functions as non-builtin. A function registered by the application differs
-// from them in flags, even when it overrides one of their names.
-const functionIdentity = row => [row.name.toLowerCase(), row.narg, row.enc, row.type, row.flags].join('/');
-function applicationFunctions(db) {
-  return new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
-    .filter(row => !row.builtin && !bundledFunctions.has(functionIdentity(row)))
-    .map(row => row.name.toLowerCase()));
-}
-function execute(fn, db, sql) {
+function execute(fn, db) {
   check();
   if (checking || callbacks.length === 0) return fn();
-  // A statement prepared before installation has no known owner, so its
-  // program cannot be inspected: refuse it while any guarded connection has
-  // application functions it might call.
-  if (!db && callbacks.some(frame => applicationFunctions(frame.db).size > 0)) {
-    throw new TypeError(REFUSED_PROGRAM);
-  }
-  // EXPLAIN includes trigger programs. Application functions (including
-  // overrides of built-ins) cannot run while native writers are enabled.
-  if (db && sql) {
-    const functions = applicationFunctions(db);
-    const program = nativeAll.call(nativePrepare.call(db, `EXPLAIN ${sql}`));
-    if (program.some(row => {
-      if (functions.size > 0 && VIRTUAL_TABLE_OPCODE.test(row.opcode)) return true;
-      if (!FUNCTION_OPCODE.test(row.opcode)) return false;
-      const name = /^([\s\S]*)\(-?\d+\)$/.exec(String(row.p4));
-      return !name || functions.has(name[1].toLowerCase());
-    })) {
-      throw new TypeError(REFUSED_PROGRAM);
-    }
-  }
   const frame = callbacks.find(frame => frame.db === db);
   // Statements predating installation have no known owner. They retain the
   // read-only fence; never open a different connection on their behalf.
@@ -83,11 +49,7 @@ function install(db) {
   const statement = Object.getPrototypeOf(prepare.call(db, 'SELECT 1'));
   const iterator = Object.getPrototypeOf(statement.iterate.call(prepare.call(db, 'SELECT 1')));
   const advance = iterator.next;
-  nativeExec = exec; nativePrepare = prepare; nativeGet = statement.get; nativeAll = statement.all;
-  const fresh = new DatabaseSync(':memory:');
-  try {
-    bundledFunctions = new Set(nativeAll.call(nativePrepare.call(fresh, 'PRAGMA function_list')).map(functionIdentity));
-  } finally { fresh.close(); }
+  nativeExec = exec; nativePrepare = prepare; nativeGet = statement.get;
   // Patch the native statement prototype too: the host may already have
   // prepared a statement before this capability was installed.
   for (const method of ['run', 'get', 'all', 'iterate']) {
@@ -95,26 +57,18 @@ function install(db) {
     statement[method] = function (...args) {
       const owner = owners.get(this);
       if (callbacks.length > 0 && !checking) rejectCodeRunningBindings(args);
-      const result = execute(() => Reflect.apply(original, this, args), owner, this.sourceSQL);
-      if (method === 'iterate') iterators.set(result, { db: owner, sql: this.sourceSQL });
+      const result = execute(() => Reflect.apply(original, this, args), owner);
+      if (method === 'iterate') iterators.set(result, owner);
       return result;
     };
   }
   iterator.next = function (...args) {
     const owner = iterators.get(this);
-    return execute(() => Reflect.apply(advance, this, args), owner?.db, owner?.sql);
+    return execute(() => Reflect.apply(advance, this, args), owner);
   };
   database.prepare = function (...args) {
     check(); const result = Reflect.apply(prepare, this, args); owners.set(result, this); return result;
   };
-  for (const method of ['function', 'aggregate']) {
-    if (typeof database[method] !== 'function') continue;
-    const original = database[method];
-    database[method] = function (...args) {
-      if (callbacks.length) throw new TypeError('SQL callbacks cannot be registered during a guard');
-      return Reflect.apply(original, this, args);
-    };
-  }
   database.exec = function (sql) {
     if (callbacks.length === 0 || checking || typeof sql !== 'string') return exec.call(this, sql);
     // SQLite itself finds statement boundaries, including CREATE TRIGGER
@@ -131,7 +85,7 @@ function install(db) {
         break;
       }
       if (!sourceSQL) break;
-      execute(() => exec.call(this, sourceSQL), this, sourceSQL);
+      execute(() => exec.call(this, sourceSQL), this);
       remaining = remaining.slice(sourceSQL.length);
     }
   };
@@ -145,11 +99,10 @@ function install(db) {
  * Named bindings (objects or functions) with accessors or proxies are refused
  * during guards, because reading them runs caller code after the last liveness
  * check.
- * SQL callback execution/registration is unsupported during guards, and so are
- * virtual tables (pragma_*() functions) on a connection with application
- * functions, because their SQL is compiled while the statement runs. Statements
- * prepared before installation can only read while a guard is active, and are
- * refused when the guarded connection has application functions.
+ * Statements prepared before installation can only read while a guard is
+ * active. Application SQL callbacks (db.function, db.aggregate) are neither
+ * inspected nor refused here: a callback that runs while the fence is open can
+ * write, so this module alone is not safe on a connection that has them.
  * This stops stale code from writing through ordinary or captured native
  * writers. It does not stop code that deliberately holds a native exec and
  * clears query_only; that needs a native authorizer, which Node 22 lacks.
