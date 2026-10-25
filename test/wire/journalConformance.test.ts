@@ -5,7 +5,7 @@ import { join } from "node:path";
 // fsync commits names. Power loss discards everything else. No journal code
 // or records are mutated by this harness.
 const fault = vi.hoisted(() => ({ fds: new Map<number, string>(), data: new Map<number, Buffer>(), durable: new Map<string, Buffer>(),
-  directory: "", syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false,
+  directory: "", syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false, filesystemType: null as bigint | null,
   shortWrite: false, zeroWrite: false, attemptStats: 0, trackDurability: true, shortRead: false, eof: false, reads: [] as number[], onLink: null as null | ((name: string) => void), onTemporaryOpen: null as null | (() => void) }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -39,6 +39,10 @@ vi.mock("node:fs", async (original) => {
       const stat = fs.lstatSync(path, options);
       if (fault.foreignUid && stat?.isDirectory()) return new Proxy(stat, { get(target, key) { return key === "uid" ? target.uid + 1 : Reflect.get(target, key); } });
       return stat;
+    },
+    statfsSync(path: string, options: any) {
+      const stat = (fs.statfsSync as any)(path, options);
+      return fault.filesystemType === null ? stat : { ...stat, type: fault.filesystemType };
     },
     writeSync(fd: number, buffer: Buffer | string, offset?: number, length?: number) {
       if (fault.zeroWrite) return 0;
@@ -83,7 +87,7 @@ function crash(directory: string) {
 beforeEach(() => {
   fault.fds.clear(); fault.data.clear(); fault.durable.clear(); fault.syncError = fault.linkError = null; fault.syncDirectoryOnly = false;
   fault.shortWrite = fault.zeroWrite = false; fault.trackDurability = true; fault.attemptStats = 0;
-  fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.onLink = null; fault.onTemporaryOpen = null; fault.reads = [];
+  fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.filesystemType = null; fault.onLink = null; fault.onTemporaryOpen = null; fault.reads = [];
 });
 afterEach(() => { expect(fault.fds.size).toBe(0); });
 
@@ -143,6 +147,14 @@ describe("journal publication and recovery regression cases", () => {
     fault.nonexclusive = false; fault.foreignUid = true;
     expect(() => openWireRequestJournal(directory)).toThrowError(refused("DIRECTORY-UNSAFE"));
     expect(names(directory)).toEqual([]);
+  }, 30000);
+  it.each([["tmpfs", 0x01021994n], ["ramfs", 0x858458f6n]])("refuses a directory on %s, which loses a completed effect at reboot", (_name, type) => {
+    const directory = journalDirectory();
+    fault.filesystemType = type;
+    expect(() => openWireRequestJournal(directory)).toThrowError(refused("DIRECTORY-VOLATILE"));
+    expect(names(directory)).toEqual([]);
+    fault.filesystemType = 0xef53n; // ext4
+    expect(openWireRequestJournal(directory)).toEqual({ directory });
   }, 30000);
   it("refuses a directory reached through a symbolic link, so a retargeted link cannot hide retained state", () => {
     const first = journalDirectory(), second = journalDirectory(), parent = journalDirectory();
