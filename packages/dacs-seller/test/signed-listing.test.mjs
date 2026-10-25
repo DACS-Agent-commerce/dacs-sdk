@@ -14,10 +14,10 @@ const signListing = value => { const { signature, ...draft } = value; return { .
 const railAuthority = () => ({ trustPhase: 'PA-1', trustPolicyAcceptsPA1: true, registry: { state: 'not-used', entries: [], definitions: [] },
   inCodeDefinitions: [{ railId: 'demos-native:DEM', railVersion: 1, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true }] });
 const validation = extra => ({ now: () => NOW, revocationSurfaces: [{ kind: 'well-known', status: 'active', integrity: 'verified' }], readMarker: async () => null, ...extra });
-function receiptFor(logicalAddress, artifact) {
-  const hash = contentHash(artifact), writerSignature = wallet.signBytes(Buffer.from(anchorWriteMessage(logicalAddress, hash))).toString('base64url');
+function receiptFor(logicalAddress, artifact, signer = wallet) {
+  const hash = contentHash(artifact), writerSignature = signer.signBytes(Buffer.from(anchorWriteMessage(logicalAddress, hash))).toString('base64url');
   return { receiptVersion: '1', substrate: FIXTURE_SUBSTRATE, finalityProfile: FIXTURE_FINALITY, logicalAddress, nativeAddress: storAddress(logicalAddress), contentHash: hash,
-    transactionRef: { kind: 'fixture-sr2-write', value: fixtureWriteHash({ logicalAddress, contentHash: hash, writer: wallet.claim, writerSignature }) }, writer: wallet.claim,
+    transactionRef: { kind: 'fixture-sr2-write', value: fixtureWriteHash({ logicalAddress, contentHash: hash, writer: signer.claim, writerSignature }) }, writer: signer.claim,
     state: 'finalized', observationDisposition: 'established', observedAt: NOW, blockRef: { id: 'TEST-block', height: '1', timestamp: NOW }, evidence: { kind: 'fixture-writer-signature', value: writerSignature } };
 }
 function publisherWorld({ editReceipt = value => value, read = value => value, sign = bytes => wallet.signBytes(bytes) } = {}) {
@@ -48,6 +48,18 @@ test('malformed component arguments return false without throwing', () => {
   for (const input of [null, undefined, {}, { signedBytes: Buffer.from('TEST'), signature: { algorithm: 'ed25519', signer: 123, value: 'A' } }]) {
     assert.doesNotThrow(() => verifyComponent(input)); assert.equal(verifyComponent(input), false);
   }
+});
+
+const identityPoint = { claim: `did:demos:agent:01${'00'.repeat(31)}`, signBytes: () => Buffer.from(`01${'00'.repeat(63)}`, 'hex') };
+
+test('a signature by a small-order key proves nothing for components, Listings and fixture receipts', async () => {
+  const signature = { algorithm: 'ed25519', signer: identityPoint.claim, value: identityPoint.signBytes().toString('base64url') };
+  for (const message of ['TEST first', 'TEST second']) assert.equal(verifyComponent({ signedBytes: Buffer.from(message), signature }), false);
+  const forged = fixtureListing(identityPoint, { now: NOW });
+  assert.equal(isListing(forged), true);
+  assert.notEqual((await validateListing(forged, validation({ loadRailResolution: railAuthority }))).disposition, 'verified');
+  const artifact = { TEST: 'receipt' }, logicalAddress = 'TEST-logical', hash = contentHash(artifact);
+  assert.equal(verifyFixtureReceipt({ receipt: receiptFor(logicalAddress, artifact, identityPoint), logicalAddress, hash, expectedWriter: identityPoint.claim }), 'invalid');
 });
 
 test('a recoded fixture receipt is invalid even if its public transaction hash is recomputed', () => {
@@ -113,6 +125,14 @@ test('publication authenticates finalized receipt and independently resolves the
   assert.equal(result.ref, storAddress(result.logicalAddress)); assert.equal(contentHash(result.listing), result.listingPin.contentHash);
   assert.deepEqual(w.calls, { sign: 1, publish: 1, read: 1 });
 });
+
+for (const [label, sign] of [['another wallet', bytes => Buffer.from(ed25519Sign(bytes, privateKeyFromSeed(new Uint8Array(32).fill(18))))],
+  ['a prefixed message', bytes => wallet.signBytes(Buffer.concat([Buffer.from('TEST prefix '), bytes]))], ['zero bytes', () => Buffer.alloc(64)]]) {
+  test(`publication refuses a signature from ${label} before any write`, async () => {
+    const w = publisherWorld({ sign }); await assert.rejects(w.publish(w.draft), /signature/);
+    assert.equal(w.calls.publish, 0);
+  });
+}
 
 test('stop reaches a pending signature and prevents any subsequent signature or submission', async () => {
   let entered, release, options;
