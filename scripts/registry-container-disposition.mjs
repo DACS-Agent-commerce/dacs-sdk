@@ -260,13 +260,51 @@ function declaredCandidates(owner, candidates) {
   return declared;
 }
 
-// Every candidate declaration, once, with the lock location of the package
-// making it ("" for the project): the project's manifest and lock entry, and
-// each installed entry's lock entry and archive manifest, which may differ.
-function candidateDeclarations(manifest, lock, closure, candidates) {
-  const owners = [["", manifest], ["", lock?.packages?.[""]]];
+// Every package.json scope in an archive, retaining manifests rather than
+// archive/file buffers after extraction. No module-root search limits the list.
+function archivePackageScopes(owner, archive) {
+  const scopes = new Map();
+  for (const [path, bytes] of packedFiles(archive)) {
+    if (posix.basename(path) !== "package.json") continue;
+    const scope = { owner };
+    try {
+      scope.manifest = JSON.parse(bytes.toString("utf8"));
+      scope.unreadable = !isPlainObject(scope.manifest);
+    } catch { scope.unreadable = true; }
+    scopes.set(posix.dirname(`${owner}/${path}`), scope);
+  }
+  return scopes;
+}
+
+// A closed inventory of physical module roots and EVERY package.json scope,
+// including scopes outside node_modules. Only archives checked against the
+// installed tree contribute manifests; opaque registry entries cannot pass.
+function candidateInventory(closure, scopes, registry) {
+  const modules = new Map(closure.carried);
+  const errors = [];
+  const { origin, path } = consumerRegistry(registry);
   for (const [location, record] of closure.entries) {
-    if (record.present) owners.push([location, record.entry], [location, record.manifest]);
+    if (!record.present) continue;
+    modules.set(location, { owner: record.bundledBy ?? location, entry: record.entry,
+      name: location.replace(/^.*node_modules\//, ""), manifest: record.manifest });
+    if (record.unverified) {
+      let url;
+      try { url = new URL(record.entry.resolved); } catch { /* source policy refuses non-registry entries */ }
+      if (url?.origin === origin && url.pathname.startsWith(path)) {
+        errors.push("cannot authenticate an unverified registry archive: " + location);
+      }
+    }
+  }
+  for (const [location, scope] of scopes) modules.set(location, { ...modules.get(location), ...scope });
+  return { modules, errors };
+}
+
+// Every declaration from the project, installed lock entries and the complete
+// archive scope inventory, once, with its declaring directory.
+function candidateDeclarations(manifest, lock, inventory, candidates) {
+  const owners = [["", manifest], ["", lock?.packages?.[""]]];
+  for (const [location, module] of inventory.modules) {
+    owners.push([location, module.entry], [location, module.manifest]);
   }
   const declarations = new Map();
   for (const [location, owner] of owners) {
@@ -319,34 +357,31 @@ function interruptedFailureClass(summary) {
 }
 
 const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
-// Every installed lock entry that is a candidate by its directory, its lock
-// name or its archive's package.json is checked as a release copy, and the
-// top-level copy must be installed.
-function candidateCopyErrors(closure, candidates, registry) {
-  const errors = [];
+
+// Every sensitive identity in the closed inventory must be an independently
+// locked release archive. Nested scopes, carried modules and file shadows have
+// no such identity. A nested scope declaring candidates is refused as well.
+function candidateInventoryErrors(closure, inventory, candidates, declarations, registry) {
+  const errors = [...inventory.errors];
   for (const candidate of candidates) {
     if (!closure.entries.get("node_modules/" + candidate.name)?.present) {
       errors.push("candidate package is not installed at the top level: " + candidate.name);
     }
-    for (const [location, { entry, manifest, present }] of closure.entries) {
-      const names = [location.replace(/^.*node_modules\//, ""), entry.name, manifest?.name];
-      if (present && names.includes(candidate.name)) errors.push(...releaseCopyErrors(location, entry, candidate, registry));
+  }
+  for (const [location, module] of inventory.modules) {
+    const names = [module.name, module.entry?.name, module.manifest?.name,
+      ...MODULE_FILE_EXTENSIONS.filter(extension => module.name?.endsWith(extension))
+        .map(extension => module.name.slice(0, -extension.length))];
+    const identities = candidates.filter(candidate => names.includes(candidate.name) ||
+      declarations.some(declared => declared.candidate === candidate && names.includes(declared.specifier)));
+    if (!module.entry && (identities.length || module.unreadable || declaredCandidates(module.manifest, candidates).length)) {
+      errors.push(`cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
+    } else {
+      if (module.unreadable) errors.push("cannot read an archive package scope: " + location);
+      for (const candidate of identities) errors.push(...releaseCopyErrors(location, module.entry, candidate, registry));
     }
   }
   return errors;
-}
-
-// A module carried in another package's archive has no lock entry, so it is no
-// release copy: one Node could load by a candidate's name or a declared alias
-// (as a directory or a file), one naming a candidate in its package.json or
-// declaring one, and one whose package.json cannot be read are refused.
-function carriedCandidateErrors(closure, candidates, declarations) {
-  const names = new Set([...candidates.map(({ name }) => name), ...declarations.map(({ specifier }) => specifier)]);
-  const loadableAs = name => [name, ...MODULE_FILE_EXTENSIONS.filter(extension => name.endsWith(extension))
-    .map(extension => name.slice(0, -extension.length))];
-  return [...closure.carried].filter(([, module]) => module.unreadable || loadableAs(module.name).some(name => names.has(name)) ||
-      candidates.some(({ name }) => name === module.manifest?.name) || declaredCandidates(module.manifest, candidates).length > 0)
-    .map(([location, module]) => `cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
 }
 
 // The first module Node finds for `specifier` from `directory`: its ESM
@@ -416,15 +451,15 @@ function candidateResolutionErrors(project, closure, declarations) {
 // candidates that run install code, installed candidate entries that are not
 // the release, carried modules standing in for one, and declared candidates
 // Node loads from anything else.
-function candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure }) {
-  const declarations = candidateDeclarations(manifest, lock, closure, candidates);
+function candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, scopes }) {
+  const inventory = candidateInventory(closure, scopes, registry);
+  const declarations = candidateDeclarations(manifest, lock, inventory, candidates);
   return [
     ...candidates.flatMap(({ name, files }) => {
       const scripts = declaredInstallScripts(files);
       return scripts.length ? [`candidate package runs code when installed (${scripts.join(", ")}): ${name}`] : [];
     }),
-    ...candidateCopyErrors(closure, candidates, registry),
-    ...carriedCandidateErrors(closure, candidates, declarations),
+    ...candidateInventoryErrors(closure, inventory, candidates, declarations, registry),
     ...candidateResolutionErrors(project, closure, declarations),
   ];
 }
@@ -446,11 +481,16 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
   const cache = npmCacheDirectory(project);
-  const closure = installationClosure(project, lock, (_location, entry) => cachedArchive(cache, entry.integrity));
+  const scopes = new Map();
+  const closure = installationClosure(project, lock, (location, entry) => {
+    const archive = cachedArchive(cache, entry.integrity);
+    for (const [path, scope] of archivePackageScopes(location, archive)) scopes.set(path, scope);
+    return archive;
+  });
   const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
   const errors = [...closure.errors, ...differences.slice(0, MAX_LISTED_DIFFERENCES),
     ...(differences.length > MAX_LISTED_DIFFERENCES ? [`and ${differences.length - MAX_LISTED_DIFFERENCES} more differences`] : []),
-    ...candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure })];
+    ...candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, scopes })];
   if (errors.length) throw new Error(errors.join("\n"));
   const violations = registryDependencyViolations({ manifest, lock, registry });
   writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
