@@ -9,6 +9,7 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
   const assertRunning=()=>{if(stopRequested()) throw new Error('the operator is stopping');};
   return async(draft)=>{
     assertRunning();
+    const seller=draft.seller.identity.presentedBy;
     let signedListing=null;
     const publication=await publishListingCore(draft,{
       sign:async(bytes)=>{
@@ -16,7 +17,7 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
         const signature=await sign(bytes,{signal:stopSignal});
         assertRunning();
         const value=typeof signature==='string'?signature:Buffer.from(signature).toString('base64url');
-        if(!verifyComponent({signedBytes:bytes,signature:{algorithm:'ed25519',signer:draft.seller.identity.presentedBy,value}})) throw new Error('the wallet signature does not verify for the Listing seller');
+        if(!verifyComponent({signedBytes:bytes,signature:{algorithm:'ed25519',signer:seller,value}})) throw new Error('the wallet signature does not verify for the Listing seller');
         return signature;
       },
       scanOwnAnchorsByNamePrefix:scanOwnListings,
