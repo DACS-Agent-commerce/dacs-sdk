@@ -1691,6 +1691,27 @@ describe("dependency policy over npm ci installations", () => {
       }
     }, 60_000);
 
+  it("refuses npm-generated directory links that create additional module roots", async () => {
+    const directory = temporaryDirectory();
+    const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION,
+      { main: "node_modules/.bin/runner.cjs", dependencies: { "bin-owner": CANDIDATE_VERSION } }),
+      "node_modules/.bin/runner.cjs": "module.exports = require('@kynesyslabs/dacs');" });
+    const binOwner = packTarball({ "package.json": packageJson("bin-owner", CANDIDATE_VERSION,
+      { bin: { node_modules: "modules" } }),
+      "modules/@kynesyslabs/dacs/package.json": packageJson(undefined, CANDIDATE_VERSION),
+      "modules/@kynesyslabs/dacs/index.js": "module.exports = 'unreleased-copy';" });
+    const { project, policy } = await registryInstallation(directory, { plugin, "bin-owner": binOwner }, {
+      "node_modules/plugin": ["plugin", { dependencies: { "bin-owner": CANDIDATE_VERSION } }],
+      "node_modules/plugin/node_modules/bin-owner": ["bin-owner", { bin: { node_modules: "modules" } }],
+    }, { dependencies: { plugin: CANDIDATE_VERSION } });
+    const loaded = spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" });
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toBe("unreleased-copy\n");
+    expect(policy.status, policy.stderr).not.toBe(0);
+    expect(policy.stderr).toContain("cannot authenticate a generated command link to a non-file: node_modules/plugin/node_modules/.bin/node_modules");
+    expect(existsSync(join(directory, "report.json"))).toBe(false);
+  }, 60_000);
+
   it.each(CANDIDATES.flatMap(name => ["name", "version"].map(field => [name, field] as const)))(
     "refuses a %s release archive with the wrong manifest %s despite matching provenance and lock", async (name, field) => {
       const directory = temporaryDirectory();
