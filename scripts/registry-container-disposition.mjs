@@ -429,6 +429,12 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
   // an entry that may be a directory is not inspected, so it is refused.
   errors.push(...inventory.filter(item => isBinEntry(item) && item.target === undefined && item.error === undefined)
     .map(item => "cannot inspect a .bin entry that is not an executable link: " + item.location));
+  // Node loads packages from the node_modules beside a link's real target, so
+  // the target must be a file inside a package this check inspects.
+  const insideInstalledPackage = target => inventory.some(item => typeof item.name === "string" && target.startsWith(item.location + "/"));
+  errors.push(...inventory.filter(item => isBinEntry(item) && (item.error !== undefined ||
+      (item.target !== undefined && !insideInstalledPackage(item.target))))
+    .map(item => "cannot inspect a .bin entry that does not lead to a file inside an installed package: " + item.location));
   errors.push(...inventory.filter(item => /(^|\/)node_modules\/(@[^/]+\/)?node_modules$/.test(item.location))
     .map(item => "cannot inspect a node_modules directory inside node_modules or a scope directory: " + item.location));
   const candidateLocations = new Set();
