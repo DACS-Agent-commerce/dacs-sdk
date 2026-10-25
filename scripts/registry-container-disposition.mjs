@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { readdirSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs";
+import { readdirSync, realpathSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { pathToFileURL } from "node:url";
-import { join, posix } from "node:path";
+import { isAbsolute, join, posix, relative } from "node:path";
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 // Pure classification of observed advisory IDs against the curated baseline.
@@ -181,25 +181,36 @@ const listDirectory = current => {
   }
 };
 
-// Node follows a link to a directory when it loads a file, so a link inside an
-// installed package can lead to a node_modules the inventory never lists. This
-// returns every link below `directory` that resolves to a directory, as paths
-// relative to it, without following any; a link to a file or to nothing is not
-// one. A link that cannot be resolved for another reason throws.
-export function linkedDirectories(directory) {
+// Node follows a link when it loads a file, so a link inside an installed
+// package can lead to a node_modules the inventory never lists: a link to a
+// directory, or to a file whose real path lies outside `directory`, where Node
+// looks for packages from the target's own location. This returns every such
+// link below `directory`, as paths relative to it, without following any. A
+// link to a file inside `directory` is inspected with the rest of it, and a
+// link to nothing is not one. A link that cannot be resolved for another
+// reason throws.
+export function escapingLinks(directory) {
   const linked = [];
-  const resolvesToDirectory = path => {
-    try { return statSync(path).isDirectory(); }
+  const resolveLink = path => {
+    try { return { real: realpathSync(path), isDirectory: statSync(path).isDirectory() }; }
     catch (error) {
-      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
       throw error;
     }
+  };
+  const root = realpathSync(directory);
+  const leavesDirectory = real => {
+    const path = relative(root, real);
+    return path === ".." || path.startsWith("../") || isAbsolute(path);
   };
   const visit = (current, prefix) => {
     for (const entry of listDirectory(current)) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) visit(join(current, entry.name), path);
-      else if (entry.isSymbolicLink() && resolvesToDirectory(join(current, entry.name))) linked.push(path);
+      else if (entry.isSymbolicLink()) {
+        const target = resolveLink(join(current, entry.name));
+        if (target && (target.isDirectory || leavesDirectory(target.real))) linked.push(path);
+      }
     }
   };
   visit(directory, "");
@@ -331,7 +342,7 @@ export function installedFileDifferences(directory, packed) {
 // reads it, in the installed package.json. When `differencesFrom` is given,
 // each copy's files must also be the files of the tarball (a candidate's
 // `files`): `differencesFrom(location, files)` returns what differs.
-export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots, installedLinkedDirectories, differencesFrom }) {
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots, installedEscapingLinks, differencesFrom }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
   const inventory = installedInventory ?? [];
@@ -412,13 +423,14 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
       errors.push("cannot inspect a candidate inside node_modules in an installed package: " + location + "/" + root);
     }
   }
-  // Node follows a link to a directory inside any installed package, including
-  // a candidate, so the node_modules behind it would never be inspected.
+  // Node follows a link inside any installed package, including a candidate,
+  // so the node_modules behind a link to a directory or out of the package
+  // would never be inspected.
   const linked = new Set();
   for (const { location } of inventory.filter(item => !isBinEntry(item) && item.link !== true)) {
-    for (const path of installedLinkedDirectories?.(location) ?? []) linked.add(location + "/" + path);
+    for (const path of installedEscapingLinks?.(location) ?? []) linked.add(location + "/" + path);
   }
-  errors.push(...[...linked].map(path => "cannot inspect a linked directory inside an installed package: " + path));
+  errors.push(...[...linked].map(path => "cannot inspect a link inside an installed package: " + path));
   return errors;
 }
 
@@ -662,7 +674,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     });
     const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
       installedModuleRoots: (location, names) => nestedModuleRoots(join(project, location), names),
-      installedLinkedDirectories: location => linkedDirectories(join(project, location)),
+      installedEscapingLinks: location => escapingLinks(join(project, location)),
       differencesFrom: (location, files) => installedFileDifferences(join(project, location), files),
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
