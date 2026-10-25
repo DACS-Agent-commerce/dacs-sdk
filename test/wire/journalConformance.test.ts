@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 // fsync commits names. Power loss discards everything else. No journal code
 // or records are mutated by this harness.
 const fault = vi.hoisted(() => ({ fds: new Map<number, string>(), data: new Map<number, Buffer>(), durable: new Map<string, Buffer>(),
-  directory: "", synced: [] as string[], syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false, filesystemType: null as bigint | null,
+  directory: "", synced: [] as string[], syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false, rootOwned: "", filesystemType: null as bigint | null,
   shortWrite: false, zeroWrite: false, attemptStats: 0, trackDurability: true, shortRead: false, eof: false, reads: [] as number[], onLink: null as null | ((name: string) => void), onTemporaryOpen: null as null | (() => void) }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -38,6 +38,7 @@ vi.mock("node:fs", async (original) => {
     lstatSync(path: string, options: any) {
       if (/o-[0-9a-f]{64}-[0-9]+$/.test(path)) fault.attemptStats++;
       const stat = fs.lstatSync(path, options);
+      if (fault.rootOwned === path && stat) return new Proxy(stat, { get(target, key) { return key === "uid" ? 0 : Reflect.get(target, key); } });
       if (fault.foreignUid && stat?.isDirectory()) return new Proxy(stat, { get(target, key) { return key === "uid" ? target.uid + 1 : Reflect.get(target, key); } });
       return stat;
     },
@@ -60,11 +61,13 @@ vi.mock("node:fs", async (original) => {
 const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
 import { completeWireEffect, journalStore, openWireRequestJournal, reserveEffect } from "../../src/wire/journal.js";
 import type { EffectReservation, WireEffect, WireRequestJournal } from "../../src/wire/journal.js";
+import { DACS_SELLER_HTTP_PATHS } from "../../src/wire/routes.js";
 import { journalDirectory } from "./requestJournalFixture.js";
 
 let counter = 1;
+const JOB = "01ARZ3NDEKTSV4RRFFQ69G5FAV", OTHER_JOB = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const hash = (n: number) => n.toString(16).padStart(64, "0");
-const reservation = (patch: Partial<EffectReservation> = {}): EffectReservation => ({ key: hash(counter++), operationId: "a".repeat(64), binding: "b".repeat(64), requestHash: "c".repeat(64), ...patch });
+const reservation = (patch: Partial<EffectReservation> = {}): EffectReservation => ({ key: hash(counter++), seller: `did:demos:agent:${"a".repeat(64)}`, jobId: JOB, path: DACS_SELLER_HTTP_PATHS.payments, binding: "b".repeat(64), requestHash: "c".repeat(64), ...patch });
 const reserve = (journal: WireRequestJournal, patch: Partial<EffectReservation> = {}) => reserveEffect(journalStore(journal), reservation(patch));
 const stored = (status = 200, text = "{}") => ({ status, textBytes: Buffer.from(text).toString("base64url") });
 const read = (directory: string, name: string) => JSON.parse(fs.readFileSync(join(directory, name), "utf8"));
@@ -88,7 +91,7 @@ function crash(directory: string) {
 beforeEach(() => {
   fault.fds.clear(); fault.synced = []; fault.data.clear(); fault.durable.clear(); fault.syncError = fault.linkError = null; fault.syncDirectoryOnly = false;
   fault.shortWrite = fault.zeroWrite = false; fault.trackDurability = true; fault.attemptStats = 0;
-  fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.filesystemType = null; fault.onLink = null; fault.onTemporaryOpen = null; fault.reads = [];
+  fault.rootOwned = ""; fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.filesystemType = null; fault.onLink = null; fault.onTemporaryOpen = null; fault.reads = [];
 });
 afterEach(() => { expect(fault.fds.size).toBe(0); });
 
@@ -110,11 +113,11 @@ describe("journal publication and recovery regression cases", () => {
     expect(reserve(reopened)).toMatchObject({ state: "completed", outcome });
     expect(names(directory).some((n) => /^(tmp|probe)-/.test(n))).toBe(false);
     // Null end is also durable; the successor is immediately recoverable.
-    const other = "d".repeat(64), next = reserve(reopened, { operationId: other });
+    const next = reserve(reopened, { jobId: OTHER_JOB });
     completeWireEffect(reopened, next, null);
     crash(directory); at++;
     reopened = openWireRequestJournal(directory, { clock: () => at, leaseMs: 1000 });
-    expect(reserve(reopened, { operationId: other })).toMatchObject({ state: "recover", attempt: 1, leaseUntil: at + 1000 });
+    expect(reserve(reopened, { jobId: OTHER_JOB })).toMatchObject({ state: "recover", attempt: 1, leaseUntil: at + 1000 });
   }, 30000);
   it.each([false, true].flatMap((directoryOnly) => ["open", "reserve", "complete"].map((phase) => ({ directoryOnly, phase }))))("fsync failure prevents success: $phase (directory=$directoryOnly)", ({ directoryOnly, phase }) => {
       const { journal } = setup();
@@ -131,6 +134,36 @@ describe("journal publication and recovery regression cases", () => {
     expect(fault.synced).toContain(dirname(directory));
     expect(fault.synced).toContain(dirname(dirname(directory)));
   });
+  it("syncs the journal directory's entry in a root-owned parent, which this user did not create", () => {
+    const directory = journalDirectory(); fault.directory = directory;
+    fault.rootOwned = dirname(directory);
+    openWireRequestJournal(directory);
+    expect(fault.synced).toContain(dirname(directory));
+  });
+  it("derives the operation from seller, job and route, so a changed request body is the same operation and runs no second effect", () => {
+    const { journal } = setup();
+    const first = reserve(journal);
+    expect(first).toMatchObject({ state: "new" });
+    expect(() => reserve(journal, { requestHash: "d".repeat(64) })).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+    expect(reserve(setup().journal, { jobId: OTHER_JOB }).operationId).not.toBe(first.operationId);
+    expect(reserve(setup().journal, { path: DACS_SELLER_HTTP_PATHS.commitments }).operationId).not.toBe(first.operationId);
+    expect(reserve(setup().journal, { seller: `did:demos:agent:${"e".repeat(64)}` }).operationId).not.toBe(first.operationId);
+  }, 30000);
+  it.each([{ jobId: "not-a-job" }, { seller: "a".repeat(64) }, { path: DACS_SELLER_HTTP_PATHS.state }, { path: "/dacs/v1/other" }])("refuses a reservation that names no seller, job or effect route (%#)", (patch) => {
+    const { journal, directory } = setup();
+    expect(() => reserve(journal, patch)).toThrowError(expect.objectContaining({ code: "wire_input_invalid" }));
+    expect(names(directory)).toEqual([]);
+  }, 30000);
+  it.each(["new", "recover"])("issues no %s attempt whose lease ran out while it was being published", (state) => {
+    let at = 1000;
+    const { journal, directory } = setup(() => at);
+    if (state === "recover") { completeWireEffect(journal, reserve(journal), null); at = 1500; }
+    const arm = (): void => { fault.onLink = (to) => { if (new RegExp(`/o-[0-9a-f]{64}-${state === "new" ? 0 : 1}$`).test(to)) at += 1500; else arm(); }; };
+    arm();
+    expect(() => reserve(journal)).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+    at += 1000; // the lapsed attempt is ended as superseded by the next request, which then recovers
+    expect(reserve(openWireRequestJournal(directory, { clock: () => at, leaseMs: 1000 }))).toMatchObject({ state: "recover" });
+  }, 30000);
 
   it("EIO during nonce or attempt link propagates unchanged, cleans temporary files and issues no effect", () => {
     for (const target of ["nonce", "attempt"]) {
@@ -274,7 +307,7 @@ describe("journal publication and recovery regression cases", () => {
       const { journal } = setup();
       const original = reservation();
       fault.onLink = () => { fault.onLink = (to) => {
-        expect(to).toContain(`o-${original.operationId}-0`);
+        expect(to).toMatch(/\/o-[0-9a-f]{64}-0$/);
         expect(reserve(journal, { binding: foreign ? "d".repeat(64) : original.binding })).toMatchObject({ state: "new" });
       }; };
       expect(() => reserveEffect(journalStore(journal), original)).toThrowError(expect.objectContaining(foreign
