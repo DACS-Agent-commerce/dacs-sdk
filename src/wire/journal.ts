@@ -1,16 +1,13 @@
-// The seller's request journal (new): the only store checkWireRequest
-// reserves effects in.
+// The seller's request journal: the only store seller admission reserves effects in.
 //
-// A journal a host supplies cannot be shown to survive a restart from inside
-// one process, so the wire takes none. It ships this one: a local directory,
-// shared by every worker on the host, in which each file is written under a
-// temporary name, synced, and published with link() (atomic, and exclusive:
-// of workers racing on one name exactly one publishes it), and the directory
-// synced before the call returns. A file published before a crash is there
-// after it.
+// A journal a host supplies cannot be shown to survive a restart from inside one process, so the wire takes
+// none. It ships this one: a local directory, shared by every worker on the host, in which each file is
+// written under a temporary name, synced, and published with link() (atomic, and exclusive: of workers
+// racing on one name exactly one publishes it), and the directory synced before the call returns. No other
+// user can rename or replace the directory or any directory above it, so the path cannot be swapped under a publish.
 //
 // Each effect is a durable state machine keyed by its operation (one per
-// seller, job and route; checkWireRequest computes it). The first attempt also
+// seller, job and route; the caller computes it). The first attempt also
 // records the operation's binding (the tuple, buyer and Agreement hash it was
 // first reserved under), and every later request for the operation must carry
 // the same one: a job whose retained Agreement, buyer or tuple changed gets
@@ -29,7 +26,7 @@
 // published too: the same signed request again is peer_request_replayed (409).
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, unlinkSync, writeSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { qualifyJournalRestart } from "./journalRestart.js";
 
@@ -127,10 +124,7 @@ function publish(store: Store, name: string, contents: string): boolean {
       fsyncSync(fd);
     } finally { closeSync(fd); }
     try { linkSync(temporary, join(store.directory, name)); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      published = false;
-    }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; published = false; }
   } catch (error) { primary = error; throw error; } finally {
     try { unlinkSync(temporary); }
     catch (cleanup) {
@@ -260,6 +254,17 @@ function readEnd(store: Store, operationId: string, attempt: number): AttemptEnd
   return { superseded: record!.superseded as boolean, outcome };
 }
 
+/** No other user can rename or replace a directory on the path: each is owned by this user (root above the journal) and not group/other-writable, bar a root-owned sticky one such as /tmp. */
+function assertPathNotReplaceable(directory: string): void {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  for (let path = directory; ; path = dirname(path)) {
+    const stat = lstatSync(path), root = path !== directory && stat.uid === 0;
+    const sticky = root && (stat.mode & 0o1000) !== 0;
+    if ((uid !== undefined && stat.uid !== uid && !root) || ((stat.mode & 0o022) !== 0 && !sticky)) fail("seller_replay_guard_invalid", 500, "DIRECTORY-UNSAFE");
+    if (dirname(path) === path) return;
+  }
+}
+
 function now(store: Store): number {
   const at = store.clock();
   if (!isUint(at)) fail("seller_configuration_invalid", 500, "JOURNAL-CLOCK");
@@ -267,14 +272,12 @@ function now(store: Store): number {
 }
 
 /**
- * Open the journal in `directory`: an existing absolute directory, not a
- * symbolic link and reached through none (the path is its own real path),
- * owned by this process's user and writable by no one else; a call after the path names another directory fails.
- * Before it is returned, an exclusive publish is tried twice on it: the second
- * must be refused. A publisher then exits before a fresh process checks
- * retained bytes and exclusive retry. Failure, or Windows (no directory sync), is
- * `seller_replay_guard_invalid` (500). Every worker on the host opens the same
- * directory.
+ * Open the journal in `directory`: an existing absolute directory, not a symbolic link and reached through none
+ * (the path is its own real path), owned by this process's user and writable by no one else, under ancestors no
+ * other user can change (root-owned, or a root-owned sticky one); a call after the path names another directory
+ * fails. Before it is returned, an exclusive publish is tried twice on it: the second must be refused. A publisher
+ * then exits before a fresh process checks retained bytes and exclusive retry. Failure, or Windows (no directory
+ * sync), is `seller_replay_guard_invalid` (500). Every worker on the host opens the same directory.
  */
 export function openWireRequestJournal(directory: string, options: WireRequestJournalOptions = {}): WireRequestJournal {
   // Windows cannot open a directory to sync it, so a publish there is not durable.
@@ -285,10 +288,9 @@ export function openWireRequestJournal(directory: string, options: WireRequestJo
   if (!isUint(leaseMs) || leaseMs < 1000 || leaseMs > 600_000 || typeof clock !== "function") fail("seller_configuration_invalid", 500, "JOURNAL-OPTIONS");
   const stat = lstatSync(directory, { throwIfNoEntry: false });
   if (stat === undefined || !stat.isDirectory()) fail("seller_replay_guard_invalid", 500, "DIRECTORY-MISSING");
-  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  if ((uid !== undefined && stat!.uid !== uid) || (stat!.mode & 0o022) !== 0) fail("seller_replay_guard_invalid", 500, "DIRECTORY-UNSAFE");
   // Every later call resolves the path again, so a link anywhere in it (or a trailing slash, `..`) could be retargeted to an empty directory.
   if (realpathSync(directory) !== directory) fail("seller_replay_guard_invalid", 500, "DIRECTORY-ALIAS");
+  assertPathNotReplaceable(directory);
   const store: Store = { directory, identity: lstatSync(directory, { bigint: true }), leaseMs: leaseMs as number, clock: clock as () => number };
   const probe = `probe-${randomBytes(16).toString("hex")}`;
   const first = publish(store, probe, "{}"), second = publish(store, probe, "{}");
@@ -367,19 +369,15 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
 }
 
 /**
- * Record the end of an effect attempt checkWireRequest issued (`new` or
- * `recover`), on the journal it was issued from. `outcome` is the answer the
- * handler signed: a later request for the same operation is answered with it
- * and runs no effect, so its text must be a body the wire can sign: a JSON
- * object CF-5 admission admits, in well-formed UTF-8 (`wire_input_invalid`,
- * detail `OUTCOME-INVALID`, before anything is published). It is published once: the same outcome again is
- * accepted, another is `seller_effect_conflict` (500). `null` ends an attempt
- * that caused no effect and will cause none (for example, a payment not yet
- * visible), so the next request recovers at once instead of after the lease.
- * Clean null ends do not spend MAX_EFFECT_ATTEMPTS; only superseded attempts do.
- * An attempt whose lease ran out and that a later request ended first is
- * `seller_effect_superseded` (500), and records nothing: its successor
- * reconciles. Call it only after the effect's own write is durable.
+ * Record the end of an effect attempt that reserveEffect issued (`new` or `recover`), on the journal it was
+ * issued from. `outcome` is the answer the handler signed: a later request for the same operation is answered
+ * with it and runs no effect, so its text must be a body the wire can sign: a JSON object CF-5 admission admits,
+ * in well-formed UTF-8 (`wire_input_invalid`, detail `OUTCOME-INVALID`, before anything is published). It is
+ * published once: the same outcome again is accepted, another is `seller_effect_conflict` (500). `null` ends an
+ * attempt that caused no effect and will cause none (for example, a payment not yet visible), so the next request
+ * recovers at once instead of after the lease. Clean null ends do not spend MAX_EFFECT_ATTEMPTS; only superseded
+ * attempts do. An attempt whose lease ran out and that a later request ended first is `seller_effect_superseded`
+ * (500), and records nothing: its successor reconciles. Call it only after the effect's own write is durable.
  */
 export function completeWireEffect(journal: WireRequestJournal, effect: WireEffect, outcome: WireEffectOutcome | null): void {
   const store = journalStore(journal) as Store;

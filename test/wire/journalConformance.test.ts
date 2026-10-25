@@ -157,6 +157,15 @@ describe("journal publication and recovery regression cases", () => {
     expect(names(first)).toEqual([]);
     expect(openWireRequestJournal(first).directory).toBe(first);
   }, 30000);
+  it.each([0o770, 0o707, 0o777])("refuses a journal under an ancestor other users can write (mode %o), where they could swap the path mid-publish", (mode) => {
+    const parent = journalDirectory(), directory = join(parent, "journal");
+    fs.mkdirSync(directory, { mode: 0o700 });
+    fs.chmodSync(parent, mode);
+    expect(() => openWireRequestJournal(directory)).toThrowError(refused("DIRECTORY-UNSAFE"));
+    expect(names(directory)).toEqual([]);
+    fs.chmodSync(parent, 0o700);
+    expect(openWireRequestJournal(directory).directory).toBe(directory);
+  }, 30000);
   it("refuses every call once the journal path names a replacement directory, so a completed operation is not issued again", () => {
     const { journal, directory } = setup();
     const effect = reserve(journal);
