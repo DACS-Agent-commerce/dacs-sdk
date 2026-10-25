@@ -2,7 +2,7 @@ import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -2154,7 +2154,25 @@ describe("candidate executable and nested alias lookup", () => {
       expect(createRequire(join(project, plugin, "dist/index.js")).resolve("@kynesyslabs/dacs")).toBe(join(holder, "index.js"));
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(`cannot inspect a linked directory inside an installed package: ${plugin}/dist`);
+    expect(result.stderr).toContain(`cannot inspect a link inside an installed package: ${plugin}/dist`);
+  });
+
+  it("rejects a link to a file outside the package that holds a candidate copy of its own", () => {
+    const fixture = dependencyPolicyHarness();
+    const plugin = "node_modules/plugin";
+    const result = fixture.run(project => {
+      const holder = join(project, "elsewhere/node_modules/@kynesyslabs/dacs");
+      mkdirSync(holder, { recursive: true });
+      mkdirSync(join(project, plugin), { recursive: true });
+      writeFileSync(join(project, plugin, "package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+      writeFileSync(join(holder, "index.js"), "module.exports = 'shadow';");
+      writeFileSync(join(project, "elsewhere/main.cjs"), "module.exports = require('@kynesyslabs/dacs');");
+      symlinkSync(join(project, "elsewhere/main.cjs"), join(project, plugin, "main.cjs"));
+      expect(realpathSync(join(project, plugin, "main.cjs"))).toBe(join(project, "elsewhere/main.cjs"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`cannot inspect a link inside an installed package: ${plugin}/main.cjs`);
   });
 
   it("accepts a link to a file inside a package that is not a candidate", () => {
