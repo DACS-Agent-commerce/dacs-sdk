@@ -134,6 +134,9 @@ function demosNode() {
     const metadata = { logicalAddress, contentHash: (artifactKind === 'Deliverable' ? core.sha256Hex(core.canonicalize(artifact)) : core.contentHash(artifact)), envelopeHash: core.sha256Hex(core.canonicalize(artifact)), artifactKind, ...(deliveryBinding ? { deliveryBinding: clone(deliveryBinding) } : {}) };
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
+    // What demosdk 4.0.16 sign adds to a storage CREATE: the node's fee and the execution edits.
+    content.transaction_fee = { network_fee: 2, rpc_fee: 3, additional_fee: 0, rpc_address: null };
+    content.gcr_edits = ['balance', 'storageProgram', 'balance', 'nonce'].map((type) => ({ type, account: owner, isRollback: false }));
     const hash = core.sha256Hex(JSON.stringify(content)), signed = { hash, content, signature: { type: 'ed25519', data: writer.signWallet(hash) } };
     pending.set(hash, { owner, nonce, apply: () => {
       include(signed);
