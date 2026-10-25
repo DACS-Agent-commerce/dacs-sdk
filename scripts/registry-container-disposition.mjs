@@ -275,7 +275,10 @@ function declaredCandidates(owner, candidates) {
       const name = typeof spec === "string" && /^npm:/i.test(spec) && registrySourceSpec(spec)
         ? npmPackageArg.resolve(specifier, spec).subSpec?.name : specifier;
       const candidate = candidates.find(release => release.name === name);
-      if (candidate) declared.push({ specifier, candidate });
+      const optional = field === "optionalDependencies" || field === "devDependencies" ||
+        typeof owner.optionalDependencies?.[specifier] === "string" ||
+        (field === "peerDependencies" && owner.peerDependenciesMeta?.[specifier]?.optional === true);
+      if (candidate) declared.push({ specifier, candidate, optional });
     }
   }
   return declared;
@@ -348,8 +351,9 @@ function candidateDeclarations(manifest, lock, inventory, candidates) {
   }
   const declarations = new Map();
   for (const [location, owner] of owners) {
-    for (const { specifier, candidate } of declaredCandidates(owner, candidates)) {
-      declarations.set(JSON.stringify([location, specifier, candidate.name]), { location, specifier, candidate });
+    for (const { specifier, candidate, optional } of declaredCandidates(owner, candidates)) {
+      const key = JSON.stringify([location, specifier, candidate.name]);
+      declarations.set(key, { location, specifier, candidate, optional: optional && (declarations.get(key)?.optional ?? true) });
     }
   }
   return [...declarations.values()];
@@ -529,9 +533,9 @@ function firstModule(directory, specifier) {
 }
 
 // Node's own resolution of each declared specifier from its declaring
-// directory, as the absolute files it loads: require.resolve here and
-// import.meta.resolve in a child process, as its parent argument needs a flag.
-// A specifier that cannot resolve, or resolves to a built-in, gives none.
+// directory: require.resolve here and import.meta.resolve in a child process,
+// as its parent argument needs a flag. Keep every outcome: an absolute file,
+// a non-file module name or URL, or null when that resolver cannot resolve it.
 const ESM_RESOLUTIONS = "process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).map(([specifier, parent]) => " +
   "{ try { return import.meta.resolve(specifier, parent); } catch { return null; } })));";
 const RESOLUTION_TIMEOUT_MS = 30_000;
@@ -544,9 +548,10 @@ function nodeResolutions(project, declarations) {
   if (esm.status !== 0) throw new Error("Node's ESM resolver failed: " + (esm.error?.message ?? esm.stderr));
   const urls = JSON.parse(esm.stdout);
   return declarations.map(({ specifier }, index) => {
-    const files = typeof urls[index] === "string" && urls[index].startsWith("file:") ? [fileURLToPath(urls[index])] : [];
-    try { files.push(createRequire(parents[index]).resolve(specifier)); } catch { /* require() throws as well */ }
-    return files.filter(file => isAbsolute(file));
+    const esm = urls[index]?.startsWith("file:") ? fileURLToPath(urls[index]) : urls[index];
+    let commonjs = null;
+    try { commonjs = createRequire(parents[index]).resolve(specifier); } catch { /* unresolved in CommonJS */ }
+    return [esm, commonjs];
   });
 }
 
@@ -555,16 +560,22 @@ function nodeResolutions(project, declarations) {
 // all where npm left an optional copy out. Node's own resolution must agree.
 function candidateResolutionErrors(project, authenticated, declarations) {
   const resolutions = nodeResolutions(project, declarations);
-  return declarations.flatMap(({ location, specifier, candidate }, index) => {
+  return declarations.flatMap(({ location, specifier, candidate, optional }, index) => {
     const declared = `${specifier} declared by ${location || "the project"}`;
+    const resolved = resolutions[index].filter(result => result !== null);
+    const nonFiles = resolved.filter(result => !isAbsolute(result));
+    if (nonFiles.length) return [`${declared} resolves to a non-file module: ${nonFiles.join(", ")}`];
     const found = firstModule(join(project, location), specifier);
-    const elsewhere = resolutions[index].filter(file => found === null || (file !== found && !file.startsWith(found + sep)));
-    if (found === null) return elsewhere.map(file => `${declared} resolves to ${file}, which no module Node searched holds`);
+    const elsewhere = resolved.filter(file => found === null || (file !== found && !file.startsWith(found + sep)));
+    if (found === null) return elsewhere.length || optional
+      ? elsewhere.map(file => `${declared} resolves to ${file}, which no module Node searched holds`)
+      : [`${declared} has no authenticated resolution`];
     const holder = relative(project, found);
     if (holder.startsWith("..") || isAbsolute(holder)) return [`${declared} loads ${found}, outside the installation`];
     if (!authenticated.get(candidate).has(holder)) {
       return [`${declared} loads ${holder}, not the ${candidate.name} release`];
     }
+    if (resolved.length === 0) return [`${declared} has no authenticated resolution`];
     return elsewhere.map(file => `${declared} resolves to ${file}, outside ${holder}`);
   });
 }
