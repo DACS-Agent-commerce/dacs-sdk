@@ -139,6 +139,7 @@ function publish(store: Store, name: string, contents: string): boolean {
     }
   }
   syncDirectory(store.directory);
+  assertSameDirectory(store); // the path was not swapped while this was written: a record in a replacement directory is no record
   return published;
 }
 
@@ -146,9 +147,8 @@ function publish(store: Store, name: string, contents: string): boolean {
 function exists(store: Store, name: string): boolean {
   assertSameDirectory(store);
   const stat = lstatSync(join(store.directory, name), { throwIfNoEntry: false });
-  if (stat === undefined) return false;
-  if (!stat.isFile()) corrupt("STORE-ENTRY-NOT-FILE");
-  return true;
+  if (stat !== undefined && !stat.isFile()) corrupt("STORE-ENTRY-NOT-FILE");
+  return stat !== undefined;
 }
 
 /** Read a published file, bounded before anything is read; undefined when it does not parse as one JSON object. */
