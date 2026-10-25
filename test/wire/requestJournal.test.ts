@@ -294,12 +294,12 @@ describe("the durable journal ends each attempt once: by its outcome, or by the 
     // Drive the synchronous journal state machine at its publication boundary.
     const at = (journal: wire.WireRequestJournal) => {
       const request = x.request(P.payments, nonce());
-      const { buyer, seller, profile, agreementHash, nonce: requestNonce } = request;
+      const { buyer, seller, jobId, path, profile, agreementHash, nonce: requestNonce } = request;
       return wire.reserveEffect(wire.journalStore(journal), { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce: requestNonce })),
-        operationId: wire.wireOperationId(request), binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wire.wireRequestHash(request) });
+        seller, jobId, path, binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wire.wireRequestHash(request) });
     };
     let first = at(a);
-    expect(first).toMatchObject({ state: "new", attempt: 0 });
+    expect(first).toMatchObject({ state: "new", attempt: 0, operationId: wire.wireOperationId(x.request(P.payments)) });
     for (let n = 0; n < crashes; n++) {
       clock += 1000;
       first = at(a);
