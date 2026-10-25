@@ -193,6 +193,14 @@ D11 transaction adapter dependency split:
 
 The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. Its statement and callback checks are retained under the separate module path; the earlier core replacement did not supply that import. The boundary is internal and does not enable purchase actions or package exports.
 
+D11 SQLite transaction split:
+
+PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
+
+PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
+
+The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1902,6 +1910,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
