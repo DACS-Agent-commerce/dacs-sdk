@@ -10,7 +10,7 @@ const VIRTUAL_TABLE_OPCODE = /^V(Begin|Check|Column|Create|Destroy|Filter|InitIn
 const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function opcodes are unsupported by the statement guard';
 const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap();
-let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll;
+let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll, bundledFunctions;
 function check() {
   if (checking) return;
   checking = true;
@@ -22,16 +22,22 @@ function check() {
 // liveness check. Only plain data properties are accepted while a guard is on.
 function rejectCodeRunningBindings(args) {
   for (const arg of args) {
-    if (typeof arg !== 'object' || arg === null || ArrayBuffer.isView(arg)) continue;
+    // Node also reads a function argument as a named-bindings object.
+    if ((typeof arg !== 'object' && typeof arg !== 'function') || arg === null || ArrayBuffer.isView(arg)) continue;
     if (types.isProxy(arg) || Reflect.ownKeys(arg).some(key => {
       const { get, set } = Reflect.getOwnPropertyDescriptor(arg, key);
       return get || set;
     })) throw new TypeError(REFUSED_BINDINGS);
   }
 }
+// Every fresh connection already lists the bundled FTS, RTREE and GEOPOLY
+// functions as non-builtin. A function registered by the application differs
+// from them in flags, even when it overrides one of their names.
+const functionIdentity = row => [row.name.toLowerCase(), row.narg, row.enc, row.type, row.flags].join('/');
 function applicationFunctions(db) {
   return new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
-    .filter(row => !row.builtin).map(row => row.name.toLowerCase()));
+    .filter(row => !row.builtin && !bundledFunctions.has(functionIdentity(row)))
+    .map(row => row.name.toLowerCase()));
 }
 function execute(fn, db, sql) {
   check();
@@ -78,6 +84,10 @@ function install(db) {
   const iterator = Object.getPrototypeOf(statement.iterate.call(prepare.call(db, 'SELECT 1')));
   const advance = iterator.next;
   nativeExec = exec; nativePrepare = prepare; nativeGet = statement.get; nativeAll = statement.all;
+  const fresh = new DatabaseSync(':memory:');
+  try {
+    bundledFunctions = new Set(nativeAll.call(nativePrepare.call(fresh, 'PRAGMA function_list')).map(functionIdentity));
+  } finally { fresh.close(); }
   // Patch the native statement prototype too: the host may already have
   // prepared a statement before this capability was installed.
   for (const method of ['run', 'get', 'all', 'iterate']) {
@@ -132,8 +142,9 @@ function install(db) {
  * The synchronous callback's result/error is preserved; guard errors stop SQL.
  * Native methods remain unrestricted outside guarded callbacks. Predicates
  * may inspect SQLite themselves; those probes bypass recursive checking.
- * Named bindings with accessors or proxies are refused during guards, because
- * reading them runs caller code after the last liveness check.
+ * Named bindings (objects or functions) with accessors or proxies are refused
+ * during guards, because reading them runs caller code after the last liveness
+ * check.
  * SQL callback execution/registration is unsupported during guards, and so are
  * virtual tables (pragma_*() functions) on a connection with application
  * functions, because their SQL is compiled while the statement runs. Statements
