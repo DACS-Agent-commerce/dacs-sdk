@@ -700,6 +700,7 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | D11 | fix(client): D11 record the 06b split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06c split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | eb48afdc8553f1ffb9a9b394474056e6eb2e140d |
+| D11 | fix(client): D11 record the 06a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1809,6 +1810,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06c split integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06c split integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06c split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
