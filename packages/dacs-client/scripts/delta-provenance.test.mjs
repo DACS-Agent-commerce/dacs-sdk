@@ -47,6 +47,12 @@ test('callback history check needs no ancestry beyond the checked-out commit', t
   execFileSync('git', ['clone', '--quiet', '--depth', '1', `file://${root}`, dir]);
   checkCallbackHistory(dir);
 });
+test('SQLite split history distinguishes the lease from the later transaction adapter', () => {
+  const notes = readFileSync(join(root, 'packages/dacs-client/DELTA-NOTES.md'), 'utf8');
+  assert.match(notes, /PR 03 supplies only the connection-local transaction-liveness lease/);
+  assert.match(notes, /PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter/);
+  assert.match(notes, /Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03/);
+});
 test('the publication inventory cannot omit an outside-only commit or name an absent hash', t => {
   for (const edit of [
     rows => rows.filter(row => !row.files.includes('.gitleaksignore')),
