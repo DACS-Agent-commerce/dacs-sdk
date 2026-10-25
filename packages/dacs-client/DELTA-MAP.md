@@ -189,6 +189,14 @@ This delta records two historical statement-guard commits and their reciprocal h
 
 These records add no runtime behavior. SQL callbacks remain allowed inside a leased transaction; SQLite's write lock prevents a rival worker from claiming the lease while that transaction is active. The module and its 28 lease tests come from the preceding core change. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
 
+D11 SQLite transaction split:
+
+PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
+
+PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
+
+The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1311,6 +1319,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document SQLite lease split | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
