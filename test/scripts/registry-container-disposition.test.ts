@@ -66,8 +66,9 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
   const report = join(directory, "report.json");
   // The files installed at a lock location instead of its archive's; `null` installs none.
   const installed: Record<string, Record<string, string> | null> = {};
-  // `environment` adds to the command's environment.
-  const run = (afterInstall: (project: string) => void = () => undefined, environment: Record<string, string> = {}) => {
+  // `environment` adds to the command's environment; `script` and `projectPath` are the paths it is given.
+  const run = (afterInstall: (project: string) => void = () => undefined, { environment = {}, script = "scripts/registry-container-disposition.mjs",
+    projectPath = project }: { environment?: Record<string, string>; script?: string; projectPath?: string } = {}) => {
     rmSync(join(project, "node_modules"), { recursive: true, force: true });
     for (const location of Object.keys(packages)) {
       for (const [path, body] of Object.entries((location in installed ? installed[location] : contents[location]) ?? {})) {
@@ -79,9 +80,8 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages: { "": {}, ...packages } }));
     writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
-    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
-      project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION],
-    { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache, ...environment } });
+    const result = spawnSync(process.execPath, [script, "--dependency-policy", projectPath, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION],
+      { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache, ...environment } });
     return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
   return { directory, cache, packages, contents, manifest, provenance, installed, lockPackage, copyPackage, run, report };
@@ -126,6 +126,17 @@ describe("registry/container evidence", () => {
     if (!entry) throw new Error("missing fixture candidate");
     entry.integrity = "sha512-wrong";
     expect(fixture.run().status).not.toBe(0);
+    expect(existsSync(fixture.report)).toBe(false);
+  });
+
+  it("runs the policy, and invalidates a previous success report, when started through a linked script path", () => {
+    const fixture = dependencyPolicyHarness();
+    expect(fixture.run().status).toBe(0);
+    const linked = join(fixture.directory, "linked-scripts");
+    symlinkSync(join(repoRoot, "scripts"), linked);
+    fixture.packages["node_modules/@kynesyslabs/dacs"] = { ...fixture.packages["node_modules/@kynesyslabs/dacs"], integrity: "sha512-wrong" };
+    const result = fixture.run(undefined, { script: join(linked, "registry-container-disposition.mjs") });
+    expect(result.status).not.toBe(0);
     expect(existsSync(fixture.report)).toBe(false);
   });
 
@@ -740,7 +751,7 @@ describe("omitted candidate aliases Node resolves outside the installation", () 
     const fixture = omittedAlias();
     const folder = join(fixture.directory, "global");
     const copy = oldCopy(folder);
-    const result = fixture.run(() => undefined, { NODE_PATH: folder });
+    const result = fixture.run(undefined, { environment: { NODE_PATH: folder } });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(`candidate-alias declared by the project loads ${copy}, outside the installation`);
   });

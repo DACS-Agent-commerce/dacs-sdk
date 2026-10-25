@@ -568,7 +568,8 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   return { scanComplete: errors.length === 0, errors, unexpected, missing };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Node runs a module by its real path, so a linked path to it is resolved first.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [mode] = process.argv.slice(2);
   if (mode === "--dependency-policy") {
     const [projectPath, registry, report, releaseSet, version] = process.argv.slice(3);
