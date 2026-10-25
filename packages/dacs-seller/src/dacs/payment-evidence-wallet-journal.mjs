@@ -64,8 +64,11 @@
 // journalId names the journal's file: it is made when the file is, so a lost
 // or replaced file is another journal, which the agent never asks about an
 // anchor the earlier one kept. reconcilePaymentEvidence refuses
-// (wallet_journal_unknown_attempt) an attempt whose answer names a txHash this
-// journal never kept. A superseded named attempt with a live successor is
+// (wallet_journal_unknown_attempt) an attempt whose answer names a malformed
+// txHash or one this journal never kept, a sent or applied attempt that names
+// none, and any attempt other than a failure before signing that names none
+// while this journal keeps no CREATE for the address: its fate is unknown, so
+// it is never answered `unsigned`. A superseded named attempt with a live successor is
 // refused as wallet_journal_stale_attempt; reconcile the successor separately.
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync } from 'node:fs';
@@ -86,6 +89,10 @@ const SIGNATURE = /^0x[0-9a-f]{128}$/;
 const CONTENT_MEMBERS = new Set(['type', 'from', 'from_ed25519_address', 'to', 'amount', 'data', 'nonce', 'timestamp', 'transaction_fee', 'gcr_edits', 'network', 'chainIdentity']);
 const OPERATION_MEMBERS = new Set(['operation', 'storageAddress', 'programName', 'encoding', 'data', 'metadata', 'acl', 'salt', 'storageLocation']);
 const METADATA_MEMBERS = new Set(['logicalAddress', 'artifactKind', 'contentHash', 'envelopeHash', 'networkBinding']);
+// Zero as the SDK signs it: a number before the node's denomination fork, the string "0" after it.
+const ZERO_AMOUNTS = [0, '0'];
+// The only attempt outcome that proves no CREATE was signed, so nothing was sent.
+const PRE_SIGNING_FAILURE = 'failed-before-signing';
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const reason = (error) => String(error?.message ?? error).slice(0, 200);
@@ -139,7 +146,7 @@ function signedCreateProblem(answer, input) {
   // those are not compared here; the members around them are the zero-value public on-chain CREATE.
   if (!Object.keys(content).every((key) => CONTENT_MEMBERS.has(key)) || !Object.keys(op).every((key) => OPERATION_MEMBERS.has(key))
       || !Object.keys(metadata).every((key) => METADATA_MEMBERS.has(key))) return 'carries a member a storage CREATE does not';
-  if (content.amount !== 0 || !object(op.acl) || Object.keys(op.acl).join() !== 'mode' || op.acl.mode !== 'public' || op.storageLocation !== 'onchain') return 'is not the public zero-value on-chain CREATE';
+  if (!ZERO_AMOUNTS.includes(content.amount) || !object(op.acl) || Object.keys(op.acl).join() !== 'mode' || op.acl.mode !== 'public' || op.storageLocation !== 'onchain') return 'is not the public zero-value on-chain CREATE';
   if (!object(content.transaction_fee) || !Array.isArray(content.gcr_edits) || content.gcr_edits.length === 0) return 'has no node fee and execution edits, so the node cannot execute it';
   return null;
 }
@@ -283,14 +290,26 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
   }
 
+  // True when a supplied attempt cannot be tied to what this journal kept: a
+  // malformed or unkept hash, a sent or applied attempt without one, or an
+  // attempt that did not fail before signing while nothing is kept for the address.
+  function attemptIsUnbound({ attempt, named, sent }, input) {
+    if (named !== undefined) {
+      return typeof named !== 'string' || !TX_HASH.test(named)
+        || !db.prepare('SELECT 1 AS found FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named);
+    }
+    if (sent) return true;
+    return attempt != null && attempt.outcome !== PRE_SIGNING_FAILURE && rows(input.logicalAddress).length === 0;
+  }
+
   async function reconcilePaymentEvidence(input) {
     // An attempt whose answer names a transaction this journal never kept was
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
-    const named = input?.attempt?.answer?.txHash;
-    const sent = input?.attempt?.outcome === 'sent' || input?.attempt?.answer?.status === 'submitted';
+    const attempt = input?.attempt, named = attempt?.answer?.txHash;
+    const sent = attempt?.outcome === 'sent' || attempt?.answer?.status === 'submitted' || attempt?.answer?.status === 'applied';
     const { live: signed, superseded, applied, reason: unread } = await locked(async () => {
-      if ((sent && (typeof named !== 'string' || !TX_HASH.test(named))) || (typeof named === 'string' && !db.prepare('SELECT 1 AS found FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named))) {
+      if (attemptIsUnbound({ attempt, named, sent }, input)) {
         throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${String(named).slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
       }
       if (typeof named === 'string') {
