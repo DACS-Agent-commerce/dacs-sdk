@@ -412,14 +412,14 @@ function reserveEffectRequest(request: WireRequestPayload, store: object | null)
 }
 
 /**
- * The host's receipt reader can take time, and the request and delegation may expire, or the connection lose its
- * authority, while it runs. Both are checked again, at the check's start plus the time elapsed since, just before the reservation.
+ * Receipt and authority reads can take time. Check current authority first,
+ * then both expiries at the check's start plus all elapsed time, just before reservation.
  */
-async function assertStillAuthorized(request: WireRequestPayload, c: RequestCheck, delegationExpiresAt: number | null, elapsedMs: number): Promise<void> {
-  const at = c.now + elapsedMs;
+async function assertStillAuthorized(request: WireRequestPayload, c: RequestCheck, delegationExpiresAt: number | null, startedAt: number): Promise<void> {
+  await assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
+  const at = c.now + (performance.now() - startedAt);
   if (request.expiresAt <= at) fail("peer_expired", 408);
   if (delegationExpiresAt !== null && delegationExpiresAt <= at) fail("peer_delegation_expired", 408);
-  await assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
 }
 
 /** Every per-request admission an effect needs, in order, then its reservation. */
@@ -427,7 +427,7 @@ async function admitEffect(request: WireRequestPayload, c: RequestCheck, listing
   const store = effectJournal(request, c.requestJournal);
   admitNewPurchase(request, c.ready);
   await admitContinuation(request, c, listingPin);
-  if (store !== null) await assertStillAuthorized(request, c, delegationExpiresAt, performance.now() - startedAt);
+  if (store !== null) await assertStillAuthorized(request, c, delegationExpiresAt, startedAt);
   return reserveEffectRequest(request, store);
 }
 
