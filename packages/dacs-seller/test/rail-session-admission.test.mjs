@@ -4,6 +4,7 @@ import { canonicalize, contentHash, sha256Hex, identityBundleHash, compositeVeri
 import { railAuthorityConfig, validateSellerListing, intakeRailDefinition } from '../src/dacs/rail-authority.mjs';
 import { proposalTimeProblem } from '../src/dacs/seller-proposal-time.mjs';
 import { SELLER_PROFILE, sessionAdmissionConfig, sessionAdmissionProblem, sellerSessionPresentationProblem, vetAnchorReceiptProblem, vetRecordProblem, listingRevocationProblem } from '../src/dacs/session-admission.mjs';
+import { verifyComponent } from '../src/dacs/listing.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { fixtureListing, fixtureIdentityBundle } from './fixtures/listings.mjs';
 import { buyer, seller, fixtureRecord, NOW, JOB } from './helpers/protocol-fixture.mjs';
@@ -69,6 +70,38 @@ test('seller presentations require the same identity and a real signature on fre
   assert.equal(sellerSessionPresentationProblem(fresh, value.seller.identity), null);
   fresh.presentation.signatures[0].signature = Buffer.alloc(64).toString('base64url');
   assert.notEqual(sellerSessionPresentationProblem(fresh, value.seller.identity), null);
+});
+
+function multiClaimPresentation(presentedAt) {
+  const bundle = fixtureIdentityBundle(seller, presentedAt);
+  bundle.claims.push({ ref: buyer.claim });
+  const bytes = Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8');
+  bundle.presentation.signatures = [buyer, seller].map(wallet => ({ ref: wallet.claim, signature: wallet.signBytes(bytes).toString('base64url') }));
+  return bundle;
+}
+
+test('fresh seller presentations accept valid additional claim signatures', async () => {
+  const value = listing();
+  value.seller.identity = multiClaimPresentation(NOW - 1000);
+  const { signature, ...draft } = value;
+  const signed = await signComponentArtifact(draft, ARTIFACT_SEPARATORS.Listing, { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
+  const result = await validateSellerListing(signed, { now: () => NOW, revocationSurfaces: active, readMarker: async () => null, simulatedFixture: true });
+  assert.equal(result.disposition, 'verified');
+  const fresh = multiClaimPresentation(NOW);
+  assert.notEqual(identityBundleHash(fresh), identityBundleHash(signed.seller.identity));
+  for (const proof of fresh.presentation.signatures) assert.equal(verifyComponent({
+    signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(fresh)}`, 'utf8'),
+    signature: { algorithm: 'ed25519', signer: proof.ref, value: proof.signature },
+  }), true);
+  assert.equal(sellerSessionPresentationProblem(fresh, signed.seller.identity), null);
+});
+
+test('additional claim signatures cannot replace the fresh seller proof', () => {
+  const identity = multiClaimPresentation(NOW - 1000);
+  const missing = multiClaimPresentation(NOW); missing.presentation.signatures.pop();
+  const invalid = multiClaimPresentation(NOW); invalid.presentation.signatures[1].signature = Buffer.alloc(64).toString('base64url');
+  const stale = multiClaimPresentation(NOW); stale.presentation.signatures[1] = identity.presentation.signatures[1];
+  for (const fresh of [missing, invalid, stale]) assert.equal(sellerSessionPresentationProblem(fresh, identity), 'the seller bundle presentation does not verify');
 });
 
 async function vetFixture() {
