@@ -39,11 +39,12 @@
 //    address the writer, the program name and the nonce derive, from the
 //    writer's address (`from` and `from_ed25519_address`), with the writer's
 //    Ed25519 signature over the hash as 0x and lower-case hex. Its amount is 0,
-//    its ACL public and its storage on-chain; the node fee and execution edits
-//    the SDK adds are required in the SDK's shape (`transaction_fee`:
-//    three fee amounts and an rpc address; `gcr_edits`: the balance, nonce and one
-//    storage program edit of the writer, none a rollback) and otherwise not
-//    compared, as the node regenerates the edits. Anything else is
+//    its ACL public and its storage on-chain; its node fee and execution edits
+//    are exactly those demosdk 4.0.16 sign writes (`transaction_fee`: network
+//    and rpc fee, no additional fee or rpc address; `gcr_edits`: the storage fee
+//    burn, the storage program, the gas burn and the nonce increment by 1), as
+//    DEM numbers before the node's denomination fork and OS strings after it
+//    (amount "0"); only the node's fee amounts are not compared. Anything else is
 //    refused (wallet_sign_invalid), and nothing is kept or sent;
 //  - broadcast({ signedTransaction, txHash }, { signal }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
@@ -99,10 +100,12 @@ const OPERATION_MEMBERS = new Set(['operation', 'storageAddress', 'programName',
 const METADATA_MEMBERS = new Set(['logicalAddress', 'artifactKind', 'contentHash', 'envelopeHash', 'networkBinding']);
 // Zero as the SDK signs it: a number before the node's denomination fork, the string "0" after it.
 const ZERO_AMOUNTS = [0, '0'];
-// A fee amount as the SDK signs it: a non-negative number before the denomination fork, a decimal string after it.
-const FEE_AMOUNT = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0) || (typeof value === 'string' && /^[0-9]+$/.test(value));
-// The execution edits demosdk 4.0.16 generates for a storage CREATE: the gas burn, the storage program, the nonce.
-const EDIT_TYPES = new Set(['balance', 'storageProgram', 'nonce']);
+// demosdk 4.0.16 signs amounts as DEM numbers before the fork and as canonical OS strings (10^9 OS per DEM) after it.
+const OS_PER_DEM = 1_000_000_000n;
+const OS_AMOUNT = /^(0|[1-9][0-9]*)$/;
+// Its storage CREATE burns 1 DEM of gas and 1 DEM of storage fee per started 10240 bytes of the program's JSON.
+const GAS_DEM = 1;
+const STORAGE_FEE_CHUNK_BYTES = 10_240;
 // The only attempt outcome that proves no CREATE was signed, so nothing was sent.
 const PRE_SIGNING_FAILURE = 'failed-before-signing';
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
@@ -129,14 +132,21 @@ export function paymentEvidenceWalletJournalOf(anchorEvidence) {
 // (demos-sr2-adapter.mjs authenticate) reads back as this evidence: kept
 // otherwise, they could never land, and while their nonce is not overtaken
 // they would never be superseded.
-// Why the node fee and execution edits are not those the SDK signs for this CREATE, or null.
-function feeAndEditsProblem(content, from, storageAddress) {
-  const fee = content.transaction_fee, edits = content.gcr_edits;
-  if (!object(fee) || !['network_fee', 'rpc_fee', 'additional_fee'].every((key) => FEE_AMOUNT(fee[key])) || (fee.rpc_address !== null && typeof fee.rpc_address !== 'string')) return 'has no valid node fee';
-  if (!Array.isArray(edits) || edits.length === 0 || !edits.every((edit) => object(edit) && EDIT_TYPES.has(edit.type) && edit.isRollback === false
-      && (edit.type === 'storageProgram' ? edit.target === storageAddress : edit.account === from))
-      || edits.filter((edit) => edit.type === 'storageProgram').length !== 1) return 'has no valid execution edits, so the node cannot execute it';
-  return null;
+// Why the node fee and execution edits are not exactly those demosdk 4.0.16 sign writes for this CREATE, or null: the
+// node's (or the SDK's own) network and rpc fee with no additional fee or rpc address, and the edits GCRGeneration makes,
+// which the node regenerates and compares: storage fee burn, storage program, gas burn, nonce increment by 1.
+function feeAndEditsProblem(content, from, op) {
+  const zero = content.amount, postFork = zero === '0', fee = content.transaction_fee;
+  const amount = (value) => (postFork ? typeof value === 'string' && OS_AMOUNT.test(value) : typeof value === 'number' && Number.isFinite(value) && value >= 0);
+  if (!object(fee) || Object.keys(fee).join() !== 'network_fee,rpc_fee,additional_fee,rpc_address' || !amount(fee.network_fee) || !amount(fee.rpc_fee)
+      || fee.additional_fee !== zero || fee.rpc_address !== null) return 'does not carry the node fee as the SDK signs it';
+  const dem = (value) => (postFork ? String(BigInt(value) * OS_PER_DEM) : value);
+  const storageFee = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data), 'utf8') / STORAGE_FEE_CHUNK_BYTES));
+  const edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: from, txhash: '', amount: dem(storageFee) },
+    { type: 'storageProgram', target: op.storageAddress, isRollback: false, txhash: '', context: { operation: 'CREATE_STORAGE_PROGRAM', sender: from, data: { variables: op, metadata: op.metadata } } },
+    { type: 'balance', account: from, operation: 'remove', amount: dem(GAS_DEM), txhash: '', isRollback: false },
+    { type: 'nonce', operation: 'add', account: from, amount: 1, txhash: '', isRollback: false }];
+  return JSON.stringify(content.gcr_edits) === JSON.stringify(edits) ? null : 'does not carry the execution edits the SDK signs, so the node cannot execute it';
 }
 function signedCreateProblem(answer, input) {
   let signed;
@@ -163,12 +173,11 @@ function signedCreateProblem(answer, input) {
   // The pre-signing builder bounds the artifact and checks the signed members.
   buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress: input.logicalAddress,
     signedListing: input.artifact, nonce: answer.nonce, timestamp: content.timestamp });
-  // The signer adds the node's fee and the execution edits the node regenerates and compares (demosdk sign), so
-  // only their shape is checked; the members around them are the zero-value public on-chain CREATE.
+  // Around the node fee and the execution edits the signer adds (demosdk sign): the zero-value public on-chain CREATE.
   if (!Object.keys(content).every((key) => CONTENT_MEMBERS.has(key)) || !Object.keys(op).every((key) => OPERATION_MEMBERS.has(key))
       || !Object.keys(metadata).every((key) => METADATA_MEMBERS.has(key))) return 'carries a member a storage CREATE does not';
   if (!ZERO_AMOUNTS.includes(content.amount) || !object(op.acl) || Object.keys(op.acl).join() !== 'mode' || op.acl.mode !== 'public' || op.storageLocation !== 'onchain') return 'is not the public zero-value on-chain CREATE';
-  return feeAndEditsProblem(content, from, storageAddress);
+  return feeAndEditsProblem(content, from, op);
 }
 
 // Refuses a journal path whose directory another user could write to: they could unlink or replace the file and with it the kept signatures.
