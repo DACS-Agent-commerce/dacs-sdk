@@ -88,6 +88,27 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
 }
 const TREE = "installed tree is not the locked archives: ";
 
+describe("complete archive package scopes", () => {
+  it.each(["identity", "alias-name", "alias-declaration"])("authenticates a nested package scope's %s", form => {
+    const fixture = dependencyPolicyHarness();
+    fixture.manifest.optionalDependencies = { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` };
+    fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0"),
+      "arbitrary/deep/package.json": packageJson(form === "identity" ? "@kynesyslabs/dacs" : form === "alias-name" ? "alias" : "inner", "1.0.0",
+        { exports: "./copy.cjs", ...(form === "alias-declaration" ? { dependencies: { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } } : {}) }),
+      "arbitrary/deep/copy.cjs": "module.exports = 'unreleased-copy';" });
+    const result = fixture.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/arbitrary/deep");
+  });
+
+  it("accepts an ordinary nested package scope without candidate identities or declarations", () => {
+    const fixture = dependencyPolicyHarness();
+    fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0"),
+      "dist/package.json": packageJson("inner", "1.0.0", { type: "module", exports: "./index.js" }), "dist/index.js": "export default 1;" });
+    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: true } });
+  });
+});
+
 describe("registry/container evidence", () => {
   it("accepts a consumer installed exactly from its locked archives", () => {
     expect(dependencyPolicyHarness().run()).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
@@ -1064,6 +1085,36 @@ describe("dependency policy over npm ci installations", () => {
   it("accepts the release candidates npm installed from the isolated registry", async () => {
     const { policy } = await registryInstallation(temporaryDirectory(), {}, {});
     expect(policy.status, policy.stderr).toBe(0);
+  }, 60_000);
+
+  it.each(["identity", "alias"])("refuses a SHA-1 registry archive hiding a candidate %s", async form => {
+    const directory = temporaryDirectory();
+    const plugin = packTarball({ "package.json": packageJson(form === "identity" ? CANDIDATES[0] : "plugin", CANDIDATE_VERSION,
+      form === "alias" ? { dependencies: { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } } : {}),
+      "index.js": form === "alias" ? "module.exports = require('alias');" : "module.exports = 'unreleased-copy';" });
+    const other = packTarball({ "package.json": packageJson("other", CANDIDATE_VERSION), "index.js": "module.exports = 'unreleased-copy';" });
+    const { project, policy } = await registryInstallation(directory, { plugin, other }, {
+      "node_modules/plugin": ["plugin", { integrity: "sha1-" + createHash("sha1").update(plugin).digest("base64") }],
+      ...(form === "alias" ? { "node_modules/alias": ["other", {}] as [string, Record<string, unknown>] } : {}),
+    }, { dependencies: { plugin: CANDIDATE_VERSION, ...(form === "alias" ? { alias: CANDIDATE_VERSION } : {}) } });
+    expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
+      .toBe("unreleased-copy\n");
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("cannot authenticate an unverified registry archive: node_modules/plugin");
+    expect(existsSync(join(directory, "report.json"))).toBe(false);
+  }, 60_000);
+
+  it.each(["dist", "lib/deep/inner"])("refuses a candidate self-reference in the nested %s package scope", async scope => {
+    const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION, { main: `${scope}/index.cjs` }),
+      [`${scope}/package.json`]: packageJson("@kynesyslabs/dacs", CANDIDATE_VERSION, { exports: "./copy.cjs" }),
+      [`${scope}/index.cjs`]: "module.exports = require('@kynesyslabs/dacs');",
+      [`${scope}/copy.cjs`]: "module.exports = 'unreleased-copy';" });
+    const { project, policy } = await registryInstallation(temporaryDirectory(), { plugin },
+      { "node_modules/plugin": ["plugin", {}] }, { dependencies: { plugin: CANDIDATE_VERSION } });
+    expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
+      .toBe("unreleased-copy\n");
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain(`cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/${scope}`);
   }, 60_000);
 
   // The lock records only fixture-plugin; npm still installs the old copy its
