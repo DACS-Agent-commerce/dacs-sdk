@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 // remains blocked.
 import { createHash } from "node:crypto";
 import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence } from "./acceptance-evidence-io.mjs";
-import { appendFileSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
@@ -266,6 +266,39 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
   return [...locations];
 }
 
+const listDirectory = current => {
+  try { return readdirSync(current, { withFileTypes: true }); }
+  catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
+    throw error;
+  }
+};
+
+// Node follows a link to a directory when it loads a file, so a link inside an
+// installed package can lead to a node_modules the inventory never lists. This
+// returns every link below `directory` that resolves to a directory, as paths
+// relative to it, without following any; a link to a file or to nothing is not
+// one. A link that cannot be resolved for another reason throws.
+export function linkedDirectories(directory) {
+  const linked = [];
+  const resolvesToDirectory = path => {
+    try { return statSync(path).isDirectory(); }
+    catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+      throw error;
+    }
+  };
+  const visit = (current, prefix) => {
+    for (const entry of listDirectory(current)) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) visit(join(current, entry.name), path);
+      else if (entry.isSymbolicLink() && resolvesToDirectory(join(current, entry.name))) linked.push(path);
+    }
+  };
+  visit(directory, "");
+  return linked;
+}
+
 // Node resolves a package from any node_modules directory above the importing
 // file, so a copy below a package's own files (`dist/node_modules`) is used by
 // that package. The inventory lists only `<package>/node_modules`, so this
@@ -277,13 +310,6 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
 // missing directory has none.
 export function nestedModuleRoots(directory, names) {
   const roots = [];
-  const list = current => {
-    try { return readdirSync(current, { withFileTypes: true }); }
-    catch (error) {
-      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
-      throw error;
-    }
-  };
   const declaresNamedModule = module => {
     try { return names.has(JSON.parse(readFileSync(join(module, "package.json"), "utf8"))?.name); }
     catch (error) {
@@ -291,14 +317,14 @@ export function nestedModuleRoots(directory, names) {
       throw error;
     }
   };
-  const holdsNamedModule = root => list(root).some(entry => {
+  const holdsNamedModule = root => listDirectory(root).some(entry => {
     const found = entry.name.startsWith("@") && (entry.isDirectory() || entry.isSymbolicLink())
-      ? list(join(root, entry.name)).map(inner => `${entry.name}/${inner.name}`) : [entry.name];
+      ? listDirectory(join(root, entry.name)).map(inner => `${entry.name}/${inner.name}`) : [entry.name];
     return found.some(module => names.has(module) || declaresNamedModule(join(root, module)) ||
       moduleFileExtensions.some(extension => module.endsWith(extension) && names.has(module.slice(0, -extension.length))));
   });
   const visit = (current, prefix) => {
-    for (const entry of list(current)) {
+    for (const entry of listDirectory(current)) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.name === "node_modules") {
         if (prefix && (!names || holdsNamedModule(join(current, entry.name)))) roots.push(path);
@@ -315,7 +341,7 @@ export function nestedModuleRoots(directory, names) {
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
 // reads it, in the installed package.json.
-export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots }) {
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots, installedLinkedDirectories }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
   const inventory = installedInventory ?? [];
@@ -390,6 +416,13 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
       errors.push("cannot inspect a candidate inside node_modules in an installed package: " + location + "/" + root);
     }
   }
+  // Node follows a link to a directory inside any installed package, including
+  // a candidate, so the node_modules behind it would never be inspected.
+  const linked = new Set();
+  for (const { location } of inventory.filter(item => !isBinEntry(item) && item.link !== true)) {
+    for (const path of installedLinkedDirectories?.(location) ?? []) linked.add(location + "/" + path);
+  }
+  errors.push(...[...linked].map(path => "cannot inspect a linked directory inside an installed package: " + path));
   return errors;
 }
 
@@ -974,6 +1007,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     });
     const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
       installedModuleRoots: (location, names) => nestedModuleRoots(join(project, location), names),
+      installedLinkedDirectories: location => linkedDirectories(join(project, location)),
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
     const violations = registryDependencyViolations({ manifest, lock, registry });
