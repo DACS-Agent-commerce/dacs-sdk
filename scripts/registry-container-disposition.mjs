@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join, posix, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { cachedArchive, installationClosure, installationDifferences, packedFiles } from "./installation-closure.mjs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
@@ -215,7 +215,7 @@ const DUAL_RAIL_DEPENDENCIES = [...CANDIDATE_NAMES, "@kynesyslabs/demosdk", "@x4
 // npm runs these when it installs a package. A candidate declaring one would
 // run its own code before this check, so it is refused.
 const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall"];
-// Node resolves a bare specifier to a directory or to one of these files.
+// require() loads a module root that is a file with one of these extensions.
 const MODULE_FILE_EXTENSIONS = [".js", ".json", ".node"];
 const MAX_LISTED_DIFFERENCES = 20;
 
@@ -247,37 +247,29 @@ function declaredInstallScripts(files) {
     ...(files.has("binding.gyp") ? ["binding.gyp"] : [])];
 }
 
-// Each candidate `owner` (a manifest or lock entry) declares, directly or as
-// an `npm:` alias, by the specifier its code imports it with.
-function declaredCandidates(owner, candidates) {
-  const declared = [];
+// The candidates `owner` (a manifest or lock entry) declares under another
+// name, as `{ specifier, name }` for each `npm:` alias of one.
+function candidateAliases(owner, candidates) {
+  const aliases = [];
   for (const field of specFields) {
     for (const [specifier, spec] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
       const name = typeof spec === "string" && /^npm:/i.test(spec) && registrySourceSpec(spec)
         ? npmPackageArg.resolve(specifier, spec).subSpec?.name : specifier;
-      const candidate = candidates.find(release => release.name === name);
-      const optional = field === "optionalDependencies" || field === "devDependencies" ||
-        typeof owner.optionalDependencies?.[specifier] === "string" ||
-        (field === "peerDependencies" && owner.peerDependenciesMeta?.[specifier]?.optional === true);
-      if (candidate) declared.push({ specifier, candidate, optional });
+      if (name !== specifier && candidates.some(candidate => candidate.name === name)) aliases.push({ specifier, name });
     }
   }
-  return declared;
+  return aliases;
 }
 
-// Called only after the entire installed namespace matches its archive closure.
-// Read every final module root and package scope, including npm-generated file
-// links and replacements. Only links to regular files are admitted, so links
-// cannot create additional module roots. A scope can occur in any directory
-// that Node executes code from; no module-root filter limits this traversal.
+// Called only after the entire installed namespace matches its archive closure,
+// so this reads every module root and package.json scope there is. The closure
+// admits npm-generated command links to archive files only: a link named
+// package.json is a scope, and no link is a module root.
 function installedCandidateModules(project, closure) {
   const modules = new Map();
   const visit = (directory, owner) => {
     for (const item of readdirSync(join(project, directory), { withFileTypes: true })) {
       const path = `${directory}/${item.name}`;
-      if (item.isSymbolicLink() && !statSync(join(project, path)).isFile()) {
-        throw new Error("cannot authenticate a generated command link to a non-file: " + path);
-      }
       const record = closure.entries.get(path);
       const archiveOwner = record ? record.bundledBy ?? path : owner;
       const parent = posix.basename(directory);
@@ -323,21 +315,22 @@ function candidateInventory(closure, installed, registry) {
   return { modules, errors };
 }
 
-// Every declaration from the project, installed lock entries and the complete
-// final installed scope inventory, once, with its declaring directory.
-function candidateDeclarations(manifest, lock, inventory, candidates) {
+// A candidate is declared under its own name only, by the project, every
+// installed lock entry and every scope in the inventory. Node then reaches it
+// only through a module root or scope of that name, all of which the inventory
+// holds, so no other name needs following through Node's resolver.
+function candidateAliasErrors(manifest, lock, inventory, candidates) {
   const owners = [["", manifest], ["", lock?.packages?.[""]]];
   for (const [location, module] of inventory.modules) {
     owners.push([location, module.entry], [location, module.manifest]);
   }
-  const declarations = new Map();
+  const errors = new Set();
   for (const [location, owner] of owners) {
-    for (const { specifier, candidate, optional } of declaredCandidates(owner, candidates)) {
-      const key = JSON.stringify([location, specifier, candidate.name]);
-      declarations.set(key, { location, specifier, candidate, optional: optional && (declarations.get(key)?.optional ?? true) });
+    for (const { specifier, name } of candidateAliases(owner, candidates)) {
+      errors.add(`${location || "the project"} declares ${name} under another name: ${specifier}`);
     }
   }
-  return [...declarations.values()];
+  return [...errors];
 }
 
 // Certify a location from its independently verified closure archive, never
@@ -385,12 +378,12 @@ function interruptedFailureClass(summary) {
       summary.failureEvidence.some(retryableFailureEvidence))) ? summary.failureClass : "functional";
 }
 const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
-// Every sensitive identity in the closed inventory must be an independently
-// locked release archive. Nested scopes, carried modules and file shadows have
-// no such identity. A nested scope declaring candidates is refused as well.
-function authenticateCandidateInventory(closure, inventory, candidates, declarations, registry) {
+// Every module root and package scope in the closed inventory that names a
+// candidate, by its location, lock entry or package.json, must be an
+// independently locked release archive at the candidate's own name. Nested
+// scopes, carried modules and file shadows have no such archive.
+function authenticateCandidateInventory(closure, inventory, candidates, registry) {
   const errors = [...inventory.errors];
-  const authenticated = new Map(candidates.map(candidate => [candidate, new Set()]));
   for (const candidate of candidates) {
     if (!closure.entries.get("node_modules/" + candidate.name)?.present) {
       errors.push("candidate package is not installed at the top level: " + candidate.name);
@@ -400,107 +393,35 @@ function authenticateCandidateInventory(closure, inventory, candidates, declarat
     const names = [module.name, module.entry?.name, module.manifest?.name,
       ...MODULE_FILE_EXTENSIONS.filter(extension => module.name?.endsWith(extension))
         .map(extension => module.name.slice(0, -extension.length))];
-    const identities = candidates.filter(candidate => names.includes(candidate.name) ||
-      declarations.some(declared => declared.candidate === candidate && names.includes(declared.specifier)));
-    if (!module.entry && (identities.length || module.unreadable || declaredCandidates(module.manifest, candidates).length)) {
+    const identities = candidates.filter(candidate => names.includes(candidate.name));
+    if (!module.entry && (identities.length || module.unreadable)) {
       errors.push(module.generated ? `cannot authenticate an npm-generated package scope: ${location}`
         : `cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
     } else {
       if (module.unreadable) errors.push("cannot read an archive package scope: " + location);
       for (const candidate of identities) {
-        const copyErrors = releaseCopyErrors(location, closure.entries.get(location), candidate, registry);
-        errors.push(...copyErrors);
-        if (copyErrors.length === 0) authenticated.get(candidate).add(location);
+        errors.push(...module.name === candidate.name
+          ? releaseCopyErrors(location, closure.entries.get(location), candidate, registry)
+          : [`candidate package ${candidate.name} is installed under another name: ${location}`]);
       }
     }
   }
-  return { errors, authenticated };
+  return errors;
 }
 
-// The first module Node finds for `specifier` from `directory`: its ESM
-// resolver walks up every parent to the file system root, a node_modules
-// directory included, and stops at the first directory of that name; require()
-// then searches its global folders (NODE_PATH, the home and install ones) and
-// also loads a file of that name with an extension.
-function firstModule(directory, specifier) {
-  const lookups = [];
-  for (let current = directory; ; current = dirname(current)) {
-    lookups.push(join(current, "node_modules"));
-    if (dirname(current) === current) break;
-  }
-  lookups.push(...createRequire(join(directory, "package.json")).resolve.paths(specifier) ?? []);
-  for (const lookup of new Set(lookups)) {
-    const found = [specifier, ...MODULE_FILE_EXTENSIONS.map(extension => specifier + extension)]
-      .map(name => join(lookup, name)).find(path => existsSync(path));
-    if (found) return found;
-  }
-  return null;
-}
-
-// Node's own resolution of each declared specifier from its declaring
-// directory: require.resolve here and import.meta.resolve in a child process,
-// as its parent argument needs a flag. Keep every outcome: an absolute file,
-// a non-file module name or URL, or null when that resolver cannot resolve it.
-const ESM_RESOLUTIONS = "process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).map(([specifier, parent]) => " +
-  "{ try { return import.meta.resolve(specifier, parent); } catch { return null; } })));";
-const RESOLUTION_TIMEOUT_MS = 30_000;
-const MAX_RESOLUTION_OUTPUT_BYTES = 1024 * 1024;
-function nodeResolutions(project, declarations) {
-  const parents = declarations.map(({ location }) => join(project, location, "package.json"));
-  const esm = spawnSync(process.execPath, ["--experimental-import-meta-resolve", "--input-type=module", "--eval", ESM_RESOLUTIONS,
-    JSON.stringify(declarations.map(({ specifier }, index) => [specifier, pathToFileURL(parents[index]).href]))],
-  { encoding: "utf8", timeout: RESOLUTION_TIMEOUT_MS, maxBuffer: MAX_RESOLUTION_OUTPUT_BYTES });
-  if (esm.status !== 0) throw new Error("Node's ESM resolver failed: " + (esm.error?.message ?? esm.stderr));
-  const urls = JSON.parse(esm.stdout);
-  return declarations.map(({ specifier }, index) => {
-    const esm = urls[index]?.startsWith("file:") ? fileURLToPath(urls[index]) : urls[index];
-    let commonjs = null;
-    try { commonjs = createRequire(parents[index]).resolve(specifier); } catch { /* unresolved in CommonJS */ }
-    return [esm, commonjs];
-  });
-}
-
-// Each declared candidate specifier must lead Node, from the directory of the
-// package declaring it, to an installed copy of the release, or to nothing at
-// all where npm left an optional copy out. Node's own resolution must agree.
-function candidateResolutionErrors(project, authenticated, declarations) {
-  const resolutions = nodeResolutions(project, declarations);
-  return declarations.flatMap(({ location, specifier, candidate, optional }, index) => {
-    const declared = `${specifier} declared by ${location || "the project"}`;
-    const resolved = resolutions[index].filter(result => result !== null);
-    const nonFiles = resolved.filter(result => !isAbsolute(result));
-    if (nonFiles.length) return [`${declared} resolves to a non-file module: ${nonFiles.join(", ")}`];
-    const found = firstModule(join(project, location), specifier);
-    const elsewhere = resolved.filter(file => found === null || (file !== found && !file.startsWith(found + sep)));
-    if (found === null) return elsewhere.length || optional
-      ? elsewhere.map(file => `${declared} resolves to ${file}, which no module Node searched holds`)
-      : [`${declared} has no authenticated resolution`];
-    const holder = relative(project, found);
-    if (holder.startsWith("..") || isAbsolute(holder)) return [`${declared} loads ${found}, outside the installation`];
-    if (!authenticated.get(candidate).has(holder)) {
-      return [`${declared} loads ${holder}, not the ${candidate.name} release`];
-    }
-    if (resolved.length === 0) return [`${declared} has no authenticated resolution`];
-    return elsewhere.map(file => `${declared} resolves to ${file}, outside ${holder}`);
-  });
-}
-
-// What keeps the installation at `project` (a real path) from holding only
-// release copies of `candidates` wherever Node loads them, given its closure:
-// candidates that run install code, installed candidate entries that are not
-// the release, carried modules standing in for one, and declared candidates
-// Node loads from anything else.
-function candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, installed }) {
+// What keeps the installation from holding only release copies of
+// `candidates`, given its closure: candidates that run install code, candidate
+// identities anywhere in it that are not the release at its own name, and
+// candidates declared under another name.
+function candidateIntegrityErrors({ manifest, lock, registry, candidates, closure, installed }) {
   const inventory = candidateInventory(closure, installed, registry);
-  const declarations = candidateDeclarations(manifest, lock, inventory, candidates);
-  const { errors, authenticated } = authenticateCandidateInventory(closure, inventory, candidates, declarations, registry);
   return [
     ...candidates.flatMap(({ name, files }) => {
       const scripts = declaredInstallScripts(files);
       return scripts.length ? [`candidate package runs code when installed (${scripts.join(", ")}): ${name}`] : [];
     }),
-    ...errors,
-    ...candidateResolutionErrors(project, authenticated, declarations),
+    ...authenticateCandidateInventory(closure, inventory, candidates, registry),
+    ...candidateAliasErrors(manifest, lock, inventory, candidates),
   ];
 }
 
@@ -528,7 +449,7 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
     ? installedCandidateModules(project, closure) : new Map();
   const errors = [...closure.errors, ...differences.slice(0, MAX_LISTED_DIFFERENCES),
     ...(differences.length > MAX_LISTED_DIFFERENCES ? [`and ${differences.length - MAX_LISTED_DIFFERENCES} more differences`] : []),
-    ...candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, installed })];
+    ...candidateIntegrityErrors({ manifest, lock, registry, candidates, closure, installed })];
   if (errors.length) throw new Error(errors.join("\n"));
   const violations = registryDependencyViolations({ manifest, lock, registry });
   writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
