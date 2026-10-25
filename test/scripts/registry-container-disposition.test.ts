@@ -759,6 +759,22 @@ describe("omitted candidate aliases Node resolves outside the installation", () 
   it("accepts an omitted candidate alias Node finds nowhere", () => {
     expect(omittedAlias().run()).toMatchObject({ status: 0, report: { passed: true } });
   });
+
+  // A package named like the alias it declares resolves that specifier to its
+  // own exports before any node_modules, whether or not npm installed the alias.
+  it.each([true, false])("rejects a declared candidate alias Node resolves to the declaring package itself, alias installed=%s", installed => {
+    const fixture = dependencyPolicyHarness();
+    const declarer = "node_modules/self-named";
+    fixture.lockPackage(declarer, { "package.json": packageJson("candidate-alias", "1.0.0", { exports: { ".": "./index.js" },
+      dependencies: { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } }), "index.js": "module.exports = 'itself';\n" });
+    fixture.copyPackage("node_modules/@kynesyslabs/dacs", `${declarer}/node_modules/candidate-alias`, { name: "@kynesyslabs/dacs", optional: true });
+    if (!installed) fixture.installed[`${declarer}/node_modules/candidate-alias`] = null;
+    let itself = "";
+    const result = fixture.run(project => { itself = join(realpathSync(project), declarer, "index.js"); });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`candidate-alias declared by ${declarer} resolves to ${itself}, ` +
+      (installed ? `outside ${declarer}/node_modules/candidate-alias` : "which no module Node searched holds"));
+  });
 });
 
 describe("candidate copies hidden in the installed tree", () => {
