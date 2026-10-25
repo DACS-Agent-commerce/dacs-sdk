@@ -188,8 +188,8 @@ function moduleRoots(location, files) {
  * entry without a sha512 integrity, such as a Git dependency, is `unverified`), `carried` (each
  * module an archive holds below a node_modules of its own that no lock entry installs, with its name
  * and package.json) and `errors` (entries whose installed files cannot be derived, including
- * packages with npm-shrinkwrap.json and command targets with CRLF shebangs that npm rewrites
- * when creating executable links). */
+ * packages with npm-shrinkwrap.json, missing command files and command targets with CRLF
+ * shebangs that npm rewrites when creating executable links). */
 export function installationClosure(project, lock, readArchive) {
   const entries = new Map();
   const roots = new Map();
@@ -228,7 +228,13 @@ export function installationClosure(project, lock, readArchive) {
       errors.push(`lock entry ${location} is also in the archive of ${roots.get(location).owner}`);
     }
     for (const target of record.present && isPlainObject(record.entry.bin) ? Object.values(record.entry.bin) : []) {
-      if (typeof target === "string" && crlfCommands.has(posix.join(location, target))) {
+      const owner = record.bundledBy ?? location;
+      const files = entries.get(owner)?.files;
+      const resolved = typeof target === "string" ? posix.join(location, target) : "";
+      if (files && (!resolved.startsWith(`${location}/`) || !files.has(resolved.slice(owner.length + 1)))) {
+        errors.push(`cannot derive the installed files of ${location}: bin target is not an archive file: ${String(target)}`);
+      }
+      if (typeof target === "string" && crlfCommands.has(resolved)) {
         errors.push(`cannot derive the installed files of ${location}: npm rewrites the CRLF shebang of bin target: ${posix.normalize(target)}`);
       }
     }
@@ -261,9 +267,9 @@ function binLinks(entries) {
 function expectedPaths(closure) {
   const files = new Map([[HIDDEN_LOCKFILE, null]]);
   const unverified = new Set();
-  const omittedScopes = [];
+  const omittedAncestors = [];
   for (const [location, record] of closure.entries) {
-    if (!record.present && posix.basename(posix.dirname(location)).startsWith("@")) omittedScopes.push(`${location}/`);
+    if (!record.present) omittedAncestors.push(location);
     if (record.present && record.unverified) unverified.add(location);
     for (const [path, digest] of record.present ? record.files ?? [] : []) files.set(`${location}/${path}`, digest);
   }
@@ -276,7 +282,7 @@ function expectedPaths(closure) {
     }
   }
   const directories = new Set();
-  for (const path of [...files.keys(), ...links.keys(), ...unverified, ...omittedScopes]) {
+  for (const path of [...files.keys(), ...links.keys(), ...unverified, ...omittedAncestors]) {
     for (let parent = posix.dirname(path); parent !== "."; parent = posix.dirname(parent)) directories.add(parent);
   }
   return { files, links, unverified, directories };
