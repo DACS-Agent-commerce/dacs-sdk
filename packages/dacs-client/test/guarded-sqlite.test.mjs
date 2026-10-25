@@ -189,3 +189,29 @@ for (const sql of ["SELECT * FROM pragma_integrity_check('checked')", "SELECT * 
     assert.equal(db.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n, 0);
   });
 }
+for (const kind of ['accessor', 'proxy']) {
+  test(`named bindings that run code are refused before the writable fence opens: ${kind}`, t => {
+    const db = world(t);
+    db.exec('BEGIN; CREATE TEMP TABLE test_live(id)');
+    const live = db.prepare("SELECT 1 FROM sqlite_temp_master WHERE name='test_live'");
+    const insert = db.prepare('INSERT INTO records VALUES ($id)');
+    let reads = 0;
+    const read = () => { reads++; nativeExec.call(db, 'ROLLBACK'); return 'TEST-escaped'; };
+    const bindings = kind === 'accessor'
+      ? { get $id() { return read(); } }
+      : new Proxy({ $id: 'TEST-value' }, { get: read });
+    withSqliteStatementGuard(db, () => { if (!live.get()) throw Error('TEST-ended'); }, () => {
+      assert.throws(() => insert.run(bindings), /named bindings/);
+    });
+    assert.equal(reads, 0);
+    assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
+  });
+}
+test('plain named and positional bindings still run under a guard', t => {
+  const db = world(t);
+  withSqliteStatementGuard(db, () => {}, () => {
+    db.prepare('INSERT INTO records VALUES ($id)').run({ $id: 'TEST-named' });
+    db.prepare('INSERT INTO records VALUES (?)').run('TEST-positional');
+  });
+  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
+});

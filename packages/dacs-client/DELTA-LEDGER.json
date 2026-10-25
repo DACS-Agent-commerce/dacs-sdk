@@ -1381,6 +1381,7 @@
       ]
     },
     {"delta":"D11","subject":"fix(client): D11 share buyer schema with the database fixture","files":[{"path":"packages/dacs-client/test/helpers/purchase-integrity-database.mjs","before":"4fd59007caab514e62aaf8b58505c1ab72af7d21","after":"a454605da7223935b8e8417722828049bf904eaf"},{"path":"packages/dacs-client/test/purchase-state-schema.test.mjs","before":"ce3bb31eb69d5828748e1d04e797bd10de4ef5f3","after":"940e94f63ffc2a65f42ea03bf262fb42fc200525"}]},
-    {"delta":"D11","subject":"fix(client): D11 refuse virtual-table programs while application functions exist","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3","after":"acd00b6505dca812acfa411da3cb9538a5956b55"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"2d4843812322f511ac816fee299dfde349c90df7","after":"eedc7797a49fc7635cb1600db68fb1dc0d9ea74f"}]}
-]
+    {"delta":"D11","subject":"fix(client): D11 refuse virtual-table programs while application functions exist","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3","after":"acd00b6505dca812acfa411da3cb9538a5956b55"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"2d4843812322f511ac816fee299dfde349c90df7","after":"eedc7797a49fc7635cb1600db68fb1dc0d9ea74f"}]},
+    {"delta":"D11","subject":"fix(client): D11 refuse code-running named bindings under a guard","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"acd00b6505dca812acfa411da3cb9538a5956b55","after":"7107be0743c2c9e227bc49fc6ed65997556b482d"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"eedc7797a49fc7635cb1600db68fb1dc0d9ea74f","after":"f30906a361e1d5290d3966e97c93673abdb683c3"}]}
+  ]
 }
