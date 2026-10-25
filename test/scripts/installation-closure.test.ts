@@ -174,6 +174,31 @@ describe("installation closure", () => {
       ]);
     });
 
+  it.each([false, true])("refuses a missing command target, bundled=%s", bundled => {
+    const files = { "package.json": manifest("a") };
+    const install = simulatedInstall(bundled ? {
+      "node_modules/parent": [{}, { "package.json": manifest("parent"), "node_modules/a/package.json": manifest("a") }],
+      "node_modules/parent/node_modules/a": [{ inBundle: true, bin: { a: "missing.js" } }, null],
+    } : { "node_modules/a": [{ bin: { a: "missing.js" } }, files] });
+    const location = bundled ? "node_modules/parent/node_modules/a" : "node_modules/a";
+    expect(install.closure().errors).toEqual([
+      `cannot derive the installed files of ${location}: bin target is not an archive file: missing.js`,
+    ]);
+  });
+
+  it.each(["optional", "dev", "devOptional"])("allows empty ancestors of an omitted nested %s package only", flag => {
+    const install = simulatedInstall({
+      "node_modules/parent": [{}, { "package.json": manifest("parent") }],
+      "node_modules/parent/node_modules/a": [{ [flag]: true }, null],
+    });
+    const modules = join(install.project, "node_modules/parent/node_modules");
+    mkdirSync(modules);
+    expect(install.closure().errors).toEqual([]);
+    expect(install.differences()).toEqual([]);
+    writeFileSync(join(modules, "unexpected.js"), "");
+    expect(install.differences()).toEqual(["unexpected file: node_modules/parent/node_modules/unexpected.js"]);
+  });
+
   it("keeps LF command bytes and CRLF files that are not commands", () => {
     const install = simulatedInstall({ "node_modules/a": [{ bin: { a: "cli.js" } },
       { "package.json": manifest("a"), "cli.js": "#!/usr/bin/env node\n", "other.js": "#!/usr/bin/env node\r\n" }] });
@@ -304,6 +329,8 @@ describe("installation closure of real npm installations", () => {
     ]))],
     ["with-bin", packTarball({ "package.json": manifest("with-bin", "1.0.0", { bin: { "with-bin": "cli.js" } }), "cli.js": "#!/usr/bin/env node\n" })],
     ["parent", packTarball({ "package.json": manifest("parent", "1.0.0", { dependencies: { child: "2.0.0" } }) })],
+    ["optional-parent", packTarball({ "package.json": manifest("optional-parent", "1.0.0", { optionalDependencies: { "nested-skipped": "1.0.0" } }) })],
+    ["nested-skipped", packTarball({ "package.json": manifest("nested-skipped", "1.0.0", { os: [`!${process.platform}`] }) })],
     ["child-1", packTarball({ "package.json": manifest("child", "1.0.0") })],
     ["child-2", packTarball({ "package.json": manifest("child", "2.0.0", { bin: { child: "bin.js" } }), "bin.js": "" })],
     ["@scope/pkg", gzipSync(tarArchive([{ name: "package/package.json", body: manifest("@scope/pkg"),
@@ -315,7 +342,7 @@ describe("installation closure of real npm installations", () => {
   ]);
   const dependencies = { "@kynesyslabs/dacs": "0.1.0-test", "dacs-alias": "npm:@kynesyslabs/dacs@0.1.0-test",
     "fixture-plugin": "1.0.0", "with-bin": "1.0.0", parent: "1.0.0",
-    child: "1.0.0", "@scope/pkg": "1.0.0", bundler: "1.0.0" };
+    child: "1.0.0", "optional-parent": "1.0.0", "@scope/pkg": "1.0.0", bundler: "1.0.0" };
 
   async function installFixture() {
     const directory = temporaryDirectory();
@@ -339,6 +366,8 @@ describe("installation closure of real npm installations", () => {
         "node_modules/with-bin": entry("with-bin", "1.0.0", { bin: { "with-bin": "cli.js" } }),
         "node_modules/parent": entry("parent", "1.0.0", { dependencies: { child: "2.0.0" } }),
         "node_modules/parent/node_modules/child": entry("child-2", "2.0.0", { bin: { child: "bin.js" } }),
+        "node_modules/optional-parent": entry("optional-parent", "1.0.0", { optionalDependencies: { "nested-skipped": "1.0.0" } }),
+        "node_modules/optional-parent/node_modules/nested-skipped": entry("nested-skipped", "1.0.0", { optional: true, os: [`!${process.platform}`] }),
         "node_modules/child": entry("child-1", "1.0.0"),
         "node_modules/@scope/pkg": entry("@scope/pkg", "1.0.0"),
         "node_modules/skipped-optional": entry("skipped-optional", "1.0.0", { optional: true, os: [`!${process.platform}`] }),
@@ -371,6 +400,35 @@ describe("installation closure of real npm installations", () => {
     expect(installationDifferences(project, closure())).toEqual([]);
     writeFileSync(join(project, "node_modules/@skipped/extra.js"), "outside the archives");
     expect(installationDifferences(project, closure())).toEqual(["unexpected file: node_modules/@skipped/extra.js"]);
+  }, 60_000);
+
+  it("allows empty nested node_modules left by npm for an omitted optional dependency", async () => {
+    const { project, closure } = await installFixture();
+    const derived = closure();
+    expect(derived.entries.get("node_modules/optional-parent/node_modules/nested-skipped")?.present).toBe(false);
+    expect(installationDifferences(project, derived)).toEqual([]);
+  }, 60_000);
+
+  it("explicitly refuses a missing bin target that npm successfully skips", async () => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const archive = packTarball({ "package.json": manifest("missing-bin", "1.0.0", { bin: { fixture: "missing.js" } }) });
+    const server = await serveArchives(new Map([["missing-bin", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { "missing-bin": "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/missing-bin": {
+        version: "1.0.0", resolved: `${server.registry}/missing-bin.tgz`, integrity: sri(archive), bin: { fixture: "missing.js" },
+      } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(() => readFileSync(join(project, "node_modules/.bin/fixture"))).toThrow();
+      const closure = installationClosure(project, lock, (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity));
+      expect(closure.errors).toEqual([
+        "cannot derive the installed files of node_modules/missing-bin: bin target is not an archive file: missing.js",
+      ]);
+    } finally { await server.close(); }
   }, 60_000);
 
   it("explicitly refuses a real npm installation expanded from a package shrinkwrap", async () => {
