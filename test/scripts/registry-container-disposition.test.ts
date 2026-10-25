@@ -260,6 +260,15 @@ describe("registry/container evidence", () => {
     expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: node_modules/alias");
   });
 
+  it.each(["dacs", "dacs-node"])("rejects an installed package whose package.json alone names @kynesyslabs/%s", name => {
+    const fixture = dependencyPolicyHarness();
+    fixture.lockPackage("node_modules/undocumented-copy", { "package.json": packageJson(`@kynesyslabs/${name}`, CANDIDATE_VERSION),
+      "index.js": "module.exports = 'old-copy';\n" });
+    const result = fixture.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: node_modules/undocumented-copy");
+  });
+
   it.each(["dacs", "dacs-node"])("compares the installed @kynesyslabs/%s with release-provenance.json", name => {
     const { packages, provenance, run } = dependencyPolicyHarness();
     expect(run()).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
