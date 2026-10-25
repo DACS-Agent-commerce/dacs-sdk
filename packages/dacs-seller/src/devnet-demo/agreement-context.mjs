@@ -11,6 +11,8 @@ const operationQueues=new Map(),signingContext=new AsyncLocalStorage();
 const clone=(value)=>JSON.parse(canonicalize(value));
 const same=(a,b)=>canonicalize(a)===canonicalize(b);
 const fail=(code,message,cause)=>{throw Object.assign(new Error(message,{cause}),{code});};
+// A written receipt in one of these states is not final yet: the step waits and is retried, never kept as failed.
+const PENDING_RECEIPT_STATES=new Set(['accepted','included']);
 function requireJobId(jobId) {
   if (!isCanonicalJobId(jobId)) fail('job_invalid','jobId must be a canonical uppercase ULID');
 }
@@ -66,7 +68,7 @@ function partyVetState(store,writer) {
 // Reserve before execution. Completed results/failures replay; an interrupted
 // pending step holds for authoritative reconciliation and never executes again.
 // Signing context belongs to this async invocation, including concurrent keys.
-function durableOperationStore(state,job,role,{now,clock}) {
+function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) {
   const own=(current)=>{if(!current?.binding||!same(current.binding,job.binding))fail('binding-changed','the job\'s party Vet binding changed; nothing was written');return current.ops[role];};
   Object.defineProperty(clock,'step',{configurable:true,get:()=>{const scope=signingContext.getStore();return scope?.clock===clock?scope.view:null;}});
   const terminalFailure=error=>({name:String(error?.name??'Error'),message:String(error?.message??error),...(typeof error?.code==='string'?{code:error.code}:{}),...(typeof error?.category==='string'?{category:error.category}:{})});
@@ -110,8 +112,13 @@ function durableOperationStore(state,job,role,{now,clock}) {
       }else await state.update(job.jobId,current=>{fenced(own(current));});}catch(error){try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet preparation cleanup failed',{cause}),{code:'indeterminate'});}throw error;}
       const scope=Object.freeze({state,jobId:job.jobId,role,key,owner,clock,view});
       const finish=outcome=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);ops.steps[key]={...identity,...outcome};return current;});
+      wait.pending=false;
       try{value=clone(await signingContext.run(scope,execute));}
       catch(error){
+        if(wait.pending){
+          try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet pending cleanup failed',{cause}),{code:'indeterminate'});}
+          throw error;
+        }
         const failure=terminalFailure(error);
         try{await finish({state:'failed',error:failure});}
         catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet failure could not be durably retained',{cause}),{code:'indeterminate'});}
@@ -344,7 +351,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     };
     // The record time of the step being written ahead, while it runs.
     const clock={step:null};
-    const durable=durableOperationStore(state,job,role,{now,clock});
+    // Set by a callback that finds the written record's receipt not final yet.
+    const wait={pending:false};
+    const durable=durableOperationStore(state,job,role,{now,clock,wait});
     const sign=async(bytes)=>{
       let stored;
       try{guard(job,'signature');await markWrite(job);stored=await durable.writeAhead(bytes);guard(job,'signature');}
@@ -382,7 +391,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       },
       verifyFinalizedAnchor:async({logicalAddress,artifact,receipt})=>(await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt}))==='valid',
       readAnchoredJson:async(ref)=>{const out=await anchor.readRetained({logicalAddress:address,artifactKind:'CompositeVerificationRecord'});return out.status==='present'&&out.receipt.nativeAddress===ref.anchor.locator&&contentHash(out.artifact)===ref.contentHash?out.artifact:null;},
-      resolveFinalizedArtifact:async({logicalAddress,contentHash:hash})=>{const out=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});if(out.status!=='present'||contentHash(out.artifact)!==hash)return null;writerCause=null;return{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:hash,signer:wallet.claim},receipt:out.receipt};},
+      resolveFinalizedArtifact:async({logicalAddress,contentHash:hash})=>{const out=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});if(out.status!=='present'||contentHash(out.artifact)!==hash)return null;if(PENDING_RECEIPT_STATES.has(out.receipt?.state)){wait.pending=true;throw new Error(`the ${role} Vet record is written and its receipt is ${out.receipt.state}, not final yet`);}writerCause=null;return{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:hash,signer:wallet.claim},receipt:out.receipt};},
       operationStore:durable.operationStore,
       verifyIdentityPresentation:({bundle,signedBytes})=>{const proof=bundle.presentation?.kind==='per-claim'&&bundle.presentation.signatures.find((entry)=>entry.ref===bundle.presentedBy);return Boolean(proof&&verifyComponent({signedBytes,signature:{algorithm:'ed25519',signer:bundle.presentedBy,value:proof.signature}}));},
       componentVerifier:verifier,sessionEffectAuthority:{store:session,leaseToken:{owner:lease.owner,generation:lease.generation}},
