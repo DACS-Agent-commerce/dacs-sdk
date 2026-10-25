@@ -7,6 +7,7 @@ import { expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
+import { assertEndpointProof } from "../../src/wire/discovery.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 
@@ -128,6 +129,59 @@ it("verifies a complete committed purchase at proof creation and on proof assert
   const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility, ...f.continuation });
   await wireDiscovery.assertEndpointProof(proof, { ...f.scope, ...f.continuation });
   expect(reads).toBe(2);
+});
+
+it.each([
+  wire.DACS_SELLER_HTTP_PATHS.payments,
+  wire.DACS_SELLER_HTTP_PATHS.bundleRequest,
+  wire.DACS_SELLER_HTTP_PATHS.bundleCountersignature,
+  wire.DACS_SELLER_HTTP_PATHS.bundleBuyerCopy,
+])("continues %s after Listing revocation and expiry without reading current eligibility", async (path) => {
+  const f = await proofFixture();
+  f.payload.expiresAt = COMMITTED_AT + 600_000;
+  let revoked = false, listingReads = 0, receiptReads = 0;
+  const readListingEligibility = (scope: Parameters<wire.ListingEligibilityReader>[0]) => {
+    listingReads++;
+    return revoked ? null : readFixtureListingEligibility(scope);
+  };
+  f.continuation.request.path = path;
+  f.continuation.readCommitmentReceipt = Object.assign(async () => { receiptReads++; return "valid"; },
+    { chainIdentity: f.options.binding.profile.chainIdentity });
+  const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, readListingEligibility,
+    readCommitmentReceipt: f.continuation.readCommitmentReceipt });
+  await assertEndpointProof(proof, { ...f.scope, ...f.continuation });
+  revoked = true;
+  const now = COMMITTED_AT + 120_000;
+  await assertEndpointProof(proof, { ...f.scope, ...f.continuation, now });
+  f.payload.ready = false;
+  f.payload.issuedAt = now;
+  f.payload.expiresAt = now + 60_000;
+  const fresh = await wire.verifyEndpointProof(f.document(), { ...f.options, ...f.continuation, now, readListingEligibility });
+  await assertEndpointProof(fresh, { ...f.scope, ...f.continuation, now });
+  expect(listingReads).toBe(1);
+  expect(receiptReads).toBe(4);
+  await expect(assertEndpointProof(fresh, { ...f.scope, now })).rejects.toMatchObject({ code: "listing_unsupported" });
+});
+
+it("continues a committed purchase when the current Listing reader throws", async () => {
+  const f = await proofFixture(false, COMMITTED_AT + 120_000);
+  const readListingEligibility = () => { throw new Error("Listing revoked"); };
+  const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, ...f.continuation, readListingEligibility });
+  await assertEndpointProof(proof, { ...f.scope, ...f.continuation });
+});
+
+it.each(["bytes", "admitted"])("binds continuation endpoints to the signed Listing supplied as %s", async (input) => {
+  const f = await proofFixture();
+  const publicEndpoint = "https://different.proof.invalid";
+  f.payload.publicEndpoint = publicEndpoint;
+  const listing = { ...f.options.listing, publicEndpoint };
+  const signedListing = input === "bytes" ? f.continuation.signedListing : wire.admitWireArtifact(f.continuation.signedListing);
+  const continuation = { ...f.continuation, signedListing };
+  const refused = { code: "continuation_listing_invalid", detail: "ENDPOINT" };
+  await expect(wire.verifyEndpointProof(f.document(), { ...f.options, ...continuation, listing })).rejects.toMatchObject(refused);
+  const proof = await wire.verifyEndpointProof(f.document(), { ...f.options, listing,
+    readCommitmentReceipt: f.continuation.readCommitmentReceipt });
+  await expect(assertEndpointProof(proof, { ...f.scope, ...continuation, publicEndpoint })).rejects.toMatchObject(refused);
 });
 
 it.each(["missing", "buyer", "seller"])("rejects a %s Agreement signature before issuing a continuation proof", async (fault) => {
