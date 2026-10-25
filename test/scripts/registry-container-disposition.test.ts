@@ -1694,6 +1694,33 @@ describe("candidate executable and nested alias lookup", () => {
     expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/dist/node_modules`);
   });
 
+  it("rejects a candidate reached through a linked directory inside a package that is not a candidate", () => {
+    const fixture = dependencyPolicyHarness();
+    const plugin = "node_modules/plugin";
+    const result = fixture.run(project => {
+      const holder = join(project, "elsewhere/node_modules/@kynesyslabs/dacs");
+      mkdirSync(holder, { recursive: true });
+      mkdirSync(join(project, plugin), { recursive: true });
+      writeFileSync(join(project, plugin, "package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+      writeFileSync(join(holder, "index.js"), "module.exports = 'shadow';");
+      symlinkSync(join(project, "elsewhere"), join(project, plugin, "dist"));
+      expect(createRequire(join(project, plugin, "dist/index.js")).resolve("@kynesyslabs/dacs")).toBe(join(holder, "index.js"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`cannot inspect a linked directory inside an installed package: ${plugin}/dist`);
+  });
+
+  it("accepts a link to a file inside a package that is not a candidate", () => {
+    const fixture = dependencyPolicyHarness();
+    expect(fixture.run(project => {
+      mkdirSync(join(project, "node_modules/plugin"), { recursive: true });
+      writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(project, "node_modules/plugin/index.js"), "module.exports = 42;");
+      symlinkSync("index.js", join(project, "node_modules/plugin/main.js"));
+    })).toMatchObject({ status: 0, report: { passed: true } });
+  });
+
   it("rejects a candidate file shadow in node_modules inside a package that is not a candidate", () => {
     const fixture = dependencyPolicyHarness();
     const result = fixture.run(project => {
