@@ -568,7 +568,11 @@ function writeSummary(overrides: Record<string, string> = {}) {
 }
 
 describe("complete installed package scopes", () => {
-  it.each(["identity", "alias-name", "alias-declaration"])("authenticates a nested package scope's %s", form => {
+  it.each([
+    ["identity", "cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/arbitrary/deep"],
+    ["alias-name", "the project declares @kynesyslabs/dacs under another name: alias"],
+    ["alias-declaration", "node_modules/plugin/arbitrary/deep declares @kynesyslabs/dacs under another name: alias"],
+  ])("refuses a nested package scope's %s", (form, refusal) => {
     const fixture = dependencyPolicyHarness();
     fixture.manifest.optionalDependencies = { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` };
     fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0"),
@@ -577,7 +581,7 @@ describe("complete installed package scopes", () => {
       "arbitrary/deep/copy.cjs": "module.exports = 'unreleased-copy';" });
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/arbitrary/deep");
+    expect(result.stderr).toContain(refusal);
   });
 
   it("accepts an ordinary nested package scope without candidate identities or declarations", () => {
@@ -819,14 +823,17 @@ describe("registry/container evidence", () => {
     expect(outside.stderr).toContain(`did not resolve through the isolated registry: ${nested}`);
   });
 
-  it.each(["dacs", "dacs-node"])("rejects a substituted npm alias of %s", name => {
+  it.each(["dacs", "dacs-node"])("rejects an npm alias of %s, substituted or the release", name => {
     const fixture = dependencyPolicyHarness();
+    const anotherName = `candidate package @kynesyslabs/${name} is installed under another name: node_modules/alias`;
     fixture.copyPackage(`node_modules/@kynesyslabs/${name}`, "node_modules/alias", { name: `@kynesyslabs/${name}` });
-    expect(fixture.run().status).toBe(0);
+    const release = fixture.run();
+    expect(release.status).not.toBe(0);
+    expect(release.stderr).toContain(anotherName);
     fixture.lockPackage("node_modules/alias", { "package.json": packageJson("other", CANDIDATE_VERSION) }, { name: `@kynesyslabs/${name}` });
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: node_modules/alias");
+    expect(result.stderr).toContain(anotherName);
   });
 
   it.each(["dacs", "dacs-node"])("rejects an installed package whose package.json alone names @kynesyslabs/%s", name => {
@@ -835,7 +842,7 @@ describe("registry/container evidence", () => {
       "index.js": "module.exports = 'old-copy';\n" });
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: node_modules/undocumented-copy");
+    expect(result.stderr).toContain(`candidate package @kynesyslabs/${name} is installed under another name: node_modules/undocumented-copy`);
   });
 
   it.each(["dacs", "dacs-node"])("compares the installed @kynesyslabs/%s with release-provenance.json", name => {
@@ -853,15 +860,14 @@ describe("registry/container evidence", () => {
   });
 
   // Every installed candidate copy is the release's version in the lock, and
-  // its installed package.json is the archive's, top-level, nested or aliased.
+  // its installed package.json is the archive's, top-level or nested.
   it.each(["dacs", "dacs-node"])("rejects a @kynesyslabs/%s copy that is not the release version", name => {
     const fixture = dependencyPolicyHarness();
     const topLevel = `node_modules/@kynesyslabs/${name}`;
     const nested = `node_modules/some-plugin/node_modules/@kynesyslabs/${name}`;
     fixture.copyPackage(topLevel, nested);
-    fixture.copyPackage(topLevel, "node_modules/alias", { name: `@kynesyslabs/${name}` });
     expect(fixture.run().status).toBe(0);
-    for (const location of [topLevel, nested, "node_modules/alias"]) {
+    for (const location of [topLevel, nested]) {
       const entry = fixture.packages[location] ?? {};
       for (const version of [undefined, "0.0.0-wrong", "0.1.0-alpha.0"]) {
         fixture.packages[location] = { ...entry, version };
@@ -2001,13 +2007,31 @@ describe("baseline Git and image archive identities", () => {
       expect(classify({ ...known, ...change }), JSON.stringify(change)).toEqual({ check: "blocked", exit: 3 });
     }
   });
+
+  it("pins the recorded version and integrity of engine findings at the same location and range", () => {
+    const known = baseline.policyFindings.engineViolations[0];
+    const classify = (violation: Record<string, unknown>) => {
+      const summary = baselineOnlySummary();
+      summary.securityGate.engineStrictExitCode = 1;
+      summary.securityGate.findings.engine = { exitCode: 1, code: "EBADENGINE", scanComplete: true,
+        violations: [violation], reportedPackage: violation.package };
+      return { check: classifyPolicyChecks(summary, baseline).engineStrict, exit: registryContainerDisposition(summary, baseline).exitCode };
+    };
+    expect(classify(known)).toEqual({ check: "baseline", exit: 4 });
+    for (const change of [{ package: known.package.replace(/@[^@]*$/, "@99.0.0") },
+      { integrity: sri(Buffer.from("different archive")) }, { integrity: undefined }]) {
+      expect(classify({ ...known, ...change }), JSON.stringify(change)).toEqual({ check: "blocked", exit: 3 });
+    }
+  });
 });
 
-describe("declared candidate alias authentication", () => {
+// A candidate is declared and installed under its own name only, so an alias
+// is refused wherever it is declared, whatever npm installed for it.
+describe("declared candidate aliases", () => {
   const aliasOf = (name: string) => `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}`;
   const other = { "package.json": packageJson("other", CANDIDATE_VERSION) };
-  const loads = (specifier: string, declarer: string, location: string, name = "dacs") =>
-    `${specifier} declared by ${declarer} loads ${location}, not the @kynesyslabs/${name} release`;
+  const declares = (declarer: string, specifier: string, name = "dacs") =>
+    `${declarer} declares @kynesyslabs/${name} under another name: ${specifier}`;
 
   it.each(["dacs", "dacs-node"])("rejects a same-version replacement for a declared %s alias", name => {
     const fixture = dependencyPolicyHarness();
@@ -2015,11 +2039,11 @@ describe("declared candidate alias authentication", () => {
     fixture.lockPackage("node_modules/candidate-alias", other);
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(loads("candidate-alias", "the project", "node_modules/candidate-alias", name));
+    expect(result.stderr).toContain(declares("the project", "candidate-alias", name));
   });
 
   it.each(["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"])(
-    "authenticates installed aliases declared in nested %s maps", field => {
+    "rejects installed aliases declared in nested %s maps", field => {
       for (const hoisted of [false, true]) {
         const fixture = dependencyPolicyHarness();
         const location = hoisted ? "node_modules/candidate-alias" : "node_modules/plugin/node_modules/candidate-alias";
@@ -2029,7 +2053,7 @@ describe("declared candidate alias authentication", () => {
         if (!hoisted) fixture.copyPackage("node_modules/@kynesyslabs/dacs", "node_modules/candidate-alias", { name: "@kynesyslabs/dacs" });
         const result = fixture.run();
         expect(result.status, `${field} ${location}`).not.toBe(0);
-        expect(result.stderr).toContain(loads("candidate-alias", "node_modules/plugin", location));
+        expect(result.stderr).toContain(declares("node_modules/plugin", "candidate-alias"));
       }
     });
 
@@ -2040,7 +2064,7 @@ describe("declared candidate alias authentication", () => {
     fixture.lockPackage("node_modules/candidate-alias", other);
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(loads("candidate-alias", "node_modules/plugin", "node_modules/candidate-alias", name));
+    expect(result.stderr).toContain(declares("node_modules/plugin", "candidate-alias", name));
   });
 
   it("rejects an alias declared by an installed package without a name", () => {
@@ -2050,23 +2074,28 @@ describe("declared candidate alias authentication", () => {
     fixture.lockPackage("node_modules/candidate-alias", other);
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(loads("candidate-alias", "node_modules/plugin", "node_modules/candidate-alias"));
+    expect(result.stderr).toContain(declares("node_modules/plugin", "candidate-alias"));
   });
 
-  it("accepts an alias that retains the exact candidate identity and bytes", () => {
+  it("rejects an alias even when it holds the exact candidate identity and bytes", () => {
     const fixture = dependencyPolicyHarness();
     fixture.manifest.dependencies = { ...fixture.manifest.dependencies as object, alias: aliasOf("dacs") };
     fixture.copyPackage("node_modules/@kynesyslabs/dacs", "node_modules/alias", { name: "@kynesyslabs/dacs" });
-    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: true } });
+    const result = fixture.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(declares("the project", "alias"));
+    expect(result.stderr).toContain("candidate package @kynesyslabs/dacs is installed under another name: node_modules/alias");
   });
 
-  it.each(["optional", "dev", "devOptional"])("allows an omitted %s alias but authenticates it when present", flag => {
+  it.each(["optional", "dev", "devOptional"])("rejects an omitted %s alias, and a present one that is not its archive", flag => {
     const fixture = dependencyPolicyHarness();
     const alias = "node_modules/candidate-alias";
     fixture.copyPackage("node_modules/@kynesyslabs/dacs", alias, { name: "@kynesyslabs/dacs", [flag]: true });
     fixture.manifest.optionalDependencies = { "candidate-alias": aliasOf("dacs") };
     fixture.installed[alias] = null;
-    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: true } });
+    const omitted = fixture.run();
+    expect(omitted.status).not.toBe(0);
+    expect(omitted.stderr).toContain(declares("the project", "candidate-alias"));
     fixture.installed[alias] = { "package.json": packageJson("@kynesyslabs/dacs", "0.0.0-wrong") };
     const result = fixture.run();
     expect(result.status).not.toBe(0);
@@ -2083,7 +2112,7 @@ describe("declared candidate alias authentication", () => {
     expect(result.stderr).toContain("candidate package is not installed at the top level: @kynesyslabs/dacs");
   });
 
-  it.each(["optional", "dev", "devOptional"])("follows the installed alias past an omitted %s lock entry", flag => {
+  it.each(["optional", "dev", "devOptional"])("rejects an omitted %s alias Node resolves to another installed package", flag => {
     const fixture = dependencyPolicyHarness();
     const alias = "node_modules/candidate-alias";
     const omitted = "node_modules/plugin/node_modules/candidate-alias";
@@ -2097,9 +2126,7 @@ describe("declared candidate alias authentication", () => {
         .toBe(join(project, alias, "package.json"));
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(loads("candidate-alias", "node_modules/plugin", alias));
-    fixture.copyPackage("node_modules/@kynesyslabs/dacs", alias, { name: "@kynesyslabs/dacs" });
-    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: true } });
+    expect(result.stderr).toContain(declares("node_modules/plugin", "candidate-alias"));
   });
 });
 
@@ -2120,6 +2147,7 @@ describe("omitted candidate aliases Node resolves outside the installation", () 
     writeFileSync(join(copy, "index.js"), "module.exports = 'old-copy';\n");
     return realpathSync(copy);
   };
+  const refusal = "the project declares @kynesyslabs/dacs under another name: candidate-alias";
 
   it("rejects an omitted candidate alias Node loads from a parent directory's node_modules", () => {
     const fixture = omittedAlias();
@@ -2128,20 +2156,25 @@ describe("omitted candidate aliases Node resolves outside the installation", () 
       expect(createRequire(join(project, "index.cjs")).resolve("candidate-alias")).toBe(join(copy, "index.js"));
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(`candidate-alias declared by the project loads ${copy}, outside the installation`);
+    expect(result.stderr).toContain(refusal);
   });
 
   it("rejects an omitted candidate alias require() loads from a NODE_PATH folder", () => {
     const fixture = omittedAlias();
     const folder = join(fixture.directory, "global");
     const copy = oldCopy(folder);
-    const result = fixture.run(undefined, { environment: { NODE_PATH: folder } });
+    const result = fixture.run(project => {
+      expect(spawnSync(process.execPath, ["--eval", "console.log(require.resolve('candidate-alias'))"],
+        { cwd: project, encoding: "utf8", env: { ...process.env, NODE_PATH: folder } }).stdout).toBe(join(copy, "index.js") + "\n");
+    }, { environment: { NODE_PATH: folder } });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(`candidate-alias declared by the project loads ${copy}, outside the installation`);
+    expect(result.stderr).toContain(refusal);
   });
 
-  it("accepts an omitted candidate alias Node finds nowhere", () => {
-    expect(omittedAlias().run()).toMatchObject({ status: 0, report: { passed: true } });
+  it("rejects an omitted candidate alias Node finds nowhere", () => {
+    const result = omittedAlias().run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(refusal);
   });
 
   // A package named like the alias it declares resolves that specifier to its
@@ -2153,11 +2186,11 @@ describe("omitted candidate aliases Node resolves outside the installation", () 
       dependencies: { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } }), "index.js": "module.exports = 'itself';\n" });
     fixture.copyPackage("node_modules/@kynesyslabs/dacs", `${declarer}/node_modules/candidate-alias`, { name: "@kynesyslabs/dacs", optional: true });
     if (!installed) fixture.installed[`${declarer}/node_modules/candidate-alias`] = null;
-    let itself = "";
-    const result = fixture.run(project => { itself = join(realpathSync(project), declarer, "index.js"); });
+    const result = fixture.run(project => {
+      expect(createRequire(join(project, declarer, "index.js")).resolve("candidate-alias")).toBe(join(realpathSync(project), declarer, "index.js"));
+    });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(`candidate-alias declared by ${declarer} resolves to ${itself}, ` +
-      (installed ? `outside ${declarer}/node_modules/candidate-alias` : "which no module Node searched holds"));
+    expect(result.stderr).toContain(`${declarer} declares @kynesyslabs/dacs under another name: candidate-alias`);
   });
 });
 
@@ -2289,7 +2322,7 @@ describe("candidate copies hidden in the installed tree", () => {
           .toBe(join(project, plugin, directory, "alias/index.js"));
       });
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain(carried(plugin, `${plugin}/${directory}/holder`));
+      expect(result.stderr).toContain(`${plugin}/${directory}/holder declares @kynesyslabs/${name} under another name: alias`);
     });
 
   it.each([
@@ -2382,7 +2415,8 @@ describe("candidate copies hidden in the installed tree", () => {
       writeFileSync(join(project, location), "module.exports = 42;");
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(location);
+    expect(result.stderr).toContain(TREE + (hoisted ? `unexpected file: ${location}` : `unexpected directory: ${plugin}/node_modules`));
+    expect(result.stderr).toContain(`${plugin} declares @kynesyslabs/dacs under another name: candidate-alias`);
   });
 });
 
@@ -2448,29 +2482,24 @@ describe("dependency policy over npm ci installations", () => {
     }, { dependencies: { [specifier]: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } });
     expect(createRequire(join(project, "index.cjs")).resolve(specifier)).toBe(specifier);
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain(`${specifier} declared by the project resolves to a non-file module`);
+    expect(policy.stderr).toContain(`the project declares @kynesyslabs/dacs under another name: ${specifier}`);
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
-  it.each([
-    ["dependencies", false], ["peerDependencies", false], ["devDependencies", true], ["optionalDependencies", true],
-    ["optional-peer", true],
-  ] as const)("requires a candidate resolution unless the %s declaration permits omission", async (field, optional) => {
-    const directory = temporaryDirectory();
-    const alias = `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}`;
-    const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION,
-      field === "optional-peer" ? { peerDependencies: { "candidate-alias": alias },
-        peerDependenciesMeta: { "candidate-alias": { optional: true } } } : { [field]: { "candidate-alias": alias } }) });
-    const { project, policy } = await registryInstallation(directory, { plugin }, { "node_modules/plugin": ["plugin", {}] },
-      { dependencies: { plugin: CANDIDATE_VERSION } });
-    expect(() => createRequire(join(project, "node_modules/plugin/index.cjs")).resolve("candidate-alias")).toThrow();
-    if (optional) expect(policy.status, policy.stderr).toBe(0);
-    else {
+  it.each(["dependencies", "peerDependencies", "devDependencies", "optionalDependencies", "optional-peer"])(
+    "refuses a candidate alias the %s map declares, though npm installed nothing for it", async field => {
+      const directory = temporaryDirectory();
+      const alias = `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}`;
+      const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION,
+        field === "optional-peer" ? { peerDependencies: { "candidate-alias": alias },
+          peerDependenciesMeta: { "candidate-alias": { optional: true } } } : { [field]: { "candidate-alias": alias } }) });
+      const { project, policy } = await registryInstallation(directory, { plugin }, { "node_modules/plugin": ["plugin", {}] },
+        { dependencies: { plugin: CANDIDATE_VERSION } });
+      expect(() => createRequire(join(project, "node_modules/plugin/index.cjs")).resolve("candidate-alias")).toThrow();
       expect(policy.status).not.toBe(0);
-      expect(policy.stderr).toContain("candidate-alias declared by node_modules/plugin has no authenticated resolution");
+      expect(policy.stderr).toContain("node_modules/plugin declares @kynesyslabs/dacs under another name: candidate-alias");
       expect(existsSync(join(directory, "report.json"))).toBe(false);
-    }
-  }, 60_000);
+    }, 60_000);
 
   it.each(["identity", "alias-name", "alias-declaration", "malformed", "ordinary"])(
     "authenticates an npm-generated package scope: %s", async form => {
@@ -2513,11 +2542,14 @@ describe("dependency policy over npm ci installations", () => {
           expect(loaded.stdout).toBe("unreleased-copy\n");
         }
         expect(policy.status, policy.stderr).not.toBe(0);
-        expect(policy.stderr).toContain("node_modules/plugin/node_modules/.bin");
+        expect(policy.stderr).toContain(form === "alias-name" ? `the project declares @kynesyslabs/dacs under another name: ${specifier}`
+          : "node_modules/plugin/node_modules/.bin");
         expect(existsSync(join(directory, "report.json"))).toBe(false);
       }
     }, 60_000);
 
+  // npm would link the command to a directory, adding a module root inside
+  // .bin; the closure admits command links to archive files only.
   it("refuses npm-generated directory links that create additional module roots", async () => {
     const directory = temporaryDirectory();
     const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION,
@@ -2535,7 +2567,7 @@ describe("dependency policy over npm ci installations", () => {
     expect(loaded.status, loaded.stderr).toBe(0);
     expect(loaded.stdout).toBe("unreleased-copy\n");
     expect(policy.status, policy.stderr).not.toBe(0);
-    expect(policy.stderr).toContain("cannot authenticate a generated command link to a non-file: node_modules/plugin/node_modules/.bin/node_modules");
+    expect(policy.stderr).toContain("cannot derive the installed files of node_modules/plugin/node_modules/bin-owner: bin target is not an archive file: modules");
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
@@ -2633,7 +2665,7 @@ describe("dependency policy over npm ci installations", () => {
     expect(spawnSync(process.execPath, ["--input-type=module", "--eval", "console.log(import.meta.resolve('candidate-alias'))"],
       { cwd: project, encoding: "utf8" }).stdout).toContain(`${realpathSync(parentCopy)}/index.js`);
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain(`candidate-alias declared by the project loads ${realpathSync(parentCopy)}, outside the installation`);
+    expect(policy.stderr).toContain("the project declares @kynesyslabs/dacs under another name: candidate-alias");
   }, 60_000);
 });
 
