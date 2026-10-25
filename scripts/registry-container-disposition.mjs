@@ -17,7 +17,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence } from "./acceptance-evidence-io.mjs";
-import { appendFileSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
@@ -231,11 +231,12 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
 }
 
 // The `npm:` aliases declared for a candidate, with the location of the
-// package declaring each ("" for the root manifest).
+// package declaring each ("" for the root manifest). `declarations` pairs each
+// location with a manifest or lock entry that declares dependencies.
 const moduleFileExtensions = [".js", ".json", ".node"];
-function candidateAliases(manifest, packages, candidate) {
+function candidateAliases(declarations, candidate) {
   const aliases = [];
-  for (const [ownerLocation, owner] of [["", manifest], ...Object.entries(packages)]) {
+  for (const [ownerLocation, owner] of declarations) {
     for (const field of specFields) {
       for (const [alias, spec] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
         if (typeof spec === "string" && /^npm:/i.test(spec) && registrySourceSpec(spec) &&
@@ -248,10 +249,10 @@ function candidateAliases(manifest, packages, candidate) {
 
 // Resolve declared candidate aliases with Node's nearest node_modules lookup,
 // including hoisting. Installed identity cannot identify a substituted alias.
-function candidateAliasLocations(manifest, packages, inventory, candidate) {
+function candidateAliasLocations(declarations, packages, inventory, candidate) {
   const available = new Set(inventory ? inventory.map(item => item.location) : Object.keys(packages));
   const locations = new Set();
-  for (const { ownerLocation, alias } of candidateAliases(manifest, packages, candidate)) {
+  for (const { ownerLocation, alias } of candidateAliases(declarations, candidate)) {
     const parts = ownerLocation ? ownerLocation.split("/") : [];
     for (;;) {
       if (parts.at(-1) !== "node_modules") {
@@ -405,20 +406,27 @@ export function packedFiles(archive) {
 
 const MAX_LISTED_DIFFERENCES = 5;
 
-/** Compares the files of one installed package directory with `packed` and returns one line per
- * missing, changed or unexpected file, and per entry that is not a regular file. The directory's
- * own `node_modules` holds its dependencies, which the tarball does not, unless it bundles them. */
+/** Compares one installed package directory with `packed` and returns one line per missing,
+ * changed or unexpected file, per unexpected directory, per hard link and per entry that is not a
+ * regular file: the directory must hold exactly the archive. Its own top-level `node_modules` holds
+ * its dependencies, which the tarball does not, unless it bundles them. */
 export function installedFileDifferences(directory, packed) {
   const differences = [];
   const installed = new Map();
   const bundled = [...packed.keys()].some(path => path.startsWith("node_modules/"));
+  const packedDirectories = new Set();
+  for (const file of packed.keys()) for (let parent = posix.dirname(file); parent !== "."; parent = posix.dirname(parent)) packedDirectories.add(parent);
   const visit = (current, prefix) => {
     for (const entry of listDirectory(current)) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        if (prefix || entry.name !== "node_modules" || bundled) visit(join(current, entry.name), path);
-      } else if (entry.isFile()) installed.set(path, readFileSync(join(current, entry.name)));
-      else differences.push(`not a regular file: ${path}`);
+        if (prefix || entry.name !== "node_modules" || bundled) {
+          if (!packedDirectories.has(path)) differences.push(`unexpected directory: ${path}`);
+          visit(join(current, entry.name), path);
+        }
+      } else if (!entry.isFile()) differences.push(`not a regular file: ${path}`);
+      else if (lstatSync(join(current, entry.name)).nlink > 1) differences.push(`hard link: ${path}`);
+      else installed.set(path, readFileSync(join(current, entry.name)));
     }
   };
   visit(directory, "");
@@ -430,12 +438,26 @@ export function installedFileDifferences(directory, packed) {
   return differences;
 }
 
+// npm runs these when it installs a package. A candidate declaring one would
+// run its own code before this check, so it is refused.
+const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall"];
+function declaredInstallScripts(files) {
+  const packedManifest = files?.get("package.json");
+  const scripts = packedManifest ? JSON.parse(packedManifest.toString("utf8"))?.scripts : undefined;
+  return [...INSTALL_LIFECYCLE_SCRIPTS.filter(script => isPlainObject(scripts) && script in scripts),
+    ...(files?.has("binding.gyp") ? ["binding.gyp"] : [])];
+}
+
 // Every installed copy of a candidate package, top-level, nested or aliased,
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
 // reads it, in the installed package.json. When `differencesFrom` is given,
 // each copy's files must also be the files of the tarball (a candidate's
 // `files`): `differencesFrom(location, files)` returns what differs.
+//
+// This is sound only for a tree installed with lifecycle scripts disabled and
+// checked before any package code runs (a build, a test, `npm rebuild`): such
+// code could add links or files after extraction. Scripts run after verification.
 export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots, installedEscapingLinks, differencesFrom }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
@@ -456,14 +478,22 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
     .map(item => "cannot inspect a .bin entry that does not lead to a file inside an installed package: " + item.location));
   errors.push(...inventory.filter(item => /(^|\/)node_modules\/(@[^/]+\/)?node_modules$/.test(item.location))
     .map(item => "cannot inspect a node_modules directory inside node_modules or a scope directory: " + item.location));
+  // A package's own package.json declares dependencies its lock entry may not
+  // (the registry's metadata and the tarball are separate), and Node resolves
+  // by the installed directory name, so both declarations name aliases.
+  const installedDeclarations = installedManifest ? inventory.filter(item => typeof item.name === "string" && item.link !== true)
+    .flatMap(item => { try { return [[item.location, installedManifest(item.location)]]; } catch { return []; } }) : [];
+  const declarations = [["", manifest], ...Object.entries(packages), ...installedDeclarations];
   const candidateLocations = new Set();
   const candidateNames = new Set(candidates.map(candidate => candidate.name));
   for (const { name, integrity, version, files } of candidates) {
-    for (const { alias } of candidateAliases(manifest, packages, name)) candidateNames.add(alias);
+    for (const { alias } of candidateAliases(declarations, name)) candidateNames.add(alias);
     if (typeof version !== "string" || version === "") {
       errors.push("candidate record has no release version: " + name);
       continue;
     }
+    const installScripts = declaredInstallScripts(files);
+    if (installScripts.length) errors.push(`candidate package runs code when installed (${installScripts.join(", ")}): ` + name);
     const candidateLocation = location => typeof location === "string" &&
       (location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
     const locations = [...new Set([...Object.keys(packages).filter(location => candidateLocation(location) || packages[location]?.name === name),
@@ -471,7 +501,7 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
         (typeof item.location === "string" && moduleFileExtensions.some(extension =>
           item.location.endsWith(extension) && candidateLocation(item.location.slice(0, -extension.length)))))
         .map(item => item.location),
-      ...candidateAliasLocations(manifest, packages, installedInventory, name)])];
+      ...candidateAliasLocations(declarations, packages, installedInventory, name)])];
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
     for (const location of locations) {
       candidateLocations.add(location);
@@ -1089,6 +1119,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     atomicWriteJson(output, { schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy, passed });
     process.stdout.write(JSON.stringify(counts) + "\n");
   } else if (mode === "--dependency-policy") {
+    // <project> must be installed with lifecycle scripts disabled and unused by
+    // any package code so far; see candidateIntegrityErrors.
     const [project, registry, report, releaseSet, version] = process.argv.slice(3);
     if (report) rmSync(report, { force: true });
     if (!project || !registry || !report || !releaseSet || !version) {
