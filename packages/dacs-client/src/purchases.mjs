@@ -39,6 +39,7 @@ import { newId } from './util/ids.mjs';
 import { OutboundError, observeWithDeadline } from './util/http.mjs';
 import { nodeProjectedNonce, OS_INTEGER } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
+import { projectDiagnostic, projectDiagnosticOperation, DIAGNOSTIC_LIMITS } from './diagnostic-projection.mjs';
 import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView } from './dacs/protocol-purchases.mjs';
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
 import { PURCHASE_LIMITS } from './purchase-limits.mjs';
@@ -397,26 +398,6 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     : purchaseNext(operation, chainMode);
   const protocolFor = operation => (diagnosticOnly ? diagnosticProtocolView : protocolView)(operation,
     { now, enabled: config.deliveryDeadlineWatch === 'on' });
-  const diagnosticOperation = operation => {
-    const p = operation.state?.protocol;
-    if (!p) return operation;
-    // CORE §11.1.2(3–4): held diagnostics must not hand out material for
-    // current signatures. Preserve historical records without mutating them.
-    const { planned: _planned, ...protocol } = p;
-    if (protocol.bundle) {
-      const { message: _message, ...bundle } = protocol.bundle;
-      protocol.bundle = bundle;
-    }
-    if (protocol.identity) {
-      const { message: _message, ...identity } = protocol.identity;
-      protocol.identity = identity;
-    }
-    if (protocol.sessionDelegation) {
-      const { payload: _payload, ...sessionDelegation } = protocol.sessionDelegation;
-      protocol.sessionDelegation = sessionDelegation;
-    }
-    return { ...operation, state: { ...operation.state, protocol } };
-  };
 
   const transferDiagnosticFields = ['status', 'txHash', 'payer', 'payee', 'amountOs', 'blockNumber', 'includedAt', 'sourceDisposition', 'reason'];
   function diagnosticFields(value, fields) {
@@ -447,15 +428,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     const operation = projectExpiry(found);
     const coords = coordinates.get(operation.id);
     const approval = approvalFor.get(operation.id);
-    return {
-      operation: diagnosticOnly ? diagnosticOperation(operation) : operation,
+    const history = ops.history(operation.id);
+    const result = {
+      operation: diagnosticOnly ? projectDiagnosticOperation(operation) : operation,
       approval: approval ? { signer: approval.signer_address, approvedAt: approval.approved_at, termsHash: approval.terms_hash } : null,
       coordinates: diagnosticOnly ? diagnosticCoordinates(coords) : coords,
-      history: ops.history(operation.id),
       approvalUrl: !diagnosticOnly && linkable(operation) ? portalUrl(operation, ops.handoffTokenFor(operation.id)) : null,
       next: nextFor(operation, coords?.observation?.chainMode),
       ...(operation.terms.protocol ? { protocol: protocolFor(operation) } : {}),
+      history: diagnosticOnly ? history.slice(-DIAGNOSTIC_LIMITS.collectionItems) : history,
     };
+    return diagnosticOnly ? projectDiagnostic(result) : result;
   }
 
   // ---- portal (browser) side; every call carries the handoff token ----
@@ -485,24 +468,29 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return found;
   }
 
-  function portalOperation(operationId, token) {
+  function authorizedPortalPurchase(operationId, token) {
     const found = handoffPurchase(operationId, token);
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
-    return diagnosticOnly ? diagnosticOperation(projectExpiry(found)) : expireIfNeeded(found);
+    return diagnosticOnly ? projectExpiry(found) : expireIfNeeded(found);
+  }
+
+  function portalOperation(operationId, token) {
+    const operation = authorizedPortalPurchase(operationId, token);
+    return diagnosticOnly ? projectDiagnosticOperation(operation) : operation;
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
   // listing verification made at prepare time and any chain observation of
   // the payment. Never inferred from the configured network or RPC URL.
   function portalEvidence(operationId, token) {
-    const operation = portalOperation(operationId, token);
+    const operation = authorizedPortalPurchase(operationId, token);
     const coords = coordinates.get(operation.id);
     const listingMode = operation.state?.preparedVerification?.evidence?.chainMode ?? null;
     const directoryMode = operation.state?.preparedVerification?.evidence?.directoryMode ?? null;
     const observation = coords?.observation ?? null;
     const settled = coords?.verifiedAt && operation.status === 'settled_verified';
     const modes = [listingMode, directoryMode, observation?.chainMode].filter(Boolean);
-    return {
+    const evidence = {
       listingMode,
       directoryMode,
       paymentMode: observation?.chainMode ?? null,
@@ -529,6 +517,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       actionable: !diagnosticOnly && linkable(operation),
       ...(operation.terms.protocol ? { protocol: protocolFor(operation) } : {}),
     };
+    return diagnosticOnly ? projectDiagnostic(evidence) : evidence;
   }
 
   async function issueApprovalChallenge({ operationId, token, address }) {
@@ -1020,11 +1009,11 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
           ...(typeof error?.code === 'string' && error.code.length <= 64 ? { code: error.code } : {}) };
       }
     }
-    return { operation: diagnosticOperation(operation), verification: { outcome: 'readback_only', authority: 'unqualified_host',
+    return projectDiagnostic({ operation: projectDiagnosticOperation(operation), verification: { outcome: 'readback_only', authority: 'unqualified_host',
       observation, termsMatch: observation?.status === 'included'
         && (!Object.hasOwn(observation, 'sourceDisposition') || observation.sourceDisposition === 'included')
         ? same(observation.payer, operation.terms.buyer.wallet) && same(observation.payee, operation.terms.seller.payee) && observation.amountOs === operation.terms.price.amountOs
-        : null, ...OBSERVATION_LIMITS } };
+        : null, ...OBSERVATION_LIMITS } });
   }
 
   async function verifySettlement(operation) {

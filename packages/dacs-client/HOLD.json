@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "112b766f75e24442876315ce84ca2a195ff276e5"
+        "blob": "0d41f1cec77884c0f6dea1abc17d85229e70d0c5"
       },
       "DELTA-LEDGER.json": {
-        "blob": "6c5ba530850efb0a8ac630adbf28ffd8b3959664"
+        "blob": "25b5db7a180ce0840acd8ac1e0915a1dde3a1355"
       },
       "DELTA-MAP.md": {
-        "blob": "67abc2e3dbdd3ebe00b0ac9eb99c9d9e1f1663bf"
+        "blob": "3743dc344d1dc437b9e53813ed3b230e62f73f4d"
       },
       "DELTA-NOTES.md": {
         "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "f49038f861e110de8ae02a277a70f03ce77049ba"
+        "blob": "8b34ee07d53edd9131d2a0bd7030b3a636c4d874"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1148,7 +1148,7 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "8a08a79ef38ce5593a6447714e82068f4da698ac"
+        "blob": "f60f7130e5aea8475362b30174645deaea15a53d"
       },
       "src/dacs/purchase-protocol.mjs": {
         "blob": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
@@ -1207,6 +1207,9 @@
       "src/devnet-demo/storage-write-recovery.mjs": {
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
+      "src/diagnostic-projection.mjs": {
+        "blob": "4d3bc5b10835cef9f1026c109293c2bf14c2afa7"
+      },
       "src/public/portal-intent/intent.mjs": {
         "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
       },
@@ -1223,7 +1226,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "7ac41a6e4f20480403f32993a28954b42217f3e4"
+        "blob": "8e6cde420c8d63e7e42e11403df0464175bf042b"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1244,7 +1247,7 @@
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
       },
       "src/util/guarded-sqlite.mjs": {
-        "blob": "e2f10ce5e45bdb746ed7e1b7a88d3897bcab7aad"
+        "blob": "5bb46f0a2a8ba91b1c57126966743f78aa3b0fe5"
       },
       "src/util/http.mjs": {
         "blob": "1a0af8b42041b4f02f3de51cd6b854b959d91f7e"
@@ -1290,6 +1293,12 @@
       },
       "test/delivery-evidence-gate.test.mjs": {
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
+      },
+      "test/diagnostic-bounds.test.mjs": {
+        "blob": "14c3d2e35b5834c3e7ec0d9571e490f4403209f7"
+      },
+      "test/diagnostic-projection.test.mjs": {
+        "blob": "8fb8e91c7d1439f3013548378394fa788236fdb0"
       },
       "test/diagnostic-reader.test.mjs": {
         "blob": "99154dd18992f65e0a498a9e2be1064fffa08a14"
@@ -1352,7 +1361,7 @@
         "blob": "4ee7eacda377c731fd70105eaa3bf862421e01c3"
       },
       "test/guarded-sqlite.test.mjs": {
-        "blob": "ca31522e33d176b0355b8e449008fe7ae6517808"
+        "blob": "8c35bf83ac972af48c61757f546bb74a6171ad16"
       },
       "test/helpers/agreement-context-integration.mjs": {
         "blob": "3bbc74d4d3f72101e8b3d3b2ff27449ba4105add"

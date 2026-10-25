@@ -3,6 +3,7 @@ import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
 import { deliveryDeadlineView, DELIVERY_TIME_SOURCE, verifiedDelivery } from './delivery-deadline-watch.mjs';
 import { purchaseStore } from '../seams/purchase-store-not-wired.mjs';
+import { projectDiagnostic } from '../diagnostic-projection.mjs';
 // The plugin's buyer side of one DACS fixed-price pay-dem purchase, driven
 // from a purchase operation's durable state (operation.state.protocol).
 //
@@ -258,9 +259,8 @@ export class StaleProtocolCheck extends OperationError {
 // Public projections describe saved protocol state without offering actions.
 export function diagnosticProtocolView(operation, options = {}) {
   const view = protocolView(operation, options);
-  const { message: _message, ...bundle } = view?.bundle ?? {};
-  return view ? { ...view, ...(view.bundle ? { bundle } : {}), historical: true,
-    next: 'Stored protocol state is historical. Purchase actions are held; public readback cannot establish settlement or delivery.' } : null;
+  return view ? projectDiagnostic({ ...view, historical: true,
+    next: 'Stored protocol state is historical. Purchase actions are held; public readback cannot establish settlement or delivery.' }) : null;
 }
 
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's

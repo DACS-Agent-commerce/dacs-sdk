@@ -9,8 +9,8 @@ const FUNCTION_OPCODE = /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInvers
 const VIRTUAL_TABLE_OPCODE = /^V(Begin|Check|Column|Create|Destroy|Filter|InitIn|Next|Open|Rename|Update)$/;
 const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function opcodes are unsupported by the statement guard';
 const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
-const owners = new WeakMap(), iterators = new WeakMap();
-let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll, bundledFunctions;
+const owners = new WeakMap(), iterators = new WeakMap(), registrations = new WeakMap();
+let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll, bundledExtensions, bundledExtensionNames;
 function check() {
   if (checking) return;
   checking = true;
@@ -30,14 +30,23 @@ function rejectCodeRunningBindings(args) {
     })) throw new TypeError(REFUSED_BINDINGS);
   }
 }
-// Every fresh connection already lists the bundled FTS, RTREE and GEOPOLY
-// functions as non-builtin. A function registered by the application differs
-// from them in flags, even when it overrides one of their names.
+// Every fresh connection lists the bundled FTS, RTREE and GEOPOLY functions as
+// non-builtin. An application function with the same name and arity has the
+// same name, arity, type, encoding and flags, so PRAGMA function_list cannot
+// tell the two apart: their names are refused wherever they are called, and
+// functions registered through the patched registration methods are recorded.
 const functionIdentity = row => [row.name.toLowerCase(), row.narg, row.enc, row.type, row.flags].join('/');
 function applicationFunctions(db) {
-  return new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
-    .filter(row => !row.builtin && !bundledFunctions.has(functionIdentity(row)))
-    .map(row => row.name.toLowerCase()));
+  const names = new Set(registrations.get(db));
+  for (const row of nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))) {
+    if (!row.builtin && !bundledExtensions.has(functionIdentity(row))) names.add(row.name.toLowerCase());
+  }
+  return names;
+}
+function rememberRegistration(db, name) {
+  const names = registrations.get(db) ?? new Set();
+  names.add(name.toLowerCase());
+  registrations.set(db, names);
 }
 function execute(fn, db, sql) {
   check();
@@ -57,7 +66,7 @@ function execute(fn, db, sql) {
       if (functions.size > 0 && VIRTUAL_TABLE_OPCODE.test(row.opcode)) return true;
       if (!FUNCTION_OPCODE.test(row.opcode)) return false;
       const name = /^([\s\S]*)\(-?\d+\)$/.exec(String(row.p4));
-      return !name || functions.has(name[1].toLowerCase());
+      return !name || functions.has(name[1].toLowerCase()) || bundledExtensionNames.has(name[1].toLowerCase());
     })) {
       throw new TypeError(REFUSED_PROGRAM);
     }
@@ -86,7 +95,9 @@ function install(db) {
   nativeExec = exec; nativePrepare = prepare; nativeGet = statement.get; nativeAll = statement.all;
   const fresh = new DatabaseSync(':memory:');
   try {
-    bundledFunctions = new Set(nativeAll.call(nativePrepare.call(fresh, 'PRAGMA function_list')).map(functionIdentity));
+    const extensions = nativeAll.call(nativePrepare.call(fresh, 'PRAGMA function_list')).filter(row => !row.builtin);
+    bundledExtensions = new Set(extensions.map(functionIdentity));
+    bundledExtensionNames = new Set(extensions.map(row => row.name.toLowerCase()));
   } finally { fresh.close(); }
   // Patch the native statement prototype too: the host may already have
   // prepared a statement before this capability was installed.
@@ -112,7 +123,9 @@ function install(db) {
     const original = database[method];
     database[method] = function (...args) {
       if (callbacks.length) throw new TypeError('SQL callbacks cannot be registered during a guard');
-      return Reflect.apply(original, this, args);
+      const result = Reflect.apply(original, this, args);
+      rememberRegistration(this, args[0]);
+      return result;
     };
   }
   database.exec = function (sql) {
@@ -150,6 +163,11 @@ function install(db) {
  * functions, because their SQL is compiled while the statement runs. Statements
  * prepared before installation can only read while a guard is active, and are
  * refused when the guarded connection has application functions.
+ * An application function that shares the name and arity of a bundled FTS,
+ * RTREE or GEOPOLY function looks identical to it, so calls to those bundled
+ * functions are refused by name under a guard. Such an override registered
+ * before this module was first used is not seen as an application function, so
+ * virtual tables and earlier prepared statements are not refused on its account.
  * This stops stale code from writing through ordinary or captured native
  * writers. It does not stop code that deliberately holds a native exec and
  * clears query_only; that needs a native authorizer, which Node 22 lacks.
