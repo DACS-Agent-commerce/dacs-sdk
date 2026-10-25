@@ -4,7 +4,7 @@ import type { WireRequestInput, WireSigner } from "../../src/wire/index.js";
 
 const sellers = new Map<string, WireSigner>();
 export function registerDiscoverySigner(signer: WireSigner): void { sellers.set(signer.claim, signer); }
-export const FIXTURE_ENDPOINT = "https://seller.proof-fixture.invalid";
+export const FIXTURE_ENDPOINT = "https://seller.agreement.invalid";
 export async function signRequestWithProof(input: Omit<WireRequestInput, "endpointProof" | "publicEndpoint"> & Partial<Pick<WireRequestInput, "endpointProof" | "publicEndpoint">>, document?: Uint8Array) {
   const wire = await import("../../src/wire/index.js");
   // Keep the earlier admission tests on the real entry point, including its
