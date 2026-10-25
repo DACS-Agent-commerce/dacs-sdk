@@ -6,6 +6,7 @@ import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime
 import { pathToFileURL } from "node:url";
 import { join, posix } from "node:path";
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 // Pure classification of observed advisory IDs against the curated baseline.
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
@@ -243,11 +244,94 @@ export function nestedModuleRoots(directory, names) {
   return roots;
 }
 
+const TAR_BLOCK = 512;
+const PACKAGE_ROOT = "package/";
+const tarText = (header, start, end) => header.toString("utf8", start, end).replace(/\0.*$/s, "");
+
+// The `path` record of a pax extended header, which npm writes for names that
+// do not fit a ustar header.
+function paxPath(data) {
+  let path;
+  for (let offset = 0; offset < data.length;) {
+    const space = data.indexOf(" ", offset);
+    const length = Number.parseInt(data.toString("utf8", offset, space), 10);
+    if (space < 0 || !(length > 0) || offset + length > data.length) throw new Error("malformed pax header in the packed tarball");
+    const record = data.toString("utf8", space + 1, offset + length - 1);
+    if (record.startsWith("path=")) path = record.slice("path=".length);
+    if (record.startsWith("size=")) throw new Error("unsupported pax size in the packed tarball");
+    offset += length;
+  }
+  return path;
+}
+
+const isEscapingPath = path => path.split("/").some(part => part === "" || part === "." || part === "..");
+
+/** Reads a gzip-compressed npm tarball into a Map of path below `package/` to file bytes.
+ * Throws on a truncated archive, one without a package.json, a duplicate or escaping path, or any entry that is not a file or directory. */
+export function packedFiles(archive) {
+  const tar = gunzipSync(archive);
+  const files = new Map();
+  let paxName;
+  for (let offset = 0; offset + TAR_BLOCK <= tar.length;) {
+    const header = tar.subarray(offset, offset + TAR_BLOCK);
+    if (header.every(byte => byte === 0)) break;
+    const size = Number.parseInt(tarText(header, 124, 136).trim() || "0", 8);
+    const type = String.fromCharCode(header[156] || 48);
+    const end = offset + TAR_BLOCK + size;
+    if (!(size >= 0) || end > tar.length) throw new Error("truncated packed tarball");
+    const data = tar.subarray(offset + TAR_BLOCK, end);
+    offset += TAR_BLOCK + Math.ceil(size / TAR_BLOCK) * TAR_BLOCK;
+    if (type === "x") { paxName = paxPath(data); continue; }
+    const prefix = tarText(header, 345, 500);
+    const name = paxName ?? (prefix ? `${prefix}/` : "") + tarText(header, 0, 100);
+    paxName = undefined;
+    if (type !== "0" && type !== "5") throw new Error(`unsupported entry type ${type} in the packed tarball: ${name}`);
+    const path = name.slice(PACKAGE_ROOT.length).replace(/\/$/, "");
+    if (!name.startsWith(PACKAGE_ROOT) || (path !== "" && isEscapingPath(path))) {
+      throw new Error("packed tarball entry is outside package/: " + name);
+    }
+    if (type === "5") continue;
+    if (files.has(path)) throw new Error("duplicate packed tarball entry: " + name);
+    files.set(path, data);
+  }
+  if (!files.has("package.json")) throw new Error("packed tarball has no package.json");
+  return files;
+}
+
+const MAX_LISTED_DIFFERENCES = 5;
+
+/** Compares the files of one installed package directory with `packed` and returns one line per
+ * missing, changed or unexpected file, and per entry that is not a regular file. The directory's
+ * own `node_modules` holds its dependencies, which the tarball does not, unless it bundles them. */
+export function installedFileDifferences(directory, packed) {
+  const differences = [];
+  const installed = new Map();
+  const bundled = [...packed.keys()].some(path => path.startsWith("node_modules/"));
+  const visit = (current, prefix) => {
+    for (const entry of listDirectory(current)) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (prefix || entry.name !== "node_modules" || bundled) visit(join(current, entry.name), path);
+      } else if (entry.isFile()) installed.set(path, readFileSync(join(current, entry.name)));
+      else differences.push(`not a regular file: ${path}`);
+    }
+  };
+  visit(directory, "");
+  for (const [path, bytes] of packed) {
+    if (!installed.has(path)) differences.push(`missing: ${path}`);
+    else if (!installed.get(path).equals(bytes)) differences.push(`changed: ${path}`);
+  }
+  for (const path of installed.keys()) if (!packed.has(path)) differences.push(`unexpected: ${path}`);
+  return differences;
+}
+
 // Every installed copy of a candidate package, top-level, nested or aliased,
 // must be the packed release-set tarball that release-provenance.json records,
 // at the release's version both in the lock and, when `installedManifest`
-// reads it, in the installed package.json.
-export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots, installedLinkedDirectories }) {
+// reads it, in the installed package.json. When `differencesFrom` is given,
+// each copy's files must also be the files of the tarball (a candidate's
+// `files`): `differencesFrom(location, files)` returns what differs.
+export function candidateIntegrityErrors({ manifest, lock, registry, candidates, installedManifest, installedInventory, installedModuleRoots, installedLinkedDirectories, differencesFrom }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
   const inventory = installedInventory ?? [];
@@ -263,7 +347,7 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
     .map(item => "cannot inspect a node_modules directory inside node_modules or a scope directory: " + item.location));
   const candidateLocations = new Set();
   const candidateNames = new Set(candidates.map(candidate => candidate.name));
-  for (const { name, integrity, version } of candidates) {
+  for (const { name, integrity, version, files } of candidates) {
     for (const { alias } of candidateAliases(manifest, packages, name)) candidateNames.add(alias);
     if (typeof version !== "string" || version === "") {
       errors.push("candidate record has no release version: " + name);
@@ -313,6 +397,12 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
           errors.push("installed candidate package is not the release: " + location + " (expected " + name + "@" +
             version + ", observed " + String(manifest?.name) + "@" + String(manifest?.version) + ")");
         }
+      }
+      const differences = differencesFrom?.(location, files) ?? [];
+      if (differences.length) {
+        errors.push("installed candidate files are not the packed tarball's: " + location + " (" +
+          differences.slice(0, MAX_LISTED_DIFFERENCES).join(", ") +
+          (differences.length > MAX_LISTED_DIFFERENCES ? `, and ${differences.length - MAX_LISTED_DIFFERENCES} more` : "") + ")");
       }
     }
   }
@@ -562,16 +652,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
     const candidates = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"].map(name => {
       const archive = join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`);
-      const integrity = "sha512-" + createHash("sha512").update(readFileSync(archive)).digest("base64");
+      const bytes = readFileSync(archive);
+      const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
       const recorded = provenance.packages?.[name]?.integrity;
       if (recorded !== integrity) {
         throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
       }
-      return { name, integrity, version };
+      return { name, integrity, version, files: packedFiles(bytes) };
     });
     const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
       installedModuleRoots: (location, names) => nestedModuleRoots(join(project, location), names),
       installedLinkedDirectories: location => linkedDirectories(join(project, location)),
+      differencesFrom: (location, files) => installedFileDifferences(join(project, location), files),
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
     const violations = registryDependencyViolations({ manifest, lock, registry });
