@@ -273,9 +273,15 @@ export function expectedNode20Rejection(p, subpath, error, node = process.versio
   return node.startsWith("20.") && Boolean(restricted) && error.code === "ERR_UNKNOWN_BUILTIN_MODULE" && error.message === "No such built-in module: node:sqlite";
 }
 
+// Prefixed to every check run in a child process. Code under test may call
+// process.exit(0) or print a completion line early; the child must set
+// `finished = true` immediately before its own completion line, or it exits 1.
+const CHILD_EXIT_GUARD = `let finished = false;
+  process.on('exit', () => { if (!finished) { process.exitCode = 1; process.stderr.write('exited before finishing\\n'); } });`;
+
 function requireCompletion(output, accepted, what) {
   const lines = output.trim().split("\n");
-  if (!accepted.includes(lines.at(-1))) fail(`${what} did not finish importing: a zero exit status without its completion line`);
+  if (!accepted.includes(lines.at(-1))) fail(`${what} did not finish: a zero exit status without its completion line`);
   return output.trim();
 }
 
@@ -405,9 +411,11 @@ export async function consume(artifacts, scratch, log = console.log, options = {
     const nativeReady = `native sqlite ready: better-sqlite3@${nativeVersion}`;
     log(requireCompletion(execute(process.execPath, ["--input-type=module", "-e", `
       import Database from 'better-sqlite3';
+      ${CHILD_EXIT_GUARD}
       const db = new Database(':memory:');
       try { if (db.prepare('SELECT 1 AS ready').get().ready !== 1) throw Error('native sqlite smoke failed'); }
       finally { db.close(); }
+      finished = true;
       console.log(${JSON.stringify(nativeReady)});`], consumer), [nativeReady], "native sqlite smoke"));
   }
   await consumeImports(consumer, artifacts, log);
@@ -423,15 +431,16 @@ export async function consumeImports(consumer, artifacts, log = console.log, inc
     const imported = `imported ${spec}`;
     const rejected = `not imported (expected Node 20 rejection): ${spec} needs node:sqlite`;
     const code = `import {fileURLToPath} from 'node:url';
+      ${CHILD_EXIT_GUARD}
       const spec = ${JSON.stringify(spec)};
       const filename = fileURLToPath(import.meta.resolve(spec));
       if (!filename.startsWith(${JSON.stringify(base + "/")})) throw Error('export resolves outside consumer');
       const attributes = filename.endsWith('.json') ? {with:{type:'json'}} : {};
       const expectedNode20Rejection = ${expectedNode20Rejection.toString()};
       const manifest = ${JSON.stringify({ name: artifact.manifest.name, engines: artifact.manifest.engines })};
-      try { await import(spec, attributes); console.log(${JSON.stringify(imported)}); }
+      try { await import(spec, attributes); finished = true; console.log(${JSON.stringify(imported)}); }
       catch (error) {
-        if (expectedNode20Rejection(manifest, ${JSON.stringify(entry.subpath)}, error)) console.log(${JSON.stringify(rejected)});
+        if (expectedNode20Rejection(manifest, ${JSON.stringify(entry.subpath)}, error)) { finished = true; console.log(${JSON.stringify(rejected)}); }
         else throw error;
       }`;
     try { log(requireCompletion(run(process.execPath, ["--input-type=module", "-e", code], consumer), [imported, rejected], spec)); }
@@ -461,9 +470,11 @@ export async function checkGenerator(consumer, artifacts, log = console.log) {
     if (!artifacts.some(a => a.manifest.name === name)) fail(`missing packed generator dependency: ${name}`);
   }
   const versions = Object.fromEntries(artifacts.map(a => [a.manifest.name, a.manifest.version]));
-  log(run(process.execPath, ["--input-type=module", "-e", `
+  const created = "generator projects created: offline, live-demos";
+  log(requireCompletion(run(process.execPath, ["--input-type=module", "-e", `
     import { readFile } from 'node:fs/promises';
     import { createDacsAgentProject, CREATE_DACS_AGENT_VERSION } from 'create-dacs-agent';
+    ${CHILD_EXIT_GUARD}
     const versions = ${JSON.stringify(versions)};
     if (CREATE_DACS_AGENT_VERSION !== versions['create-dacs-agent']) throw Error('generator version mismatch');
     for (const mode of ['offline', 'live-demos']) {
@@ -475,7 +486,9 @@ export async function checkGenerator(consumer, artifacts, log = console.log) {
       }
       if (mode === 'live-demos' && p.dacs?.generatorVersion !== versions['create-dacs-agent']) throw Error('generated metadata version mismatch');
       console.log('generator project created: ' + mode);
-    }`], consumer).trim());
+    }
+    finished = true;
+    console.log(${JSON.stringify(created)});`], consumer), [created], "generator project check"));
   const nativeVersion = artifacts.find(a => a.manifest.name === "@kynesyslabs/dacs-node")?.manifest.optionalDependencies?.["better-sqlite3"];
   for (const mode of ["offline", "live-demos"]) {
     const p = JSON.parse(await readFile(join(consumer, `generated-${mode}`, "package.json"), "utf8"));
