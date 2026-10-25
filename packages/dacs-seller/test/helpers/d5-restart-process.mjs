@@ -24,7 +24,7 @@ const anchor={writer:seller,hasIntent:async address=>Boolean(data.records[addres
  const hash=contentHash(artifact),receipt={receiptVersion:'1',substrate:'fixture',finalityProfile:'fixture',logicalAddress,nativeAddress:logicalAddress,contentHash:hash,transactionRef:{kind:'fixture',value:hash},writer:seller,state:'finalized',observationDisposition:'established',observedAt:config.time,blockRef:{id:'fixture'},evidence:{kind:'fixture',value:'local'}};
  const result={status:'present',artifact,receipt};data.records[logicalAddress]=result;data.creates.push(logicalAddress);data.closing=false;save();return result;
 }};
-const partyStore=openPartyVetStore({path:join(directory,'party.sqlite')}),transport=createSellerTransportStore({path:join(directory,'transport.sqlite'),now:()=>config.time});
+const partyPath=join(directory,'party.sqlite'),partyStore=openPartyVetStore({path:partyPath,mode:existsSync(partyPath)?'open':'create'}),transport=createSellerTransportStore({path:join(directory,'transport.sqlite'),now:()=>config.time});
 const buyerKey=createPrivateKey(config.buyer.privateKey),counterparty={
  issueChallenge:async({jobId})=>({issuer:config.buyer.claim,seller,jobId,sessionNonce:sha256Hex('buyer-issued:'+jobId),expiresAt:config.time+60000}),
  readRecord:async input=>data.counterpartyRecord?{status:'present',record:data.counterpartyRecord}:data.counterpartyAttempt?{status:'indeterminate'}:{status:'unattempted',issuer:config.buyer.claim,jobId:input.jobId,bundleHash:identityBundleHash(input.identityBundle),requirementHash:sha256Hex(canonicalize(input.requirement))},
