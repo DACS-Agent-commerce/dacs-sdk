@@ -172,10 +172,12 @@ function moduleRoots(location, files) {
  * files, manifest, bundledBy, unverified }`: `files` maps installed paths to sha256 digests, and an
  * entry without a sha512 integrity, such as a Git dependency, is `unverified`), `carried` (each
  * module an archive holds below a node_modules of its own that no lock entry installs, with its name
- * and package.json) and `errors` (entries whose installed files cannot be derived). */
+ * and package.json) and `errors` (entries whose installed files cannot be derived, including
+ * command targets with CRLF shebangs that npm rewrites when creating executable links). */
 export function installationClosure(project, lock, readArchive) {
   const entries = new Map();
   const roots = new Map();
+  const crlfCommands = new Set();
   const errors = [];
   if (!isPlainObject(lock?.packages)) return { entries, carried: new Map(), errors: ["package-lock.json has no packages map"] };
   for (const [location, entry] of Object.entries(lock.packages)) {
@@ -191,6 +193,9 @@ export function installationClosure(project, lock, readArchive) {
     if (sha512Digest(entry.integrity) === null) { record.unverified = true; continue; }
     try {
       const files = packedFiles(readArchive(location, entry));
+      for (const [path, bytes] of files) {
+        if (/^#![^\n]+\r\n/.test(bytes.toString("utf8"))) crlfCommands.add(`${location}/${path}`);
+      }
       record.manifest = readManifest(files.get("package.json")).manifest;
       record.files = new Map([...files].map(([path, bytes]) => [path, fileDigest(bytes)]));
       for (const [root, module] of moduleRoots(location, files)) roots.set(root, module);
@@ -204,6 +209,11 @@ export function installationClosure(project, lock, readArchive) {
       else Object.assign(record, { bundledBy: module.owner, manifest: module.manifest });
     } else if (record.files && roots.has(location)) {
       errors.push(`lock entry ${location} is also in the archive of ${roots.get(location).owner}`);
+    }
+    for (const target of record.present && isPlainObject(record.entry.bin) ? Object.values(record.entry.bin) : []) {
+      if (typeof target === "string" && crlfCommands.has(posix.join(location, target))) {
+        errors.push(`cannot derive the installed files of ${location}: npm rewrites the CRLF shebang of bin target: ${posix.normalize(target)}`);
+      }
     }
   }
   const carried = new Map([...roots].filter(([root]) => !entries.has(root)));
@@ -280,7 +290,7 @@ export function installationDifferences(project, closure) {
     }
   };
   visit("node_modules", false);
-  for (const path of [...files.keys(), ...unverified]) {
+  for (const path of [...files.keys(), ...links.keys(), ...unverified]) {
     if (path !== HIDDEN_LOCKFILE && !seen.has(path)) differences.push("missing: " + path);
   }
   return differences;
