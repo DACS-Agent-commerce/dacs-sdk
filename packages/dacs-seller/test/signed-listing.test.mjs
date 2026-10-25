@@ -20,14 +20,14 @@ function receiptFor(logicalAddress, artifact, signer = wallet) {
     transactionRef: { kind: 'fixture-sr2-write', value: fixtureWriteHash({ logicalAddress, contentHash: hash, writer: signer.claim, writerSignature }) }, writer: signer.claim,
     state: 'finalized', observationDisposition: 'established', observedAt: NOW, blockRef: { id: 'TEST-block', height: '1', timestamp: NOW }, evidence: { kind: 'fixture-writer-signature', value: writerSignature } };
 }
-function publisherWorld({ editReceipt = value => value, read = value => value, sign = bytes => wallet.signBytes(bytes) } = {}) {
+function publisherWorld({ editReceipt = value => value, read = value => value, sign = bytes => wallet.signBytes(bytes), scanOwnListings = async () => ({ status: 'ok', anchors: [] }) } = {}) {
   const calls = { sign: 0, publish: 0, read: 0 }; let kept;
   const anchor = {
     async publish(input) { calls.publish++; kept = { status: 'present', artifact: structuredClone(input.artifact), receipt: editReceipt(receiptFor(input.logicalAddress, input.artifact)) }; return structuredClone(kept); },
     async read() { calls.read++; return read(structuredClone(kept)); },
     async verifyReceipt(input) { return verifyFixtureReceipt({ receipt: input.receipt, logicalAddress: input.logicalAddress, hash: contentHash(input.artifact), expectedWriter: wallet.claim }); },
   };
-  const publish = createDevnetDemoListingPublisher({ anchor, sign: (...args) => { calls.sign++; return sign(...args); }, scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: railAuthority });
+  const publish = createDevnetDemoListingPublisher({ anchor, sign: (...args) => { calls.sign++; return sign(...args); }, scanOwnListings, loadRailResolution: railAuthority });
   const { signature, ...draft } = fixtureListing(wallet, { now: NOW });
   return { publish, draft, calls };
 }
@@ -133,6 +133,25 @@ for (const [label, sign] of [['another wallet', bytes => Buffer.from(ed25519Sign
     assert.equal(w.calls.publish, 0);
   });
 }
+
+for (const seam of ['history scan', 'wallet signing']) test(`publication keeps the original seller when the caller changes its draft during ${seam}`, async () => {
+  const otherSeed = new Uint8Array(32).fill(18);
+  const otherClaim = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(otherSeed))).toString('hex')}`;
+  let entered, release;
+  const pendingCallback = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const pause = async () => { entered(); await gate; };
+  const w = publisherWorld({
+    scanOwnListings: async () => { if (seam === 'history scan') await pause(); return { status: 'ok', anchors: [] }; },
+    sign: async bytes => { if (seam === 'wallet signing') await pause(); return Buffer.from(ed25519Sign(bytes, privateKeyFromSeed(otherSeed))); },
+  });
+  const pending = w.publish(w.draft);
+  await pendingCallback;
+  w.draft.seller.identity.presentedBy = otherClaim;
+  release();
+  await assert.rejects(pending, /signature/);
+  assert.deepEqual(w.calls, { sign: 1, publish: 0, read: 0 });
+});
 
 test('stop reaches a pending signature and prevents any subsequent signature or submission', async () => {
   let entered, release, options;
