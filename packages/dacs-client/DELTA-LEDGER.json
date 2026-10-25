@@ -1559,6 +1559,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the 06c lease formatting integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 06a lease formatting integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 07 lease formatting integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 08 lease formatting integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 08 lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 09 lease formatting integration","files":[]}
   ]
 }
