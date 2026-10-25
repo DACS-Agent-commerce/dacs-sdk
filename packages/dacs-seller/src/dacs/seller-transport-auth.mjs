@@ -550,14 +550,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // The host may resolve only the SAME retained operation, after its seller
     // reducer has authenticated durable context and fresh native readback. No
     // reservation, slot or transaction is released; no expired intent retries.
-    // retry (payments and proposals): the agent resumed its durable operation.
-    // A payment claim runs again from its retained work, or its start when
-    // it ended before the work checkpoint,
-    // and it is not final yet; the effect goes back to `retry`, as finish would
-    // leave it, so the next claim runs it again under the same slot.
-    // noEffect (payments and proven unsigned proposals): the claim ended before the agent's work
-    // checkpoint with a definite answer that kept nothing; its effect, slot
-    // and transaction go, as finish's noEffect, so another claim can start.
+    // A pending effect may be performed by a live run: only readback of a
+    // finished effect (200) can complete it; retry and noEffect need `uncertain`.
+    // retry (payments and proposals): the agent resumed its durable operation;
+    // the effect goes back to `retry`, so the next claim runs it again.
+    // noEffect (payments and proven unsigned proposals): the claim ended before
+    // the work checkpoint with a definite answer that kept nothing; its effect,
+    // slot and transaction go.
     reconcile(reservation, request, status, text, { retry = false, noEffect = false } = {}) {
       requireJobId(request?.jobId);
       if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
@@ -566,7 +565,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
-            !current || current.owner !== reservation.owner || !['pending', 'uncertain'].includes(current.state) ||
+            !current || current.owner !== reservation.owner || !(current.state === 'uncertain' || (current.state === 'pending' && !retry && !noEffect)) ||
             // The context step is bound by its admission record, the other steps by the job's Agreement row.
             (request.path === CONTEXT ? !admissions() || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
               : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
@@ -585,10 +584,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     },
     // The context step only: an uncertain step (finished with its 503) whose
     // route reconciliation proved that a shutdown cut it before anything of it
-    // was signed or sent (seller-context-route.mjs reconcile) runs again, under
-    // a fresh owner, as the same effect of the same admission record. Only one
-    // retry can take it: a step pending again (running, or crashed mid-run)
-    // stays fenced. Its earlier nonces keep their 503 until it completes.
+    // was signed or sent runs again, under a fresh owner, as the same effect of
+    // the same admission record, unless its seller session has ended. Only one
+    // retry can take it; a step pending again stays fenced. Its earlier nonces
+    // keep their 503 until it completes.
     resume(reservation, request) {
       requireJobId(request?.jobId);
       return transaction(() => {
@@ -596,6 +595,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (request.path !== CONTEXT || reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
             !current || current.owner !== reservation.owner || current.state !== 'uncertain' || !admissions() ||
             get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey) fail('peer_reconciliation_conflict', 503);
+        if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
         const owner = randomBytes(24).toString('hex');
         run('UPDATE peer_effects SET owner = ?, state = ?, status = NULL, response = NULL WHERE effect = ?', owner, 'pending', reservation.effectKey);
         return { disposition: 'perform', effectKey: reservation.effectKey, owner, readOnly: false, resumed: true };
