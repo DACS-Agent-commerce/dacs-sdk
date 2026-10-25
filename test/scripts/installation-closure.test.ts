@@ -1,4 +1,4 @@
-import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -145,6 +145,45 @@ describe("installation closure", () => {
     mkdirSync(join(install.project, "node_modules/.bin"));
     symlinkSync("../a/x.js", join(install.project, "node_modules/.bin/a"));
     expect(install.differences()).toEqual(["link to an unexpected target: node_modules/.bin/a -> ../a/x.js"]);
+  });
+
+  it.each(["node_modules/a", "node_modules/parent/node_modules/a"])(
+    "reports an interrupted installation missing its command link for %s", location => {
+      const install = simulatedInstall({
+        [location]: [{ version: "1.0.0", bin: { a: "cli.js" } }, { "package.json": manifest("a"), "cli.js": "" }],
+      });
+      const link = `${dirname(location)}/.bin/a`;
+      mkdirSync(dirname(join(install.project, link)), { recursive: true });
+      symlinkSync("../a/cli.js", join(install.project, link));
+      expect(install.differences()).toEqual([]);
+      rmSync(join(install.project, link));
+      expect(install.differences()).toEqual(["missing: " + link]);
+    });
+
+  it.each(["node_modules/a", "node_modules/parent/node_modules/a"])(
+    "refuses a CRLF shebang command npm rewrites at %s", location => {
+      const install = simulatedInstall({ [location]: [{ version: "1.0.0", bin: { a: "./lib/../cli.js" } },
+        { "package.json": manifest("a"), "cli.js": "#!/usr/bin/env node\r\nconsole.log('fixture');\r\n" }] });
+      expect(install.closure().errors).toEqual([
+        `cannot derive the installed files of ${location}: npm rewrites the CRLF shebang of bin target: cli.js`,
+      ]);
+    });
+
+  it("keeps LF command bytes and CRLF files that are not commands", () => {
+    const install = simulatedInstall({ "node_modules/a": [{ bin: { a: "cli.js" } },
+      { "package.json": manifest("a"), "cli.js": "#!/usr/bin/env node\n", "other.js": "#!/usr/bin/env node\r\n" }] });
+    expect(install.closure().errors).toEqual([]);
+  });
+
+  it("refuses a bundled command whose CRLF shebang npm rewrites", () => {
+    const install = simulatedInstall({
+      "node_modules/parent": [{}, { "package.json": manifest("parent"),
+        "node_modules/a/package.json": manifest("a"), "node_modules/a/cli.js": "#!/usr/bin/env node\r\n" }],
+      "node_modules/parent/node_modules/a": [{ inBundle: true, bin: { a: "cli.js" } }, null],
+    });
+    expect(install.closure().errors).toEqual([
+      "cannot derive the installed files of node_modules/parent/node_modules/a: npm rewrites the CRLF shebang of bin target: cli.js",
+    ]);
   });
 
   it("lists a module an archive carries in node_modules of its own, which no lock entry names", () => {
@@ -307,5 +346,38 @@ describe("installation closure of real npm installations", () => {
     writeFileSync(join(project, "node_modules/fixture-plugin/dist/node_modules/@kynesyslabs/dacs/extra.js"), "");
     expect(installationDifferences(project, closure()))
       .toEqual(["unexpected file: node_modules/fixture-plugin/dist/node_modules/@kynesyslabs/dacs/extra.js"]);
+  }, 60_000);
+
+  it("reports removed top-level and nested command links after a successful npm installation", async () => {
+    const { project, closure } = await installFixture();
+    const links = ["node_modules/.bin/with-bin", "node_modules/parent/node_modules/.bin/child"];
+    expect(installationDifferences(project, closure())).toEqual([]);
+    for (const link of links) rmSync(join(project, link));
+    expect(installationDifferences(project, closure())).toEqual(links.map(link => "missing: " + link));
+  }, 60_000);
+
+  it("refuses the original bytes of a CRLF command that npm successfully normalizes", async () => {
+    const directory = temporaryDirectory();
+    const cache = join(directory, "cache");
+    const files = { "package.json": manifest("crlf-bin", "1.0.0", { bin: { crlf: "cli.js" } }),
+      "cli.js": "#!/usr/bin/env node\r\nconsole.log('fixture');\r\n" };
+    const archive = packTarball(files);
+    const server = await serveArchives(new Map([["crlf-bin", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { "crlf-bin": "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/crlf-bin": {
+        version: "1.0.0", resolved: `${server.registry}/crlf-bin.tgz`, integrity: sri(archive), bin: { crlf: "cli.js" },
+      } } };
+      writeFileSync(join(directory, "package.json"), JSON.stringify(root));
+      writeFileSync(join(directory, "package-lock.json"), JSON.stringify(lock));
+      const installed = await npmCi(directory, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(readFileSync(join(directory, "node_modules/crlf-bin/cli.js"), "utf8"))
+        .toBe("#!/usr/bin/env node\nconsole.log('fixture');\r\n");
+      const closure = installationClosure(directory, lock, (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity));
+      expect(closure.errors).toEqual([
+        "cannot derive the installed files of node_modules/crlf-bin: npm rewrites the CRLF shebang of bin target: cli.js",
+      ]);
+    } finally { await server.close(); }
   }, 60_000);
 });
