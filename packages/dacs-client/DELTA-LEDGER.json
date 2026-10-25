@@ -1404,6 +1404,10 @@
     {"delta":"D11","subject":"fix(client): D11 record the 03a split integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 04 split integration","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"bcbc66ea3a869596598efa05e0aa1aeff721464d","after":"bcbc66ea3a869596598efa05e0aa1aeff721464d"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"9ae489487e07d4a3f7fe02285cf594c8bc565f53","after":"9ae489487e07d4a3f7fe02285cf594c8bc565f53"},{"path":"packages/dacs-client/test/purchase-executed-only.test.mjs","before":"498f20be5b423d6328ffb0031d71d4e3d8233c43","after":"55210180f3e09b6b8aa1286ddffda7fd1fdb92ea"}]},
     {"delta":"D11","subject":"fix(client): D11 distinguish source records from metadata checkpoints","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 04 checkpoint check integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 04 checkpoint check integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 normalize the extracted lease and checkpoint probes","files":[{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"bccc86590f36056cb352f4cff077c1671845831f","after":"011865d7d581630937628b776c829f0fdce48607"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03b lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03c lease formatting integration","files":[{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"927a43435424ea2b8ee1a11f7d2d47eb350139fc","after":"927a43435424ea2b8ee1a11f7d2d47eb350139fc"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the 03a lease formatting integration","files":[]}
   ]
 }
