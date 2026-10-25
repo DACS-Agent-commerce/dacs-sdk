@@ -39,9 +39,10 @@ export function walletChain({ state = newWalletChainState(), file = null } = {})
       signedListing: artifact, nonce, timestamp: chain.timestamp++ });
     content.data[1].metadata = { logicalAddress: input.logicalAddress, contentHash: input.receiptContentHash, envelopeHash: sha256Hex(canonicalize(artifact)), artifactKind: input.artifactKind };
     content.from_ed25519_address = from;
-    // What demosdk 4.0.16 sign adds: the node's fee and the execution edits (balance, storage, balance, nonce).
+    // What demosdk 4.0.16 sign adds: the node's fee and the execution edits (storage fee, storage program, gas, nonce).
     content.transaction_fee = { network_fee: 2, rpc_fee: 3, additional_fee: 0, rpc_address: null };
-    content.gcr_edits = ['balance', 'storageProgram', 'balance', 'nonce'].map((type) => ({ type, account: from, isRollback: false }));
+    content.gcr_edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: from, amount: 1 }, { type: 'storageProgram', target: storageAddress, isRollback: false },
+      { type: 'balance', operation: 'remove', isRollback: false, account: from, amount: 1 }, { type: 'nonce', operation: 'add', account: from, amount: 1, isRollback: false }];
     change.edit?.(content);
     const hash = sha256Hex(JSON.stringify(content));
     const projection = { hash, content, signature: { type: 'ed25519', data: change.signature ?? signHash(hash) } };
