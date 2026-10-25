@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { types } from 'node:util';
 
 const require = createRequire(import.meta.url);
 const callbacks = [];
@@ -7,6 +8,7 @@ const FUNCTION_OPCODE = /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInvers
 // SQL while the statement runs, so EXPLAIN cannot show the functions they call.
 const VIRTUAL_TABLE_OPCODE = /^V(Begin|Check|Column|Create|Destroy|Filter|InitIn|Next|Open|Rename|Update)$/;
 const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function opcodes are unsupported by the statement guard';
+const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap();
 let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll;
 function check() {
@@ -14,6 +16,18 @@ function check() {
   checking = true;
   try { for (const { predicate } of callbacks) predicate(); }
   finally { checking = false; }
+}
+// Reading a binding object can run caller code (accessors, proxy traps), and
+// the native method reads it after the writable fence is open, past the last
+// liveness check. Only plain data properties are accepted while a guard is on.
+function rejectCodeRunningBindings(args) {
+  for (const arg of args) {
+    if (typeof arg !== 'object' || arg === null || ArrayBuffer.isView(arg)) continue;
+    if (types.isProxy(arg) || Reflect.ownKeys(arg).some(key => {
+      const { get, set } = Reflect.getOwnPropertyDescriptor(arg, key);
+      return get || set;
+    })) throw new TypeError(REFUSED_BINDINGS);
+  }
 }
 function applicationFunctions(db) {
   return new Set(nativeAll.call(nativePrepare.call(db, 'PRAGMA function_list'))
@@ -70,6 +84,7 @@ function install(db) {
     const original = statement[method];
     statement[method] = function (...args) {
       const owner = owners.get(this);
+      if (callbacks.length > 0 && !checking) rejectCodeRunningBindings(args);
       const result = execute(() => Reflect.apply(original, this, args), owner, this.sourceSQL);
       if (method === 'iterate') iterators.set(result, { db: owner, sql: this.sourceSQL });
       return result;
@@ -117,6 +132,8 @@ function install(db) {
  * The synchronous callback's result/error is preserved; guard errors stop SQL.
  * Native methods remain unrestricted outside guarded callbacks. Predicates
  * may inspect SQLite themselves; those probes bypass recursive checking.
+ * Named bindings with accessors or proxies are refused during guards, because
+ * reading them runs caller code after the last liveness check.
  * SQL callback execution/registration is unsupported during guards, and so are
  * virtual tables (pragma_*() functions) on a connection with application
  * functions, because their SQL is compiled while the statement runs. Statements
