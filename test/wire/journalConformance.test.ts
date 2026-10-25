@@ -6,11 +6,13 @@ import { join } from "node:path";
 // or records are mutated by this harness.
 const fault = vi.hoisted(() => ({ fds: new Map<number, string>(), data: new Map<number, Buffer>(), durable: new Map<string, Buffer>(),
   directory: "", syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false,
-  shortWrite: false, zeroWrite: false, attemptStats: 0, trackDurability: true, shortRead: false, eof: false, reads: [] as number[], onLink: null as null | ((name: string) => void) }));
+  shortWrite: false, zeroWrite: false, attemptStats: 0, trackDurability: true, shortRead: false, eof: false, reads: [] as number[], onLink: null as null | ((name: string) => void), onTemporaryOpen: null as null | (() => void) }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs,
-    openSync(...args: any[]) { const fd = (fs.openSync as any)(...args); fault.fds.set(fd, String(args[0])); return fd; },
+    openSync(...args: any[]) {
+      if (fault.onTemporaryOpen && /\/tmp-[0-9a-f]+$/.test(String(args[0]))) { const callback = fault.onTemporaryOpen; fault.onTemporaryOpen = null; callback(); }
+      const fd = (fs.openSync as any)(...args); fault.fds.set(fd, String(args[0])); return fd; },
     closeSync(fd: number) { fault.fds.delete(fd); fs.closeSync(fd); },
     fsyncSync(fd: number) {
       if (fault.syncError && (!fault.syncDirectoryOnly || fs.fstatSync(fd).isDirectory())) throw fault.syncError;
@@ -81,7 +83,7 @@ function crash(directory: string) {
 beforeEach(() => {
   fault.fds.clear(); fault.data.clear(); fault.durable.clear(); fault.syncError = fault.linkError = null; fault.syncDirectoryOnly = false;
   fault.shortWrite = fault.zeroWrite = false; fault.trackDurability = true; fault.attemptStats = 0;
-  fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.onLink = null; fault.reads = [];
+  fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.onLink = null; fault.onTemporaryOpen = null; fault.reads = [];
 });
 afterEach(() => { expect(fault.fds.size).toBe(0); });
 
@@ -169,6 +171,16 @@ describe("journal publication and recovery regression cases", () => {
     expect(() => reserve(journal)).toThrowError(refused("DIRECTORY-REPLACED"));
     fs.renameSync(moved, directory);
     expect(reserve(journal)).toMatchObject({ state: "completed" });
+  }, 30000);
+  it("refuses a directory replaced while an attempt is being published, so no attempt is issued from the replacement", () => {
+    const { journal, directory } = setup();
+    const moved = `${directory}-moved`;
+    // The first temporary file carries the request nonce; the second is the attempt.
+    fault.onTemporaryOpen = () => { fault.onTemporaryOpen = () => { fs.renameSync(directory, moved); fs.mkdirSync(directory, { mode: 0o700 }); }; };
+    expect(() => reserve(journal)).toThrowError(refused("DIRECTORY-REPLACED"));
+    expect(fault.onTemporaryOpen).toBeNull();
+    fs.rmSync(directory, { recursive: true });
+    fs.renameSync(moved, directory);
   }, 30000);
   it.each([NaN, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])("invalid clock %s issues no attempt", (at) => {
     const { journal, directory } = setup(() => at);
