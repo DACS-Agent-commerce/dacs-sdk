@@ -548,6 +548,9 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | 44175c6440b0e37730f1d4a881165e6325b0b725 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | deleted |
+| D11 | fix(client): D11 normalize the extracted lease and checkpoint probes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 011865d7d581630937628b776c829f0fdce48607 |
+| D11 | fix(client): D11 record the 03b lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1343,6 +1346,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
 | fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
 | fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
