@@ -37,7 +37,7 @@ import {
   ARTIFACT_SEPARATORS,
 } from '@kynesyslabs/dacs';
 import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8, purchaseSupport } from './listing.mjs';
-import { addressForClaim } from './demos-claims.mjs';
+import { addressForClaim, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { canonicalSignature, fixtureRef, fixtureTxRef, verifyFixtureReceipt, verifyFixtureRecord } from './fixture-anchors.mjs';
 
 export const PROTOCOL_PROFILE = 'dacs-chatgpt-plugin/fixed-price-pay-dem/v1';
@@ -92,6 +92,7 @@ export const ed25519Deps = Object.freeze({
   resolvePublicKey: async (signer) => claimPublicKeyRaw(signer),
   verify: (bytes, signature, publicKey) => {
     try {
+      if (isSmallOrderPublicKey(publicKey)) return false;
       return ed25519Verify(bytes, signature, publicKeyFromRaw(Buffer.from(publicKey)));
     } catch {
       return false;
