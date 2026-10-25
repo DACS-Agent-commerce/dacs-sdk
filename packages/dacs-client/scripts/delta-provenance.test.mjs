@@ -49,6 +49,7 @@ test('callback history check needs no ancestry beyond the checked-out commit', t
 });
 test('SQLite split history distinguishes the lease from the later transaction adapter', () => {
   const notes = readFileSync(join(root, 'packages/dacs-client/DELTA-NOTES.md'), 'utf8');
+  assert.match(notes, /^PR 03 title: `feat\(client\): extract the SQLite transaction-liveness lease`\.$/m);
   assert.match(notes, /PR 03 supplies only the connection-local transaction-liveness lease/);
   assert.match(notes, /PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter/);
   assert.match(notes, /Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03/);
