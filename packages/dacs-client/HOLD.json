@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "ce8670c50c487b33b884ca990024908f2da0edbc"
+        "blob": "632541a8be76596bd6672da05d52472cfae8e725"
       },
       "DELTA-LEDGER.json": {
-        "blob": "1919d3fd93c54385f4b4d2d548500a44dfae079a"
+        "blob": "cd10ad5187cf385fcbc0b4c0011fa85542f218e5"
       },
       "DELTA-MAP.md": {
-        "blob": "e4f6d1fb6614ce3be96456121eb3a760a0efb26f"
+        "blob": "285a0d182c136f312b93a28713c4741509babc38"
       },
       "DELTA-NOTES.md": {
         "blob": "f3ec418f2ab5ecd3769611fc54bf0acd14c4849e"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "9a5e2a7283912bc5d058a06efbbfea6807ee719f"
+        "blob": "f6963d410de9a052dc8ea8d261b26929a004e27f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1223,7 +1223,7 @@
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "944247d4ce8b2622389c79b71de1a21d6b83e239"
+        "blob": "e426a63c2c413f2073d28c0ee922e8e305fd88db"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
@@ -1284,6 +1284,9 @@
       },
       "test/delivery-evidence-gate.test.mjs": {
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
+      },
+      "test/diagnostic-store-regressions.test.mjs": {
+        "blob": "00357c230e040c7a2658f717f72e172eedcc8b44"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
@@ -1576,6 +1579,9 @@
       "test/helpers/start-intent.mjs": {
         "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
       },
+      "test/helpers/store-crash-worker.mjs": {
+        "blob": "f19662c277f9bcc86145487d72230cdfbdde2d50"
+      },
       "test/helpers/wallet-extension-probe-dom.mjs": {
         "blob": "82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c"
       },
@@ -1620,6 +1626,12 @@
       },
       "test/storage-read-nonobservation.test.mjs": {
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
+      },
+      "test/store-atomicity.test.mjs": {
+        "blob": "77cf094cdddb8ffd4131013d42e15eb58f2fe8a6"
+      },
+      "test/store-host-boundary.test.mjs": {
+        "blob": "74c4ba0638f76b77d45dd45c1260e7e718a8e7af"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
