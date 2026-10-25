@@ -195,6 +195,21 @@ test('a CREATE signed with the SDK node fee, execution edits and source binding 
   assert.equal(w.calls.broadcast.length, 1);
 });
 
+test('a CREATE signed after the denomination fork, with a string zero amount and string fees, is kept and sent', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.sign.push({ edit: (content) => {
+    content.amount = '0';
+    content.transaction_fee = { network_fee: '2000000000', rpc_fee: '3000000000', additional_fee: '0', rpc_address: null };
+  } });
+  const { status, txHash } = await journal.anchorEvidence(w.input());
+  assert.equal(status, 'submitted');
+  assert.equal((await journal.readSignedProjection(w.input())).content.amount, '0');
+  assert.equal(w.calls.broadcast.length, 1);
+  assert.equal(w.calls.sign, 1);
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).txHash, txHash);
+});
+
 test('the pair check names only one journal\'s own anchorEvidence and reconcilePaymentEvidence', async (t) => {
   const a = wallet(t).open(), b = wallet(t).open();
   t.after(() => { a.close(); b.close(); });
@@ -413,6 +428,7 @@ const hostileCreateEdits = [
   ['an invalid timestamp', (content) => { content.timestamp = 'TEST'; }],
   ['a negative timestamp', (content) => { content.timestamp = -1; }],
   ['an amount', (content) => { content.amount = 7; }],
+  ['a string amount other than zero', (content) => { content.amount = '7'; }],
   ['no node fee', (content) => { delete content.transaction_fee; }],
   ['no execution edits', (content) => { delete content.gcr_edits; }],
   ['empty execution edits', (content) => { content.gcr_edits = []; }],
@@ -458,6 +474,28 @@ test('a replaced journal refuses sent attempts with missing or malformed transac
   assert.equal((await journal.reconcilePaymentEvidence(w.input({ attempt: { outcome: 'failed-before-signing' } }))).status, 'unsigned');
 });
 
+test('a replaced journal refuses an ambiguous attempt that names no transaction, and an applied one without a hash', async (t) => {
+  const w = wallet(t); let journal = w.open();
+  await journal.anchorEvidence(w.input()); journal.close(); rmSync(w.path);
+  journal = w.open(); t.after(() => journal.close());
+  for (const attempt of [
+    { outcome: 'threw', error: 'TEST response lost' },
+    { outcome: 'threw' },
+    { answer: { status: 'applied', txHash: null } },
+    { answer: { status: 'applied' } },
+    { outcome: 'failed-before-signing', answer: { txHash: 123 } },
+  ]) await assert.rejects(journal.reconcilePaymentEvidence(w.input({ attempt })), { code: 'wallet_journal_unknown_attempt' });
+  assert.equal(w.calls.sign, 1, 'nothing signed anew');
+});
+
+test('a journal that kept the CREATE answers an attempt that threw without naming a transaction', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  w.faults.broadcast.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), /TEST node unreachable/);
+  const answer = await journal.reconcilePaymentEvidence(w.input({ attempt: { outcome: 'threw', error: 'TEST node unreachable' } }));
+  assert.equal(answer.status, 'rebroadcast');
+  assert.equal(w.calls.sign, 1);
+});
 
 test('a multibyte signed transaction beyond the wire byte limit is not retained or broadcast', async (t) => {
   const w = wallet(t), node = walletChain({ state: w.chain });
