@@ -468,6 +468,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | acd00b6505dca812acfa411da3cb9538a5956b55 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | eedc7797a49fc7635cb1600db68fb1dc0d9ea74f |
+| D11 | fix(client): D11 refuse code-running named bindings under a guard | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 7107be0743c2c9e227bc49fc6ed65997556b482d |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | f30906a361e1d5290d3966e97c93673abdb683c3 |
 
 ## Complete commit and file inventory
 
@@ -1115,6 +1118,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
 | fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
 
 ## Original moved files
 
