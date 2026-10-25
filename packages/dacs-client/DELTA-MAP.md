@@ -197,6 +197,10 @@ D11 SQLite transaction split:
 
 PR 03 title: `feat(client): extract the SQLite transaction-liveness lease`.
 
+PR 03 plan row: | 3 | feat(client): extract the SQLite transaction-liveness lease | Supply the internal connection-local transaction-liveness lease only. | `src/util/sqlite-write-lease.mjs` and its isolated lease tests | No transaction orchestration or public export |.
+
+PR 03 acceptance: `test/sqlite-write-lease.test.mjs` covers the marker, ordinary-table rollback refusal, schema refresh, commit barrier and permanent retirement; `scripts/delta-provenance.test.mjs` and `scripts/check-hold.test.mjs` check the split records and package controls. The adapter's atomicity, nested-call, diagnostic and crash/reopen acceptance belongs to PR 03c (#503), after PR 03b's statement boundary (#502).
+
 PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
 
 PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
@@ -1940,6 +1944,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
