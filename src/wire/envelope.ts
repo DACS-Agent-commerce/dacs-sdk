@@ -406,8 +406,8 @@ export function wireOperationId(request: Pick<WireRequestPayload, "seller" | "jo
 
 function reserveEffectRequest(request: WireRequestPayload, store: object | null): WireEffect | null {
   if (store === null) return null;
-  const { buyer, seller, profile, nonce, agreementHash } = request;
-  return reserveEffect(store, { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })), operationId: wireOperationId(request),
+  const { buyer, seller, profile, nonce, agreementHash, jobId, path } = request;
+  return reserveEffect(store, { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })), seller, jobId, path,
     binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wireRequestHash(request) });
 }
 
