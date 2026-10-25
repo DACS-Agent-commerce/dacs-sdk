@@ -224,13 +224,17 @@ export function escapingLinks(directory) {
 // returns every other node_modules entry inside an installed package directory,
 // as paths relative to it. With `names`, it returns only those entries holding
 // a module of one of those names, a package whose package.json declares one of
-// them under any directory name, or a file shadowing one. Links are not
-// followed, except a scope directory that is a link, which Node does follow; a
-// missing directory has none.
-export function nestedModuleRoots(directory, names) {
+// them under any directory name or whose package.json satisfies
+// `declaresCandidateAlias`, or a file shadowing one. Links are not followed,
+// except a scope directory that is a link, which Node does follow; a missing
+// directory has none.
+export function nestedModuleRoots(directory, names, declaresCandidateAlias = () => false) {
   const roots = [];
   const declaresNamedModule = module => {
-    try { return names.has(JSON.parse(readFileSync(join(module, "package.json"), "utf8"))?.name); }
+    try {
+      const declared = JSON.parse(readFileSync(join(module, "package.json"), "utf8"));
+      return names.has(declared?.name) || declaresCandidateAlias(declared);
+    }
     catch (error) {
       if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
       throw error;
@@ -384,6 +388,9 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
     .map(item => "cannot inspect a .bin entry that does not lead to a file inside an installed package: " + item.location));
   errors.push(...inventory.filter(item => /(^|\/)node_modules\/(@[^/]+\/)?node_modules$/.test(item.location))
     .map(item => "cannot inspect a node_modules directory inside node_modules or a scope directory: " + item.location));
+  // Node loads an entry without a name, but its declarations cannot be read.
+  errors.push(...inventory.filter(item => !isBinEntry(item) && item.link !== true && typeof item.name !== "string")
+    .map(item => "cannot identify an installed package without a name in its package.json: " + item.location));
   // A package's own package.json declares dependencies its lock entry may not
   // (the registry's metadata and the tarball are separate), and Node resolves
   // by the installed directory name, so both declarations name aliases.
@@ -392,6 +399,9 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
   const declarations = [["", manifest], ...Object.entries(packages), ...installedDeclarations];
   const candidateLocations = new Set();
   const candidateNames = new Set(candidates.map(candidate => candidate.name));
+  const declaresCandidateAlias = declared => candidates.some(({ name }) => {
+    try { return candidateAliases([["", declared]], name).length > 0; } catch { return true; } // unreadable: refuse
+  });
   for (const { name, integrity, version, files } of candidates) {
     for (const { alias } of candidateAliases(declarations, name)) candidateNames.add(alias);
     if (typeof version !== "string" || version === "") {
@@ -455,7 +465,7 @@ export function candidateIntegrityErrors({ manifest, lock, registry, candidates,
   }
   // Any other installed package may hold a candidate below its own files too.
   for (const { location } of inventory.filter(item => !isBinEntry(item) && item.link !== true && !candidateLocations.has(item.location))) {
-    for (const root of installedModuleRoots?.(location, candidateNames) ?? []) {
+    for (const root of installedModuleRoots?.(location, candidateNames, declaresCandidateAlias) ?? []) {
       errors.push("cannot inspect a candidate inside node_modules in an installed package: " + location + "/" + root);
     }
   }
@@ -711,7 +721,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       return { name, integrity, version, files: packedFiles(bytes) };
     });
     const errors = candidateIntegrityErrors({ manifest, lock, registry, candidates, installedInventory: runtimeImageInventory(project).packages,
-      installedModuleRoots: (location, names) => nestedModuleRoots(join(project, location), names),
+      installedModuleRoots: (location, names, declaresCandidateAlias) => nestedModuleRoots(join(project, location), names, declaresCandidateAlias),
       installedEscapingLinks: location => escapingLinks(join(project, location)),
       differencesFrom: (location, files) => installedFileDifferences(join(project, location), files),
       installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });

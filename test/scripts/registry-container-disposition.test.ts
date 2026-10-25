@@ -85,6 +85,11 @@ function dependencyPolicyHarness(candidateManifest: Record<string, unknown> = {}
       const installedManifest = location in installed ? installed[location] : { name, version: entry.version };
       if (installedManifest === null) continue;
       mkdirSync(join(project, location), { recursive: true });
+      // A package npm installs below another one has that package's manifest.
+      const owner = location.replace(/\/node_modules\/(@[^/]+\/)?[^/]+$/, "");
+      if (owner !== location) {
+        writeFileSync(join(project, owner, "package.json"), JSON.stringify({ name: owner.replace(/^.*node_modules\//, ""), version: "1.0.0" }));
+      }
       for (const [file, text] of Object.entries(packed[name] ?? {})) writeFileSync(join(project, location, file), text);
       writeFileSync(join(project, location, "package.json"), JSON.stringify(installedManifest));
     }
@@ -194,6 +199,8 @@ describe("registry/container evidence", () => {
     const { run } = dependencyPolicyHarness();
     expect(run(project => {
       mkdirSync(join(project, "node_modules/@kynesyslabs/dacs/node_modules/dependency"), { recursive: true });
+      writeFileSync(join(project, "node_modules/@kynesyslabs/dacs/node_modules/dependency/package.json"),
+        JSON.stringify({ name: "dependency", version: "1.0.0" }));
       writeFileSync(join(project, "node_modules/@kynesyslabs/dacs/node_modules/dependency/index.js"), "");
     })).toMatchObject({ status: 0, report: { passed: true } });
   });
@@ -680,6 +687,24 @@ describe("candidate alias lookup through dependency maps", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("candidate package integrity does not match the packed tarball: " + alias);
   });
+  it.each(["dacs", "dacs-node"])("rejects an installed package without a name that declares a %s alias", name => {
+    const fixture = dependencyPolicyHarness();
+    const alias = "node_modules/candidate-alias";
+    fixture.packages["node_modules/plugin"] = { name: "plugin", version: "1.0.0",
+      resolved: `${CANDIDATE_REGISTRY}/plugin.tgz`, integrity: sri(Buffer.from("plugin")),
+      dependencies: { "candidate-alias": `npm:other@${CANDIDATE_VERSION}` } };
+    fixture.packages[alias] = { name: "other", version: CANDIDATE_VERSION,
+      resolved: `${CANDIDATE_REGISTRY}/other.tgz`, integrity: sri(Buffer.from("other")) };
+    const result = fixture.run(project => {
+      mkdirSync(join(project, "node_modules/plugin"), { recursive: true });
+      writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ version: "1.0.0",
+        dependencies: { "candidate-alias": `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}` } }));
+      mkdirSync(join(project, alias), { recursive: true });
+      writeFileSync(join(project, alias, "package.json"), JSON.stringify({ name: "other", version: CANDIDATE_VERSION }));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot identify an installed package without a name in its package.json: node_modules/plugin");
+  });
   it("accepts an alias that retains the exact candidate identity and bytes", () => {
     const fixture = dependencyPolicyHarness();
     fixture.manifest.dependencies = Object.assign({}, fixture.manifest.dependencies, { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` });
@@ -921,6 +946,37 @@ describe("candidate executable and nested alias lookup", () => {
       mkdirSync(join(project, "node_modules/plugin/cli/node_modules/@kynesyslabs/other"), { recursive: true });
       writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
       writeFileSync(join(project, "node_modules/plugin/cli/node_modules/@kynesyslabs/other/package.json"), JSON.stringify({ name: "@kynesyslabs/other", version: "1.0.0" }));
+    })).toMatchObject({ status: 0, report: { passed: true } });
+  });
+
+  it.each([["dacs", "dist/node_modules"], ["dacs-node", "lib/inner/node_modules"]])(
+    "rejects a nested package declaring a %s alias that another nested package stands in for, in %s", (name, directory) => {
+      const fixture = dependencyPolicyHarness();
+      const plugin = "node_modules/plugin";
+      const result = fixture.run(project => {
+        const holder = join(project, plugin, directory, "holder");
+        const replacement = join(project, plugin, directory, "alias");
+        mkdirSync(holder, { recursive: true });
+        mkdirSync(replacement, { recursive: true });
+        writeFileSync(join(project, plugin, "package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+        writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "holder", version: "1.0.0",
+          dependencies: { alias: `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}` } }));
+        writeFileSync(join(replacement, "package.json"), JSON.stringify({ name: "other", version: CANDIDATE_VERSION }));
+        writeFileSync(join(replacement, "index.js"), "module.exports = 'substituted';");
+        expect(createRequire(join(holder, "index.js")).resolve("alias")).toBe(join(replacement, "index.js"));
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/${directory}`);
+    });
+
+  it("accepts a nested package whose alias is not a candidate", () => {
+    const fixture = dependencyPolicyHarness();
+    expect(fixture.run(project => {
+      const holder = join(project, "node_modules/plugin/dist/node_modules/holder");
+      mkdirSync(holder, { recursive: true });
+      writeFileSync(join(project, "node_modules/plugin/package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+      writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "holder", version: "1.0.0",
+        dependencies: { alias: "npm:other@1.0.0" } }));
     })).toMatchObject({ status: 0, report: { passed: true } });
   });
 
