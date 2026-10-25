@@ -155,6 +155,21 @@ describe("journal publication and recovery regression cases", () => {
     expect(names(first)).toEqual([]);
     expect(openWireRequestJournal(first).directory).toBe(first);
   }, 30000);
+  it("refuses every call once the journal path names a replacement directory, so a completed operation is not issued again", () => {
+    const { journal, directory } = setup();
+    const effect = reserve(journal);
+    completeWireEffect(journal, effect, { status: 200, text: "{}" });
+    const moved = `${directory}-moved`;
+    fs.renameSync(directory, moved);
+    fs.mkdirSync(directory, { mode: 0o700 });
+    expect(() => reserve(journal)).toThrowError(refused("DIRECTORY-REPLACED"));
+    expect(() => completeWireEffect(journal, effect, null)).toThrowError(refused("DIRECTORY-REPLACED"));
+    expect(names(directory)).toEqual([]);
+    fs.rmdirSync(directory);
+    expect(() => reserve(journal)).toThrowError(refused("DIRECTORY-REPLACED"));
+    fs.renameSync(moved, directory);
+    expect(reserve(journal)).toMatchObject({ state: "completed" });
+  }, 30000);
   it.each([NaN, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])("invalid clock %s issues no attempt", (at) => {
     const { journal, directory } = setup(() => at);
     expect(() => reserve(journal)).toThrowError(expect.objectContaining({ code: "seller_configuration_invalid", status: 500, detail: "JOURNAL-CLOCK" }));
