@@ -75,7 +75,6 @@ function validateAuditCounts(counts) {
     throw new Error("inconsistent npm audit vulnerability counts");
   }
 }
-
 // Check every package count and every inherited advisory edge before policy admission.
 function validateAuditGraph(audit) {
   const counts = audit.metadata?.vulnerabilities;
@@ -109,7 +108,6 @@ function validateAuditGraph(audit) {
   }
   if (reached.size !== entries.length) throw new Error("incomplete npm audit advisory graph");
 }
-
 function summaryAudit(summary, baseline) {
   if (!validIds(summary.audit?.directAdvisories)) throw new Error("summary has no valid direct-advisory evidence");
   const policy = classifyRegistryAudit(summary.audit?.observedAdvisories, baseline, summary.audit?.directAdvisories ?? []);
@@ -120,7 +118,6 @@ function summaryAudit(summary, baseline) {
   if ((summary.audit.total === 0) !== (policy.observedAdvisories.length === 0)) throw new Error("audit totals disagree with advisory evidence");
   return policy;
 }
-
 export function registryAuditDriftDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8"))) {
   if (summary?.schema !== ACCEPTANCE_SUMMARY_SCHEMA) return { exitCode: 3, message: "unexpected acceptance schema" };
   // A run that stopped before its audit was classified has no advisory IDs to
@@ -459,9 +456,7 @@ function interruptedFailureClass(summary) {
       [...summary.failureEvidence].every(line => typeof line === "string" && Buffer.byteLength(line) <= MAX_FAILURE_EVIDENCE_BYTES) &&
       summary.failureEvidence.some(retryableFailureEvidence))) ? summary.failureClass : "functional";
 }
-
 const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
-
 // Every sensitive identity in the closed inventory must be an independently
 // locked release archive. Nested scopes, carried modules and file shadows have
 // no such identity. A nested scope declaring candidates is refused as well.
