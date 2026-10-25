@@ -936,6 +936,13 @@ describe("candidate copies hidden in the installed tree", () => {
       expect(withBin().run(project => linkBin(project, "dacs", "../@kynesyslabs/dacs/index.js")))
         .toMatchObject({ status: 0, report: { passed: true } });
     });
+    it("accepts an ordinary executable link when the project path goes through a link", () => {
+      const fixture = withBin();
+      const linked = join(fixture.directory, "linked");
+      symlinkSync(fixture.directory, linked);
+      expect(fixture.run(project => linkBin(project, "dacs", "../@kynesyslabs/dacs/index.js"), { projectPath: join(linked, "project") }))
+        .toMatchObject({ status: 0, report: { passed: true } });
+    });
     it.each([
       ["to a file outside every installed package", "runner", "../../elsewhere/runner.cjs", "unexpected link: node_modules/.bin/runner"],
       ["whose target does not exist", "dacs", "../missing-command", "link to an unexpected target: node_modules/.bin/dacs -> ../missing-command"],
