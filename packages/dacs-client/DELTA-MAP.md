@@ -189,6 +189,10 @@ This delta records two historical statement-guard commits and their reciprocal h
 
 These records add no runtime behavior. SQL callbacks remain allowed inside a leased transaction; SQLite's write lock prevents a rival worker from claiming the lease while that transaction is active. The module and its 28 lease tests come from the preceding core change. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
 
+D11 transaction adapter dependency split:
+
+The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. Its statement and callback checks are retained under the separate module path; the earlier core replacement did not supply that import. The boundary is internal and does not enable purchase actions or package exports.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -472,32 +476,32 @@ These records add no runtime behavior. SQL callbacks remain allowed inside a lea
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
 | D11 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | c202d2b701edc2a536b34d860bdb7317cfed6d77 |
-| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | f19662c277f9bcc86145487d72230cdfbdde2d50 |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 8560f9547739573a5f2c8c32c27a085fbd59370d |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 18c6e3c74c2817a1c38f58676eb2053d76398ebb |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) | c202d2b701edc2a536b34d860bdb7317cfed6d77 |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) | f19662c277f9bcc86145487d72230cdfbdde2d50 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | 8560f9547739573a5f2c8c32c27a085fbd59370d |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | 18c6e3c74c2817a1c38f58676eb2053d76398ebb |
 | D11 | fix(client): D11 guard every SQLite callback statement after rollback | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | dea888ee7f7906fc011ccb8e69319cf00f036c85 |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 00357c230e040c7a2658f717f72e172eedcc8b44 |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 7fb6c88ed1400bffc509fc23453150bf78519cbe |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | dea888ee7f7906fc011ccb8e69319cf00f036c85 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) | 00357c230e040c7a2658f717f72e172eedcc8b44 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | 7fb6c88ed1400bffc509fc23453150bf78519cbe |
 | D11 | fix(client): D11 cover retained native exec rollback on reopen | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | aca495eb87c54f557b02a7a2ce5d5b2882f1ce83 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | aca495eb87c54f557b02a7a2ce5d5b2882f1ce83 |
 | D11 | fix(client): D11 classify native constraints and rebuild renamed table guards | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | f80619dee3a06bfc04b11247821e8f1d5dd82bad |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 0cae28f8588f2e4d35350d4f009ddfa58e84abc4 |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | f80619dee3a06bfc04b11247821e8f1d5dd82bad |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | 0cae28f8588f2e4d35350d4f009ddfa58e84abc4 |
 | D11 | fix(client): D11 track cached host statements before transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
 | D11 | fix(client): D11 preserve callback fencing and private savepoints | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | ea871900d025e7310e2a35b95a626da101ca9edd |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | ea871900d025e7310e2a35b95a626da101ca9edd |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | aa9dbf4fc1e98f055efc5d7690e042dad16f9186 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | aa9dbf4fc1e98f055efc5d7690e042dad16f9186 |
 | D11 | fix(client): D11 guard result inspection and preserve unfinished host writes | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 6e92f93f88eacacd26f5dd031c64a0c29388eb3f |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 4814964834698bcd72cc3faaf6f2438b8ce35cee |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 74c4ba0638f76b77d45dd45c1260e7e718a8e7af |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 6e92f93f88eacacd26f5dd031c64a0c29388eb3f |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | 4814964834698bcd72cc3faaf6f2438b8ce35cee |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | 74c4ba0638f76b77d45dd45c1260e7e718a8e7af |
 | D11 | fix(client): D11 refuse unowned statements while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 2d4843812322f511ac816fee299dfde349c90df7 |
@@ -523,19 +527,27 @@ These records add no runtime behavior. SQL callbacks remain allowed inside a lea
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
 | D11 | fix(client): D11 separate the SQLite write lease from transaction orchestration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 944247d4ce8b2622389c79b71de1a21d6b83e239 |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 944247d4ce8b2622389c79b71de1a21d6b83e239 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | bccc86590f36056cb352f4cff077c1671845831f |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | deleted |
-| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | deleted |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d8cd083fb13cd1b288825b8939fd6714478a6dc1 |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | deleted |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | deleted |
 | D11 | fix(client): D11 restore synchronous purchase transactions above the write lease | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | e426a63c2c413f2073d28c0ee922e8e305fd88db |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 00357c230e040c7a2658f717f72e172eedcc8b44 |
-| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | f19662c277f9bcc86145487d72230cdfbdde2d50 |
-| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 77cf094cdddb8ffd4131013d42e15eb58f2fe8a6 |
-| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 74c4ba0638f76b77d45dd45c1260e7e718a8e7af |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | e426a63c2c413f2073d28c0ee922e8e305fd88db |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) | 00357c230e040c7a2658f717f72e172eedcc8b44 |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) | f19662c277f9bcc86145487d72230cdfbdde2d50 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | 77cf094cdddb8ffd4131013d42e15eb58f2fe8a6 |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | 74c4ba0638f76b77d45dd45c1260e7e718a8e7af |
+| D11 | fix(client): D11 supply the separate SQLite statement boundary | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 944247d4ce8b2622389c79b71de1a21d6b83e239 |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 5bb46f0a2a8ba91b1c57126966743f78aa3b0fe5 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | 44175c6440b0e37730f1d4a881165e6325b0b725 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | deleted |
 
 ## Complete commit and file inventory
 
@@ -1181,56 +1193,56 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
 | fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) |
+| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
 | fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 track cached host statements before transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
 | fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
 | fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
 | fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1301,23 +1313,36 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
 | fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
+| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) |
+| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
 | fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
 | fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
-| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
-| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
-| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) |
+| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| fix(client): D11 restore synchronous purchase transactions above the write lease | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs` (deleted) |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| fix(client): D11 supply the separate SQLite statement boundary | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
 
 ## Original moved files
 
