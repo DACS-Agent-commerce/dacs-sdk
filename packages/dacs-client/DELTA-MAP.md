@@ -688,6 +688,12 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | D11 | fix(client): D11 record the 05a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06b split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 distinguish source records from metadata checkpoints | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 04 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 05 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 05a checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 06 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 06b checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1754,6 +1760,37 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06b split integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06b split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 05 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 05 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 05 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 05 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 05 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
