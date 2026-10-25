@@ -701,3 +701,33 @@ test('global nonce capacity bounds full-window counters for distinct authenticat
   w.advance(1); w.reopen();
   await attempt(34, true);
 });
+
+test('a terminal seller session cannot resume its interrupted context step', t => {
+  const w = world(t, { maxRecords: 20 }), p = context(w, 0), body = contextBody(0);
+  w.store.finish(w.store.reserve(p, body, { admit: () => w.now() }), 503, '{"TEST":"interrupted"}'); w.reopen();
+  const uncertain = w.store.reserve({ ...p, nonce: 'again' }, body);
+  assert.equal(uncertain.disposition, 'uncertain');
+  w.terminal(p.jobId, 'aborted-by-self');
+  noMutations(() => assert.throws(() => w.store.resume(uncertain, p), { code: 'context_session_terminal', status: 409 }));
+  assert.equal(w.store.reserve({ ...p, nonce: 'third' }, body).disposition, 'uncertain');
+});
+
+for (const [outcome, path] of [[{ retry: true }, '/dacs/v1/agreements/proposals'], [{ noEffect: true }, '/dacs/v1/payments']]) test(`reconcile cannot release an effect another run is still performing (${Object.keys(outcome)[0]})`, t => {
+  const w = world(t, { maxRecords: 20 }), job = request(w, 0), body = { txHash: '0x' + '1'.repeat(64) };
+  const proposal = path === job.path;
+  if (!proposal) w.store.finish(w.store.reserve(job, {}), 200, '{}');
+  const p = { ...job, path, nonce: 'first' }, running = w.store.reserve(p, body);
+  const uncertain = w.store.reserve({ ...p, nonce: 'second' }, body);
+  assert.equal(running.disposition, 'perform'); assert.equal(uncertain.disposition, 'uncertain');
+  noMutations(() => assert.throws(() => w.store.reconcile(uncertain, p, 200, '{}', outcome), { code: 'peer_reconciliation_conflict' }));
+  assert.equal(w.store.reserve({ ...p, nonce: 'third' }, body).disposition, 'uncertain');
+  w.store.finish(running, 200, '{"TEST":"first run"}');
+});
+
+test('reconcile completes a performing effect from readback and fences the first run', t => {
+  const w = world(t, { maxRecords: 20 }), p = request(w, 0), running = w.store.reserve(p, {});
+  const uncertain = w.store.reserve({ ...p, nonce: 'second' }, {}), text = '{"TEST":"read back"}';
+  w.store.reconcile(uncertain, p, 200, text);
+  assert.throws(() => w.store.finish(running, 200, '{}'), { code: 'peer_store_conflict' });
+  assert.deepEqual(w.store.reserve({ ...p, nonce: 'third' }, {}), { disposition: 'cached', status: 200, text });
+});
