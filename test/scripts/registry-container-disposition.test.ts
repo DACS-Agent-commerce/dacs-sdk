@@ -943,6 +943,22 @@ describe("candidate executable and nested alias lookup", () => {
     expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/dist/node_modules`);
   });
 
+  it.each(["undocumented-copy", "@other/undocumented-copy"])(
+    "rejects a candidate hidden as %s in dist/node_modules, which only its manifest names", directory => {
+      const fixture = dependencyPolicyHarness();
+      const plugin = "node_modules/plugin";
+      const result = fixture.run(project => {
+        const holder = join(project, plugin, "dist/node_modules", directory);
+        mkdirSync(holder, { recursive: true });
+        writeFileSync(join(project, plugin, "package.json"), JSON.stringify({ name: "plugin", version: "1.0.0" }));
+        writeFileSync(join(holder, "package.json"), JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-evil" }));
+        writeFileSync(join(holder, "index.js"), "module.exports = 'shadow';");
+        expect(createRequire(join(project, plugin, "dist/index.js")).resolve(directory)).toBe(join(holder, "index.js"));
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`cannot inspect a candidate inside node_modules in an installed package: ${plugin}/dist/node_modules`);
+    });
+
   it.each([
     ["dist/node_modules/foo/node_modules", "dist/node_modules/foo/node_modules"],
     ["a/node_modules/b/dist/node_modules", "a/node_modules/b/dist/node_modules"],
