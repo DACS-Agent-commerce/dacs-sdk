@@ -570,6 +570,12 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 834da95ce983a23387840cc0049572d522f9a440 |
 | D11 | fix(client): D11 record the 03a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 distinguish source records from metadata checkpoints | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 normalize the extracted lease and checkpoint probes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 011865d7d581630937628b776c829f0fdce48607 |
+| D11 | fix(client): D11 record the 03b lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 03c lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 927a43435424ea2b8ee1a11f7d2d47eb350139fc |
+| D11 | fix(client): D11 record the 03a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1416,6 +1422,28 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 03b lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 03c lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 03c lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 03c lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 03c lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 03c lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
