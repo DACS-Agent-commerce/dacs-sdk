@@ -868,15 +868,14 @@ export function extractPolicyFindings(readInput) {
   };
 }
 
-// Baseline rules match location, dependency spec and engine range; SBOM rules
-// elide installed versions so patch releases alone do not create new rules.
+// Baseline Git and image identities pin archive version and integrity. Engine
+// rules pin ranges; SBOM rules elide patch versions in their problem text.
 const sameIdentity = (keys) => (item, known) => keys.every(key => JSON.stringify(item?.[key]) === JSON.stringify(known?.[key]));
 const packageName = (spec) => typeof spec === "string" ? spec.replace(/(?<=.)@[^@]*$/, "") : spec;
-const gitIdentity = sameIdentity(["location", "field", "value"]);
+const gitIdentity = sameIdentity(["location", "field", "value", "version", "integrity"]);
 const engineIdentity = (item, known) => typeof item?.package === "string" &&
   packageName(item.package) === packageName(known?.package) && sameIdentity(["location", "required"])(item, known);
-const imageIdentity = (item, known) => sameIdentity(["name", "location"])(item, known) &&
-  (item?.name !== "pqcrypto" || sameIdentity(["version"])(item, known));
+const imageIdentity = sameIdentity(["name", "location", "version", "integrity"]);
 const sbomProblemRule = (line) => typeof line === "string" ? line
   .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,]+/, "$1@*")
   .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@\S+$/, "$1@*") : line;
