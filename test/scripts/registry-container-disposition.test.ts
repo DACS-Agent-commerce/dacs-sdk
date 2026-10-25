@@ -1645,6 +1645,37 @@ describe("dependency policy over npm ci installations", () => {
     expect(policy.status, policy.stderr).toBe(0);
   }, 60_000);
 
+  it.each(["fs", "path"])("refuses the built-in resolution of the exact installed candidate alias %s", async specifier => {
+    const directory = temporaryDirectory();
+    const { project, policy } = await registryInstallation(directory, {}, {
+      [`node_modules/${specifier}`]: ["@kynesyslabs/dacs", { name: "@kynesyslabs/dacs" }],
+    }, { dependencies: { [specifier]: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } });
+    expect(createRequire(join(project, "index.cjs")).resolve(specifier)).toBe(specifier);
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain(`${specifier} declared by the project resolves to a non-file module`);
+    expect(existsSync(join(directory, "report.json"))).toBe(false);
+  }, 60_000);
+
+  it.each([
+    ["dependencies", false], ["peerDependencies", false], ["devDependencies", true], ["optionalDependencies", true],
+    ["optional-peer", true],
+  ] as const)("requires a candidate resolution unless the %s declaration permits omission", async (field, optional) => {
+    const directory = temporaryDirectory();
+    const alias = `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}`;
+    const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION,
+      field === "optional-peer" ? { peerDependencies: { "candidate-alias": alias },
+        peerDependenciesMeta: { "candidate-alias": { optional: true } } } : { [field]: { "candidate-alias": alias } }) });
+    const { project, policy } = await registryInstallation(directory, { plugin }, { "node_modules/plugin": ["plugin", {}] },
+      { dependencies: { plugin: CANDIDATE_VERSION } });
+    expect(() => createRequire(join(project, "node_modules/plugin/index.cjs")).resolve("candidate-alias")).toThrow();
+    if (optional) expect(policy.status, policy.stderr).toBe(0);
+    else {
+      expect(policy.status).not.toBe(0);
+      expect(policy.stderr).toContain("candidate-alias declared by node_modules/plugin has no authenticated resolution");
+      expect(existsSync(join(directory, "report.json"))).toBe(false);
+    }
+  }, 60_000);
+
   it.each(["identity", "alias-name", "alias-declaration", "malformed", "ordinary"])(
     "authenticates an npm-generated package scope: %s", async form => {
       const directory = temporaryDirectory();
