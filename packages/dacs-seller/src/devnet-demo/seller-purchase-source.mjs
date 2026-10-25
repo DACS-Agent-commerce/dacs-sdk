@@ -2,7 +2,6 @@
 import { contentHash } from '@kynesyslabs/dacs';
 import { addressForClaim } from '../dacs/demos-claims.mjs';
 
-const CLAIM=/^did:demos:agent:[0-9a-f]{64}$/;
 const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/.test(value)?BigInt(value.split('.')[0])*1_000_000_000n+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;
 
 // The buyer's signed Agreement CREATE, which the seller authenticated on its
@@ -51,8 +50,13 @@ export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now,observe
     const agreement=session?.agreement??session?.proposal?.plan?.draft??null;
     if(!agreement)return null;
     const party=(role)=>agreement?.parties?.find((entry)=>entry.role===role)?.primaryClaim??null;
-    const presented=session.buyerBundle?.presentedBy,buyer=CLAIM.test(presented??'')&&party('buyer')===presented?presented:null;
-    if(buyer&&!buyerAccess().allowsWallet(addressForClaim(buyer)))return false;
+    const presented=session.buyerBundle?.presentedBy,buyer=party('buyer');
+    let buyerAddress;
+    try {
+      buyerAddress=addressForClaim(buyer);
+      if(buyerAddress!==addressForClaim(presented))return false;
+    } catch { return false; }
+    if(!buyerAccess().allowsWallet(buyerAddress))return false;
     const ref=agreement?.listingRef,price=agreement?.terms?.price,amount=price?.currency==='DEM'?demOs(price.amount):null;
     const projection={jobId:session.jobId,seller:party('seller'),buyer,listingPin:ref?{listingId:ref.listingId,version:ref.version,contentHash:ref.contentHash}:null,
       sourceBinding:agreementBinding(session.agreementSignedProjection),agreementHash:session.agreementHash??null,amountOs:amount===null?null:amount.toString(),
