@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // A real-filesystem fault model. File fsync commits inode data; directory
 // fsync commits names. Power loss discards everything else. No journal code
 // or records are mutated by this harness.
 const fault = vi.hoisted(() => ({ fds: new Map<number, string>(), data: new Map<number, Buffer>(), durable: new Map<string, Buffer>(),
-  directory: "", syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false, filesystemType: null as bigint | null,
+  directory: "", synced: [] as string[], syncDirectoryOnly: false, syncError: null as Error | null, linkError: null as Error | null, nonexclusive: false, foreignUid: false, filesystemType: null as bigint | null,
   shortWrite: false, zeroWrite: false, attemptStats: 0, trackDurability: true, shortRead: false, eof: false, reads: [] as number[], onLink: null as null | ((name: string) => void), onTemporaryOpen: null as null | (() => void) }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -19,6 +19,7 @@ vi.mock("node:fs", async (original) => {
       fs.fsyncSync(fd);
       if (!fault.trackDurability) return;
       const path = fault.fds.get(fd)!;
+      if (fs.fstatSync(fd).isDirectory()) fault.synced.push(path);
       const stat = fs.fstatSync(fd);
       if (stat.isDirectory()) {
         fault.durable.clear();
@@ -85,7 +86,7 @@ function crash(directory: string) {
   }
 }
 beforeEach(() => {
-  fault.fds.clear(); fault.data.clear(); fault.durable.clear(); fault.syncError = fault.linkError = null; fault.syncDirectoryOnly = false;
+  fault.fds.clear(); fault.synced = []; fault.data.clear(); fault.durable.clear(); fault.syncError = fault.linkError = null; fault.syncDirectoryOnly = false;
   fault.shortWrite = fault.zeroWrite = false; fault.trackDurability = true; fault.attemptStats = 0;
   fault.nonexclusive = fault.foreignUid = fault.shortRead = fault.eof = false; fault.filesystemType = null; fault.onLink = null; fault.onTemporaryOpen = null; fault.reads = [];
 });
@@ -124,6 +125,13 @@ describe("journal publication and recovery regression cases", () => {
       expect(invoke).toThrow(error);
       fault.syncError = null;
   }, 30000);
+  it("syncs the journal directory's own entry and the entries above it this user created before issuing a handle", () => {
+    const directory = journalDirectory(); fault.directory = directory;
+    openWireRequestJournal(directory);
+    expect(fault.synced).toContain(dirname(directory));
+    expect(fault.synced).toContain(dirname(dirname(directory)));
+  });
+
   it("EIO during nonce or attempt link propagates unchanged, cleans temporary files and issues no effect", () => {
     for (const target of ["nonce", "attempt"]) {
       const { journal, directory } = setup();
