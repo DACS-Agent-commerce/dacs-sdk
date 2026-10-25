@@ -1471,6 +1471,31 @@ describe("candidate executable and nested alias lookup", () => {
       symlinkSync("../@kynesyslabs/dacs/index.js", join(directory, "dacs"));
     })).toMatchObject({ status: 0, report: { passed: true } });
   });
+  // Node loads a package from the node_modules beside a link's real target, so
+  // an executable link must lead to a file inside a package the inventory lists.
+  it("rejects an executable link to a file outside every installed package", () => {
+    const fixture = dependencyPolicyHarness();
+    const result = fixture.run(project => {
+      const holder = join(project, "elsewhere");
+      mkdirSync(join(holder, "node_modules/@kynesyslabs/dacs"), { recursive: true });
+      writeFileSync(join(holder, "node_modules/@kynesyslabs/dacs/package.json"),
+        JSON.stringify({ name: "@kynesyslabs/dacs", version: "0.0.0-wrong" }));
+      writeFileSync(join(holder, "runner.cjs"), "require('@kynesyslabs/dacs');\n");
+      mkdirSync(join(project, "node_modules/.bin"), { recursive: true });
+      symlinkSync("../../elsewhere/runner.cjs", join(project, "node_modules/.bin/runner"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot inspect a .bin entry that does not lead to a file inside an installed package: node_modules/.bin/runner");
+  });
+  it("rejects an executable link whose target does not exist", () => {
+    const fixture = dependencyPolicyHarness();
+    const result = fixture.run(project => {
+      mkdirSync(join(project, "node_modules/.bin"), { recursive: true });
+      symlinkSync("../missing-command", join(project, "node_modules/.bin/dacs"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot inspect a .bin entry that does not lead to a file inside an installed package: node_modules/.bin/dacs");
+  });
   // The inventory lists each `.bin` entry without descending into it, yet Node
   // resolves a candidate from a `node_modules` directory placed inside `.bin`.
   it.each(["a directory", "a link to a directory"])("rejects a candidate copy hidden in .bin as %s", form => {
