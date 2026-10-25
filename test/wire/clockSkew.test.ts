@@ -14,7 +14,7 @@ import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from
 // delegation is verified whether or not the seller requires one; and a host's
 // own input faults are its own.
 import { createHash, sign } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
@@ -42,6 +42,11 @@ const RPC_B = { endpoint: "https://rpc-b.clock-skew.invalid/", transportAuthorit
 const TEXT = `{"jobId":"${JOB}"}`;
 const ANSWER = '{"status":"committed"}';
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+
+// Clock offsets and admission latency are independent inputs, including at
+// the last millisecond of validity. Tests advance elapsed time explicitly.
+beforeEach(() => { vi.spyOn(performance, "now").mockReturnValue(0); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 function party(seed?: number): WireSigner & { raw: string } {
   const { privateKey, publicKey } = ed25519KeyPair(seed);
@@ -209,6 +214,19 @@ describe("a buyer request under clock difference (the seller's 60 s window, the 
     expect(await code(() => buyerSigns(w, NOW, { lifetimeMs: 30_001 }))).toBe("TypeError");
     expect(await code(() => buyerSigns(w, NOW, { lifetimeMs: 60_000 }))).toBe("TypeError");
     expect((await buyerSigns(w, NOW, { lifetimeMs: 30_000 })).payload.expiresAt).toBe(NOW + 30_000);
+  });
+
+  it.each([0, 1])("a request with 1 ms left checks expiry after %i ms of receipt verification", async (elapsed) => {
+    const w = await world();
+    const { header, payload } = await buyerSigns(w, NOW);
+    const journals = testJournals();
+    const readCommitmentReceipt = Object.assign(() => {
+      vi.mocked(performance.now).mockReturnValue(elapsed);
+      return "valid";
+    }, { chainIdentity: w.sellerBinding.profile.chainIdentity });
+    const checked = await sellerCheck(w, header, payload.expiresAt - 1, { requestJournal: journals.open(), readCommitmentReceipt });
+    expect(await code(checked.check)).toBe(elapsed === 0 ? "ok" : "peer_expired");
+    expect(journals.reservations()).toHaveLength(elapsed === 0 ? 1 : 0);
   });
 });
 
