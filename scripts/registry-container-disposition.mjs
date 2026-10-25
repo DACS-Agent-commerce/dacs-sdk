@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, posix, relative } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { cachedArchive, installationClosure, installationDifferences, packedFiles } from "./installation-closure.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
@@ -253,28 +253,64 @@ function carriedCandidateErrors(closure, candidates, declarations) {
 }
 
 // The first module Node finds for `specifier` from `directory`: its ESM
-// resolver walks up every parent, a node_modules directory included, and
-// stops at the first directory of that name; CommonJS also loads a file of
-// that name with an extension. Within the closure each such module is a lock
-// entry or a carried one, so the walk stops at the project's directory.
-function firstModule(project, directory, specifier) {
-  for (let current = directory; current.startsWith(project); current = dirname(current)) {
+// resolver walks up every parent to the file system root, a node_modules
+// directory included, and stops at the first directory of that name; require()
+// then searches its global folders (NODE_PATH, the home and install ones) and
+// also loads a file of that name with an extension.
+function firstModule(directory, specifier) {
+  const lookups = [];
+  for (let current = directory; ; current = dirname(current)) {
+    lookups.push(join(current, "node_modules"));
+    if (dirname(current) === current) break;
+  }
+  lookups.push(...createRequire(join(directory, "package.json")).resolve.paths(specifier) ?? []);
+  for (const lookup of new Set(lookups)) {
     const found = [specifier, ...MODULE_FILE_EXTENSIONS.map(extension => specifier + extension)]
-      .map(name => join(current, "node_modules", name)).find(path => existsSync(path));
+      .map(name => join(lookup, name)).find(path => existsSync(path));
     if (found) return found;
   }
   return null;
 }
 
-// Each declared candidate specifier must lead Node to an installed copy of the
-// release from the directory of the package declaring it.
+// Node's own resolution of each declared specifier from its declaring
+// directory, as the absolute files it loads: require.resolve here and
+// import.meta.resolve in a child process, as its parent argument needs a flag.
+// A specifier that cannot resolve, or resolves to a built-in, gives none.
+const ESM_RESOLUTIONS = "process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).map(([specifier, parent]) => " +
+  "{ try { return import.meta.resolve(specifier, parent); } catch { return null; } })));";
+const RESOLUTION_TIMEOUT_MS = 30_000;
+const MAX_RESOLUTION_OUTPUT_BYTES = 1024 * 1024;
+function nodeResolutions(project, declarations) {
+  const parents = declarations.map(({ location }) => join(project, location, "package.json"));
+  const esm = spawnSync(process.execPath, ["--experimental-import-meta-resolve", "--input-type=module", "--eval", ESM_RESOLUTIONS,
+    JSON.stringify(declarations.map(({ specifier }, index) => [specifier, pathToFileURL(parents[index]).href]))],
+  { encoding: "utf8", timeout: RESOLUTION_TIMEOUT_MS, maxBuffer: MAX_RESOLUTION_OUTPUT_BYTES });
+  if (esm.status !== 0) throw new Error("Node's ESM resolver failed: " + (esm.error?.message ?? esm.stderr));
+  const urls = JSON.parse(esm.stdout);
+  return declarations.map(({ specifier }, index) => {
+    const files = typeof urls[index] === "string" && urls[index].startsWith("file:") ? [fileURLToPath(urls[index])] : [];
+    try { files.push(createRequire(parents[index]).resolve(specifier)); } catch { /* require() throws as well */ }
+    return files.filter(file => isAbsolute(file));
+  });
+}
+
+// Each declared candidate specifier must lead Node, from the directory of the
+// package declaring it, to an installed copy of the release, or to nothing at
+// all where npm left an optional copy out. Node's own resolution must agree.
 function candidateResolutionErrors(project, closure, declarations) {
-  return declarations.flatMap(({ location, specifier, candidate }) => {
-    const found = firstModule(project, join(project, location), specifier);
-    if (found === null) return [];
-    const record = closure.entries.get(relative(project, found));
-    if (record?.present && record.entry.integrity === candidate.integrity && record.entry.inBundle !== true) return [];
-    return [`${specifier} declared by ${location || "the project"} loads ${relative(project, found)}, not the ${candidate.name} release`];
+  const resolutions = nodeResolutions(project, declarations);
+  return declarations.flatMap(({ location, specifier, candidate }, index) => {
+    const declared = `${specifier} declared by ${location || "the project"}`;
+    const found = firstModule(join(project, location), specifier);
+    const elsewhere = resolutions[index].filter(file => found === null || (file !== found && !file.startsWith(found + sep)));
+    if (found === null) return elsewhere.map(file => `${declared} resolves to ${file}, which no module Node searched holds`);
+    const holder = relative(project, found);
+    if (holder.startsWith("..") || isAbsolute(holder)) return [`${declared} loads ${found}, outside the installation`];
+    const record = closure.entries.get(holder);
+    if (!record?.present || record.entry.integrity !== candidate.integrity || record.entry.inBundle === true) {
+      return [`${declared} loads ${holder}, not the ${candidate.name} release`];
+    }
+    return elsewhere.map(file => `${declared} resolves to ${file}, outside ${holder}`);
   });
 }
 

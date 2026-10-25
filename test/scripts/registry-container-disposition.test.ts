@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -66,7 +66,8 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
   const report = join(directory, "report.json");
   // The files installed at a lock location instead of its archive's; `null` installs none.
   const installed: Record<string, Record<string, string> | null> = {};
-  const run = (afterInstall: (project: string) => void = () => undefined) => {
+  // `environment` adds to the command's environment.
+  const run = (afterInstall: (project: string) => void = () => undefined, environment: Record<string, string> = {}) => {
     rmSync(join(project, "node_modules"), { recursive: true, force: true });
     for (const location of Object.keys(packages)) {
       for (const [path, body] of Object.entries((location in installed ? installed[location] : contents[location]) ?? {})) {
@@ -80,7 +81,7 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
     writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
       project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION],
-    { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache } });
+    { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache, ...environment } });
     return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
   return { directory, cache, packages, contents, manifest, provenance, installed, lockPackage, copyPackage, run, report };
@@ -707,6 +708,48 @@ describe("declared candidate alias authentication", () => {
   });
 });
 
+// npm leaves an optional alias out on another platform; Node then keeps
+// looking above the project, and require() also in its global folders.
+describe("omitted candidate aliases Node resolves outside the installation", () => {
+  const omittedAlias = () => {
+    const fixture = dependencyPolicyHarness();
+    fixture.copyPackage("node_modules/@kynesyslabs/dacs", "node_modules/candidate-alias", { name: "@kynesyslabs/dacs", optional: true });
+    fixture.manifest.optionalDependencies = { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` };
+    fixture.installed["node_modules/candidate-alias"] = null;
+    return fixture;
+  };
+  const oldCopy = (directory: string) => {
+    const copy = join(directory, "candidate-alias");
+    mkdirSync(copy, { recursive: true });
+    writeFileSync(join(copy, "package.json"), packageJson("@kynesyslabs/dacs", "0.0.0-old"));
+    writeFileSync(join(copy, "index.js"), "module.exports = 'old-copy';\n");
+    return realpathSync(copy);
+  };
+
+  it("rejects an omitted candidate alias Node loads from a parent directory's node_modules", () => {
+    const fixture = omittedAlias();
+    const copy = oldCopy(join(fixture.directory, "node_modules"));
+    const result = fixture.run(project => {
+      expect(createRequire(join(project, "index.cjs")).resolve("candidate-alias")).toBe(join(copy, "index.js"));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`candidate-alias declared by the project loads ${copy}, outside the installation`);
+  });
+
+  it("rejects an omitted candidate alias require() loads from a NODE_PATH folder", () => {
+    const fixture = omittedAlias();
+    const folder = join(fixture.directory, "global");
+    const copy = oldCopy(folder);
+    const result = fixture.run(() => undefined, { NODE_PATH: folder });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`candidate-alias declared by the project loads ${copy}, outside the installation`);
+  });
+
+  it("accepts an omitted candidate alias Node finds nowhere", () => {
+    expect(omittedAlias().run()).toMatchObject({ status: 0, report: { passed: true } });
+  });
+});
+
 describe("candidate copies hidden in the installed tree", () => {
   const evil = { "package.json": packageJson("@kynesyslabs/dacs", "0.0.0-evil"), "index.js": "module.exports = 'shadow';" };
   const carried = (owner: string, location: string) => `cannot authenticate a candidate copy carried in the archive of ${owner}: ${location}`;
@@ -993,5 +1036,25 @@ describe("dependency policy over npm ci installations", () => {
     expect(policy.status).not.toBe(0);
     expect(policy.stderr).toContain("cannot authenticate a candidate copy carried in the archive of node_modules/fixture-plugin: " +
       "node_modules/fixture-plugin/dist/node_modules/@kynesyslabs/dacs");
+  }, 60_000);
+
+  // npm skips the optional alias on this platform although the lock records
+  // the release's integrity for it; CommonJS and ESM then load the parent
+  // project's old copy.
+  it("rejects an omitted optional candidate alias that loads a parent project's copy", async () => {
+    const directory = temporaryDirectory();
+    const parentCopy = join(directory, "node_modules/candidate-alias");
+    mkdirSync(parentCopy, { recursive: true });
+    writeFileSync(join(parentCopy, "package.json"), packageJson("@kynesyslabs/dacs", "0.0.0-old"));
+    writeFileSync(join(parentCopy, "index.js"), "module.exports = 'ancestor';\n");
+    const { project, policy } = await registryInstallation(directory, {},
+      { "node_modules/candidate-alias": ["@kynesyslabs/dacs", { name: "@kynesyslabs/dacs", optional: true, os: [`!${process.platform}`] }] },
+      { optionalDependencies: { "candidate-alias": `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` } });
+    expect(existsSync(join(project, "node_modules/candidate-alias"))).toBe(false);
+    expect(createRequire(join(project, "index.cjs")).resolve("candidate-alias")).toBe(join(realpathSync(parentCopy), "index.js"));
+    expect(spawnSync(process.execPath, ["--input-type=module", "--eval", "console.log(import.meta.resolve('candidate-alias'))"],
+      { cwd: project, encoding: "utf8" }).stdout).toContain(`${realpathSync(parentCopy)}/index.js`);
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain(`candidate-alias declared by the project loads ${realpathSync(parentCopy)}, outside the installation`);
   }, 60_000);
 });
