@@ -18,6 +18,26 @@ const dirFor = (t) => { const dir = mkdtempSync(join(tmpdir(), 'party-vet-store-
 const openStore = (options) => openPartyVetStore({ mode: existsSync(options.path) ? 'open' : 'create', ...options });
 const code = (expected) => (error) => error?.code === expected;
 
+test('party Vet paths with trailing whitespace are refused before touching files', async t => {
+  const directory = dirFor(t), path = join(directory, 'party vet.sqlite');
+  const store = openStore({ path }); t.after(() => store.close());
+  await store.update('job', () => ({ checkpoint: 'TEST-complete' }));
+  const before = readdirSync(directory).sort();
+  for (const suffix of [' ', '\t', '\n', '\r', '\u00a0', '\ufeff', ' /.']) {
+    for (const mode of ['create', 'open']) {
+      assert.throws(() => {
+        const unexpected = openPartyVetStore({ path: path + suffix, mode });
+        unexpected.close();
+      }, code('journal-invalid'), JSON.stringify({ suffix, mode }));
+      assert.deepEqual(readdirSync(directory).sort(), before, 'refusal creates no file or initialization directory');
+      assert.deepEqual(await store.read('job'), { checkpoint: 'TEST-complete' });
+    }
+  }
+  const again = openPartyVetStore({ path, mode: 'open' }); t.after(() => again.close());
+  assert.equal(again.storeId, store.storeId, 'internal spaces still identify the same store');
+  assert.deepEqual(await again.read('job'), { checkpoint: 'TEST-complete' });
+});
+
 test('a missing file is a fresh private store; rows survive a reopen; usage counts jobs and bytes', (t) => {
   const path = join(dirFor(t), 'seller-party-vet.sqlite');
   const store = openStore({ path });
