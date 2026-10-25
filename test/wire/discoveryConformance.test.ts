@@ -44,8 +44,8 @@ it("inclusive 60s issuedAt skew, rollback refusal and exclusive expiry on initia
   await expect(wire.signWireRequest({ ...x.input, endpointProof: proof, now: x.discovery.expiresAt })).rejects.toMatchObject({ code: "discovery_expired" });
   expect(x.buyer.calls).toBe(0);
 });
-it("future-skew commitment time does not admit a Listing decision that is not live yet", async () => {
-  const x = (await wireWorld()), listing = tp1Listing({ seller: x.seller });
+it("a committed continuation uses its pinned Listing when live eligibility changes", async () => {
+  const x = (await wireWorld()), listing = tp1Listing({ seller: x.seller, publicEndpoint: x.discovery.publicEndpoint });
   const a = signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: listing.pin, listing });
   const c = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: a.agreementHash, listingPin: listing.pin, committedAt: NOW + 10_000 });
   let notBefore = NOW;
@@ -60,8 +60,8 @@ it("future-skew commitment time does not admit a Listing decision that is not li
     commitment: options.commitment, agreement: options.agreement, signedListing: options.signedListing };
   await expect(assertEndpointProof(proof, scope)).resolves.toBeUndefined();
   notBefore = NOW + 1;
-  await expect(Promise.resolve().then(async () => (await wire.verifyEndpointProof(doc, options)))).rejects.toThrowError(expect.objectContaining({ code: "listing_unsupported" }));
-  await expect(Promise.resolve().then(async () => (await assertEndpointProof(proof, scope)))).rejects.toThrowError(expect.objectContaining({ code: "listing_unsupported" }));
+  await expect(wire.verifyEndpointProof(doc, options)).resolves.toMatchObject({ ready: true });
+  await expect(assertEndpointProof(proof, scope)).resolves.toBeUndefined();
 });
 it("refused discovery participants cause zero trusted eligibility or receipt reads", async () => {
   const x = (await wireWorld());
@@ -74,7 +74,7 @@ it("refused discovery participants cause zero trusted eligibility or receipt rea
 });
 it("authority is rechecked after each trusted reader returns", async () => {
   for (const boundary of ["eligibility", "receipt"]) {
-    const x = (await wireWorld()), listing = tp1Listing({ seller: x.seller });
+    const x = (await wireWorld()), listing = tp1Listing({ seller: x.seller, publicEndpoint: x.discovery.publicEndpoint });
     const a = signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: listing.pin, listing });
     const c = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: a.agreementHash, listingPin: listing.pin, committedAt: NOW - 5000 });
     let calls = 0;
