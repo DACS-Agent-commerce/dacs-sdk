@@ -584,6 +584,10 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 record the 03c lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 927a43435424ea2b8ee1a11f7d2d47eb350139fc |
 | D11 | fix(client): D11 record the 03a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 enforce synchronous SQLite statement boundaries | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | eafd77f954d594e9b2d10fcb7340a1acd95aa729 |
+| | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | b4e9db02994949d2259e9bd69c6f54ca0d8a452a |
+| | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 9fbac0814d491ce1e136f0e1b84830d79c3f0f6f |
 
 ## Complete commit and file inventory
 
@@ -1462,6 +1466,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
+| fix(client): D11 enforce synchronous SQLite statement boundaries | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
 
 ## Original moved files
 
