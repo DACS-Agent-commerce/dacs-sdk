@@ -254,7 +254,12 @@ function releaseCandidates(releaseSet, version) {
     if (recorded !== integrity) {
       throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
     }
-    return { name, integrity, version, files: packedFiles(bytes) };
+    const files = packedFiles(bytes);
+    const manifest = JSON.parse(files.get("package.json").toString("utf8"));
+    if (manifest?.name !== name || manifest?.version !== version) {
+      throw new Error(`packed candidate manifest does not match the release: ${name}@${version}`);
+    }
+    return { name, integrity, version, files };
   });
 }
 
@@ -334,11 +339,15 @@ function candidateDeclarations(manifest, lock, inventory, candidates) {
   return [...declarations.values()];
 }
 
-// A copy of `candidate` installed at `location` must be its packed tarball,
-// fetched through the isolated registry, at the release's name and version.
-function releaseCopyErrors(location, entry, { name, integrity, version }, registry) {
+// Certify a location from its independently verified closure archive, never
+// from lock claims alone. Bundles and opaque entries have no such files.
+function releaseCopyErrors(location, record, { name, integrity, version }, registry) {
+  const entry = record?.entry ?? {};
   const { origin, path } = consumerRegistry(registry);
   const errors = [];
+  if (!record?.files || record.unverified || entry.inBundle === true) {
+    errors.push("candidate package has no independently verified release archive: " + location);
+  }
   let url = null;
   try { url = new URL(entry.resolved); } catch { /* not a URL */ }
   if (url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
@@ -456,8 +465,9 @@ const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? 
 // Every sensitive identity in the closed inventory must be an independently
 // locked release archive. Nested scopes, carried modules and file shadows have
 // no such identity. A nested scope declaring candidates is refused as well.
-function candidateInventoryErrors(closure, inventory, candidates, declarations, registry) {
+function authenticateCandidateInventory(closure, inventory, candidates, declarations, registry) {
   const errors = [...inventory.errors];
+  const authenticated = new Map(candidates.map(candidate => [candidate, new Set()]));
   for (const candidate of candidates) {
     if (!closure.entries.get("node_modules/" + candidate.name)?.present) {
       errors.push("candidate package is not installed at the top level: " + candidate.name);
@@ -473,10 +483,14 @@ function candidateInventoryErrors(closure, inventory, candidates, declarations, 
       errors.push(`cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
     } else {
       if (module.unreadable) errors.push("cannot read an archive package scope: " + location);
-      for (const candidate of identities) errors.push(...releaseCopyErrors(location, module.entry, candidate, registry));
+      for (const candidate of identities) {
+        const copyErrors = releaseCopyErrors(location, closure.entries.get(location), candidate, registry);
+        errors.push(...copyErrors);
+        if (copyErrors.length === 0) authenticated.get(candidate).add(location);
+      }
     }
   }
-  return errors;
+  return { errors, authenticated };
 }
 
 // The first module Node finds for `specifier` from `directory`: its ESM
@@ -524,7 +538,7 @@ function nodeResolutions(project, declarations) {
 // Each declared candidate specifier must lead Node, from the directory of the
 // package declaring it, to an installed copy of the release, or to nothing at
 // all where npm left an optional copy out. Node's own resolution must agree.
-function candidateResolutionErrors(project, closure, declarations) {
+function candidateResolutionErrors(project, authenticated, declarations) {
   const resolutions = nodeResolutions(project, declarations);
   return declarations.flatMap(({ location, specifier, candidate }, index) => {
     const declared = `${specifier} declared by ${location || "the project"}`;
@@ -533,8 +547,7 @@ function candidateResolutionErrors(project, closure, declarations) {
     if (found === null) return elsewhere.map(file => `${declared} resolves to ${file}, which no module Node searched holds`);
     const holder = relative(project, found);
     if (holder.startsWith("..") || isAbsolute(holder)) return [`${declared} loads ${found}, outside the installation`];
-    const record = closure.entries.get(holder);
-    if (!record?.present || record.entry.integrity !== candidate.integrity || record.entry.inBundle === true) {
+    if (!authenticated.get(candidate).has(holder)) {
       return [`${declared} loads ${holder}, not the ${candidate.name} release`];
     }
     return elsewhere.map(file => `${declared} resolves to ${file}, outside ${holder}`);
@@ -549,13 +562,14 @@ function candidateResolutionErrors(project, closure, declarations) {
 function candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, scopes }) {
   const inventory = candidateInventory(closure, scopes, registry);
   const declarations = candidateDeclarations(manifest, lock, inventory, candidates);
+  const { errors, authenticated } = authenticateCandidateInventory(closure, inventory, candidates, declarations, registry);
   return [
     ...candidates.flatMap(({ name, files }) => {
       const scripts = declaredInstallScripts(files);
       return scripts.length ? [`candidate package runs code when installed (${scripts.join(", ")}): ${name}`] : [];
     }),
-    ...candidateInventoryErrors(closure, inventory, candidates, declarations, registry),
-    ...candidateResolutionErrors(project, closure, declarations),
+    ...errors,
+    ...candidateResolutionErrors(project, authenticated, declarations),
   ];
 }
 
