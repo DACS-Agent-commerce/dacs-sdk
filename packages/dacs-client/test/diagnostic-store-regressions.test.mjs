@@ -237,7 +237,7 @@ test('public watch refuses a host promise before its continuation can persist an
   const transition = world.ops.transition.bind(world.ops);
   world.ops.transition = (...args) => Promise.resolve().then(() => transition(...args));
   const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true, now: () => ABSENT.checkedAt });
-  assert.throws(() => watch.observe(op, ABSENT), { code: 'client_not_wired' });
+  assert.throws(() => watch.observe(op, ABSENT), { code: 'purchase_store_async_result' });
   await new Promise(resolve => setImmediate(resolve));
   const reopened = openWorld(path);
   try { assert.deepEqual(reopened.snapshot('delivery'), before); }

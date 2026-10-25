@@ -636,6 +636,8 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | D11 | fix(client): D11 record the 05 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 6c029aa8aa4cb0bfbc38c1c345be3adf1d0fd344 |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 5a2a00254d003a77105c64e5f60b05372a5dbf3f |
+| D11 | fix(client): D11 assert the watch result refusal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 8cf441713b5fb8df9e0698eabfe571c79d0f68cb |
 
 ## Complete commit and file inventory
 
@@ -1593,6 +1595,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 05 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 05 split integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 05 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 assert the watch result refusal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 assert the watch result refusal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 assert the watch result refusal | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 assert the watch result refusal | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 assert the watch result refusal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 assert the watch result refusal | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 
 ## Original moved files
 
