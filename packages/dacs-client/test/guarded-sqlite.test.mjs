@@ -234,3 +234,36 @@ test('an application override of a bundled extension function is still refused',
     assert.throws(() => db.prepare("SELECT geopoly_bbox('[[0,0],[1,0],[1,1]]')").get(), /SQL callbacks/);
   });
 });
+test('an application override of rtreenode cannot write after a rollback inside a guard', t => {
+  const db = world(t);
+  db.exec('BEGIN; CREATE TEMP TABLE test_live(id)');
+  const live = db.prepare("SELECT 1 FROM sqlite_temp_master WHERE name='test_live'");
+  const write = db.prepare("INSERT INTO records VALUES ('TEST-escaped')");
+  let calls = 0;
+  // Two parameters give the override the same name and arity as the bundled function.
+  db.function('rtreenode', (nodeSize, nodeData) => {
+    calls++;
+    nativeExec.call(db, 'ROLLBACK');
+    nativeRun.call(write);
+    return nodeSize + nodeData;
+  });
+  withSqliteStatementGuard(db, () => { if (!live.get()) throw Error('TEST-ended'); }, () => {
+    assert.throws(() => db.prepare('SELECT rtreenode(1, 2)').get(), /SQL callbacks/);
+  });
+  assert.equal(calls, 0);
+  assert.equal(db.prepare("SELECT count(*) n FROM records WHERE id='TEST-escaped'").get().n, 0);
+});
+test('a bundled extension function is refused because an override cannot be told apart', t => {
+  const db = world(t);
+  withSqliteStatementGuard(db, () => {}, () => {
+    assert.throws(() => db.prepare("SELECT geopoly_area('[[0,0],[1,0],[1,1]]')").get(), /SQL callbacks/);
+  });
+});
+test('a colliding override registered after installation makes virtual-table programs refused', t => {
+  const db = world(t);
+  withSqliteStatementGuard(db, () => {}, () => {});
+  db.function('rtreenode', (nodeSize, nodeData) => nodeSize + nodeData);
+  withSqliteStatementGuard(db, () => {}, () => {
+    assert.throws(() => db.prepare("SELECT count(*) n FROM pragma_table_info('records')").get(), /SQL callbacks/);
+  });
+});
