@@ -29,7 +29,7 @@ import {
   DACS_STANDARD_PIN,
   VERSION as DACS_SDK_VERSION,
 } from '@kynesyslabs/dacs';
-import { addressForClaim, claimForAddress, decodeSignature, isCanonicalEd25519Signature } from './demos-claims.mjs';
+import { addressForClaim, claimForAddress, decodeSignature, isCanonicalEd25519Signature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { OS_INTEGER } from './chain.mjs';
 
 export const DEM_RAIL = Object.freeze({ railId: 'demos-native:DEM', railVersion: 1 });
@@ -59,7 +59,7 @@ export function verifyComponent(input) {
     const { signedBytes: bytes, signature } = input;
     if (signature?.algorithm !== 'ed25519' || !isCanonicalEd25519Signature(signature.value)) return false;
     const raw = canonicalDemosAgentPublicKey(signature.signer);
-    if (!raw) return false;
+    if (!raw || isSmallOrderPublicKey(raw)) return false;
     return ed25519Verify(bytes, Buffer.from(signature.value, 'base64url'), publicKeyFromRaw(raw));
   } catch {
     return false;
