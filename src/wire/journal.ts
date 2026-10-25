@@ -88,7 +88,7 @@ export const MAX_EFFECT_ATTEMPTS = 16;
 const SMALL_FILE_BYTES = 4096;
 const OUTCOME_FILE_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes * 2 + SMALL_FILE_BYTES;
 
-type Store = { directory: string; leaseMs: number; clock: () => number };
+type Store = { directory: string; identity: { dev: bigint; ino: bigint }; leaseMs: number; clock: () => number };
 type IssuedEffect = { store: Store; operationId: string; attempt: number };
 // Methods taken at module load (see profile.ts).
 const stores = new WeakMap<object, Store>();
@@ -100,6 +100,11 @@ const issuedSet = uncurry(WeakMap.prototype.set) as (map: typeof issued, key: ob
 
 const corrupt = (detail: string): never => fail("seller_replay_guard_invalid", 500, detail);
 
+/** The journal path still names the directory that passed the open checks; a renamed or replaced one is refused. */
+function assertSameDirectory({ directory, identity }: Store): void {
+  const stat = lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+  if (stat === undefined || !stat.isDirectory() || stat.dev !== identity.dev || stat.ino !== identity.ino) corrupt("DIRECTORY-REPLACED");
+}
 function syncDirectory(directory: string): void {
   const fd = openSync(directory, constants.O_RDONLY);
   try { fsyncSync(fd); } finally { closeSync(fd); }
@@ -107,6 +112,7 @@ function syncDirectory(directory: string): void {
 
 /** Publish `name` with exactly `contents`, durably; false if it already exists. */
 function publish(store: Store, name: string, contents: string): boolean {
+  assertSameDirectory(store);
   const temporary = join(store.directory, `tmp-${randomBytes(16).toString("hex")}`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   let published = true, primary: unknown;
@@ -138,6 +144,7 @@ function publish(store: Store, name: string, contents: string): boolean {
 
 /** Whether `name` exists; anything but a regular file there is a corrupt store. */
 function exists(store: Store, name: string): boolean {
+  assertSameDirectory(store);
   const stat = lstatSync(join(store.directory, name), { throwIfNoEntry: false });
   if (stat === undefined) return false;
   if (!stat.isFile()) corrupt("STORE-ENTRY-NOT-FILE");
@@ -146,6 +153,7 @@ function exists(store: Store, name: string): boolean {
 
 /** Read a published file, bounded before anything is read; undefined when it does not parse as one JSON object. */
 function readRecord(store: Store, name: string, maxBytes: number): JsonRecord | undefined {
+  assertSameDirectory(store);
   const fd = openSync(join(store.directory, name), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(fd);
@@ -261,7 +269,7 @@ function now(store: Store): number {
 /**
  * Open the journal in `directory`: an existing absolute directory, not a
  * symbolic link and reached through none (the path is its own real path),
- * owned by this process's user and writable by no one else.
+ * owned by this process's user and writable by no one else; a call after the path names another directory fails.
  * Before it is returned, an exclusive publish is tried twice on it: the second
  * must be refused. A publisher then exits before a fresh process checks
  * retained bytes and exclusive retry. Failure, or Windows (no directory sync), is
@@ -281,7 +289,7 @@ export function openWireRequestJournal(directory: string, options: WireRequestJo
   if ((uid !== undefined && stat!.uid !== uid) || (stat!.mode & 0o022) !== 0) fail("seller_replay_guard_invalid", 500, "DIRECTORY-UNSAFE");
   // Every later call resolves the path again, so a link anywhere in it (or a trailing slash, `..`) could be retargeted to an empty directory.
   if (realpathSync(directory) !== directory) fail("seller_replay_guard_invalid", 500, "DIRECTORY-ALIAS");
-  const store: Store = { directory, leaseMs: leaseMs as number, clock: clock as () => number };
+  const store: Store = { directory, identity: lstatSync(directory, { bigint: true }), leaseMs: leaseMs as number, clock: clock as () => number };
   const probe = `probe-${randomBytes(16).toString("hex")}`;
   const first = publish(store, probe, "{}"), second = publish(store, probe, "{}");
   unlinkSync(join(directory, probe));
