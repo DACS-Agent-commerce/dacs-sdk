@@ -271,7 +271,8 @@ function candidateAliasLocations(manifest, packages, inventory, candidate) {
 // that package. The inventory lists only `<package>/node_modules`, so this
 // returns every other node_modules entry inside an installed package directory,
 // as paths relative to it. With `names`, it returns only those entries holding
-// a module of one of those names or a file shadowing one. Links are not
+// a module of one of those names, a package whose package.json declares one of
+// them under any directory name, or a file shadowing one. Links are not
 // followed, except a scope directory that is a link, which Node does follow; a
 // missing directory has none.
 export function nestedModuleRoots(directory, names) {
@@ -283,10 +284,17 @@ export function nestedModuleRoots(directory, names) {
       throw error;
     }
   };
+  const declaresNamedModule = module => {
+    try { return names.has(JSON.parse(readFileSync(join(module, "package.json"), "utf8"))?.name); }
+    catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+      throw error;
+    }
+  };
   const holdsNamedModule = root => list(root).some(entry => {
     const found = entry.name.startsWith("@") && (entry.isDirectory() || entry.isSymbolicLink())
       ? list(join(root, entry.name)).map(inner => `${entry.name}/${inner.name}`) : [entry.name];
-    return found.some(module => names.has(module) ||
+    return found.some(module => names.has(module) || declaresNamedModule(join(root, module)) ||
       moduleFileExtensions.some(extension => module.endsWith(extension) && names.has(module.slice(0, -extension.length))));
   });
   const visit = (current, prefix) => {
