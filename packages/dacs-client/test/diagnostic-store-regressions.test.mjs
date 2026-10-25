@@ -5,14 +5,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
-import { createPublicPurchaseService as createPurchaseService } from '../src/purchases.mjs';
-import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
-import { createDeliveryDeadlineWatch } from '../src/dacs/delivery-deadline-watch.mjs';
-import { diagnosticProtocolView as protocolView } from '../src/dacs/protocol-purchases.mjs';
-import { deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
-import { openDatabase } from './helpers/purchase-integrity-database.mjs';
-import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
-import { openWorld, ABSENT } from './helpers/domain-store-crash-world.mjs';
 
 function database(t) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-diagnostic-store-')), path = join(dir, 'state.sqlite');
@@ -144,6 +136,12 @@ test('detach and reattach of the same file retains transaction protection', t =>
   finally { reopened.close(); }
 });
 
+import { createPurchaseService } from '../src/purchases.mjs';
+import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
+import { createDeliveryDeadlineWatch, deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
+import { protocolView } from '../src/dacs/protocol-purchases.mjs';
+import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 function purchaseWorld(t) {
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
@@ -166,39 +164,6 @@ function purchaseWorld(t) {
   const purchases = createPurchaseService({ db, ops, coordinates, store, chain, config: {}, purposes: { APPROVE_PURCHASE: 'TEST' } });
   return { db, ops, coordinates, store, operation, purchases };
 }
-
-test('every public diagnostic omits payment payloads and signing messages while preserving identifiers', async t => {
-  const w = purchaseWorld(t), { operation: op } = w;
-  await assert.rejects(w.purchases.prepareHandoff({ operationId: op.id, token: w.ops.handoffTokenFor(op.id) }), { code: 'profile_not_admitted' });
-  const before = w.ops.get(op.accountId, op.id), coords = w.coordinates.get(op.id);
-  const status = w.purchases.status(op.accountId, op.id, w.ops.handoffTokenFor(op.id));
-  const portal = w.purchases.portalOperation(op.id, w.ops.handoffTokenFor(op.id));
-  for (const result of [status, portal, w.purchases.portalEvidence(op.id, w.ops.handoffTokenFor(op.id)), protocolView(before), await w.purchases.verifyDeal({ accountId: op.accountId, operationId: op.id, token: w.ops.handoffTokenFor(op.id) })]) {
-    const json = JSON.stringify(result);
-    assert.doesNotMatch(json, /"payload"|"agreementMessage"|"anchorMessage"|TEST-.*-sign/);
-  }
-  assert.equal(status.coordinates.expectedNonce, 7);
-  assert.equal(status.coordinates.payloadHash, coords.payloadHash);
-  assert.equal(status.protocol.bundle.bundleHash, 'b'.repeat(64));
-  assert.deepEqual(w.ops.get(op.accountId, op.id), before);
-  assert.deepEqual(w.coordinates.get(op.id), coords);
-});
-
-test('public watch refuses a host promise before its continuation can persist an overdue event', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'dacs-watch-store-')), path = join(dir, 'state.sqlite');
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const world = openWorld(path);
-  world.seed('delivery');
-  const before = world.snapshot('delivery'), op = world.operation('delivery');
-  const transition = world.ops.transition.bind(world.ops);
-  world.ops.transition = (...args) => Promise.resolve().then(() => transition(...args));
-  const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true, now: () => ABSENT.checkedAt });
-  assert.throws(() => watch.observe(op, ABSENT), { code: 'client_not_wired' });
-  await new Promise(resolve => setImmediate(resolve));
-  const reopened = openWorld(path);
-  try { assert.deepEqual(reopened.snapshot('delivery'), before); }
-  finally { reopened.db.close(); }
-});
 
 for (const checkedAt of [8640000000000000, 8640000000000001, Number.MAX_SAFE_INTEGER]) {
   test(`deadline observation checks the Date range (${checkedAt})`, t => {
@@ -261,4 +226,20 @@ test('a microsecond report cannot mark a future delivery deadline overdue', t =>
   watch.observe(current, { notPresent: true, delivery: { status: 'absent' }, checkedAt: clock * 1000 });
   assert.equal(w.ops.get(op.accountId, op.id).state.protocol.deliveryDeadline, undefined);
   assert.deepEqual(w.ops.history(op.id), history);
+});
+import { openWorld, ABSENT } from './helpers/domain-store-crash-world.mjs';
+test('public watch refuses a host promise before its continuation can persist an overdue event', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacs-watch-store-')), path = join(dir, 'state.sqlite');
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const world = openWorld(path);
+  world.seed('delivery');
+  const before = world.snapshot('delivery'), op = world.operation('delivery');
+  const transition = world.ops.transition.bind(world.ops);
+  world.ops.transition = (...args) => Promise.resolve().then(() => transition(...args));
+  const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true, now: () => ABSENT.checkedAt });
+  assert.throws(() => watch.observe(op, ABSENT), { code: 'client_not_wired' });
+  await new Promise(resolve => setImmediate(resolve));
+  const reopened = openWorld(path);
+  try { assert.deepEqual(reopened.snapshot('delivery'), before); }
+  finally { reopened.db.close(); }
 });

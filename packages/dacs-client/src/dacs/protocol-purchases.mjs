@@ -255,14 +255,6 @@ export class StaleProtocolCheck extends OperationError {
   }
 }
 
-// Public projections describe saved protocol state without offering actions.
-export function diagnosticProtocolView(operation, options = {}) {
-  const view = protocolView(operation, options);
-  const { message: _message, ...bundle } = view?.bundle ?? {};
-  return view ? { ...view, ...(view.bundle ? { bundle } : {}), historical: true,
-    next: 'Stored protocol state is historical. Purchase actions are held; public readback cannot establish settlement or delivery.' } : null;
-}
-
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
 // that need one refuse with buyer_access_closed).
