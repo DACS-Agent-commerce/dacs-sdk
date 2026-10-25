@@ -201,7 +201,7 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
 }
 const TREE = "installed tree is not the locked archives: ";
 
-describe("complete archive package scopes", () => {
+describe("complete installed package scopes", () => {
   it.each(["identity", "alias-name", "alias-declaration"])("authenticates a nested package scope's %s", form => {
     const fixture = dependencyPolicyHarness();
     fixture.manifest.optionalDependencies = { alias: `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}` };
@@ -1644,6 +1644,52 @@ describe("dependency policy over npm ci installations", () => {
     const { policy } = await registryInstallation(temporaryDirectory(), {}, {});
     expect(policy.status, policy.stderr).toBe(0);
   }, 60_000);
+
+  it.each(["identity", "alias-name", "alias-declaration", "malformed", "ordinary"])(
+    "authenticates an npm-generated package scope: %s", async form => {
+      const directory = temporaryDirectory();
+      const alias = `npm:@kynesyslabs/dacs@${CANDIDATE_VERSION}`;
+      const specifier = form.startsWith("alias-") ? "candidate-alias" : "@kynesyslabs/dacs";
+      const scope = form === "malformed" ? "{" : packageJson(
+        form === "identity" ? "@kynesyslabs/dacs" : form === "alias-name" ? specifier : "inner", CANDIDATE_VERSION,
+        { exports: "./copy.cjs", ...(form === "alias-declaration" ? { dependencies: { [specifier]: alias } } : {}) });
+      const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION,
+        { main: "node_modules/.bin/runner.cjs", dependencies: { "bin-owner": CANDIDATE_VERSION } }),
+        "node_modules/.bin/runner.cjs": `module.exports = require(${JSON.stringify(specifier)});`,
+        "node_modules/.bin/copy.cjs": "module.exports = 'unreleased-copy';",
+        // npm replaces this archived scope with the generated command link.
+        ...(form === "ordinary" ? { "node_modules/.bin/package.json": packageJson("@kynesyslabs/dacs", CANDIDATE_VERSION,
+          { exports: "./copy.cjs" }) } : {}) });
+      const binOwner = packTarball({ "package.json": packageJson("bin-owner", CANDIDATE_VERSION,
+        { bin: { "package.json": "scope.json" } }), "scope.json": scope });
+      const other = packTarball({ "package.json": packageJson("other", CANDIDATE_VERSION),
+        "index.js": "module.exports = 'unreleased-copy';" });
+      const { project, policy } = await registryInstallation(directory, { plugin, "bin-owner": binOwner, other }, {
+        "node_modules/plugin": ["plugin", { dependencies: { "bin-owner": CANDIDATE_VERSION } }],
+        "node_modules/plugin/node_modules/bin-owner": ["bin-owner", { bin: { "package.json": "scope.json" } }],
+        ...(form === "alias-declaration" ? { "node_modules/candidate-alias": ["other", {}] as [string, Record<string, unknown>] } : {}),
+      }, { dependencies: { plugin: CANDIDATE_VERSION },
+        ...(form === "alias-name" ? { optionalDependencies: { [specifier]: alias } } : {}) });
+      const installedScope = join(project, "node_modules/plugin/node_modules/.bin/package.json");
+      expect(realpathSync(installedScope)).toBe(join(project, "node_modules/plugin/node_modules/bin-owner/scope.json"));
+      expect(readFileSync(installedScope, "utf8")).toBe(scope);
+      const loaded = spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" });
+      if (form === "ordinary") {
+        expect(loaded.status, loaded.stderr).toBe(0);
+        expect(loaded.stdout).toBe("@kynesyslabs/dacs\n");
+        expect(policy.status, policy.stderr).toBe(0);
+        expect(JSON.parse(readFileSync(join(directory, "report.json"), "utf8"))).toMatchObject({ passed: true });
+      } else {
+        if (form === "malformed") expect(loaded.status).not.toBe(0);
+        else {
+          expect(loaded.status, loaded.stderr).toBe(0);
+          expect(loaded.stdout).toBe("unreleased-copy\n");
+        }
+        expect(policy.status, policy.stderr).not.toBe(0);
+        expect(policy.stderr).toContain("node_modules/plugin/node_modules/.bin");
+        expect(existsSync(join(directory, "report.json"))).toBe(false);
+      }
+    }, 60_000);
 
   it.each(CANDIDATES.flatMap(name => ["name", "version"].map(field => [name, field] as const)))(
     "refuses a %s release archive with the wrong manifest %s despite matching provenance and lock", async (name, field) => {

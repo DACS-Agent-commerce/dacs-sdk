@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -263,27 +263,42 @@ function declaredCandidates(owner, candidates) {
   return declared;
 }
 
-// Every package.json scope in an archive, retaining manifests rather than
-// archive/file buffers after extraction. No module-root search limits the list.
-function archivePackageScopes(owner, archive) {
-  const scopes = new Map();
-  for (const [path, bytes] of packedFiles(archive)) {
-    if (posix.basename(path) !== "package.json") continue;
-    const scope = { owner };
-    try {
-      scope.manifest = JSON.parse(bytes.toString("utf8"));
-      scope.unreadable = !isPlainObject(scope.manifest);
-    } catch { scope.unreadable = true; }
-    scopes.set(posix.dirname(`${owner}/${path}`), scope);
-  }
-  return scopes;
+// Called only after the entire installed namespace matches its archive closure.
+// Read every final module root and package scope, including npm-generated file
+// links and replacements. Never follow directory links or select module roots
+// to search: a scope can occur in any directory that Node executes code from.
+function installedCandidateModules(project, closure) {
+  const modules = new Map();
+  const visit = (directory, owner) => {
+    for (const item of readdirSync(join(project, directory), { withFileTypes: true })) {
+      const path = `${directory}/${item.name}`;
+      const record = closure.entries.get(path);
+      const archiveOwner = record ? record.bundledBy ?? path : owner;
+      const parent = posix.basename(directory);
+      const name = parent === "node_modules" ? (item.name.startsWith("@") ? null : item.name)
+        : parent.startsWith("@") && posix.basename(posix.dirname(directory)) === "node_modules"
+          ? `${parent}/${item.name}` : null;
+      if (name) modules.set(path, { owner: archiveOwner, name });
+      if (item.isDirectory()) visit(path, archiveOwner);
+      else if (item.name === "package.json") {
+        const scope = { ...modules.get(directory), owner, generated: item.isSymbolicLink() };
+        try {
+          scope.manifest = JSON.parse(readFileSync(join(project, path), "utf8"));
+          scope.unreadable = !isPlainObject(scope.manifest);
+        } catch { scope.unreadable = true; }
+        modules.set(directory, scope);
+      }
+    }
+  };
+  visit("node_modules", "npm");
+  return modules;
 }
 
 // A closed inventory of physical module roots and EVERY package.json scope,
-// including scopes outside node_modules. Only archives checked against the
-// installed tree contribute manifests; opaque registry entries cannot pass.
-function candidateInventory(closure, scopes, registry) {
-  const modules = new Map(closure.carried);
+// including scopes outside module roots. Only the verified final namespace
+// contributes manifests; opaque registry entries cannot pass.
+function candidateInventory(closure, installed, registry) {
+  const modules = new Map();
   const errors = [];
   const { origin, path } = consumerRegistry(registry);
   for (const [location, record] of closure.entries) {
@@ -298,12 +313,12 @@ function candidateInventory(closure, scopes, registry) {
       }
     }
   }
-  for (const [location, scope] of scopes) modules.set(location, { ...modules.get(location), ...scope });
+  for (const [location, module] of installed) modules.set(location, { ...modules.get(location), ...module });
   return { modules, errors };
 }
 
 // Every declaration from the project, installed lock entries and the complete
-// archive scope inventory, once, with its declaring directory.
+// final installed scope inventory, once, with its declaring directory.
 function candidateDeclarations(manifest, lock, inventory, candidates) {
   const owners = [["", manifest], ["", lock?.packages?.[""]]];
   for (const [location, module] of inventory.modules) {
@@ -456,7 +471,8 @@ function authenticateCandidateInventory(closure, inventory, candidates, declarat
     const identities = candidates.filter(candidate => names.includes(candidate.name) ||
       declarations.some(declared => declared.candidate === candidate && names.includes(declared.specifier)));
     if (!module.entry && (identities.length || module.unreadable || declaredCandidates(module.manifest, candidates).length)) {
-      errors.push(`cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
+      errors.push(module.generated ? `cannot authenticate an npm-generated package scope: ${location}`
+        : `cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
     } else {
       if (module.unreadable) errors.push("cannot read an archive package scope: " + location);
       for (const candidate of identities) {
@@ -535,8 +551,8 @@ function candidateResolutionErrors(project, authenticated, declarations) {
 // candidates that run install code, installed candidate entries that are not
 // the release, carried modules standing in for one, and declared candidates
 // Node loads from anything else.
-function candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, scopes }) {
-  const inventory = candidateInventory(closure, scopes, registry);
+function candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, installed }) {
+  const inventory = candidateInventory(closure, installed, registry);
   const declarations = candidateDeclarations(manifest, lock, inventory, candidates);
   const { errors, authenticated } = authenticateCandidateInventory(closure, inventory, candidates, declarations, registry);
   return [
@@ -566,16 +582,14 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
   const cache = npmCacheDirectory(project);
-  const scopes = new Map();
-  const closure = installationClosure(project, lock, (location, entry) => {
-    const archive = cachedArchive(cache, entry.integrity);
-    for (const [path, scope] of archivePackageScopes(location, archive)) scopes.set(path, scope);
-    return archive;
-  });
+  const closure = installationClosure(project, lock, (_location, entry) => cachedArchive(cache, entry.integrity));
   const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
+  const installed = closure.errors.length === 0 && differences.length === 0 &&
+    [...closure.entries.values()].every(record => !record.present || !record.unverified)
+    ? installedCandidateModules(project, closure) : new Map();
   const errors = [...closure.errors, ...differences.slice(0, MAX_LISTED_DIFFERENCES),
     ...(differences.length > MAX_LISTED_DIFFERENCES ? [`and ${differences.length - MAX_LISTED_DIFFERENCES} more differences`] : []),
-    ...candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, scopes })];
+    ...candidateIntegrityErrors({ project, manifest, lock, registry, candidates, closure, installed })];
   if (errors.length) throw new Error(errors.join("\n"));
   const violations = registryDependencyViolations({ manifest, lock, registry });
   writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
