@@ -10,6 +10,37 @@ function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));ex
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
+test('callback history explains the superseded guard and preserves the write-lease tree', () => {
+  const pkg = join(root, 'packages/dacs-client');
+  const notes = readFileSync(join(pkg, 'DELTA-NOTES.md'), 'utf8');
+  const { changes } = JSON.parse(readFileSync(join(pkg, 'DELTA-LEDGER.json'), 'utf8'));
+  const replacement = 'fix(client): D11 enforce the write lease in SQLite instead of patching statements';
+  const retired = [
+    'fix(client): D11 refuse SQL callbacks under the statement guard',
+    'fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard',
+  ];
+  for (const subject of retired) {
+    assert.ok(notes.includes(`- \`${subject}\`: superseded by \`${replacement}\`.`),
+      `the provenance explanation must identify the replacement for ${subject}`);
+  }
+  assert.match(notes, /SQL callbacks remain allowed inside a leased transaction/);
+  const lease = changes.find(change => change.subject === replacement);
+  assert.ok(lease, 'the write-lease implementation must retain its own delta record');
+  // This immutable merge retained the preceding core's source and test blobs;
+  // the two retired commits contribute historical evidence, not runtime code.
+  const merge = '1e5210a196f8b6a9c16544d3f9b13b6d8cebe4bd';
+  for (const file of lease.files) {
+    const atMerge = execFileSync('git', ['-C', root, 'rev-parse', `${merge}:${file.path}`], { encoding: 'utf8' }).trim();
+    assert.equal(atMerge, file.after, `${file.path} must retain the preceding write-lease implementation`);
+    for (const subject of retired) {
+      const record = changes.find(change => change.subject === subject);
+      assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
+      const retiredFile = record.files.find(entry => entry.path === file.path);
+      assert.ok(retiredFile, `${subject} must record ${file.path}`);
+      assert.notEqual(retiredFile.after, atMerge);
+    }
+  }
+});
 test('the publication inventory cannot omit an outside-only commit or name an absent hash', t => {
   for (const edit of [
     rows => rows.filter(row => !row.files.includes('.gitleaksignore')),
