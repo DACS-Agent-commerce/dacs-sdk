@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -192,13 +192,17 @@ function declaredCandidates(owner, candidates) {
 
 // Called only after the entire installed namespace matches its archive closure.
 // Read every final module root and package scope, including npm-generated file
-// links and replacements. Never follow directory links or select module roots
-// to search: a scope can occur in any directory that Node executes code from.
+// links and replacements. Only links to regular files are admitted, so links
+// cannot create additional module roots. A scope can occur in any directory
+// that Node executes code from; no module-root filter limits this traversal.
 function installedCandidateModules(project, closure) {
   const modules = new Map();
   const visit = (directory, owner) => {
     for (const item of readdirSync(join(project, directory), { withFileTypes: true })) {
       const path = `${directory}/${item.name}`;
+      if (item.isSymbolicLink() && !statSync(join(project, path)).isFile()) {
+        throw new Error("cannot authenticate a generated command link to a non-file: " + path);
+      }
       const record = closure.entries.get(path);
       const archiveOwner = record ? record.bundledBy ?? path : owner;
       const parent = posix.basename(directory);
