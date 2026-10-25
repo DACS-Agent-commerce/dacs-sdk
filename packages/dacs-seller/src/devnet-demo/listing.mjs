@@ -1,7 +1,8 @@
 import { canonicalize, contentHash, isAnchorReceipt, publishListingCore } from '@kynesyslabs/dacs';
+import { verifyComponent } from '../dacs/listing.mjs';
 import { stopRequested, stopSignal } from './stop-request.mjs';
 
-/** Publish a signed Listing only after fresh authenticated final readback; sign receives its stop signal. */
+/** Publish a signed Listing only after its signature verifies for the seller and fresh authenticated final readback; sign receives its stop signal. */
 export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,loadRailResolution}) {
   if(typeof sign!=='function' || typeof scanOwnListings!=='function' || typeof loadRailResolution!=='function' ||
       !['publish','read','verifyReceipt'].every(method=>typeof anchor?.[method]==='function')) throw new TypeError('listing publication requires signer, history, rail authority and authenticated native anchor operations');
@@ -14,6 +15,8 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
         assertRunning();
         const signature=await sign(bytes,{signal:stopSignal});
         assertRunning();
+        const value=typeof signature==='string'?signature:Buffer.from(signature).toString('base64url');
+        if(!verifyComponent({signedBytes:bytes,signature:{algorithm:'ed25519',signer:draft.seller.identity.presentedBy,value}})) throw new Error('the wallet signature does not verify for the Listing seller');
         return signature;
       },
       scanOwnAnchorsByNamePrefix:scanOwnListings,
