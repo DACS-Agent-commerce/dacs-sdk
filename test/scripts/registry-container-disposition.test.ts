@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -139,6 +140,24 @@ const candidateDisposition = (summary: unknown, baseline?: unknown, options: Rec
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 
+// An npm tarball holding `files` below `package/`.
+function packTarball(files: Record<string, string>) {
+  const blocks: Buffer[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    const body = Buffer.from(text);
+    const header = Buffer.alloc(512);
+    header.write(`package/${path}`, 0);
+    header.write("0000644\0", 100);
+    header.write(body.length.toString(8).padStart(11, "0") + "\0", 124);
+    header.write("        ", 148);
+    header.write("0", 156);
+    header.write("ustar\0" + "00", 257);
+    header.write(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0") + "\0 ", 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
+
 // Runs the dependency-policy command the script runs against a generated
 // consumer whose lock initially names the exact packed candidate tarballs,
 // as release-provenance.json records them.
@@ -147,8 +166,13 @@ function dependencyPolicyHarness() {
   scratch.push(directory);
   const packages: Record<string, Record<string, unknown>> = {};
   const provenance = { version: CANDIDATE_VERSION, packages: {} as Record<string, { integrity: string }> };
+  const packed: Record<string, Record<string, string>> = {};
   for (const name of ["dacs", "dacs-node"]) {
-    const bytes = Buffer.from(name);
+    packed[`@kynesyslabs/${name}`] = {
+      "package.json": JSON.stringify({ name: `@kynesyslabs/${name}`, version: CANDIDATE_VERSION }),
+      "index.js": `module.exports = "${name}";\n`,
+    };
+    const bytes = packTarball(packed[`@kynesyslabs/${name}`]!);
     writeFileSync(join(directory, `kynesyslabs-${name}-${CANDIDATE_VERSION}.tgz`), bytes);
     packages[`node_modules/@kynesyslabs/${name}`] = {
       version: CANDIDATE_VERSION,
@@ -175,6 +199,7 @@ function dependencyPolicyHarness() {
       const installedManifest = location in installed ? installed[location] : { name, version: entry.version };
       if (installedManifest === null) continue;
       mkdirSync(join(project, location), { recursive: true });
+      for (const [file, text] of Object.entries(packed[name] ?? {})) writeFileSync(join(project, location, file), text);
       writeFileSync(join(project, location, "package.json"), JSON.stringify(installedManifest));
     }
     afterInstall(project);
@@ -258,6 +283,56 @@ describe("registry/container evidence", () => {
     expect(fixture.run().status).not.toBe(0);
     expect(existsSync(fixture.report)).toBe(false);
   });
+  it.each(["dacs", "dacs-node"])("rejects an installed %s whose runtime file differs from the packed tarball", name => {
+    const { run } = dependencyPolicyHarness();
+    const root = `node_modules/@kynesyslabs/${name}`;
+    const result = run(project => writeFileSync(join(project, root, "index.js"), "module.exports = 'replaced';\n"));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`installed candidate files are not the packed tarball's: ${root} (changed: index.js)`);
+  });
+
+  it("rejects an installed candidate with an added file", () => {
+    const { run } = dependencyPolicyHarness();
+    const result = run(project => writeFileSync(join(project, "node_modules/@kynesyslabs/dacs/postinstall.js"), "x"));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("(unexpected: postinstall.js)");
+  });
+
+  it("rejects an installed candidate with a missing file", () => {
+    const { run } = dependencyPolicyHarness();
+    const result = run(project => rmSync(join(project, "node_modules/@kynesyslabs/dacs-node/index.js")));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("(missing: index.js)");
+  });
+
+  it("rejects an installed candidate file that is a link", () => {
+    const { run } = dependencyPolicyHarness();
+    const result = run(project => {
+      const file = join(project, "node_modules/@kynesyslabs/dacs/index.js");
+      rmSync(file);
+      symlinkSync("../dacs-node/index.js", file);
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("not a regular file: index.js");
+  });
+
+  it("accepts the dependencies npm installs inside a candidate directory", () => {
+    const { run } = dependencyPolicyHarness();
+    expect(run(project => {
+      mkdirSync(join(project, "node_modules/@kynesyslabs/dacs/node_modules/dependency"), { recursive: true });
+      writeFileSync(join(project, "node_modules/@kynesyslabs/dacs/node_modules/dependency/index.js"), "");
+    })).toMatchObject({ status: 0, report: { passed: true } });
+  });
+
+  it("rejects a packed tarball that is not an npm package archive", () => {
+    const { run, provenance } = dependencyPolicyHarness();
+    const bytes = gzipSync(Buffer.from("not a tar"));
+    provenance.packages["@kynesyslabs/dacs"] = { integrity: sri(bytes) };
+    const result = run(project => writeFileSync(join(project, "..", "kynesyslabs-dacs-" + CANDIDATE_VERSION + ".tgz"), bytes));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("packed tarball has no package.json");
+  });
+
   it("rejects an unknown policy mode", () => {
     expect(spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-polciy"],
       { cwd: repoRoot }).status).not.toBe(0);
@@ -1510,8 +1585,7 @@ describe("candidate executable and nested alias lookup", () => {
     expect(fixture.run(project => {
       const directory = join(project, "node_modules/.bin");
       mkdirSync(directory);
-      writeFileSync(join(project, "node_modules/@kynesyslabs/dacs/cli.js"), "module.exports = 42;");
-      symlinkSync("../@kynesyslabs/dacs/cli.js", join(directory, "dacs"));
+      symlinkSync("../@kynesyslabs/dacs/index.js", join(directory, "dacs"));
     })).toMatchObject({ status: 0, report: { passed: true } });
   });
   // The inventory lists each `.bin` entry without descending into it, yet Node
