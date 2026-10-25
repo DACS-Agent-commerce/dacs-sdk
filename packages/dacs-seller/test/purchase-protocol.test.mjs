@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { attestationBundleHash, contentHash, sha256Hex, signComponentArtifact, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { fixtureRef } from '../src/dacs/fixture-anchors.mjs';
-import { protocolSupport, agreementInput, agreementTerms, claimPublicKeyRaw, deliverableAddress, deliveryEvidenceAddress, commitmentReader, verifyPaymentEvidence, verifyDelivery, verifyAnchoredCopy, bundleSession, bundleSigningPlan, assembleBundleCopies, paymentEvidenceAddress, bundleAddress } from '../src/dacs/purchase-protocol.mjs';
+import { protocolSupport, agreementInput, agreementTerms, claimPublicKeyRaw, deliverableAddress, deliveryEvidenceAddress, commitmentReader, verifyPaymentEvidence, verifyDelivery, verifyAnchoredCopy, bundleSession, bundleSigningPlan, assembleBundleCopies, paymentEvidenceAddress, bundleAddress, ed25519Deps } from '../src/dacs/purchase-protocol.mjs';
 import { buyer, seller, protocolFixture, fixtureRecord, NOW, JOB } from './helpers/protocol-fixture.mjs';
 
 for (const [label, options, mutate] of [['zero price', { price: '0' }], ['unsafe OS amount', { price: '9007199.254740992' }],
@@ -72,6 +72,30 @@ test('anchored bundle references and receipts use the role-independent bundle si
   assert.ok(broken.problems.length > 0);
 });
 
+
+test('protocol signature backend refuses small-order keys for arbitrary messages', () => {
+  const key = Buffer.from('01' + '00'.repeat(31), 'hex');
+  const signature = Buffer.from('01' + '00'.repeat(63), 'hex');
+  for (const message of ['TEST first', 'TEST second']) assert.equal(ed25519Deps.verify(Buffer.from(message), signature, key), false);
+  const bytes = Buffer.from('TEST genuine');
+  assert.equal(ed25519Deps.verify(bytes, buyer.signBytes(bytes), claimPublicKeyRaw(buyer.claim)), true);
+});
+
+for (const forgedRole of ['buyer', 'seller']) test(`bundle assembly and anchored copies refuse a small-order ${forgedRole} signature`, async () => {
+  const f = await protocolFixture(), ref = label => fixtureRef('TEST-' + label, sha256Hex('TEST ' + label));
+  const session = bundleSession({ ...f, agreementRef: ref('agreement'), commitmentRef: ref('commitment'), payment: ref('payment'), delivery: ref('delivery'), finalisedAt: NOW });
+  session[forgedRole].primaryClaim = 'did:demos:agent:01' + '00'.repeat(31);
+  const plan = await bundleSigningPlan(session);
+  const signatures = { buyer: buyer.signBytes(plan.payload).toString('base64url'), seller: seller.signBytes(plan.payload).toString('base64url'),
+    [forgedRole]: Buffer.from('01' + '00'.repeat(63), 'hex').toString('base64url') };
+  const { copies, problems } = await assembleBundleCopies(session, signatures);
+  const role = forgedRole === 'buyer' ? 'seller' : 'buyer', writer = role === 'seller' ? seller : buyer;
+  const copy = copies[role + 'Copy'], hash = attestationBundleHash(copy);
+  const record = fixtureRecord(bundleAddress(JOB, role), copy, writer, hash);
+  const result = await verifyAnchoredCopy({ record, role, jobId: JOB, writer: writer.claim, expectedHash: hash });
+  assert.equal(result.status, 'rejected');
+  assert.ok(problems.length > 0);
+});
 
 test('delivery evidence verifies exact payload bindings and rejects a changed payload', async () => {
   const f = await protocolFixture(), address = deliverableAddress(JOB), evidenceAddress = deliveryEvidenceAddress(JOB);
