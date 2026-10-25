@@ -516,7 +516,7 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:24`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:51`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:258`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:266`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:270`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:343`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:434`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:493`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:560`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:671`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:695`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:870`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1116`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1159`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1313`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1319` | d523e721e629c2f2e3164fed45065d24f87aee3f |
 | | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 557ea59e906125decb9c56d5b2322a1d30af3321 |
 | | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:164`, `packages/dacs-client/src/purchases.mjs:281`, `packages/dacs-client/src/purchases.mjs:416`, `packages/dacs-client/src/purchases.mjs:461`, `packages/dacs-client/src/purchases.mjs:480`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:693`, `packages/dacs-client/src/purchases.mjs:910`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:1107`, `packages/dacs-client/src/purchases.mjs:1114`, `packages/dacs-client/src/purchases.mjs:1132`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1148`, `packages/dacs-client/src/purchases.mjs:1155` | d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9 |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 9b3c78ed8b64b9113170ca6796196f49957881c2 |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 9b3c78ed8b64b9113170ca6796196f49957881c2 |
 | | `packages/dacs-client/src/seams/wallet-actions-not-wired.mjs:2` | 2fd8da35f4657e607784dcd339900dfe03d7fb9f |
 | | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` | 717c0a6ab525d95c330ec2dafcda3074e7b47b24 |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | a2cd8b437ac464174f10834f7870b960966d0393 |
@@ -533,17 +533,17 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:164`, `packages/dacs-client/src/purchases.mjs:281`, `packages/dacs-client/src/purchases.mjs:416`, `packages/dacs-client/src/purchases.mjs:461`, `packages/dacs-client/src/purchases.mjs:480`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:693`, `packages/dacs-client/src/purchases.mjs:910`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:1107`, `packages/dacs-client/src/purchases.mjs:1114`, `packages/dacs-client/src/purchases.mjs:1132`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1148`, `packages/dacs-client/src/purchases.mjs:1155` | 4aaed8cf6ea80a8871e2a08e32d7d1ff76932695 |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 4abceff4d2f43e41f00707479962c194ca06070f |
 | D11 | fix(client): D11 reconcile held buyer seam merge provenance | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 9fa8ce3f7c831bd65179dc99a9e70877349c1f6d |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 9fa8ce3f7c831bd65179dc99a9e70877349c1f6d |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d697a51b58d0e71ab9992bcd0f17272c85c28f5f |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 8b38b0a63507a18a55f0fe55f153e03866343a30 |
 | D11 | fix(client): D11 resolve duplicate schema import after stack merge | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:1`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:14`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | f1e6076cb72330b0bfed0ede94455e39d360272d |
 | D11 | fix(client): D11 reconcile adapter initialization merge | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | eb7c37692bdd5da4ac476e6791a35172f404212e |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | eb7c37692bdd5da4ac476e6791a35172f404212e |
 | D11 | fix(client): D11 qualify merged transaction source | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 78994cc83d1c0bbe3065bec8852ea8b37f8d1988 |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 78994cc83d1c0bbe3065bec8852ea8b37f8d1988 |
 | D11 | fix(client): D11 select historical changes in provenance deletion probes | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` | 052a7eaf5e1cf405c211dcd21b9ef1e3faad108a |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 052a7eaf5e1cf405c211dcd21b9ef1e3faad108a |
 | D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | acd00b6505dca812acfa411da3cb9538a5956b55 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | eedc7797a49fc7635cb1600db68fb1dc0d9ea74f |
@@ -602,6 +602,10 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | D11 | fix(client): D11 assert the enclosing transaction refusal | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 834da95ce983a23387840cc0049572d522f9a440 |
 | D11 | fix(client): D11 record the 03a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 04 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | bcbc66ea3a869596598efa05e0aa1aeff721464d |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 9ae489487e07d4a3f7fe02285cf594c8bc565f53 |
+| | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 55210180f3e09b6b8aa1286ddffda7fd1fdb92ea |
 
 ## Complete commit and file inventory
 
@@ -1325,7 +1329,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:24`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:51`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:258`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:266`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:270`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:343`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:434`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:493`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:560`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:671`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:695`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:870`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1116`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1159`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1313`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1319` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/purchase-state-schema.mjs:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:164`, `packages/dacs-client/src/purchases.mjs:281`, `packages/dacs-client/src/purchases.mjs:416`, `packages/dacs-client/src/purchases.mjs:461`, `packages/dacs-client/src/purchases.mjs:480`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:693`, `packages/dacs-client/src/purchases.mjs:910`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:1107`, `packages/dacs-client/src/purchases.mjs:1114`, `packages/dacs-client/src/purchases.mjs:1132`, `packages/dacs-client/src/purchases.mjs:1141`, `packages/dacs-client/src/purchases.mjs:1148`, `packages/dacs-client/src/purchases.mjs:1155` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1`, `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:4` |
+| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/seams/wallet-actions-not-wired.mjs:2` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` |
 | delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
@@ -1498,6 +1502,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 03a split integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 03a split integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 03a split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 04 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 04 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 04 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 04 split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 04 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 04 split integration | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
 
 ## Original moved files
 

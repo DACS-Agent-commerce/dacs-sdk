@@ -156,7 +156,7 @@ for (const value of [false, true, 'promise', 'throw', null, 1]) {
   const w = world(t, { classifier, settlementError: cause });
   await assert.rejects(w.verify(), error => value === false ? error === cause
    : value === true ? error.code === 'hash_conflict'
-   : value === 'throw' ? error === classifierCause : error.code === 'client_not_wired');
+   : value === 'throw' ? error === classifierCause : error.code === (value === 'promise' ? 'purchase_store_async_classifier_result' : 'purchase_store_invalid_classifier_result'));
   assertUnsettled(w, 'broadcast_reported');
  });
 }
