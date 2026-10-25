@@ -29,7 +29,7 @@ test('a compatible-looking non-DatabaseSync handle is refused before database or
   let calls = 0;
   const db = { prepare() { calls++; }, exec() { calls++; } };
   assert.throws(() => createSqlitePurchaseStore().transaction(db, () => { calls++; }),
-    { code: 'client_not_wired', seam: 'purchase-store-not-wired' });
+    { code: 'purchase_store_invalid_handle' });
   assert.equal(calls, 0);
 });
 
@@ -81,10 +81,10 @@ for (const rejected of [false, true]) {
         insert.run('TEST-inner');
         store.transaction(db, () => insert.run('TEST-inner-child'));
         return rejected ? Promise.reject(new Error('TEST-refused')) : Promise.resolve();
-      }), { code: 'client_not_wired' });
+      }), { code: 'purchase_store_async_result' });
       assert.throws(() => insert.run('TEST-after'), /closed|not open|finalized/i);
-      assert.throws(() => store.transaction(db, () => { called = true; }), { code: 'client_not_wired' });
-    }), { code: 'client_not_wired' });
+      assert.throws(() => store.transaction(db, () => { called = true; }), { code: 'purchase_store_retired_handle' });
+    }), { code: 'purchase_store_async_result' });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(called, false);
     const reopened = new DatabaseSync(path);
@@ -121,7 +121,7 @@ for (const kind of ['conflict', 'trigger']) {
     assert.throws(() => db.prepare('SELECT 1'), /closed|not open|transaction ended/i, 'recovery failure closes the connection before returning the inner error');
     assert.match(directError?.message ?? '', /closed|not open|finalized/i);
     assert.match(execError?.message ?? '', /closed|not open|transaction ended/i);
-    assert.equal(nestedError?.code, 'client_not_wired');
+    assert.equal(nestedError?.code, 'purchase_store_retired_handle');
     assert.equal(called, false);
     const reopened = new DatabaseSync(path);
     try {
@@ -131,7 +131,7 @@ for (const kind of ['conflict', 'trigger']) {
     } finally { reopened.close(); }
     db.open();
     called = false;
-    assert.throws(() => store.transaction(db, () => { called = true; }), { code: 'client_not_wired' });
+    assert.throws(() => store.transaction(db, () => { called = true; }), { code: 'purchase_store_retired_handle' });
     assert.equal(called, false, 'the failed handle stays fenced even if the host reopens it');
   });
 }
@@ -141,9 +141,9 @@ for (const rejected of [false, true]) {
     assert.throws(() => store.transaction(db, () => {
       db.prepare('INSERT INTO records VALUES (?)').run('TEST-thenable');
       return rejected ? Promise.reject(new Error('TEST-refused')) : Promise.resolve();
-    }), { code: 'client_not_wired' });
+    }), { code: 'purchase_store_async_result' });
     await new Promise(resolve => setImmediate(resolve));
-    assert.throws(() => store.transaction(db, () => 'TEST-retry'), { code: 'client_not_wired' });
+    assert.throws(() => store.transaction(db, () => 'TEST-retry'), { code: 'purchase_store_retired_handle' });
     const reopened = new DatabaseSync(path);
     try {
       assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 0);
@@ -233,7 +233,7 @@ test('automatic rollback guards TEMP and attached tables, including quoted host 
     assert.throws(() => tempInsert.run('TEST-after'), /transaction ended/);
     assert.throws(() => attachedInsert.run('TEST-after'), /transaction ended/);
     assert.throws(() => db.prepare('SELECT count(*) n FROM "TEST-temp"'), /transaction ended/);
-  }), { code: 'client_not_wired' });
+  }), { code: 'purchase_store_transaction_ended' });
   const reopened = new DatabaseSync(`${path}.attached`);
   try { assert.equal(reopened.prepare('SELECT count(*) n FROM "TEST-table"').get().n, 0); }
   finally { reopened.close(); }
@@ -285,13 +285,13 @@ for (const value of [true, false, undefined, 1, 'true']) {
   test(`classifier requires a synchronous boolean result (${typeof value}, ${String(value)})`, () => {
     const store = purchaseStore({ ...createSqlitePurchaseStore(), isUniqueViolation: () => value });
     if (typeof value === 'boolean') assert.equal(store.isUniqueViolation(new Error('TEST')), value);
-    else assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'client_not_wired' });
+    else assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'purchase_store_invalid_classifier_result' });
   });
 }
 for (const reject of [false, true]) {
   test(`classifier refuses thenables and consumes rejected promises (reject=${reject})`, () => {
     const store = purchaseStore({ ...createSqlitePurchaseStore(), isUniqueViolation: () => reject ? Promise.reject(new Error('TEST')) : Promise.resolve(true) });
-    assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'client_not_wired' });
+    assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'purchase_store_async_classifier_result' });
   });
 }
 test('a retained native exec cannot persist schema writes after a caught rollback', t => {
@@ -300,7 +300,7 @@ test('a retained native exec cannot persist schema writes after a caught rollbac
   assert.throws(() => store.transaction(db, () => {
     assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')"), /UNIQUE/);
     assert.throws(() => nativeExec.call(db, 'CREATE TABLE escaped AS SELECT 1'), /readonly/);
-  }), { code: 'client_not_wired' });
+  }), { code: 'purchase_store_transaction_ended' });
   const reopened = new DatabaseSync(path);
   try { assert.equal(reopened.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n, 0); }
   finally { reopened.close(); }

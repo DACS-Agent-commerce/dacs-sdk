@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
-import { NotWiredError } from '../client-errors.mjs';
+import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { withSqliteStatementGuard } from '../util/sqlite-statement-boundary.mjs';
 import { sqliteWriteLease, retireSqliteHandle, isSqliteHandleRetired } from '../util/sqlite-write-lease.mjs';
 
@@ -9,11 +9,11 @@ const active = new WeakMap();
 // SQLite extended constraint codes: PRIMARYKEY, UNIQUE and ROWID.
 const UNIQUE_CONSTRAINT_CODES = new Set([1555, 2067, 2579]);
 const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
-function synchronousResult(result, refuse = () => {}) {
+function synchronousResult(result, refuse = () => {}, code = 'purchase_store_async_result') {
   if (result && typeof result.then === 'function') {
     refuse();
     Promise.resolve(result).catch(() => {});
-    throw new NotWiredError('purchase-store-not-wired');
+    throw new OperationError(code, 'purchase store requires a synchronous result');
   }
   return result;
 }
@@ -36,7 +36,10 @@ function transactionResult(db, result) {
 // callback before the package has checked its synchronous result.
 function sqliteTransaction(db, fn) {
   const { DatabaseSync } = require('node:sqlite');
-  if (!(db instanceof DatabaseSync) || isSqliteHandleRetired(db) || typeof fn !== 'function' || nonSynchronous(fn)) throw new NotWiredError('purchase-store-not-wired');
+  if (!(db instanceof DatabaseSync)) throw new OperationError('purchase_store_invalid_handle', 'purchase store requires a DatabaseSync handle');
+  if (isSqliteHandleRetired(db)) throw new OperationError('purchase_store_retired_handle', 'purchase store handle is retired');
+  if (typeof fn !== 'function') throw new OperationError('purchase_store_invalid_callback', 'purchase transaction requires a callback');
+  if (nonSynchronous(fn)) throw new OperationError('purchase_store_async_callback', 'purchase transaction requires an ordinary synchronous callback');
   if (active.has(db)) {
     const state = active.get(db);
     const savepoint = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
@@ -49,7 +52,7 @@ function sqliteTransaction(db, fn) {
       opened = true;
       state.barrier = state.guard.blockCommit();
       const result = withSqliteStatementGuard(db, () => {
-        if (!state.guard.present()) throw new Error('purchase transaction ended');
+        if (!state.guard.present()) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
       }, () => transactionResult(db, fn()));
       state.guard.check();
       state.barrier.return();
@@ -83,7 +86,7 @@ function sqliteTransaction(db, fn) {
     state = { guard, barrier: guard.blockCommit() };
     active.set(db, state);
     const result = withSqliteStatementGuard(db, () => {
-      if (!guard.present()) throw new Error('purchase transaction ended');
+      if (!guard.present()) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
     }, () => transactionResult(db, fn()));
     guard.check();
     state.barrier.return();
@@ -132,8 +135,8 @@ export function purchaseStore(store) {
   return Object.freeze({
     transaction: sqliteTransaction,
     isUniqueViolation(error) {
-      const result = synchronousResult(classify.call(store, error));
-      if (typeof result !== 'boolean') throw new NotWiredError('purchase-store-not-wired');
+      const result = synchronousResult(classify.call(store, error), undefined, 'purchase_store_async_classifier_result');
+      if (typeof result !== 'boolean') throw new OperationError('purchase_store_invalid_classifier_result', 'purchase store classifier must return a boolean');
       return result;
     },
   });
