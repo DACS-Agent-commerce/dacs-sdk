@@ -61,7 +61,17 @@ test('the publication inventory cannot omit an outside-only commit or name an ab
 });
 test('an unenumerated working-tree edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST edit\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 test('a deletion needs a named delta',t=>{const dir=scratch(t);unlinkSync(join(dir,moved));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
-test('removing a delta record cannot hide its historical file changes',t=>{const dir=scratch(t),f=join(dir,'packages/dacs-client/DELTA-LEDGER.json'),data=JSON.parse(readFileSync(f,'utf8'));data.changes.pop();writeFileSync(f,JSON.stringify(data));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/unenumerated change/);});
+test('removing a delta record cannot hide its historical file changes', t => {
+  const dir = scratch(t), file = join(dir, 'packages/dacs-client/DELTA-LEDGER.json');
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  const index = data.changes.findLastIndex(record => record.files.some(file => file.before !== file.after));
+  assert.ok(index >= 0, 'the ledger must contain a historical source change');
+  data.changes.splice(index, 1);
+  writeFileSync(file, JSON.stringify(data));
+  const result = check(dir);
+  assert.equal(result.status, 1, result.text);
+  assert.match(result.text, /unenumerated change/);
+});
 test('a later commit with an unlisted moved-file edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST later commit\n');execFileSync('git',['-C',dir,'add',moved]);execFileSync('git',['-C',dir,'-c','user.name=the SDK maintainer','-c','user.email=maintainer@example.invalid','commit','--quiet','-m','delta(client): D15 TEST unlisted change']);const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/unenumerated change/);});
 test('the per-file Markdown table is checked, not trusted',t=>{const dir=scratch(t);appendFileSync(join(dir,'packages/dacs-client/DELTA-MAP.md'),'TEST drift\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/differs from generated Git table/);});
 
