@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import DatabaseSync from 'better-sqlite3';
 import { createInMemoryPartyVetStore, openPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
 
@@ -9,8 +11,14 @@ if (mode === 'init-crash') {
     if (sql.startsWith('CREATE TABLE meta ')) process.kill(process.pid, 'SIGKILL');
     return execute.call(this, sql);
   };
-  openPartyVetStore({ path });
+  openPartyVetStore({ path, mode: 'create' });
   assert.fail('TEST initializer did not reach the crash boundary');
+} else if (mode === 'link-crash') {
+  const link = fs.linkSync;
+  fs.linkSync = (existing, target) => { link(existing, target); process.kill(process.pid, 'SIGKILL'); };
+  syncBuiltinESMExports();
+  openPartyVetStore({ path, mode: 'create' });
+  assert.fail('TEST publication did not reach the crash boundary');
 } else if (mode === 'writer') {
   const db = new DatabaseSync(path);
   db.exec('BEGIN IMMEDIATE');
@@ -20,7 +28,7 @@ if (mode === 'init-crash') {
   process.on('message', () => { globalThis.gc(); process.send(db.inTransaction ? 'collected' : 'lost'); });
   process.send('locked');
 } else {
-  const store = mode === 'reject-memory' ? createInMemoryPartyVetStore() : openPartyVetStore({ path });
+  const store = mode === 'reject-memory' ? createInMemoryPartyVetStore() : openPartyVetStore({ path, mode: 'create' });
   await assert.rejects(store.update('job', async () => { throw new Error('TEST rejected change'); }), { code: 'journal-invalid' });
   assert.equal(await store.read('job'), null);
   store.close();
