@@ -84,7 +84,7 @@ for (const rejected of [false, true]) {
       }), { code: 'purchase_store_async_result' });
       assert.throws(() => insert.run('TEST-after'), /closed|not open|finalized/i);
       assert.throws(() => store.transaction(db, () => { called = true; }), { code: 'purchase_store_retired_handle' });
-    }), { code: 'purchase_store_async_result' });
+    }), { code: 'purchase_store_transaction_ended' });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(called, false);
     const reopened = new DatabaseSync(path);

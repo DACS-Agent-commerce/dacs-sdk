@@ -560,6 +560,8 @@ The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e57d6756201c7169e9ecf80fa299b491855c6d9f |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 026edca5593e825f73f5526fbbf64b0571d151bd |
 | | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` | a41ff025877d600e4d9213600d642213d61dd7a2 |
+| D11 | fix(client): D11 assert the enclosing transaction refusal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 834da95ce983a23387840cc0049572d522f9a440 |
 
 ## Complete commit and file inventory
 
@@ -1375,6 +1377,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 identify concrete purchase store refusals | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 identify concrete purchase store refusals | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 | fix(client): D11 identify concrete purchase store refusals | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` |
+| fix(client): D11 assert the enclosing transaction refusal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 assert the enclosing transaction refusal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 assert the enclosing transaction refusal | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 assert the enclosing transaction refusal | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 assert the enclosing transaction refusal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 assert the enclosing transaction refusal | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 
 ## Original moved files
 
