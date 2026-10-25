@@ -34,10 +34,10 @@ test('terminal executor failure is retained and never invokes the executor again
  for(let i=0;i<2;i++)await assert.rejects(f.store.runOnce(input),e=>e.message==='TEST terminal failure'&&e.code==='TEST_FAILED');assert.equal(effects,1);f.raw.close();
 });
 test('lost result save remains indeterminate after real database reopen without a second effect',async t=>{
- const dir=await mkdtemp(join(tmpdir(),'TEST-vet-checkpoint-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'vet.sqlite');let raw=openPartyVetStore({path}),crash=true,effects=0;
+ const dir=await mkdtemp(join(tmpdir(),'TEST-vet-checkpoint-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'vet.sqlite');let raw=openPartyVetStore({path,mode:'create'}),crash=true,effects=0;
  const input=request(async()=>{effects++;return{TEST:'landed'};});const key=canonicalize({operationKey:input.operationKey,step:input.step});
  const flaky={...raw,update:(id,change)=>raw.update(id,(old,rows)=>{const next=change(old,rows);if(crash&&next?.ops?.seller?.steps?.[key]?.value!==undefined){crash=false;throw new Error('TEST result save interrupted');}return next;})};
- const f=await fixture(flaky);await assert.rejects(f.store.runOnce(input),/result save interrupted/);raw.close();raw=openPartyVetStore({path});const again=await fixture(raw,false);
+ const f=await fixture(flaky);await assert.rejects(f.store.runOnce(input),/result save interrupted/);raw.close();raw=openPartyVetStore({path,mode:'open'});const again=await fixture(raw,false);
  const result=await Promise.allSettled([again.store.runOnce(input)]);assert.equal(result[0].status,'rejected');assert.equal(result[0].reason.code,'indeterminate');assert.equal(effects,1);raw.close();
 });
 test('authorization is serialized with the step and concurrent replay does not reauthorize',async()=>{
@@ -92,7 +92,7 @@ test('legacy successful results replay but an unfinished legacy signing step rem
  assert.deepEqual(await f.store.runOnce(input),{TEST:'legacy result'});assert.equal(effects,0);f.raw.close();
 });
 test('different store handles fence the same durable step while its outcome is pending',async t=>{
- const dir=await mkdtemp(join(tmpdir(),'TEST-vet-handles-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'vet.sqlite'),one=openPartyVetStore({path}),two=openPartyVetStore({path});
+ const dir=await mkdtemp(join(tmpdir(),'TEST-vet-handles-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'vet.sqlite'),one=openPartyVetStore({path,mode:'create'}),two=openPartyVetStore({path,mode:'open'});
  const first=await fixture(one),second=await fixture(two,false),gate=deferred(),started=deferred();let effects=0;
  const input=request(async()=>{effects++;started.resolve();await gate.promise;return{TEST:'one durable effect'};});const a=first.store.runOnce(input),b=second.store.runOnce(input);await started.promise;gate.resolve();
  const result=await Promise.all([a,b]);assert.deepEqual(result[0],result[1]);assert.equal(effects,1);one.close();two.close();
