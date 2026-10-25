@@ -134,6 +134,44 @@ test('T9 no-effect completion retains a job used by another pending read, then r
   w.store.finish(read, 200, '{}'); assert.equal(w.count('peer_jobs'), 0);
 });
 
+test('terminal completed jobs release capacity and related rows across restart', t => {
+  for (const state of ['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']) {
+    const w = world(t, { maxRecords: 10, maxJobs: 1 }), first = request(w, 0);
+    const body = { scope: { jobId: first.jobId } };
+    w.store.finish(w.store.reserve({ ...first, path: SELLER_CONTEXT_PATH, nonce: 'context' }, body, { admit: w.now }), 200, '{}');
+    w.store.finish(w.store.reserve(first, {}), 200, '{ "TEST": "complete" }');
+    w.store.finish(w.store.reserve({ ...first, path: '/dacs/v1/payments', nonce: 'payment' }, { txHash: '1'.repeat(64) }), 200, '{}');
+    w.terminal(first.jobId, state); w.advance(HOUR + 1); w.reopen();
+    noMutations(() => assert.equal(w.store.classify(request(w, 1), {}), 'start'));
+    assert.equal(w.count('peer_effects'), 3, 'classification preserves retained answers');
+    assert.equal(w.store.reserve(request(w, 1), {}).disposition, 'perform');
+    for (const table of ['peer_jobs', 'peer_effects', 'peer_effect_jobs', 'peer_slots', 'peer_nonces', 'peer_nonce_retention']) assert.equal(w.count(table), 1, table);
+    for (const table of ['peer_transactions', 'peer_context_admissions']) assert.equal(w.count(table), 0, table);
+    w.reopen();
+    noMutations(() => assert.throws(() => w.store.reserve({ ...first, nonce: 'again', expiresAt: w.now() + 60000 }, {}), { code: 'context_session_terminal' }));
+  }
+});
+
+test('terminal job cleanup keeps unresolved effects and retention windows', t => {
+  for (const fence of ['pending', 'uncertain', 'retry', 'live nonce', 'nonce window', 'context window', 'unknown state', 'active state']) {
+    const w = world(t, { maxRecords: 10, maxJobs: 1, nonceWindowMs: fence === 'context window' ? 60000 : HOUR });
+    const first = request(w, 0, { expiresAt: w.now() + (fence === 'live nonce' ? 3 * HOUR : 60000) });
+    w.store.finish(w.store.reserve(first, {}), 200, '{}');
+    if (fence === 'context window') {
+      w.store.finish(w.store.reserve({ ...first, path: SELLER_CONTEXT_PATH, nonce: 'context' }, { scope: { jobId: first.jobId } }, { admit: w.now }), 200, '{}');
+    } else {
+      const effect = w.store.reserve({ ...first, path: '/dacs/v1/payments', nonce: 'payment' }, { txHash: '1'.repeat(64) });
+      if (fence !== 'pending') w.store.finish(effect, fence === 'uncertain' ? 503 : 200, '{}', { retry: fence === 'retry' });
+    }
+    if (fence !== 'unknown state') w.terminal(first.jobId, fence === 'active state' ? 'settle-completed' : 'finalised');
+    w.advance(['nonce window', 'context window'].includes(fence) ? 60001 : 2 * HOUR); w.reopen();
+    noMutations(() => {
+      for (const method of ['classify', 'reserve']) assert.throws(() => w.store[method](request(w, 1), {}), { code: 'peer_job_capacity' }, fence);
+    });
+    assert.equal(w.count('peer_jobs'), 1); assert.equal(w.count('peer_effects'), 2);
+  }
+});
+
 function noMutations(work) {
   const prepare = DatabaseSync.prototype.prepare, exec = DatabaseSync.prototype.exec, mutations = [];
   DatabaseSync.prototype.prepare = function(sql) { if (/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)/i.test(sql)) mutations.push(sql); return prepare.call(this, sql); };
