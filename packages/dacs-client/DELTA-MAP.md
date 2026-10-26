@@ -203,6 +203,8 @@ PR 03 acceptance: `test/sqlite-write-lease.test.mjs` covers the marker, ordinary
 
 PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
 
+Schema refresh reads schema versions and table bindings in one SQLite savepoint snapshot, replaces the temporary triggers atomically, and publishes the matching cache only after release. Reusable trigger names retain ownership across a failed refresh or an enclosing caller rollback; a rival schema commit is discovered on reacquisition.
+
 PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
@@ -745,6 +747,20 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | b1b98c21e80cef1baf539534984ed449cd93d048 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 7ba5cd5d3028b2e8b668ca82423e4794a5fc7c80 |
 | | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | 2f9c2dbb0360c258cc35445db671fcf12754b365 |
+| D11 | fix(client): D11 refresh lease guards from one schema snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 500190c769112f72c2de2915132c9c32074e7079 |
+| | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d5cd592b2d02917ce3b15cb74e625420257f3c4c |
+| D11 | fix(client): D11 record the merged lease snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | c44c9789a5dcd04b967fdfab877ee76915ab082f |
+| D11 | fix(client): D11 keep lease recovery checks portable | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | fc104ed0039536bab64baa7882764154ac37e933 |
+| D11 | fix(client): D11 record PR 04 lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 78329c1067d342758057ec5eac873e7504c37290 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
+| D11 | fix(client): D11 record PR 05 lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
+| D11 | fix(client): D11 record PR 06c lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 070a7eac2757271e84f797a3a90635ce1b6cc2e4 |
 
 ## Complete commit and file inventory
 
@@ -1996,6 +2012,40 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 | fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| fix(client): D11 record the merged lease snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged lease snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged lease snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged lease snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged lease snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
