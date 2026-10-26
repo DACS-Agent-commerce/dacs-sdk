@@ -5,7 +5,8 @@ import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendF
 import { createRequire } from "node:module";
 import { dirname, join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { cachedArchive, installationClosure, installationDifferences, packedFiles } from "./installation-closure.mjs";
+import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
+import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { runtimeImageInventory, RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence } from "./acceptance-evidence-io.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
@@ -228,14 +229,18 @@ const MAX_LISTED_DIFFERENCES = 20;
 function releaseCandidates(releaseSet, version) {
   const provenance = JSON.parse(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"));
   if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
-  return CANDIDATE_NAMES.map(name => {
+  const candidates = CANDIDATE_NAMES.map(name => {
     const bytes = readFileSync(join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`));
     const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
     const recorded = provenance.packages?.[name]?.integrity;
     if (recorded !== integrity) {
       throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
     }
-    const files = packedFiles(bytes);
+    return { name, integrity, version, bytes };
+  });
+  const fileSets = packedFileSets(new Map(candidates.map(({ name, bytes }) => [name, bytes])));
+  return candidates.map(({ name, integrity, version }) => {
+    const files = fileSets.get(name);
     const manifest = JSON.parse(files.get("package.json").toString("utf8"));
     if (manifest?.name !== name || manifest?.version !== version) {
       throw new Error(`packed candidate manifest does not match the release: ${name}@${version}`);
@@ -303,10 +308,10 @@ function candidateInventory(closure, installed, registry) {
   const errors = [];
   const { origin, path } = consumerRegistry(registry);
   for (const [location, record] of closure.entries) {
-    if (!record.present) continue;
+    if (!record.present && closure.inventory !== null) continue;
     modules.set(location, { owner: record.bundledBy ?? location, entry: record.entry,
       name: location.replace(/^.*node_modules\//, ""), manifest: record.manifest });
-    if (record.unverified) {
+    if (record.unverified || (record.files === null && record.entry.inBundle !== true)) {
       let url;
       try { url = new URL(record.entry.resolved); } catch { /* source policy refuses non-registry entries */ }
       if (url?.origin === origin && url.pathname.startsWith(path)) {
@@ -504,10 +509,6 @@ function candidateIntegrityErrors({ manifest, lock, registry, candidates, closur
   ];
 }
 
-// npm's cache directory: npm_config_cache when set, as npm reads it, or npm's own setting for the project.
-const npmCacheDirectory = project => process.env.npm_config_cache ||
-  execFileSync(process.execPath, [npmCliPath(), "config", "get", "cache"], { cwd: project, encoding: "utf8" }).trim();
-
 // Checks the consumer at `projectPath`, installed by npm ci --ignore-scripts
 // and unused by any package code so far (such code could change the tree
 // after extraction), and writes its registry dependency report. Every
@@ -520,8 +521,9 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   const missing = DUAL_RAIL_DEPENDENCIES.filter(name => typeof manifest.dependencies?.[name] !== "string");
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
-  const cache = npmCacheDirectory(project);
-  const closure = installationClosure(project, lock, (_location, entry) => cachedArchive(cache, entry.integrity));
+  const installer = npmInstallContract(project);
+  const closure = referenceInstallation({ manifest, lock, installer,
+    readArchive: (_location, entry) => cachedArchive(installer.config.cache, entry.integrity) });
   const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
   const installed = closure.errors.length === 0 && differences.length === 0 &&
     [...closure.entries.values()].every(record => !record.present || !record.unverified)
