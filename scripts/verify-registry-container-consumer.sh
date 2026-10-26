@@ -314,6 +314,7 @@ run_bounded docker run --rm \
   --env npm_config_registry="$consumer_registry" \
   --env npm_config_audit=false \
   --env npm_config_fund=false \
+  --env npm_config_omit=optional \
   --env DACS_BOUNDED_NPM_HTTP=1 \
   --env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs \
   --env npm_config_fetch_timeout="$npm_config_fetch_timeout" \
@@ -333,13 +334,15 @@ run_bounded docker run --rm \
       --profile dacs-sdk:fixed-price-x402:v1 \
       --rails "$DACS_GENERATED_RAILS" \
       --role "$DACS_GENERATED_ROLE" \
-      --deploy docker
+      --deploy docker --no-install
     cd one-click-agent
+    npm install --ignore-scripts
     dependency_status=0
     node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \
       /acceptance-artifacts/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION" || dependency_status=$?
     printf "%s\n" "$dependency_status" > /work/dependency-policy.exit-code
     test "$dependency_status" -eq 0
+    npm rebuild better-sqlite3
     tests_status=0
     { npm run build && npm test; } || tests_status=$?
     printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
