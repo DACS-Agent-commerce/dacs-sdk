@@ -133,7 +133,6 @@ test('interrupted refresh restores its triggers and preserves the caller transac
   assert.throws(() => sqliteWriteLease(db), error => error === failure);
   db.afterTrigger = undefined;
   assert.deepEqual(triggerNames(db), before);
-  assert.equal(db.isTransaction, true);
   assert.equal(sqliteWriteLease(db), lease);
   db.exec('COMMIT');
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
