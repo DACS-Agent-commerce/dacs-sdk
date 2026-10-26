@@ -103,6 +103,22 @@ for (const at of [299, 300]) test(`new context hold refuses timestamp ${at} prec
   assert.equal(await createSellerContextAdmission({ ...f.config, now: () => at }).reserve(f.reserve), 'hold-time-order');
   assert.equal(await text(f), before);
 });
+for (const outcome of ['signed', 'spent']) for (const at of [299, 300]) test(`context hold at ${at} refuses an earlier ${outcome} Vet reservation with a later or equal clock`, async t => {
+  const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
+  const rows = attempt(0).map((row, index) => {
+    const request = JSON.parse(row.requestBytes); request.content.artifactKind = 'CompositeVerificationRecord';
+    const requestBytes = JSON.stringify(request);
+    return { ...row, requestBytes, approvalHash: sha256Hex(requestBytes), recordedAt: 298 + index };
+  });
+  if (outcome === 'spent') rows.push({ format: 'dacs-node2-seller-policy-attempt/v1', attemptId: rows[0].attemptId, reservationId: rows[2].reservationId, approvalHash: rows[0].approvalHash, outcome: 'spent', recordedAt: 301 });
+  await writeFile(f.evidencePath, encode(rows)); const before = await text(f);
+  assert.equal(await createSellerContextAdmission({ ...f.config, now: () => at }).reserve(f.reserve), 'hold-time-order');
+  assert.equal(await text(f), before);
+  const later = createSellerContextAdmission({ ...f.config, now: () => 302 });
+  assert.equal(await later.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), null);
+  assert.deepEqual(heldPolicyBudget(withContextHolds(parsePolicyLedger(await text(f)).rows), 302), { writes: 2, totalOs: 8n });
+  assert.equal(await later.reserve({ ...f.reserve, hold: 'TEST third' }), 'hourly-write-limit');
+});
 test('strictly later context holds count separately from preceding unfinished Vet attempts', async t => {
   const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
   const row = attempt(0)[0], request = JSON.parse(row.requestBytes);
