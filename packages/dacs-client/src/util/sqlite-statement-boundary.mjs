@@ -14,13 +14,29 @@ const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupport
 const owners = new WeakMap(), iterators = new WeakMap(), registrations = new WeakMap();
 let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll, bundledExtensions, bundledExtensionNames;
 function synchronousResult(db, result) {
-  if (typeof result?.then === 'function') {
+  let deferred;
+  try { deferred = types.isPromise(result) || typeof result?.then === 'function'; }
+  catch (error) { retireSqliteHandle(db); throw error; }
+  if (deferred) {
     retireSqliteHandle(db);
     // Observe rejection without executing a user-provided thenable body.
     if (types.isPromise(result)) Promise.prototype.then.call(result, undefined, () => {});
     throw new TypeError('statement guard callbacks must return a synchronous result');
   }
   return result;
+}
+function guardedPrepare(db, ...args) {
+  try { return Reflect.apply(nativePrepare, db, args); }
+  finally {
+    // SQLite changes query_only during preparation, even for EXPLAIN. Close
+    // the fence before returning a statement or inspecting its program.
+    if (callbacks.some(frame => frame.db === db) && !isSqliteHandleRetired(db)
+      && nativeGet.call(nativePrepare.call(db, 'PRAGMA query_only')).query_only === 0) {
+      try { nativeExec.call(db, 'PRAGMA query_only=ON'); }
+      catch { retireSqliteHandle(db); }
+      throw new TypeError('guarded SQL cannot clear the read-only policy');
+    }
+  }
 }
 function check() {
   if (checking) return;
@@ -69,7 +85,7 @@ function execute(fn, db, sql) {
   // overrides of built-ins) cannot run while native writers are enabled.
   if (db && sql) {
     const functions = applicationFunctions(db);
-    const program = nativeAll.call(nativePrepare.call(db, `EXPLAIN ${sql}`));
+    const program = nativeAll.call(guardedPrepare(db, `EXPLAIN ${sql}`));
     if (program.some(row => {
       if (VIRTUAL_TABLE_OPCODE.test(row.opcode)) return true;
       if (!FUNCTION_OPCODE.test(row.opcode)) return false;
@@ -123,7 +139,7 @@ function install(db) {
     return execute(() => Reflect.apply(advance, this, args), owner?.db, owner?.sql);
   };
   database.prepare = function (...args) {
-    check(); const result = Reflect.apply(prepare, this, args); owners.set(result, this); return result;
+    check(); const result = guardedPrepare(this, ...args); owners.set(result, this); return result;
   };
   for (const method of ['function', 'aggregate']) {
     if (typeof database[method] !== 'function') continue;
@@ -142,7 +158,7 @@ function install(db) {
     let remaining = sql;
     while (remaining.length) {
       check();
-      const next = prepare.call(this, remaining);
+      const next = guardedPrepare(this, remaining);
       let sourceSQL;
       try { sourceSQL = next.sourceSQL; }
       catch (error) {
@@ -174,6 +190,8 @@ function install(db) {
  * functions are refused by name under a guard, even if registered before this
  * module was first used. A promise result permanently retires the connection
  * before a continuation can use its retained statements.
+ * SQL that clears query_only is refused at preparation, including EXPLAIN;
+ * an unreadable thenable result also permanently retires the connection.
  * This stops stale code from writing through ordinary or captured native
  * writers. It does not stop code that deliberately holds a native exec and
  * clears query_only; that needs a native authorizer, which Node 22 lacks.
