@@ -30,6 +30,7 @@ const LITERAL_LOOPBACK = new Set(['127.0.0.1', '[::1]']);
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const clone = (v) => structuredClone(v);
 const exactHash = (v) => sha256Hex(canonicalize(v));
+const sameDeliveryBinding = (a, b) => canonicalize(a ?? null) === canonicalize(b ?? null);
 const integer = (v) => Number.isSafeInteger(v) && v >= 0;
 const wireInteger = (v) => integer(v) ? v : typeof v === 'string' && /^(0|[1-9][0-9]*)$/.test(v) && integer(Number(v)) ? Number(v) : null;
 
@@ -109,7 +110,7 @@ function inputs({ logicalAddress, artifact, writer, artifactKind, deliveryBindin
   if (programName.length > 256) reject('invalid', 'program name exceeds the offline fixture limit');
   const value = JSON.parse(canonicalize(artifact));
   if (!object(value) || Buffer.byteLength(canonicalize(value)) > 64 * 1024) reject('invalid', 'artifact must be a bounded JSON object');
-  if (!HASH.test(receiptContentHash)) reject('invalid', 'receipt content hash must be SHA-256 hex');
+  if (!HASH.test(receiptContentHash) || receiptContentHash !== contentHash(value)) reject('invalid', 'receipt content hash must match the artifact signed scope');
   const owner = addressForClaim(writer);
   const envelopeHash = exactHash(value);
   if (artifactKind !== undefined && (typeof artifactKind !== 'string' || !/^[A-Za-z][A-Za-z0-9-]{0,79}$/.test(artifactKind))) reject('invalid', 'explicit artifact kind is malformed');
@@ -354,11 +355,17 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return journal.withWalletLock(walletKey(requested.writer), async () => {
       const saved = await retained(requested.logicalAddress, requested.writer);
       if (saved) {
-        if (saved.envelopeHash !== requested.envelopeHash || saved.hash !== requested.hash || saved.artifactKind !== requested.artifactKind) reject('conflict', 'immutable logical address already has different content or kind');
+        if (saved.envelopeHash !== requested.envelopeHash || saved.hash !== requested.hash || saved.artifactKind !== requested.artifactKind || !sameDeliveryBinding(saved.deliveryBinding, requested.deliveryBinding)) reject('conflict', 'immutable logical address already has different content, kind or delivery binding');
         return descriptor(saved);
       }
-      const existing = await read(requested.logicalAddress, { expectedWriter: requested.writer });
-      if (existing.status === 'present') {
+      const existing = await boundedRead(async () => {
+        const native = await resolve(requested.logicalAddress, requested.writer);
+        if (!native) return null;
+        const record = await authenticate(requested.logicalAddress, requested.writer, native, native.createdByTx);
+        if (!sameDeliveryBinding(native.metadata.deliveryBinding, requested.deliveryBinding)) reject('conflict', 'immutable native record already has another delivery binding');
+        return record;
+      });
+      if (existing) {
         if (exactHash(existing.artifact) !== requested.envelopeHash || existing.receipt.contentHash !== requested.hash) reject('conflict', 'immutable native record already has different content');
         const complete = { ...requested, scope, planId: exactHash([scope, requested.writer, requested.logicalAddress]), nativeAddress: existing.receipt.nativeAddress,
           nonce: Number(existing.receipt.nonce), stage: 'verified', transactionHash: existing.receipt.transactionRef.value,
@@ -427,11 +434,12 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     const requested = sourceInputs({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, receiptContentHash });
     return journal.withWalletLock(walletKey(writer), async () => {
       const saved = await retained(logicalAddress, writer);
-      if (!saved || saved.envelopeHash !== requested.envelopeHash || saved.hash !== requested.hash || saved.artifactKind !== requested.artifactKind) reject('conflict', 'write requires the exact retained wallet plan');
+      if (!saved || saved.envelopeHash !== requested.envelopeHash || saved.hash !== requested.hash || saved.artifactKind !== requested.artifactKind || !sameDeliveryBinding(saved.deliveryBinding, requested.deliveryBinding)) reject('conflict', 'write requires the exact retained wallet plan');
       if (!['authorization-issued', 'verified'].includes(saved.stage)) reject('authorization-required', 'exact wallet authorization has not been established');
       if (saved.transactionHash && saved.transactionHash !== transactionHash) reject('invalid', 'verified transaction pointer cannot change');
       const native = await nativeRead(saved.nativeAddress);
       const record = await authenticate(logicalAddress, writer, native, transactionHash, saved);
+      if (!sameDeliveryBinding(native.metadata.deliveryBinding, requested.deliveryBinding)) reject('conflict', 'native write binds another delivery scope');
       saved.stage = 'verified';
       saved.transactionHash = transactionHash;
       await persist(saved);
@@ -442,7 +450,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   async function verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind, deliveryBinding, receiptContentHash = contentHash(artifact), signedProjection }) {
     try {
       const projection = signedProjection === undefined ? undefined : clone(signedProjection);
-      if (!isAnchorReceipt(receipt) || receipt.logicalAddress !== logicalAddress || receipt.writer !== expectedWriter || receipt.contentHash !== receiptContentHash) return 'invalid';
+      if (!isAnchorReceipt(receipt) || receipt.logicalAddress !== logicalAddress || receipt.writer !== expectedWriter || receipt.contentHash !== receiptContentHash || receiptContentHash !== contentHash(artifact)) return 'invalid';
       const proof = decodeDemosAnchorReceiptProof(receipt);
       if (proof.chainIdentity !== expectedIdentity || proof.operation !== 'create') return 'invalid';
       const derived = deriveStorageAddress(addressForClaim(expectedWriter), logicalToStorageProgramName(logicalAddress), Number(receipt.nonce), '');
