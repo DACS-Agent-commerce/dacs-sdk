@@ -202,14 +202,14 @@ export function openPartyVetStore({ path, mode, busyTimeoutMs = 1000, ...options
       try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { try { db.exec('ROLLBACK'); } catch { /* already rolled back */ } throw error; }
     } catch (error) { throw translate(error); }
   };
-  let storeId, openedTotals;
+  let storeId;
   try {
     verifyIdentity();
     db = new DatabaseSync(path, { readonly: true, fileMustExist: true });
     verifyIdentity();
     db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
     if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') fail('journal-integrity', 'the party Vet store failed its integrity check');
-    ({ storeId, totals: openedTotals } = tx('BEGIN', () => {
+    storeId = tx('BEGIN', () => {
       const schema = db.prepare('SELECT type, name, tbl_name, sql FROM sqlite_schema').all();
       if (schema.some(row => !(row.type === 'table' && Object.hasOwn(STORE_TABLES, row.name) && row.sql === STORE_TABLES[row.name]) &&
           !(row.type === 'index' && Object.hasOwn(STORE_TABLES, row.tbl_name) && row.sql === null && row.name === `sqlite_autoindex_${row.tbl_name}_1`))) {
@@ -221,8 +221,8 @@ export function openPartyVetStore({ path, mode, busyTimeoutMs = 1000, ...options
       let meta;
       try { meta = Object.fromEntries(db.prepare('SELECT key, value FROM meta').all().map((row) => [row.key, row.value])); } catch (error) { fail('journal-integrity', 'the party Vet store schema is absent or changed', { cause: error }); }
       if (Object.keys(meta).sort().join() !== 'format,store_id,totals,version' || meta.format !== PARTY_VET_STORE_FORMAT || meta.version !== String(PARTY_VET_STORE_VERSION) || !/^[a-f0-9]{32}$/.test(meta.store_id ?? '')) fail('journal-integrity', 'the party Vet store format, version or identity is not recognized');
-      return { storeId: meta.store_id, totals: meta.totals };
-    }));
+      return meta.store_id;
+    });
   } catch (error) { try { db?.close(); } catch { /* already failed */ } closed = true; throw translate(error); }
   const digest = (key, text) => sha256(`${PARTY_VET_STORE_FORMAT}\n${storeId}\n${key}\n${text}`);
   const decode = (row) => {
@@ -242,7 +242,7 @@ export function openPartyVetStore({ path, mode, busyTimeoutMs = 1000, ...options
   };
   const recordTotals = () => { const { jobs, bytes } = heldTotals(); db.prepare("UPDATE meta SET value = ? WHERE key = 'totals'").run(totalsRecord(storeId, jobs, bytes)); };
   try {
-    tx('BEGIN', () => { for (const row of db.prepare('SELECT key, value, bytes, digest FROM jobs').iterate()) decode(row); checkTotals(openedTotals); });
+    tx('BEGIN', () => { for (const row of db.prepare('SELECT key, value, bytes, digest FROM jobs').iterate()) decode(row); checkTotals(recordedTotals()); });
     db.close(); verifyIdentity();
     db = new DatabaseSync(path, { fileMustExist: true }); verifyIdentity();
     db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
