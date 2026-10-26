@@ -209,6 +209,8 @@ PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
 
+PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds, supported schemas and rollback/crash-safe main journals. Persistent main databases require DELETE, TRUNCATE, PERSIST or WAL; volatile main databases may use MEMORY. OFF is refused on every main database. Admission preserves caller configuration. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -762,6 +764,44 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 bound diagnostic keys and omit bundle signatures | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/diagnostic-projection.mjs:1` | b24a2e0a97c0e9a2b1979af72c77c5822281f831 |
 | | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 44d7a815d7c7f89983a35f6210da65c856a3d344 |
+| D11 | fix(client): D11 separate purchase connection admission from transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 944247d4ce8b2622389c79b71de1a21d6b83e239 |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 1803da8de85ea26f119944b7550b8698f920f4bc |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | dc7166d3baff55abd0a7862a4b78e337cd5ae0d9 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | deleted |
+| | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) | f34fe299227e2607f005885f0abcf393d2a2ffaa |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-startup-results.test.mjs:1` | deleted |
+| D11 | fix(client): D11 refuse journals that cannot recover purchase writes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 562bcba0f9523ce1133c19f6572c459beb7a3093 |
+| | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | a4c59300ff497d05f4b26ce97cd022d01b68a02a |
+| D11 | fix(client): D11 restore transactions above purchase admission | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 676aac6112fe98e5b83119f99fe3f1986f431638 |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | a2abc629dbd08cdb3d2bd8d074fe47aa8bbfa374 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | b1b98c21e80cef1baf539534984ed449cd93d048 |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | f19662c277f9bcc86145487d72230cdfbdde2d50 |
+| | `packages/dacs-client/test/helpers/store-journal-worker.mjs:1` | afe5801065bef448692d22a1e3b2bfbd7e2a9b32 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 1809e37f4a27259a45f8e5ef0c1a30c2b21c51cc |
+| | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | 3fef1e1f706852d0c0436312266b1317063875ec |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 35502a67588f8d135111dfcf183e3cf0dc536948 |
+| | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` | 2f62f76ff92b85e7c9829bba4a94cc802519b431 |
+| | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` | 9c826914e5533aec0d9718e76aea11a4785562d1 |
+| | `packages/dacs-client/test/store-startup-results.test.mjs:1` | 130fd5d3a70ab5640916c4c1ca00ba1a94135284 |
+| D11 | fix(client): D11 keep host refusal tests with admission | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | f34fe299227e2607f005885f0abcf393d2a2ffaa |
+| D11 | fix(client): D11 record both admission test paths | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 keep transaction boundary tests with orchestration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` | 35502a67588f8d135111dfcf183e3cf0dc536948 |
+| D11 | fix(client): D11 retain 04 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | de9b38f087ad793733f16b30ddf8a28fc2213728 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
+| D11 | fix(client): D11 retain 05 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
 
 ## Complete commit and file inventory
 
@@ -2022,6 +2062,75 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
 | fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-startup-results.test.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/helpers/store-journal-worker.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-startup-results.test.mjs:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
