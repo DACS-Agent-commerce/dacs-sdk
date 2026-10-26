@@ -92,7 +92,7 @@ async function purchaseWorld({ buyerClaim = buyer.claim } = {}) {
 
 test('seller-only state never opens pre-payment policy without buyer cancellation authority', async () => {
   const w = await purchaseWorld(); delete w.session.agreement; delete w.session.nativeEvidenceWork;
-  assert.equal((await sellerRecordsPurchaseResolver(w.options)(JOB)).prePaymentOpen, false);
+  assert.equal((await sellerRecordsPurchaseResolver(w.options)(JOB)).prePaymentOpen, null);
 });
 
 test('closed access refuses a qualified Agreement buyer before observing payment', async () => {
@@ -112,7 +112,7 @@ for (const presenter of ['qualified', 'bare']) test(`allowed qualified Agreement
   let accessCalls = 0;
   const resolve = sellerRecordsPurchaseResolver({ ...w.options, buyerAccess: () => ({ allowsWallet: address => { accessCalls++; assert.equal(address, buyer.address); return true; } }) });
   const projection = await resolve(JOB);
-  assert.equal(projection.buyer, claim); assert.equal(projection.prePaymentOpen, false); assert.equal(accessCalls, 1);
+  assert.equal(projection.buyer, claim); assert.equal(projection.prePaymentOpen, null); assert.equal(accessCalls, 1);
 });
 
 for (const [label, mutate] of [
