@@ -66,6 +66,10 @@ describe("packed archive files", () => {
     const archive = gzipSync(tarArchive([{ ...valid, pax: { size: String(Buffer.byteLength(valid.body ?? "")) } }]));
     expect(text(packedFiles(archive))).toEqual({ "package.json": valid.body });
   });
+  it.each(["00000000001", "00000002000"])("refuses a directory header with nonzero size %s", size => {
+    const archive = gzipSync(tarArchive([valid, { name: "package/lib/", type: "5", size }]));
+    expect(() => packedFiles(archive)).toThrow("packed tarball directory has a nonzero size");
+  });
   it.each([
     ["entry data cut short", complete.subarray(0, 520), "truncated packed tarball entry"],
     ["entry padding cut short", complete.subarray(0, 600), "truncated packed tarball entry"],
@@ -454,6 +458,39 @@ describe("installation closure of real npm installations", () => {
       expect(installed.status, installed.output).toBe(0);
       expect(readFileSync(join(project, "node_modules/late-file/late.js"), "utf8")).toBe("module.exports = 42;\n");
       const error = "cannot derive the installed files of node_modules/late-file: packed tarball has a malformed trailer";
+      expect([interrupted.errors, closure().errors]).toEqual([[error], [error]]);
+    } finally { await server.close(); }
+  }, 60_000);
+
+  it("refuses a directory body hiding a file for interrupted and complete installations", async () => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const packageJson = manifest("directory-body", "1.0.0", { main: "hidden.js" });
+    const hiddenFile = "module.exports = 42;\n";
+    const archive = gzipSync(Buffer.concat([
+      tarArchive([{ name: "package/package.json", body: packageJson },
+        { name: "package/lib/", type: "5", size: "00000002000" }]).subarray(0, -1024),
+      tarArchive([{ name: "package/hidden.js", body: hiddenFile }]),
+    ]));
+    const server = await serveArchives(new Map([["directory-body", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { "directory-body": "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/directory-body": {
+        version: "1.0.0", resolved: `${server.registry}/directory-body.tgz`, integrity: sri(archive),
+      } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      // Extraction interrupted after package.json has not installed the declared main file.
+      mkdirSync(join(project, "node_modules/directory-body"), { recursive: true });
+      writeFileSync(join(project, "node_modules/directory-body/package.json"), packageJson);
+      cacheArchive(cache, archive);
+      const closure = () => installationClosure(project, lock, (_location: string, entry: { integrity: string }) =>
+        cachedArchive(cache, entry.integrity));
+      const interrupted = closure();
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(readFileSync(join(project, "node_modules/directory-body/hidden.js"), "utf8")).toBe(hiddenFile);
+      const error = "cannot derive the installed files of node_modules/directory-body: packed tarball directory has a nonzero size";
       expect([interrupted.errors, closure().errors]).toEqual([[error], [error]]);
     } finally { await server.close(); }
   }, 60_000);
