@@ -574,6 +574,8 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 refresh lease guards from one schema snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 500190c769112f72c2de2915132c9c32074e7079 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d5cd592b2d02917ce3b15cb74e625420257f3c4c |
+| D11 | fix(client): D11 keep lease recovery checks portable | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | fc104ed0039536bab64baa7882764154ac37e933 |
 
 ## Complete commit and file inventory
 
@@ -1419,6 +1421,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
 | fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
 
 ## Original moved files
 
