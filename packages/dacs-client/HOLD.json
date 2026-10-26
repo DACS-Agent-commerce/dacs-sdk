@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "70d52adc60f210dc4c47125f18a4a8cedb739418"
+        "blob": "a23b153748a233a34b9e3ba92bbb82b2ee6927db"
       },
       "DELTA-LEDGER.json": {
-        "blob": "44a6e593e0f23ff0ed9bd939e0876206355b6c35"
+        "blob": "e5b772aa334cba8d0f52ab43264fa4550810c075"
       },
       "DELTA-MAP.md": {
-        "blob": "9f0e0b5c539889c0f1d88558deae9813b8933026"
+        "blob": "e838c44983d29994b87517ee52fd347f1f549d6e"
       },
       "DELTA-NOTES.md": {
         "blob": "237d5ab2cf303a0ea0b0977e0104650f3ed9ee13"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "40b2bd80f45bb95110b269e4a72bb76d5c1fcded"
+        "blob": "853f6c03948290275c34daf7947aa04280331062"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1229,7 +1229,7 @@
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "bcbc66ea3a869596598efa05e0aa1aeff721464d"
+        "blob": "78329c1067d342758057ec5eac873e7504c37290"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
@@ -1301,7 +1301,7 @@
         "blob": "8fb8e91c7d1439f3013548378394fa788236fdb0"
       },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "8cf441713b5fb8df9e0698eabfe571c79d0f68cb"
+        "blob": "d519e2a9d4f9d49d255eac734443dcebcd270afc"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
@@ -1676,7 +1676,10 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/store-atomicity.test.mjs": {
-        "blob": "834da95ce983a23387840cc0049572d522f9a440"
+        "blob": "7ba5cd5d3028b2e8b668ca82423e4794a5fc7c80"
+      },
+      "test/store-attached-databases.test.mjs": {
+        "blob": "2f9c2dbb0360c258cc35445db671fcf12754b365"
       },
       "test/store-host-boundary.test.mjs": {
         "blob": "74c4ba0638f76b77d45dd45c1260e7e718a8e7af"
