@@ -393,7 +393,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   const askSignal=()=>{const current=typeof signal==='function'?signal():signal;if(current!==null&&!(current instanceof AbortSignal))throw new TypeError('seller approval signal must be an AbortSignal');return current;};
   const STOPPED=Symbol('stopped');
   const unlessStopped=(answer,stopSignal)=>!stopSignal?answer:new Promise((resolve,reject)=>{
-    const stop=()=>resolve(STOPPED);stopSignal.addEventListener('abort',stop,{once:true});
+    const stop=()=>resolve(STOPPED);if(stopSignal.aborted)stop();else stopSignal.addEventListener('abort',stop,{once:true});
     Promise.resolve(answer).then(resolve,reject).finally(()=>stopSignal.removeEventListener('abort',stop));
   });
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
@@ -481,7 +481,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const authorized=signRecords&&validity!==undefined&&!manualApproved?signed:null;
     let reservationId=authorized?authorized.reservationId:policyMode?randomUUID():null;
     const notice=policyMode?null:sellerNotice(request);
-    let accepted=false,policyReason=null;
+    let accepted=false,policyReason=null,closeSignal=null;
     if(policyMode){
       const waitsForLedger=signRecords&&validity===undefined&&BEFORE_PAYMENT.has(request?.content?.artifactKind);
       for(let waited=0;;){
@@ -500,11 +500,11 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       if(!policyReason&&signRecords&&validity!==undefined&&!manualApproved&&authorized?.approvalHash!==approvalHash)policyReason='sign-authorization-missing';
       accepted=policyReason===null;
     }else{
-      const closeSignal=askSignal();
+      closeSignal=askSignal();
       if(closeSignal?.aborted)throw closingError();
       if(authorize){
         const answer=await unlessStopped(authorize(Object.freeze({approvalHash,request:structuredClone(request),...(notice?{notice}:{})})),closeSignal);
-        if(answer===STOPPED)throw closingError();
+        if(answer===STOPPED||closeSignal?.aborted)throw closingError();
         accepted=answer===true;
       }else{
         if(!process.stdin.isTTY||!process.stderr.isTTY)throw new Error('exact seller approval requires an interactive TTY');
@@ -528,6 +528,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     if(preparing&&accepted){live();return true;}
     await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});
     live();
+    if(closeSignal?.aborted)throw closingError();
     // Resolve current purchase authority after the last ledger/directory await.
     if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);}catch{policyReason='policy-check-failed';}live();accepted=policyReason===null;}
     if(accepted)accepted=retain();

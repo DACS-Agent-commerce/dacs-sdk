@@ -68,3 +68,17 @@ for(const [state,found] of [
  const ledger=await f.read();assert.equal(ledger.rows.some(row=>row.signAuthorized),false);assert.equal(heldPolicyBudget(ledger.rows,T0).writes,0);
  assert.equal([...ledger.attempts.values()][0].outcome,'released');
 });
+
+test('C-4 synchronous abort during a manual callback records no decision',async t=>{
+ const f=await fixture(t),controller=new AbortController();
+ const a=createExactOperatorApproval({...f.settings,signal:controller.signal,authorize:()=>{controller.abort();return true;}});
+ await assert.rejects(a(requestFor()),{code:'operator_closing'});
+ await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
+});
+
+test('C-4 synchronous abort also ends an unanswered manual callback',async t=>{
+ const f=await fixture(t),controller=new AbortController();
+ const a=createExactOperatorApproval({...f.settings,signal:controller.signal,authorize:()=>{controller.abort();return new Promise(()=>{});}});
+ await assert.rejects(a(requestFor()),{code:'operator_closing'});
+ await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
+});
