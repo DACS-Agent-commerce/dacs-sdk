@@ -135,9 +135,42 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
   return unavailable;
 }
 
+// Evaluate exclusions with the selected npm's configuration and install checks in
+// its own process: npm's flattening may change the lifecycle environment.
+function excludedSources(unavailable, entries, contract, scratch) {
+  if (!unavailable.size) return new Set();
+  const input = join(scratch, "unavailable.json");
+  writeFileSync(input, JSON.stringify({ config: contract.config,
+    entries: [...unavailable.keys()].map(location => [location, entries.get(location).entry]) }));
+  const command = `const requireNpm = require('node:module').createRequire(process.argv[1]);
+    const { config, entries } = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
+    const options = requireNpm('@npmcli/config/lib/definitions').flatten(config);
+    const { checkPlatform, checkEngine } = requireNpm('npm-install-checks');
+    const omit = new Set(options.omit);
+    const excluded = entries.filter(([, entry]) => {
+      // The same dependency-flag rules as npm's Arborist reifier.
+      if (entry.peer && omit.has('peer') || entry.dev && omit.has('dev') ||
+          entry.optional && omit.has('optional') || entry.devOptional && omit.has('dev') && omit.has('optional')) return true;
+      if (entry.optional) {
+        try {
+          checkPlatform(entry, false, options);
+          checkEngine(entry, config['npm-version'], process.version, false);
+        } catch (error) {
+          if (error.code === 'EBADPLATFORM' || error.code === 'EBADENGINE') return true;
+          throw error;
+        }
+      }
+      return false;
+    }).map(([location]) => location);
+    console.log(JSON.stringify(excluded));`;
+  return new Set(JSON.parse(runNpmNode(contract.toolchain, ["-e", command, contract.toolchain.cli, input],
+    { env: contract.env }).toString()));
+}
+
 /** Replays an explicit npm install contract offline with scripts disabled, using independently
  * verified archive bytes in fresh private storage. Returns source entries/carried modules plus one
- * kind-tagged inventory. Errors publish no inventory. Never reads the inspected installation. */
+ * kind-tagged inventory. Unavailable sources need an explicit npm contract exclusion; errors
+ * publish no inventory. Never reads the inspected installation. */
 export function referenceInstallation({ manifest, lock, readArchive, installer }) {
   const entries = new Map();
   const roots = new Map();
@@ -167,6 +200,12 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
       throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
     }
     const inventory = installationInventory(project);
+    const excluded = excludedSources(unavailable, entries, installer, scratch);
+    for (const [location, cause] of unavailable) {
+      if (inventory.has(location) || !excluded.has(location)) {
+        throw new Error(`cannot read source ${location}: ${cause.message}`, { cause });
+      }
+    }
     for (const [location, record] of entries) {
       record.present = inventory.get(location)?.kind === "directory";
       if (record.entry.inBundle === true && !roots.has(location)) {
@@ -178,7 +217,6 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
         if (!module) throw new Error("bundled lock entry is not in the archive of the package bundling it: " + location);
         Object.assign(record, { bundledBy: module.owner, manifest: module.manifest });
       } else {
-        if (unavailable.has(location)) throw unavailable.get(location);
         if (!record.files) throw new Error("installed package has no verified source: " + location);
         if (roots.has(location)) throw new Error(`lock entry ${location} is also in the archive of ${roots.get(location).owner}`);
       }
