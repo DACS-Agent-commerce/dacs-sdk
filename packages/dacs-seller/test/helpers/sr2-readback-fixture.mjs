@@ -13,6 +13,7 @@ export function readbackFixture(options = {}) {
   if(!options.signedTransaction){
   signed.content.from_ed25519_address = seller.address;
   signed.content.data[1].metadata = { logicalAddress, artifactKind: options.artifactKind??'Deliverable', contentHash: contentHash(artifact), envelopeHash: sha256Hex(canonicalize(artifact)) };
+  Object.assign(signed.content.data[1].metadata, options.metadata);
   signed.hash = sha256Hex(JSON.stringify(signed.content));
   signed.signature = { type: 'ed25519', data: `0x${seller.signBytes(Buffer.from(signed.hash)).toString('hex')}` };
   }
@@ -35,5 +36,5 @@ export function readbackFixture(options = {}) {
   };
   const journal = options.journal ?? createInMemoryDemosSr2Journal();
   const adapter = createDemosSr2Adapter({ rpcUrl: 'http://127.0.0.1:9922/', journal, fetchImpl, now: () => observedAt, ...options.adapter });
-  return { ...state, state, adapter, journal, logicalAddress, artifact, expectedWriter: seller.claim };
+  return { ...state, state, adapter, journal, fetchImpl, logicalAddress, artifact, expectedWriter: seller.claim };
 }
