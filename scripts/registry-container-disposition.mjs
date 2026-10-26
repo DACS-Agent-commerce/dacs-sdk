@@ -57,7 +57,7 @@ function validateAuditCounts(counts) {
     throw new Error("inconsistent npm audit vulnerability counts");
   }
 }
-// Check every package count and every inherited advisory edge before policy admission.
+// Check package counts and maximum reachable advisory severities before policy admission.
 function validateAuditGraph(audit) {
   const counts = audit.metadata?.vulnerabilities;
   validateAuditCounts(counts);
@@ -67,7 +67,7 @@ function validateAuditGraph(audit) {
       entries.filter(([, value]) => value?.severity === severity).length !== counts[severity])) {
     throw new Error("npm audit graph disagrees with vulnerability counts");
   }
-  const reached = new Set();
+  const reached = new Map();
   const dependents = new Map();
   for (const [name, value] of entries) {
     if (typeof value.isDirect !== "boolean") throw new Error("npm audit directness must be an explicit boolean");
@@ -78,17 +78,19 @@ function validateAuditGraph(audit) {
       if (typeof via === "string" && Object.hasOwn(audit.vulnerabilities, via)) {
         const parents = dependents.get(via) ?? [];
         parents.push(name); dependents.set(via, parents);
-      } else if (isPlainObject(via) && auditSeverities.includes(via.severity)) reached.add(name);
-      else throw new Error("incomplete npm audit advisory graph");
+      } else if (isPlainObject(via) && auditSeverities.includes(via.severity)) {
+        reached.set(name, Math.max(reached.get(name) ?? -1, auditSeverities.indexOf(via.severity)));
+      } else throw new Error("incomplete npm audit advisory graph");
     }
   }
-  const queue = [...reached];
+  const queue = [...reached.keys()];
   for (let index = 0; index < queue.length; index++) {
     for (const parent of dependents.get(queue[index]) ?? []) {
-      if (!reached.has(parent)) { reached.add(parent); queue.push(parent); }
+      if ((reached.get(parent) ?? -1) < reached.get(queue[index])) { reached.set(parent, reached.get(queue[index])); queue.push(parent); }
     }
   }
   if (reached.size !== entries.length) throw new Error("incomplete npm audit advisory graph");
+  if (entries.some(([name, value]) => reached.get(name) !== auditSeverities.indexOf(value.severity))) throw new Error("npm audit package severity disagrees with reachable advisories");
 }
 function summaryAudit(summary, baseline) {
   if (!validIds(summary.audit?.directAdvisories)) throw new Error("summary has no valid direct-advisory evidence");
