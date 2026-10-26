@@ -25,8 +25,8 @@ export function sqliteWriteLease(db) {
   // Install once, outside BEGIN. Arming survives automatic rollback, while
   // the in-transaction update does not. Unarmed guards allow host DML.
   const name = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
-  const marker = `temp.${identifier(name)}`, tables = new Map();
-  let serial = 0, versions;
+  const marker = `temp.${identifier(name)}`;
+  let triggerCount = 0, versions;
   db.exec(`CREATE TEMP TABLE ${identifier(name)} (armed INTEGER, present INTEGER);
     INSERT INTO ${marker} VALUES (0, 0)`);
   const schemaVersions = () => db.prepare('PRAGMA database_list').all().map(({ name: schema, file }) =>
@@ -39,29 +39,39 @@ export function sqliteWriteLease(db) {
       versions = undefined;
     },
     refresh() {
-      const current = JSON.stringify(schemaVersions());
-      if (current === versions && !schemaVersions().some(([schema]) => !['main', 'temp'].includes(schema))) return;
-      // SQLite retargets TEMP triggers on rename. Rebuild their actual table
-      // bindings whenever schema identities change, including replacements.
-      for (const triggers of tables.values()) for (const trigger of triggers) {
-        db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(trigger.name)}`);
-      }
-      tables.clear();
-      for (const { schema, name: table, type } of db.prepare('PRAGMA table_list').all()) {
-        if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
-        const key = JSON.stringify([schema, table]);
-        const triggers = [];
-        tables.set(key, triggers);
-        for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
-          const trigger = `${name}_${serial++}`;
-          db.exec(`CREATE TEMP TRIGGER ${identifier(trigger)} BEFORE ${action}
-            ON ${identifier(schema)}.${identifier(table)}
-            WHEN EXISTS (SELECT 1 FROM ${marker} WHERE armed = 1 AND present = 0)
-            BEGIN SELECT RAISE(ABORT, 'purchase transaction ended'); END`);
-          triggers.push({ name: trigger });
+      const savepoint = identifier(`${name}_refresh`);
+      db.exec(`SAVEPOINT ${savepoint}`);
+      try {
+        // Schema versions, enumeration and trigger bindings share one SQLite
+        // snapshot. A rival WAL commit must never be cached for an older scan.
+        const snapshot = schemaVersions();
+        let next = JSON.stringify(snapshot);
+        if (next !== versions || snapshot.some(([schema]) => !['main', 'temp'].includes(schema))) {
+          // Reuse a closed range of names. Even an enclosing rollback that
+          // restores an older generation cannot leave untracked TEMP triggers.
+          for (let i = 0; i < triggerCount; i++) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(`${name}_${i}`)}`);
+          let serial = 0;
+          for (const { schema, name: table, type } of db.prepare('PRAGMA table_list').all()) {
+            if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
+            for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
+              const trigger = `${name}_${serial++}`;
+              triggerCount = Math.max(triggerCount, serial);
+              db.exec(`CREATE TEMP TRIGGER ${identifier(trigger)} BEFORE ${action}
+                ON ${identifier(schema)}.${identifier(table)}
+                WHEN EXISTS (SELECT 1 FROM ${marker} WHERE armed = 1 AND present = 0)
+                BEGIN SELECT RAISE(ABORT, 'purchase transaction ended'); END`);
+            }
+          }
+          next = JSON.stringify(schemaVersions());
         }
+        db.exec(`RELEASE ${savepoint}`);
+        versions = next;
+      } catch (error) {
+        versions = undefined;
+        try { db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); }
+        catch { retireSqliteHandle(db); }
+        throw error;
       }
-      versions = JSON.stringify(schemaVersions());
     },
     arm() { db.exec(`UPDATE ${marker} SET armed = 1, present = 0`); },
     start() { db.exec(`UPDATE ${marker} SET present = 1`); },

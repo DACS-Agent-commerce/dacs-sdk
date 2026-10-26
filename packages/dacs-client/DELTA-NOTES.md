@@ -202,6 +202,8 @@ PR 03 acceptance: `test/sqlite-write-lease.test.mjs` covers the marker, ordinary
 
 PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
 
+Schema refresh reads schema versions and table bindings in one SQLite savepoint snapshot, replaces the temporary triggers atomically, and publishes the matching cache only after release. Reusable trigger names retain ownership across a failed refresh or an enclosing caller rollback; a rival schema commit is discovered on reacquisition.
+
 PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
