@@ -219,6 +219,14 @@ function repeatsTopLevelKey(text) {
   return false;
 }
 
+// The name require() reaches the entry `item` of `directory` by, or null when
+// it is no module root: a scope folder, or a path inside a package.
+function moduleRootName(directory, item) {
+  const parent = posix.basename(directory);
+  if (parent === "node_modules") return item.startsWith("@") ? null : item;
+  return parent.startsWith("@") && posix.basename(posix.dirname(directory)) === "node_modules" ? `${parent}/${item}` : null;
+}
+
 // Called only after the entire installed namespace matches its archive closure,
 // so this reads every module root and package.json scope there is. The closure
 // admits npm-generated command links to archive files only: a link named
@@ -230,10 +238,7 @@ function installedCandidateModules(project, closure) {
       const path = `${directory}/${item.name}`;
       const record = closure.entries.get(path);
       const archiveOwner = record ? record.bundledBy ?? path : owner;
-      const parent = posix.basename(directory);
-      const name = parent === "node_modules" ? (item.name.startsWith("@") ? null : item.name)
-        : parent.startsWith("@") && posix.basename(posix.dirname(directory)) === "node_modules"
-          ? `${parent}/${item.name}` : null;
+      const name = moduleRootName(directory, item.name);
       if (name) modules.set(path, { owner: archiveOwner, name });
       if (item.isDirectory()) visit(path, archiveOwner);
       else if (item.name === "package.json") {
