@@ -199,7 +199,7 @@ PR 03 acceptance: `test/sqlite-write-lease.test.mjs` covers the marker, ordinary
 
 PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
 
-Schema refresh reads schema versions and table bindings in one SQLite savepoint snapshot, replaces the temporary triggers atomically, and publishes the matching cache only after release. Reusable trigger names retain ownership across a failed refresh or an enclosing caller rollback; a rival schema commit is discovered on reacquisition.
+Only main/temp ordinary tables are supported; attached schemas are refused because their names and versions cannot establish binding identity after replacement. Schema refresh installs ordinary-table triggers under its own BEGIN IMMEDIATE and commits before publishing their schema fingerprint. Acquisition refuses enclosing caller transactions without changing their work. After arming and BEGIN IMMEDIATE, start refuses a different locked schema fingerprint before marking the lease live; the caller must roll back, disarm and reacquire before retrying. Accepted guards survive body rollback because installation was committed separately; failed installation rolls back, or retires the handle if recovery fails.
 
 PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
 
@@ -553,6 +553,9 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d5cd592b2d02917ce3b15cb74e625420257f3c4c |
 | D11 | fix(client): D11 keep lease recovery checks portable | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | fc104ed0039536bab64baa7882764154ac37e933 |
+| D11 | fix(client): D11 commit guard generations before accepting transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | dc7166d3baff55abd0a7862a4b78e337cd5ae0d9 |
+| | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | 40d3d1bbb2852a6424337ee5c50af9c2e59b8154 |
 
 ## Complete commit and file inventory
 
@@ -1368,6 +1371,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
 
 ## Original moved files
 
