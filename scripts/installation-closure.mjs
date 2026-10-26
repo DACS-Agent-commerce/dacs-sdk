@@ -38,9 +38,9 @@ export function runNpmNode(toolchain, args, options = {}, overrides) {
   }
 }
 
-/** Extracts a Map of independently supplied archive bytes with the selected npm's pacote
- * in one bounded worker. Returns a Map of labels to file Maps only after every extraction
- * succeeds. Decompression, validation and extraction share the worker deadline. Throws on
+/** Extracts a Map of independently supplied archive bytes with the selected npm's pacote.
+ * Returns a Map of labels to file Maps only after every extraction succeeds. Validation
+ * and extraction run in separate workers, each with its full deadline. Throws on
  * framing/path ambiguity, warnings, byte/depth limits and missing package.json. */
 export function packedFileSets(archives, toolchain = npmToolchain(), overrides) {
   const limits = boundedLimits(overrides);
@@ -53,7 +53,11 @@ export function packedFileSets(archives, toolchain = npmToolchain(), overrides) 
   try {
     for (const [index, [, bytes]] of sources.entries()) writeFileSync(join(scratch, index + ".tgz"), bytes);
     writeFileSync(join(scratch, "sources.json"), JSON.stringify({ limits, labels: sources.map(([label]) => label) }));
-    try { runNpmNode(toolchain, [ARCHIVE_WORKER, toolchain.cli, scratch], {}, limits); }
+    try {
+      for (const phase of ["validate", "extract"]) {
+        runNpmNode(toolchain, [ARCHIVE_WORKER, toolchain.cli, scratch, phase], {}, limits);
+      }
+    }
     catch (cause) {
       const failure = join(scratch, "failure.json");
       if (existsSync(failure)) throw new Error(JSON.parse(readFileSync(failure, "utf8")).message, { cause });
