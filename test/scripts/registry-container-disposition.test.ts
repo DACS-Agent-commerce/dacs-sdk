@@ -1332,21 +1332,42 @@ describe("#191 policy-finding baseline", () => {
     expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
   });
 
-  // Final r11 review: the consumer installs without a lockfile, so a patch
-  // release under the same rule (make-fetch-happen takes @npmcli/agent ^5.0.0)
-  // must not turn every PR, the drift job and prereleases red.
-  const release = (location: string, version: string) => (p: Record<string, Record<string, unknown>>) => {
+  // Baselined Git, engine and image findings pin their archive, so a patch
+  // release or another archive at the recorded version is a new finding under
+  // the same rule: the run blocks and names that package.
+  const rearchive = (location: string, version?: string) => (p: Record<string, Record<string, unknown>>) => {
     const entry = requiredFixtureEntry(p[location], location);
-    entry.version = version; entry.integrity = `sha512-${version}-next-release`;
+    if (version !== undefined) entry.version = version;
+    entry.integrity = `sha512-${version ?? "recorded-version"}-other-archive`;
   };
+  const agent = "node_modules/@npmcli/agent";
+  const arbundles = "node_modules/@bundlr-network/client/node_modules/arbundles";
+  const typescript = "node_modules/typescript";
   it.each([
-    ["@npmcli/agent 5.0.3 with the same engine range", "engineStrict", {
-      "generated-package-lock.json": withLock(release("node_modules/@npmcli/agent", "5.0.3")),
+    ["@npmcli/agent 5.0.3 with the same engine range", "engineStrict", agent, {
+      "generated-package-lock.json": withLock(rearchive(agent, "5.0.3")),
       "engine-strict.log": strictLog.replaceAll("@npmcli/agent@5.0.2", "@npmcli/agent@5.0.3") }],
-    ["arbundles 0.6.24 with the same Git avsc spec", "registryDependency", {
-      "generated-package-lock.json": withLock(release("node_modules/@bundlr-network/client/node_modules/arbundles", "0.6.24")) }],
-    ["typescript 5.9.3 in the image", "productionImage", {
-      "generated-package-lock.json": withLock(release("node_modules/typescript", "5.9.3")) }],
+    ["@npmcli/agent 5.0.2 from another archive", "engineStrict", agent, {
+      "generated-package-lock.json": withLock(rearchive(agent)) }],
+    ["arbundles 0.6.24 with the same Git avsc spec", "registryDependency", arbundles, {
+      "generated-package-lock.json": withLock(rearchive(arbundles, "0.6.24")) }],
+    ["arbundles 0.6.23 from another archive", "registryDependency", arbundles, {
+      "generated-package-lock.json": withLock(rearchive(arbundles)) }],
+    ["typescript 5.9.3 in the image", "productionImage", typescript, {
+      "generated-package-lock.json": withLock(rearchive(typescript, "5.9.3")) }],
+    ["typescript 5.9.2 from another archive in the image", "productionImage", typescript, {
+      "generated-package-lock.json": withLock(rearchive(typescript)) }],
+  ])("exits 3 and names the package for %s", (_label, check, location, overrides) => {
+    const summary = b7b180fSimulation(overrides as Record<string, string | undefined>);
+    expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("blocked");
+    expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+    const unlisted = unlistedPolicyFindings(summary, baseline, [check as string])[check as string] as Array<{ location: string }>;
+    expect(unlisted.map(item => item.location)).toEqual([location]);
+  });
+
+  // SBOM rules elide installed versions, so the same problem under a patch
+  // release stays baseline-only.
+  it.each([
     ["lock SBOM problems with other installed versions", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err")
       .replace("arbundles@0.6.23", "arbundles@0.6.24").replace("@ton/core@0.59.1", "@ton/core@0.59.2")
       .replace("@ton/ton@15.4.0", "@ton/ton@15.4.1").replace("@solana/spl-token@0.4.15", "@solana/spl-token@0.4.16") }],
@@ -1476,15 +1497,17 @@ describe("runtime-image package inventory", () => {
     expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
   });
 
-  it("waives a package only when the baseline records its name and location", () => {
+  it("waives an image package only when the baseline records its name, location, version and integrity", () => {
     const summary = b7b180fSimulation({ "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4") });
-    const narrow = { ...baseline, policyFindings: { ...baseline.policyFindings, productionImageDependencies: [
-      ...baseline.policyFindings.productionImageDependencies, { name: "vitest", location: "node_modules/vitest" }] } };
-    expect(classifyPolicyChecks(summary, narrow).productionImage).toBe("baseline");
-    expect(historicalDisposition(summary, narrow)).toMatchObject({ exitCode: 4 });
-    const elsewhere = { ...narrow, policyFindings: { ...narrow.policyFindings, productionImageDependencies: [
-      ...baseline.policyFindings.productionImageDependencies, { name: "vitest", location: "node_modules/x/node_modules/vitest" }] } };
-    expect(classifyPolicyChecks(summary, elsewhere).productionImage).toBe("blocked");
+    const vitest = { name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null };
+    const listing = (entry: Record<string, unknown>) => ({ ...baseline, policyFindings: { ...baseline.policyFindings,
+      productionImageDependencies: [...baseline.policyFindings.productionImageDependencies, entry] } });
+    expect(classifyPolicyChecks(summary, listing(vitest)).productionImage).toBe("baseline");
+    expect(historicalDisposition(summary, listing(vitest))).toMatchObject({ exitCode: 4 });
+    for (const entry of [{ name: "vitest", location: "node_modules/vitest" }, { ...vitest, version: "3.2.5" },
+      { ...vitest, integrity: "sha512-other-archive" }, { ...vitest, location: "node_modules/x/node_modules/vitest" }]) {
+      expect(classifyPolicyChecks(summary, listing(entry)).productionImage, JSON.stringify(entry)).toBe("blocked");
+    }
   });
 
   // A blocked run's log must say which findings the baseline lacks, so they
