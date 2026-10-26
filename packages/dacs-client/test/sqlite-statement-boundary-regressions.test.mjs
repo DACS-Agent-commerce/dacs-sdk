@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { withSqliteStatementGuard } from '../src/util/sqlite-statement-boundary.mjs';
 import { isSqliteHandleRetired } from '../src/util/sqlite-write-lease.mjs';
+const nativeExec = DatabaseSync.prototype.exec;
 
 for (const kind of ['async', 'generator', 'async generator']) {
   test(`the statement boundary refuses a declared ${kind} body before entry`, () => {
@@ -160,3 +161,103 @@ test('a rejected promise result is observed after the connection is retired', ()
     assert.throws(() => withSqliteStatementGuard(db, () => {}, () => Promise.reject(new Error('TEST-rejected'))), /synchronous result/);
   `);
 });
+
+for (const callback of ['body', 'predicate']) for (const kind of ['masked promise', 'throwing promise getter', 'throwing thenable getter']) {
+  test(`${callback} result retirement precedes retained writes for a ${kind}`, async t => {
+    const dir = mkdtempSync(join(tmpdir(), 'statement-result-'));
+    const path = join(dir, 'store.sqlite');
+    const db = new DatabaseSync(path);
+    t.after(() => { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); });
+    db.exec("CREATE TABLE records(id TEXT); BEGIN; INSERT INTO records VALUES ('TEST-pending')");
+    const writer = db.prepare("INSERT INTO records VALUES ('TEST-late')");
+    const cause = new Error('TEST-then-inspection');
+    let continuation, lateError, refusal, entered = false, reads = 0;
+    const deferred = () => {
+      continuation = Promise.resolve().then(() => {
+        try { writer.run(); } catch (error) { lateError = error; }
+      });
+      const result = kind === 'throwing thenable getter' ? {} : continuation;
+      Object.defineProperty(result, 'then', kind === 'masked promise' ? { value: undefined } : {
+        get() { reads++; throw cause; },
+      });
+      return result;
+    };
+    try {
+      withSqliteStatementGuard(db, callback === 'predicate' ? deferred : () => {}, () => {
+        entered = true;
+        return callback === 'body' ? deferred() : undefined;
+      });
+    } catch (error) { refusal = error; }
+    // A transaction caller rolls back after refusal, before queued work resumes.
+    try { db.exec('ROLLBACK'); } catch { /* Retirement has already rolled back and closed. */ }
+    await continuation;
+    if (kind === 'throwing thenable getter') assert.equal(refusal, cause);
+    else assert.match(refusal?.message ?? '', /synchronous result/);
+    assert.equal(reads, kind === 'throwing thenable getter' ? 1 : 0);
+    assert.equal(entered, callback === 'body');
+    assert.equal(isSqliteHandleRetired(db), true);
+    assert.ok(lateError, 'a retained writer must fail before it can autocommit');
+    const reopened = new DatabaseSync(path);
+    try { assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 0); }
+    finally { reopened.close(); }
+  });
+}
+
+for (const sql of [
+  'PRAGMA query_only=OFF',
+  '/* TEST-policy */ PRAGMA main."QuErY_OnLy" (FALSE)',
+  "-- TEST-policy\n PRAGMA [query_only]='unknown'",
+]) {
+  test(`guarded exec refuses clearing the saved read-only policy before a batch writes: ${sql}`, t => {
+    const db = new DatabaseSync(':memory:');
+    t.after(() => db.close());
+    db.exec('CREATE TABLE records(id); PRAGMA query_only=ON');
+    withSqliteStatementGuard(db, () => {}, () => {
+      assert.throws(() => db.exec(`${sql}; INSERT INTO records VALUES ('TEST-late')`), /read-only policy/);
+      assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
+      assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST-after')"), /readonly/);
+    });
+    assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
+    assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
+  });
+}
+
+test('preparing SQL cannot leave either a writable or a read-only guard fence open', t => {
+  for (const saved of [0, 1]) {
+    const db = new DatabaseSync(':memory:');
+    t.after(() => db.close());
+    db.exec(`CREATE TABLE records(id); PRAGMA query_only=${saved}`);
+    withSqliteStatementGuard(db, () => {}, () => {
+      withSqliteStatementGuard(db, () => {}, () => {
+        assert.throws(() => db.prepare('PRAGMA temp.`query_only`=0'), /read-only policy/);
+        assert.throws(() => nativeExec.call(db, "INSERT INTO records VALUES ('TEST-captured')"), /readonly/);
+        db.prepare('PRAGMA query_only=ON').run();
+        assert.equal(db.prepare('SELECT 1 AS value').get().value, 1);
+      });
+      assert.throws(() => nativeExec.call(db, "INSERT INTO records VALUES ('TEST-outer')"), /readonly/);
+    });
+    assert.equal(db.prepare('PRAGMA query_only').get().query_only, saved);
+    db.exec('PRAGMA query_only=OFF');
+    assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
+  }
+});
+
+for (const method of ['run', 'get', 'all', 'iterate', 'next']) {
+  test(`an earlier prepared pragma cannot clear a read-only guard during ${method}`, t => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE records(id)');
+    // Install ownership tracking before preparing a setter outside a guard.
+    withSqliteStatementGuard(db, () => {}, () => {});
+    const clear = db.prepare('PRAGMA query_only=OFF');
+    const iterator = method === 'next' ? clear.iterate() : undefined;
+    t.after(() => { iterator?.return(); db.close(); });
+    db.exec('PRAGMA query_only=ON');
+    withSqliteStatementGuard(db, () => {}, () => {
+      assert.throws(() => method === 'next' ? iterator.next() : clear[method](), /read-only policy/);
+      assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
+      assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST-late')"), /readonly/);
+    });
+    assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
+    assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
+  });
+}
