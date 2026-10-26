@@ -90,7 +90,7 @@ test('S1 seller records require manual prepayment approval and retain held-evide
  const draft={parties:[{role:'buyer',primaryClaim:buyer},{role:'seller',primaryClaim:seller}],listingRef:pin,generatedAt:T0,terms:{price:{amount:'1',currency:'DEM'},deadline:T0+1000}};
  const session={jobId:JOBS[0],buyerBundle:{presentedBy:buyer},proposal:{plan:{draft}},proposalAdmission:{observedAt:T0}};
  const resolver=sellerRecordsPurchaseResolver({sessionOf:()=>session,buyerAccess:()=>({allowsWallet:()=>true}),now:()=>T0});
- assert.equal((await resolver(JOBS[0])).prePaymentOpen,false);
+ assert.equal((await resolver(JOBS[0])).prePaymentOpen,null);
  assert.equal(await sellerRecordsPurchaseResolver({sessionOf:()=>session,buyerAccess:()=>({allowsWallet:()=>false}),now:()=>T0})(JOBS[0]),false);
  assert.deepEqual(sellerHeldEvidenceJobs([{...session,stage:'delivery-ready',deliveryReady:{},nativeEvidenceWork:{}}]),[{jobId:JOBS[0]}]);
 });
