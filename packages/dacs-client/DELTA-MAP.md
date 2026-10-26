@@ -756,6 +756,8 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
 | D11 | fix(client): D11 record PR 05 lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
+| D11 | fix(client): D11 record PR 06c lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 070a7eac2757271e84f797a3a90635ce1b6cc2e4 |
 
 ## Complete commit and file inventory
 
@@ -2007,6 +2009,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
