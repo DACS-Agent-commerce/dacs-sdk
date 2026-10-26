@@ -30,3 +30,28 @@ test('C-2 real seller projection reaches manual approval and confirms an unpaid 
  assert.equal(await a(r),true);assert.equal(prompts,1);assert.equal(await a.confirm(confirmationFor(r)),true);
  await a.settle(r,'spent');assert.equal((await f.read()).rows.find(row=>row.signAuthorized).outcome,'spent');
 });
+
+test('D-1 a request changed during manual approval receives no sign authority',async t=>{
+ const f=await fixture(t),r=requestFor({artifactKind:'CompositeVerificationRecord'});
+ const manual=createExactOperatorApproval({...f.settings,authorize:()=>{r.content.exactCreate='{"changed":true}';return true;}});
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual});
+ assert.equal(await a(r),false);
+ const ledger=await f.read();assert.equal(ledger.rows.some(row=>row.signAuthorized),false);assert.equal(heldPolicyBudget(ledger.rows,T0).writes,0);
+});
+
+test('D-1 a request changed during an asynchronous policy read receives no approval',async t=>{
+ const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
+ const f=await fixture(t,async()=>{r.content.exactCreate='{"changed":true}';return purchase();});
+ assert.equal(await f.p.prepare(r),false);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+});
+
+test('D-1 direct manual approval refuses changed bytes and retains immutable approved bytes',async t=>{
+ const f=await fixture(t),changed=requestFor();
+ const manual=createExactOperatorApproval({...f.settings,authorize:()=>{changed.content.exactCreate='{}';return true;}});
+ assert.equal(await manual(changed),false);
+ const r=requestFor(),approve=createExactOperatorApproval({...f.settings,authorize:()=>true});
+ assert.equal(await approve(r),true);assert(Object.isFrozen(r));assert(Object.isFrozen(r.content.debit));
+ assert.throws(()=>{r.content.exactCreate='{}';},TypeError);
+ const lines=(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
+ assert.equal(lines.at(-1).requestBytes,JSON.stringify(r));
+});

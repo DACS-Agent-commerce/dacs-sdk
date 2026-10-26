@@ -306,10 +306,22 @@ export function composeSellerApproval({mode,policy,manual}){
     const previous=prepared;prepared=null;
     if(previous?.policy||previous?.held)await policy.settle?.(previous.request,'released','replaced');
     const kind=request?.content?.artifactKind;
-    if(mode!=='policy'||kind==='Listing')return manual(request);
+    const requestBytes=JSON.stringify(request);
+    if(mode!=='policy'||kind==='Listing'){
+      const accepted=await manual(JSON.parse(requestBytes));
+      if(accepted!==true||JSON.stringify(request)!==requestBytes)return false;
+      freezeRequest(request);return true;
+    }
     const deferred=typeof policy.prepare==='function';
-    const copy=deferred?structuredClone(request):request;
+    const copy=deferred?JSON.parse(requestBytes):request;
+    const retain=async()=>{
+      if(JSON.stringify(request)!==requestBytes||JSON.stringify(copy)!==requestBytes){
+        await policy.settle?.(copy,'released','confirmation-mismatch');return false;
+      }
+      freezeRequest(request);freezeRequest(copy);return true;
+    };
     if((await (deferred?policy.prepare(copy):policy(request)))===true){
+      if(!(await retain()))return false;
       if(deferred){prepared={request:copy,policy:true,origin:request};confirmedCopies.set(request,copy);}
       return true;
     }
@@ -318,9 +330,9 @@ export function composeSellerApproval({mode,policy,manual}){
     let accepted=false;
     const attemptId=held?policy.heldAttempt?.(copy)??null:null;
     if(held)atManualGate.add(request);
-    try{accepted=(await (attemptId?manual(request,undefined,{attemptId}):manual(request)))===true;}
+    try{accepted=(await (attemptId?manual(copy,undefined,{attemptId}):manual(copy)))===true;}
     finally{atManualGate.delete(request);if(held&&deferred&&!accepted)await policy.settle?.(copy,'released','manual-declined');}
-    if(!accepted)return false;
+    if(!accepted||!(await retain()))return false;
     // Seller records: the approved held write is sign-authorized on the ledger
     // before this answer lets the wallet sign it. If that line cannot be
     // retained, nothing was signed and the attempt ends released. The write is
@@ -451,7 +463,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     if(attempt.outcome===null)appendAttempt({attemptId,approvalHash:attempt.approvalHash,outcome:'released',reason,recordedAt:now()});
     liveAttempts.delete(attemptId);
   };
-  const decide=async(input,validity,{preparing=false,manualApproved=false,held=null,provisional=null,attemptId=null,signed=null}={})=>{
+  const decide=async(input,validity,{preparing=false,manualApproved=false,held=null,provisional=null,attemptId=null,signed=null,origin=input}={})=>{
     const confirmedTotal=validity===undefined?undefined:confirmedWriteOs(validity,input);
     const declaredTotal=input?.content?.debit?.totalOs;
     const declared=typeof declaredTotal==='string'&&OS.test(declaredTotal)?BigInt(declaredTotal):null;
@@ -459,7 +471,11 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const total=countedTotal?.toString();
     const withinBudget=input?.method==='sendTransaction'&&OS.test(total??'')&&BigInt(total)<=BigInt(maxTotalOs);
     if(!policyMode&&!withinBudget)return false;
-    const requestBytes=JSON.stringify(input),request=policyMode?JSON.parse(requestBytes):input,approvalHash=sha(requestBytes);
+    const requestBytes=JSON.stringify(input),request=JSON.parse(requestBytes),approvalHash=sha(requestBytes);
+    const retain=()=>{
+      if(JSON.stringify(origin)!==requestBytes||JSON.stringify(input)!==requestBytes){policyReason='request-changed';return false;}
+      freezeRequest(origin);freezeRequest(input);return true;
+    };
     let at=policyMode?now():null;
     const authorized=signRecords&&validity!==undefined&&!manualApproved?signed:null;
     let reservationId=authorized?authorized.reservationId:policyMode?randomUUID():null;
@@ -505,7 +521,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     // Sign authority must be durable before preparation can approve.
     if(preparing&&accepted&&signRecords){
-      try{await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});live();await authorizeSigning(input,{reservationId,at});}
+      try{await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});live();accepted=retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
       catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
     }
     if(preparing&&accepted){live();return true;}
@@ -513,6 +529,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     // Resolve current purchase authority after the last ledger/directory await.
     if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);live();}catch{policyReason='policy-check-failed';}accepted=policyReason===null;}
+    if(accepted)accepted=retain();
     if(policyMode&&HOLD_REASONS.has(policyReason))heldRequests.set(input,policyReason);
     if(policyMode&&HOLD_REASONS.has(policyReason)){attemptId=randomUUID();heldAttempts.set(input,attemptId);liveAttempts.add(attemptId);}
     appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:request?.method??null,address:request?.address??null,totalOs:total??null,decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),
@@ -530,7 +547,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
         const held=options.held===true?heldRequests.get(request)??null:null;
         const attemptId=held?heldAttempts.get(request)??null:null;
         const signed=options.preparing?null:signAuthorized.get(request)??null;
-        const accepted=await decide(snapshot,validity,{...options,held,attemptId,signed,provisional:signed??preparations.get(request)});
+        const accepted=await decide(snapshot,validity,{...options,origin:request,held,attemptId,signed,provisional:signed??preparations.get(request)});
         live();
         const heldNow=heldRequests.has(snapshot);
         if(signAuthorized.has(snapshot))signAuthorized.set(request,signAuthorized.get(snapshot));
@@ -891,3 +908,11 @@ export async function stillOpenBeforePayment(request,policy,held){
 let ttyPrompts=0;
 /** Return whether an interactive non-Listing approval prompt is pending. */
 export const ttyApprovalPending=()=>ttyPrompts>0;
+
+// Freeze the wallet-facing request so its retained bytes survive later asynchronous work.
+function freezeRequest(value){
+  if(value&&typeof value==='object'){
+    for(const child of Object.values(value))freezeRequest(child);
+    Object.freeze(value);
+  }
+}
