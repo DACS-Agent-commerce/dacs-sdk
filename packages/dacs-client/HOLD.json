@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "56925c9ecb73f748bc2b32232d7921b42be99ed3"
+        "blob": "9c3e95b45ba8fcbfa504336178fe150b66282786"
       },
       "DELTA-LEDGER.json": {
-        "blob": "823d8516f0a24104f5fe692f1f8f6d03f17e7f48"
+        "blob": "a629c3b3a2c82fa26d51450fd6f16eab7978ffb5"
       },
       "DELTA-MAP.md": {
-        "blob": "661429c3ecafb501f1348849ac4c08fb171ec098"
+        "blob": "837515e0dc4d9fbf2d6d810955ff1eaa67e5bf70"
       },
       "DELTA-NOTES.md": {
         "blob": "a2d05d876eaa978cadf5d310c78f74e8a46dc137"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7b2b948b5ac3a6c9ec8318a0a7b7ef8b4d14ff64"
+        "blob": "06b0a4e2c65a4879ed4a3e75c34c829eadf5fc49"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1226,7 +1226,7 @@
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "78329c1067d342758057ec5eac873e7504c37290"
+        "blob": "2730715a63ecaf36b43fbf1af32bf832bb567b65"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
@@ -1670,16 +1670,19 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/store-atomicity.test.mjs": {
-        "blob": "7ba5cd5d3028b2e8b668ca82423e4794a5fc7c80"
+        "blob": "927fca2142201b31325e1e21045de052b186dfb3"
       },
       "test/store-attached-databases.test.mjs": {
-        "blob": "2f9c2dbb0360c258cc35445db671fcf12754b365"
+        "blob": "3fef1e1f706852d0c0436312266b1317063875ec"
       },
       "test/store-host-boundary.test.mjs": {
-        "blob": "74c4ba0638f76b77d45dd45c1260e7e718a8e7af"
+        "blob": "25527e1737241f6c8516577de115665cd65b971c"
       },
       "test/store-refusal-errors.test.mjs": {
         "blob": "a41ff025877d600e4d9213600d642213d61dd7a2"
+      },
+      "test/store-startup-results.test.mjs": {
+        "blob": "130fd5d3a70ab5640916c4c1ca00ba1a94135284"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "3955731dbff3f936b239e42a7a4aa8f13c69091f"
