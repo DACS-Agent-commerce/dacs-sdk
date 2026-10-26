@@ -741,6 +741,8 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 | D11 | fix(client): D11 retain 04 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | de9b38f087ad793733f16b30ddf8a28fc2213728 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
+| D11 | fix(client): D11 retain 05 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
 
 ## Complete commit and file inventory
 
@@ -1925,6 +1927,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
