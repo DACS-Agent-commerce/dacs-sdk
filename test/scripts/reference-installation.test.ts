@@ -457,7 +457,7 @@ describe("installation closure of real npm installations", () => {
       const installed = await npmCi(project, server.registry, cache);
       expect(installed.status, installed.output).toBe(0);
       expect(readFileSync(join(project, "node_modules/late-file/late.js"), "utf8")).toBe("module.exports = 42;\n");
-      const error = "cannot derive reference installation: cannot derive the installed files of node_modules/late-file: packed tarball has a malformed trailer";
+      const error = "cannot derive reference installation: cannot extract archive node_modules/late-file: packed tarball has a malformed trailer";
       expect([interrupted.errors, closure().errors]).toEqual([[error], [error]]);
     } finally { await server.close(); }
   }, 60_000);
@@ -490,7 +490,7 @@ describe("installation closure of real npm installations", () => {
       const installed = await npmCi(project, server.registry, cache);
       expect(installed.status, installed.output).toBe(0);
       expect(readFileSync(join(project, "node_modules/directory-body/hidden.js"), "utf8")).toBe(hiddenFile);
-      const error = "cannot derive reference installation: cannot derive the installed files of node_modules/directory-body: packed tarball directory has a nonzero size";
+      const error = "cannot derive reference installation: cannot extract archive node_modules/directory-body: packed tarball directory has a nonzero size";
       expect([interrupted.errors, closure().errors]).toEqual([[error], [error]]);
     } finally { await server.close(); }
   }, 60_000);
