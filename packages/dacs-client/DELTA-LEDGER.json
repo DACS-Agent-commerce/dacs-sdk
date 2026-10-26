@@ -1546,6 +1546,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the 06c split integration","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"eb48afdc8553f1ffb9a9b394474056e6eb2e140d","after":"eb48afdc8553f1ffb9a9b394474056e6eb2e140d"}]},
     {"delta":"D11","subject":"fix(client): D11 record the 06c checkpoint check integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 06c lease formatting integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record PR 06c lease snapshot integration","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"070a7eac2757271e84f797a3a90635ce1b6cc2e4","after":"070a7eac2757271e84f797a3a90635ce1b6cc2e4"}]}
+    {"delta":"D11","subject":"fix(client): D11 record PR 06c lease snapshot integration","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"070a7eac2757271e84f797a3a90635ce1b6cc2e4","after":"070a7eac2757271e84f797a3a90635ce1b6cc2e4"}]},
+    {"delta":"D11","subject":"fix(client): D11 require durable purchase synchronization","files":[{"path":"packages/dacs-client/src/util/sqlite-purchase-admission.mjs","before":"562bcba0f9523ce1133c19f6572c459beb7a3093","after":"0fcf1acf63b90484141c80bce9a06edb13fcab57"},{"path":"packages/dacs-client/test/sqlite-purchase-journal.test.mjs","before":"a4c59300ff497d05f4b26ce97cd022d01b68a02a","after":"9e845427d6f0b94900c04e02c4eda869e5e6f7f8"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"f34fe299227e2607f005885f0abcf393d2a2ffaa","after":"fd61c135ce343fec49823d4e9dea0225e5afafd6"}]}
   ]
 }
