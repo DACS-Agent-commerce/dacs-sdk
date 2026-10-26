@@ -32,6 +32,18 @@ function transactionResult(db, result) {
   });
 }
 
+function checkPersistentAttachments(db) {
+  // Separate durable files can recover different parts of one WAL commit.
+  if (db.prepare('PRAGMA database_list').all().some(({ name, file }) => name !== 'main' && file)) {
+    throw new OperationError('purchase_store_persistent_attachment', 'purchase transactions cannot include persistent attached databases');
+  }
+}
+
+function checkTransaction(db, guard) {
+  guard.check();
+  checkPersistentAttachments(db);
+}
+
 // The package owns the transaction boundary. Host wrappers cannot commit a
 // callback before the package has checked its synchronous result.
 function sqliteTransaction(db, fn) {
@@ -40,21 +52,20 @@ function sqliteTransaction(db, fn) {
   if (isSqliteHandleRetired(db)) throw new OperationError('purchase_store_retired_handle', 'purchase store handle is retired');
   if (typeof fn !== 'function') throw new OperationError('purchase_store_invalid_callback', 'purchase transaction requires a callback');
   if (nonSynchronous(fn)) throw new OperationError('purchase_store_async_callback', 'purchase transaction requires an ordinary synchronous callback');
+  checkPersistentAttachments(db);
   if (active.has(db)) {
     const state = active.get(db);
     const savepoint = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
     let opened = false;
     try {
-      state.guard.check();
+      checkTransaction(db, state.guard);
       state.barrier.return();
       state.barrier = null;
       db.exec(`SAVEPOINT ${savepoint}`);
       opened = true;
       state.barrier = state.guard.blockCommit();
-      const result = withSqliteStatementGuard(db, () => {
-        if (!state.guard.present()) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
-      }, () => transactionResult(db, fn()));
-      state.guard.check();
+      const result = withSqliteStatementGuard(db, () => checkTransaction(db, state.guard), () => transactionResult(db, fn()));
+      checkTransaction(db, state.guard);
       state.barrier.return();
       state.barrier = null;
       db.exec(`RELEASE ${savepoint}`);
@@ -85,10 +96,8 @@ function sqliteTransaction(db, fn) {
     guard.start();
     state = { guard, barrier: guard.blockCommit() };
     active.set(db, state);
-    const result = withSqliteStatementGuard(db, () => {
-      if (!guard.present()) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
-    }, () => transactionResult(db, fn()));
-    guard.check();
+    const result = withSqliteStatementGuard(db, () => checkTransaction(db, guard), () => transactionResult(db, fn()));
+    checkTransaction(db, guard);
     state.barrier.return();
     state.barrier = null;
     // All fallible guard cleanup precedes COMMIT. It is DML, so an active
@@ -113,7 +122,9 @@ function sqliteUniqueViolation(error) {
 }
 
 let statementGuardReady = false;
-/** Create the package-owned synchronous SQLite transaction and unique-error adapter. */
+/** Create the synchronous SQLite transaction and unique-error adapter.
+ * Transactions refuse persistent attachments before callbacks or further SQL.
+ */
 export function createSqlitePurchaseStore() {
   // Track host statements prepared after construction, before the first write.
   if (!statementGuardReady) {
