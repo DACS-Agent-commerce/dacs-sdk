@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256Hex } from '@kynesyslabs/dacs';
-import { createSellerContextAdmission, releaseSellerContextHolds, releaseHeldSellerAttempt, composeSellerApproval, parsePolicyLedger, SELLER_LEDGER_HEADER_FORMAT, SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
+import { createSellerContextAdmission, releaseSellerContextHolds, releaseHeldSellerAttempt, composeSellerApproval, parsePolicyLedger, withContextHolds, heldPolicyBudget, SELLER_LEDGER_HEADER_FORMAT, SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
 import { JOB } from './helpers/protocol-fixture.mjs';
 const effect = 'a'.repeat(64), otherJob = JOB.slice(0,-1) + 'B', CONTEXT = 'dacs-node2-seller-context-admission/v1';
 async function fixture(t, limits = {}) {
@@ -90,4 +92,54 @@ test('manual decline releases a held prepayment attempt without sign authorizati
   const calls = [], policy = Object.assign(async () => false, { prepare: async () => false, heldForManual: () => true, heldAttempt: () => 'TEST attempt', settle: (...args) => calls.push(args), authorizeSign: () => { throw new Error('must not sign'); } });
   const approval = composeSellerApproval({ mode: 'policy', policy, manual: async () => false });
   assert.equal(await approval({ content: { artifactKind: 'FinalityCommitmentRecord' } }), false); assert.equal(calls[0][1], 'released'); assert.equal(calls[0][2], 'manual-declined');
+});
+
+for (const at of [299, 300]) test(`new context hold refuses timestamp ${at} preceding or equal to an unfinished Vet attempt`, async t => {
+  const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
+  const row = attempt(0)[0], request = JSON.parse(row.requestBytes);
+  request.content.artifactKind = 'CompositeVerificationRecord';
+  row.requestBytes = JSON.stringify(request); row.approvalHash = sha256Hex(row.requestBytes); row.recordedAt = 300;
+  await writeFile(f.evidencePath, encode([row])); const before = await text(f);
+  assert.equal(await createSellerContextAdmission({ ...f.config, now: () => at }).reserve(f.reserve), 'hold-time-order');
+  assert.equal(await text(f), before);
+});
+test('strictly later context holds count separately from preceding unfinished Vet attempts', async t => {
+  const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
+  const row = attempt(0)[0], request = JSON.parse(row.requestBytes);
+  request.content.artifactKind = 'CompositeVerificationRecord';
+  row.requestBytes = JSON.stringify(request); row.approvalHash = sha256Hex(row.requestBytes); row.recordedAt = 300;
+  await writeFile(f.evidencePath, encode([row]));
+  const admission = createSellerContextAdmission({ ...f.config, now: () => 301 });
+  assert.equal(await admission.reserve(f.reserve), null);
+  assert.deepEqual(heldPolicyBudget(withContextHolds(parsePolicyLedger(await text(f)).rows), 301), { writes: 2, totalOs: 8n });
+  assert.equal(await admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST third' }), 'hourly-write-limit');
+});
+
+for (const operation of ['distinct hold', 'identical hold', 'context release', 'attempt release']) test(`a second process cannot perform ${operation} while a ledger transaction is reading`, { timeout: 15_000 }, async t => {
+  const f = await fixture(t, { maxWritesPerHour: 1, maxTotalOsPerHour: '4' });
+  const child = fork(new URL('./helpers/context-budget-worker.mjs', import.meta.url), [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; } });
+  const reading = once(child, 'message'); child.send({ config: f.config, reserve: f.reserve });
+  assert.deepEqual((await reading)[0], { type: 'reading' });
+  const work = () => operation === 'context release' ? f.admission.release({ jobId: JOB, hold: f.reserve.hold })
+    : operation === 'attempt release' ? releaseHeldSellerAttempt({ evidencePath: f.evidencePath, attemptId: attempt(0)[0].attemptId, now: () => 300 })
+    : f.admission.reserve({ ...f.reserve, ...(operation === 'distinct hold' ? { jobId: otherJob, hold: 'TEST second' } : {}) });
+  await assert.rejects(work(), error => error.code === 'seller_state_locked');
+  await assert.rejects(readFile(f.evidencePath), error => error.code === 'ENOENT');
+  const result = once(child, 'message'), exited = once(child, 'exit'); child.send({ type: 'continue' });
+  assert.deepEqual((await result)[0], { type: 'result', value: null }); assert.equal((await exited)[0], 0);
+  const retained = await text(f);
+  assert.deepEqual(heldPolicyBudget(withContextHolds(parsePolicyLedger(retained).rows), 300), { writes: 1, totalOs: 4n });
+  assert.equal(await f.admission.reserve(f.reserve), null); assert.equal(await text(f), retained);
+  assert.equal(await f.admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), 'hourly-write-limit');
+  await f.admission.release({ jobId: JOB, hold: f.reserve.hold });
+  assert.equal(await f.admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), null);
+});
+
+test('transaction locking preserves one-leaf parent creation and refuses two missing levels', async t => {
+  const f = await fixture(t), evidencePath = join(f.dir, 'TEST leaf', 'approval.jsonl');
+  assert.equal(await createSellerContextAdmission({ ...f.config, evidencePath }).reserve(f.reserve), null);
+  assert.equal(fs.statSync(join(f.dir, 'TEST leaf')).mode & 0o777, 0o700);
+  const missing = join(f.dir, 'TEST absent', 'TEST leaf', 'approval.jsonl');
+  await assert.rejects(createSellerContextAdmission({ ...f.config, evidencePath: missing }).reserve(f.reserve), error => error.code === 'ENOENT');
 });
