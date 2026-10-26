@@ -1559,6 +1559,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the 07 lease formatting integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 08 split integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 08 checkpoint check integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 08 lease formatting integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 08 lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 require durable purchase synchronization","files":[{"path":"packages/dacs-client/src/util/sqlite-purchase-admission.mjs","before":"562bcba0f9523ce1133c19f6572c459beb7a3093","after":"0fcf1acf63b90484141c80bce9a06edb13fcab57"},{"path":"packages/dacs-client/test/sqlite-purchase-journal.test.mjs","before":"a4c59300ff497d05f4b26ce97cd022d01b68a02a","after":"9e845427d6f0b94900c04e02c4eda869e5e6f7f8"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"f34fe299227e2607f005885f0abcf393d2a2ffaa","after":"fd61c135ce343fec49823d4e9dea0225e5afafd6"}]}
   ]
 }
