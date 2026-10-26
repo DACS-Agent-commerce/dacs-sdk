@@ -20,8 +20,8 @@ const NOW = Date.UTC(2026, 9, 18);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
 // The seller's key is fixed, so its signed Listing, and the pin every request names, is a constant.
 const SELLER_SEED = 56;
-const { listing: LISTING, pin: PIN } = tp1Listing({ seller: party(SELLER_SEED), listingId: "report" });
 const ENDPOINT = "https://seller.admission.invalid";
+const { listing: LISTING, pin: PIN } = tp1Listing({ seller: party(SELLER_SEED), listingId: "report", publicEndpoint: ENDPOINT });
 const LOCAL = { endpoint: "https://rpc.admission.invalid/", transportAuthority: "test", connectionId: "1" };
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 function party(seed?: number) {
@@ -33,7 +33,7 @@ function party(seed?: number) {
 async function world(purchase?: AcceptedPurchase) {
   const buyer = purchase?.buyer ?? party(), seller = purchase?.seller ?? party(SELLER_SEED), session = party();
   const pin = purchase?.pin ?? PIN, listing = purchase?.listing ?? LISTING;
-  const signedHere = purchase ? undefined : signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN });
+  const signedHere = purchase ? undefined : signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN, listing: { listing, pin } });
   // Signing that Agreement is no wire signature: the tests count those.
   buyer.calls = 0; seller.calls = 0;
   const agreement = purchase?.agreement ?? signedHere!.agreement;
@@ -296,17 +296,24 @@ describe("endpoint proof purchase gate", () => {
 });
 
 describe("a purchase the buyer already committed continues while the seller drains or its Listing ends", { timeout: 60_000 }, () => {
-  // The wire's reader gives the Listing a one-minute window from NOW - 1 s (the signed Listing's own validity is
-  // wider, so a commitment can finalize outside that window); discovery lasts ten. The commitment finalized at COMMITTED.
+  // The signed Listing and the new-purchase reader have the same one-minute window from NOW - 1 s;
+  // discovery lasts ten. Continuation checks the signed window at the receipt's COMMITTED time.
   const COMMITTED = NOW + 1000, ENDED = NOW + 120_000;
+  const VALIDITY = { notBefore: NOW - 1000, notAfter: NOW + 60_000 };
   const CONTINUING = ["/dacs/v1/payments", "/dacs/v1/bundles/request", "/dacs/v1/bundles/countersignature", "/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"] as const;
   /** The routes among them that need the job's commitment to be signed at all; the others are readback. */
   const EVIDENCE_ROUTES = CONTINUING.filter(w.isContinuingRoute), READBACK = CONTINUING.filter((path) => !w.isContinuingRoute(path));
   /** Routes that start or commit a purchase: never continued, with or without the job's commitment. */
   const STARTING = ["/dacs/v1/agreements/proposals", "/dacs/v1/commitments", "/dacs/v1/commitments/signature", "/dacs/v1/agreements/context"] as const;
-  const windowed: w.ListingEligibilityReader = (scope) => ({ ...(readFixtureListingEligibility(scope) as object), notBefore: NOW - 1000, expiresAt: NOW + 60_000 });
+  const windowed: w.ListingEligibilityReader = (scope) => ({ ...(readFixtureListingEligibility(scope) as object), notBefore: VALIDITY.notBefore, expiresAt: VALIDITY.notAfter });
   const accepted = (generatedAt = NOW, jobId = JOB, listingId?: string) =>
-    acceptedPurchase({ jobId, generatedAt, validity: { notBefore: NOW - 600_000, notAfter: NOW + 600_000 }, publicEndpoint: ENDPOINT, ...(listingId ? { listingId } : {}) });
+    acceptedPurchase({ jobId, generatedAt, validity: VALIDITY, publicEndpoint: ENDPOINT, ...(listingId ? { listingId } : {}) });
+  /** Independently signed evidence: the normal producer refuses off-window receipts before the wire sees them. */
+  function signedCommitment(purchase: AcceptedPurchase, committedAt: number) {
+    return wireCommitment({ seller: { claim: purchase.seller.claim, sign: purchase.seller.signBytes }, buyer: purchase.buyer.claim,
+      jobId: purchase.agreement.jobId, agreementHash: purchase.agreementHash, listingPin: purchase.pin, committedAt,
+      patch: { createdAt: purchase.agreement.generatedAt } });
+  }
   /** An Agreement both parties signed, and its finality commitment from commitFixedPriceAgreement. */
   async function committed(committedAt = COMMITTED) {
     const purchase = await accepted();
@@ -370,24 +377,28 @@ describe("a purchase the buyer already committed continues while the seller drai
     expect(x.buyer.calls).toBe(3 * CONTINUING.length + 1);
   });
   it("a committed purchase still needs a commitment time inside the window, and every other proof check", async () => {
-    const purchase = await accepted(NOW - 2000), x = (await world(purchase)), endpointProof = await proof(x, false);
+    const purchase = await accepted(VALIDITY.notBefore), x = (await world(purchase)), endpointProof = await proof(x, false);
     const pay = async (committedAt: number, patch: Partial<w.WireRequestInput> = {}) =>
-      w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", endpointProof, commitment: received(await commitPurchase(purchase, committedAt)), agreement: received(x.agreement), signedListing: received(x.listing), now: ENDED, ...patch });
+      w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", endpointProof, commitment: received(signedCommitment(purchase, committedAt)), agreement: received(x.agreement), signedListing: received(x.listing), now: ENDED, ...patch });
     // Committed before the Listing's window opened, or after it ended; its first and last instants hold (notAfter >= committedAt).
-    for (const committedAt of [NOW - 1001, NOW + 60_001]) await refuses(() => pay(committedAt), "listing_unsupported", 500);
+    for (const committedAt of [NOW - 1001, NOW + 60_001]) await refuses(() => pay(committedAt), "continuation_commitment_invalid", 500);
     expect(x.buyer.calls).toBe(0);
     for (const committedAt of [NOW - 1000, NOW + 60_000]) await pay(committedAt);
     expect(x.buyer.calls).toBe(2);
     x.buyer.calls = 0;
     await refuses(() => pay(COMMITTED, { now: NOW + 600_000 }), "discovery_expired", 503);
     await refuses(() => pay(COMMITTED, { seller: party().claim }), "endpoint_proof_mismatch", 500);
-    // The reader's own refusal, such as a revoked Listing, still refuses: only the window is compared at committedAt.
+    // A committed purchase uses its pinned Listing; only new purchases consult the live eligibility reader.
     const revoked = new Error("Listing revoked");
     let reads = 0;
     const bytes = await w.signDiscoveryDocument({ ...x.discovery, expiresAt: NOW + 600_000 }, x.seller, x.binding, LOCAL);
     const read = (await w.verifyEndpointProof(bytes, { readListingEligibility: (scope) => { if (reads++) throw revoked; return windowed(scope); }, readCommitmentReceipt: validReceipt, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: x.pin }, binding: x.binding, local: LOCAL, now: NOW }));
-    await expect(pay(COMMITTED, { endpointProof: read })).rejects.toBe(revoked);
-    expect(x.buyer.calls).toBe(0);
+    await pay(COMMITTED, { endpointProof: read });
+    expect(reads).toBe(1);
+    expect(x.buyer.calls).toBe(1);
+    await expect(w.signWireRequest({ ...x.input, path: STARTING[0], endpointProof: read, now: ENDED })).rejects.toBe(revoked);
+    expect(reads).toBe(2);
+    expect(x.buyer.calls).toBe(1);
   });
   it("refuses forged, future and backdated times at both signers and at proof refresh", async () => {
     const { x, purchase, commitment } = await committed(), drained = await proof(x, false), kept = await proof(x, true), now = NOW + 5000;
@@ -434,13 +445,13 @@ describe("a purchase the buyer already committed continues while the seller drai
     expect(x.buyer.calls).toBe(2);
     // Backdated: an Agreement generated inside the window whose commitment finalized after it ended. Only the
     // receipt's committedAt is compared, so the Agreement's own generatedAt extends nothing.
-    const late = await accepted(NOW + 1000), lx = (await world(late)), lateCommitment = await commitPurchase(late, NOW + 60_001);
+    const late = await accepted(NOW + 1000), lx = (await world(late)), lateCommitment = signedCommitment(late, NOW + 60_001);
     expect(late.agreement.generatedAt).toBe(NOW + 1000);
     const lateKept = await proof(lx, true), lateDrained = await proof(lx, false);
     for (const sign of [...signers(lx, { commitment: lateCommitment }, lateKept, ENDED), ...signers(lx, { commitment: lateCommitment }, lateDrained, NOW + 61_000)]) {
-      await refuses(sign, "listing_unsupported", 500);
+      await refuses(sign, "continuation_commitment_invalid", 500);
     }
-    await refuses(async () => (await proof(lx, true, ENDED, { commitment: lateCommitment })), "listing_unsupported", 500);
+    await refuses(async () => (await proof(lx, true, ENDED, { commitment: lateCommitment })), "continuation_commitment_invalid", 500);
     expect(lx.buyer.calls).toBe(0);
   });
 });
