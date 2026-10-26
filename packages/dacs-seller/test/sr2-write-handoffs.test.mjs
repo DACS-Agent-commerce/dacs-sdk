@@ -1,12 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contentHash } from '@kynesyslabs/dacs';
-import { createInMemoryDemosSr2Journal } from '../src/dacs/demos-sr2-adapter.mjs';
+import { attestationBundleHash, canonicalize, contentHash, demosSignedTransactionProofHash,
+  demosWriteEvidenceToAnchorReceipt, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
+import { createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../src/dacs/demos-sr2-adapter.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
-import { seller } from './helpers/protocol-fixture.mjs';
+import { NOW, seller } from './helpers/protocol-fixture.mjs';
 
 const binding = { agreementHash: 'a'.repeat(64) };
-const inputFor = (f, extra = {}) => ({ logicalAddress: f.logicalAddress, artifact: f.artifact, writer: seller.claim, artifactKind: 'Deliverable', ...extra });
+const inputFor = (f, extra = {}) => ({ logicalAddress: f.logicalAddress, artifact: f.artifact, writer: seller.claim, artifactKind: f.native.metadata.artifactKind, ...extra });
+
+// Build public receipt evidence independently of the reader so a signed false
+// artifact hash can reach verifyReceipt without failing during test setup.
+function fixtureReceipt(f) {
+  const finalityProof = canonicalize(f.block.validation_data);
+  return demosWriteEvidenceToAnchorReceipt({ logicalAddress: f.logicalAddress, writer: seller.claim,
+    contentHash: f.native.metadata.contentHash, evidence: {
+      evidenceVersion: '1', chainIdentity: f.block.validation_data.chainIdentity, writer: seller.address,
+      logicalName: f.logicalAddress, nativeAddress: f.native.storageAddress, operation: 'create', nonce: 1,
+      transactionRef: f.signed.hash, signedTransaction: canonicalize(f.signed), signedTransactionHash: demosSignedTransactionProofHash(f.signed),
+      blockNumber: 1, blockHash: f.block.hash, blockTimestamp: NOW, finalityProof, finalityProofHash: sha256Hex(finalityProof),
+      nativeRead: { owner: seller.address, programName: f.native.programName, valueHash: sha256Hex(canonicalize(f.artifact)),
+        metadataHash: sha256Hex(canonicalize(f.native.metadata)), observedAt: NOW },
+    } });
+}
 
 // A trusted restored plan whose exact signed CREATE is present at the node.
 function authorizedFixture(options = {}) {
@@ -68,15 +84,89 @@ test('writing refuses a hash override even when retained and signed metadata agr
 
 test('receipt verification rejects a signed CREATE with the wrong artifact content hash', async () => {
   const f = readbackFixture({ metadata: { contentHash: 'b'.repeat(64) } });
-  const { receipt } = await f.adapter.read(f.logicalAddress, { expectedWriter: seller.claim });
+  const receipt = fixtureReceipt(f);
   assert.equal(await f.adapter.verifyReceipt({ ...inputFor(f), expectedWriter: seller.claim, receipt, receiptContentHash: 'b'.repeat(64) }), 'invalid');
 });
 
-test('writing and receipt verification accept the exact signed-scope hash with signature fields excluded', async () => {
-  const f = authorizedFixture({ artifact: { report: 'TEST signed artifact', signature: { value: 'TEST-signature' } } });
+test('writing and receipt verification accept a signed component hash with signature fields excluded', async () => {
+  const f = authorizedFixture({ artifact: { report: 'TEST signed artifact', signature: { value: 'TEST-signature' } }, metadata: { artifactKind: 'SettlementEvidence' } });
   const receipt = await f.adapter.write(inputFor(f, { transactionHash: f.signed.hash, receiptContentHash: contentHash(f.artifact) }));
   assert.equal(await f.adapter.verifyReceipt({ ...inputFor(f), expectedWriter: seller.claim, receipt }), 'valid');
 });
+
+const payload = { report: 'TEST payload', signature: 'TEST payload member', signatures: ['TEST payload member'] };
+const component = { report: 'TEST component', signature: 'TEST signature' };
+const bundle = { report: 'TEST bundle', signatures: ['TEST signature'], anchoredByRole: { buyer: 'TEST anchor' } };
+for (const [kind, artifact, hash] of [
+  [undefined, payload, sha256Hex(canonicalize(payload))],
+  ['Deliverable', payload, sha256Hex(canonicalize(payload))],
+  ['Listing', component, contentHash(component)],
+  ['Agreement', { report: 'TEST agreement', signatures: ['TEST signature'] }, contentHash({ report: 'TEST agreement' })],
+  ['SettlementEvidence', component, contentHash(component)],
+  ['IdentityBundle', { claims: [], presentation: { signature: 'TEST presentation' } }, identityBundleHash({ claims: [] })],
+  ...['AttestationBundle', 'FaultAttestationBundle', 'EvidenceBoundFaultAttestationBundle'].map(kind => [kind, bundle, attestationBundleHash(bundle)]),
+]) {
+  const label = kind ?? 'raw JSON';
+  const options = { artifact, metadata: { artifactKind: kind, contentHash: hash } };
+  for (const explicit of [false, true]) {
+    test(`${label} consumes retained authorization with its ${explicit ? 'explicit' : 'default'} artifact hash`, async () => {
+      const f = authorizedFixture(options);
+      const receipt = await f.adapter.write(inputFor(f, { transactionHash: f.signed.hash, ...(explicit ? { receiptContentHash: hash } : {}) }));
+      assert.equal(receipt.contentHash, hash); assert.equal(f.journal.get('TEST-plan').stage, 'verified');
+    });
+    test(`${label} uses its ${explicit ? 'explicit' : 'default'} artifact hash through first write and restart`, async () => {
+      const f = readbackFixture(options); f.state.rows = [];
+      const input = inputFor(f, explicit ? { receiptContentHash: hash } : {});
+      const plan = await f.adapter.planWrite(input);
+      assert.equal(plan.stage, 'prepared'); assert.equal(plan.contentHash, hash);
+      const journal = createInMemoryDemosSr2Journal(f.journal.records());
+      const adapter = createDemosSr2Adapter({ rpcUrl: 'http://127.0.0.1:9922/', journal, fetchImpl: f.fetchImpl, now: () => NOW });
+      assert.deepEqual(await adapter.planWrite(input), plan);
+      await adapter.takeWalletHandoff({ planId: plan.planId, walletAddress: seller.address });
+      const message = journal.get(plan.planId).authorizationMessage;
+      const { signedTransaction } = await adapter.authorizeWrite({ planId: plan.planId, walletAddress: seller.address,
+        writerSignature: seller.signBytes(Buffer.from(message)).toString('base64url') });
+      Object.assign(f.tx, structuredClone(signedTransaction), { status: 'confirmed', blockNumber: 1 });
+      f.native.createdByTx = signedTransaction.hash; f.native.interactionTxs = [signedTransaction.hash];
+      f.block.content.ordered_transactions = [signedTransaction.hash];
+      const receipt = await adapter.write({ ...input, transactionHash: signedTransaction.hash });
+      assert.equal(receipt.contentHash, hash);
+      assert.equal(await adapter.verifyReceipt({ ...input, expectedWriter: seller.claim, receipt }), 'valid');
+      const restartedJournal = createInMemoryDemosSr2Journal(journal.records());
+      const restarted = createDemosSr2Adapter({ rpcUrl: 'http://127.0.0.1:9922/', journal: restartedJournal, fetchImpl: f.fetchImpl, now: () => NOW });
+      assert.deepEqual(await restarted.write({ ...input, transactionHash: signedTransaction.hash }), receipt);
+      assert.equal((await restarted.planWrite(input)).stage, 'verified');
+      assert.equal((await restarted.read(f.logicalAddress, { expectedWriter: seller.claim })).receipt.contentHash, hash);
+      assert.equal((await restarted.recheck(receipt, { expectedWriter: seller.claim })).status, 'present');
+    });
+  }
+  test(`${label} adopts an existing authenticated CREATE with the same artifact hash`, async () => {
+    const f = readbackFixture(options);
+    const plan = await f.adapter.planWrite(inputFor(f));
+    assert.equal(plan.stage, 'verified'); assert.equal(plan.contentHash, hash);
+  });
+  test(`${label} refuses a false artifact hash before retaining a plan`, async () => {
+    const f = readbackFixture(options); f.state.rows = [];
+    await assert.rejects(f.adapter.planWrite(inputFor(f, { receiptContentHash: 'b'.repeat(64) })), { code: 'invalid' });
+    assert.deepEqual(f.journal.records(), []); assert.equal(f.calls.length, 0);
+  });
+  test(`${label} refuses a false artifact hash before consuming authorization`, async () => {
+    const f = authorizedFixture(options);
+    await assert.rejects(f.adapter.write(inputFor(f, { transactionHash: f.signed.hash, receiptContentHash: 'b'.repeat(64) })), { code: 'invalid' });
+    assert.equal(f.journal.get('TEST-plan').stage, 'authorization-issued'); assert.equal(f.calls.length, 0);
+  });
+  test(`${label} rejects a signed CREATE and receipt that agree on a false artifact hash`, async () => {
+    const f = readbackFixture({ artifact, metadata: { artifactKind: kind, contentHash: 'b'.repeat(64) } });
+    assert.equal(await f.adapter.verifyReceipt({ ...inputFor(f), expectedWriter: seller.claim,
+      receipt: fixtureReceipt(f), receiptContentHash: 'b'.repeat(64) }), 'invalid');
+  });
+  test(`${label} verifies a reader receipt using the same default artifact hash`, async () => {
+    const f = readbackFixture(options);
+    const { receipt } = await f.adapter.read(f.logicalAddress, { expectedWriter: seller.claim });
+    assert.deepEqual(fixtureReceipt(f), receipt, 'independent receipt fixture matches authenticated evidence');
+    assert.equal(await f.adapter.verifyReceipt({ ...inputFor(f), expectedWriter: seller.claim, receipt }), 'valid');
+  });
+}
 
 for (const [label, savedBinding, requestedBinding] of [
   ['changed', binding, { agreementHash: 'b'.repeat(64) }], ['omitted', binding, undefined], ['added', undefined, binding],
