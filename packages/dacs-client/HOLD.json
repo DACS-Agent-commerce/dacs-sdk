@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "c68a69923556b9e77ce7757ae97ec17a7e248c3c"
+        "blob": "b9a7f39ebfcde76ea67b74a200be4ff931b82a25"
       },
       "DELTA-LEDGER.json": {
-        "blob": "fb7b22b55d73c86dddf72d29e1513b86b7f34612"
+        "blob": "6e7770c51ada66d57a8c58c6843f2729552a252f"
       },
       "DELTA-MAP.md": {
-        "blob": "d00a86c7fdd48262e5ba8b559d269dd6c3e5b19e"
+        "blob": "2faecaa8d7c017dbcf1ef247974e9a6489509ab5"
       },
       "DELTA-NOTES.md": {
-        "blob": "b46813a25cc7f59de20071393cebe78bb7ffb9da"
+        "blob": "a8aeabe888601dfa55a04720941b5a6d15d7d3d4"
       },
       "HOLD.json": {
         "control": "record"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e5dd78675294b3803ac195d909df649e249ab359"
+        "blob": "f0068ec85cf644fced138637dca03ab5ee681a0c"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1256,7 +1256,7 @@
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
       },
       "src/util/sqlite-purchase-admission.mjs": {
-        "blob": "562bcba0f9523ce1133c19f6572c459beb7a3093"
+        "blob": "0fcf1acf63b90484141c80bce9a06edb13fcab57"
       },
       "src/util/sqlite-statement-boundary.mjs": {
         "blob": "5e0077f1c0e94938358e112ba518f124323894fa"
@@ -1658,7 +1658,7 @@
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
       "test/sqlite-purchase-journal.test.mjs": {
-        "blob": "a4c59300ff497d05f4b26ce97cd022d01b68a02a"
+        "blob": "9e845427d6f0b94900c04e02c4eda869e5e6f7f8"
       },
       "test/sqlite-statement-boundary-regressions.test.mjs": {
         "blob": "7acf0c866638baa16417d40e0f345238fe4985f1"
@@ -1679,7 +1679,7 @@
         "blob": "3fef1e1f706852d0c0436312266b1317063875ec"
       },
       "test/store-host-boundary.test.mjs": {
-        "blob": "f34fe299227e2607f005885f0abcf393d2a2ffaa"
+        "blob": "fd61c135ce343fec49823d4e9dea0225e5afafd6"
       },
       "test/store-journal-atomicity.test.mjs": {
         "blob": "2f62f76ff92b85e7c9829bba4a94cc802519b431"

@@ -211,6 +211,8 @@ The provenance removal test selects the last record with changed file bytes, so 
 
 PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds, supported schemas and rollback/crash-safe main journals. Persistent main databases require DELETE, TRUNCATE, PERSIST or WAL; volatile main databases may use MEMORY. OFF is refused on every main database. Admission preserves caller configuration. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
 
+Persistent admission also reads main.synchronous on every attempt: WAL requires FULL or EXTRA, and rollback journals require EXTRA for power-loss durability. Weaker settings are refused before transactions or callbacks, without changing the connection configuration or host work. Volatile main databases have no persistent synchronization requirement.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -743,6 +745,10 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
 | D11 | fix(client): D11 retain 05 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
+| D11 | fix(client): D11 require durable purchase synchronization | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 0fcf1acf63b90484141c80bce9a06edb13fcab57 |
+| | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | 9e845427d6f0b94900c04e02c4eda869e5e6f7f8 |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 
 ## Complete commit and file inventory
 
@@ -1932,6 +1938,15 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
+| fix(client): D11 require durable purchase synchronization | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 
 ## Original moved files
 
