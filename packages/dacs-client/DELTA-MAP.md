@@ -775,6 +775,9 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 2730715a63ecaf36b43fbf1af32bf832bb567b65 |
 | D11 | fix(client): D11 target domain commits after lease setup | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` | fe025a891b76f93bc8cf0b0a02ccdf36e92e2712 |
+| D11 | fix(client): D11 bound diagnostic keys and omit bundle signatures | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | b24a2e0a97c0e9a2b1979af72c77c5822281f831 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 44d7a815d7c7f89983a35f6210da65c856a3d344 |
 
 ## Complete commit and file inventory
 
@@ -2072,6 +2075,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
 
 ## Original moved files
 
