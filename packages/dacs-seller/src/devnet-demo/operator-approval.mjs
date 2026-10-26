@@ -221,8 +221,10 @@ function contextHoldRows(ledger,converting=null){
     let remaining=hold.writes;
     // One write consumes one slot across all holds, including holds retained
     // across a shutdown and a replacement reservation for the same job.
+    // Projected attempts lost their original append position during parsing,
+    // so equal timestamps cannot establish that they followed this hold.
     for(const row of ledger){
-      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&(row.recordedAt===undefined||row.recordedAt>hold.recordedAt||(row.recordedAt===hold.recordedAt&&ledger.indexOf(row)>ledger.indexOf(hold)))){
+      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&(row.recordedAt===undefined||row.recordedAt>hold.recordedAt||(row.recordedAt===hold.recordedAt&&!row.openAttempt&&ledger.indexOf(row)>ledger.indexOf(hold)))){
         remaining--;converted.add(row);
       }
     }
