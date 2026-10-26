@@ -1067,33 +1067,35 @@ describe("registry/container evidence", () => {
   });
 
   // Every installed candidate copy is the release's version in the lock, and
-  // its installed package.json is the archive's, top-level or nested.
-  it.each(["dacs", "dacs-node"])("rejects a @kynesyslabs/%s copy that is not the release version", name => {
+  // its installed package.json is the archive's, top-level or nested. Each
+  // case runs the policy once, so it stays well inside the test deadline.
+  const releaseCopy = (name: string, nested: boolean) => {
     const fixture = dependencyPolicyHarness();
-    const topLevel = `node_modules/@kynesyslabs/${name}`;
-    const nested = `node_modules/some-plugin/node_modules/@kynesyslabs/${name}`;
-    fixture.copyPackage(topLevel, nested);
-    expect(fixture.run().status).toBe(0);
-    for (const location of [topLevel, nested]) {
-      const entry = fixture.packages[location] ?? {};
-      for (const version of [undefined, "0.0.0-wrong", "0.1.0-alpha.0"]) {
-        fixture.packages[location] = { ...entry, version };
-        const lockVersion = fixture.run();
-        expect(lockVersion.status, `${location} ${String(version)}`).not.toBe(0);
-        expect(lockVersion.stderr).toContain(`lock version does not match the release: ${location} ` +
-          `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
-      }
-      fixture.packages[location] = entry;
-      for (const installedManifest of [packageJson(`@kynesyslabs/${name}`, "0.0.0-wrong"), packageJson("@kynesyslabs/other", CANDIDATE_VERSION)]) {
-        fixture.installed[location] = { ...fixture.contents[location], "package.json": installedManifest };
-        const installedCopy = fixture.run();
-        expect(installedCopy.status, `${location} ${installedManifest}`).not.toBe(0);
-        expect(installedCopy.stderr).toContain(`${TREE}changed: ${location}/package.json`);
-      }
-      delete fixture.installed[location];
-      expect(fixture.run().status).toBe(0);
-    }
-  }, 60_000);
+    const nestedLocation = `node_modules/some-plugin/node_modules/${name}`;
+    fixture.copyPackage(`node_modules/${name}`, nestedLocation);
+    return { fixture, location: nested ? nestedLocation : `node_modules/${name}` };
+  };
+  const releaseCopies = CANDIDATES.flatMap(name => [false, true].map(nested => [name, nested] as const));
+
+  it.each(releaseCopies.flatMap(([name, nested]) => [undefined, "0.0.0-wrong", "0.1.0-alpha.0"]
+    .map(version => [name, nested, version] as const)))("rejects a %s copy, nested=%s, whose lock version is %s", (name, nested, version) => {
+    const { fixture, location } = releaseCopy(name, nested);
+    fixture.packages[location] = { ...fixture.packages[location], version };
+    const result = fixture.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`lock version does not match the release: ${location} ` +
+      `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
+  });
+
+  it.each(releaseCopies.flatMap(([name, nested]) => ([[name, "0.0.0-wrong"], ["@kynesyslabs/other", CANDIDATE_VERSION]] as const)
+    .map(([installedName, installedVersion]) => [name, nested, installedName, installedVersion] as const)))(
+    "rejects a %s copy, nested=%s, whose installed package.json is %s@%s", (name, nested, installedName, installedVersion) => {
+      const { fixture, location } = releaseCopy(name, nested);
+      fixture.installed[location] = { ...fixture.contents[location], "package.json": packageJson(installedName, installedVersion) };
+      const result = fixture.run();
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`${TREE}changed: ${location}/package.json`);
+    });
 
   it("composes only evidence of its producer's schema for the release version", () => {
     const evidence: Array<[string, Record<string, unknown>]> = [
