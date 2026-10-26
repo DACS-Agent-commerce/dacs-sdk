@@ -334,26 +334,29 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       });
     }
     // Callback adapters must enforce maxBytes before decoding their wire reply.
-    const ANCHOR_READ_BYTES = 1024 * 1024, ANCHOR_READ_TIMEOUT_MS = 10000;
-    async function readAnchorRecord(anchors, address) {
+    const ANCHOR_REPLY_BYTES = 1024 * 1024, ANCHOR_TIMEOUT_MS = 10000;
+    async function anchorRequest(operation, invoke) {
       const controller = new AbortController();
       let timer;
       const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
-        const cause = new DOMException('anchor read timed out', 'TimeoutError'); controller.abort(cause); reject(cause);
-      }, ANCHOR_READ_TIMEOUT_MS); });
+        const cause = new DOMException(`anchor ${operation} timed out`, 'TimeoutError'); controller.abort(cause); reject(cause);
+      }, ANCHOR_TIMEOUT_MS); });
       try {
-        const raw = await Promise.race([Promise.resolve().then(() => anchors.read(address, { signal: controller.signal, maxBytes: ANCHOR_READ_BYTES, timeoutMs: ANCHOR_READ_TIMEOUT_MS })), deadline]);
-        let budget = ANCHOR_READ_BYTES;
-        const text = raw instanceof Uint8Array ? raw : JSON.stringify(raw, (key, value) => {
-          budget -= key.length + 1 + (typeof value === 'string' ? value.length : 0);
-          if (budget < 0) throw new Error('anchor read exceeds decoded budget');
-          return value;
-        });
-        if (typeof text === 'string' && Buffer.byteLength(text) > ANCHOR_READ_BYTES) throw new Error('anchor read exceeds byte limit');
-        const record = admitRawJson(text instanceof Uint8Array ? text : Buffer.from(text), { maxBytes: ANCHOR_READ_BYTES });
-        if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.status !== 'string') throw new Error('malformed anchor read');
-        return record;
+        return await Promise.race([Promise.resolve().then(() => invoke({ signal: controller.signal, maxBytes: ANCHOR_REPLY_BYTES, timeoutMs: ANCHOR_TIMEOUT_MS })), deadline]);
       } finally { clearTimeout(timer); controller.abort(); }
+    }
+    async function readAnchorRecord(anchors, address) {
+      const raw = await anchorRequest('read', options => anchors.read(address, options));
+      let budget = ANCHOR_REPLY_BYTES;
+      const text = raw instanceof Uint8Array ? raw : JSON.stringify(raw, (key, value) => {
+        budget -= key.length + 1 + (typeof value === 'string' ? value.length : 0);
+        if (budget < 0) throw new Error('anchor read exceeds decoded budget');
+        return value;
+      });
+      if (typeof text === 'string' && Buffer.byteLength(text) > ANCHOR_REPLY_BYTES) throw new Error('anchor read exceeds byte limit');
+      const record = admitRawJson(text instanceof Uint8Array ? text : Buffer.from(text), { maxBytes: ANCHOR_REPLY_BYTES });
+      if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.status !== 'string') throw new Error('malformed anchor read');
+      return record;
     }
     const pendingReleases = new Map();
     function release(jobId, owner) {
@@ -609,8 +612,10 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           transaction(() => { fence(jobId); if (effect(id)) fail('seller_state_busy'); putEffect(id, { ...value, state: 'intent' }); });
           // Retain the exact intended scope before the external write. Once an
           // outcome is uncertain, retries only read; never submit a second time.
-          fence(jobId);
-          try { await anchors.write({ logicalAddress, artifact: clone(value.artifact), writer: signer.claim, writerSignature }); }
+          try { await anchorRequest('write', options => {
+            fence(jobId);
+            return anchors.write({ logicalAddress, artifact: clone(value.artifact), writer: signer.claim, writerSignature, ...options });
+          }); }
           catch (error) { fail('seller_anchor_reconciliation_required', error); }
         }
         // A signed state snapshot is historical context, not anchor proof. Both
