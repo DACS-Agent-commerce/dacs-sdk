@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -78,6 +78,20 @@ describe("packed archive files", () => {
   it.each(["00000000001", "00000002000"])("refuses a directory header with nonzero size %s", size => {
     const archive = gzipSync(tarArchive([valid, { name: "package/lib/", type: "5", size }]));
     expect(() => packedFiles(archive)).toThrow("packed tarball directory has a nonzero size");
+  });
+  it.each(["1", "2"])("matches npm for link type %s with a body covering the next file header", async type => {
+    const tar = Buffer.concat([tarArchive([valid, { name: "package/link", type, size: "00000002000" }]).subarray(0, -1024),
+      tarArchive([{ name: "package/hidden.js", body: "hidden" }])]);
+    const archive = gzipSync(tar);
+    const directory = temporaryDirectory();
+    const path = join(directory, "archive.tgz");
+    const expected = join(directory, "expected");
+    writeFileSync(path, archive);
+    await createRequire(npmToolchain().cli)("pacote").extract(path, expected,
+      { offline: true, ignoreScripts: true, cache: join(directory, "cache") });
+    const files = packedFiles(archive);
+    expect([...files.keys()].sort()).toEqual(readdirSync(expected).sort());
+    for (const [name, bytes] of files) expect(bytes).toEqual(readFileSync(join(expected, name)));
   });
   it.each([
     ["entry data cut short", complete.subarray(0, 520), "Truncated input"],
@@ -181,6 +195,59 @@ describe("bounded archive operations", () => {
   });
   it("rejects limits exceeding the hard ceilings", () => {
     expect(() => packedFiles(archive, toolchain, { entries: ARCHIVE_LIMITS.entries + 1 })).toThrow("invalid archive limit");
+  });
+  it("bounds path bytes before splitting, including multibyte paths", () => {
+    const packed = (path: string) => gzipSync(tarArchive([
+      { name: "package/package.json", body: manifest("a") }, { name: path, body: "file" },
+    ]));
+    expect(packedFiles(packed(`package/${"x".repeat(56)}`), toolchain, { pathBytes: 64 }).size).toBe(2);
+    for (const path of [`package/${"x".repeat(57)}`, `package/${"é".repeat(29)}`]) {
+      expect(() => packedFiles(packed(path), toolchain, { pathBytes: 64 })).toThrow("path exceeds byte limit");
+    }
+  });
+  it("bounds path depth before building the package namespace", () => {
+    const packed = (path: string) => gzipSync(tarArchive([
+      { name: "package/package.json", body: manifest("a") }, { name: path, body: "file" },
+    ]));
+    expect(packedFiles(packed("package/a/b/c"), toolchain, { pathDepth: 4 }).size).toBe(2);
+    expect(() => packedFiles(packed("package/a/b/c/d"), toolchain, { pathDepth: 4 })).toThrow("path exceeds depth limit");
+  });
+  it("refuses a shared deep PAX namespace before constructing ancestors", () => {
+    const prefix = `package/${"d/".repeat(200_000)}`;
+    const archive = gzipSync(tarArchive([{ name: "package/package.json", body: manifest("a") },
+      ...Array.from({ length: 120 }, (_, index) => ({ name: "package/short", body: "file", pax: { path: `${prefix}${index}.js` } })),
+    ]));
+    expect(() => packedFiles(archive, toolchain)).toThrow("path exceeds byte limit");
+  });
+  const parserToolchain = (source: string) => {
+    const npmRoot = join(temporaryDirectory(), "npm");
+    mkdirSync(join(npmRoot, "bin"), { recursive: true });
+    mkdirSync(join(npmRoot, "node_modules/tar"), { recursive: true });
+    writeFileSync(join(npmRoot, "bin/npm-cli.js"), "");
+    writeFileSync(join(npmRoot, "node_modules/tar/index.js"), source);
+    const real = createRequire(toolchain.cli);
+    symlinkSync(dirname(real.resolve("pacote/package.json")), join(npmRoot, "node_modules/pacote"));
+    return { ...toolchain, cli: join(npmRoot, "bin/npm-cli.js") };
+  };
+  it("runs archive validation inside the extraction subprocess", () => {
+    const real = createRequire(toolchain.cli);
+    const isolated = parserToolchain(`const tar = require(${JSON.stringify(real.resolve("tar"))});
+      module.exports = { Parser: class extends (tar.Parser ?? tar.Parse) {
+        constructor(options) {
+          if (process.pid === ${process.pid}) throw Error('parser ran in caller');
+          super(options);
+        }
+      } };`);
+    expect(packedFiles(archive, isolated).has("package.json")).toBe(true);
+  });
+  it("applies the worker deadline to stalled archive validation", () => {
+    const stalled = parserToolchain(`module.exports = { Parser: class {
+      constructor() {
+        if (process.pid === ${process.pid}) throw Error('parser ran in caller');
+        while (true) {}
+      }
+    } };`);
+    expect(() => packedFiles(archive, stalled, { timeout: 200 })).toThrow("ETIMEDOUT");
   });
   it.each([false, true])("refuses file/ancestor conflicts in either archive order, reverse=%s", reverse => {
     const entries = [{ name: "package/a", body: "file" }, { name: "package/a/b", body: "child" }];
