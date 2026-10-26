@@ -733,7 +733,7 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
   const report = join(directory, "report.json");
   expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")).toContain(
     'node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \\\n' +
-    '  "$artifact_stage/dependency-policy.json" "$release_set" "$version"');
+    '      /acceptance-artifacts/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION"');
   // The files installed at a lock location instead of its archive's; `null` installs none.
   const installed: Record<string, Record<string, string> | null> = {};
   // `environment` adds to the command's environment; `script` and `projectPath` are the paths it is given.
