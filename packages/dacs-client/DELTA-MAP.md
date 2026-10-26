@@ -620,7 +620,7 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | dc7166d3baff55abd0a7862a4b78e337cd5ae0d9 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | deleted |
 | | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | deleted |
-| | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs:1` | f34fe299227e2607f005885f0abcf393d2a2ffaa |
+| | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) | f34fe299227e2607f005885f0abcf393d2a2ffaa |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | deleted |
 | | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | deleted |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | deleted |
@@ -641,6 +641,10 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 | | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` | 2f62f76ff92b85e7c9829bba4a94cc802519b431 |
 | | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` | 9c826914e5533aec0d9718e76aea11a4785562d1 |
 | | `packages/dacs-client/test/store-startup-results.test.mjs:1` | 130fd5d3a70ab5640916c4c1ca00ba1a94135284 |
+| D11 | fix(client): D11 keep host refusal tests with admission | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | f34fe299227e2607f005885f0abcf393d2a2ffaa |
+| D11 | fix(client): D11 record both admission test paths | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1578,7 +1582,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
-| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
@@ -1608,6 +1612,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` |
 | fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` |
 | fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-startup-results.test.mjs:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
