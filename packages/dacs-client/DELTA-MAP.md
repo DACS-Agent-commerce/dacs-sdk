@@ -808,6 +808,12 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 0fcf1acf63b90484141c80bce9a06edb13fcab57 |
 | | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | 9e845427d6f0b94900c04e02c4eda869e5e6f7f8 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
+| D11 | fix(client): D11 align disk fixtures with durable synchronization | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e7bf7a95fd5f8ce536b3834a27859b79dd607f22 |
+| | `packages/dacs-client/test/helpers/store-journal-worker.mjs:1` | 596accf25d6cc1542f5845e41c109c2448b43b8e |
+| | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | 1c68fcc9f4e42a6bc8ac20ee822567ac8249144c |
+| | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` | cc80718653e938fdd661ae5ea8fe744ee6e8729e |
+| | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` | 1bc7e1415710c3c8adf453b56c8873c5177d25b7 |
 
 ## Complete commit and file inventory
 
@@ -2146,6 +2152,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 require durable purchase synchronization | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
 | fix(client): D11 require durable purchase synchronization | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
 | fix(client): D11 require durable purchase synchronization | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/helpers/store-journal-worker.mjs:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` |
+| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` |
 
 ## Original moved files
 
