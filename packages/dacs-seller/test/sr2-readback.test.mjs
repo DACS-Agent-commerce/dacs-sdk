@@ -1,8 +1,46 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { attestationBundleHash, canonicalize, contentHash, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
-import { buyer } from './helpers/protocol-fixture.mjs';
+import { buyer, seller } from './helpers/protocol-fixture.mjs';
 const read = f => f.adapter.read(f.logicalAddress, { expectedWriter: f.expectedWriter });
+
+function signArtifact(f, artifact, artifactKind, hash) {
+  const op = f.signed.content.data[1];
+  op.data = structuredClone(artifact);
+  op.metadata = { logicalAddress: f.logicalAddress, contentHash: hash, envelopeHash: sha256Hex(canonicalize(artifact)), ...(artifactKind === undefined ? {} : { artifactKind }) };
+  f.signed.hash = sha256Hex(JSON.stringify(f.signed.content));
+  f.signed.signature.data = `0x${seller.signBytes(Buffer.from(f.signed.hash)).toString('hex')}`;
+  Object.assign(f.tx, structuredClone(f.signed), { status: 'confirmed', blockNumber: 1 });
+  f.native.data = structuredClone(artifact); f.native.metadata = structuredClone(op.metadata);
+  f.native.createdByTx = f.signed.hash; f.native.interactionTxs = [f.signed.hash];
+  f.block.content.ordered_transactions = [f.signed.hash];
+}
+const payload = { report: 'TEST full payload', signature: 'TEST payload member', signatures: ['TEST payload member'] };
+for (const [kind, artifact, hash] of [
+  ['Deliverable', payload, sha256Hex(canonicalize(payload))],
+  [undefined, payload, sha256Hex(canonicalize(payload))],
+  ['Listing', { report: 'TEST signed artifact', signature: 'TEST signature' }, contentHash({ report: 'TEST signed artifact' })],
+  ['Agreement', { report: 'TEST signed artifact', signatures: ['TEST signature'] }, contentHash({ report: 'TEST signed artifact' })],
+  ['IdentityBundle', { claims: [], presentation: { signature: 'TEST presentation' } }, identityBundleHash({ claims: [] })],
+  ...['AttestationBundle', 'FaultAttestationBundle', 'EvidenceBoundFaultAttestationBundle'].map(kind => [kind,
+    { report: 'TEST bundle', signatures: ['TEST signature'], anchoredByRole: { buyer: 'TEST anchor' } }, attestationBundleHash({ report: 'TEST bundle' })]),
+]) {
+  test(`read accepts the artifact-specific digest for ${kind ?? 'raw JSON'}`, async () => {
+    const f = readbackFixture(); signArtifact(f, artifact, kind, hash);
+    const result = await read(f);
+    assert.deepEqual(result.artifact, artifact); assert.equal(result.receipt.contentHash, hash);
+    assert.equal((await f.adapter.recheck(result.receipt, { expectedWriter: f.expectedWriter })).status, 'present');
+  });
+  test(`read refuses a validly signed false artifact digest for ${kind ?? 'raw JSON'}`, async () => {
+    const f = readbackFixture(); signArtifact(f, artifact, kind, 'b'.repeat(64));
+    await assert.rejects(read(f), error => error.code === 'invalid' && /artifact content hash/.test(error.message));
+  });
+}
+test('Deliverable digest retains signature-named payload fields', async () => {
+  const f = readbackFixture(); signArtifact(f, payload, 'Deliverable', contentHash(payload));
+  await assert.rejects(read(f), error => error.code === 'invalid' && /artifact content hash/.test(error.message));
+});
 
 test('authenticates signed CREATE and freshly rechecks across a journal restart', async () => {
   const f = readbackFixture(), result = await read(f);
