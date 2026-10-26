@@ -22,7 +22,7 @@ export const usesNativePaymentEvidence = (op) => op?.terms?.protocol?.nativePaym
 export function nativeEvidenceReadOutcome(record) {
   if (record?.status === 'present') return null;
   const nativeReadStatus = record?.status ?? 'missing';
-  return { disposition: nativeReadStatus === 'absent' ? 'absent' : ['invalid', 'rejected'].includes(nativeReadStatus) ? 'rejected' : 'indeterminate',
+  return { disposition: nativeReadStatus === 'absent' ? 'absent' : 'indeterminate',
     nativeReadStatus, reason: String(record?.reason ?? (nativeReadStatus === 'absent' ? 'native-payment-evidence-not-anchored' : 'native-payment-evidence-read-incomplete')).slice(0,240),
     ...(record?.code ? { code: record.code } : {}) };
 }
@@ -92,7 +92,7 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
         // chain, so a rejection from here on is about what they read back.
         const decided = (result) => answerProjectionOnly && result.disposition === 'rejected' ? { ...result, authenticated: true } : result;
         const validity = await adapter.verifyReceipt({ receipt: record.receipt, logicalAddress: address, artifact: record.artifact, expectedWriter: writer, artifactKind: 'SettlementEvidence', ...(projection ? { signedProjection: projection } : {}) });
-        if (validity !== 'valid') return decided({ disposition: validity === 'invalid' ? 'rejected' : 'indeterminate', nativeReadStatus: `receipt-${validity}`, reason: `native-payment-evidence-receipt-${validity}` });
+        if (validity !== 'valid') return { disposition: 'indeterminate', nativeReadStatus: `receipt-${validity}`, reason: `native-payment-evidence-receipt-${validity}` };
         const check = await checkNativePaymentEvidence({ artifact: record.artifact, agreement, writer, txHash, blockNumber });
         if (check.decision !== 'pass') return decided({ disposition: 'rejected', reason: check.reasons.join('; ') });
         const observed = await observer.observeDemosTransfer(txHash);
@@ -101,12 +101,12 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
         if (!Number.isSafeInteger(committedAt) || observed.txHash !== txHash || observed.blockNumber !== blockNumber
             || observed.payer !== raw(terms.buyer) || observed.payee !== raw(terms.payee) || observed.amountOs !== terms.price.amountOs
             || observed.includedAt < committedAt || observed.includedAt > terms.deadline || record.artifact.observedAt !== observed.includedAt
-            || record.artifact.settlementFinality.finalityObservedAt !== observed.includedAt) return decided({ disposition: 'rejected', reason: 'native-evidence-observed-tuple-time-or-commitment-mismatch' });
+            || record.artifact.settlementFinality.finalityObservedAt !== observed.includedAt) return { disposition: 'indeterminate', reason: 'native-evidence-observed-tuple-time-or-commitment-mismatch' };
         if (!projection) return { disposition:'indeterminate',nativeReadStatus:'public-projection-missing',reason:'original-public-signed-create-projection-unavailable' };
         return { disposition: 'present', artifact: record.artifact, ref: { anchor: { kind: 'storage-program', locator: address }, contentHash: contentHash(record.artifact) }, receipt: record.receipt,
           signedProjection: JSON.parse(JSON.stringify(projection)),
           evidenceMode: source ? 'explicit-pinned-source; one-node-included-view; not-independent-finality' : 'simulated-fixture; one-node-included-view; not-independent-finality' };
-      } catch (error) { return { disposition: ['invalid', 'rejected', 'wrong-writer', 'conflict'].includes(error.code) ? 'rejected' : 'indeterminate', nativeReadStatus: error.code ?? 'error',
+      } catch (error) { return { disposition: 'indeterminate', nativeReadStatus: error.code ?? 'error',
         ...(error.code ? { code:error.code } : {}), reason: String(error.message).slice(0,240) }; }
     } });
   capabilities.add(capability);
