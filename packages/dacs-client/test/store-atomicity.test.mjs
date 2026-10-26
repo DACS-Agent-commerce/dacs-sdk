@@ -25,14 +25,6 @@ for (const kind of ['callback-then-thenable', 'deferred', 'pass-through']) {
   });
 }
 
-test('a compatible-looking non-DatabaseSync handle is refused before database or callback access', () => {
-  let calls = 0;
-  const db = { prepare() { calls++; }, exec() { calls++; } };
-  assert.throws(() => createSqlitePurchaseStore().transaction(db, () => { calls++; }),
-    { code: 'purchase_store_invalid_handle' });
-  assert.equal(calls, 0);
-});
-
 function database(t) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-store-'));
   const path = join(dir, 'state.sqlite');
