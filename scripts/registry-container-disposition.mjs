@@ -195,9 +195,9 @@ function candidateAliases(owner, candidates) {
 }
 
 // Whether the top-level object of `text`, which JSON.parse accepted, repeats a
-// key once escapes are decoded. JSON.parse keeps the last `name`; Node's
-// package scope reader keeps the first, so a repeated key hides the identity
-// Node uses from the one this check reads.
+// key once escapes are decoded. JSON.parse keeps the last `name`, while some
+// supported Node versions use the first for package scope identity. Refuse
+// repeated keys regardless of which value the runtime selects.
 function repeatsTopLevelKey(text) {
   const keys = new Set();
   let depth = 0;

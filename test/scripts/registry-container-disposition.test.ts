@@ -1345,18 +1345,18 @@ describe("dependency policy over npm ci installations", () => {
     expect(policy.stderr).toContain(`cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/${scope}`);
   }, 60_000);
 
-  // JSON.parse reads the escaped second name; Node's scope reader keeps the first.
-  it("refuses a package scope whose escaped duplicate name hides the candidate from JSON.parse", async () => {
+  // Supported Node versions differ on which name they use; the policy refuses both.
+  it("refuses a package scope with an escaped duplicate name regardless of runtime resolution", async () => {
+    const directory = temporaryDirectory();
     const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION, { main: "dist/index.cjs" }),
       "dist/package.json": '{"name":"@kynesyslabs/dacs","\\u006eame":"ordinary-scope","exports":"./copy.cjs"}',
       "dist/index.cjs": "module.exports = require('@kynesyslabs/dacs');",
       "dist/copy.cjs": "module.exports = 'unreleased-copy';" });
-    const { project, policy } = await registryInstallation(temporaryDirectory(), { plugin },
+    const { policy } = await registryInstallation(directory, { plugin },
       { "node_modules/plugin": ["plugin", {}] }, { dependencies: { plugin: CANDIDATE_VERSION } });
-    expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
-      .toBe("unreleased-copy\n");
     expect(policy.status).not.toBe(0);
     expect(policy.stderr).toContain("cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/dist");
+    expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
   // The lock records only fixture-plugin; npm still installs the old copy its
