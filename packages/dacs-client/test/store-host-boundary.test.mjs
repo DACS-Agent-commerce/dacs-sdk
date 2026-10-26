@@ -12,7 +12,7 @@ function database(t, memory = false) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-purchase-admission-'));
   const db = new DatabaseSync(memory ? ':memory:' : join(dir, 'state.sqlite'));
   t.after(() => { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); });
-  db.exec('CREATE TABLE records(id TEXT)');
+  db.exec('PRAGMA synchronous=EXTRA; CREATE TABLE records(id TEXT)');
   return { db, dir };
 }
 test('a compatible-looking handle is refused before database or callback access', () => {

@@ -4,10 +4,12 @@ import { isSqliteHandleRetired } from './sqlite-write-lease.mjs';
 
 const require = createRequire(import.meta.url);
 const PERSISTENT_JOURNAL_MODES = new Set(['delete', 'truncate', 'persist', 'wal']);
+const SYNCHRONOUS_FULL = 2;
+const SYNCHRONOUS_EXTRA = 3;
 const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
 
 /** Check the schemas and rollback/crash journal supported by a purchase transaction.
- * Returns undefined; throws OperationError for unsupported attachments or journals.
+ * Returns undefined; throws OperationError for unsupported attachments, journals or synchronization.
  * This read-only check preserves the caller's configuration and host work.
  */
 export function checkSqlitePurchaseDatabase(db) {
@@ -26,6 +28,13 @@ export function checkSqlitePurchaseDatabase(db) {
   // OFF cannot undo spilled writes even without a process exit.
   if (!main || !(PERSISTENT_JOURNAL_MODES.has(mode) || (!main.file && mode === 'memory'))) {
     throw new OperationError('purchase_store_unsupported_journal_mode', 'purchase transactions require a rollback and crash-safe journal mode');
+  }
+  if (main.file) {
+    const synchronous = db.prepare('PRAGMA main.synchronous').get()?.synchronous;
+    // WAL needs a commit sync; rollback journals also need the EXTRA directory sync.
+    if (synchronous !== SYNCHRONOUS_EXTRA && !(mode === 'wal' && synchronous === SYNCHRONOUS_FULL)) {
+      throw new OperationError('purchase_store_unsupported_synchronous', 'persistent purchase transactions require synchronous FULL or EXTRA for WAL, and EXTRA for rollback journals');
+    }
   }
 }
 
