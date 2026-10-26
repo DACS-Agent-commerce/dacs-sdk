@@ -65,13 +65,17 @@ test('an in-memory main database still refuses persistent attachments', t => {
   db.prepare(attach).run(auxiliary);
   assert.throws(() => store.transaction(db, () => assert.fail('callback ran')), refused);
 });
-for (const memory of [false, true]) {
-  test(`volatile attachments and TEMP writes remain supported, memory main=${memory}`, t => {
+for (const memory of [false, true]) for (const file of [':memory:', '']) for (const nested of [false, true]) {
+  test(`volatile attachments are refused before callback entry, memory main=${memory}, file=${file}, nested=${nested}`, t => {
     const { db, store } = world(t, 'WAL', memory);
-    db.exec("ATTACH ':memory:' AS volatile; ATTACH '' AS scratch; CREATE TEMP TABLE session(id TEXT); CREATE TABLE volatile.records(id TEXT)");
-    store.transaction(db, () => {
-      db.exec("INSERT INTO records VALUES ('TEST-main'); INSERT INTO session VALUES ('TEST-temp'); INSERT INTO volatile.records VALUES ('TEST-memory')");
-    });
-    for (const table of ['records', 'session', 'volatile.records']) assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 1);
+    const body = () => {
+      db.prepare('ATTACH ? AS volatile').run(file);
+      assert.throws(() => store.transaction(db, () => assert.fail('callback ran')), { code: 'purchase_store_unsupported_attachment' });
+    };
+    if (nested) assert.throws(() => store.transaction(db, body), { code: 'purchase_store_unsupported_attachment' });
+    else body();
+    db.exec('DETACH volatile; CREATE TEMP TABLE session(id TEXT)');
+    store.transaction(db, () => db.exec("INSERT INTO records VALUES ('TEST-main'); INSERT INTO session VALUES ('TEST-temp')"));
+    for (const table of ['records', 'session']) assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 1);
   });
 }
