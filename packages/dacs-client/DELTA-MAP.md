@@ -707,6 +707,9 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
 | D11 | fix(client): D11 record PR 05 lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
+| D11 | fix(client): D11 preserve deferred-result and read-only statement fences | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 5e0077f1c0e94938358e112ba518f124323894fa |
+| | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 7acf0c866638baa16417d40e0f345238fe4985f1 |
 
 ## Complete commit and file inventory
 
@@ -1835,6 +1838,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
 
 ## Original moved files
 
