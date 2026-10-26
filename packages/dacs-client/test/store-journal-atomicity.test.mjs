@@ -16,7 +16,7 @@ function database(t) {
   db.exec('CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT NOT NULL); BEGIN');
   const insert = db.prepare('INSERT INTO records(value) VALUES (?)');
   for (let i = 0; i < 1_000; i++) insert.run(original);
-  db.exec('COMMIT; PRAGMA synchronous=FULL; PRAGMA cache_size=10');
+  db.exec('COMMIT; PRAGMA synchronous=EXTRA; PRAGMA cache_size=10');
   return { db, path, store };
 }
 function assertUnchanged(path) {
