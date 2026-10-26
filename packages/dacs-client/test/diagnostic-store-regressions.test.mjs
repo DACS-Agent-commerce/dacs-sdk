@@ -17,7 +17,7 @@ import { openWorld, ABSENT } from './helpers/domain-store-crash-world.mjs';
 function database(t) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-diagnostic-store-')), path = join(dir, 'state.sqlite');
   const db = new DatabaseSync(path);
-  db.exec('CREATE TABLE records (id TEXT PRIMARY KEY, value INTEGER DEFAULT 0)');
+  db.exec('PRAGMA synchronous=EXTRA; CREATE TABLE records (id TEXT PRIMARY KEY, value INTEGER DEFAULT 0)');
   t.after(() => { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); });
   return { db, path, store: createSqlitePurchaseStore() };
 }
