@@ -11,6 +11,7 @@ export function readbackFixture(options = {}) {
   signed.content.from_ed25519_address = seller.address;
   signed.content.data[1].metadata = { logicalAddress, artifactKind: 'Deliverable', contentHash: contentHash(artifact), envelopeHash: sha256Hex(canonicalize(artifact)) };
   Object.assign(signed.content.data[1].metadata, options.metadata);
+  if (signed.content.data[1].metadata.artifactKind === undefined) delete signed.content.data[1].metadata.artifactKind;
   signed.hash = sha256Hex(JSON.stringify(signed.content));
   signed.signature = { type: 'ed25519', data: `0x${seller.signBytes(Buffer.from(signed.hash)).toString('hex')}` };
   const tx = { ...structuredClone(signed), status: 'confirmed', blockNumber: 1 };
