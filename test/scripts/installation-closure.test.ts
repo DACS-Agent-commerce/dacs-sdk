@@ -49,6 +49,19 @@ describe("packed archive files", () => {
 
   const valid: TarEntry = { name: "package/package.json", body: manifest("a") };
   const complete = tarArchive([valid]);
+  it.each([1, 2, 4])("accepts an archive ending in %i zero tar blocks", blocks => {
+    const tar = Buffer.concat([complete.subarray(0, -1024), Buffer.alloc(blocks * 512)]);
+    expect(text(packedFiles(gzipSync(tar)))).toEqual({ "package.json": valid.body });
+  });
+  it.each([1, 2, 4])("refuses file entries after %i zero tar blocks", blocks => {
+    const tar = Buffer.concat([complete.subarray(0, -1024), Buffer.alloc(blocks * 512),
+      tarArchive([{ name: "package/late.js", body: "module.exports = 42;\n" }])]);
+    expect(() => packedFiles(gzipSync(tar))).toThrow("packed tarball has a malformed trailer");
+  });
+  it("refuses nonzero trailing bytes after the archive terminator", () => {
+    expect(() => packedFiles(gzipSync(Buffer.concat([complete, Buffer.from([1])]))))
+      .toThrow("packed tarball has a malformed trailer");
+  });
   it("accepts a PAX size equal to the file header size", () => {
     const archive = gzipSync(tarArchive([{ ...valid, pax: { size: String(Buffer.byteLength(valid.body ?? "")) } }]));
     expect(text(packedFiles(archive))).toEqual({ "package.json": valid.body });
@@ -412,6 +425,37 @@ describe("installation closure of real npm installations", () => {
     expect(derived.entries.get("node_modules/skipped-optional")?.present).toBe(false);
     expect(derived.entries.get("node_modules/@skipped/optional")?.present).toBe(false);
     expect([...derived.carried.keys()]).toEqual(["node_modules/fixture-plugin/dist/node_modules/@kynesyslabs/dacs"]);
+  }, 60_000);
+
+  it("refuses an archive with files after a zero block for interrupted and complete installations", async () => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const packageJson = manifest("late-file", "1.0.0", { main: "late.js" });
+    const archive = gzipSync(Buffer.concat([
+      tarArchive([{ name: "package/package.json", body: packageJson }]).subarray(0, -512),
+      tarArchive([{ name: "package/late.js", body: "module.exports = 42;\n" }]),
+    ]));
+    const server = await serveArchives(new Map([["late-file", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { "late-file": "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/late-file": {
+        version: "1.0.0", resolved: `${server.registry}/late-file.tgz`, integrity: sri(archive),
+      } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      // The state left when extraction stops after the manifest, before late.js.
+      mkdirSync(join(project, "node_modules/late-file"), { recursive: true });
+      writeFileSync(join(project, "node_modules/late-file/package.json"), packageJson);
+      cacheArchive(cache, archive);
+      const closure = () => installationClosure(project, lock, (_location: string, entry: { integrity: string }) =>
+        cachedArchive(cache, entry.integrity));
+      const interrupted = closure();
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(readFileSync(join(project, "node_modules/late-file/late.js"), "utf8")).toBe("module.exports = 42;\n");
+      const error = "cannot derive the installed files of node_modules/late-file: packed tarball has a malformed trailer";
+      expect([interrupted.errors, closure().errors]).toEqual([[error], [error]]);
+    } finally { await server.close(); }
   }, 60_000);
 
   it("allows an omitted scope directory but refuses files within it", async () => {
