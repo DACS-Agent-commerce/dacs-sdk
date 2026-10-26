@@ -11,6 +11,8 @@ it.each([0, 23])("checks the consumer reference in its install context before pa
   expect(block).toContain('--volume "$repo_root/scripts:/acceptance-sdk/scripts:ro"');
   expect(block).toContain('--volume "$release_set:/release-set:ro"');
   expect(block).toContain('--volume "$artifact_stage:/acceptance-artifacts"');
+  expect(block).toContain("--env npm_config_omit=optional");
+  expect(block).toContain("--deploy docker --no-install");
   const body = block?.split("sh -ceu '\n")[1]?.split("' 2>&1 | tee")[0];
   expect(body).toContain('node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry"');
   if (!body) throw new Error("missing consumer shell body");
@@ -33,7 +35,7 @@ it.each([0, 23])("checks the consumer reference in its install context before pa
     const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", stubs + snippet], {
       cwd: working, encoding: "utf8", env: { PATH: process.env.PATH, TRACE: trace, POLICY_STATUS: String(status),
         DACS_HOST_UID: "1000", DACS_HOST_GID: "1000", DACS_PACKAGE_VERSION: "0.1.0-test", DACS_GENERATED_MODE: "live-demos",
-        DACS_GENERATED_ROLE: "seller", DACS_GENERATED_RAILS: "both", npm_config_registry: "http://127.0.0.1:4873" },
+        DACS_GENERATED_ROLE: "seller", DACS_GENERATED_RAILS: "both", npm_config_registry: "http://127.0.0.1:4873", npm_config_omit: "optional" },
     });
     const commands = readFileSync(trace, "utf8");
     expect(commands).toContain(`node:${working}/one-click-agent:`);
@@ -48,10 +50,13 @@ it.each([0, 23])("checks the consumer reference in its install context before pa
     expect(classify.stdout).toBe(status === 0 ? "consumer" : "dependency-policy");
     if (status === 0) {
       expect(result.status, result.stderr).toBe(0);
-      expect(commands.indexOf("--dependency-policy")).toBeLessThan(commands.indexOf("npm:run build"));
+      expect(commands.indexOf("npm:install --ignore-scripts")).toBeLessThan(commands.indexOf("--dependency-policy"));
+      expect(commands.indexOf("--dependency-policy")).toBeLessThan(commands.indexOf("npm:rebuild better-sqlite3"));
+      expect(commands.indexOf("npm:rebuild better-sqlite3")).toBeLessThan(commands.indexOf("npm:run build"));
       expect(commands).toContain("npm:test");
     } else {
       expect(result.status).not.toBe(0);
+      expect(commands).not.toContain("npm:rebuild better-sqlite3");
       expect(commands).not.toContain("npm:run build");
       expect(commands).not.toContain("npm:test");
     }
