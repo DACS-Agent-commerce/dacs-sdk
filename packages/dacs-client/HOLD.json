@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "784bb083f6f590e58b95524d9b15778b9de76c9e"
+        "blob": "f975052666698d579cef15d033647dd4b8ea0243"
       },
       "DELTA-LEDGER.json": {
-        "blob": "e407643e240e1e2531442eb718594ea5f255e845"
+        "blob": "4ad93e0184609f6fc5e4b971048bf2f3e1d68f48"
       },
       "DELTA-MAP.md": {
-        "blob": "2d28bab124c7925912abf1ed3d4b20ef5a3cbece"
+        "blob": "8ac46c58d6c2b92ebb457dd7b56d1864e8b43608"
       },
       "DELTA-NOTES.md": {
-        "blob": "b46813a25cc7f59de20071393cebe78bb7ffb9da"
+        "blob": "a8aeabe888601dfa55a04720941b5a6d15d7d3d4"
       },
       "HOLD.json": {
         "control": "record"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "a9fd45752976a63a13fe37a24b4f24179090a4e2"
+        "blob": "14fa4c2636bc360281f2f3d79b01990b7edd0f03"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1253,7 +1253,7 @@
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
       },
       "src/util/sqlite-purchase-admission.mjs": {
-        "blob": "562bcba0f9523ce1133c19f6572c459beb7a3093"
+        "blob": "0fcf1acf63b90484141c80bce9a06edb13fcab57"
       },
       "src/util/sqlite-statement-boundary.mjs": {
         "blob": "5e0077f1c0e94938358e112ba518f124323894fa"
@@ -1622,7 +1622,7 @@
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
       "test/sqlite-purchase-journal.test.mjs": {
-        "blob": "a4c59300ff497d05f4b26ce97cd022d01b68a02a"
+        "blob": "9e845427d6f0b94900c04e02c4eda869e5e6f7f8"
       },
       "test/sqlite-statement-boundary-regressions.test.mjs": {
         "blob": "7acf0c866638baa16417d40e0f345238fe4985f1"
@@ -1637,7 +1637,7 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/store-host-boundary.test.mjs": {
-        "blob": "f34fe299227e2607f005885f0abcf393d2a2ffaa"
+        "blob": "fd61c135ce343fec49823d4e9dea0225e5afafd6"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
