@@ -277,6 +277,31 @@ test('portal evidence refuses another operation handoff token', t => {
   assert.throws(() => w.purchases.portalEvidence(w.op.id, other.handoffToken), { code: 'not_found' });
   assert.equal(w.purchases.portalEvidence(other.operation.id, other.handoffToken).reportedTxHash, null);
 });
+// Diagnostic reads save nothing, on a repeat as well: an elapsed approval is
+// reported as expired. Only the portal's action entry saves that transition.
+for (const status of ['awaiting_approval', 'agreement_pending']) {
+  test(`portal evidence and status report an elapsed ${status} approval without saving it`, t => {
+    const w = world(t, INCLUDED, { native: status === 'agreement_pending' });
+    w.db.prepare('UPDATE operations SET status=?, expires_at=?, state=? WHERE id=?').run(status, new Date(Date.now() - 1000).toISOString(),
+      JSON.stringify(status === 'agreement_pending' ? { protocol: { stage: 'agreement-pending' } } : {}), w.op.id);
+    const token = w.ops.handoffTokenFor(w.op.id), events = w.ops.history(w.op.id).length;
+    const writes = () => w.db.prepare('SELECT total_changes() n').get().n, before = writes();
+    const transition = w.ops.transition;
+    w.ops.transition = () => assert.fail('diagnostic read saved a transition');
+    for (let read = 0; read < 2; read++) {
+      const evidence = w.purchases.portalEvidence(w.op.id, token);
+      assert.equal(evidence.actionable, false);
+      if (status === 'agreement_pending') assert.equal(evidence.protocol.stage, 'agreement-pending');
+      assert.equal(w.purchases.status(w.op.accountId, w.op.id).operation.status, 'expired');
+    }
+    assert.equal(writes(), before);
+    assert.equal(w.ops.get(w.op.accountId, w.op.id).status, status);
+    assert.equal(w.ops.history(w.op.id).length, events);
+    w.ops.transition = transition;
+    assert.equal(w.purchases.portalOperation(w.op.id, token).status, 'expired');
+    assert.equal(w.ops.history(w.op.id).length, events + 1);
+  });
+}
 for (const source of ['lookup', 'buyer-access']) {
   test(`portal evidence preserves ${source} refusals before private reads`, t => {
     const cause = new Error('TEST-host-refusal');

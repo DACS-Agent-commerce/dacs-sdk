@@ -224,10 +224,19 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   function expireIfNeeded(operation) {
-    if ((operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now()) {
+    if (approvalElapsed(operation)) {
       return ops.transition(operation.id, operation.status, 'expired', { data: { reason: 'approval window elapsed' } });
     }
     return operation;
+  }
+
+  function approvalElapsed(operation) {
+    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now();
+  }
+
+  // Diagnostic reads report an elapsed approval window without saving it.
+  function projectExpiry(operation) {
+    return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
   }
 
   function selectWallet(accountId, requested) {
@@ -356,8 +365,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   function status(accountId, operationId) {
     const found = ops.get(accountId, operationId);
     if (!found || found.kind !== 'purchase') throw new OperationError('not_found', 'purchase not found for this account');
-    const elapsed = (found.status === 'awaiting_approval' || found.status === 'agreement_pending') && Date.parse(found.expiresAt) <= now();
-    const operation = elapsed ? { ...found, status: 'expired' } : found;
+    const operation = projectExpiry(found);
     const coords = coordinates.get(operation.id);
     const approval = approvalFor.get(operation.id);
     return {
@@ -398,17 +406,23 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return found;
   }
 
-  function portalOperation(operationId, token) {
+  function authorizedPortalPurchase(operationId, token) {
     const found = handoffPurchase(operationId, token);
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
-    return expireIfNeeded(found);
+    return found;
+  }
+
+  // Entry for the portal's approval and payment actions, which save expiry.
+  function portalOperation(operationId, token) {
+    return expireIfNeeded(authorizedPortalPurchase(operationId, token));
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
   // listing verification made at prepare time and any chain observation of
   // the payment. Never inferred from the configured network or RPC URL.
+  // Read-only: an elapsed approval window is reported, not saved.
   function portalEvidence(operationId, token) {
-    const operation = portalOperation(operationId, token);
+    const operation = projectExpiry(authorizedPortalPurchase(operationId, token));
     const coords = coordinates.get(operation.id);
     const listingMode = operation.state?.preparedVerification?.evidence?.chainMode ?? null;
     const directoryMode = operation.state?.preparedVerification?.evidence?.directoryMode ?? null;
