@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "6c015a9ada5d81e4b3fb0d3e568b5c8d4504ecb5"
+        "blob": "23fac37882ec4a35a5117ead7bfe598dbf93db4b"
       },
       "DELTA-LEDGER.json": {
-        "blob": "5da11345cf698113a0eafe966f075a1c3ce737ba"
+        "blob": "a1fbd4978f7a764779a22a351119d50ac8aff630"
       },
       "DELTA-MAP.md": {
-        "blob": "cb86109476184100520dcce9e9212ec600fdf88f"
+        "blob": "ae06b44190392a00eef3f1c5f683ad0c6f6deb24"
       },
       "DELTA-NOTES.md": {
         "blob": "a8aeabe888601dfa55a04720941b5a6d15d7d3d4"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "f77829e2d16ab46314712016de7de2d43489bf76"
+        "blob": "f7031eb765ce5533e1a89b1c392de1bafaf9161b"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1292,7 +1292,7 @@
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
       },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "b1b98c21e80cef1baf539534984ed449cd93d048"
+        "blob": "e7bf7a95fd5f8ce536b3834a27859b79dd607f22"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
@@ -1589,7 +1589,7 @@
         "blob": "f19662c277f9bcc86145487d72230cdfbdde2d50"
       },
       "test/helpers/store-journal-worker.mjs": {
-        "blob": "afe5801065bef448692d22a1e3b2bfbd7e2a9b32"
+        "blob": "596accf25d6cc1542f5845e41c109c2448b43b8e"
       },
       "test/helpers/wallet-extension-probe-dom.mjs": {
         "blob": "82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c"
@@ -1649,13 +1649,13 @@
         "blob": "1809e37f4a27259a45f8e5ef0c1a30c2b21c51cc"
       },
       "test/store-attached-databases.test.mjs": {
-        "blob": "3fef1e1f706852d0c0436312266b1317063875ec"
+        "blob": "1c68fcc9f4e42a6bc8ac20ee822567ac8249144c"
       },
       "test/store-host-boundary.test.mjs": {
         "blob": "fd61c135ce343fec49823d4e9dea0225e5afafd6"
       },
       "test/store-journal-atomicity.test.mjs": {
-        "blob": "2f62f76ff92b85e7c9829bba4a94cc802519b431"
+        "blob": "cc80718653e938fdd661ae5ea8fe744ee6e8729e"
       },
       "test/store-refusal-errors.test.mjs": {
         "blob": "9c826914e5533aec0d9718e76aea11a4785562d1"
@@ -1664,7 +1664,7 @@
         "blob": "130fd5d3a70ab5640916c4c1ca00ba1a94135284"
       },
       "test/store-transaction-boundary.test.mjs": {
-        "blob": "35502a67588f8d135111dfcf183e3cf0dc536948"
+        "blob": "1bc7e1415710c3c8adf453b56c8873c5177d25b7"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
