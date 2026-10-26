@@ -742,6 +742,13 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 commit guard generations before accepting transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | dc7166d3baff55abd0a7862a4b78e337cd5ae0d9 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | 40d3d1bbb2852a6424337ee5c50af9c2e59b8154 |
+| D11 | fix(client): D11 own transaction startup and result refusal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 07eefeb2f67b9c63e52c1a79c075f7e3c237f15e |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 927fca2142201b31325e1e21045de052b186dfb3 |
+| | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | 3fef1e1f706852d0c0436312266b1317063875ec |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 25527e1737241f6c8516577de115665cd65b971c |
+| | `packages/dacs-client/test/store-startup-results.test.mjs:1` | 130fd5d3a70ab5640916c4c1ca00ba1a94135284 |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | a2abc629dbd08cdb3d2bd8d074fe47aa8bbfa374 |
 
 ## Complete commit and file inventory
 
@@ -1952,6 +1959,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 preserve merged lease control records | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 preserve merged lease control records | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 preserve merged lease control records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/test/store-startup-results.test.mjs:1` |
 
 ## Original moved files
 
