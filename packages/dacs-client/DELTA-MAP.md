@@ -804,6 +804,8 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | a2abc629dbd08cdb3d2bd8d074fe47aa8bbfa374 |
 | D11 | fix(client): D11 record PR 04 adapter export removal | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 2730715a63ecaf36b43fbf1af32bf832bb567b65 |
+| D11 | fix(client): D11 target domain commits after lease setup | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` | fe025a891b76f93bc8cf0b0a02ccdf36e92e2712 |
 
 ## Complete commit and file inventory
 
@@ -2221,6 +2223,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 target domain commits after lease setup | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 target domain commits after lease setup | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 target domain commits after lease setup | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 target domain commits after lease setup | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 target domain commits after lease setup | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 target domain commits after lease setup | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` |
 
 ## Original moved files
 
