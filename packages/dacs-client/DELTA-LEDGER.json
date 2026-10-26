@@ -1556,6 +1556,7 @@
     {"delta":"D11","subject":"fix(client): D11 hold public protocol actions and stage packed dependencies","files":[{"path":"packages/dacs-client/src/index.mjs","before":"ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5","after":"e5645c81db36570840808f82a52187d27afdffcc"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"13d71f2e8ed865ee4ae9686cc57c5214307c8a55","after":"f05e545f62faf232439c60bb69b08f6ac5684026"},{"path":"packages/dacs-client/test/public-api.test.mjs","before":"c074963573ad7c710ca3b873a44105bbec0c1946","after":"b28c6ef97e3004d9921c2b9f48a66d0e4d936423"}]},
     {"delta":"D11","subject":"fix(client): D11 record the 07 split integration","files":[]},
     {"delta":"D11","subject":"fix(client): D11 record the 07 checkpoint check integration","files":[]},
-    {"delta":"D11","subject":"fix(client): D11 record the 07 lease formatting integration","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record the 07 lease formatting integration","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 require durable purchase synchronization","files":[{"path":"packages/dacs-client/src/util/sqlite-purchase-admission.mjs","before":"562bcba0f9523ce1133c19f6572c459beb7a3093","after":"0fcf1acf63b90484141c80bce9a06edb13fcab57"},{"path":"packages/dacs-client/test/sqlite-purchase-journal.test.mjs","before":"a4c59300ff497d05f4b26ce97cd022d01b68a02a","after":"9e845427d6f0b94900c04e02c4eda869e5e6f7f8"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"f34fe299227e2607f005885f0abcf393d2a2ffaa","after":"fd61c135ce343fec49823d4e9dea0225e5afafd6"}]}
   ]
 }
