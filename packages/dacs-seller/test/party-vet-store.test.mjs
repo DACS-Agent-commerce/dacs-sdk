@@ -55,6 +55,30 @@ test('a missing file is a fresh private store; rows survive a reopen; usage coun
   })();
 });
 
+test('opening validates rows and totals from one snapshot after a concurrent commit', async t => {
+  const path = join(dirFor(t), 'concurrent.sqlite');
+  const seed = openPartyVetStore({ path, mode: 'create' });
+  await seed.update('job', () => ({ checkpoint: 'planned' })); seed.close();
+  const execute = DatabaseSync.prototype.exec;
+  let committed = false;
+  t.after(() => { DatabaseSync.prototype.exec = execute; });
+  DatabaseSync.prototype.exec = function(sql) {
+    const result = execute.call(this, sql);
+    if (sql === 'COMMIT' && !committed) {
+      // Commit through another process after metadata admission, before row validation.
+      committed = true;
+      DatabaseSync.prototype.exec = execute;
+      const child = spawnSync(process.execPath, [WORKER, 'committed-update', path], { encoding: 'utf8', timeout: 10000 });
+      assert.equal(child.status, 0, child.stderr);
+      assert.equal(child.signal, null);
+    }
+    return result;
+  };
+  const store = openPartyVetStore({ path, mode: 'open' }); t.after(() => store.close());
+  assert.equal(committed, true);
+  assert.deepEqual(await store.read('job'), { checkpoint: 'TEST-committed' });
+});
+
 for (const [label, make] of [['sqlite', (t) => openStore({ path: join(dirFor(t), 's.sqlite') })], ['memory', () => createInMemoryPartyVetStore()]]) {
   test(`${label}: a change keeps, writes or deletes a row atomically; it must be synchronous; a failed change writes nothing`, async (t) => {
     const store = make(t); t.after(() => store.close());
