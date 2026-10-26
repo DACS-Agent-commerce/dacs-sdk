@@ -681,6 +681,52 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     expect(reference.errors.join()).toContain("explicit matching npm/platform/configuration contract");
   });
 
+  it.each(["", "omit[]=optional\ninclude[]=optional\n"])("refuses an eligible optional source read failure with config %j", config => {
+    const fixture = simulatedInstall({ "node_modules/a": [{ optional: true, os: [process.platform], cpu: [process.arch] },
+      { "package.json": manifest("a") }] });
+    writeFileSync(join(fixture.project, ".npmrc"), config);
+    const input = { manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+      lock: fixture.lock, installer: npmInstallContract(fixture.project) };
+    const complete = referenceInstallation({ ...input,
+      readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(join(fixture.project, ".npm"), entry.integrity) });
+    expect(complete.errors).toEqual([]);
+    expect(installationDifferences(fixture.project, complete)).toEqual([]);
+    const unavailable = referenceInstallation({ ...input, readArchive: () => { throw new Error("source temporarily absent"); } });
+    expect(unavailable.inventory).toBeNull();
+    expect(unavailable.errors.join()).toContain("node_modules/a: source temporarily absent");
+    rmSync(join(fixture.project, "node_modules/a"), { recursive: true });
+    expect(installationDifferences(fixture.project, unavailable)).toEqual(["reference installation did not complete"]);
+  });
+
+  it.each([{ os: [`!${process.platform}`] }, { cpu: [`!${process.arch}`] },
+    { libc: ["unsupported-fixture-libc"] }, { engines: { node: "<0.0.0" } }])(
+    "allows an unavailable optional source excluded by npm's environment checks: %j", constraints => {
+      const fixture = simulatedInstall({ "node_modules/a": [{ optional: true, ...constraints }, null] });
+      writeFileSync(join(fixture.project, ".npmrc"), "");
+      const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+        lock: fixture.lock, installer: npmInstallContract(fixture.project), readArchive: () => { throw new Error("not acquired"); } });
+      expect(reference.errors).toEqual([]);
+      expect(reference.entries.get("node_modules/a").present).toBe(false);
+      expect(reference.inventory).toBeInstanceOf(Map);
+    });
+
+  it("matches npm when an omitted optional owner shares a command and another command starts with a dot", () => {
+    const fixture = simulatedInstall({
+      "node_modules/a": [{ bin: { shared: "cli.js", ".hidden": "cli.js" } }, { "package.json": manifest("a"), "cli.js": "" }],
+      "node_modules/b": [{ optional: true, bin: { shared: "cli.js" } }, null],
+    });
+    const toolchain = npmToolchain();
+    runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+      `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
+    const reference = fixture.closure();
+    expect(reference.errors).toEqual([]);
+    expect(reference.entries.get("node_modules/a").present).toBe(true);
+    expect(reference.entries.get("node_modules/b").present).toBe(false);
+    expect(reference.inventory.get("node_modules/.bin/.hidden").kind).toBe("link");
+    expect(reference.inventory.has("node_modules/.bin/shared")).toBe(false);
+    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+  });
+
   it("uses the consumer's bin-links configuration instead of synthesizing executable links", () => {
     const fixture = simulatedInstall({ "node_modules/a": [{ bin: { a: "cli.js" } }, { "package.json": manifest("a"), "cli.js": "" }] });
     writeFileSync(join(fixture.project, ".npmrc"), "bin-links=false\n");
