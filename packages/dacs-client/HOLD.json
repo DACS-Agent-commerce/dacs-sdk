@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "cfd478c4a8dbc1e9a0fbc3675b1e6f87201f47c7"
+        "blob": "6b2c9c1bef36ac100d10374d2491ea6fb8a41973"
       },
       "DELTA-LEDGER.json": {
-        "blob": "dfefb16968ae3cae6ec97c95e83b28a29645b887"
+        "blob": "bd03698642874f250206e6023aaba84b23973dff"
       },
       "DELTA-MAP.md": {
-        "blob": "fc29460a080478b505738ce8473b83b6362cf70f"
+        "blob": "c64a104d3262998bb03c59363152291eff525fab"
       },
       "DELTA-NOTES.md": {
-        "blob": "4fe9f081e2857e102eb6ae1b8e2f70f41d21ce04"
+        "blob": "a677cf8eb3049b1b618e2a66c500322fdd0129a6"
       },
       "HOLD.json": {
         "control": "record"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6ea1bd1378c38782f97ffcc779eb3f65ac1bfbae"
+        "blob": "3ff72c8436b1cdfd67bdf47d7c0fca7a848d3526"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1253,7 +1253,7 @@
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
       },
       "src/util/sqlite-write-lease.mjs": {
-        "blob": "011865d7d581630937628b776c829f0fdce48607"
+        "blob": "500190c769112f72c2de2915132c9c32074e7079"
       },
       "src/util/text.mjs": {
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
@@ -1616,7 +1616,7 @@
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
       "test/sqlite-write-lease.test.mjs": {
-        "blob": "d8cd083fb13cd1b288825b8939fd6714478a6dc1"
+        "blob": "d5cd592b2d02917ce3b15cb74e625420257f3c4c"
       },
       "test/storage-read-nonobservation.test.mjs": {
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
