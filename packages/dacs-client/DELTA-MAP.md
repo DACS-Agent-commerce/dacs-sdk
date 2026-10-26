@@ -585,6 +585,11 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | eafd77f954d594e9b2d10fcb7340a1acd95aa729 |
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | b4e9db02994949d2259e9bd69c6f54ca0d8a452a |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 9fbac0814d491ce1e136f0e1b84830d79c3f0f6f |
+| D11 | fix(client): D11 refuse persistent transaction attachments | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 56cf75ff821599aba29aceba2b93f7e84186d32e |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | b1b98c21e80cef1baf539534984ed449cd93d048 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 7ba5cd5d3028b2e8b668ca82423e4794a5fc7c80 |
+| | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | 2f9c2dbb0360c258cc35445db671fcf12754b365 |
 
 ## Complete commit and file inventory
 
@@ -1453,6 +1458,15 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 refuse persistent transaction attachments | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
 
 ## Original moved files
 
