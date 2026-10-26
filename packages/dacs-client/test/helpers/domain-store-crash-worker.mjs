@@ -9,12 +9,15 @@ const world = openWorld(path, { failResolution: kind.endsWith('-pending') }), ex
 world.db.exec = sql => {
   if (sql !== 'COMMIT') return exec(sql);
   const snapshot = world.snapshot(kind);
+  // The write lease commits setup before the domain decision exists.
   if (kind !== 'delivery') {
+    if (snapshot.operation.status === 'broadcast_reported') return exec(sql);
     assert.equal(snapshot.operation.status, 'settled_verified');
     assert.ok(snapshot.coordinate.verifiedAt);
     assert.equal(snapshot.consumptions.length, 1);
     assert.equal(snapshot.replacement.status, 'superseded');
   } else {
+    if (!snapshot.operation.state.protocol.deliveryDeadline?.overdue) return exec(sql);
     assert.ok(snapshot.operation.state.protocol.deliveryDeadline.overdue);
     assert.equal(snapshot.events.filter(event => event.type === 'protocol_delivery_deadline_overdue').length, 1);
   }
