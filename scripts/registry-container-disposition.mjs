@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, posix, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
 import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
@@ -141,16 +141,16 @@ function validIntegrity(value) {
 const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
 
-// The executing npm's command-line entry (npm_execpath), or that of the npm on PATH.
-const npmCliPath = () => join(dirname(process.env.npm_execpath ?? join(execFileSync("npm", ["root", "--global"],
-  { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js")), "npm-cli.js");
-
 // Use the executing npm's parser, including loose semver and alias-name rules.
 // Acceptance pins npm; this keeps dependency grammar separate from engine ranges.
 let npmPackageArg;
 function registrySourceSpec(value) {
   if (typeof value !== "string") return false;
-  if (!npmPackageArg) npmPackageArg = createRequire(npmCliPath())("npm-package-arg");
+  if (!npmPackageArg) {
+    const npmEntry = process.env.npm_execpath ?? join(execFileSync("npm", ["root", "--global"],
+      { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js");
+    npmPackageArg = createRequire(npmEntry)("npm-package-arg");
+  }
   try {
     const parsed = npmPackageArg.resolve("dependency", value);
     // Older npm parsers (npm 10.8) read `npm:node_modules` as an alias with no
@@ -294,6 +294,14 @@ function repeatsTopLevelKey(text) {
   return false;
 }
 
+// The name require() reaches the entry `item` of `directory` by, or null when
+// it is no module root: a scope folder, or a path inside a package.
+function moduleRootName(directory, item) {
+  const parent = posix.basename(directory);
+  if (parent === "node_modules") return item.startsWith("@") ? null : item;
+  return parent.startsWith("@") && posix.basename(posix.dirname(directory)) === "node_modules" ? `${parent}/${item}` : null;
+}
+
 // Called only after the entire installed namespace matches its archive closure,
 // so this reads every module root and package.json scope there is. The closure
 // admits npm-generated command links to archive files only: a link named
@@ -305,10 +313,7 @@ function installedCandidateModules(project, closure) {
       const path = `${directory}/${item.name}`;
       const record = closure.entries.get(path);
       const archiveOwner = record ? record.bundledBy ?? path : owner;
-      const parent = posix.basename(directory);
-      const name = parent === "node_modules" ? (item.name.startsWith("@") ? null : item.name)
-        : parent.startsWith("@") && posix.basename(posix.dirname(directory)) === "node_modules"
-          ? `${parent}/${item.name}` : null;
+      const name = moduleRootName(directory, item.name);
       if (name) modules.set(path, { owner: archiveOwner, name });
       if (item.isDirectory()) visit(path, archiveOwner);
       else if (item.name === "package.json") {
