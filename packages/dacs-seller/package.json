@@ -48,6 +48,7 @@
     "src/dacs/session-challenge-limits.mjs",
     "src/dacs/wallet-transactions.mjs",
     "src/devnet-demo/agreement-context.mjs",
+    "src/devnet-demo/approval-ledger-append.mjs",
     "src/devnet-demo/artifact-anchor.mjs",
     "src/devnet-demo/buyer-access.mjs",
     "src/devnet-demo/deliverable.mjs",
