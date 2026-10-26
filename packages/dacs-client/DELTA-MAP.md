@@ -209,6 +209,8 @@ PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
 
+PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds, supported schemas and rollback/crash-safe main journals. Persistent main databases require DELETE, TRUNCATE, PERSIST or WAL; volatile main databases may use MEMORY. OFF is refused on every main database. Admission preserves caller configuration. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -625,25 +627,6 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 qualify merged diagnostic source | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` | 7ac41a6e4f20480403f32993a28954b42217f3e4 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 6575800a2095f41ac8f5a350d37f0925be6f5d9d |
-| D11 | delta(client): D11 split 07 expose the private buyer package boundary | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
-| | `packages/dacs-client/src/index.mjs:1` | a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4 |
-| | `packages/dacs-client/src/public-verification.mjs:1` | eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579 |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | 84b222cd3ec30df147e61cd776534666fd9e75fd |
-| | `packages/dacs-client/test/public-api.test.mjs:1` | c0d259390c30873269d2a1c9b306b8867dcc63b0 |
-| | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | dac6e6aae63aac269c0a84197ce2b77d3211eb35 |
-| D11 | fix(client): D11 document public contracts and keep packed checks offline | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/index.mjs:1` | a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17 |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | 171253367491218f30989ba8511f92305937f75b |
-| | `packages/dacs-client/test/public-api.test.mjs:1` | 5f2ef3b4e30101b70f88e665ded5485f77764da9 |
-| D11 | fix(client): D11 document exact public interfaces and test the packed journal | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/index.mjs:1` | ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5 |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | 13d71f2e8ed865ee4ae9686cc57c5214307c8a55 |
-| | `packages/dacs-client/test/public-api.test.mjs:1` | c074963573ad7c710ca3b873a44105bbec0c1946 |
-| D11 | fix(client): D11 hold public protocol actions and stage packed dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/index.mjs:1` | e5645c81db36570840808f82a52187d27afdffcc |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | f05e545f62faf232439c60bb69b08f6ac5684026 |
-| | `packages/dacs-client/test/public-api.test.mjs:1` | b28c6ef97e3004d9921c2b9f48a66d0e4d936423 |
 | D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | acd00b6505dca812acfa411da3cb9538a5956b55 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | eedc7797a49fc7635cb1600db68fb1dc0d9ea74f |
@@ -671,16 +654,6 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 add bounded diagnostic projections | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 4d3bc5b10835cef9f1026c109293c2bf14c2afa7 |
 | | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 8fb8e91c7d1439f3013548378394fa788236fdb0 |
-| D11 | fix(client): D11 add read-only public purchase diagnostics | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | 8a08a79ef38ce5593a6447714e82068f4da698ac |
-| | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` | 7ac41a6e4f20480403f32993a28954b42217f3e4 |
-| | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | 99154dd18992f65e0a498a9e2be1064fffa08a14 |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | ef6723b2e7509c38a37fee121912cfc7c197895a |
-| | `packages/dacs-client/test/host-observations.test.mjs:1` | 6575800a2095f41ac8f5a350d37f0925be6f5d9d |
-| D11 | fix(client): D11 bound and allowlist every public purchase diagnostic | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | f60f7130e5aea8475362b30174645deaea15a53d |
-| | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` | 8e6cde420c8d63e7e42e11403df0464175bf042b |
-| | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` | 14c3d2e35b5834c3e7ec0d9571e490f4403209f7 |
 | D11 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
@@ -733,23 +706,12 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 record the 05a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06b split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06c split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | eb48afdc8553f1ffb9a9b394474056e6eb2e140d |
-| D11 | fix(client): D11 record the 06a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 07 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 08 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 09 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 distinguish source records from metadata checkpoints | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 04 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 05 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 05a checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06b checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06c checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06a checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 07 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 08 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 09 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 normalize the extracted lease and checkpoint probes | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 011865d7d581630937628b776c829f0fdce48607 |
 | D11 | fix(client): D11 record the 03b lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
@@ -761,11 +723,6 @@ The provenance removal test selects the last record with changed file bytes, so 
 | D11 | fix(client): D11 record the 05a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06b lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06c lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 07 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 08 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 09 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 enforce synchronous SQLite statement boundaries | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | eafd77f954d594e9b2d10fcb7340a1acd95aa729 |
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | b4e9db02994949d2259e9bd69c6f54ca0d8a452a |
@@ -787,8 +744,6 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
 | D11 | fix(client): D11 record PR 05 lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
-| D11 | fix(client): D11 record PR 06c lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 070a7eac2757271e84f797a3a90635ce1b6cc2e4 |
 | D11 | fix(client): D11 preserve deferred-result and read-only statement fences | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 5e0077f1c0e94938358e112ba518f124323894fa |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 7acf0c866638baa16417d40e0f345238fe4985f1 |
@@ -806,6 +761,94 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 2730715a63ecaf36b43fbf1af32bf832bb567b65 |
 | D11 | fix(client): D11 target domain commits after lease setup | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` | fe025a891b76f93bc8cf0b0a02ccdf36e92e2712 |
+| D11 | fix(client): D11 bound diagnostic keys and omit bundle signatures | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | b24a2e0a97c0e9a2b1979af72c77c5822281f831 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 44d7a815d7c7f89983a35f6210da65c856a3d344 |
+| D11 | fix(client): D11 separate purchase connection admission from transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 944247d4ce8b2622389c79b71de1a21d6b83e239 |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 1803da8de85ea26f119944b7550b8698f920f4bc |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | dc7166d3baff55abd0a7862a4b78e337cd5ae0d9 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | deleted |
+| | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) | f34fe299227e2607f005885f0abcf393d2a2ffaa |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` | deleted |
+| | `packages/dacs-client/test/store-startup-results.test.mjs:1` | deleted |
+| D11 | fix(client): D11 refuse journals that cannot recover purchase writes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 562bcba0f9523ce1133c19f6572c459beb7a3093 |
+| | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | a4c59300ff497d05f4b26ce97cd022d01b68a02a |
+| D11 | fix(client): D11 restore transactions above purchase admission | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 676aac6112fe98e5b83119f99fe3f1986f431638 |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | a2abc629dbd08cdb3d2bd8d074fe47aa8bbfa374 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | b1b98c21e80cef1baf539534984ed449cd93d048 |
+| | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` | f19662c277f9bcc86145487d72230cdfbdde2d50 |
+| | `packages/dacs-client/test/helpers/store-journal-worker.mjs:1` | afe5801065bef448692d22a1e3b2bfbd7e2a9b32 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 1809e37f4a27259a45f8e5ef0c1a30c2b21c51cc |
+| | `packages/dacs-client/test/store-attached-databases.test.mjs:1` | 3fef1e1f706852d0c0436312266b1317063875ec |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 35502a67588f8d135111dfcf183e3cf0dc536948 |
+| | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` | 2f62f76ff92b85e7c9829bba4a94cc802519b431 |
+| | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` | 9c826914e5533aec0d9718e76aea11a4785562d1 |
+| | `packages/dacs-client/test/store-startup-results.test.mjs:1` | 130fd5d3a70ab5640916c4c1ca00ba1a94135284 |
+| D11 | fix(client): D11 keep host refusal tests with admission | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | f34fe299227e2607f005885f0abcf393d2a2ffaa |
+| D11 | fix(client): D11 record both admission test paths | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 keep transaction boundary tests with orchestration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` | 35502a67588f8d135111dfcf183e3cf0dc536948 |
+| D11 | fix(client): D11 retain 04 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | de9b38f087ad793733f16b30ddf8a28fc2213728 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
+| D11 | fix(client): D11 retain 05 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d519e2a9d4f9d49d255eac734443dcebcd270afc |
+| D11 | fix(client): D11 add read-only public purchase diagnostics | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | 8a08a79ef38ce5593a6447714e82068f4da698ac |
+| | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` | 7ac41a6e4f20480403f32993a28954b42217f3e4 |
+| | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | 99154dd18992f65e0a498a9e2be1064fffa08a14 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | ef6723b2e7509c38a37fee121912cfc7c197895a |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | 6575800a2095f41ac8f5a350d37f0925be6f5d9d |
+| D11 | fix(client): D11 bound and allowlist every public purchase diagnostic | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | f60f7130e5aea8475362b30174645deaea15a53d |
+| | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` | 8e6cde420c8d63e7e42e11403df0464175bf042b |
+| | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` | 14c3d2e35b5834c3e7ec0d9571e490f4403209f7 |
+| D11 | fix(client): D11 record the 06c split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | eb48afdc8553f1ffb9a9b394474056e6eb2e140d |
+| D11 | fix(client): D11 record the 06c checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 06c lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record PR 06c lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 070a7eac2757271e84f797a3a90635ce1b6cc2e4 |
+| D11 | fix(client): D11 record the 06a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 06a checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 06a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | delta(client): D11 split 07 expose the private buyer package boundary | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
+| | `packages/dacs-client/src/index.mjs:1` | a8fd49b1d720d709f8cfaa48d5091bbc9d7dedb4 |
+| | `packages/dacs-client/src/public-verification.mjs:1` | eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 84b222cd3ec30df147e61cd776534666fd9e75fd |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | c0d259390c30873269d2a1c9b306b8867dcc63b0 |
+| | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | dac6e6aae63aac269c0a84197ce2b77d3211eb35 |
+| D11 | fix(client): D11 document public contracts and keep packed checks offline | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | a5c2cd25bcb985b32050d6dbd7a29dae3c0c9c17 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 171253367491218f30989ba8511f92305937f75b |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 5f2ef3b4e30101b70f88e665ded5485f77764da9 |
+| D11 | fix(client): D11 document exact public interfaces and test the packed journal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | ad6b6309c24cef28d52dc22dbfd33f58cfe0f2f5 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 13d71f2e8ed865ee4ae9686cc57c5214307c8a55 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | c074963573ad7c710ca3b873a44105bbec0c1946 |
+| D11 | fix(client): D11 hold public protocol actions and stage packed dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/index.mjs:1` | e5645c81db36570840808f82a52187d27afdffcc |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | f05e545f62faf232439c60bb69b08f6ac5684026 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | b28c6ef97e3004d9921c2b9f48a66d0e4d936423 |
+| D11 | fix(client): D11 record the 07 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 07 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 07 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 08 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 08 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 08 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 09 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 09 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 09 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1696,65 +1739,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 qualify merged diagnostic source | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 qualify merged diagnostic source | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 qualify merged diagnostic source | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
-| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `package-lock.json:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/LICENSE:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/README.md:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/package.json:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/index.mjs:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/public-verification.mjs:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/public-api.test.mjs:1` |
-| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/src/index.mjs:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/public-api.test.mjs:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/README.md:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/src/index.mjs:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/public-api.test.mjs:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/src/index.mjs:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/public-api.test.mjs:1` |
-| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/README.md:1` |
-| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1815,35 +1799,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
 | fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/README.md:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/test/host-observations.test.mjs:1` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` |
-| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
-| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/package.json:1` |
-| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/README.md:1` |
-| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1960,33 +1915,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06b split integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06b split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06c split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06c split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06c split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06c split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06c split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06a split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06a split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 07 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 07 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 07 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 07 split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 07 split integration | `packages/dacs-client/package.json:1` |
-| fix(client): D11 record the 07 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 08 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 08 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 08 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 08 split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 08 split integration | `packages/dacs-client/README.md:1` |
-| fix(client): D11 record the 08 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 09 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 09 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 09 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 09 split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 09 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -2018,31 +1946,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -2090,31 +1993,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-NOTES.md:1` |
@@ -2183,11 +2061,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record PR 05 lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -2229,6 +2102,252 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` |
+| fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-startup-results.test.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/helpers/store-crash-worker.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/helpers/store-journal-worker.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-journal-atomicity.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-refusal-errors.test.mjs:1` |
+| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-startup-results.test.mjs:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain 05 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/README.md:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 add read-only public purchase diagnostics | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:42`, `packages/dacs-client/src/purchases.mjs:47`, `packages/dacs-client/src/purchases.mjs:52`, `packages/dacs-client/src/purchases.mjs:75`, `packages/dacs-client/src/purchases.mjs:119`, `packages/dacs-client/src/purchases.mjs:172`, `packages/dacs-client/src/purchases.mjs:188`, `packages/dacs-client/src/purchases.mjs:194`, `packages/dacs-client/src/purchases.mjs:245`, `packages/dacs-client/src/purchases.mjs:251`, `packages/dacs-client/src/purchases.mjs:274`, `packages/dacs-client/src/purchases.mjs:277`, `packages/dacs-client/src/purchases.mjs:295`, `packages/dacs-client/src/purchases.mjs:313`, `packages/dacs-client/src/purchases.mjs:380`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:431`, `packages/dacs-client/src/purchases.mjs:435`, `packages/dacs-client/src/purchases.mjs:441`, `packages/dacs-client/src/purchases.mjs:446`, `packages/dacs-client/src/purchases.mjs:467`, `packages/dacs-client/src/purchases.mjs:474`, `packages/dacs-client/src/purchases.mjs:485`, `packages/dacs-client/src/purchases.mjs:493`, `packages/dacs-client/src/purchases.mjs:503`, `packages/dacs-client/src/purchases.mjs:506`, `packages/dacs-client/src/purchases.mjs:516`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:524`, `packages/dacs-client/src/purchases.mjs:569`, `packages/dacs-client/src/purchases.mjs:588`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:696`, `packages/dacs-client/src/purchases.mjs:704`, `packages/dacs-client/src/purchases.mjs:802`, `packages/dacs-client/src/purchases.mjs:822`, `packages/dacs-client/src/purchases.mjs:832`, `packages/dacs-client/src/purchases.mjs:882`, `packages/dacs-client/src/purchases.mjs:917`, `packages/dacs-client/src/purchases.mjs:929`, `packages/dacs-client/src/purchases.mjs:1020`, `packages/dacs-client/src/purchases.mjs:1047`, `packages/dacs-client/src/purchases.mjs:1060`, `packages/dacs-client/src/purchases.mjs:1068`, `packages/dacs-client/src/purchases.mjs:1070`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1094`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1130`, `packages/dacs-client/src/purchases.mjs:1256`, `packages/dacs-client/src/purchases.mjs:1264`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1270`, `packages/dacs-client/src/purchases.mjs:1277`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1322`, `packages/dacs-client/src/purchases.mjs:1329`, `packages/dacs-client/src/purchases.mjs:1347`, `packages/dacs-client/src/purchases.mjs:1356`, `packages/dacs-client/src/purchases.mjs:1363`, `packages/dacs-client/src/purchases.mjs:1370`, `packages/dacs-client/src/purchases.mjs:1377`, `packages/dacs-client/src/purchases.mjs:1423` |
+| fix(client): D11 bound and allowlist every public purchase diagnostic | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
+| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/package.json:1` |
+| fix(client): D11 retain the diagnostic projection in the package closure | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06c split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06c split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06c split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06c split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06c split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06c checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06c lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record PR 06c lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 bind reviewed merge snapshots to immutable parents | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 pin reachable merges and require working bytes to match HEAD | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06a split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06a checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06a lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `package-lock.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/LICENSE:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/README.md:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/package.json:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/index.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/src/public-verification.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): D11 split 07 expose the private buyer package boundary | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 document public contracts and keep packed checks offline | `packages/dacs-client/test/public-api.test.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/README.md:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 document exact public interfaces and test the packed journal | `packages/dacs-client/test/public-api.test.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/src/index.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 hold public protocol actions and stage packed dependencies | `packages/dacs-client/test/public-api.test.mjs:1` |
+| fix(client): D11 record the 07 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 07 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 07 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 07 split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 07 split integration | `packages/dacs-client/package.json:1` |
+| fix(client): D11 record the 07 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 07 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 07 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/README.md:1` |
+| delta(client): D11 split 08 document the buyer integration contract | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/README.md:1` |
+| fix(client): D11 document bounded diagnostics and refused bundled function names | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 08 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 08 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 08 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 08 split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 08 split integration | `packages/dacs-client/README.md:1` |
+| fix(client): D11 record the 08 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 08 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 08 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 09 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 09 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 09 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 09 split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 09 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 09 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 09 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
