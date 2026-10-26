@@ -1,5 +1,6 @@
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -7,11 +8,11 @@ import { expect, it } from "vitest";
 it.each([0, 23])("checks the consumer reference in its install context before package execution, status=%s", status => {
   const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
   const block = source.split("stage=consumer\n")[1]?.split('\nproject="$consumer_root/one-click-agent"')[0];
-  expect(block).toContain('--volume "$repo_root/scripts:/acceptance-scripts:ro"');
+  expect(block).toContain('--volume "$repo_root/scripts:/acceptance-sdk/scripts:ro"');
   expect(block).toContain('--volume "$release_set:/release-set:ro"');
   expect(block).toContain('--volume "$artifact_stage:/acceptance-artifacts"');
   const body = block?.split("sh -ceu '\n")[1]?.split("' 2>&1 | tee")[0];
-  expect(body).toContain('node /acceptance-scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry"');
+  expect(body).toContain('node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry"');
   if (!body) throw new Error("missing consumer shell body");
   const end = body.indexOf('    printf "%s\\n" "$tests_status"');
   expect(end).toBeGreaterThan(0);
@@ -54,5 +55,24 @@ it.each([0, 23])("checks the consumer reference in its install context before pa
       expect(commands).not.toContain("npm:run build");
       expect(commands).not.toContain("npm:test");
     }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+it("imports the deployed checking bundle with its adjacent package metadata", () => {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const directory = mkdtempSync(join(tmpdir(), "dacs-checker-bundle-"));
+  try {
+    const bundle = join(directory, "acceptance-sdk");
+    mkdirSync(bundle);
+    cpSync("scripts", join(bundle, "scripts"), { recursive: true });
+    if (source.includes('--volume "$repo_root/package.json:/acceptance-sdk/package.json:ro"')) {
+      copyFileSync("package.json", join(bundle, "package.json"));
+    }
+    const entry = pathToFileURL(join(bundle, "scripts/registry-container-disposition.mjs")).href;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e",
+      `const { RELEASE_VERSION } = await import(${JSON.stringify(entry)}); process.stdout.write(RELEASE_VERSION);`], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(JSON.parse(readFileSync("package.json", "utf8")).version);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
