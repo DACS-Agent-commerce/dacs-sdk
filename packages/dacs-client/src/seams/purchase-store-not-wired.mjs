@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
+import { types } from 'node:util';
 import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { withSqliteStatementGuard } from '../util/sqlite-statement-boundary.mjs';
 import { sqliteWriteLease, retireSqliteHandle, isSqliteHandleRetired } from '../util/sqlite-write-lease.mjs';
@@ -9,10 +10,15 @@ const active = new WeakMap();
 // SQLite extended constraint codes: PRIMARYKEY, UNIQUE and ROWID.
 const UNIQUE_CONSTRAINT_CODES = new Set([1555, 2067, 2579]);
 const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
-function synchronousResult(result, refuse = () => {}, code = 'purchase_store_async_result') {
-  if (result && typeof result.then === 'function') {
+function synchronousResult(result, db, code = 'purchase_store_async_result') {
+  // Result accessors and continuations may retain writers at any nesting depth.
+  const refuse = () => { if (db) { recover(db, 'ROLLBACK'); retireSqliteHandle(db); } };
+  let deferred;
+  try { deferred = types.isPromise(result) || typeof result?.then === 'function'; }
+  catch (error) { refuse(); throw error; }
+  if (deferred) {
     refuse();
-    Promise.resolve(result).catch(() => {});
+    if (types.isPromise(result)) Promise.prototype.then.call(result, undefined, () => {});
     throw new OperationError(code, 'purchase store requires a synchronous result');
   }
   return result;
@@ -22,26 +28,19 @@ function recover(db, sql) {
   if (isSqliteHandleRetired(db)) return;
   try { db.exec(sql); } catch { retireSqliteHandle(db); }
 }
-
-function transactionResult(db, result) {
-  return synchronousResult(result, () => {
-    // A continuation may retain prepared statements. Retire the whole handle
-    // before returning, even when the promise came from a nested body.
-    recover(db, 'ROLLBACK');
-    retireSqliteHandle(db);
-  });
-}
-
-function checkPersistentAttachments(db) {
+function checkAttachments(db) {
   // Separate durable files can recover different parts of one WAL commit.
-  if (db.prepare('PRAGMA database_list').all().some(({ name, file }) => name !== 'main' && file)) {
+  const attached = db.prepare('PRAGMA database_list').all().filter(({ name }) => !['main', 'temp'].includes(name));
+  if (attached.some(({ file }) => file)) {
     throw new OperationError('purchase_store_persistent_attachment', 'purchase transactions cannot include persistent attached databases');
   }
+  if (attached.length) {
+    throw new OperationError('purchase_store_unsupported_attachment', 'purchase transactions support only main and TEMP schemas');
+  }
 }
-
 function checkTransaction(db, guard) {
   guard.check();
-  checkPersistentAttachments(db);
+  checkAttachments(db);
 }
 
 // The package owns the transaction boundary. Host wrappers cannot commit a
@@ -52,7 +51,7 @@ function sqliteTransaction(db, fn) {
   if (isSqliteHandleRetired(db)) throw new OperationError('purchase_store_retired_handle', 'purchase store handle is retired');
   if (typeof fn !== 'function') throw new OperationError('purchase_store_invalid_callback', 'purchase transaction requires a callback');
   if (nonSynchronous(fn)) throw new OperationError('purchase_store_async_callback', 'purchase transaction requires an ordinary synchronous callback');
-  checkPersistentAttachments(db);
+  checkAttachments(db);
   if (active.has(db)) {
     const state = active.get(db);
     const savepoint = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
@@ -64,7 +63,7 @@ function sqliteTransaction(db, fn) {
       db.exec(`SAVEPOINT ${savepoint}`);
       opened = true;
       state.barrier = state.guard.blockCommit();
-      const result = withSqliteStatementGuard(db, () => checkTransaction(db, state.guard), () => transactionResult(db, fn()));
+      const result = withSqliteStatementGuard(db, () => checkTransaction(db, state.guard), () => synchronousResult(fn(), db));
       checkTransaction(db, state.guard);
       state.barrier.return();
       state.barrier = null;
@@ -96,7 +95,7 @@ function sqliteTransaction(db, fn) {
     guard.start();
     state = { guard, barrier: guard.blockCommit() };
     active.set(db, state);
-    const result = withSqliteStatementGuard(db, () => checkTransaction(db, guard), () => transactionResult(db, fn()));
+    const result = withSqliteStatementGuard(db, () => checkTransaction(db, guard), () => synchronousResult(fn(), db));
     checkTransaction(db, guard);
     state.barrier.return();
     state.barrier = null;
@@ -108,9 +107,9 @@ function sqliteTransaction(db, fn) {
     return result;
   } catch (error) {
     try { state?.barrier?.return(); } catch { /* Preserve the callback error. */ }
-    // At outer depth SQLite may already have rolled back everything. There
-    // is no savepoint to recover and no reason to retire that host handle.
-    try { if (begun && guard.present()) recover(db, 'ROLLBACK'); } catch { retireSqliteHandle(db); }
+    // Before body entry, BEGIN ownership requires recovery even if startup
+    // never marked the lease live. During the body SQLite may already roll back.
+    try { if (begun && (!state || guard.present())) recover(db, 'ROLLBACK'); } catch { retireSqliteHandle(db); }
     try { guard.disarm(); } catch { retireSqliteHandle(db); }
     throw error;
   } finally {
@@ -123,7 +122,7 @@ function sqliteUniqueViolation(error) {
 
 let statementGuardReady = false;
 /** Create the synchronous SQLite transaction and unique-error adapter.
- * Transactions refuse persistent attachments before callbacks or further SQL.
+ * Transactions refuse attached schemas before callbacks or further SQL.
  */
 export function createSqlitePurchaseStore() {
   // Track host statements prepared after construction, before the first write.
