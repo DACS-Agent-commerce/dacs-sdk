@@ -218,11 +218,11 @@ test('a caught recoverable statement error still permits a complete commit', t =
   db.exec("INSERT INTO records VALUES ('TEST-outside')");
 });
 
-test('automatic rollback guards TEMP and attached tables, including quoted host identifiers', t => {
-  const { db, path } = database(t), store = createSqlitePurchaseStore();
+test('automatic rollback guards TEMP and volatile attached tables, including quoted host identifiers', t => {
+  const { db } = database(t), store = createSqlitePurchaseStore();
   db.exec(`INSERT INTO records VALUES ('TEST-existing');
     CREATE TEMP TABLE "TEST-temp" (id TEXT);`);
-  db.prepare('ATTACH DATABASE ? AS "TEST-attached"').run(`${path}.attached`);
+  db.prepare('ATTACH DATABASE ? AS "TEST-attached"').run(':memory:');
   db.exec('CREATE TABLE "TEST-attached"."TEST-table" (id TEXT)');
   const tempInsert = db.prepare('INSERT INTO "TEST-temp" VALUES (?)');
   const attachedInsert = db.prepare('INSERT INTO "TEST-attached"."TEST-table" VALUES (?)');
@@ -234,9 +234,7 @@ test('automatic rollback guards TEMP and attached tables, including quoted host 
     assert.throws(() => attachedInsert.run('TEST-after'), /transaction ended/);
     assert.throws(() => db.prepare('SELECT count(*) n FROM "TEST-temp"'), /transaction ended/);
   }), { code: 'purchase_store_transaction_ended' });
-  const reopened = new DatabaseSync(`${path}.attached`);
-  try { assert.equal(reopened.prepare('SELECT count(*) n FROM "TEST-table"').get().n, 0); }
-  finally { reopened.close(); }
+  assert.equal(db.prepare('SELECT count(*) n FROM "TEST-attached"."TEST-table"').get().n, 0);
 });
 test('BEGIN IMMEDIATE blocks a second connection before its callback and permits retry', t => {
   const { db, path } = database(t), second = new DatabaseSync(path), store = createSqlitePurchaseStore();

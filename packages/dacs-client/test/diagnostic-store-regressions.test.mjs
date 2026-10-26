@@ -128,20 +128,18 @@ for (const [name, ddl, seed, write] of [
     } finally { reopened.close(); }
   });
 }
-test('detach and reattach of the same file retains transaction protection', t => {
+test('detach and reattach of the same persistent file is refused on every call', t => {
   const { db, path, store } = database(t);
-  db.prepare('ATTACH DATABASE ? AS aux').run(`${path}.aux`);
-  db.exec("CREATE TABLE aux.extra(id TEXT); INSERT INTO records(id) VALUES ('TEST-existing')");
   store.transaction(db, () => {});
-  db.exec('DETACH aux');
-  db.prepare('ATTACH DATABASE ? AS aux').run(`${path}.aux`);
-  assert.throws(() => store.transaction(db, () => {
-    assert.throws(() => db.exec("INSERT OR ROLLBACK INTO records(id) VALUES ('TEST-existing')"), /UNIQUE/);
-    assert.throws(() => db.exec("INSERT INTO aux.extra VALUES ('TEST-after')"), /transaction ended/);
-  }), { code: 'purchase_store_transaction_ended' });
-  const reopened = new DatabaseSync(`${path}.aux`);
-  try { assert.equal(reopened.prepare('SELECT count(*) n FROM extra').get().n, 0); }
-  finally { reopened.close(); }
+  for (const attempt of [1, 2]) {
+    db.prepare('ATTACH DATABASE ? AS aux').run(`${path}.aux`);
+    assert.throws(() => store.transaction(db, () => assert.fail('callback ran')),
+      { code: 'purchase_store_persistent_attachment' });
+    assert.equal(db.isTransaction, false);
+    db.exec('DETACH aux');
+    store.transaction(db, () => db.prepare('INSERT INTO records(id) VALUES (?)').run(`TEST-${attempt}`));
+  }
+  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
 });
 
 function purchaseWorld(t) {
