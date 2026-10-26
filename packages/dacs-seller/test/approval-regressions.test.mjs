@@ -55,3 +55,16 @@ test('D-1 direct manual approval refuses changed bytes and retains immutable app
  const lines=(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
  assert.equal(lines.at(-1).requestBytes,JSON.stringify(r));
 });
+
+for(const [state,found] of [
+ ['closed',{...purchase(),paymentObserved:false,prePaymentOpen:false}],
+ ['paid',{...purchase(),paymentObserved:true,prePaymentOpen:null}],
+ ['indeterminate',{...purchase(),paymentObserved:null,prePaymentOpen:null}],
+ ['access-refused',false],
+])test(`D-2 a held purchase becoming ${state} during manual approval is released without sign authority`,async t=>{
+ let current=null;const f=await fixture(t,async()=>current);let prompts=0;
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;current=found;return true;}});
+ assert.equal(await a(requestFor({artifactKind:'CompositeVerificationRecord'})),false);assert.equal(prompts,1);
+ const ledger=await f.read();assert.equal(ledger.rows.some(row=>row.signAuthorized),false);assert.equal(heldPolicyBudget(ledger.rows,T0).writes,0);
+ assert.equal([...ledger.attempts.values()][0].outcome,'released');
+});

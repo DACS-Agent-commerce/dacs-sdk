@@ -342,6 +342,7 @@ export function composeSellerApproval({mode,policy,manual}){
     if(deferred&&held&&typeof policy.authorizeSign==='function'&&(await policy.authorizeSign(copy))!==true){
       try{await policy.settle?.(copy,'released','sign-authorization-failed');}
       catch(error){process.stderr.write(`seller-policy-sign-authorization: the attempt ${attemptId} could not be ended released (${String(error?.code??error?.message).slice(0,120)}); it stays held and counted\n`);}
+      if(policy.heldForManual?.(copy)!==true)return false;
       process.stderr.write(`seller-policy-sign-authorization failed: the ${kind} write for job ${copy?.content?.jobId} was not signed and is not refused; it is decided again, as a new hold for exact manual approval\n`);
       await policy.pause?.();
       return approve(request);
@@ -521,14 +522,14 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     // Sign authority must be durable before preparation can approve.
     if(preparing&&accepted&&signRecords){
-      try{await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});live();accepted=retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
+      try{await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});live();policyReason=await stillOpenBeforePayment(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
       catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
     }
     if(preparing&&accepted){live();return true;}
     await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});
     live();
     // Resolve current purchase authority after the last ledger/directory await.
-    if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);live();}catch{policyReason='policy-check-failed';}accepted=policyReason===null;}
+    if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);}catch{policyReason='policy-check-failed';}live();accepted=policyReason===null;}
     if(accepted)accepted=retain();
     if(policyMode&&HOLD_REASONS.has(policyReason))heldRequests.set(input,policyReason);
     if(policyMode&&HOLD_REASONS.has(policyReason)){attemptId=randomUUID();heldAttempts.set(input,attemptId);liveAttempts.add(attemptId);}
@@ -587,6 +588,12 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       try{
         const attempt=(await whenReadable(()=>readPolicyLedger(evidencePath),request)).attempts.get(attemptId);
         if(!attempt||attempt.outcome!==null||attempt.reservation||attempt.approvalHash!==sha(JSON.stringify(request)))return false;
+        // Reread after the manual answer and ledger wait, immediately before the synchronous append.
+        const refusal=await stillOpenBeforePayment(request,policy,heldRequests.get(request));live();
+        if(refusal){
+          await releaseAttempt(attemptId,'confirmation-refused');
+          heldAttempts.delete(request);heldRequests.delete(request);dropPreparation(request);return false;
+        }
         await authorizeSigning(request,{attemptId});
       }catch(error){
         if(stopped)throw error;
