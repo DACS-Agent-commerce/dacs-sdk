@@ -1,7 +1,7 @@
 // All downloaded archive processing runs under the caller's subprocess deadline.
 import { lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 const TAR_BLOCK = 512;
@@ -16,6 +16,16 @@ function boundPath(name, limits) {
   for (const character of name) {
     if (character === "/" && ++depth > limits.pathDepth) throw new Error("packed tarball path exceeds depth limit");
   }
+}
+
+// npm strips one archive component before resolving the extraction destination.
+function packagePath(name) {
+  const parts = name.split("/").slice(1);
+  const stripped = parts.join("/");
+  if (posix.isAbsolute(name) || posix.isAbsolute(stripped) || parts.includes("..") || name.includes("\\")) {
+    throw new Error("packed tarball entry escapes the package: " + name);
+  }
+  return posix.normalize(stripped);
 }
 
 // One bounded trie insertion detects duplicate and ancestor conflicts in either order.
@@ -56,12 +66,10 @@ function validateFraming(tar, tarModule, limits) {
       if (entry.type !== "Directory" && size !== entry.size) throw new Error("pax size differs from the entry header in the packed tarball");
       if (SKIPPED_TYPES.has(entry.type)) return false;
       if (!FILE_TYPES.has(entry.type)) throw new Error("unsupported entry type in the packed tarball: " + entry.type);
-      const parts = name.split("/").slice(1);
-      if (name.startsWith("/") || parts.some(part => !part || part === "." || part === "..") || name.includes("\\")) {
-        throw new Error("packed tarball entry escapes the package: " + name);
-      }
-      addFile(namespace, parts, name);
-      files.add(parts.join("/"));
+      const path = packagePath(name);
+      if (path === ".") return false;
+      addFile(namespace, path.split("/"), name);
+      files.add(path);
       return true;
     },
   });
@@ -100,27 +108,30 @@ function extractedPaths(destination) {
   return paths;
 }
 
-const [cli, scratch] = process.argv.slice(2);
+const [cli, scratch, phase] = process.argv.slice(2);
 const { limits, labels } = JSON.parse(readFileSync(join(scratch, "sources.json"), "utf8"));
 process.on("log", (level, title, ...messages) => {
   if (level === "warn" || level === "error") throw new Error(title + ": " + messages.join(" "));
 });
 try {
   const require = createRequire(cli);
-  const pacote = require("pacote");
-  const tarModule = require("tar");
+  const pacote = phase === "extract" ? require("pacote") : null;
+  const tarModule = phase === "validate" ? require("tar") : null;
   const results = [];
   for (const [index, label] of labels.entries()) {
     try {
       const archive = join(scratch, index + ".tgz");
-      const tar = gunzipSync(readFileSync(archive), { maxOutputLength: limits.unpackedBytes });
-      validateFraming(tar, tarModule, limits);
-      const destination = join(scratch, "package-" + index);
-      await pacote.extract(archive, destination, { offline: true, ignoreScripts: true, cache: join(scratch, "cache") });
-      results.push(extractedPaths(destination));
+      if (phase === "validate") {
+        const tar = gunzipSync(readFileSync(archive), { maxOutputLength: limits.unpackedBytes });
+        validateFraming(tar, tarModule, limits);
+      } else {
+        const destination = join(scratch, "package-" + index);
+        await pacote.extract(archive, destination, { offline: true, ignoreScripts: true, cache: join(scratch, "cache") });
+        results.push(extractedPaths(destination));
+      }
     } catch (cause) { throw new Error(`cannot extract archive ${label}: ${cause.message}`, { cause }); }
   }
-  writeFileSync(join(scratch, "files.json"), JSON.stringify(results));
+  if (phase === "extract") writeFileSync(join(scratch, "files.json"), JSON.stringify(results));
 } catch (cause) {
   writeFileSync(join(scratch, "failure.json"), JSON.stringify({ message: cause.message }));
   process.exitCode = 1;
