@@ -112,13 +112,13 @@ function descriptor(record) {
     ...(transactionHash ? { transactionHash } : {}), evidenceMode: record.evidenceMode ?? DEMOS_SR2_EVIDENCE_MODE };
 }
 
-function inputs({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, receiptContentHash = contentHash(artifact) }) {
+function inputs({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, receiptContentHash = artifactContentHash(artifact, artifactKind) }) {
   if (typeof logicalAddress !== 'string' || !logicalAddress || logicalAddress.trim() !== logicalAddress) reject('invalid', 'logical address is required');
   const programName = logicalToStorageProgramName(logicalAddress);
   if (programName.length > 256) reject('invalid', 'program name exceeds the offline fixture limit');
   const value = JSON.parse(canonicalize(artifact));
   if (!object(value) || Buffer.byteLength(canonicalize(value)) > 64 * 1024) reject('invalid', 'artifact must be a bounded JSON object');
-  if (!HASH.test(receiptContentHash) || receiptContentHash !== contentHash(value)) reject('invalid', 'receipt content hash must match the artifact signed scope');
+  if (!HASH.test(receiptContentHash) || receiptContentHash !== artifactContentHash(value, artifactKind)) reject('invalid', 'receipt content hash must match the artifact kind');
   const owner = addressForClaim(writer);
   const envelopeHash = exactHash(value);
   if (artifactKind !== undefined && (typeof artifactKind !== 'string' || !/^[A-Za-z][A-Za-z0-9-]{0,79}$/.test(artifactKind))) reject('invalid', 'explicit artifact kind is malformed');
@@ -439,7 +439,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
 
   // Consume a pointer, never submit a transaction. A missing/uncertain read
   // throws indeterminate and keeps the wallet lane and original plan fenced.
-  async function write({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, transactionHash, receiptContentHash = contentHash(artifact) }) {
+  async function write({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, transactionHash, receiptContentHash }) {
     const requested = sourceInputs({ logicalAddress, artifact, writer, artifactKind, deliveryBinding, receiptContentHash });
     return journal.withWalletLock(walletKey(writer), async () => {
       const saved = await retained(logicalAddress, writer);
@@ -456,10 +456,10 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     });
   }
 
-  async function verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind, deliveryBinding, receiptContentHash = contentHash(artifact), signedProjection }) {
+  async function verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind, deliveryBinding, receiptContentHash = artifactContentHash(artifact, artifactKind), signedProjection }) {
     try {
       const projection = signedProjection === undefined ? undefined : clone(signedProjection);
-      if (!isAnchorReceipt(receipt) || receipt.logicalAddress !== logicalAddress || receipt.writer !== expectedWriter || receipt.contentHash !== receiptContentHash || receiptContentHash !== contentHash(artifact)) return 'invalid';
+      if (!isAnchorReceipt(receipt) || receipt.logicalAddress !== logicalAddress || receipt.writer !== expectedWriter || receipt.contentHash !== receiptContentHash || receiptContentHash !== artifactContentHash(artifact, artifactKind)) return 'invalid';
       const proof = decodeDemosAnchorReceiptProof(receipt);
       if (proof.chainIdentity !== expectedIdentity || proof.operation !== 'create') return 'invalid';
       const derived = deriveStorageAddress(addressForClaim(expectedWriter), logicalToStorageProgramName(logicalAddress), Number(receipt.nonce), '');
