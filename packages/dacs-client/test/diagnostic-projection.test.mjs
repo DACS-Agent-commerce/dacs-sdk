@@ -74,3 +74,38 @@ test('operation projection keeps the listed state fields and returns a fresh cop
 test('operation projection of a non-record state yields an empty state', () => {
   assert.deepEqual(projectDiagnosticOperation({ id: 'TEST-op', state: 'TEST-not-a-record' }), { id: 'TEST-op', state: {} });
 });
+
+for (const [name, project] of [
+  ['value', projectDiagnostic],
+  ['operation', value => projectDiagnosticOperation({ state: { protocol: { listing: value } } }).state.protocol.listing],
+]) {
+  test(`${name} projection refuses overlong record keys`, () => {
+    for (const key of ['x'.repeat(200000), '\u0000'.repeat(DIAGNOSTIC_LIMITS.stringChars + 1)]) {
+      const projected = project({ [key]: 'TEST-value' });
+      assert.equal(Object.hasOwn(projected, key), false);
+      assert.match(JSON.stringify(projected), /omitted/);
+      assert.ok(JSON.stringify(projected).length <= DIAGNOSTIC_LIMITS.outputChars);
+    }
+    const key = 'x'.repeat(DIAGNOSTIC_LIMITS.stringChars);
+    assert.equal(project({ [key]: 'TEST-value' })[key], 'TEST-value');
+  });
+
+  test(`${name} projection checks escaped record keys against the remaining budget`, () => {
+    const record = Object.fromEntries(Array.from({ length: DIAGNOSTIC_LIMITS.collectionItems }, (_, index) =>
+      ['\u0000'.repeat(DIAGNOSTIC_LIMITS.stringChars - 2) + index, null]));
+    const projected = project(record);
+    assert.ok(JSON.stringify(projected).length <= DIAGNOSTIC_LIMITS.outputChars);
+    assert.match(JSON.stringify(projected), /omitted/);
+  });
+}
+
+test('saved bundle signatures are removed by both projections', () => {
+  const bundle = { bundleHash: 'TEST-hash', finalisedAt: 123, buyerSignature: REPLAY, sellerSignature: REPLAY,
+    copies: [{ buyerSignature: REPLAY, sellerSignature: REPLAY, ref: 'TEST-copy' }] };
+  const operation = { id: 'TEST-op', state: { protocol: { bundle } } };
+  const expected = { bundleHash: 'TEST-hash', finalisedAt: 123, copies: [{ ref: 'TEST-copy' }] };
+  assert.deepEqual(projectDiagnostic(operation).state.protocol.bundle, expected);
+  assert.deepEqual(projectDiagnosticOperation(operation).state.protocol.bundle, expected);
+  assert.equal(bundle.buyerSignature, REPLAY);
+  assert.equal(bundle.sellerSignature, REPLAY);
+});

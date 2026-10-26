@@ -12,7 +12,7 @@ const OPERATION_STATE_FIELDS = ['preparedVerification', 'protocol'];
 const PROTOCOL_STATE_FIELDS = ['stage', 'revision', 'notSaved', 'listing', 'agreement', 'commitment', 'claim', 'paymentEvidence',
   'delivery', 'bundle', 'nativeEvidence', 'attempts', 'deliveryDeadline', 'storageGap', 'agreementContext'];
 const SIGNING_MATERIAL_KEYS = new Set(['payload', 'message', 'agreementMessage', 'anchorMessage', 'signature', 'signatures',
-  'planned', 'buyerBundle', 'rawTransaction']);
+  'buyerSignature', 'sellerSignature', 'planned', 'buyerBundle', 'rawTransaction']);
 
 const isPlainRecord = value => value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const pick = (record, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(record, field)).map(field => [field, record[field]]));
@@ -49,8 +49,9 @@ function copyRecord(record, budget, depth) {
   const entries = [];
   for (const key of keys) {
     if (SIGNING_MATERIAL_KEYS.has(key)) continue;
-    if (exhausted(budget)) { entries.push(['omitted', omit(budget)]); break; }
-    budget.chars -= JSON.stringify(key).length + 1;
+    const cost = key.length > DIAGNOSTIC_LIMITS.stringChars ? Infinity : JSON.stringify(key).length + 1;
+    if (exhausted(budget) || cost > budget.chars) { entries.push(['omitted', omit(budget)]); break; }
+    budget.chars -= cost;
     const value = copyValue(record[key], budget, depth + 1);
     if (value !== undefined) entries.push([key, value]);
   }
