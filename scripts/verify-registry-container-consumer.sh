@@ -300,7 +300,8 @@ run_bounded docker run --rm \
   "${consumer_network_args[@]}" \
   --volume "$consumer_root:/work" \
   --volume "$bounded_support:/acceptance-support:ro" \
-  --volume "$repo_root/scripts:/acceptance-scripts:ro" \
+  --volume "$repo_root/scripts:/acceptance-sdk/scripts:ro" \
+  --volume "$repo_root/package.json:/acceptance-sdk/package.json:ro" \
   --volume "$release_set:/release-set:ro" \
   --volume "$artifact_stage:/acceptance-artifacts" \
   --workdir /work \
@@ -335,7 +336,7 @@ run_bounded docker run --rm \
       --deploy docker
     cd one-click-agent
     dependency_status=0
-    node /acceptance-scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \
+    node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \
       /acceptance-artifacts/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION" || dependency_status=$?
     printf "%s\n" "$dependency_status" > /work/dependency-policy.exit-code
     test "$dependency_status" -eq 0
