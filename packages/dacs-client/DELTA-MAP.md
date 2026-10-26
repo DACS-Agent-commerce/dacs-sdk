@@ -576,15 +576,12 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d5cd592b2d02917ce3b15cb74e625420257f3c4c |
 | D11 | fix(client): D11 keep lease recovery checks portable | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | fc104ed0039536bab64baa7882764154ac37e933 |
-<<<<<<< HEAD
 | D11 | fix(client): D11 preserve deferred-result and read-only statement fences | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 5e0077f1c0e94938358e112ba518f124323894fa |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 7acf0c866638baa16417d40e0f345238fe4985f1 |
-=======
 | D11 | fix(client): D11 commit guard generations before accepting transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | dc7166d3baff55abd0a7862a4b78e337cd5ae0d9 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | 40d3d1bbb2852a6424337ee5c50af9c2e59b8154 |
->>>>>>> stack/376/03-sqlite-transaction-adapter
 
 ## Complete commit and file inventory
 
@@ -1436,7 +1433,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
-<<<<<<< HEAD
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1444,7 +1440,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
 | fix(client): D11 preserve deferred-result and read-only statement fences | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
-=======
 | fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1453,7 +1448,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
 | fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
->>>>>>> stack/376/03-sqlite-transaction-adapter
+| fix(client): D11 preserve merged lease control records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve merged lease control records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve merged lease control records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve merged lease control records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve merged lease control records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
