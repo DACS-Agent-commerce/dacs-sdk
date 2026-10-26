@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { NotWiredError } from '../client-errors.mjs';
+import { NotWiredError, OperationError } from '../client-errors.mjs';
 
 const guards = new WeakMap();
 const fenced = new WeakSet();
@@ -86,14 +86,14 @@ function createLease(db) {
         // SQLite refuses COMMIT/END while a write statement is in progress.
         // Keep the iterator private; only package code may finish this statement.
         const iterator = db.prepare(`UPDATE ${marker} SET present = present RETURNING present`).iterate();
-        if (iterator.next().done) throw new NotWiredError('purchase-store-not-wired');
+        if (iterator.next().done) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
         return iterator;
       },
       present() { return !fenced.has(db) && db.isTransaction !== false && Boolean(db.prepare(`SELECT 1 FROM ${marker} WHERE present = 1`).get()); },
       check() {
         // isTransaction is unavailable on the minimum supported Node versions;
         // the transactional marker supplies the same check on those versions.
-        if (!state.guard.present()) throw new NotWiredError('purchase-store-not-wired');
+        if (!state.guard.present()) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
       },
       disarm() { if (!fenced.has(db)) db.exec(`UPDATE ${marker} SET armed = 0`); },
     },
