@@ -1,3 +1,6 @@
+import { stopRequested, stopSignal } from './stop-request.mjs';
+import { createInterface } from 'node:readline/promises';
+import { randomUUID } from 'node:crypto';
 import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
 import { compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { dirname, resolve } from 'node:path';
@@ -368,6 +371,265 @@ const stoppedError=(message)=>Object.assign(new Error(message),{code:'seller_app
 export const OPERATOR_CLOSING='operator_closing';
 const closingError=()=>Object.assign(new Error('the operator is closing: this seller approval was not decided, nothing was signed, and the next start asks again'),{code:OPERATOR_CLOSING});
 
+/** Create exact manual or bounded policy approval with durable sign reservations.
+ * Returns an approval function with prepare, confirmation, settlement, stop and reconciliation methods.
+ * Abort and ledger failures reject; a false answer permits no signature. */
+export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
+  if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
+  if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
+  const askSignal=()=>{const current=typeof signal==='function'?signal():signal;if(current!==null&&!(current instanceof AbortSignal))throw new TypeError('seller approval signal must be an AbortSignal');return current;};
+  const STOPPED=Symbol('stopped');
+  const unlessStopped=(answer,stopSignal)=>!stopSignal?answer:new Promise((resolve,reject)=>{
+    const stop=()=>resolve(STOPPED);stopSignal.addEventListener('abort',stop,{once:true});
+    Promise.resolve(answer).then(resolve,reject).finally(()=>stopSignal.removeEventListener('abort',stop));
+  });
+  const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
+  if(policyMode&&(!policy||typeof policy.resolvePurchase!=='function'||typeof policy.listingPin!=='function'||!policy.sourceBinding||!/^0x[0-9a-f]{64}$/.test(policy.address??'')||policy.seller!==`did:demos:agent:${policy.address.slice(2)}`))throw new TypeError('seller policy requires exact operator-owned purchase and source context');
+  if(policyMode)sellerPurchaseSource(policy.purchaseSource);
+  const signRecords=policyMode&&sellerPurchaseSource(policy.purchaseSource)==='seller';
+  // Track each exact request through preparation, signing, confirmation and completion.
+  const reservations=new WeakMap(),heldRequests=new WeakMap(),heldAttempts=new WeakMap(),signAuthorized=new WeakMap();
+  const preparations=new WeakMap(),path=resolve(evidencePath),liveAttempts=new Set(),liveReservations=new Set();
+  const dropPreparation=(request)=>{
+    const hold=preparations.get(request);if(!hold)return;
+    const holds=provisionalHolds.get(path);holds.delete(hold);if(!holds.size)provisionalHolds.delete(path);
+    preparations.delete(request);
+  };
+  const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
+  let stopped=false,idle=null;const pauses=new Set(),flights=new Set();
+  const live=()=>{if(stopped)throw stoppedError(APPROVAL_STOPPED);};
+  const track=(work)=>{
+    if(stopped)return Promise.reject(stoppedError(APPROVAL_STOPPED));
+    const flight=work(),forget=()=>{flights.delete(flight);};
+    flights.add(flight);flight.then(forget,forget);
+    return flight;
+  };
+  const pause=()=>new Promise((done,fail)=>{
+    if(stopped)return fail(stoppedError(LEDGER_STOPPED));
+    const entry={fail,timer:setTimeout(()=>{pauses.delete(entry);done();},ledgerRetryMs)};pauses.add(entry);
+  });
+  const LOG_EVERY=Math.max(1,Math.ceil(60_000/ledgerRetryMs));
+  const ledgerUnreadable=async(error,request,waited)=>{
+    if(stopped)throw stoppedError(LEDGER_STOPPED);
+    if(waited%LOG_EVERY===0)process.stderr.write(`seller-policy-ledger unreadable: ${path}${Number.isSafeInteger(error?.ledgerLine)?` line ${error.ledgerLine}`:''} (${String(error?.code??error?.message).slice(0,120)}); the ${request?.content?.artifactKind} write for job ${request?.content?.jobId} waits, unsigned and not refused, and is decided again once the ledger reads; with the operator stopped, correct the ledger (docs/SELLER-POLICY-AND-DELIVERY-EVIDENCE.md, "Resolving a held reservation by hand")\n`);
+    await pause();
+  };
+  const ledgerReadable=(request)=>process.stderr.write(`seller-policy-ledger readable again: deciding the ${request?.content?.artifactKind} write for job ${request?.content?.jobId}\n`);
+  // An unreadable pre-payment ledger holds the write until a fresh decision is possible.
+  const whenReadable=async(read,request)=>{
+    for(let waited=0;;waited++){
+      live();
+      let value;
+      try{value=await read();}catch(error){await ledgerUnreadable(error,request,waited);continue;}
+      live();
+      if(waited)ledgerReadable(request);
+      return value;
+    }
+  };
+  // Retain and sync the exact sign authority before allowing the wallet to sign.
+  const authorizeSigning=async(request,{reservationId=randomUUID(),attemptId=null,at=now()}={})=>{
+    const requestBytes=JSON.stringify(request),totalOs=request?.content?.debit?.totalOs;
+    if(!OS.test(totalOs??'')||!Number.isSafeInteger(at)||at<0)throw new Error('seller policy sign authorization is malformed');
+    const reservation={reservationId,approvalHash:sha(requestBytes),totalOs,...(attemptId?{attemptId}:{})};
+    try{
+      appendApprovalLedgerLine(evidencePath,{format:SIGN_FORMAT,reservationId,approvalHash:reservation.approvalHash,requestBytes,totalOs,recordedAt:at,...(attemptId?{attemptId}:{})});
+    }catch(error){
+      try{
+        const row=(await readPolicyLedger(evidencePath)).rows.find(entry=>entry.signAuthorized&&entry.reservationId===reservationId),recordedAt=now();
+        if(!stopped&&row?.outcome===null&&Number.isSafeInteger(recordedAt)&&recordedAt>=row.recordedAt)
+          appendAttempt({reservationId,approvalHash:reservation.approvalHash,...(attemptId?{attemptId}:{}),outcome:'released',reason:'sign-authorization-failed',recordedAt});
+      }catch{}
+      throw error;
+    }
+    signAuthorized.set(request,reservation);liveReservations.add(reservationId);
+    return reservation;
+  };
+  const releaseAttempt=async(attemptId,reason)=>{
+    const attempt=(await readPolicyLedger(evidencePath)).attempts.get(attemptId);
+    live();
+    if(!attempt||(attempt.reservation&&attempt.outcome===null))throw new Error('seller policy attempt is unavailable');
+    if(attempt.outcome===null)appendAttempt({attemptId,approvalHash:attempt.approvalHash,outcome:'released',reason,recordedAt:now()});
+    liveAttempts.delete(attemptId);
+  };
+  const decide=async(input,validity,{preparing=false,manualApproved=false,held=null,provisional=null,attemptId=null,signed=null}={})=>{
+    const confirmedTotal=validity===undefined?undefined:confirmedWriteOs(validity,input);
+    const declaredTotal=input?.content?.debit?.totalOs;
+    const declared=typeof declaredTotal==='string'&&OS.test(declaredTotal)?BigInt(declaredTotal):null;
+    const countedTotal=confirmedTotal===undefined?declared:confirmedTotal===null||declared===null?null:confirmedTotal>declared?confirmedTotal:declared;
+    const total=countedTotal?.toString();
+    const withinBudget=input?.method==='sendTransaction'&&OS.test(total??'')&&BigInt(total)<=BigInt(maxTotalOs);
+    if(!policyMode&&!withinBudget)return false;
+    const requestBytes=JSON.stringify(input),request=policyMode?JSON.parse(requestBytes):input,approvalHash=sha(requestBytes);
+    let at=policyMode?now():null;
+    const authorized=signRecords&&validity!==undefined&&!manualApproved?signed:null;
+    let reservationId=authorized?authorized.reservationId:policyMode?randomUUID():null;
+    const notice=policyMode?null:sellerNotice(request);
+    let accepted=false,policyReason=null;
+    if(policyMode){
+      const waitsForLedger=signRecords&&validity===undefined&&BEFORE_PAYMENT.has(request?.content?.artifactKind);
+      for(let waited=0;;){
+        live();
+        try{policyReason=confirmedTotal===null?'debit':!withinBudget?'operator-fee-budget':await policyRefusal(request,policy,settings,{confirmedTotal,countedTotal,manualApproved,held});}catch{policyReason='policy-check-failed';}
+        live();
+        if(held&&HOLD_REASONS.has(policyReason))policyReason=null;
+        const hold=!held&&HOLD_REASONS.has(policyReason)?policyReason:null;
+        if(!policyReason||hold){try{policyReason=(await budgetRefusal({evidencePath,jobId:request.content.jobId,artifactKind:request.content.artifactKind,totalOs:total,at,limits:settings,manualApproved,
+          provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null}))??hold;}
+          catch(error){if(waitsForLedger){await ledgerUnreadable(error,request,waited++);at=now();continue;}policyReason='evidence-unreadable';}}
+        live();
+        if(waited)ledgerReadable(request);
+        break;
+      }
+      if(!policyReason&&signRecords&&validity!==undefined&&!manualApproved&&authorized?.approvalHash!==approvalHash)policyReason='sign-authorization-missing';
+      accepted=policyReason===null;
+    }else{
+      const closeSignal=askSignal();
+      if(closeSignal?.aborted)throw closingError();
+      if(authorize){
+        const answer=await unlessStopped(authorize(Object.freeze({approvalHash,request:structuredClone(request),...(notice?{notice}:{})})),closeSignal);
+        if(answer===STOPPED)throw closingError();
+        accepted=answer===true;
+      }else{
+        if(!process.stdin.isTTY||!process.stderr.isTTY)throw new Error('exact seller approval requires an interactive TTY');
+        const listing=request?.content?.artifactKind==='Listing';
+        if(listing&&stopRequested())return false;
+        if(notice)process.stderr.write(`${notice}\n`);
+        process.stderr.write(`${JSON.stringify({approvalHash,request})}\n`);
+        const signals=[...(listing?[stopSignal]:[]),...(closeSignal?[closeSignal]:[])];
+        const ui=createInterface({input:process.stdin,output:process.stderr});if(!listing)ttyPrompts++;
+        try{accepted=(await ui.question(`Type APPROVE ${approvalHash} to authorize this exact seller transaction: `,signals.length?{signal:signals.length===1?signals[0]:AbortSignal.any(signals)}:{}))===`APPROVE ${approvalHash}`;}
+        catch(error){if(listing&&stopRequested())return false;if(!closeSignal?.aborted)throw error;throw closingError();}
+        finally{if(!listing)ttyPrompts--;ui.close();}
+      }
+    }
+    live();
+    // Sign authority must be durable before preparation can approve.
+    if(preparing&&accepted&&signRecords){
+      try{await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});live();await authorizeSigning(input,{reservationId,at});}
+      catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
+    }
+    if(preparing&&accepted){live();return true;}
+    await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});
+    live();
+    // Resolve current purchase authority after the last ledger/directory await.
+    if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);live();}catch{policyReason='policy-check-failed';}accepted=policyReason===null;}
+    if(policyMode&&HOLD_REASONS.has(policyReason))heldRequests.set(input,policyReason);
+    if(policyMode&&HOLD_REASONS.has(policyReason)){attemptId=randomUUID();heldAttempts.set(input,attemptId);liveAttempts.add(attemptId);}
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:request?.method??null,address:request?.address??null,totalOs:total??null,decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),
+      ...(policyMode&&!manualApproved?{approvalMode:'policy',policyReason,reservationId,...(held?{policyHold:held}:{})}:{}),...(validity===undefined?{}:{confirmation:validity,declaredTotalOs:declaredTotal??null,confirmedRemovalsOs:confirmedTotal?.toString()??null,countedTotalOs:total??null,...(manualApproved?{manualApproved:true}:{})}),recordedAt:policyMode?at:now()});
+    if(policyMode&&accepted&&!manualApproved){reservations.set(input,{reservationId,approvalHash,...(attemptId?{attemptId}:{})});liveReservations.add(reservationId);}
+    return accepted;
+  };
+  const approve=async(request,validity,options={})=>{
+    try{
+      if(!policyMode){live();return await decide(request,undefined,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?{attemptId:options.attemptId}:{});}
+      const snapshot=structuredClone(request);
+      return await track(()=>serializedPolicy(evidencePath,async()=>{
+        live();
+        if(options.preparing)dropPreparation(request);
+        const held=options.held===true?heldRequests.get(request)??null:null;
+        const attemptId=held?heldAttempts.get(request)??null:null;
+        const signed=options.preparing?null:signAuthorized.get(request)??null;
+        const accepted=await decide(snapshot,validity,{...options,held,attemptId,signed,provisional:signed??preparations.get(request)});
+        live();
+        const heldNow=heldRequests.has(snapshot);
+        if(signAuthorized.has(snapshot))signAuthorized.set(request,signAuthorized.get(snapshot));
+        if(options.preparing&&(heldNow||(accepted&&!signAuthorized.has(snapshot)))){
+          const hold={decision:'approved',policy:true,outcome:null,jobId:snapshot.content.jobId,artifactKind:snapshot.content.artifactKind,totalOs:snapshot.content.debit.totalOs,approvalHash:sha(JSON.stringify(snapshot)),...(heldNow?{held:true,attemptId:heldAttempts.get(snapshot)}:{})};
+          if(!provisionalHolds.has(path))provisionalHolds.set(path,new Set());
+          provisionalHolds.get(path).add(hold);preparations.set(request,hold);
+        }else if(!options.preparing)dropPreparation(request);
+        if(accepted&&reservations.has(snapshot))reservations.set(request,reservations.get(snapshot));
+        if(signed&&accepted)signAuthorized.delete(request);
+        if(heldNow)heldRequests.set(request,heldRequests.get(snapshot));else heldRequests.delete(request);
+        if(heldNow)heldAttempts.set(request,heldAttempts.get(snapshot));
+        else if(attemptId&&accepted){heldAttempts.delete(request);liveAttempts.delete(attemptId);}
+        else if(signed&&!accepted){try{await completeReservation(request,signed,'released','confirmation-refused');}catch{}}
+        else if(attemptId){try{await releaseAttempt(attemptId,'confirmation-refused');heldAttempts.delete(request);}catch{}}
+        return accepted;
+      }));
+    }catch(error){
+      if(process.env.DACS_TEST_TRACE==='1')process.stderr.write(`devnet-operator-approval-error:${error.code??'failed'}:${String(error.message).slice(0,200)}\n`);
+      throw error;
+    }
+  };
+  approve.prepare=(request)=>approve(request,undefined,{preparing:true});
+  approve.pause=pause;
+  approve.stop=()=>{
+    stopped=true;for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
+    return idle??=(async()=>{while(flights.size)await Promise.allSettled([...flights]);})();
+  };
+  approve.heldForManual=(request)=>heldRequests.has(request);
+  approve.heldAttempt=(request)=>heldAttempts.get(request)??null;
+  approve.authorizeSign=(request)=>{
+    if(!signRecords)return Promise.resolve(true);
+    return track(()=>serializedPolicy(evidencePath,async()=>{
+      live();
+      const attemptId=heldAttempts.get(request);
+      if(!heldRequests.has(request)||!attemptId||signAuthorized.has(request))return false;
+      try{
+        const attempt=(await whenReadable(()=>readPolicyLedger(evidencePath),request)).attempts.get(attemptId);
+        if(!attempt||attempt.outcome!==null||attempt.reservation||attempt.approvalHash!==sha(JSON.stringify(request)))return false;
+        await authorizeSigning(request,{attemptId});
+      }catch(error){
+        if(stopped)throw error;
+        return false;
+      }
+      live();
+      dropPreparation(request);
+      return true;
+    }));
+  };
+  const completeReservation=async(request,reservation,outcome,reason)=>{
+    const{rows}=await readPolicyLedger(evidencePath),row=rows.find(entry=>entry.reservationId===reservation.reservationId);
+    live();
+    if(!row||row.outcome!==null)throw new Error('seller policy reservation is unavailable');
+    const recordedAt=now();
+    if(!Number.isSafeInteger(recordedAt)||recordedAt<row.recordedAt)throw new Error('seller policy completion time is unavailable');
+    const confirmed=reservations.get(request)===reservation;
+    appendAttempt({reservationId:reservation.reservationId,approvalHash:reservation.approvalHash,...(reservation.attemptId?{attemptId:reservation.attemptId}:{}),outcome,
+      ...(!confirmed&&outcome==='released'?{reason:RELEASE_REASONS.has(reason)?reason:'wallet-released'}:{}),recordedAt});
+    reservations.delete(request);signAuthorized.delete(request);liveReservations.delete(reservation.reservationId);
+    if(reservation.attemptId){heldAttempts.delete(request);heldRequests.delete(request);liveAttempts.delete(reservation.attemptId);}
+  };
+  approve.settle=async(request,outcome,reason='wallet-released')=>{
+    if(!['spent','released','unknown'].includes(outcome))throw new TypeError('seller attempt outcome must be spent, released or unknown');
+    if(outcome==='unknown')return;
+    return track(()=>serializedPolicy(evidencePath,async()=>{
+      live();
+      if(outcome==='released')dropPreparation(request);
+      const reservation=reservations.get(request)??signAuthorized.get(request);
+      if(!reservation){
+        const attemptId=heldAttempts.get(request);
+        if(attemptId&&outcome==='released'){await releaseAttempt(attemptId,RELEASE_REASONS.has(reason)?reason:'wallet-released');heldAttempts.delete(request);}
+        return;
+      }
+      await completeReservation(request,reservation,outcome,reason);
+    }));
+  };
+  // Restart only labels unresolved attempts; it never resends or releases them.
+  approve.reconcile=()=>track(()=>serializedPolicy(evidencePath,async()=>{
+    if(!policyMode)return{released:[],held:[]};
+    const{rows,attempts}=await readPolicyLedger(evidencePath),held=[];
+    const describe=(row,extra)=>({jobId:row?.jobId??null,artifactKind:row?.request?.content?.artifactKind??null,...extra});
+    for(const[attemptId,attempt]of attempts){
+      if(attempt.outcome!==null||attempt.reservation||liveAttempts.has(attemptId))continue;
+      held.push(describe(rows.find(row=>row.attemptId===attemptId),{attemptId,reservationId:null,approvalHash:attempt.approvalHash,state:attempt.manual?'approved-sign-unknown':'approval-unknown'}));
+    }
+    for(const row of rows){
+      if(row.openAttempt||!row.policy||row.decision!=='approved'||row.outcome!==null||liveReservations.has(row.reservationId))continue;
+      const ids={attemptId:row.attemptId,reservationId:row.reservationId??null,approvalHash:row.approvalHash};
+      if(!decidedFromJournals(row)){held.push(describe(row,{...ids,state:'no-completion-record'}));continue;}
+      let issuance='unknown';
+      try{if(typeof policy.issuance==='function')issuance=await policy.issuance(structuredClone(row.request),Object.freeze({reservationId:row.reservationId,approvalHash:row.approvalHash}));}catch{issuance='unknown';}
+      held.push(describe(row,{...ids,state:issuance==='issued'?'issued-outcome-unknown':'issuance-unknown'}));
+    }
+    return{released:[],held};
+  }));
+  return approve;
+}
+
+
 // Seller records: the operator's explicit release of one held attempt, named
 // by its attemptId, with the operator stopped (operator.mjs takes the state
 // lock), after a chain readback shows that its write can never be included
@@ -625,3 +887,7 @@ export async function stillOpenBeforePayment(request,policy,held){
   if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&purchase===null)return null;
   return purchase?.jobId===request.content.jobId&&(purchase.prePaymentOpen===true||(held&&purchase.prePaymentOpen===null))&&purchase.paymentObserved===false?null:'purchase-closed';
 }
+
+let ttyPrompts=0;
+/** Return whether an interactive non-Listing approval prompt is pending. */
+export const ttyApprovalPending=()=>ttyPrompts>0;
