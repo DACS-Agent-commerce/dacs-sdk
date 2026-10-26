@@ -1,7 +1,7 @@
+import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
 import { compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
-import { closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
@@ -387,14 +387,7 @@ export function releaseHeldSellerAttempt({evidencePath,attemptId,now=Date.now}){
     if(attempt.outcome!==null)throw new Error(`seller policy attempt ${attemptId} already ended ${attempt.outcome}; nothing was released`);
     const reservation=attempt.reservation,recordedAt=now();
     if(!Number.isSafeInteger(recordedAt)||recordedAt<(reservation?.recordedAt??0))throw new Error('seller policy release time is unavailable; nothing was released');
-    // Never glued onto a last line written by hand without its newline.
-    const line=`${text.endsWith('\n')?'':'\n'}${JSON.stringify({format:ATTEMPT_FORMAT,...(reservation?{reservationId:reservation.reservationId}:{}),approvalHash:attempt.approvalHash,attemptId,outcome:'released',reason:'operator-released',recordedAt})}\n`;
-    const handle=openSync(evidencePath,'a',0o600);
-    try{
-      const bytes=Buffer.from(line,'utf8');
-      for(let done=0;done<bytes.length;){const written=writeSync(handle,bytes,done,bytes.length-done);if(!(written>0))throw new Error('seller policy release was not written');done+=written;}
-      fsyncSync(handle);
-    }finally{closeSync(handle);}
+    appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...(reservation?{reservationId:reservation.reservationId}:{}),approvalHash:attempt.approvalHash,attemptId,outcome:'released',reason:'operator-released',recordedAt});
     const hold=rows.find(row=>row.attemptId===attemptId);
     return{attemptId,reservationId:reservation?.reservationId??null,approvalHash:attempt.approvalHash,jobId:hold?.jobId??null,artifactKind:hold?.request?.content?.artifactKind??null,
       state:reservation?'sign-authorized':attempt.manual?'approved-sign-unknown':'approval-unknown',reason:'operator-released',recordedAt};
@@ -448,24 +441,7 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
   });
 }
 
-// Sync both a retained append and its publication directory. Parent creation
-// is one leaf only; its existing parent's entry is synchronized as well.
-function syncContextLedger(evidencePath){
-  for(const path of [evidencePath,dirname(resolve(evidencePath)),dirname(dirname(resolve(evidencePath)))]){
-    const handle=openSync(path,'r');try{fsyncSync(handle);}finally{closeSync(handle);}
-  }
-}
-const appendContextLine=async(evidencePath,line)=>{
-  await mkdir(dirname(evidencePath),{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error;});
-  let text='';try{text=await readFile(evidencePath,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
-  const bytes=Buffer.from(`${text.length&&!text.endsWith('\n')?'\n':''}${JSON.stringify({format:CONTEXT_FORMAT,...line})}\n`);
-  const handle=openSync(evidencePath,'a',0o600);
-  try{
-    for(let done=0;done<bytes.length;){const written=writeSync(handle,bytes,done,bytes.length-done);if(!(written>0))throw new Error('context line was not written');done+=written;}
-    fsyncSync(handle);
-  }finally{closeSync(handle);}
-  syncContextLedger(evidencePath);
-};
+const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
 
 // Ends a job's open context holds (only holdId when given) with one release
 // line each, under the policy lock, and returns the released hold ids. The
