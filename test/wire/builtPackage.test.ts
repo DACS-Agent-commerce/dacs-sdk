@@ -25,6 +25,7 @@ import { signedAgreement, tp1Listing } from "./commitmentFixture.js";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const VECTORS = join(root, "vectors/dacs-seller-http-v1.json");
+const PUBLIC_ENDPOINT = "https://seller.built-package.invalid";
 // An Agreement for the vectors' job and pin with placeholder parties; the consumer names its own and signs it.
 const PLACEHOLDER = { buyer: `did:demos:agent:${"1".repeat(64)}`, seller: `did:demos:agent:${"2".repeat(64)}` };
 const { job: vectorJob, now: vectorNow } = JSON.parse(readFileSync(VECTORS, "utf8"));
@@ -33,7 +34,7 @@ const placeholderSigner = (claim: string) => ({ claim, sign: () => new Uint8Arra
 const AGREEMENT_TEMPLATE = JSON.stringify(signedAgreement({ buyer: placeholderSigner(PLACEHOLDER.buyer), seller: placeholderSigner(PLACEHOLDER.seller),
   jobId: vectorJob.jobId, listingPin: vectorJob.listingPin, generatedAt: vectorNow - 60_000 }).agreement);
 // The seller's signed Listing it is derived from, with the placeholder seller; the consumer names its own seller, pins it and signs it.
-const LISTING_TEMPLATE = JSON.stringify(tp1Listing({ seller: placeholderSigner(PLACEHOLDER.seller), listingId: vectorJob.listingPin.listingId }).listing);
+const LISTING_TEMPLATE = JSON.stringify(tp1Listing({ seller: placeholderSigner(PLACEHOLDER.seller), listingId: vectorJob.listingPin.listingId, publicEndpoint: PUBLIC_ENDPOINT }).listing);
 
 const CONSUMER = String.raw`
 import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -168,7 +169,7 @@ const sb = (await bindTp1Fixture({ record: approvedRecord, local: sellerLocal })
 const sellerKeys = generateKeyPairSync("ed25519");
 const sellerSigner = { claim: "did:demos:agent:" + sellerKeys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), calls: 0,
   sign(bytes) { sellerSigner.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), sellerKeys.privateKey)); } };
-const publicEndpoint = "https://seller.built-package.invalid";
+const publicEndpoint = ${JSON.stringify(PUBLIC_ENDPOINT)};
 const discoveryBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
 const endpointProof = (await wire.verifyEndpointProof(discoveryBytes, { readListingEligibility, listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now }));
 // Discovery is a separate seller signature from the request/answer pair counted below.
