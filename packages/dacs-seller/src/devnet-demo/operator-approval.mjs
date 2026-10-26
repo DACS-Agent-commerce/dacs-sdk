@@ -3,6 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
+import { acquireSellerStateLock } from './seller-state-lock.mjs';
 
 const sha=(value)=>createHash('sha256').update(value).digest('hex');
 const OS=/^(0|[1-9][0-9]*)$/,POSITIVE_OS=/^[1-9][0-9]*$/,HASH=/^[0-9a-f]{64}$/;
@@ -418,6 +419,8 @@ export function releaseHeldSellerAttempt({evidencePath,attemptId,now=Date.now}){
 // Exact retries bind holdId to job, effect, write count and fee cap.
 // Conflicting/released reuse refuses without appending; unreadable ledgers
 // throw seller_context_ledger_unreadable with the underlying cause.
+// Concurrent ledger transactions throw seller_state_locked. A new hold must
+// strictly follow unfinished Vet attempts for its job (hold-time-order).
 export function createSellerContextAdmission({evidencePath,sellerApproval,now=()=>Date.now()}){
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
   const append=(line)=>appendContextLine(evidencePath,line);
@@ -435,6 +438,9 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
       }
       const at=now();
       if(!Number.isSafeInteger(at)||at<0)throw new RangeError('context hold time must be a nonnegative safe integer');
+      // Open attempts are projected after real ledger rows. At equal or
+      // earlier times they would incorrectly convert this newer hold.
+      if(snapshot.rows.some(row=>row.openAttempt&&row.jobId===jobId&&row.artifactKind==='CompositeVerificationRecord'&&row.recordedAt>=at))return 'hold-time-order';
       const refusal=await budgetRefusal({evidencePath,jobId,totalOs:BigInt(settings.maxWriteTotalOs)*BigInt(writes),at,limits:settings,writes,snapshot});
       if(refusal)return refusal;
       await append({event:'hold',holdId:hold,jobId,effect,writes,totalOs:settings.maxWriteTotalOs,recordedAt:at});
@@ -490,7 +496,15 @@ async function readPolicyLedger(evidencePath){
 }
 
 function serializedPolicy(evidencePath,work){
-  const key=resolve(evidencePath),result=(policyTails.get(key)??Promise.resolve()).then(work),tail=result.catch(()=>{});
+  const key=resolve(evidencePath),result=(policyTails.get(key)??Promise.resolve()).then(async()=>{
+    // Reuse the process lock separately from the operator's lifetime lock.
+    // Every ledger writer shares it, including releases and exact retries.
+    await mkdir(dirname(key),{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error;});
+    const directory=`${key}.policy-lock`;
+    await mkdir(directory,{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error;});
+    const lock=await acquireSellerStateLock(directory);
+    try{return await work();}finally{lock.release();}
+  }),tail=result.catch(()=>{});
   policyTails.set(key,tail);
   void tail.then(()=>{if(policyTails.get(key)===tail)policyTails.delete(key);});
   return result;
