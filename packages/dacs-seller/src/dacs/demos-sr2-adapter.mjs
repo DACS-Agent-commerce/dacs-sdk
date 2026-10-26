@@ -26,6 +26,9 @@ export const DEMOS_SR2_FIXTURE_CHAIN_IDENTITY = sha256Hex('dacs-chatgpt-plugin/d
 export const DENIED_UNSIGNED = 'denied-unsigned';
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
 const MAX_NATIVE_CANDIDATES = 32;
+const OS_PER_DEM = 1_000_000_000n;
+const STORAGE_FEE_CHUNK_BYTES = 10_240;
+const SDK_GAS_DEM = 1;
 const HASH = /^[0-9a-f]{64}$/;
 const LITERAL_LOOPBACK = new Set(['127.0.0.1', '[::1]']);
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -41,6 +44,21 @@ function artifactContentHash(artifact, kind) {
 }
 const integer = (v) => Number.isSafeInteger(v) && v >= 0;
 const wireInteger = (v) => integer(v) ? v : typeof v === 'string' && /^(0|[1-9][0-9]*)$/.test(v) && integer(Number(v)) ? Number(v) : null;
+
+// The only SDK signing transformation of the retained, fee-approved CREATE.
+function sdkStorageContent(initial, postFork) {
+  const dem = (value) => postFork ? String(BigInt(value) * OS_PER_DEM) : value;
+  const op = initial.data[1], from = initial.from, fee = initial.transaction_fee;
+  const storageFee = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data)) / STORAGE_FEE_CHUNK_BYTES));
+  return { ...initial, amount: dem(initial.amount), transaction_fee: {
+    network_fee: dem(fee.network_fee), rpc_fee: dem(fee.rpc_fee), additional_fee: dem(fee.additional_fee), rpc_address: fee.rpc_address,
+  }, gcr_edits: [
+    { type: 'balance', operation: 'remove', isRollback: false, account: from, txhash: '', amount: dem(storageFee) },
+    { type: 'storageProgram', target: op.storageAddress, isRollback: false, txhash: '', context: { operation: 'CREATE_STORAGE_PROGRAM', sender: from, data: { variables: op, metadata: op.metadata } } },
+    { type: 'balance', account: from, operation: 'remove', amount: dem(SDK_GAS_DEM), txhash: '', isRollback: false },
+    { type: 'nonce', operation: 'add', account: from, amount: 1, txhash: '', isRollback: false },
+  ] };
+}
 
 // Node2's confirmed storageProgram projection can omit the two source-binding
 // properties that remain present in the original signed CREATE. Restore that
@@ -133,7 +151,10 @@ export function demosSr2TxRef(receipt) {
   return { kind: 'storage-program', address: receipt.nativeAddress, writeTxHash: receipt.transactionRef.value };
 }
 
-export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null }) {
+// proveLogicalAddressAbsent is a trusted binding policy: true requires complete
+// authenticated absence for this chain/writer/name at accountNonce. An index
+// miss is insufficient. Without that policy, fresh planning is indeterminate.
+export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, proveLogicalAddressAbsent }) {
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
   const endpoint = new URL(rpcUrl);
   if (sourceCapability ? rpcUrl !== sourceCapability.pins.endpoint : (endpoint.protocol !== 'http:' || !LITERAL_LOOPBACK.has(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/')) {
@@ -385,6 +406,14 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       if ((await ownRecords()).some((r) => r.writer === requested.writer && !['verified', DENIED_UNSIGNED].includes(r.stage))) reject('wallet-fenced', 'another unresolved wallet handoff owns the nonce lane');
       const current = await nodeCall('getAddressNonce', { address: requested.owner });
       if (!integer(current) || !Number.isSafeInteger(current + 1)) reject('indeterminate', 'account nonce is unavailable or exhausted');
+      if (typeof proveLogicalAddressAbsent !== 'function') reject('indeterminate', 'fresh planning requires an authenticated logical-address absence policy');
+      let absent;
+      try {
+        absent = await boundedRead(() => proveLogicalAddressAbsent({ rpcOrigin: base, chainIdentity: expectedIdentity,
+          logicalAddress: requested.logicalAddress, writer: requested.writer, owner: requested.owner,
+          programName: requested.programName, accountNonce: current, signal: readBudget.getStore() }));
+      } catch (cause) { if (cause instanceof DemosSr2Error) throw cause; reject('indeterminate', 'logical-address absence could not be established', { cause }); }
+      if (absent !== true) reject('indeterminate', 'logical-address absence was not authenticated');
       const nonce = current + 1;
       const nativeAddress = deriveStorageAddress(requested.owner, requested.programName, nonce, '');
       const timestamp = now();
@@ -521,10 +550,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
         || canonicalize(approved.transaction?.content) !== canonicalize(current.payload.content)
         || signed.hash !== walletRecord.hash || !HASH.test(signed.hash) || sha256Hex(JSON.stringify(c)) !== signed.hash
         || signed.signature?.type !== 'ed25519' || !verifyDemosSignature({ address: current.owner, message: signed.hash, signature: signed.signature.data })) reject('authorization-required', 'the exact approved wallet signature and journal record are required');
-      const initial = current.payload.content;
-      if (c.from !== current.owner || c.from_ed25519_address !== current.owner || c.to !== current.nativeAddress || c.nonce !== current.nonce
-        || c.timestamp !== initial.timestamp || wireInteger(c.amount) !== 0 || c.network !== initial.network || c.chainIdentity !== initial.chainIdentity
-        || canonicalize(c.data) !== canonicalize(initial.data) || !Array.isArray(c.gcr_edits) || c.gcr_edits.length !== 4) reject('invalid', 'the signed SDK CREATE differs from its retained scope or coordinate');
+      if (canonicalize(c) !== canonicalize(sdkStorageContent(current.payload.content, c.amount === '0'))) reject('invalid', 'the signed SDK CREATE differs from its retained approval or SDK execution edits');
       if (current.authorizedTransaction && canonicalize(current.authorizedTransaction) !== canonicalize(signed)) reject('invalid', 'retained wallet authorization cannot change');
       current.authorizedTransaction = clone(signed);
       current.authorizationMessage = signed.hash;
