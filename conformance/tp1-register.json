@@ -85,7 +85,8 @@
       "classification": null,
       "label": "Intended, pending the SDK's executed-payment check and composition qualification: \"Payment executed on Demos testnet; BFT finality not independently proven\". Until that check lands, this label would also appear on a failed payment reported as included",
       "closedBy": "for the executed-record rule, the SDK's executed-payment check; for finality, Demos executed-status and BFT finality proof APIs, then the Standard's Demos payment-finality binding, then SDK support for finality-bound pay-dem evidence",
-      "blocksPublication": false,
+      "blocksPublication": true,
+      "blocksPublicationNote": "Blocks until the SDK's executed-record check and an effect-path test prove that a failed transfer reported as included is not counted as paid. The remaining BFT finality gap is a non-blocking follow-up.",
       "status": "open"
     },
     {
@@ -243,7 +244,8 @@
       "classification": null,
       "label": "Intended, pending the SDK's executed-payment check and composition qualification: \"Payment failed on Demos testnet · purchase held as unresolved; the payment is not sent again\". Until then a failed payment reported as included is counted as paid and this label is not shown",
       "closedBy": "the SDK's executed-payment check and an effect-path test of the hold; then a failure class on settlement results, so that a definitive failed pay-dem transfer is recorded as `permanent`",
-      "blocksPublication": false,
+      "blocksPublication": true,
+      "blocksPublicationNote": "Blocks until the SDK's executed-record check and an effect-path test prove that the failed purchase stays unresolved and the payment is not sent again. The remaining permanent failure classification gap is a non-blocking follow-up.",
       "status": "open"
     },
     {
