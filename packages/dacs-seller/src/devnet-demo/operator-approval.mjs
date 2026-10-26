@@ -440,9 +440,9 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
       }
       const at=now();
       if(!Number.isSafeInteger(at)||at<0)throw new RangeError('context hold time must be a nonnegative safe integer');
-      // Open attempts are projected after real ledger rows. At equal or
-      // earlier times they would incorrectly convert this newer hold.
-      if(snapshot.rows.some(row=>row.openAttempt&&row.jobId===jobId&&row.artifactKind==='CompositeVerificationRecord'&&row.recordedAt>=at))return 'hold-time-order';
+      // Earlier Vet reservations must not convert this newer hold when the
+      // clock moves backward, including sign-authorized and spent writes.
+      if(snapshot.rows.some(row=>row.policy&&row.decision==='approved'&&row.outcome!=='released'&&row.jobId===jobId&&row.artifactKind==='CompositeVerificationRecord'&&row.recordedAt>=at))return 'hold-time-order';
       const refusal=await budgetRefusal({evidencePath,jobId,totalOs:BigInt(settings.maxWriteTotalOs)*BigInt(writes),at,limits:settings,writes,snapshot});
       if(refusal)return refusal;
       await append({event:'hold',holdId:hold,jobId,effect,writes,totalOs:settings.maxWriteTotalOs,recordedAt:at});
