@@ -36,7 +36,7 @@ function authorizedFixture(options = {}) {
 }
 
 test('first-write planning prepares the nonce and repeats unchanged across a journal restart', async () => {
-  const f = readbackFixture(); f.state.rows = [];
+  const f = readbackFixture({ adapter: { proveLogicalAddressAbsent: async () => true } }); f.state.rows = [];
   await assert.rejects(f.adapter.read(f.logicalAddress, { expectedWriter: seller.claim }), { code: 'indeterminate' });
   const plan = await f.adapter.planWrite(inputFor(f));
   assert.equal(plan.stage, 'prepared'); assert.equal(plan.nonce, 1);
@@ -115,7 +115,7 @@ for (const [kind, artifact, hash] of [
       assert.equal(receipt.contentHash, hash); assert.equal(f.journal.get('TEST-plan').stage, 'verified');
     });
     test(`${label} uses its ${explicit ? 'explicit' : 'default'} artifact hash through first write and restart`, async () => {
-      const f = readbackFixture(options); f.state.rows = [];
+      const f = readbackFixture({ ...options, adapter: { proveLogicalAddressAbsent: async () => true } }); f.state.rows = [];
       const input = inputFor(f, explicit ? { receiptContentHash: hash } : {});
       const plan = await f.adapter.planWrite(input);
       assert.equal(plan.stage, 'prepared'); assert.equal(plan.contentHash, hash);
