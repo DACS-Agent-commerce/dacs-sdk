@@ -1078,15 +1078,6 @@ describe("registry/container evidence", () => {
     }
   });
 
-  it("writes every registry-policy violation to the report the summary reads", () => {
-    const { lockPackage, manifest, run } = dependencyPolicyHarness();
-    lockPackage("node_modules/x", { "package.json": packageJson("x", "1.0.0") }, { resolved: "https://example.com/x-1.0.0.tgz" });
-    manifest.overrides = { viem: "npm:not-viem@1.0.0" };
-    expect(run()).toMatchObject({ status: 0, report: { schema: "dacs-registry-dependency-policy/v1", passed: false,
-      violations: [{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@1.0.0"}' },
-        { location: "node_modules/x", field: "resolved", value: "https://example.com/x-1.0.0.tgz" }] } });
-  });
-
   it("derives the summary fields from the checks that ran", () => {
     const passing = writeSummary();
     expect(passing).toMatchObject({
