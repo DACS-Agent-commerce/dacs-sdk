@@ -118,14 +118,20 @@ describe("effect request replay reservations", () => {
 
   // The journal never drops a key, and the seller refuses a request from the instant now === expiresAt.
   it.each(["direct", "delegated"] as const)("a %s replay is refused while it is live and expired from expiresAt", async (mode) => {
-    const x = (await world());
-    const directory = journalDirectory();
-    const at = (now: number) => ({ ...x.check, now, requestJournal: openJournal(directory), ...(mode === "delegated" ? { artifacts: [x.artifact] } : {}) });
-    const opened = async () => (mode === "delegated" ? (await x.delegated()) : (await x.open()));
-    expect((await wire.checkWireRequest((await opened()), at(NOW))).readbackOnly).toBe(false);
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), at(x.request.expiresAt - 1))))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), at(x.request.expiresAt))))).rejects.toThrowError(expect.objectContaining({ code: "peer_expired", status: 408 }));
-    expect(reservationsIn(directory)).toHaveLength(1);
+    // Hold admission latency constant to isolate the last live millisecond from machine speed.
+    const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      const x = (await world());
+      const directory = journalDirectory();
+      const at = (now: number) => ({ ...x.check, now, requestJournal: openJournal(directory), ...(mode === "delegated" ? { artifacts: [x.artifact] } : {}) });
+      const opened = async () => (mode === "delegated" ? (await x.delegated()) : (await x.open()));
+      expect((await wire.checkWireRequest((await opened()), at(NOW))).readbackOnly).toBe(false);
+      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), at(x.request.expiresAt - 1))))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
+      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), at(x.request.expiresAt))))).rejects.toThrowError(expect.objectContaining({ code: "peer_expired", status: 408 }));
+      expect(reservationsIn(directory)).toHaveLength(1);
+    } finally {
+      monotonic.mockRestore();
+    }
   });
 
   it("fails closed on a journal entry it did not write: not a file, too large, or a malformed outcome", async () => {
