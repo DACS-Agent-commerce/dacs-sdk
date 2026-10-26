@@ -549,12 +549,12 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
   // else it holds is still checked, as is the request's own binding above.
   const unbound=sellerRecords&&held!==null&&c.artifactKind==='CompositeVerificationRecord'&&purchase?.sourceBinding===null;
   if(!exact(purchase,['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','prePaymentOpen'])||purchase.jobId!==c.jobId||purchase.seller!==policy.seller
-    ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||typeof purchase.prePaymentOpen!=='boolean'||!POSITIVE_OS.test(purchase.amountOs??'')
+    ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||(purchase.prePaymentOpen!==null&&typeof purchase.prePaymentOpen!=='boolean')||!POSITIVE_OS.test(purchase.amountOs??'')
     ||!same(purchase.listingPin,policy.listingPin())||!(unbound||(sellerRecords?sameNetwork(purchase.sourceBinding,policy.sourceBinding):same(purchase.sourceBinding,policy.sourceBinding))))return 'purchase';
   if(AFTER_PAYMENT.has(c.artifactKind)&&!purchase.paymentObserved)return 'payment-not-observed';
   if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.paymentObserved)return 'payment-already-observed';
   // A cancelled, expired or otherwise ended purchase gets no more seller writes before payment.
-  if(BEFORE_PAYMENT.has(c.artifactKind)&&!purchase.prePaymentOpen)return 'purchase-closed';
+  if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.prePaymentOpen===false)return 'purchase-closed';
   if(c.artifactKind==='SettlementEvidence'&&artifact.phase==='pay-dem'&&(!exact(artifact.paymentAmount,['amount','currency'])||artifact.paymentAmount.currency!=='DEM'
     ||demOs(artifact.paymentAmount.amount)!==BigInt(purchase.amountOs)))return 'payment-amount';
   if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
@@ -647,5 +647,5 @@ export async function stillOpenBeforePayment(request,policy,held){
   if(!BEFORE_PAYMENT.has(request.content.artifactKind))return null;
   const purchase=await policy.resolvePurchase(request.content.jobId);
   if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&purchase===null)return null;
-  return purchase?.jobId===request.content.jobId&&purchase.prePaymentOpen===true&&purchase.paymentObserved===false?null:'purchase-closed';
+  return purchase?.jobId===request.content.jobId&&(purchase.prePaymentOpen===true||(held&&purchase.prePaymentOpen===null))&&purchase.paymentObserved===false?null:'purchase-closed';
 }
