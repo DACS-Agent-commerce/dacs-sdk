@@ -209,7 +209,7 @@ PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
 
-PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds and supported schemas. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
+PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds, supported schemas and rollback/crash-safe main journals. Persistent main databases require DELETE, TRUNCATE, PERSIST or WAL; volatile main databases may use MEMORY. OFF is refused on every main database. Admission preserves caller configuration. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
 
 ## Commit register
 
@@ -626,6 +626,9 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 | | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) | deleted |
+| D11 | fix(client): D11 refuse journals that cannot recover purchase writes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 562bcba0f9523ce1133c19f6572c459beb7a3093 |
+| | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | a4c59300ff497d05f4b26ce97cd022d01b68a02a |
 
 ## Complete commit and file inventory
 
@@ -1569,6 +1572,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-host-boundary.test.mjs` (deleted) |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 refuse journals that cannot recover purchase writes | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
 
 ## Original moved files
 
