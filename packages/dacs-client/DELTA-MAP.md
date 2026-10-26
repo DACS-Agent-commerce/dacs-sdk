@@ -857,6 +857,8 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` | 1bc7e1415710c3c8adf453b56c8873c5177d25b7 |
 | D11 | fix(client): D11 record the final held-seam test snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | cf1439cf82a8ed2125c019ef2717951f14fbc632 |
+| D11 | fix(client): D11 record the final observation test snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | b1a99b8154aa9ff1892a1076a2fbd48cd91462d6 |
 
 ## Complete commit and file inventory
 
@@ -2339,6 +2341,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the final observation test snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the final observation test snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the final observation test snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the final observation test snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the final observation test snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
