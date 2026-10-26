@@ -600,8 +600,6 @@ describe("npm audit graph severity", () => {
   it.each([
     { root: { severity: "high", isDirect: true, via: ["leaf"] },
       leaf: { severity: "low", isDirect: false, via: [edge("low")] } },
-    { root: { severity: "low", isDirect: true, via: ["leaf"] },
-      leaf: { severity: "critical", isDirect: false, via: [edge("critical")] } },
     { root: { severity: "high", isDirect: true, via: ["leaf"] },
       leaf: { severity: "high", isDirect: false, via: ["root", edge("low")] } },
   ])("refuses contradictory inherited severities %j", graph => {
@@ -610,6 +608,50 @@ describe("npm audit graph severity", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("npm audit package severity disagrees with reachable advisories");
     expect(existsSync(fixture.output)).toBe(false);
+  });
+
+  it.each(severities.flatMap((severity, index) => severities.slice(index + 1)
+    .flatMap(via => [true, false].map(isDirect => ({ severity, via, isDirect }))))) (
+    "accepts $severity inherited from aggregated $via evidence (direct: $isDirect)", ({ severity, via, isDirect }) => {
+      const fixture = auditFixture();
+      const result = fixture.run({ root: { severity, isDirect, via: ["leaf"] },
+        leaf: { severity: via, isDirect: false, via: [edge(via)] } });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(fixture.output, "utf8"))).toMatchObject({
+        observedAdvisories: [id], directAdvisories: [] });
+    });
+
+  it.each([
+    { severity: "low", own: "moderate", inherited: "critical", accepted: false },
+    { severity: "critical", own: "low", inherited: "high", accepted: false },
+    { severity: "moderate", own: "low", inherited: "critical", accepted: true },
+    { severity: "high", own: "high", inherited: "critical", accepted: true },
+  ])("bounds mixed evidence by own and reachable advisories: %j", ({ severity, own, inherited, accepted }) => {
+    const fixture = auditFixture();
+    const result = fixture.run({ root: { severity, isDirect: true, via: [edge(own), "leaf"] },
+      leaf: { severity: inherited, isDirect: false, via: [edge(inherited)] } });
+    expect(result.status === 0, result.stderr).toBe(accepted);
+    expect(existsSync(fixture.output)).toBe(accepted);
+    if (accepted) expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories)
+      .toEqual(own === "high" ? [id] : []);
+  });
+
+  it.each([false, true])("admits a collapsed two-copy audit graph in either package order (reversed: %s)", reversed => {
+    const fixture = auditFixture();
+    // npm groups leaf@1 (moderate) and leaf@2 (high) into one name-level record.
+    const graph = { parent: { severity: "moderate", isDirect: true, via: ["leaf"] },
+      other: { severity: "high", isDirect: true, via: ["leaf"] },
+      leaf: { severity: "high", isDirect: false, via: [edge("moderate"),
+        { ...edge("high"), url: "https://github.com/advisories/GHSA-2pr8-phx7-x9h3" }] } };
+    const result = fixture.run(reversed ? Object.fromEntries(Object.entries(graph).reverse()) : graph);
+    expect(result.status, result.stderr).toBe(0);
+    const policy = JSON.parse(readFileSync(fixture.output, "utf8"));
+    expect(policy).toMatchObject({ directAdvisories: [], unlistedAdvisories: [],
+      observedAdvisories: [id, "GHSA-2pr8-phx7-x9h3"], observed: { moderate: 1, high: 2, total: 3 } });
+    const summary = baselineOnlySummary();
+    Object.assign(summary.audit, policy.observed, { observedAdvisories: policy.observedAdvisories,
+      unlistedAdvisories: policy.unlistedAdvisories, directAdvisories: policy.directAdvisories });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
   });
 
   it.each([["low", "critical"], ["critical", "low"]])("uses the maximum own severity in order %j, %j", (first, second) => {
