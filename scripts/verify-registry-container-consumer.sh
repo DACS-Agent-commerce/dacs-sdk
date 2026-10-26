@@ -75,6 +75,10 @@ cleanup() {
   # A failed evidence write must not skip the Docker cleanup below or replace
   # the original exit status.
   set +e
+  if [ "${stage-}" = consumer ] && [ -f "$consumer_root/dependency-policy.exit-code" ] &&
+      [ "$(cat "$consumer_root/dependency-policy.exit-code")" != 0 ]; then
+    stage=dependency-policy
+  fi
   # Preserve only collected, secret-free evidence, including on early failure.
   if [ -d "$artifact_stage" ]; then
     # These are the same secret-free diagnostics exported on a complete run.
@@ -296,6 +300,9 @@ run_bounded docker run --rm \
   "${consumer_network_args[@]}" \
   --volume "$consumer_root:/work" \
   --volume "$bounded_support:/acceptance-support:ro" \
+  --volume "$repo_root/scripts:/acceptance-scripts:ro" \
+  --volume "$release_set:/release-set:ro" \
+  --volume "$artifact_stage:/acceptance-artifacts" \
   --workdir /work \
   --env DACS_PACKAGE_VERSION="$version" \
   --env DACS_GENERATED_MODE="$generated_mode" \
@@ -315,7 +322,7 @@ run_bounded docker run --rm \
   "$consumer_image" \
   sh -ceu '
     restore_host_ownership() {
-      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work || true
+      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work /acceptance-artifacts || true
     }
     trap restore_host_ownership EXIT
     npm install --global --ignore-scripts npm@11.19.0
@@ -327,6 +334,11 @@ run_bounded docker run --rm \
       --role "$DACS_GENERATED_ROLE" \
       --deploy docker
     cd one-click-agent
+    dependency_status=0
+    node /acceptance-scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \
+      /acceptance-artifacts/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION" || dependency_status=$?
+    printf "%s\n" "$dependency_status" > /work/dependency-policy.exit-code
+    test "$dependency_status" -eq 0
     tests_status=0
     { npm run build && npm test; } || tests_status=$?
     printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
@@ -358,12 +370,6 @@ run_bounded docker run --rm \
   ' 2>&1 | tee "$artifact_stage/generation.log"
 
 project="$consumer_root/one-click-agent"
-stage=dependency-policy
-# Registry packages only (an allowlist over the manifest and every lock entry),
-# and every candidate copy is the packed tarball release-provenance.json records.
-node scripts/registry-container-disposition.mjs --dependency-policy "$project" "$consumer_registry" \
-  "$artifact_stage/dependency-policy.json" "$release_set" "$version"
-
 stage=audit-policy
 node scripts/registry-container-disposition.mjs --audit-policy \
   "$consumer_root/npm-audit.json" "$artifact_stage/audit-policy.json"

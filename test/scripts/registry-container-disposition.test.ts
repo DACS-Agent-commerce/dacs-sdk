@@ -2,12 +2,12 @@ import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
@@ -15,6 +15,10 @@ const dispositionModulePath = "../../scripts/registry-container-disposition.mjs"
 const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings, classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines, registryDependencyViolations, runtimeImageInventoryFindings, RELEASE_VERSION, unlistedPolicyFindings } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
+const archiveModulePath = "../../scripts/installation-closure.mjs";
+const { npmToolchain, runNpmNode } = await import(archiveModulePath);
+// Reference replay invokes the real npm toolchain for each policy scenario.
+vi.setConfig({ testTimeout: 60_000 });
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
 
@@ -710,11 +714,13 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
     contents[to] = contents[from] ?? {};
     packages[to] = { ...packages[from], ...fields };
   };
-  for (const name of CANDIDATES) {
-    const archive = lockPackage(`node_modules/${name}`, { "package.json": packageJson(name, CANDIDATE_VERSION, candidateFields),
-      "index.js": `module.exports = "${name}";\n`, ...candidateFiles });
-    writeFileSync(join(directory, releaseFile(name)), archive);
-    provenance.packages[name] = { integrity: sri(archive) };
+  for (const name of DUAL_RAIL_DEPENDENCIES) {
+    const archive = lockPackage(`node_modules/${name}`, { "package.json": packageJson(name, CANDIDATE_VERSION, CANDIDATES.includes(name) ? candidateFields : {}),
+      "index.js": `module.exports = "${name}";\n`, ...(CANDIDATES.includes(name) ? candidateFiles : {}) });
+    if (CANDIDATES.includes(name)) {
+      writeFileSync(join(directory, releaseFile(name)), archive);
+      provenance.packages[name] = { integrity: sri(archive) };
+    }
   }
   const manifest: Record<string, unknown> = {
     dependencies: Object.fromEntries(DUAL_RAIL_DEPENDENCIES.map(name => [name, CANDIDATE_VERSION])) };
@@ -727,17 +733,72 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
   // `environment` adds to the command's environment; `script` and `projectPath` are the paths it is given.
   const run = (afterInstall: (project: string) => void = () => undefined, { environment = {}, script = "scripts/registry-container-disposition.mjs",
     projectPath = project }: { environment?: Record<string, string>; script?: string; projectPath?: string } = {}) => {
+    // Supply a complete npm lock/manifest contract, including every fixture
+    // package, before applying the test's interrupted or changed tree state.
+    const dependencies = ["dependencies", "optionalDependencies", "devDependencies"];
+    for (const location of Object.keys(packages)) {
+      for (let end = location.lastIndexOf("/node_modules/"); end >= 0;) {
+        const parent = location.slice(0, end);
+        if (!packages[parent]) lockPackage(parent, { "package.json": packageJson(parent.slice("node_modules/".length), "1.0.0") });
+        end = parent.lastIndexOf("/node_modules/");
+      }
+    }
+    // Keep declared aliases in a complete graph, even when a test adds a
+    // file shadow or carried copy rather than supplying the ordinary lock edge.
+    for (const [owner, fields] of [["", manifest], ...Object.entries(packages)] as [string, Record<string, unknown>][]) {
+      for (const field of [...dependencies, "peerDependencies"]) {
+        for (const [name, spec] of Object.entries((fields[field] ?? {}) as Record<string, unknown>)) {
+          const candidate = typeof spec === "string" && /^npm:(@kynesyslabs\/(?:dacs|dacs-node))@/.exec(spec)?.[1];
+          const location = (owner ? owner + "/" : "") + "node_modules/" + name;
+          if (candidate && !packages[location] && !packages["node_modules/" + name] && packages["node_modules/" + candidate]) {
+            copyPackage("node_modules/" + candidate, location, { name: candidate });
+          }
+        }
+      }
+    }
+    for (const [location, entry] of Object.entries(packages)) {
+      const split = location.lastIndexOf("/node_modules/");
+      const name = location.slice(split < 0 ? "node_modules/".length : split + "/node_modules/".length);
+      const owner = split < 0 ? manifest : packages[location.slice(0, split)];
+      if (split < 0 && DUAL_RAIL_DEPENDENCIES.includes(name)) continue;
+      if (owner && !dependencies.some(field => Object.hasOwn(owner[field] ?? {}, name))) {
+        const declared = owner.dependencies;
+        owner.dependencies = { ...(typeof declared === "object" && declared !== null ? declared : {}), [name]: entry.version };
+      }
+    }
+    const lock = { lockfileVersion: 3, packages: { "": manifest, ...packages } };
+    writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
+    writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+    writeFileSync(join(project, ".npmrc"), "legacy-peer-deps=true\n");
+    writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
+    rmSync(join(project, "node_modules"), { recursive: true, force: true });
+    const modes = new Map<string, number>();
+    let hiddenLock: Buffer | undefined;
+    if (Object.values(packages).every(entry => typeof entry.resolved === "string" && /^https?:/.test(entry.resolved))) {
+      try {
+        const toolchain = npmToolchain();
+        runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", `--cache=${cache}`], { cwd: project });
+        hiddenLock = readFileSync(join(project, "node_modules/.package-lock.json"));
+        for (const [location, files] of Object.entries(contents)) {
+          for (const path of Object.keys(files)) {
+            const installedPath = join(project, location, path);
+            if (existsSync(installedPath)) modes.set(installedPath, statSync(installedPath).mode & 0o777);
+          }
+        }
+      } catch { /* Invalid contracts deliberately have no completed baseline. */ }
+    }
     rmSync(join(project, "node_modules"), { recursive: true, force: true });
     for (const location of Object.keys(packages)) {
       for (const [path, body] of Object.entries((location in installed ? installed[location] : contents[location]) ?? {})) {
-        mkdirSync(dirname(join(project, location, path)), { recursive: true });
-        writeFileSync(join(project, location, path), body);
+        const installedPath = join(project, location, path);
+        mkdirSync(dirname(installedPath), { recursive: true });
+        writeFileSync(installedPath, body);
+        const mode = modes.get(installedPath);
+        if (mode !== undefined) chmodSync(installedPath, mode);
       }
     }
+    if (hiddenLock) writeFileSync(join(project, "node_modules/.package-lock.json"), hiddenLock);
     afterInstall(project);
-    writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
-    writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages: { "": {}, ...packages } }));
-    writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
     const result = spawnSync(process.execPath, [script, "--dependency-policy", projectPath, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION],
       { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache, ...environment } });
     return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
@@ -860,7 +921,7 @@ describe("npm audit graph severity", () => {
   });
 });
 
-describe("complete installed package scopes", () => {
+describe("complete installed package scopes", { timeout: 60_000 }, () => {
   it.each([
     ["identity", "cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/arbitrary/deep"],
     ["alias-name", "the project declares @kynesyslabs/dacs under another name: alias"],
@@ -948,7 +1009,7 @@ describe("registry/container evidence", () => {
     ["an added file", (root: string) => writeFileSync(join(root, "postinstall.js"), "x"), "unexpected file: node_modules/@kynesyslabs/dacs/postinstall.js"],
     ["a missing file", (root: string) => rmSync(join(root, "index.js")), "missing: node_modules/@kynesyslabs/dacs/index.js"],
     ["a file that is a link", (root: string) => { rmSync(join(root, "index.js")); symlinkSync("../dacs-node/index.js", join(root, "index.js")); },
-      "unexpected link: node_modules/@kynesyslabs/dacs/index.js"],
+      "expected file, found link: node_modules/@kynesyslabs/dacs/index.js"],
     ["a file that is a hard link", (root: string) => linkSync(join(root, "index.js"), join(root, "alias.js")),
       "hard link: node_modules/@kynesyslabs/dacs/index.js"],
     ["a directory the tarball does not hold", (root: string) => mkdirSync(join(root, "dist")), "unexpected directory: node_modules/@kynesyslabs/dacs/dist"],
@@ -1005,7 +1066,7 @@ describe("registry/container evidence", () => {
     rmSync(fixture.cache, { recursive: true });
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/cannot derive the installed files of node_modules\/@kynesyslabs\/dacs: cannot read npm's cached archive .*\(ENOENT\)/);
+    expect(result.stderr).toMatch(/node_modules\/@kynesyslabs\/dacs: cannot read npm's cached archive .*\(ENOENT\)/);
   });
 
   it("rejects an unknown policy mode", () => {
@@ -1257,18 +1318,29 @@ describe("registry/container evidence", () => {
     expect(candidateDisposition(doctor).exitCode).toBe(1);
   });
 
-  it("reports a Git dependency, whose files have no archive to compare, while it holds no module of its own", () => {
+  it("reports registry-source violations and refuses an unreplayable override contract", () => {
+    const fixture = dependencyPolicyHarness();
+    fixture.lockPackage("node_modules/x", { "package.json": packageJson("x", "1.0.0") }, { resolved: "https://example.com/x-1.0.0.tgz" });
+    expect(fixture.run()).toMatchObject({ status: 0, report: { schema: "dacs-registry-dependency-policy/v1", passed: false,
+      violations: [{ location: "node_modules/x", field: "resolved", value: "https://example.com/x-1.0.0.tgz" }] } });
+    fixture.manifest.overrides = { viem: "npm:not-viem@1.0.0" };
+    expect(registryDependencyViolations({ manifest: fixture.manifest, lock: { packages: { "": fixture.manifest, ...fixture.packages } },
+      registry: CANDIDATE_REGISTRY })).toContainEqual({ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@1.0.0"}' });
+    expect(fixture.run().status).not.toBe(0);
+  });
+
+  it("refuses a Git dependency without verified bytes, including a carried module", () => {
     const fixture = dependencyPolicyHarness();
     const location = "node_modules/git-dependency";
     fixture.packages[location] = { version: "1.0.0", resolved: "git+ssh://git@example.com/git-dependency.git#0" };
     fixture.installed[location] = { "package.json": packageJson("git-dependency", "1.0.0"), "lib/index.js": "" };
-    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: false } });
+    expect(fixture.run().status).not.toBe(0);
     const hidden = fixture.run(project => {
       mkdirSync(join(project, location, "lib/node_modules/@kynesyslabs/dacs"), { recursive: true });
       writeFileSync(join(project, location, "lib/node_modules/@kynesyslabs/dacs/package.json"), packageJson("@kynesyslabs/dacs", "0.0.0-old"));
     });
     expect(hidden.status).not.toBe(0);
-    expect(hidden.stderr).toContain(`${TREE}unexpected directory: ${location}/lib/node_modules`);
+    expect(hidden.stderr).toContain("cannot authenticate an unverified registry archive: " + location);
   });
 });
 
@@ -2434,7 +2506,7 @@ describe("declared candidate aliases", () => {
     fixture.installed[location] = null;
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("candidate package is not installed at the top level: @kynesyslabs/dacs");
+    expect(result.stderr).toContain(TREE + "missing: node_modules/@kynesyslabs/dacs");
   });
 
   it.each(["optional", "dev", "devOptional"])("rejects an omitted %s alias Node resolves to another installed package", flag => {
@@ -2740,7 +2812,7 @@ describe("candidate copies hidden in the installed tree", () => {
       writeFileSync(join(project, location), "module.exports = 42;");
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(TREE + (hoisted ? `unexpected file: ${location}` : `unexpected directory: ${plugin}/node_modules`));
+    expect(result.stderr).toContain(TREE + `unexpected file: ${location}`);
     expect(result.stderr).toContain(`${plugin} declares @kynesyslabs/dacs under another name: candidate-alias`);
   });
 });
@@ -2892,7 +2964,7 @@ describe("dependency policy over npm ci installations", () => {
     expect(loaded.status, loaded.stderr).toBe(0);
     expect(loaded.stdout).toBe("unreleased-copy\n");
     expect(policy.status, policy.stderr).not.toBe(0);
-    expect(policy.stderr).toContain("cannot derive the installed files of node_modules/plugin/node_modules/bin-owner: bin target is not an archive file: modules");
+    expect(policy.stderr).toContain("executable link target is not a reference file: node_modules/plugin/node_modules/.bin/node_modules");
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
