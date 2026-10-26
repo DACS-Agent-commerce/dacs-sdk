@@ -4,7 +4,8 @@
 // The adapter owns no key and never broadcasts.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  canonicalize, isAnchorReceipt, logicalToStorageProgramName, sha256Hex,
+  attestationBundleHash, canonicalize, contentHash, identityBundleHash,
+  isAnchorReceipt, logicalToStorageProgramName, sha256Hex,
   assertDemosWriteEvidence, decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash, demosWriteEvidenceBindsReceiptContent,
   demosWriteEvidenceToAnchorReceipt,
@@ -27,6 +28,13 @@ const LITERAL_LOOPBACK = new Set(['127.0.0.1', '[::1]']);
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const clone = (v) => structuredClone(v);
 const exactHash = (v) => sha256Hex(canonicalize(v));
+// Payloads retain every member; signed artifacts use their normative scope.
+function artifactContentHash(artifact, kind) {
+  if (kind === undefined || kind === 'Deliverable') return exactHash(artifact);
+  if (kind === 'IdentityBundle') return identityBundleHash(artifact);
+  if (['AttestationBundle', 'FaultAttestationBundle', 'EvidenceBoundFaultAttestationBundle'].includes(kind)) return attestationBundleHash(artifact);
+  return contentHash(artifact);
+}
 const integer = (v) => Number.isSafeInteger(v) && v >= 0;
 const wireInteger = (v) => integer(v) ? v : typeof v === 'string' && /^(0|[1-9][0-9]*)$/.test(v) && integer(Number(v)) ? Number(v) : null;
 
@@ -254,6 +262,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       || native.owner !== owner || native.programName !== op.programName || canonicalize(native.data) !== canonicalize(op.data)
       || canonicalize(native.metadata) !== canonicalize(op.metadata) || op.metadata?.logicalAddress !== logicalAddress
       || op.metadata?.envelopeHash !== exactHash(native.data) || !HASH.test(op.metadata?.contentHash)) reject('invalid', 'transaction does not bind the logical address, native address and exact readback');
+    if (op.metadata.contentHash !== artifactContentHash(native.data, op.metadata.artifactKind)) reject('invalid', 'native artifact content hash differs from the signed metadata');
     if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity || canonicalize(op.metadata.networkBinding)!==canonicalize(sourceCapability.transportBinding))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
     if (saved && ((!embedded && canonicalize(c) !== canonicalize(saved.payload.content)) || txHash !== saved.authorizationMessage
       || exactHash(native.data) !== saved.envelopeHash || op.metadata.contentHash !== saved.hash || op.metadata.artifactKind !== saved.artifactKind)) reject('invalid', 'transaction differs from the retained wallet plan');
