@@ -18,8 +18,18 @@ for(const [reason,mutate] of [
  ['request-shape',r=>r.address='0x'+'f'.repeat(64)],
  ['debit',r=>r.content.debit.totalOs='04'],
  ['create-bytes',r=>r.content.exactCreate='{}'],
- ['logical-address',r=>{r.content.logicalAddress='dacs4:wrong';}],
 ])test(`request validation refuses ${reason}`,async()=>{
  const r=requestFor();mutate(r);assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),reason);
+});
+
+test('request validation refuses a consistently encoded wrong logical address',async()=>{
+ assert.equal(await policyRefusal(requestFor({logicalAddress:'dacs4:wrong'}),policy(),SELLER_POLICY_DEFAULTS),'logical-address');
+});
+
+test('C-1 final pre-payment check awaits the real resolver for an unknown Vet',async()=>{
+ const resolve=sellerRecordsPurchaseResolver({sessionOf:()=>null});
+ const r=requestFor({artifactKind:'CompositeVerificationRecord'});
+ assert.equal(await policyRefusal(r,policy(resolve),SELLER_POLICY_DEFAULTS),'seller-record-missing');
+ assert.equal(await stillOpenBeforePayment(r,policy(resolve),'seller-record-missing'),null);
 });
 

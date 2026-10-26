@@ -641,15 +641,11 @@ const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/
 // binding, so today a seller record always carries the seller's own endpoint.
 const sameNetwork=(a,b)=>typeof a?.network==='string'&&typeof a.chainIdentity==='string'&&a.network===b.network&&a.chainIdentity===b.chainIdentity;
 
-/** Return null for an open pre-payment request, or a refusal reason. */
-// The final pre-payment check, synchronous so that no cancellation can land
-// between it and the answer. A resolver that is not synchronous fails closed.
-export function stillOpenBeforePayment(request,policy,held){
+/** Await fresh purchase authority; return null for an open request or a refusal reason.
+ * Resolver errors propagate; callers must append synchronously after this resolves. */
+export async function stillOpenBeforePayment(request,policy,held){
   if(!BEFORE_PAYMENT.has(request.content.artifactKind))return null;
-  const purchase=policy.resolvePurchase(request.content.jobId);
-  if(typeof purchase?.then==='function'){purchase.catch?.(()=>{});return 'policy-check-failed';}
-  // A held write the operator approved exactly may still have no seller
-  // record (vet records); a record that shows the job paid or closed refuses it.
+  const purchase=await policy.resolvePurchase(request.content.jobId);
   if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&purchase===null)return null;
   return purchase?.jobId===request.content.jobId&&purchase.prePaymentOpen===true&&purchase.paymentObserved===false?null:'purchase-closed';
 }
