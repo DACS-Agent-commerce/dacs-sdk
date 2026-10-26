@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { writeSync } from 'node:fs';
 import { createSqlitePurchaseStore } from '../../src/seams/purchase-store-not-wired.mjs';
 const db = new DatabaseSync(process.argv[2]);
-db.exec(`PRAGMA journal_mode=${process.argv[3]}; PRAGMA synchronous=FULL; PRAGMA cache_size=10`);
+db.exec(`PRAGMA journal_mode=${process.argv[3]}; PRAGMA synchronous=${process.argv[3] === 'WAL' ? 'FULL' : 'EXTRA'}; PRAGMA cache_size=10`);
 try {
   createSqlitePurchaseStore().transaction(db, () => {
     db.prepare('UPDATE records SET value=?').run('b'.repeat(10_000));
