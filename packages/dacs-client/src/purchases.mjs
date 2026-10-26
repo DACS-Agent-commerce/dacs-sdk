@@ -252,6 +252,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now();
   }
 
+  // Diagnostic reads report an elapsed approval window without saving it.
   function projectExpiry(operation) {
     return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
   }
@@ -471,19 +472,22 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   function authorizedPortalPurchase(operationId, token) {
     const found = handoffPurchase(operationId, token);
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
-    return diagnosticOnly ? projectExpiry(found) : expireIfNeeded(found);
+    return found;
   }
 
+  // Entry for the portal's approval and payment actions, which save expiry.
+  // The public diagnostic service projects it without saving.
   function portalOperation(operationId, token) {
-    const operation = authorizedPortalPurchase(operationId, token);
-    return diagnosticOnly ? projectDiagnosticOperation(operation) : operation;
+    const found = authorizedPortalPurchase(operationId, token);
+    return diagnosticOnly ? projectDiagnosticOperation(projectExpiry(found)) : expireIfNeeded(found);
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
   // listing verification made at prepare time and any chain observation of
   // the payment. Never inferred from the configured network or RPC URL.
+  // Read-only: an elapsed approval window is reported, not saved.
   function portalEvidence(operationId, token) {
-    const operation = authorizedPortalPurchase(operationId, token);
+    const operation = projectExpiry(authorizedPortalPurchase(operationId, token));
     const coords = coordinates.get(operation.id);
     const listingMode = operation.state?.preparedVerification?.evidence?.chainMode ?? null;
     const directoryMode = operation.state?.preparedVerification?.evidence?.directoryMode ?? null;
