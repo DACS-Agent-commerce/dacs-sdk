@@ -91,6 +91,38 @@ test('a never-settling anchor read has an overall abortable deadline', async t =
   const work = assert.rejects(f.store.readAnchor({ jobId: JOB, logicalAddress, anchors }), e => e.code === 'seller_anchor_reconciliation_required' && e.cause?.name === 'TimeoutError');
   await Promise.resolve(); t.mock.timers.tick(10001); await work; assert.equal(signal.aborted, true); f.store.close();
 });
+for (const lateAnswer of [false, true]) test(`an unanswered anchor write releases the job and retries read-only after restart (late answer=${lateAnswer})`, async t => {
+  const f = await durableFixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let entered, answer, writes = 0, reads = 0, authorizations = 0;
+  const started = new Promise(resolve => { entered = resolve; });
+  const pending = new Promise(resolve => { answer = resolve; });
+  const anchors = {
+    write(request) { writes++; entered(request); return pending; },
+    async read() { reads++; return fixtureRecord(logicalAddress, artifact); },
+  };
+  let result;
+  const work = f.store.withJob(JOB, () => f.store.anchor(scope(f, anchors, { authorize: () => { authorizations++; return signAnchorWrite(seller.signBytes, logicalAddress, contentHash(artifact)); } })))
+    .then(value => { result = { value }; }, error => { result = { error }; });
+  const request = await started;
+  t.mock.timers.tick(10000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(result?.error?.code, 'seller_anchor_reconciliation_required');
+  assert.equal(result.error.cause?.name, 'TimeoutError');
+  assert.equal(request.signal.aborted, true);
+  assert.equal(request.signal.reason, result.error.cause);
+  assert.equal(request.timeoutMs, 10000); assert.equal(request.maxBytes, 1024 * 1024);
+  await work;
+  assert.equal(await f.store.withJob(JOB, () => true), true);
+  f.store.close();
+  if (lateAnswer) { answer(fixtureRecord(logicalAddress, artifact).receipt); await new Promise(resolve => setImmediate(resolve)); }
+  assert.equal(reads, 0);
+  const again = await f.reopen();
+  const receipt = await again.withJob(JOB, () => again.anchor(scope(f, anchors)));
+  assert.equal(receipt.state, 'finalized');
+  assert.equal(writes, 1); assert.equal(reads, 1); assert.equal(authorizations, 1);
+  again.close();
+});
 test('exact authenticated session schema upgrades atomically to effects', async t => {
   const f = await durableFixture(t); f.store.close(); const db = new DatabaseSync(f.path); db.exec('DROP TABLE seller_effects; DROP TABLE seller_settlements'); db.close();
   const again = await f.reopen(); assert.equal(await again.withJob(JOB, () => again.bindSettlement('TEST-upgrade', JOB, { phaseIndex: 0 })), true); again.close();
