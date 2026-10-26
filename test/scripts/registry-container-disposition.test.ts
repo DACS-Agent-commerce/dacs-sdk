@@ -440,9 +440,15 @@ async function runToConsumerStage(complete = false, failStart = false) {
     docker: [`printf '%s\\n' "$*" >> '${commands}'`, ...(failStart ? ['if [ "$1 $2" = "run --detach" ]; then exit 17; fi'] : []), `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
       `if [ "$1" = build ]; then touch '${built}'; exit 0; fi`,
       `if [ "$1 $2" = 'image inspect' ]; then [ -f '${built}' ] || exit 98; case "$*" in *--format*) echo 10001:10001 ;; *) printf '%s' '[{"Id":"fixture","Size":1,"Config":{"User":"10001:10001"}}]' ;; esac; exit 0; fi`,
-      'if [ "$1" = compose ]; then echo "services: {}"; exit 0; fi', 'if [ "$1" != run ]; then exit 0; fi', 'work=; previous=',
-      'for argument in "$@"; do', '  if [ "$previous" = --volume ]; then case "$argument" in *:/work) work=${argument%:/work} ;; esac; fi', '  previous=$argument', 'done',
-      'if [ -n "$work" ]; then', ...(complete ? [`  cp -r '${fixture}/.' "$work/"`, '  exit 0'] : [
+      'if [ "$1" = compose ]; then echo "services: {}"; exit 0; fi', 'if [ "$1" != run ]; then exit 0; fi', 'work=; artifacts=; previous=',
+      'for argument in "$@"; do', '  if [ "$previous" = --volume ]; then case "$argument" in *:/work) work=${argument%:/work} ;; *:/acceptance-artifacts) artifacts=${argument%:/acceptance-artifacts} ;; esac; fi', '  previous=$argument', 'done',
+      'if [ -n "$work" ]; then', ...(complete ? [`  cp -r '${fixture}/.' "$work/"`,
+        // The fake consumer emits the producer output at its mounted evidence
+        // destination; real-npm and bundle tests exercise the actual checker.
+        '  [ -n "$artifacts" ] || exit 99',
+        '  case "$*" in *--dependency-policy*) ;; *) exit 99 ;; esac',
+        `  printf '%s' '{"schema":"dacs-registry-dependency-policy/v1","passed":true,"violations":[]}' > "$artifacts/dependency-policy.json"`,
+        '  exit 0'] : [
         '  mkdir -p "$work/one-click-agent"', `  printf '{"name":"one-click-agent"}\\n' > "$work/one-click-agent/package.json"`,
         `  printf '{"lockfileVersion":3,"packages":{}}\\n' > "$work/one-click-agent/package-lock.json"`, `  printf '0\\n' > "$work/generated-tests.exit-code"`,
         `  printf 'doctor: release metadata is unreadable\\n' > "$work/doctor.log"`, `  printf '1\\n' > "$work/doctor.exit-code"`, "  echo 'npm run dacs:doctor exited 1'", '  exit 1']),
@@ -860,7 +866,7 @@ describe("registry/container evidence", () => {
   });
 
 
-  it("traverses image build, evidence assembly and disposition using the pinned host npm", async () => {
+  it("traverses consumer policy, image build, evidence assembly and disposition with pinned npm", async () => {
     const { directory, output, result, commands } = await runToConsumerStage(true);
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(existsSync(join(directory, "npm-pinned"))).toBe(true);
@@ -870,6 +876,9 @@ describe("registry/container evidence", () => {
     expect(invoked).toContain("--env DACS_BOUNDED_NPM_HTTP=1");
     expect(invoked).toContain("--env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs");
     expect(invoked).toContain("--env npm_config_fetch_retries=2");
+    expect(invoked).toContain("/acceptance-sdk/package.json:ro");
+    expect(invoked).toContain("/acceptance-sdk/scripts:ro");
+    expect(invoked).toContain("--dependency-policy");
     for (const name of ["doctor.json", "compose.rendered.yaml", "docker-image.json", "runtime-image-inventory.json", "runtime-image-policy.json", "policy-findings.json", "release-set.log"]) expect(existsSync(join(output, name)), name).toBe(true);
     expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: true, functionalPassed: true, disposition: { exitCode: 0 } });
   }, 30_000);
