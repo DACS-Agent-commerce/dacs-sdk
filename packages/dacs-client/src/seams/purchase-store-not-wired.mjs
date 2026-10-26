@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { types } from 'node:util';
 import { NotWiredError, OperationError } from '../client-errors.mjs';
+import { checkSqlitePurchaseInput, checkSqlitePurchaseDatabase } from '../util/sqlite-purchase-admission.mjs';
 import { withSqliteStatementGuard } from '../util/sqlite-statement-boundary.mjs';
 import { sqliteWriteLease, retireSqliteHandle, isSqliteHandleRetired } from '../util/sqlite-write-lease.mjs';
 
@@ -28,30 +29,15 @@ function recover(db, sql) {
   if (isSqliteHandleRetired(db)) return;
   try { db.exec(sql); } catch { retireSqliteHandle(db); }
 }
-function checkAttachments(db) {
-  // Separate durable files can recover different parts of one WAL commit.
-  const attached = db.prepare('PRAGMA database_list').all().filter(({ name }) => !['main', 'temp'].includes(name));
-  if (attached.some(({ file }) => file)) {
-    throw new OperationError('purchase_store_persistent_attachment', 'purchase transactions cannot include persistent attached databases');
-  }
-  if (attached.length) {
-    throw new OperationError('purchase_store_unsupported_attachment', 'purchase transactions support only main and TEMP schemas');
-  }
-}
 function checkTransaction(db, guard) {
   guard.check();
-  checkAttachments(db);
+  checkSqlitePurchaseDatabase(db);
 }
 
 // The package owns the transaction boundary. Host wrappers cannot commit a
 // callback before the package has checked its synchronous result.
 function sqliteTransaction(db, fn) {
-  const { DatabaseSync } = require('node:sqlite');
-  if (!(db instanceof DatabaseSync)) throw new OperationError('purchase_store_invalid_handle', 'purchase store requires a DatabaseSync handle');
-  if (isSqliteHandleRetired(db)) throw new OperationError('purchase_store_retired_handle', 'purchase store handle is retired');
-  if (typeof fn !== 'function') throw new OperationError('purchase_store_invalid_callback', 'purchase transaction requires a callback');
-  if (nonSynchronous(fn)) throw new OperationError('purchase_store_async_callback', 'purchase transaction requires an ordinary synchronous callback');
-  checkAttachments(db);
+  checkSqlitePurchaseInput(db, fn);
   if (active.has(db)) {
     const state = active.get(db);
     const savepoint = `dacs_purchase_${randomUUID().replaceAll('-', '')}`;
