@@ -79,8 +79,9 @@ function renameGitignores(files) {
  * entry path without the first component, as npm extracts it) to its bytes. Directory, link and
  * device entries are skipped, as npm skips them. Throws on an archive that is truncated, unpacks to
  * more than MAX_UNPACKED_ARCHIVE_BYTES or holds more than MAX_ARCHIVE_ENTRIES entries, a header with
- * a bad checksum or size, a PAX size override, an unsupported entry type, an escaping or duplicate
- * path, or no package.json. PAX sizes equal to the file header size are supported. */
+ * a bad checksum or size, nonzero data after the end block, a PAX size override, an unsupported entry
+ * type, an escaping or duplicate path, or no package.json. PAX sizes equal to the file header size
+ * are supported. */
 export function packedFiles(archive) {
   const tar = gunzipSync(archive, { maxOutputLength: MAX_UNPACKED_ARCHIVE_BYTES });
   const files = new Map();
@@ -89,7 +90,10 @@ export function packedFiles(archive) {
   for (let offset = 0, entries = 0; ; entries += 1) {
     if (offset + TAR_BLOCK > tar.length) throw new Error("truncated packed tarball: no end-of-archive block");
     const header = tar.subarray(offset, offset + TAR_BLOCK);
-    if (header.every(byte => byte === 0)) break;
+    if (header.every(byte => byte === 0)) {
+      if (tar.subarray(offset + TAR_BLOCK).some(byte => byte !== 0)) throw new Error("packed tarball has a malformed trailer");
+      break;
+    }
     if (entries === MAX_ARCHIVE_ENTRIES) throw new Error(`packed tarball has more than ${MAX_ARCHIVE_ENTRIES} entries`);
     if (!validChecksum(header)) throw new Error("packed tarball header has a bad checksum");
     const size = tarNumber(header, TAR_SIZE);
