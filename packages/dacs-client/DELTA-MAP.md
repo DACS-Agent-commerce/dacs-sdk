@@ -632,6 +632,7 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 | D11 | fix(client): D11 keep host refusal tests with admission | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | f34fe299227e2607f005885f0abcf393d2a2ffaa |
+| D11 | fix(client): D11 record both admission test paths | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1588,7 +1589,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
 | fix(client): D11 keep host refusal tests with admission | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record both admission test paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
