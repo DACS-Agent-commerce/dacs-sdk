@@ -12,7 +12,7 @@ function world(t, mode = 'WAL', memory = false) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-store-attachments-'));
   const path = join(dir, 'main.sqlite'), auxiliary = join(dir, 'aux.sqlite');
   const db = new DatabaseSync(memory ? ':memory:' : path), aux = new DatabaseSync(auxiliary);
-  for (const connection of [db, aux]) connection.exec(`PRAGMA journal_mode=${mode}; PRAGMA synchronous=FULL; CREATE TABLE records(id TEXT)`);
+  for (const connection of [db, aux]) connection.exec(`PRAGMA journal_mode=${mode}; PRAGMA synchronous=${mode === 'WAL' ? 'FULL' : 'EXTRA'}; CREATE TABLE records(id TEXT)`);
   aux.close();
   t.after(() => { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); });
   return { db, path, auxiliary, store: createSqlitePurchaseStore() };
