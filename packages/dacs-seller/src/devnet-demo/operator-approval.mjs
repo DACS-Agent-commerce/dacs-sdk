@@ -588,6 +588,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       try{
         const attempt=(await whenReadable(()=>readPolicyLedger(evidencePath),request)).attempts.get(attemptId);
         if(!attempt||attempt.outcome!==null||attempt.reservation||attempt.approvalHash!==sha(JSON.stringify(request)))return false;
+        freezeRequest(request);
         // Reread after the manual answer and ledger wait, immediately before the synchronous append.
         const refusal=await stillOpenBeforePayment(request,policy,heldRequests.get(request));live();
         if(refusal){

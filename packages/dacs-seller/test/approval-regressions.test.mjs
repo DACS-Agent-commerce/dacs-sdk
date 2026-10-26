@@ -121,3 +121,11 @@ test('C-5 manual approval publishes every newly created parent directory before 
  }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
  assert(synced.includes(evidencePath));assert(synced.includes(f.evidencePath+'-nested'));assert(synced.includes(join(f.evidencePath,'..')));
 });
+
+test('D-1 direct held authorization cannot change retained bytes during its final resolver read',async t=>{
+ const r=requestFor({artifactKind:'CompositeVerificationRecord'});let reads=0;
+ const f=await fixture(t,async()=>{if(++reads===2)r.content.exactCreate='{"changed":true}';return null;});
+ assert.equal(await f.p.prepare(r),false);assert.equal(f.p.heldForManual(r),true);
+ assert.equal(await f.p.authorizeSign(r),false);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+ await f.p.settle(r,'released');assert.equal(heldPolicyBudget((await f.read()).rows,T0).writes,0);
+});
