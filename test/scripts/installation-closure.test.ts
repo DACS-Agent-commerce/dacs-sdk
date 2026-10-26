@@ -39,6 +39,53 @@ describe("packed archive files", () => {
       ".npmignore": "dist\n", "docs/.npmignore": "notes\n" });
   });
 
+  it("matches a real npm installation that normalizes dot segments after stripping one component", async () => {
+    const archive = gzipSync(tarArchive([
+      { name: "package/./package.json", body: manifest("dots") },
+      { name: "package/./index.js", body: "module.exports = 1;\n" },
+      { name: "package/lib/./nested.js", body: "nested" },
+      { name: "package/./lib2/./multiple.js", body: "multiple" },
+      { name: "./package/leading.js", body: "strip before resolving" },
+    ]));
+    const expected = { "package.json": manifest("dots"), "index.js": "module.exports = 1;\n",
+      "lib/nested.js": "nested", "lib2/multiple.js": "multiple", "package/leading.js": "strip before resolving" };
+    const project = temporaryDirectory();
+    const server = await serveArchives(new Map([["dots", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { dots: "1.0.0" } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {
+        "": root, "node_modules/dots": { version: "1.0.0", resolved: `${server.registry}/dots.tgz`, integrity: sri(archive) },
+      } }));
+      const installed = await npmCi(project, server.registry, join(project, ".npm"));
+      expect(installed.status, installed.output).toBe(0);
+      for (const [path, content] of Object.entries(expected)) {
+        expect(readFileSync(join(project, "node_modules/dots", path), "utf8")).toBe(content);
+      }
+      expect(text(packedFiles(archive))).toEqual(expected);
+    } finally { await server.close(); }
+  }, 60_000);
+
+  it.each([false, true])("refuses canonical duplicate paths with dot segments, reverse=%s", reverse => {
+    const entries = [{ name: "package/index.js", body: "first" }, { name: "package/./index.js", body: "second" }];
+    if (reverse) entries.reverse();
+    expect(() => packedFiles(gzipSync(tarArchive([{ name: "package/package.json", body: manifest("a") }, ...entries]))))
+      .toThrow("duplicate packed tarball entry");
+  });
+
+  it.each([false, true])("refuses canonical file/ancestor conflicts with dot segments, reverse=%s", reverse => {
+    const entries = [{ name: "package/./a", body: "file" }, { name: "package/a/./b", body: "child" }];
+    if (reverse) entries.reverse();
+    expect(() => packedFiles(gzipSync(tarArchive([{ name: "package/package.json", body: manifest("a") }, ...entries]))))
+      .toThrow("file/ancestor conflict");
+  });
+
+  it.each(["package/./../escape.js", "package/./a/../../escape.js", "package/./\\escape.js"])(
+    "refuses an escaping path containing dot segments: %s", name => {
+      expect(() => packedFiles(gzipSync(tarArchive([{ name: "package/package.json", body: manifest("a") }, { name }]))))
+        .toThrow("escapes the package");
+    });
+
   it.each([
     ["a pax path record", [{ name: "package/short", body: "long", pax: { path: `package/${"d/".repeat(60)}file.js` } }]],
     ["a GNU long-name entry", [{ name: "././@LongLink", type: "L", body: `package/${"d/".repeat(60)}file.js\0` },
@@ -249,6 +296,26 @@ describe("bounded archive operations", () => {
     } };`);
     expect(() => packedFiles(archive, stalled, { timeout: 200 })).toThrow("ETIMEDOUT");
   });
+  it("gives extraction its full deadline after the validation worker completes", () => {
+    const probe = `
+      import childProcess from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const original = childProcess.execFileSync;
+      const calls = [];
+      childProcess.execFileSync = (node, args, options) => {
+        const result = original(node, args, options);
+        calls.push({ phase: args[3], timeout: options.timeout });
+        return result;
+      };
+      syncBuiltinESMExports();
+      const { packedFiles } = await import(${JSON.stringify(new URL(closureModulePath, import.meta.url).href)});
+      packedFiles(Buffer.from(${JSON.stringify(archive.toString("base64"))}, 'base64'), ${JSON.stringify(toolchain)});
+      process.stdout.write(JSON.stringify(calls));
+    `;
+    const calls = JSON.parse(runNpmNode(toolchain, ["--input-type=module", "-e", probe], { encoding: "utf8" }));
+    expect(calls).toEqual([{ phase: "validate", timeout: ARCHIVE_LIMITS.timeout },
+      { phase: "extract", timeout: ARCHIVE_LIMITS.timeout }]);
+  });
   it.each([false, true])("refuses file/ancestor conflicts in either archive order, reverse=%s", reverse => {
     const entries = [{ name: "package/a", body: "file" }, { name: "package/a/b", body: "child" }];
     if (reverse) entries.reverse();
@@ -281,7 +348,7 @@ it("reads archives with the tar 6 parser name bundled with npm 10.8", () => {
   expect(text(files)).toEqual({ "package.json": manifest("a") });
 });
 
-it("extracts multiple independent sources in one worker and publishes no partial result", () => {
+it("extracts multiple independent sources and publishes no partial result", () => {
   const sources = new Map([["a", packTarball({ "package.json": manifest("a"), "index.js": "a" })],
     ["b", packTarball({ "package.json": manifest("b"), "index.js": "b" })]]);
   const files = packedFileSets(sources);
