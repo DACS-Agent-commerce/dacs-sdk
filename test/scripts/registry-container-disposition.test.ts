@@ -356,7 +356,7 @@ describe("registry/container evidence", () => {
       `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
   });
 
-  it.each(releaseCopies.flatMap(([name, nested]) => [[name, "0.0.0-wrong"], ["@kynesyslabs/other", CANDIDATE_VERSION]]
+  it.each(releaseCopies.flatMap(([name, nested]) => ([[name, "0.0.0-wrong"], ["@kynesyslabs/other", CANDIDATE_VERSION]] as const)
     .map(([installedName, installedVersion]) => [name, nested, installedName, installedVersion] as const)))(
     "rejects a %s copy, nested=%s, whose installed package.json is %s@%s", (name, nested, installedName, installedVersion) => {
       const { fixture, location } = releaseCopy(name, nested);
