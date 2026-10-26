@@ -203,6 +203,8 @@ PR 03 acceptance: `test/sqlite-write-lease.test.mjs` covers the marker, ordinary
 
 PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
 
+Schema refresh reads schema versions and table bindings in one SQLite savepoint snapshot, replaces the temporary triggers atomically, and publishes the matching cache only after release. Reusable trigger names retain ownership across a failed refresh or an enclosing caller rollback; a rival schema commit is discovered on reacquisition.
+
 PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
@@ -569,6 +571,9 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | eafd77f954d594e9b2d10fcb7340a1acd95aa729 |
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | b4e9db02994949d2259e9bd69c6f54ca0d8a452a |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 9fbac0814d491ce1e136f0e1b84830d79c3f0f6f |
+| D11 | fix(client): D11 refresh lease guards from one schema snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 500190c769112f72c2de2915132c9c32074e7079 |
+| | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d5cd592b2d02917ce3b15cb74e625420257f3c4c |
 
 ## Complete commit and file inventory
 
@@ -1406,6 +1411,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
 
 ## Original moved files
 
