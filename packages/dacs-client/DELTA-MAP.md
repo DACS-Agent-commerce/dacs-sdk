@@ -700,6 +700,9 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 | D11 | fix(client): D11 record both admission test paths | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 keep transaction boundary tests with orchestration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` | 35502a67588f8d135111dfcf183e3cf0dc536948 |
+| D11 | fix(client): D11 retain 04 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | de9b38f087ad793733f16b30ddf8a28fc2213728 |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
 
 ## Complete commit and file inventory
 
@@ -1797,6 +1800,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/test/store-transaction-boundary.test.mjs:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
