@@ -73,6 +73,10 @@ it("register local evidence exists at this prefix", () => {
   };
   walk(JSON.parse(read("conformance/tp1-register.json")));
 });
+it.each(["L2", "G10"])("%s blocks publication until failed-payment handling is qualified", id => {
+  const register: typeof import("../../conformance/tp1-register.json") = JSON.parse(read("conformance/tp1-register.json"));
+  expect(register.rows.find(row => row.id === id)?.blocksPublication).toBe(true);
+});
 it("pins register identity, tuple and qualification references independently", () => {
   const register: typeof import("../../conformance/tp1-register.json") = JSON.parse(read("conformance/tp1-register.json"));
   expect(register.base.commit).toBe("d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20");
