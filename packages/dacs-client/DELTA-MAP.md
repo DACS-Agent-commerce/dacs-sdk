@@ -699,6 +699,8 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 25527e1737241f6c8516577de115665cd65b971c |
 | | `packages/dacs-client/test/store-startup-results.test.mjs:1` | 130fd5d3a70ab5640916c4c1ca00ba1a94135284 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | a2abc629dbd08cdb3d2bd8d074fe47aa8bbfa374 |
+| D11 | fix(client): D11 record PR 04 adapter export removal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 2730715a63ecaf36b43fbf1af32bf832bb567b65 |
 
 ## Complete commit and file inventory
 
@@ -1808,6 +1810,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/test/store-attached-databases.test.mjs:1` |
 | fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 | fix(client): D11 own transaction startup and result refusal | `packages/dacs-client/test/store-startup-results.test.mjs:1` |
+| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
