@@ -1,3 +1,4 @@
+import { sellerRecordsPurchaseResolver } from '../../src/devnet-demo/seller-purchase-source.mjs';
 // Exact CREATE/confirmation fixtures adapted from #58's purchase-source tests.
 import {createHash} from 'node:crypto';
 import {canonicalize,compositeVerificationAddress,contentHash,finalityCommitmentAddress,paymentEvidenceAddress} from '@kynesyslabs/dacs';
@@ -38,3 +39,10 @@ function confirmationFor(r){
 
 
 export {address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor};
+
+export function realPurchaseResolver(){
+ const agreement={parties:[{role:'buyer',primaryClaim:buyer},{role:'seller',primaryClaim:seller}],listingRef:pin,terms:{price:{amount:'1',currency:'DEM'}}};
+ // Keep the fixture's Agreement hash consistent with the actual seller projection.
+ return sellerRecordsPurchaseResolver({sessionOf:()=>({jobId:JOBS[0],agreement,agreementHash:contentHash(agreement),buyerBundle:{presentedBy:buyer},agreementSignedProjection:{content:{network:sourceBinding.network,chainIdentity:sourceBinding.chainIdentity,data:['storageProgram',{metadata:{networkBinding:sourceBinding}}]}}}),buyerAccess:()=>({allowsWallet:()=>true}),now:()=>T0,
+  observePayment:q=>({disposition:'absent',jobId:q.jobId,agreementHash:q.agreementHash,observedAt:q.observedAt})});
+}
