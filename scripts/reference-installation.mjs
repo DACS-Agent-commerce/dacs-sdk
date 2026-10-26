@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkS
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { ARCHIVE_LIMITS, npmToolchain, packedFiles, runNpmNode, verifyArchive } from "./installation-closure.mjs";
+import { ARCHIVE_LIMITS, npmToolchain, packedFileSets, runNpmNode, verifyArchive } from "./installation-closure.mjs";
 
 const PACKAGE_NAME = "(?:@[^/.][^/]*\\/[^/.][^/]*|(?!node_modules(?:/|$))[^/.@][^/]*)";
 const PACKAGE_LOCATION = new RegExp(`^node_modules/${PACKAGE_NAME}(?:/node_modules/${PACKAGE_NAME})*$`);
@@ -104,6 +104,7 @@ function seedArchive(cache, bytes) {
 
 function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
   const unavailable = new Map();
+  const sources = new Map();
   for (const [location, entry] of Object.entries(lock.packages)) {
     if (location === "") continue;
     if (!PACKAGE_LOCATION.test(location) || !isPlainObject(entry) || entry.link === true) {
@@ -120,15 +121,16 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
     let bytes;
     try { bytes = readArchive(location, entry); }
     catch (error) { unavailable.set(location, error); continue; }
-    try {
-      verifyArchive(bytes, entry.integrity);
-      const files = packedFiles(bytes, contract.toolchain);
-      if (files.has("npm-shrinkwrap.json")) throw new Error("package has an npm-shrinkwrap.json");
-      record.manifest = manifestOf(files.get("package.json")).manifest;
-      record.files = new Map([...files].map(([path, content]) => [path, digest(content)]));
-      for (const [root, module] of moduleRoots(location, files)) roots.set(root, module);
-      seedArchive(cache, bytes);
-    } catch (cause) { throw new Error(`cannot derive the installed files of ${location}: ${cause.message}`, { cause }); }
+    try { sources.set(location, verifyArchive(bytes, entry.integrity)); }
+    catch (cause) { throw new Error(`cannot derive the installed files of ${location}: ${cause.message}`, { cause }); }
+  }
+  for (const [location, files] of packedFileSets(sources, contract.toolchain)) {
+    const record = entries.get(location);
+    if (files.has("npm-shrinkwrap.json")) throw new Error("package has an npm-shrinkwrap.json: " + location);
+    record.manifest = manifestOf(files.get("package.json")).manifest;
+    record.files = new Map([...files].map(([path, content]) => [path, digest(content)]));
+    for (const [root, module] of moduleRoots(location, files)) roots.set(root, module);
+    seedArchive(cache, sources.get(location));
   }
   return unavailable;
 }
