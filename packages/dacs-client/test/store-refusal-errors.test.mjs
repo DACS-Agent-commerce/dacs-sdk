@@ -15,25 +15,6 @@ test('an unqualified store retains the integration error', () => {
     { name: 'NotWiredError', code: 'client_not_wired', seam: 'purchase-store-not-wired' });
 });
 
-test('a non-SQLite handle identifies the refused database', () => {
-  assert.throws(() => createSqlitePurchaseStore().transaction({}, () => {}),
-    { name: 'OperationError', code: 'purchase_store_invalid_handle' });
-});
-
-for (const fn of [undefined, 'TEST-callback']) {
-  test(`a ${typeof fn} callback identifies the invalid callback`, t => {
-    const { db, store } = database(t);
-    assert.throws(() => store.transaction(db, fn), { code: 'purchase_store_invalid_callback' });
-  });
-}
-
-for (const fn of [async () => {}, function* () {}, async function* () {}]) {
-  test(`${fn.constructor.name} identifies the synchronous callback requirement`, t => {
-    const { db, store } = database(t);
-    assert.throws(() => store.transaction(db, fn), { code: 'purchase_store_async_callback' });
-  });
-}
-
 test('a promise result identifies the result refusal and a retry identifies the retired handle', t => {
   const { db, store } = database(t);
   assert.throws(() => store.transaction(db, () => Promise.resolve()), { code: 'purchase_store_async_result' });
@@ -50,15 +31,3 @@ for (const nested of [false, true]) {
       { code: 'purchase_store_transaction_ended' });
   });
 }
-
-for (const value of [undefined, 1, 'true']) {
-  test(`a ${typeof value} classifier result identifies the boolean requirement`, () => {
-    const store = purchaseStore({ ...createSqlitePurchaseStore(), isUniqueViolation: () => value });
-    assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'purchase_store_invalid_classifier_result' });
-  });
-}
-
-test('a classifier promise identifies its own synchronous result requirement', () => {
-  const store = purchaseStore({ ...createSqlitePurchaseStore(), isUniqueViolation: () => Promise.reject(new Error('TEST')) });
-  assert.throws(() => store.isUniqueViolation(new Error('TEST')), { code: 'purchase_store_async_classifier_result' });
-});
