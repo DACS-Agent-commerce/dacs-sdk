@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "4be0170c14945f2eac91d1d9d44d58e5cfcaae11"
+        "blob": "28aefe62d8aab9f4feb5135b530d0b6cdd85da50"
       },
       "DELTA-LEDGER.json": {
-        "blob": "932d69670f2ddc19f9be99cb7e5ab29709202a5b"
+        "blob": "90167c988e15b75b464793d9d130b1b79f39d3f6"
       },
       "DELTA-MAP.md": {
-        "blob": "649bf7a19e89b5d2d5dbefb288fa9e767281bbbd"
+        "blob": "c5be143d595e0644a1de167d187b927815b4b198"
       },
       "DELTA-NOTES.md": {
-        "blob": "a2d05d876eaa978cadf5d310c78f74e8a46dc137"
+        "blob": "766939ef81c79f5d135ec90930b4fe61c365f28b"
       },
       "HOLD.json": {
         "control": "record"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "bbdfc1472f64aa49bb0f80ba8282c7ef04c78172"
+        "blob": "4fd4d53a32e48b6ebdebf4356141dc5097d917d7"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1223,7 +1223,7 @@
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "07eefeb2f67b9c63e52c1a79c075f7e3c237f15e"
+        "blob": "944247d4ce8b2622389c79b71de1a21d6b83e239"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
@@ -1252,11 +1252,14 @@
       "src/util/purchase-readback-cache.mjs": {
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
       },
+      "src/util/sqlite-purchase-admission.mjs": {
+        "blob": "1803da8de85ea26f119944b7550b8698f920f4bc"
+      },
       "src/util/sqlite-statement-boundary.mjs": {
         "blob": "5e0077f1c0e94938358e112ba518f124323894fa"
       },
       "src/util/sqlite-write-lease.mjs": {
-        "blob": "a2abc629dbd08cdb3d2bd8d074fe47aa8bbfa374"
+        "blob": "dc7166d3baff55abd0a7862a4b78e337cd5ae0d9"
       },
       "src/util/text.mjs": {
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
@@ -1287,9 +1290,6 @@
       },
       "test/delivery-evidence-gate.test.mjs": {
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
-      },
-      "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "b1b98c21e80cef1baf539534984ed449cd93d048"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
@@ -1582,9 +1582,6 @@
       "test/helpers/start-intent.mjs": {
         "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
       },
-      "test/helpers/store-crash-worker.mjs": {
-        "blob": "f19662c277f9bcc86145487d72230cdfbdde2d50"
-      },
       "test/helpers/wallet-extension-probe-dom.mjs": {
         "blob": "82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c"
       },
@@ -1624,6 +1621,9 @@
       "test/rpc-byte-budget.test.mjs": {
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
+      "test/sqlite-purchase-admission.test.mjs": {
+        "blob": "f34fe299227e2607f005885f0abcf393d2a2ffaa"
+      },
       "test/sqlite-statement-boundary-regressions.test.mjs": {
         "blob": "7acf0c866638baa16417d40e0f345238fe4985f1"
       },
@@ -1635,21 +1635,6 @@
       },
       "test/storage-read-nonobservation.test.mjs": {
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
-      },
-      "test/store-atomicity.test.mjs": {
-        "blob": "927fca2142201b31325e1e21045de052b186dfb3"
-      },
-      "test/store-attached-databases.test.mjs": {
-        "blob": "3fef1e1f706852d0c0436312266b1317063875ec"
-      },
-      "test/store-host-boundary.test.mjs": {
-        "blob": "25527e1737241f6c8516577de115665cd65b971c"
-      },
-      "test/store-refusal-errors.test.mjs": {
-        "blob": "a41ff025877d600e4d9213600d642213d61dd7a2"
-      },
-      "test/store-startup-results.test.mjs": {
-        "blob": "130fd5d3a70ab5640916c4c1ca00ba1a94135284"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"

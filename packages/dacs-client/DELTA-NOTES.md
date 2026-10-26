@@ -207,3 +207,5 @@ Only main/temp ordinary tables are supported; attached schemas are refused becau
 PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
+
+PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds and supported schemas. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
