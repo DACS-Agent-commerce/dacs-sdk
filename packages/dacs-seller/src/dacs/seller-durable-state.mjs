@@ -4,7 +4,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { createPublicKey, randomUUID, verify } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { isMainThread } from 'node:worker_threads';
@@ -193,25 +193,8 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || realpathSync(dir) !== dir) fail('seller_state_directory_unsafe');
-  const path = join(dir, 'seller-state.sqlite');
-  let created = false;
-  try {
-    lstatSync(path);
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    if (readdirSync(dir).length) fail('seller_state_missing_database');
-    const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    closeSync(fd); created = true;
-  }
-  const file = lstatSync(path);
-  if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid?.() || (file.mode & 0o077)) fail('seller_state_file_unsafe');
-  if (!created && file.size === 0) fail('seller_state_corrupt');
-  takeLease(dir);
   const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(signer.claim.slice(16), 'hex')]), format: 'der', type: 'spki' });
-  const db = new DatabaseSync(path);
-  const owned = new Map(); // jobId -> { owner, revision } for this store's held locks
   const pin = clone(listingPin);
-  db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000');
   const schema = [
     'CREATE TABLE seller_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
     'CREATE TABLE seller_jobs (job TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL)',
@@ -220,11 +203,46 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     'CREATE TABLE seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL)',
   ];
   let needsEffects = false;
+  const path = join(dir, 'seller-state.sqlite');
   try {
-    if (created) db.exec(schema.join(';'));
+    lstatSync(path);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    // Only unfinished initializers may precede the final database. Recheck
+    // the path because another process may have published while we listed.
+    if (readdirSync(dir).some(name => !/^seller-state-[0-9a-f-]{36}\.init(?:-journal)?$/.test(name)) && !existsSync(path)) fail('seller_state_missing_database');
+    if (!existsSync(path)) {
+      const pending = join(dir, `seller-state-${randomUUID()}.init`);
+      const fd = openSync(pending, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      let initial;
+      try {
+        closeSync(fd);
+        initial = new DatabaseSync(pending);
+        initial.exec('PRAGMA synchronous=FULL; BEGIN IMMEDIATE');
+        initial.exec(schema.join(';'));
+        initial.prepare('INSERT INTO seller_meta VALUES (?,?)').run('context', authenticated('context', 'context', null));
+        initial.exec('COMMIT');
+        initial.close(); initial = null;
+        // Publish only a complete, authenticated database, without replacing
+        // the winner of a concurrent initialization. No SQLite handle to the
+        // temporary path remains open when the final path becomes visible.
+        try { linkSync(pending, path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+        const directory = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+        try { fsyncSync(directory); } finally { closeSync(directory); }
+      } finally { try { initial?.close(); } finally { unlinkSync(pending); } }
+    }
+  }
+  const file = lstatSync(path);
+  if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid?.() || (file.mode & 0o077)) fail('seller_state_file_unsafe');
+  if (file.size === 0) fail('seller_state_corrupt');
+  takeLease(dir);
+  const db = new DatabaseSync(path);
+  const owned = new Map(); // jobId -> { owner, revision } for this store's held locks
+  db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000');
+  try {
     const actual = db.prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.sql);
     const sorted = tables => [...tables].sort((a,b) => a.split(' ')[2].localeCompare(b.split(' ')[2]));
-    needsEffects = !created && same(actual, sorted(schema.filter(sql => !/seller_(effects|settlements) /.test(sql))));
+    needsEffects = same(actual, sorted(schema.filter(sql => !/seller_(effects|settlements) /.test(sql))));
     if (!needsEffects && !same(actual, sorted(schema))) fail('seller_state_corrupt');
   } catch (error) { db.close(); throw error; }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
@@ -252,8 +270,8 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   }
   try {
     const config = get('SELECT value FROM seller_meta WHERE key=?', 'context');
-    if (config) verified(config.value, 'context', 'context');
-    else if (!created) fail('seller_state_corrupt');
+    if (!config) fail('seller_state_corrupt');
+    verified(config.value, 'context', 'context');
     if (needsEffects) transaction(() => db.exec(schema.filter(sql => /seller_(effects|settlements) /.test(sql)).join(';')));
     const fencedStore = await createFsFencedSessionStore({ dir: join(dir, 'sdk-agreements') });
     const receiptStore = await createFsSellerReceiptStore({ dir: join(dir, 'sdk-receipts') });
@@ -362,8 +380,10 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       retainContext(context) {
         transaction(() => {
           const row = get('SELECT value FROM seller_meta WHERE key=?', 'context');
-          if (row) { if (!same(verified(row.value, 'context', 'context'), context)) fail('seller_state_context_conflict'); }
-          else run('INSERT INTO seller_meta VALUES (?,?)', 'context', authenticated('context', 'context', context));
+          if (!row) fail('seller_state_corrupt');
+          const previous = verified(row.value, 'context', 'context');
+          if (previous === null) run('UPDATE seller_meta SET value=? WHERE key=?', authenticated('context', 'context', context), 'context');
+          else if (!same(previous, context)) fail('seller_state_context_conflict');
         });
       },
       sessions: () => db.prepare('SELECT job FROM seller_jobs ORDER BY job').all().map(({ job }) => load(job).session),
