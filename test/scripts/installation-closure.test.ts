@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives, sri, tarArchive, type TarEntry } from "./npm-archive-fixtures.js";
@@ -198,6 +199,20 @@ it.each(["ustar\0" + "00", ""]) ("delegates ustar prefix handling to npm, magic=
   expect(files.has(magic ? "long/path/package/short.js" : "short.js")).toBe(true);
 });
 
+
+it("reads archives with the tar 6 parser name bundled with npm 10.8", () => {
+  const toolchain = npmToolchain();
+  const real = createRequire(toolchain.cli);
+  const npmRoot = join(temporaryDirectory(), "npm");
+  mkdirSync(join(npmRoot, "bin"), { recursive: true });
+  mkdirSync(join(npmRoot, "node_modules/tar"), { recursive: true });
+  writeFileSync(join(npmRoot, "bin/npm-cli.js"), "");
+  writeFileSync(join(npmRoot, "node_modules/tar/index.js"),
+    `const tar = require(${JSON.stringify(real.resolve("tar"))}); module.exports = { Parse: tar.Parser ?? tar.Parse };`);
+  symlinkSync(dirname(real.resolve("pacote/package.json")), join(npmRoot, "node_modules/pacote"));
+  const files = packedFiles(packTarball({ "package.json": manifest("a") }), { ...toolchain, cli: join(npmRoot, "bin/npm-cli.js") });
+  expect(text(files)).toEqual({ "package.json": manifest("a") });
+});
 
 it("extracts multiple independent sources in one worker and publishes no partial result", () => {
   const sources = new Map([["a", packTarball({ "package.json": manifest("a"), "index.js": "a" })],
