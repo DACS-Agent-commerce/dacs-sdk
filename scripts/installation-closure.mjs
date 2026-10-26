@@ -43,7 +43,9 @@ export function runNpmNode(toolchain, args, options = {}, overrides) {
 // The trusted parser advances its own cursor. We feed fixed blocks solely to
 // observe its terminator event and refuse any later nonzero bytes.
 function validateFraming(tar, toolchain, limits) {
-  const { Parser } = createRequire(toolchain.cli)("tar");
+  // npm 10.8 and earlier bundle tar 6, which names the parser class `Parse`.
+  const tarModule = createRequire(toolchain.cli)("tar");
+  const Parser = tarModule.Parser ?? tarModule.Parse;
   let block;
   let terminated = false;
   let entries = 0;

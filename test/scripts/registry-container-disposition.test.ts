@@ -394,6 +394,23 @@ describe("complete installed package scopes", { timeout: 60_000 }, () => {
     expect(result.stderr).toContain(refusal);
   });
 
+  it("accepts a package scope whose nested objects and string values reuse the key name", () => {
+    const fixture = dependencyPolicyHarness();
+    fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0"),
+      "dist/package.json": '{"name":"inner","exports":{"name":{"name":"./a.js"},"./b":[{"name":"x"}]},"description":"name:\\"name\\":"}',
+      "dist/a.js": "export default 1;" });
+    expect(fixture.run()).toMatchObject({ status: 0, report: { passed: true } });
+  });
+
+  it("refuses a package scope that repeats a top-level key", () => {
+    const fixture = dependencyPolicyHarness();
+    fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0"),
+      "dist/package.json": '{"name":"inner","exports":"./a.js","exports":"./b.js"}', "dist/a.js": "", "dist/b.js": "" });
+    const result = fixture.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("node_modules/plugin/dist");
+  });
+
   it("accepts an ordinary nested package scope without candidate identities or declarations", () => {
     const fixture = dependencyPolicyHarness();
     fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0"),
@@ -1649,6 +1666,20 @@ describe("dependency policy over npm ci installations", () => {
       .toBe("unreleased-copy\n");
     expect(policy.status).not.toBe(0);
     expect(policy.stderr).toContain(`cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/${scope}`);
+  }, 60_000);
+
+  // JSON.parse reads the escaped second name; Node's scope reader keeps the first.
+  it("refuses a package scope whose escaped duplicate name hides the candidate from JSON.parse", async () => {
+    const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION, { main: "dist/index.cjs" }),
+      "dist/package.json": '{"name":"@kynesyslabs/dacs","\\u006eame":"ordinary-scope","exports":"./copy.cjs"}',
+      "dist/index.cjs": "module.exports = require('@kynesyslabs/dacs');",
+      "dist/copy.cjs": "module.exports = 'unreleased-copy';" });
+    const { project, policy } = await registryInstallation(temporaryDirectory(), { plugin },
+      { "node_modules/plugin": ["plugin", {}] }, { dependencies: { plugin: CANDIDATE_VERSION } });
+    expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
+      .toBe("unreleased-copy\n");
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/dist");
   }, 60_000);
 
   // The lock records only fixture-plugin; npm still installs the old copy its

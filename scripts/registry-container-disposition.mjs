@@ -268,6 +268,31 @@ function candidateAliases(owner, candidates) {
   return aliases;
 }
 
+// Whether the top-level object of `text`, which JSON.parse accepted, repeats a
+// key once escapes are decoded. JSON.parse keeps the last `name`; Node's
+// package scope reader keeps the first, so a repeated key hides the identity
+// Node uses from the one this check reads.
+function repeatsTopLevelKey(text) {
+  const keys = new Set();
+  let depth = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === '"') {
+      let end = index + 1;
+      while (text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      const afterString = /\s*:/y;
+      afterString.lastIndex = end + 1;
+      if (depth === 1 && afterString.test(text)) {
+        const key = JSON.parse(text.slice(index, end + 1));
+        if (keys.has(key)) return true;
+        keys.add(key);
+      }
+      index = end;
+    } else if (text[index] === "{" || text[index] === "[") depth++;
+    else if (text[index] === "}" || text[index] === "]") depth--;
+  }
+  return false;
+}
+
 // Called only after the entire installed namespace matches its archive closure,
 // so this reads every module root and package.json scope there is. The closure
 // admits npm-generated command links to archive files only: a link named
@@ -288,8 +313,9 @@ function installedCandidateModules(project, closure) {
       else if (item.name === "package.json") {
         const scope = { ...modules.get(directory), owner, generated: item.isSymbolicLink() };
         try {
-          scope.manifest = JSON.parse(readFileSync(join(project, path), "utf8"));
-          scope.unreadable = !isPlainObject(scope.manifest);
+          const text = readFileSync(join(project, path), "utf8");
+          scope.manifest = JSON.parse(text);
+          scope.unreadable = !isPlainObject(scope.manifest) || repeatsTopLevelKey(text);
         } catch { scope.unreadable = true; }
         modules.set(directory, scope);
       }
