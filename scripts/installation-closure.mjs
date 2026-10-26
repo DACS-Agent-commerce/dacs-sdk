@@ -99,42 +99,62 @@ function validateFraming(tar, toolchain, limits) {
 
 const EXTRACT = `
 const { createRequire } = require('node:module');
-const [cli, archive, destination] = process.argv.slice(1);
+const { join } = require('node:path');
+const [cli, scratch, count] = process.argv.slice(1);
 process.on('log', (level, title, ...messages) => {
   if (level === 'warn' || level === 'error') throw new Error(title + ': ' + messages.join(' '));
 });
-createRequire(cli)('pacote').extract(archive, destination,
-  { offline: true, ignoreScripts: true, cache: destination + '-cache' })
-  .catch(error => { console.error(error); process.exitCode = 1; });
+const pacote = createRequire(cli)('pacote');
+(async () => {
+  for (let index = 0; index < Number(count); index++) {
+    await pacote.extract(join(scratch, index + '.tgz'), join(scratch, 'package-' + index),
+      { offline: true, ignoreScripts: true, cache: join(scratch, 'cache') });
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
 `;
 
-/** Extracts archive bytes with the selected npm's pacote into disposable storage and returns
- * a Map of installed file paths to bytes. Refuses framing/path ambiguity, warnings, limits,
- * subprocess failure and missing package.json. This authenticates no source identity itself. */
-export function packedFiles(archive, toolchain = npmToolchain(), overrides) {
+/** Extracts a Map of independently supplied archive bytes with the selected npm's pacote
+ * in one bounded worker. Returns a Map of labels to file Maps only after every extraction
+ * succeeds. Refuses framing/path ambiguity, warnings, limits and missing package.json. */
+export function packedFileSets(archives, toolchain = npmToolchain(), overrides) {
   const limits = boundedLimits(overrides);
-  if (archive.length > limits.archiveBytes) throw new Error("archive is larger than " + limits.archiveBytes + " bytes");
-  const tar = gunzipSync(archive, { maxOutputLength: limits.unpackedBytes });
-  validateFraming(tar, toolchain, limits);
+  const sources = [...archives];
+  if (sources.length > limits.entries) throw new Error("too many package archives");
+  for (const [label, archive] of sources) {
+    try {
+      if (archive.length > limits.archiveBytes) throw new Error("archive is larger than " + limits.archiveBytes + " bytes");
+      const tar = gunzipSync(archive, { maxOutputLength: limits.unpackedBytes });
+      validateFraming(tar, toolchain, limits);
+    } catch (cause) { throw new Error(`cannot extract archive ${label}: ${cause.message}`, { cause }); }
+  }
   const scratch = mkdtempSync(join(tmpdir(), "dacs-npm-archive-"));
   try {
-    const source = join(scratch, "source.tgz");
-    const destination = join(scratch, "package");
-    writeFileSync(source, archive);
-    runNpmNode(toolchain, ["-e", EXTRACT, toolchain.cli, source, destination], {}, limits);
-    const files = new Map();
-    const visit = directory => {
-      for (const item of readdirSync(join(destination, directory), { withFileTypes: true })) {
-        const path = directory ? `${directory}/${item.name}` : item.name;
-        if (item.isDirectory()) visit(path);
-        else if (item.isFile() && lstatSync(join(destination, path)).nlink === 1) files.set(path, readFileSync(join(destination, path)));
-        else throw new Error("unexpected extracted entry: " + path);
-      }
-    };
-    visit("");
-    if (!files.has("package.json")) throw new Error("packed tarball has no package.json");
-    return files;
+    for (const [index, [, bytes]] of sources.entries()) writeFileSync(join(scratch, index + ".tgz"), bytes);
+    runNpmNode(toolchain, ["-e", EXTRACT, toolchain.cli, scratch, String(sources.length)], {}, limits);
+    const results = new Map();
+    for (const [index, [label]] of sources.entries()) {
+      const destination = join(scratch, "package-" + index);
+      const files = new Map();
+      const visit = directory => {
+        for (const item of readdirSync(join(destination, directory), { withFileTypes: true })) {
+          const path = directory ? `${directory}/${item.name}` : item.name;
+          if (item.isDirectory()) visit(path);
+          else if (item.isFile() && lstatSync(join(destination, path)).nlink === 1) files.set(path, readFileSync(join(destination, path)));
+          else throw new Error("unexpected extracted entry: " + path);
+        }
+      };
+      visit("");
+      if (!files.has("package.json")) throw new Error("packed tarball has no package.json: " + label);
+      results.set(label, files);
+    }
+    return results;
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+
+/** Returns one archive's npm-extracted file Map; applies the same limits and refusals as packedFileSets.
+ * Source identity must be authenticated separately with verifyArchive or cachedArchive. */
+export function packedFiles(archive, toolchain = npmToolchain(), overrides) {
+  return packedFileSets(new Map([["package", archive]]), toolchain, overrides).get("package");
 }
 
 function sha512Digest(integrity) {

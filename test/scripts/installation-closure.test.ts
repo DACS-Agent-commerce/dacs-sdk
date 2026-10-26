@@ -7,7 +7,7 @@ import { cacheArchive, npmCi, packTarball, serveArchives, sri, tarArchive, type 
 
 // Keep the closure executable as plain Node ESM.
 const closureModulePath = "../../scripts/installation-closure.mjs";
-const { ARCHIVE_LIMITS, cachedArchive, npmToolchain, packedFiles, runNpmNode, verifyArchive } = await import(closureModulePath);
+const { ARCHIVE_LIMITS, cachedArchive, npmToolchain, packedFileSets, packedFiles, runNpmNode, verifyArchive } = await import(closureModulePath);
 
 const scratch: string[] = [];
 afterEach(() => {
@@ -196,4 +196,15 @@ it.each(["ustar\0" + "00", ""]) ("delegates ustar prefix handling to npm, magic=
     { name: "package/short.js", prefix: "package/long/path", magic, body: "content" },
   ])));
   expect(files.has(magic ? "long/path/package/short.js" : "short.js")).toBe(true);
+});
+
+
+it("extracts multiple independent sources in one worker and publishes no partial result", () => {
+  const sources = new Map([["a", packTarball({ "package.json": manifest("a"), "index.js": "a" })],
+    ["b", packTarball({ "package.json": manifest("b"), "index.js": "b" })]]);
+  const files = packedFileSets(sources);
+  expect(files.get("a").get("index.js").toString()).toBe("a");
+  expect(files.get("b").get("index.js").toString()).toBe("b");
+  sources.set("b", Buffer.from("invalid"));
+  expect(() => packedFileSets(sources)).toThrow("cannot extract archive b");
 });
