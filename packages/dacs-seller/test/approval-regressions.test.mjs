@@ -82,3 +82,42 @@ test('C-4 synchronous abort also ends an unanswered manual callback',async t=>{
  await assert.rejects(a(requestFor()),{code:'operator_closing'});
  await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
 });
+
+for(const stage of ['decision','signing','completion'])test(`C-3 ${stage} append preserves an unterminated ledger record`,async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
+ if(stage==='completion'){
+  assert.equal(await f.p.prepare(r),true);await writeFile(f.evidencePath,(await readFile(f.evidencePath,'utf8')).trimEnd());
+  await f.p.settle(r,'spent');assert.equal((await f.read()).rows[0].outcome,'spent');
+ }else{
+  const header={format:SELLER_LEDGER_HEADER_FORMAT,journals:Object.fromEntries(SELLER_ISSUANCE_JOURNALS.map(name=>[name,'a'.repeat(32)])),recordedAt:T0};
+  await writeFile(f.evidencePath,JSON.stringify(header));
+  const approve=stage==='signing'?f.p.prepare:createExactOperatorApproval({...f.settings,authorize:()=>true});
+  assert.equal(await approve(r),true);assert.equal((await f.read()).rows.length,1);
+ }
+});
+
+test('D-3 completion syncs its file before reporting success',async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});assert.equal(await f.p.prepare(r),true);
+ const original=fs.fsyncSync;let synced=false;
+ try{
+  fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath)synced=true;return original(fd);};syncBuiltinESMExports();
+  await f.p.settle(r,'spent');assert.equal(synced,true);
+ }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+});
+
+for(const stage of ['file','directory'])test(`C-5 ${stage} sync failure prevents signature approval`,async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'}),original=fs.fsyncSync,cause=new Error(`TEST ${stage} sync failed`);
+ try{
+  fs.fsyncSync=fd=>{if(fs.fstatSync(fd).isDirectory()===(stage==='directory'))throw cause;return original(fd);};syncBuiltinESMExports();
+  const answer=await f.p.prepare(r).catch(error=>{assert.equal(error,cause);return false;});assert.equal(answer,false);
+ }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+});
+
+test('C-5 manual approval publishes every newly created parent directory before returning',async t=>{
+ const f=await fixture(t),evidencePath=join(f.evidencePath+'-nested','deeper','ledger'),original=fs.fsyncSync,synced=[];
+ try{
+  fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();
+  const a=createExactOperatorApproval({...f.settings,evidencePath,authorize:()=>true});assert.equal(await a(requestFor()),true);
+ }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+ assert(synced.includes(evidencePath));assert(synced.includes(f.evidencePath+'-nested'));assert(synced.includes(join(f.evidencePath,'..')));
+});

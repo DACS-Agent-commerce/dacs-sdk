@@ -522,14 +522,13 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     // Sign authority must be durable before preparation can approve.
     if(preparing&&accepted&&signRecords){
-      try{await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});live();policyReason=await stillOpenBeforePayment(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
+      try{live();policyReason=await stillOpenBeforePayment(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
       catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
     }
     if(preparing&&accepted){live();return true;}
-    await mkdir(dirname(evidencePath),{recursive:true,mode:0o700});
     live();
     if(closeSignal?.aborted)throw closingError();
-    // Resolve current purchase authority after the last ledger/directory await.
+    // Resolve current purchase authority after the last ledger await.
     if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);}catch{policyReason='policy-check-failed';}live();accepted=policyReason===null;}
     if(accepted)accepted=retain();
     if(policyMode&&HOLD_REASONS.has(policyReason))heldRequests.set(input,policyReason);
