@@ -8,6 +8,7 @@ vi.mock("../../src/wire/journal.js", async (original) => ({
 }));
 
 import * as wire from "../../src/wire/index.js";
+import { CONTINUING_PATHS } from "../../src/wire/discovery.js";
 import { journalStore, reserveEffect } from "../../src/wire/journal.js";
 import { sha256Hex } from "../../src/canonical/hash.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/ed25519.js";
@@ -62,7 +63,7 @@ it.each(EFFECT_PATHS)("%s passes the authenticated job and route to the journal"
   expect(checked.effect).toBe(effect);
 });
 
-it.each(wire.CONTINUING_PATHS)("%s reserves nothing for a request that expired while its receipt was verified", async (path) => {
+it.each(CONTINUING_PATHS)("%s reserves nothing for a request that expired while its receipt was verified", async (path) => {
   vi.clearAllMocks();
   const p = await committedPurchase();
   const request = await openRequest(p, p.scope.binding, path, 10_000);
@@ -114,7 +115,7 @@ it.each(finalReadCases)("$path rechecks expiry after the final authority read (d
   }
 });
 
-it.each(wire.CONTINUING_PATHS)("%s reserves nothing once the connection's authority is lost while its receipt is verified", async (path) => {
+it.each(CONTINUING_PATHS)("%s reserves nothing once the connection's authority is lost while its receipt is verified", async (path) => {
   vi.clearAllMocks();
   const p = await committedPurchase();
   const { profile } = p.scope.binding;
