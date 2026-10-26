@@ -109,7 +109,7 @@ for (const warm of [false, true]) {
     const dir = mkdtempSync(join(tmpdir(), 'dacs-host-writer-')), path = join(dir, 'state.sqlite');
     const db = new DatabaseSync(path), store = createSqlitePurchaseStore();
     t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
-    db.exec('CREATE TABLE records(id TEXT PRIMARY KEY)');
+    db.exec('PRAGMA synchronous=EXTRA; CREATE TABLE records(id TEXT PRIMARY KEY)');
     const rows = () => db.prepare('SELECT id FROM records ORDER BY id').all().map(row => row.id);
     if (warm) store.transaction(db, () => {});
     const iterator = db.prepare("INSERT INTO records VALUES ('TEST-host') RETURNING id").iterate();
