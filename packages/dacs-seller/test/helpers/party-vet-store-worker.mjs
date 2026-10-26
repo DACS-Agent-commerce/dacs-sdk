@@ -19,6 +19,10 @@ if (mode === 'init-crash') {
   syncBuiltinESMExports();
   openPartyVetStore({ path, mode: 'create' });
   assert.fail('TEST publication did not reach the crash boundary');
+} else if (mode === 'committed-update') {
+  const store = openPartyVetStore({ path, mode: 'open' });
+  await store.update('job', () => ({ checkpoint: 'TEST-committed' }));
+  store.close();
 } else if (mode === 'writer') {
   const db = new DatabaseSync(path);
   db.exec('BEGIN IMMEDIATE');
