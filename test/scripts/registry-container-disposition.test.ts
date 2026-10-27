@@ -1329,10 +1329,14 @@ describe("registry/container evidence", () => {
     });
     expect(candidateDisposition(passing).exitCode).toBe(4);
 
-    const violation = writeSummary({ "dependency-policy.json": JSON.stringify({
-      schema: "dacs-registry-dependency-policy/v1",
-      passed: false, violations: [{ location: "package.json", value: "file:../dacs" }],
-    }) });
+    // The policy findings carry the violation as the producer extracts it from that report.
+    const fileDependency = { location: "package.json", value: "file:../dacs" };
+    const violation = writeSummary({
+      "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: false,
+        violations: [fileDependency] }),
+      "policy-findings.json": JSON.stringify({ ...baselineOnlySummary().securityGate.findings,
+        gitDependencies: [{ ...fileDependency, field: null, version: null, integrity: null }] }),
+    });
     expect(violation.registryDependencyOnly).toBe(false);
     expect(candidateDisposition(violation).exitCode).toBe(3);
 
@@ -1771,7 +1775,8 @@ describe("#191 policy-finding baseline", () => {
   });
 
   it("does not invent a runtime inventory for the recorded run", () => {
-    expect(b7b180fEvidence().securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(b7b180fEvidence().securityGate.findings.productionImageInventory)
+      .toEqual({ incomplete: ["runtime-image-inventory.json"] });
   });
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
 
@@ -1827,14 +1832,31 @@ describe("#191 policy-finding baseline", () => {
       "npm error missing: other@1.0.0, required by x@1.0.0\n" }],
     ["a lock SBOM problem against a changed range", "lockSbom", { "consumer-lock-sbom.err":
       sbomErr("consumer-lock-sbom.err").replace(">=0.62.0 <1.0.0", ">=0.63.0 <1.0.0") }],
-    ["typescript in the image but not at the lock's top level", "productionImage", {
-      "generated-package-lock.json": withLock(p => { delete p["node_modules/typescript"]; }) }],
-    ["rubic-sdk in the image", "productionImage", { "runtime-image-policy.json": JSON.stringify({
-      ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }) }],
   ])("still exits 3 for %s", (_label, check, overrides) => {
     const summary = b7b180fSimulation(overrides as Record<string, string | undefined>);
     expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("blocked");
     expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  // The image as built from the recorded lock, plus any extra packages,
+  // whatever lock the simulated run then records.
+  const recordedImage = (...extra: Array<Record<string, string>>) => {
+    const value = JSON.parse(closureInventory(JSON.stringify(lock()))); value.packages.push(...extra); return JSON.stringify(value);
+  };
+  it.each([
+    ["typescript in the image but not at the lock's top level", "typescript", {
+      "generated-package-lock.json": withLock(p => { delete p["node_modules/typescript"]; }),
+      "runtime-image-inventory.json": recordedImage() }],
+    ["rubic-sdk in the image", "rubic-sdk", {
+      "runtime-image-policy.json": JSON.stringify({
+        ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }),
+      "runtime-image-inventory.json": recordedImage({ name: "rubic-sdk", location: "node_modules/rubic-sdk", version: "5.0.0" }) }],
+  ])("still exits 3 for %s and names it", (_label, name, overrides) => {
+    const summary = b7b180fSimulation(overrides);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+    expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+    const unlisted = unlistedPolicyFindings(summary, baseline, ["productionImage"]).productionImage as Array<{ name?: string }>;
+    expect(unlisted.map(item => item.name)).toContain(name);
   });
 
   // Baselined Git, engine and image findings pin their archive, so a patch
@@ -1885,11 +1907,15 @@ describe("#191 policy-finding baseline", () => {
     expect(historicalDisposition(summary)).toMatchObject({ exitCode: 4, failureClass: "policy" });
   });
 
-  it("passes a check with no findings and blocks a passing flag that carries findings", () => {
+  // The findings decide the gate; the summary's passing flag only repeats them.
+  it("decides the dependency check from its findings whatever its passing flag says", () => {
     const summary = b7b180fSimulation();
     summary.securityGate.registryDependencyPolicyPassed = true;
+    expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("baseline");
+    summary.securityGate.findings.gitDependencies = [{ ...avsc, value: "https://github.com/Irys-xyz/avsc#main" }];
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("blocked");
     summary.securityGate.findings.gitDependencies = [];
+    summary.securityGate.registryDependencyPolicyPassed = false;
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("passed");
   });
 });
@@ -1908,7 +1934,7 @@ describe("runtime-image package inventory", () => {
 
   it("as recorded, without an inventory, blocks the b7b180f run (exit 3)", () => {
     const summary = b7b180fSimulation({ "runtime-image-inventory.json": undefined });
-    expect(summary.securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(summary.securityGate.findings.productionImageInventory).toEqual({ incomplete: ["runtime-image-inventory.json"] });
     expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
     expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy", checks: { productionImage: "blocked" } });
   });
@@ -1986,8 +2012,13 @@ describe("runtime-image package inventory", () => {
     const value = JSON.parse(lockText); value.packages[location].dev = true; return JSON.stringify(value);
   }
 
+  it("records an unreadable inventory as incomplete evidence and blocks", () => {
+    const summary = b7b180fSimulation({ "runtime-image-inventory.json": "{" });
+    expect(summary.securityGate.findings.productionImageInventory).toEqual({ incomplete: ["runtime-image-inventory.json"] });
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
   it.each([
-    ["unreadable JSON", "{"],
     ["another schema", JSON.stringify({ schema: "dacs-runtime-image-inventory/v0", packages: [] })],
     ["no package list", JSON.stringify({ schema: "dacs-runtime-image-inventory/v1" })],
     ["an entry without a version", add("node_modules/x", "x", undefined)],
@@ -3139,6 +3170,24 @@ describe("acceptance failure class", () => {
     ["image-build", { "docker-build.log": "#12 3.1 npm error code ECONNRESET" }, "network"],
     ["image-build", { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
     ["release-set", { "generation.log": "npm error code ETIMEDOUT" }, "functional"],
+    // A retryable HTTP status as curl --fail, Git and the Docker registry client spell it.
+    ["registry-auth", { "registry.log": "curl: (22) The requested URL returned error: 503" }, "network"],
+    ["registry-start", { "registry.log": "curl: (22) The requested URL returned error: 429 Too Many Requests" }, "network"],
+    ["publish", { "registry.log": "curl: (22) The requested URL returned error: 408" }, "network"],
+    ["registry-auth", { "registry.log": "curl: (22) The requested URL returned error: 403" }, "functional"],
+    ["consumer", { "generation.log": "npm error fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 502" }, "network"],
+    ["consumer", { "generation.log": "npm error fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 404" }, "functional"],
+    ["registry-start", { "registry.log": "docker: Error response from daemon: received unexpected HTTP status: 503 Service Unavailable." }, "network"],
+    ["image-build", { "docker-build.log": "#3 ERROR: failed to resolve source metadata for docker.io/library/node:20: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/node/manifests/20: 503 Service Unavailable" }, "network"],
+    ["image-build", { "docker-build.log": "#3 ERROR: failed to resolve source metadata for docker.io/library/node:20: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/node/manifests/20: 401 Unauthorized" }, "functional"],
+    // Output of downloaded or generated code can print any npm line: once the
+    // consumer stage has written its dependency policy, its log is not evidence.
+    ["consumer", { "dependency-policy.json": "{}", "generation.log": "not ok 1 - seller test failed\nnpm error code ECONNRESET" }, "functional"],
+    ["consumer", { "dependency-policy.json": "{}", "generation.log": "npm error command sh -c prebuild-install\nnpm error ECONNRESET" }, "functional"],
+    // The image build's own steps count until one runs package code.
+    ["image-build", { "docker-build.log": "#7 [build 3/8] RUN npm ci --ignore-scripts --omit=optional\n#7 9.1 npm error code ECONNRESET" }, "network"],
+    ["image-build", { "docker-build.log": "#9 [build 4/8] RUN npm rebuild better-sqlite3\n#9 1.2 npm error ECONNRESET" }, "functional"],
+    ["image-build", { "docker-build.log": "Step 8/14 : RUN npm run build\n ---> Running in 0a1b\nnpm error code ECONNRESET" }, "functional"],
   ])("classifies a %s failure with %j as %s", (stage, files, failureClass) => {
     expect(classifyAcceptanceFailure({ stage, read: reader(files) }).failureClass).toBe(failureClass);
     const summary = failureSummary({ stage, exitCode: 1, read: reader(files) });
