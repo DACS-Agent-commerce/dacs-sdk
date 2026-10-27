@@ -134,6 +134,23 @@ describe("recording a disposition", () => {
     expect(cli(path).status).toBe(4);
   });
 
+  it.each([
+    { failureClass: "network" },
+    { failureClass: "functional" },
+    { failureClass: null },
+    { failureClass: "policy", disposition: { exitCode: 0, failureClass: null } },
+    { failedStage: "consumer" },
+    { packageVersion: "0.0.0-other" },
+  ])("leaves a refused complete summary %j unchanged and refused on repeat", fields => {
+    const bytes = JSON.stringify({ ...summary(), ...fields });
+    const path = join(scratch(), "summary.json");
+    writeFileSync(path, bytes);
+    expect(cli("--record", path).status).toBe(1);
+    expect(readFileSync(path, "utf8")).toBe(bytes);
+    expect(cli("--record", path).status).toBe(1);
+    expect(cli(path).status).toBe(1);
+  });
+
   it("preserves the original summary when recording fails after a partial write", () => {
     const root = scratch(), input = join(root, "summary.json"), preload = join(root, "failed-write.cjs");
     const bytes = JSON.stringify({ schema: "dacs-registry-container-acceptance/v1", complete: false });
