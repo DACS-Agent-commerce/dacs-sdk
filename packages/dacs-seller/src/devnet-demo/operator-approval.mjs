@@ -260,10 +260,10 @@ export function heldPolicyBudget(ledger,at){
 // Whether `writes` more writes of jobId, `totalOs` in total, fit the limits on
 // a parsed ledger snapshot: null when they do, else the limit they exceed
 // ('job-write-limit', 'hourly-write-limit' or 'hourly-dem-limit').
-function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot}){
+function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}){
   const{rows:ledger,attempts}=snapshot;
   // A released attempt counts towards neither limit.
-  const live=withContextHolds(ledger).filter(row=>row.decision==='approved'&&row.outcome!=='released'&&attempts.get(row.attemptId)?.outcome!=='released');
+  const live=withContextHolds(ledger,converting).filter(row=>row.decision==='approved'&&row.outcome!=='released'&&attempts.get(row.attemptId)?.outcome!=='released');
   // An attempt (its hold, manual line and reservation) is one write for the
   // job. Older lines: a held reservation and the manual line for the same
   // bytes are one write.
@@ -275,6 +275,17 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot}){
   if(recent.writes+writes>limits.maxWritesPerHour)return 'hourly-write-limit';
   if(recent.totalOs+BigInt(totalOs)>BigInt(limits.maxTotalOsPerHour))return 'hourly-dem-limit';
   return null;
+}
+
+// budgetRefusal for the one write being decided, read under the policy lock (throws when unreadable), with
+// unheld in-memory preparations. A manual confirmation, or a matching preparation or sign-authorized
+// reservation, already has its budget.
+async function writeBudgetRefusal({evidencePath,jobId,artifactKind,totalOs,at,limits,manualApproved,provisional,ledgerHeld}){
+  if(manualApproved||(provisional&&ledgerHeld))return null;
+  const snapshot=await readPolicyLedger(evidencePath);
+  if(provisional)return null;
+  snapshot.rows.push(...[...(provisionalHolds.get(resolve(evidencePath))??[])].filter(hold=>!snapshot.attempts.has(hold.attemptId)));
+  return budgetRefusal({jobId,totalOs,at,limits,writes:1,snapshot,converting:{jobId,artifactKind}});
 }
 
 // Combines the two approval paths for the seller wallet. Listing writes are
@@ -480,7 +491,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
         live();
         if(held&&HOLD_REASONS.has(policyReason))policyReason=null;
         const hold=!held&&HOLD_REASONS.has(policyReason)?policyReason:null;
-        if(!policyReason||hold){try{policyReason=(await budgetRefusal({evidencePath,jobId:request.content.jobId,artifactKind:request.content.artifactKind,totalOs:total,at,limits:settings,manualApproved,
+        if(!policyReason||hold){try{policyReason=(await writeBudgetRefusal({evidencePath,jobId:request.content.jobId,artifactKind:request.content.artifactKind,totalOs:total,at,limits:settings,manualApproved,
           provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null}))??hold;}
           catch(error){if(waitsForLedger){await ledgerUnreadable(error,request,waited++);at=now();continue;}policyReason='evidence-unreadable';}}
         live();
@@ -882,6 +893,8 @@ function serializedPolicy(evidencePath,work){
 }
 
 const policyTails=new Map();
+// Each ledger path's in-memory preparations (createExactOperatorApproval).
+const provisionalHolds=new Map();
 
 const KINDS=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord','SettlementEvidence','Deliverable']);
 
