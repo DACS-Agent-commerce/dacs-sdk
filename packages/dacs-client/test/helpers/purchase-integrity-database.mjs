@@ -1,17 +1,17 @@
-// Test-only host extras over the shipped buyer-state schema.
+// Test-only offline harness from frontend 82bf8c4; no application wiring.
 // Durable state for accounts, wallets, agents, operations, challenges and the
 // OAuth provider. Backed by node:sqlite (WAL, synchronous=FULL) so idempotency
 // keys, one-use challenges and approvals are enforced by UNIQUE constraints and
 // survive process restarts.
 import { DatabaseSync } from 'node:sqlite';
+import { PURCHASE_STATE_SCHEMA } from '../../src/purchase-state-schema.mjs';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createSqlitePurchaseStore } from '../../src/seams/purchase-store-not-wired.mjs';
 
 // v2: reported_tx_hash no longer UNIQUE (verified-only partial index). Pre-release:
 // older files are refused rather than migrated.
 const SCHEMA_VERSION = 2;
-
-import { PURCHASE_STATE_SCHEMA } from '../../src/purchase-state-schema.mjs';
 
 const MIGRATIONS = [
   PURCHASE_STATE_SCHEMA,
@@ -84,5 +84,4 @@ export function openDatabase(path) {
 }
 
 // Exercise the same concrete adapter shipped to package consumers.
-import { createSqlitePurchaseStore } from '../../src/seams/purchase-store-not-wired.mjs';
 export const { transaction, isUniqueViolation } = createSqlitePurchaseStore();
