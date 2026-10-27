@@ -125,7 +125,8 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   scratch.push(directory);
   const checkout = join(directory, "checkout");
   mkdirSync(join(checkout, "scripts"), { recursive: true });
-  for (const name of ["registry-container-disposition.mjs", "runtime-image-inventory.mjs", "acceptance-evidence-io.mjs"]) {
+  for (const name of ["registry-container-disposition.mjs", "runtime-image-inventory.mjs", "acceptance-evidence-io.mjs",
+    "check-npm-advisories.mjs"]) {
     writeFileSync(join(checkout, "scripts", name), readFileSync(join(repoRoot, "scripts", name)));
   }
   // The disposition reads the release version from the checkout's manifest.
