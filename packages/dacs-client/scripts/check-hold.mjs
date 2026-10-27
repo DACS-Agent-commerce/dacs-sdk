@@ -31,8 +31,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "12fe2d33ab142886f7b8397d46eba0bf9c8ecbfcb6772a78397b53d38541d11f",
-  holdBytesSha256: "ece25342d63d77fcc77cdffa56de6de9875a8df5a63ea10a812922e1a63a4f6e",
+  holdSha256: "73bb2b1af91dfd2b157107856dcd7684ea32365b7ea40e9027c95b83d6f56edb",
+  holdBytesSha256: "fb7881746ae43da1c763eff7484695ca000c8e724f7052a146501e75d8e7f3e1",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -50,7 +50,7 @@ export const PINNED = Object.freeze({
   probe: "packages/dacs-client/evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt",
   blockedPrerequisites: Object.freeze([
     Object.freeze({ id: "sdk-ci", what: "Add the freeze gate and its negative tests (npm test --workspace @kynesyslabs/dacs-client) to the SDK CI workflow before any client delta PR. The gate reads files and Git metadata only; it imports no client entry point." }),
-    Object.freeze({ id: "d11-transaction-contract", what: "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls using savepoints and successful writes committing with the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart." }),
+    Object.freeze({ id: "d11-transaction-contract", what: "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls joining the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart." }),
     Object.freeze({ id: "dec16-testnet-admission", what: "Before live wiring, D2/D4 must consume the approved immutable DEC-16 testnet identity record, reject missing or fixture pins and non-approved identities before effects, and rerun the instrumented zero-signature and zero-broadcast cases." }),
   ]),
 });
