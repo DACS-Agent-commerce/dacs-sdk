@@ -4,11 +4,15 @@ import { isSqliteHandleRetired } from './sqlite-write-lease.mjs';
 
 const require = createRequire(import.meta.url);
 const PERSISTENT_JOURNAL_MODES = new Set(['delete', 'truncate', 'persist', 'wal']);
+// TEMP holds the lease marker, savepoint state and host TEMP tables; OFF cannot roll them back.
+const TEMP_JOURNAL_MODES = new Set(['delete', 'truncate', 'persist', 'memory']);
 const SYNCHRONOUS_FULL = 2;
 const SYNCHRONOUS_EXTRA = 3;
-const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
+/** Return whether fn is an async, generator or async generator function. */
+export const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
 
-/** Check the schemas and rollback/crash journal supported by a purchase transaction.
+/** Check the schemas and rollback/crash journals supported by a purchase transaction.
+ * Only main and TEMP are admitted, each with a journal mode that can roll back.
  * Returns undefined; throws OperationError for unsupported attachments, journals or synchronization.
  * This read-only check preserves the caller's configuration and host work.
  */
@@ -35,6 +39,9 @@ export function checkSqlitePurchaseDatabase(db) {
     if (synchronous !== SYNCHRONOUS_EXTRA && !(mode === 'wal' && synchronous === SYNCHRONOUS_FULL)) {
       throw new OperationError('purchase_store_unsupported_synchronous', 'persistent purchase transactions require synchronous FULL or EXTRA for WAL, and EXTRA for rollback journals');
     }
+  }
+  if (!TEMP_JOURNAL_MODES.has(db.prepare('PRAGMA temp.journal_mode').get()?.journal_mode)) {
+    throw new OperationError('purchase_store_unsupported_temp_journal_mode', 'purchase transactions require a TEMP journal mode that can roll back');
   }
 }
 
