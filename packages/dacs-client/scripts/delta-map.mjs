@@ -57,21 +57,15 @@ export function table(data = ledger()) {
   }
   return publicationText(lines.join('\n')+'\n');
 }
-// Source records form a DAG. A merge may choose a recorded parent blob;
-// synthesizing a different blob requires its own immutable commit/parent pins.
+// Source records form a DAG. A commit's blob is reviewed when a record or merge
+// snapshot names it there, or when a reviewed parent holds the same blob. A merge
+// may therefore choose a reviewed parent blob but cannot bring back one that no
+// parent holds; synthesizing a different blob requires its own immutable
+// commit/parent pins. Returns each recorded path with the one blob HEAD may hold.
 function terminalBlobs(data, history, failures) {
   const graph = new Map(git('rev-list', '--parents', BASELINE+'..HEAD').split('\n').map(row => { const [sha,...parents]=row.split(' '); return [sha,parents]; }));
-  const ancestors = new Map();
-  function before(a,b) {
-    if (!ancestors.has(b)) {
-      const found = new Set(), pending = [...(graph.get(b) ?? [])];
-      while (pending.length) { const sha=pending.pop(); if (found.has(sha)) continue; found.add(sha); pending.push(...(graph.get(sha) ?? [])); }
-      ancestors.set(b,found);
-    }
-    return ancestors.get(b).has(a);
-  }
   const events = new Map(), add = (sha,file) => {
-    const rows=events.get(file.path) ?? []; rows.push({sha,after:file.after}); events.set(file.path,rows);
+    const rows=events.get(file.path) ?? new Map(); rows.set(sha,file.after); events.set(file.path,rows);
   };
   for (const change of data.changes) {
     const matches=history.filter(row=>row.subject===change.subject);
@@ -95,7 +89,25 @@ function terminalBlobs(data, history, failures) {
       paths.add(file.path); add(snapshot.commit,file);
     }
   }
-  return new Map([...events].map(([path,rows]) => [path,rows.filter(row=>!rows.some(other=>before(row.sha,other.sha))).map(row=>row.after)]));
+  const head = git('rev-parse','HEAD'), paths = [...events.keys()];
+  const commitIds = [...new Set([BASELINE,head,...graph.keys(),...[...graph.values()].flat()])];
+  const names = commitIds.flatMap(sha=>paths.map(path=>`${sha}:${path}`));
+  const listed = sourceGit(['-C',root,'cat-file','--batch-check'],{encoding:'utf8',maxBuffer:1<<28,input:names.join('\n')+'\n'}).split('\n');
+  const blobs = new Map(names.map((name,index)=>[name,/^[0-9a-f]{40} blob /.test(listed[index]) ? listed[index].slice(0,40) : null]));
+  const blobAt = (sha,path) => blobs.get(`${sha}:${path}`);
+  const verdicts = new Map();
+  function reviewed(sha, path) {
+    const key=`${sha}:${path}`;
+    if (!verdicts.has(key)) {
+      verdicts.set(key,false);
+      const named=events.get(path).get(sha), here=blobAt(sha,path);
+      verdicts.set(key, !graph.has(sha) ? here===blobAt(BASELINE,path)
+        : named!==undefined ? named===here
+        : graph.get(sha).some(parent=>blobAt(parent,path)===here && reviewed(parent,path)));
+    }
+    return verdicts.get(key);
+  }
+  return new Map(paths.map(path => [path,reviewed(head,path) ? [blobAt(head,path)] : []]));
 }
 export function checkDeltas(packageDir=pkg) {
   const failures=[]; const data=ledger(); const history=commits();

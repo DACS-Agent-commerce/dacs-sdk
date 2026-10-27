@@ -16,20 +16,35 @@ function fixture(t) {
   const node = (...args) => execFileSync(process.execPath,args,{cwd:dir,stdio:'pipe'});
   copyFileSync(join(root,prefix+'scripts/delta-map.mjs'),join(dir,prefix+'scripts/delta-map.mjs'));
   copyFileSync(join(root,prefix+'DELTA-LEDGER.json'),join(dir,prefix+'DELTA-LEDGER.json'));
+  const read = rev => execFileSync('git',['-C',dir,'show',`${rev}:${moved}`],{encoding:'utf8'});
   const json = path => JSON.parse(readFileSync(join(dir,prefix+path),'utf8'));
   const save = (path,value) => writeFileSync(join(dir,prefix+path),JSON.stringify(value,null,2)+'\n');
   const check = () => {
     const result = spawnSync(process.execPath,[prefix+'scripts/check-provenance.mjs','--local-only'],{cwd:dir,encoding:'utf8'});
     return { status: result.status, text: result.stdout+result.stderr };
   };
-  return { dir,git,node,json,save,check };
+  return { dir,git,node,read,json,save,check };
 }
-function merged(t, selectParent = false) {
+// A commit outside the client package, so the branch diverges without a record.
+function note(f, name) {
+  const file = `TEST-note-${name.replace(/ /g,'-')}.txt`;
+  writeFileSync(join(f.dir,file),name+'\n'); f.git('add','--',file); f.git('commit','--quiet','-m',`TEST note ${name}`);
+}
+// Merge two unrecorded branches off the current commit; the merge writes `bytes` to the moved file.
+function laterMerge(f, bytes) {
+  const from = f.git('rev-parse','HEAD');
+  for (const name of ['left','right']) { f.git('switch','--quiet','-c',`TEST-${name}`,from); note(f,name); }
+  f.git('merge','--no-ff','--no-commit','TEST-left');
+  writeFileSync(join(f.dir,moved),bytes); f.git('add','--',moved); f.git('commit','--quiet','-m','merge: TEST later merge');
+}
+const failing = text => [...text.matchAll(/^FAIL (\S+?):/gm)].map(match => match[1]);
+function merged(t, selectParent = false, baselineSide = false) {
   const f = fixture(t), { dir,git,node,json,save } = f;
   const base = readFileSync(join(dir,moved),'utf8'), start = git('rev-parse','HEAD');
   const histories = [];
   for (const side of ['one','two']) {
     git('switch','--quiet','-c',`TEST-${side}`,start);
+    if (baselineSide && side === 'two') { note(f,'baseline side'); histories.push({ledger:json('DELTA-LEDGER.json'),inventory:json('DELTA-COMMITS.json')}); continue; }
     writeFileSync(join(dir,moved),base+`\n// TEST merge side ${side}\n`); git('add','--',moved);
     const subject = `fix(client): D11 TEST snapshot side ${side}`;
     node(prefix+'scripts/delta-map.mjs','--record','D11',subject);
@@ -40,7 +55,7 @@ function merged(t, selectParent = false) {
     histories.push({ledger:json('DELTA-LEDGER.json'),inventory:json('DELTA-COMMITS.json')});
   }
   spawnSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','merge','--no-ff','--no-commit','TEST-one'],{encoding:'utf8'});
-  writeFileSync(join(dir,moved),base+(selectParent ? '\n// TEST merge side one\n' : '\n// TEST merge side one\n// TEST merge side two\n'));
+  writeFileSync(join(dir,moved),baselineSide ? base : base+(selectParent ? '\n// TEST merge side one\n' : '\n// TEST merge side one\n// TEST merge side two\n'));
   const ledger=histories[1].ledger; ledger.mergeSnapshots=histories[0].ledger.mergeSnapshots ?? []; ledger.changes.push(histories[0].ledger.changes.at(-1)); save('DELTA-LEDGER.json',ledger);
   const inventory=histories[1].inventory; inventory.push(histories[0].inventory.at(-1)); save('DELTA-COMMITS.json',inventory);
   node(prefix+'scripts/delta-map.mjs'); git('add','--',moved,prefix+'DELTA-LEDGER.json',prefix+'DELTA-COMMITS.json',prefix+'DELTA-MAP.md');
@@ -84,4 +99,20 @@ test('a working substitution from the other reviewed merge parent is refused',t=
   writeFileSync(join(f.dir,moved),other);
   f.node(prefix+'scripts/delta-map.mjs');
   result=f.check();assert.equal(result.status,1,result.text);assert.match(result.text,/current blob differs/);
+});
+
+test('a later merge cannot restore a reviewed blob that neither of its parents holds',t=>{
+  const f=merged(t,true);
+  assert.ok(!failing(f.check().text).includes(moved));
+  laterMerge(f,f.read(f.snapshot.parents[0]));
+  const result=f.check();assert.ok(failing(result.text).includes(moved),result.text);
+});
+test('a later merge cannot keep an unreviewed blob that both of its parents hold',t=>{
+  const f=merged(t);
+  laterMerge(f,f.read('HEAD'));
+  const result=f.check();assert.ok(failing(result.text).includes(moved),result.text);
+});
+test('a merge may keep the baseline blob from the parent that never changed the file',t=>{
+  const f=merged(t,false,true);
+  const result=f.check();assert.ok(!failing(result.text).includes(moved),result.text);
 });
