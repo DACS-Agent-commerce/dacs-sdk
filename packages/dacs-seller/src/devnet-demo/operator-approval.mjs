@@ -389,7 +389,7 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
 
 /** Create exact manual or bounded policy approval with durable sign reservations.
  * Returns an approval function with prepare, confirmation, settlement, stop and reconciliation methods.
- * Abort and ledger failures reject; a false answer permits no signature. */
+ * Abort and ledger failures reject, as does a failing purchase resolver before payment (nothing decided or written); a false answer permits no signature. */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
@@ -401,7 +401,6 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   });
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
   if(policyMode&&(!policy||typeof policy.resolvePurchase!=='function'||typeof policy.listingPin!=='function'||!policy.sourceBinding||!/^0x[0-9a-f]{64}$/.test(policy.address??'')||policy.seller!==`did:demos:agent:${policy.address.slice(2)}`))throw new TypeError('seller policy requires exact operator-owned purchase and source context');
-  if(policyMode)sellerPurchaseSource(policy.purchaseSource);
   const signRecords=policyMode&&sellerPurchaseSource(policy.purchaseSource)==='seller';
   // Track each exact request through preparation, signing, confirmation and completion.
   const reservations=new WeakMap(),heldRequests=new WeakMap(),heldAttempts=new WeakMap(),signAuthorized=new WeakMap();
@@ -484,12 +483,13 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const authorized=signRecords&&validity!==undefined&&!manualApproved?signed:null;
     let reservationId=authorized?authorized.reservationId:policyMode?randomUUID():null;
     const notice=policyMode?null:sellerNotice(request);
-    let accepted=false,policyReason=null,closeSignal=null;
+    let accepted=false,policyReason=null,closeSignal=null,resolverError=null;
+    const purchases=policyMode?Object.create(policy,{resolvePurchase:{value:async(jobId)=>{try{return await policy.resolvePurchase(jobId);}catch(error){if(BEFORE_PAYMENT.has(request?.content?.artifactKind))resolverError=error;throw error;}}}}):null; // before payment a failed resolver is no refusal: its error is rethrown, nothing decided
     if(policyMode){
       const waitsForLedger=signRecords&&validity===undefined&&BEFORE_PAYMENT.has(request?.content?.artifactKind);
       for(let waited=0;;){
         live();
-        try{policyReason=confirmedTotal===null?'debit':!withinBudget?'operator-fee-budget':await policyRefusal(request,policy,settings,{confirmedTotal,countedTotal,manualApproved,held});}catch{policyReason='policy-check-failed';}
+        try{policyReason=confirmedTotal===null?'debit':!withinBudget?'operator-fee-budget':await policyRefusal(request,purchases,settings,{confirmedTotal,countedTotal,manualApproved,held});}catch{if(resolverError)throw resolverError;policyReason='policy-check-failed';}
         live();
         if(held&&HOLD_REASONS.has(policyReason))policyReason=null;
         const hold=!held&&HOLD_REASONS.has(policyReason)?policyReason:null;
@@ -532,7 +532,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     if(closeSignal?.aborted)throw closingError();
     // Resolve current purchase authority after the last ledger await.
-    if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);}catch{policyReason='policy-check-failed';}live();accepted=policyReason===null;}
+    if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,purchases,held);}catch{if(resolverError)throw resolverError;policyReason='policy-check-failed';}live();accepted=policyReason===null;}
     if(accepted)accepted=retain();
     if(policyMode&&HOLD_REASONS.has(policyReason))heldRequests.set(input,policyReason);
     if(policyMode&&HOLD_REASONS.has(policyReason)){attemptId=randomUUID();heldAttempts.set(input,attemptId);liveAttempts.add(attemptId);}
