@@ -8,10 +8,17 @@
 // With `file`, the chain is kept in that JSON file after every change, so a
 // process killed at any step leaves it for the next process (a crash test).
 import { readFileSync, writeFileSync } from 'node:fs';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { resignedProjection, SDK_WALLET_ADDRESS, sdkSignedCreate } from './payment-evidence-wallet-sdk.mjs';
 
 export const evidenceInput = (writer, extra = {}) => ({ logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:2', artifact: { TEST: 'evidence' }, writer,
   artifactKind: 'SettlementEvidence', jobId: 'TEST-job', receiptContentHash: 'e1'.repeat(32), ...extra });
+
+// What the agent asks a Deliverable journal about: the report, its canonical hash and its fulfilment binding.
+const DELIVERABLE_REPORT = { reportVersion: '1', kind: 'TEST/report', jobId: 'TEST-job', body: ['TEST report'] };
+export const deliverableInput = (writer, extra = {}) => ({ logicalAddress: 'dacs4:deliverable:TEST-job', report: DELIVERABLE_REPORT, writer,
+  jobId: 'TEST-job', receiptContentHash: sha256Hex(canonicalize(DELIVERABLE_REPORT)),
+  deliveryBinding: { version: '1', jobId: 'TEST-job', fulfilmentId: 'f1'.repeat(32), payloadHash: sha256Hex(canonicalize(DELIVERABLE_REPORT)) }, ...extra });
 
 export function newWalletChainState() {
   return { accountNonce: 0, nextNonce: 1, timestamp: 1, signed: {}, applied: [], pending: [] };

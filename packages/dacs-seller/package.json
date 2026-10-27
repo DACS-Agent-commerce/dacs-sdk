@@ -26,6 +26,7 @@
     "src/dacs/agreement-context-consumer.mjs",
     "src/dacs/chain.mjs",
     "src/dacs/commit-on-signature.mjs",
+    "src/dacs/deliverable-wallet-journal.mjs",
     "src/dacs/delivery-evidence.mjs",
     "src/dacs/dem-delivery-context-consumer.mjs",
     "src/dacs/demos-claims.mjs",

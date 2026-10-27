@@ -79,6 +79,9 @@
 // while this journal keeps no CREATE for the address: its fate is unknown, so
 // it is never answered `unsigned`. A superseded named attempt with a live successor is
 // refused as wallet_journal_stale_attempt; reconcile the successor separately.
+// The seller's Deliverable journal (deliverable-wallet-journal.mjs) is this
+// journal over its own table and file: createSignedCreateJournal is the body of
+// both, and a Deliverable CREATE also carries (and is checked for) its delivery binding.
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
@@ -97,7 +100,10 @@ const SIGNATURE = /^0x[0-9a-f]{128}$/;
 // The members the signer may leave on a storage CREATE: the SDK's own, and the source binding the SR-2 readback asks for.
 const CONTENT_MEMBERS = new Set(['type', 'from', 'from_ed25519_address', 'to', 'amount', 'data', 'nonce', 'timestamp', 'transaction_fee', 'gcr_edits', 'network', 'chainIdentity']);
 const OPERATION_MEMBERS = new Set(['operation', 'storageAddress', 'programName', 'encoding', 'data', 'metadata', 'acl', 'salt', 'storageLocation']);
-const METADATA_MEMBERS = new Set(['logicalAddress', 'artifactKind', 'contentHash', 'envelopeHash', 'networkBinding']);
+const METADATA_MEMBERS = new Set(['logicalAddress', 'artifactKind', 'contentHash', 'envelopeHash', 'networkBinding', 'deliveryBinding']);
+// One table per kind of journal; a file made for the other kind is refused.
+const TABLE_NAME = /^[a-z]+_creates$/;
+const EVIDENCE_TABLE = 'evidence_creates';
 // Zero as the SDK signs it: a number before the node's denomination fork, the string "0" after it.
 const ZERO_AMOUNTS = [0, '0'];
 // demosdk 4.0.16 signs amounts as DEM numbers before the fork and as canonical OS strings (10^9 OS per DEM) after it.
@@ -148,6 +154,9 @@ function feeAndEditsProblem(content, from, op) {
     { type: 'nonce', operation: 'add', account: from, amount: 1, txhash: '', isRollback: false }];
   return JSON.stringify(content.gcr_edits) === JSON.stringify(edits) ? null : 'does not carry the execution edits the SDK signs, so the node cannot execute it';
 }
+// True when the CREATE's delivery binding is not exactly the input's: a Deliverable names its fulfilment, evidence names none.
+const bindingProblem = (metadata, input) => ('deliveryBinding' in metadata ? input.deliveryBinding === undefined || canonicalize(metadata.deliveryBinding) !== canonicalize(input.deliveryBinding)
+  : input.deliveryBinding !== undefined);
 function signedCreateProblem(answer, input) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
@@ -164,7 +173,8 @@ function signedCreateProblem(answer, input) {
   if (content.type !== 'storageProgram' || content.data.length !== 2 || content.data[0] !== 'storageProgram' || op.operation !== 'CREATE_STORAGE_PROGRAM'
       || op.programName !== programName || op.salt !== '' || op.encoding !== 'json' || canonicalize(op.data) !== canonicalize(input.artifact)
       || metadata.logicalAddress !== input.logicalAddress || typeof input.artifactKind !== 'string' || metadata.artifactKind !== input.artifactKind
-      || metadata.contentHash !== input.receiptContentHash || metadata.envelopeHash !== sha256Hex(canonicalize(input.artifact))) return 'is not this evidence\'s storage CREATE';
+      || metadata.contentHash !== input.receiptContentHash || metadata.envelopeHash !== sha256Hex(canonicalize(input.artifact))
+      || bindingProblem(metadata, input)) return `is not this ${input.artifactKind === 'Deliverable' ? 'Deliverable' : 'evidence'}'s storage CREATE`;
   if (content.from !== from || content.from_ed25519_address !== from || signed.signature.type !== 'ed25519' || typeof signed.signature.data !== 'string'
       || !SIGNATURE.test(signed.signature.data) || !verifyDemosSignature({ address: from, message: answer.txHash, signature: signed.signature.data })) return 'is not signed by the writer';
   const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
@@ -191,7 +201,16 @@ function assertPrivateDirectory(directory) {
   }
 }
 
-export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
+/**
+ * The journal of signed storage CREATEs both kinds of seller wallet journal are
+ * made of (createPaymentEvidenceWalletJournal, createDeliverableWalletJournal):
+ * the options the header describes, and `table`, the one SQLite table of its
+ * kind (a file made for another kind is refused). Returns { anchor, reconcile,
+ * readSignedProjection, journalId, close }, which the two kinds name for their
+ * artifact. Throws TypeError for an unusable option, path or file.
+ */
+export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
+  if (!TABLE_NAME.test(table)) throw new TypeError('the wallet journal table must be named for its kind of artifact');
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
   if (typeof readAccountNonce !== 'function' || typeof readTransactionState !== 'function') throw new TypeError('the wallet journal needs readAccountNonce and readTransactionState, to tell a kept CREATE that can no longer be executed');
@@ -215,19 +234,20 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     if (!journalId) {
       db.exec('PRAGMA journal_mode=DELETE');
       db.transaction(() => {
-        db.exec(`CREATE TABLE IF NOT EXISTS evidence_creates (logical_address TEXT NOT NULL, receipt_content_hash TEXT NOT NULL,
+        db.exec(`CREATE TABLE IF NOT EXISTS ${table} (logical_address TEXT NOT NULL, receipt_content_hash TEXT NOT NULL,
           tx_hash TEXT NOT NULL UNIQUE, nonce INTEGER NOT NULL, signed_transaction TEXT NOT NULL, signed_at INTEGER NOT NULL,
           superseded_at INTEGER, PRIMARY KEY (logical_address, nonce));
-        CREATE UNIQUE INDEX IF NOT EXISTS evidence_creates_live ON evidence_creates (logical_address) WHERE superseded_at IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS ${table}_live ON ${table} (logical_address) WHERE superseded_at IS NULL;
         CREATE TABLE IF NOT EXISTS journal_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
         // Another first opener may have initialized while this one waited for the writer lock.
         if (!db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get()) {
-          if (db.prepare('SELECT 1 FROM evidence_creates LIMIT 1').get()) throw new TypeError('the wallet journal lost its identity while retaining signed CREATEs');
+          if (db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()) throw new TypeError('the wallet journal lost its identity while retaining signed CREATEs');
           db.prepare("INSERT INTO journal_meta VALUES ('journal-id', ?)").run(randomBytes(16).toString('hex'));
         }
       }).immediate();
       journalId = db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get().value;
     }
+    if (!db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) throw new TypeError('the wallet journal file was made for another kind of journal; it is not read');
   } catch (error) { db.close(); throw error.code === 'SQLITE_BUSY' ? journalBusy(error) : error; }
   // SQLite's writer lock is the signing lease across handles and processes.
   // A crash releases it. Commit the signed bytes before any broadcast.
@@ -256,7 +276,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     finally { release(); }
   }
 
-  const rows =(logicalAddress) => db.prepare('SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM evidence_creates WHERE logical_address = ? ORDER BY nonce').all(logicalAddress);
+  const rows =(logicalAddress) => db.prepare(`SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM ${table} WHERE logical_address = ? ORDER BY nonce`).all(logicalAddress);
   // One evidence per address: a question about other bytes at a kept address is refused.
   const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
@@ -310,7 +330,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     if (!live) return { live: null, highestNonce };
     const checked = await fate(live);
     if (checked.alive) return { live, highestNonce, applied: checked.applied, reason: checked.reason };
-    const swap = db.prepare('UPDATE evidence_creates SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL').run(now(), input.logicalAddress, live.txHash);
+    const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), input.logicalAddress, live.txHash);
     if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });
     return { live: null, highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
@@ -328,12 +348,12 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       if (answer.nonce <= highestNonce) throw Object.assign(new Error(`signCreate answered nonce ${answer.nonce}, not above the kept nonce ${highestNonce}`), { code: 'wallet_sign_invalid' });
       signed = { signedTransaction: answer.signedTransaction, txHash: answer.txHash, nonce: answer.nonce };
       // Kept before it can be sent; a second live row for the address is refused, never replaced.
-      db.prepare('INSERT INTO evidence_creates (logical_address, receipt_content_hash, tx_hash, nonce, signed_transaction, signed_at) VALUES (?, ?, ?, ?, ?, ?)')
+      db.prepare(`INSERT INTO ${table} (logical_address, receipt_content_hash, tx_hash, nonce, signed_transaction, signed_at) VALUES (?, ?, ?, ?, ?, ?)`)
         .run(input.logicalAddress, input.receiptContentHash, signed.txHash, signed.nonce, signed.signedTransaction, now());
     }
     return { ...signed, applied };
   }
-  async function anchorEvidence(input) {
+  async function anchorCreate(input) {
     const signed = await locked(() => prepareAnchor(input));
     if (!signed.applied) await sendSigned(signed);
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
@@ -345,13 +365,13 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
   function attemptIsUnbound({ attempt, named, sent }, input) {
     if (named !== undefined) {
       return typeof named !== 'string' || !TX_HASH.test(named)
-        || !db.prepare('SELECT 1 AS found FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named);
+        || !db.prepare(`SELECT 1 AS found FROM ${table} WHERE logical_address = ? AND tx_hash = ?`).get(input.logicalAddress, named);
     }
     if (sent) return true;
     return attempt != null && attempt.outcome !== PRE_SIGNING_FAILURE && rows(input.logicalAddress).length === 0;
   }
 
-  async function reconcilePaymentEvidence(input) {
+  async function reconcileCreate(input) {
     // An attempt whose answer names a transaction this journal never kept was
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
@@ -362,7 +382,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
         throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${String(named).slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
       }
       if (typeof named === 'string') {
-        const namedRow = db.prepare('SELECT superseded_at FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named);
+        const namedRow = db.prepare(`SELECT superseded_at FROM ${table} WHERE logical_address = ? AND tx_hash = ?`).get(input.logicalAddress, named);
         const retained = keptFor(input);
         if (namedRow.superseded_at !== null && retained.live) {
           throw Object.assign(new Error('the named CREATE was superseded; reconcile the live successor separately'), { code: 'wallet_journal_stale_attempt' });
@@ -385,11 +405,16 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
   // Read only: the live kept CREATE's public signed projection, as signCreate gave it.
   async function readSignedProjection(input) {
     if (!object(input) || typeof input.logicalAddress !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
-    const live = db.prepare('SELECT signed_transaction FROM evidence_creates WHERE logical_address = ? AND superseded_at IS NULL').get(input.logicalAddress);
+    const live = db.prepare(`SELECT signed_transaction FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
     return live ? JSON.parse(live.signed_transaction) : null;
   }
 
-  const journal = Object.freeze({ anchorEvidence, reconcilePaymentEvidence, readSignedProjection, journalId, close: () => db.close() });
+  return Object.freeze({ anchor: anchorCreate, reconcile: reconcileCreate, readSignedProjection, journalId, close: () => db.close() });
+}
+
+export function createPaymentEvidenceWalletJournal(options) {
+  const { anchor: anchorEvidence, reconcile: reconcilePaymentEvidence, ...rest } = createSignedCreateJournal({ ...options, table: EVIDENCE_TABLE });
+  const journal = Object.freeze({ anchorEvidence, reconcilePaymentEvidence, ...rest });
   journals.set(anchorEvidence, journal);
   journals.set(reconcilePaymentEvidence, journal);
   return journal;
