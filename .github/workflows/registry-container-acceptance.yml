@@ -25,6 +25,8 @@ on:
       - "scripts/registry-container-audit-baseline.json"
       - "scripts/runtime-image-inventory.mjs"
       - "scripts/verify-registry-container-consumer.sh"
+      - "scripts/acceptance-seal.mjs"
+      - "scripts/registry-container-registry.sh"
       - "scripts/verify-release-set.mjs"
       - "scripts/sync-vectors.mjs"
       - "src/**"
