@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "9f9bef64bc9cc65206202dfff847b6845f3fae1e"
+        "blob": "66e759b8d1f39a32ae52113d65d849bb9e47d45e"
       },
       "DELTA-LEDGER.json": {
-        "blob": "a92cc2bcc322b104b45c15b2bb3aa670294bee87"
+        "blob": "ed5cf10ef3112488ca09b3f1f410bd2f0b10e625"
       },
       "DELTA-MAP.md": {
-        "blob": "b060f2983c1231ab949cc9b8bed83bf76f7db1c6"
+        "blob": "02142c1fb893ba1fa8fcbc503adc4fcdf7d31c1b"
       },
       "DELTA-NOTES.md": {
         "blob": "d7ad623a4f76ee359718ccd90c823d54a503aed8"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "579a1828a5e59b0616209efda36a3583ffb967a6"
+        "blob": "f5319d1a2915ea508636239ab7c797ab1ba098af"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1325,13 +1325,16 @@
         "blob": "99154dd18992f65e0a498a9e2be1064fffa08a14"
       },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "0bc483eefebd7e8bb05b127a32438855a5271b84"
+        "blob": "ace13289bd75b0708a7819bd3203995e46a6c5fb"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
       },
       "test/domain-store-crash.test.mjs": {
         "blob": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
+      },
+      "test/engine-floor-portability.test.mjs": {
+        "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
       },
       "test/fetch-abort-settle.test.mjs": {
         "blob": "fe69899c2f8553c5615335ef2bac09a47113fd17"
@@ -1642,6 +1645,9 @@
       "test/helpers/source-demo-seller.mjs": {
         "blob": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b"
       },
+      "test/helpers/sqlite-engine-floor.mjs": {
+        "blob": "eac4f2e9c7337c76fb7478050fc95c617f5fb999"
+      },
       "test/helpers/start-intent.mjs": {
         "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
       },
@@ -1697,16 +1703,16 @@
         "blob": "940e94f63ffc2a65f42ea03bf262fb42fc200525"
       },
       "test/purchase-tx-admission.test.mjs": {
-        "blob": "bd3935f98efac1f1eb1fefae04760e7f1e5a80a8"
+        "blob": "f3a58dda92a3c36b8fd238941cab931999e55fdd"
       },
       "test/purchase-tx-boundary.test.mjs": {
-        "blob": "4ca7e68bae461c30923327c7f149d59a7cd94858"
+        "blob": "53fbeca69a87846aa9d32845aab011cbf451dd84"
       },
       "test/purchase-tx-nesting.test.mjs": {
         "blob": "124ddbf578822f8bfe3298e01e83626f40de071d"
       },
       "test/purchase-tx-results.test.mjs": {
-        "blob": "0e0424d74f577266d0b13386b7a18cf3aeefc4ec"
+        "blob": "89418b814a42dad7fb1183ddc9e69fb17a1d4df0"
       },
       "test/readback-review-decisions.test.mjs": {
         "blob": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
@@ -1718,13 +1724,13 @@
         "blob": "b2a3acd0b40dfab8d88586e7fe6326fbbb11a697"
       },
       "test/sqlite-purchase-journal.test.mjs": {
-        "blob": "9e845427d6f0b94900c04e02c4eda869e5e6f7f8"
+        "blob": "0cf1690daa71819106208636318cbc955dd9ed8b"
       },
       "test/sqlite-statement-boundary-regressions.test.mjs": {
         "blob": "3cd9965ac3a3fcf7191550d7bffae2b67b8841a2"
       },
       "test/sqlite-statement-boundary.test.mjs": {
-        "blob": "b4e9db02994949d2259e9bd69c6f54ca0d8a452a"
+        "blob": "169a5edac4f556d5ddec2e0278223be9a27f7f9c"
       },
       "test/sqlite-write-lease.test.mjs": {
         "blob": "aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2"
@@ -1733,7 +1739,7 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/store-host-boundary.test.mjs": {
-        "blob": "fd61c135ce343fec49823d4e9dea0225e5afafd6"
+        "blob": "8cb570e3a627217ee42631ff4ea5e105edfef014"
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
