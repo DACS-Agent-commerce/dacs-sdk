@@ -1,9 +1,13 @@
 import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
+import { MAX_STORAGE_ARTIFACT_BYTES } from '../dacs/wallet-transactions.mjs';
 
 const REPORT_TEXT_MAX_BYTES = 16_384;
 const reportTextValid = text => typeof text === 'string' && text.length > 0 && text.length <= REPORT_TEXT_MAX_BYTES &&
   Buffer.byteLength(text, 'utf8') <= REPORT_TEXT_MAX_BYTES && text.normalize('NFC') === text &&
   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\ud800-\udfff]/u.test(text);
+// A report is published whole in one storage CREATE, so its complete canonical
+// bytes, not only its text, must fit that CREATE's limit.
+const reportFitsOneCreate = report => Buffer.byteLength(canonicalize(report), 'utf8') <= MAX_STORAGE_ARTIFACT_BYTES;
 
 export const DEVNET_PURCHASED_REPORT_KIND='dacs-chatgpt-plugin/devnet-purchased-report';
 
@@ -18,9 +22,11 @@ export function createDevnetPurchasedReportProducer({producer,produce}) {
     if(result && typeof result.then==='function') throw new TypeError('the durable seller producer must return deterministic bytes synchronously');
     const text=typeof result==='string' ? result : result?.mediaType==='text/plain; charset=utf-8' && typeof result.text==='string' ? result.text : null;
     if(!reportTextValid(text)) throw new TypeError('the purchased report must be bounded UTF-8 text');
-    return JSON.parse(canonicalize({reportVersion:'1',kind:DEVNET_PURCHASED_REPORT_KIND,jobId:agreement.jobId,
+    const report=JSON.parse(canonicalize({reportVersion:'1',kind:DEVNET_PURCHASED_REPORT_KIND,jobId:agreement.jobId,
       agreementHash:contentHash(agreement),listing:{...agreement.listingRef},title:listing.offering.title,settlementId,producer,
       content:{mediaType:'text/plain; charset=utf-8',text}}));
+    if(!reportFitsOneCreate(report)) throw new TypeError(`the purchased report must fit one storage CREATE (${MAX_STORAGE_ARTIFACT_BYTES} canonical bytes)`);
+    return report;
   };
 }
 
@@ -36,6 +42,6 @@ export function isDevnetPurchasedReport(value,{jobId,agreementHash,producer}={})
     && typeof value.title==='string' && value.title.length>0 && value.title.length<=512
     && /^did:demos:agent:[0-9a-f]{64}$/.test(value.producer ?? '')
     && value.content?.mediaType==='text/plain; charset=utf-8' && Object.keys(value.content).sort().join(',')==='mediaType,text'
-    && reportTextValid(value.content.text)
+    && reportTextValid(value.content.text) && reportFitsOneCreate(value)
     && (jobId===undefined || value.jobId===jobId) && (agreementHash===undefined || value.agreementHash===agreementHash) && (producer===undefined || value.producer===producer);
 }
