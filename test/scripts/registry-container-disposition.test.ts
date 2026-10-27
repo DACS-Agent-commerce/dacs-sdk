@@ -3270,6 +3270,24 @@ describe("acceptance failure class", () => {
     ["image-build", { "docker-build.log": "#12 3.1 npm error code ECONNRESET" }, "network"],
     ["image-build", { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
     ["release-set", { "generation.log": "npm error code ETIMEDOUT" }, "functional"],
+    // A retryable HTTP status as curl --fail, Git and the Docker registry client spell it.
+    ["registry-auth", { "registry.log": "curl: (22) The requested URL returned error: 503" }, "network"],
+    ["registry-start", { "registry.log": "curl: (22) The requested URL returned error: 429 Too Many Requests" }, "network"],
+    ["publish", { "registry.log": "curl: (22) The requested URL returned error: 408" }, "network"],
+    ["registry-auth", { "registry.log": "curl: (22) The requested URL returned error: 403" }, "functional"],
+    ["consumer", { "generation.log": "npm error fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 502" }, "network"],
+    ["consumer", { "generation.log": "npm error fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 404" }, "functional"],
+    ["registry-start", { "registry.log": "docker: Error response from daemon: received unexpected HTTP status: 503 Service Unavailable." }, "network"],
+    ["image-build", { "docker-build.log": "#3 ERROR: failed to resolve source metadata for docker.io/library/node:20: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/node/manifests/20: 503 Service Unavailable" }, "network"],
+    ["image-build", { "docker-build.log": "#3 ERROR: failed to resolve source metadata for docker.io/library/node:20: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/node/manifests/20: 401 Unauthorized" }, "functional"],
+    // Output of downloaded or generated code can print any npm line: once the
+    // consumer stage has written its dependency policy, its log is not evidence.
+    ["consumer", { "dependency-policy.json": "{}", "generation.log": "not ok 1 - seller test failed\nnpm error code ECONNRESET" }, "functional"],
+    ["consumer", { "dependency-policy.json": "{}", "generation.log": "npm error command sh -c prebuild-install\nnpm error ECONNRESET" }, "functional"],
+    // The image build's own steps count until one runs package code.
+    ["image-build", { "docker-build.log": "#7 [build 3/8] RUN npm ci --ignore-scripts --omit=optional\n#7 9.1 npm error code ECONNRESET" }, "network"],
+    ["image-build", { "docker-build.log": "#9 [build 4/8] RUN npm rebuild better-sqlite3\n#9 1.2 npm error ECONNRESET" }, "functional"],
+    ["image-build", { "docker-build.log": "Step 8/14 : RUN npm run build\n ---> Running in 0a1b\nnpm error code ECONNRESET" }, "functional"],
   ])("classifies a %s failure with %j as %s", (stage, files, failureClass) => {
     expect(classifyAcceptanceFailure({ stage, read: reader(files) }).failureClass).toBe(failureClass);
     const summary = failureSummary({ stage, exitCode: 1, read: reader(files) });
