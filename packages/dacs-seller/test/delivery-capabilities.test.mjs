@@ -24,6 +24,15 @@ for (const [label, text] of [['control byte', 'TEST\u0000'], ['lone surrogate', 
   assert.throws(() => createDevnetPurchasedReportProducer({ producer: seller.claim, produce: () => text })({ agreement: f.agreement, listing: f.listing, settlementId: 'TEST' }));
 });
 
+// The producer checks its own output with the predicate the publish path uses, so a
+// conforming Listing or settlement that the predicate refuses never yields a report.
+for (const [label, title, settlementId] of [['empty Listing title', '', 'TEST-settlement'], ['513-character Listing title', 'T'.repeat(513), 'TEST-settlement'],
+  ['empty settlement ID', 'TEST title', ''], ['numeric settlement ID', 'TEST title', 7]]) test(`report producer refuses a report the predicate refuses: ${label}`, async () => {
+  const f = await protocolFixture(), listing = { ...f.listing, offering: { ...f.listing.offering, title } };
+  const produce = createDevnetPurchasedReportProducer({ producer: seller.claim, produce: () => 'TEST purchased report' });
+  assert.throws(() => produce({ agreement: f.agreement, listing, settlementId }), /report predicate/);
+});
+
 // A report is stored whole in one storage CREATE: the largest one admitted is exactly the builder's limit.
 test('a report is admitted up to one storage CREATE of complete canonical bytes and rejects malformed Agreement digests', async () => {
   const f = await reportFixture('x'), capacity = 16_384 - (Buffer.byteLength(canonicalize(f.report)) - 1);
