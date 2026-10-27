@@ -1365,7 +1365,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
     const result = drift ? registryAuditDriftDisposition(summary)
       : registryContainerDisposition(summary, undefined, { unlistedAdvisories });
-    if (record) {
+    // A refused summary is left as it is: recording the refusal would make its
+    // failure class match its disposition and admit it on the next reading.
+    if (record && admitAcceptanceRun(summary, RELEASE_VERSION).state !== "refused") {
       const { exitCode, failureClass, message, checks } = result;
       atomicWriteJson(summaryPath, { ...summary, failureClass,
         disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } });
