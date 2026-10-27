@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createPurchaseService } from '../src/purchases.mjs';
 import { createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
 import { createDeliveryDeadlineWatch, deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
@@ -44,6 +45,29 @@ test('the store seam keeps only the two host functions, and purposes only the ap
   try { assert.equal(purchaseStore(extra).transaction(db, () => 'TEST-result'), 'TEST-result'); } finally { db.close(); }
   assert.deepEqual(walletPurposes({ ...purposes, LOGIN: 'login' }), purposes);
   assert.equal(Object.isFrozen(walletPurposes(purposes)), true);
+});
+
+test('a fresh process loads the store and all three factories and writes through the concrete store', () => {
+  const at = (path) => JSON.stringify(new URL(path, import.meta.url).href);
+  const script = `
+    import { DatabaseSync } from 'node:sqlite';
+    const seam = await import(${at('../src/seams/purchase-store-not-wired.mjs')});
+    const { createPurchaseService } = await import(${at('../src/purchases.mjs')});
+    const { createProtocolPurchases } = await import(${at('../src/dacs/protocol-purchases.mjs')});
+    const { createDeliveryDeadlineWatch } = await import(${at('../src/dacs/delivery-deadline-watch.mjs')});
+    const { PURCHASE_STATE_SCHEMA } = await import(${at('../src/purchase-state-schema.mjs')});
+    const store = seam.createSqlitePurchaseStore(), db = new DatabaseSync(':memory:');
+    db.exec(PURCHASE_STATE_SCHEMA);
+    db.exec('CREATE TABLE records (id TEXT PRIMARY KEY)');
+    const prepared = createPurchaseService({ db, config: {}, store, purposes: { APPROVE_PURCHASE: 'TEST' } });
+    createProtocolPurchases({ db, ops: {}, coordinates: {}, store });
+    createDeliveryDeadlineWatch({ db, ops: {}, coordinates: {}, store });
+    store.transaction(db, () => db.prepare('INSERT INTO records VALUES (?)').run('TEST-written'));
+    console.log(JSON.stringify({ exports: Object.keys(seam).sort(), service: typeof prepared.prepare,
+      rows: db.prepare('SELECT count(*) AS n FROM records').get().n }));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { exports: ['createSqlitePurchaseStore', 'purchaseStore'], service: 'function', rows: 1 });
 });
 
 test('protocol purchases without an operator capability build, and their paths that need one stay closed', () => {
