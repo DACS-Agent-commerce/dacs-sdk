@@ -19,7 +19,7 @@ export function deliveryDeadlineView(operation, { now = () => Date.now(), enable
   const overdue = stored?.overdue, later = stored?.laterDelivery;
   let message;
   if (overdue) message = `${prefix} The host's local report at ${validDeadline(overdue.checkedAt) ? new Date(overdue.checkedAt).toISOString() : 'an unavailable historical time'} says no Deliverable from the seller was present. Demos can't prove a record is absent, so this remains a host observation, not a recorded fault. Nothing has been refunded. Do not pay again.`;
-  else if (pastDueMs > 0) message = verifiedDelivery(p) ? `${prefix} Delivery is verified.` : `${prefix} Delivery is not confirmed yet. Public verify_deal reads the payment transfer only; delivery checking remains held.`;
+  else if (pastDueMs > 0) message = verifiedDelivery(p) ? `${prefix} Delivery is verified.` : `${prefix} Delivery is not confirmed yet. verify_deal records the payment transfer and, while purchase actions are held, then answers profile_not_admitted; get_purchase_status shows the saved result. Delivery checking remains held.`;
   const deliveryMessage = later ? (!validDeadline(later.deliveredAt) ? 'The historical delivery time is unavailable.' : later.deliveredAt <= deadline
     ? `A Deliverable was verified later, and its ${later.deliveredAtSource} delivery time is within the deadline: the earlier check had not seen it yet.`
     : `A Deliverable was verified after the deadline (${later.deliveredAtSource} time ${new Date(later.deliveredAt).toISOString()}). The earlier observation stays recorded.`) : undefined;
@@ -32,6 +32,8 @@ const defaultTimer = {
   after: (run, ms) => setTimeout(run, ms), cancelAfter: clearTimeout,
 };
 
+// The watch is disabled unless `enabled` is set. `store` is the host's
+// PurchaseStore; each observation rereads the purchase inside its transaction.
 export function createDeliveryDeadlineWatch({ db, ops, coordinates, enabled = false, now = () => Date.now(), logger, timer = defaultTimer, store }) {
   const { transaction } = purchaseStore(store);
   let handle = null, stopped = false, running = null, cursor = '', checkDelivery;
