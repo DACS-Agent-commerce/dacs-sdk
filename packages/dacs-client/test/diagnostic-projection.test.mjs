@@ -109,3 +109,31 @@ test('saved bundle signatures are removed by both projections', () => {
   assert.equal(bundle.buyerSignature, REPLAY);
   assert.equal(bundle.sellerSignature, REPLAY);
 });
+
+// Full lists of the same JSON value, nested `levels` deep.
+function filled(leaf, levels) {
+  let value = leaf;
+  for (let level = 0; level < levels; level++) value = Array(DIAGNOSTIC_LIMITS.collectionItems).fill(value);
+  return JSON.parse(JSON.stringify(value));
+}
+const assertWithinOutput = value => {
+  const chars = JSON.stringify(value).length;
+  assert.ok(chars <= DIAGNOSTIC_LIMITS.outputChars, `${chars} JSON characters`);
+};
+for (const [name, leaf, levels] of [
+  ['empty lists', [], 3], ['empty lists', [], 4], ['empty records', {}, 3], ['false', false, 3],
+  ['true', true, 3], ['null', null, 3], ['numbers', -1.5e-300, 3], ['empty strings', '', 3],
+]) {
+  test(`projection charges container syntax and every scalar: ${levels} levels of ${name}`, () => {
+    const projected = projectDiagnostic(filled(leaf, levels));
+    assertWithinOutput(projected);
+    assert.match(JSON.stringify(projected), /omitted/);
+  });
+}
+
+test('an operation projection charges container syntax in every allowed protocol field', () => {
+  const fields = ['notSaved', 'revision', 'agreement', 'commitment', 'claim', 'paymentEvidence', 'delivery', 'bundle',
+    'nativeEvidence', 'attempts', 'deliveryDeadline', 'storageGap', 'agreementContext'];
+  const protocol = Object.fromEntries(fields.map(field => [field, filled([], 2)]));
+  assertWithinOutput(projectDiagnosticOperation({ id: 'TEST-op', state: { protocol: { ...protocol, stage: 'TEST-stage', listing: filled(false, 3) } } }));
+});
