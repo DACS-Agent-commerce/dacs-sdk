@@ -8,6 +8,8 @@ export const DIAGNOSTIC_LIMITS = Object.freeze({ stringChars: 1024, collectionIt
 export const DIAGNOSTIC_OMITTED = '[omitted: over the diagnostic size limit]';
 // Room kept back for the markers written once the content budget is spent.
 const MARKER_RESERVE = 1024;
+// A list or record emits its two brackets and the separator that follows it.
+const CONTAINER_CHARS = 3;
 const OPERATION_STATE_FIELDS = ['preparedVerification', 'protocol'];
 const PROTOCOL_STATE_FIELDS = ['stage', 'revision', 'notSaved', 'listing', 'agreement', 'commitment', 'claim', 'paymentEvidence',
   'delivery', 'bundle', 'nativeEvidence', 'attempts', 'deliveryDeadline', 'storageGap', 'agreementContext'];
@@ -23,10 +25,10 @@ function omit(budget) {
 }
 
 function copyScalar(value, budget) {
-  if (value === null || typeof value === 'boolean') { budget.chars -= 5; return value; }
-  if (typeof value === 'number') { budget.chars -= String(value).length + 1; return Number.isFinite(value) ? value : undefined; }
-  if (typeof value !== 'string') return undefined;
-  const cost = value.length > DIAGNOSTIC_LIMITS.stringChars ? Infinity : JSON.stringify(value).length + 1;
+  if (value !== null && !['boolean', 'number', 'string'].includes(typeof value)) return undefined;
+  if (typeof value === 'number' && !Number.isFinite(value)) return undefined;
+  // Every scalar pays its full JSON text and one separator, and must fit.
+  const cost = typeof value === 'string' && value.length > DIAGNOSTIC_LIMITS.stringChars ? Infinity : JSON.stringify(value).length + 1;
   if (cost > budget.chars) return omit(budget);
   budget.chars -= cost;
   return value;
@@ -60,7 +62,8 @@ function copyRecord(record, budget, depth) {
 
 function copyValue(value, budget, depth) {
   if (!Array.isArray(value) && !isPlainRecord(value)) return copyScalar(value, budget);
-  if (depth >= DIAGNOSTIC_LIMITS.depth || exhausted(budget)) return omit(budget);
+  if (depth >= DIAGNOSTIC_LIMITS.depth || budget.chars < CONTAINER_CHARS) return omit(budget);
+  budget.chars -= CONTAINER_CHARS;
   return Array.isArray(value) ? copyList(value, budget, depth) : copyRecord(value, budget, depth);
 }
 
