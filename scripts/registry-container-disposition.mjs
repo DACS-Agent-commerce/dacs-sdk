@@ -548,6 +548,9 @@ const NETWORK_FAILURE_SIGNATURES = [
   /Connection (?:timed out|refused)/,
   /connect: (?:connection refused|network is unreachable)/,
   /\b(?:408|429|5\d\d) [^\r\n]+ - (?:GET|POST) https?:\/\//,
+  // A retryable HTTP status as curl --fail and Git, and as Docker's registry client, report it.
+  /The requested URL returned error: (?:408|429|5\d\d)\b/,
+  /(?:received unexpected HTTP status|unexpected status from [A-Z]+ request to \S+): (?:408|429|5\d\d)\b/,
   /invalid json response body at /,
   /Invalid response body while trying to fetch /,
   // The whole entry the acceptance script records when Verdaccio never answers.
@@ -580,7 +583,7 @@ export function auditEndpointError(text) {
 }
 
 // The evidence each network-dependent stage leaves behind. Consumer output
-// also holds generated-test logs, so only npm and Docker errors count there.
+// also holds the generator's own output, so only npm and Docker errors count there.
 const stageEvidence = {
   "release-set": [["release-set.log", () => true]],
   "registry-start": [["registry.log", () => true]],
@@ -590,6 +593,14 @@ const stageEvidence = {
   "audit-policy": [["npm-audit.json", () => true]],
   "image-build": [["docker-build.log", () => true]],
 };
+// Code from downloaded packages or the generated project can print any npm or
+// Docker line, so a stage's log is evidence only from before that code runs.
+// The consumer stage writes its dependency policy report just before it
+// rebuilds native packages and runs the generated build and tests; the image
+// build runs that code from the first RUN step that invokes node, or npm
+// without --ignore-scripts (BuildKit and legacy builder step headers).
+const packageCodeRan = { consumer: read => read("dependency-policy.json") !== undefined };
+const packageCodeStep = /^(?:#\d+ \[[^\]]*\]|Step \d+\/\d+ :) RUN (?!npm(?: \S+)* --ignore-scripts\b)(?:npm|npx|node)\b/;
 const policyStages = new Set(["dependency-policy", "audit-policy"]);
 
 /** Classifies bounded stage evidence; oversized or unreadable diagnostics fail functionally. */
@@ -613,8 +624,9 @@ function classifyBoundedFailure({ stage, read }) {
     if (isAuditReport(report)) return { failureClass: "policy", evidence: [] };
   }
   const evidence = [];
-  for (const [name, relevant] of stageEvidence[stage] ?? []) {
+  for (const [name, relevant] of packageCodeRan[stage]?.(read) ? [] : stageEvidence[stage] ?? []) {
     for (const line of evidenceLines(read(name))) {
+      if (packageCodeStep.test(line)) break;
       if (evidence.length < 5 && relevant(line) && networkSignature.test(line)) evidence.push(`${name}: ${line.trim()}`);
     }
   }

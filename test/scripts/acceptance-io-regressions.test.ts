@@ -8,6 +8,9 @@ const { classifyAcceptanceFailure } = await import(modulePath);
 const cli = (...args: string[]) => spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", ...args], { encoding: "utf8" });
 const emptyAudit = { auditReportVersion: 2, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } }, vulnerabilities: {} };
 const emptyLock = { lockfileVersion: 3, packages: { "": { name: "consumer", version: "1.0.0" } } };
+// Reads a stage's own log by name, as the CLI does; every other source is missing.
+const stageLog = (stage: string, text: string) => (name: string) =>
+  name === (stage === "consumer" ? "generation.log" : "registry.log") ? text : undefined;
 describe("acceptance evidence I/O", () => {
   it.each(["--audit-policy", "--policy-findings"])("invalidates a prior successful %s result before a failed repeat", mode => {
     const root = mkdtempSync(join(tmpdir(), "dacs-repeat-"));
@@ -35,7 +38,7 @@ describe("acceptance evidence I/O", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it.each(["npm error ECONNRESET " + "x".repeat(8192), "\n".repeat(100001)])("fails classification on oversized lines or line counts", text => {
-    expect(classifyAcceptanceFailure({ stage: "consumer", read: () => text })).toMatchObject({ failureClass: "functional", evidence: [expect.stringContaining("evidence")] });
+    expect(classifyAcceptanceFailure({ stage: "consumer", read: stageLog("consumer", text) })).toMatchObject({ failureClass: "functional", evidence: [expect.stringContaining("evidence")] });
   });
   it("writes a bounded failed classification for an oversized file", () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-failure-evidence-"));
@@ -56,13 +59,13 @@ describe("acceptance evidence I/O", () => {
 describe("physical diagnostic line boundaries", () => {
   it.each([false, true])("admits exactly 100000 lines with terminating newline %s", trailing => {
     const log = "npm error code ECONNRESET\n" + "x\n".repeat(99998) + "x" + (trailing ? "\n" : "");
-    expect(classifyAcceptanceFailure({ stage: "consumer", read: () => log }).failureClass).toBe("network");
-    expect(classifyAcceptanceFailure({ stage: "consumer", read: () => log + (trailing ? "x\n" : "\nx") }).failureClass).toBe("functional");
+    expect(classifyAcceptanceFailure({ stage: "consumer", read: stageLog("consumer", log) }).failureClass).toBe("network");
+    expect(classifyAcceptanceFailure({ stage: "consumer", read: stageLog("consumer", log + (trailing ? "x\n" : "\nx")) }).failureClass).toBe("functional");
   });
   it.each(["docker-refused.txt", "docker-unreachable.txt"])("preserves Docker transport cause %s", name => {
     const log = readFileSync(join("test/scripts/fixtures/acceptance-transport", name), "utf8");
     for (const stage of ["registry-start", "consumer"]) {
-      expect(classifyAcceptanceFailure({ stage, read: () => log })).toMatchObject({ failureClass: "network", evidence: [expect.stringContaining("connect:")] });
+      expect(classifyAcceptanceFailure({ stage, read: stageLog(stage, log) })).toMatchObject({ failureClass: "network", evidence: [expect.stringContaining("connect:")] });
     }
   });
 });
