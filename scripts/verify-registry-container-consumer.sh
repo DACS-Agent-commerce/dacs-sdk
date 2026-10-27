@@ -9,8 +9,9 @@ node scripts/registry-container-disposition.mjs --dependency-policy "$project" "
   "$artifact_stage/dependency-policy.json" "$release_set" "$version"
 
 stage=audit-policy
+# Directness comes from the audited lock, not npm's name-level flag.
 node scripts/registry-container-disposition.mjs --audit-policy \
-  "$consumer_root/npm-audit.json" "$artifact_stage/audit-policy.json"
+  "$consumer_root/npm-audit.json" "$project/package-lock.json" "$artifact_stage/audit-policy.json"
 
 stage=compose
 # Inert Compose inputs: these are deliberately invalid credentials and drafts,

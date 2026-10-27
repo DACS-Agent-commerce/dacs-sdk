@@ -997,21 +997,23 @@ describe("assessed advisories", () => {
     expect(registryContainerDisposition(cleared(null), assessed)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
   });
 
-  it("records directness from npm's report and lets the summary pass the gate", () => {
+  it("records directness from the audited lock and lets the summary pass the gate", () => {
     const directory = mkdtempSync(join(tmpdir(), "dacs-registry-audit-policy-"));
     scratch.push(directory);
-    const via = (id: string, severity: string) => ({ source: 1, name: "x", dependency: "x", title: "t",
+    const via = (name: string, id: string, severity: string) => ({ source: 1, name, dependency: name, title: "t",
       url: `https://github.com/advisories/${id}`, severity, cwe: [], cvss: {}, range: "<2" });
     const report = { auditReportVersion: 2, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 1, high: 2, critical: 0, total: 3 } },
       vulnerabilities: {
-        direct: { name: "direct", severity: "high", isDirect: true, via: [via("GHSA-3333-4444-5555", "high"), "transitive"] },
-        moderate: { name: "moderate", severity: "moderate", isDirect: true, via: [via("GHSA-4444-5555-6666", "moderate")] },
-        transitive: { name: "transitive", severity: "high", isDirect: false, via: [via("GHSA-23hp-3jrh-7fpw", "high")] },
+        direct: { name: "direct", severity: "high", isDirect: true, via: [via("direct", "GHSA-3333-4444-5555", "high"), "transitive"] },
+        moderate: { name: "moderate", severity: "moderate", isDirect: true, via: [via("moderate", "GHSA-4444-5555-6666", "moderate")] },
+        transitive: { name: "transitive", severity: "high", isDirect: false, via: [via("transitive", "GHSA-23hp-3jrh-7fpw", "high")] },
       } };
     writeFileSync(join(directory, "npm-audit.json"), JSON.stringify(report));
+    // The root declares direct@1.0.0 and moderate@1.0.0, not transitive.
+    writeFileSync(join(directory, "package-lock.json"), JSON.stringify(auditLock(report.vulnerabilities)));
     const policyPath = join(directory, "audit-policy.json");
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
-      join(directory, "npm-audit.json"), policyPath], { cwd: repoRoot, encoding: "utf8" });
+      join(directory, "npm-audit.json"), join(directory, "package-lock.json"), policyPath], { cwd: repoRoot, encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(readFileSync(policyPath, "utf8"))).toMatchObject({
       observedAdvisories: ["GHSA-23hp-3jrh-7fpw", "GHSA-3333-4444-5555", "GHSA-4444-5555-6666"],
