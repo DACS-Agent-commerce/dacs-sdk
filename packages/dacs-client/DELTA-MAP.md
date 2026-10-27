@@ -653,9 +653,6 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | deleted |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e1ee6a0855e0955fba14cda7d1ae14aa02248fa6 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 23418eab2fc9cfc3dc517ae7ff822dbcd4345340 |
-| D11 | fix(client): D11 add bounded diagnostic projections | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 4d3bc5b10835cef9f1026c109293c2bf14c2afa7 |
-| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 8fb8e91c7d1439f3013548378394fa788236fdb0 |
 | D11 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
@@ -707,13 +704,11 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 8cf441713b5fb8df9e0698eabfe571c79d0f68cb |
 | D11 | fix(client): D11 record the 05a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06b split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 distinguish source records from metadata checkpoints | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 04 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 05 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 05a checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06b checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 normalize the extracted lease and checkpoint probes | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 011865d7d581630937628b776c829f0fdce48607 |
 | D11 | fix(client): D11 record the 03b lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
@@ -724,7 +719,6 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | D11 | fix(client): D11 record the 05 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 05a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 record the 06 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 06b lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 enforce synchronous SQLite statement boundaries | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | eafd77f954d594e9b2d10fcb7340a1acd95aa729 |
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | b4e9db02994949d2259e9bd69c6f54ca0d8a452a |
@@ -763,9 +757,6 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 2730715a63ecaf36b43fbf1af32bf832bb567b65 |
 | D11 | fix(client): D11 target domain commits after lease setup | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` | fe025a891b76f93bc8cf0b0a02ccdf36e92e2712 |
-| D11 | fix(client): D11 bound diagnostic keys and omit bundle signatures | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | b24a2e0a97c0e9a2b1979af72c77c5822281f831 |
-| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 44d7a815d7c7f89983a35f6210da65c856a3d344 |
 | D11 | fix(client): D11 separate purchase connection admission from transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 944247d4ce8b2622389c79b71de1a21d6b83e239 |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 1803da8de85ea26f119944b7550b8698f920f4bc |
@@ -888,6 +879,15 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) | deleted |
+| D11 | fix(client): D11 add bounded diagnostic projections | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 4d3bc5b10835cef9f1026c109293c2bf14c2afa7 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 8fb8e91c7d1439f3013548378394fa788236fdb0 |
+| D11 | fix(client): D11 record the 06b split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 06b checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 06b lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 bound diagnostic keys and omit bundle signatures | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | b24a2e0a97c0e9a2b1979af72c77c5822281f831 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 44d7a815d7c7f89983a35f6210da65c856a3d344 |
 | D11 | fix(client): D11 charge every emitted JSON token against the diagnostic budget | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 97ec872d0d92efe8b26b20f5b1dc822838d4dda7 |
 | | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 990e51e0393a24448e0ebfc0f7ab608ee0273138 |
@@ -1837,13 +1837,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 move the public diagnostic service out of the capability checks | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
 | fix(client): D11 move the public diagnostic service out of the capability checks | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 move the public diagnostic service out of the capability checks | `packages/dacs-client/test/host-observations.test.mjs:1` |
-| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
-| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1955,11 +1948,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06 split integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06b split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06b split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -1986,11 +1974,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -2033,11 +2016,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the 06 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the 06 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the 06 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-NOTES.md:1` |
@@ -2147,13 +2125,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 target domain commits after lease setup | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` |
-| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
-| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 separate purchase connection admission from transactions | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -2444,6 +2415,35 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 add bounded diagnostic projections | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06b split integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06b split integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06b split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06b checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the 06b lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 bound diagnostic keys and omit bundle signatures | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
 | fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/DELTA-MAP.md:1` |
