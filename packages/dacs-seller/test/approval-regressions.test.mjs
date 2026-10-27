@@ -309,3 +309,84 @@ test('stop ends an unanswered manual callback with no external signal',async t=>
  await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
  await assert.rejects(a(requestFor()),{code:'seller_approval_stopped'});
 });
+
+// Every exit of a held attempt ends it, and no line is written for an attempt that has ended (cold F1, cold2 F1).
+const vetRequest=()=>requestFor({artifactKind:'CompositeVerificationRecord'});
+const attemptReasons=async(f)=>[...(await f.read()).attempts.values()].map(attempt=>attempt.reason);
+const WEEK_MS=7*24*3_600_000;
+for(const [label,prepare] of [['prepare',(f,r)=>f.p.prepare(r)],['policy-mode approve',(f,r)=>f.p(r)]])test(`a held write prepared through ${label} opens no attempt and holds no budget`,async t=>{
+ const f=await fixture(t);assert.equal(await prepare(f,vetRequest()),false);
+ const ledger=await f.read();assert.equal(ledger.attempts.size,0);assert.equal(heldPolicyBudget(ledger.rows,T0+WEEK_MS).writes,0);
+});
+test('a held preparation at the hourly write limit leaves a restarted composer able to ask and approve a Vet',async t=>{
+ const f=await fixture(t,()=>null,{limits:{maxWritesPerHour:1}});let prompts=0;
+ assert.equal(await f.p.prepare(vetRequest()),false);
+ assert.equal(await composeSellerApproval({mode:'policy',policy:f.policyFor(),manual:()=>{prompts++;return true;}})(vetRequest()),true);assert.equal(prompts,1);
+});
+test('a sign gate that throws after a manual yes releases the held attempt and keeps the error',async t=>{
+ let reads=0;const f=await fixture(t,async()=>{if(++reads===2)throw timeout();return null;});
+ await assert.rejects(composeSellerApproval({mode:'policy',policy:f.p,manual:()=>true})(vetRequest()),{code:'ETIMEDOUT'});
+ assert.deepEqual(await attemptReasons(f),['sign-authorization-failed']);
+});
+test('a retry after a sign gate error is counted once and approved under a one-write hourly limit',async t=>{
+ let reads=0;const f=await fixture(t,async()=>{if(++reads===2)throw timeout();return null;},{limits:{maxWritesPerHour:1}});let prompts=0;
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}}),r=vetRequest();
+ await assert.rejects(a(r),{code:'ETIMEDOUT'});assert.equal(await a(r),true);assert.equal(prompts,2);
+});
+for(const [label,end,code] of [['ends with the closing error',fail=>fail(Object.assign(new Error('TEST closing'),{code:'operator_closing'})),'operator_closing'],
+ ['answers no',(fail,answer)=>answer(false),'seller_approval_stopped']])test(`a manual answer that ${label} after the policy stopped still releases the held attempt`,async t=>{
+ const f=await fixture(t);let answer,fail,asked;const prompted=new Promise(done=>{asked=done;});
+ const pending=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>new Promise((done,reject)=>{answer=done;fail=reject;asked();})})(vetRequest());
+ await prompted;await f.p.stop();end(fail,answer);
+ await assert.rejects(pending,{code});assert.deepEqual(await attemptReasons(f),['operator-released']);
+});
+// A manual approval on f's ledger whose first prompt waits for answer(value); any later prompt answers no.
+function deferredManual(settings){
+ let answer,asked,prompts=0;const prompted=new Promise(done=>{asked=done;});
+ const manual=createExactOperatorApproval({...settings,authorize:()=>{if(++prompts>1)return false;asked();return new Promise(done=>{answer=done;});}});
+ return{manual,prompted,answer:value=>answer(value)};
+}
+test('a second approval of a request whose manual answer is pending rejects, writes nothing and leaves the first answer valid',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),d=deferredManual(f.settings),a=composeSellerApproval({mode:'policy',policy:f.p,manual:d.manual}),r=payDem();
+ const first=a(r);await d.prompted;const lines=(await ledgerLines(f)).length;
+ await assert.rejects(a(r),{code:'seller_approval_pending'});assert.equal((await ledgerLines(f)).length,lines);
+ d.answer(true);assert.equal(await first,true);
+ const ledger=await f.read();assert.equal(ledger.attempts.size,1);assert.equal((await openSignRows(f)).length,1);
+});
+for(const [label,end] of [['the wallet released it',(f,a,r)=>a.settle(r,'released')],['the policy released it',(f,a,r)=>f.p.releaseHeld(r,'operator-released')]])
+ test(`a manual answer that arrives after ${label} writes nothing and leaves the ledger readable`,async t=>{
+  const f=await fixture(t,purchase,OVER_CAP),d=deferredManual(f.settings),a=composeSellerApproval({mode:'policy',policy:f.p,manual:d.manual}),r=payDem();
+  const pending=a(r);await d.prompted;await end(f,a,r);const lines=(await ledgerLines(f)).length;
+  d.answer(true);assert.equal(await pending,false);
+  assert.equal((await ledgerLines(f)).length,lines);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+ });
+test('a manual answer for bytes changed after the approval started writes nothing and leaves the ledger readable',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=payDem();
+ const pending=composeSellerApproval({mode:'policy',policy:f.p,manual:createExactOperatorApproval({...f.settings,authorize:()=>false})})(r);
+ r.purpose='TEST changed';assert.equal(await pending,false);
+ assert.deepEqual(await attemptReasons(f),['manual-declined']);assert.equal((await ledgerLines(f)).some(line=>line.decision&&!line.approvalMode),false);
+});
+test('a manual approval on another ledger writes no line for an attempt it does not have',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),other=f.evidencePath+'-manual';
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:createExactOperatorApproval({...f.settings,evidencePath:other,authorize:()=>true})});
+ assert.equal(await a(payDem()),false);await assert.rejects(readFile(other),{code:'ENOENT'});
+ assert.deepEqual(await attemptReasons(f),['manual-declined']);
+});
+// A held attempt whose sign line was written but not synced, and whose cleanup append also failed.
+async function unsyncedSignLine(t){
+ const f=await fixture(t),r=vetRequest(),{fsyncSync,openSync}=fs;let syncs=0,appends=0;
+ assert.equal((await f.p.decide(r)).outcome,'held');
+ try{
+  fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');return fsyncSync(fd);};
+  fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&++appends===2)throw new Error('TEST append failed');return openSync(path,flags,...rest);};
+  syncBuiltinESMExports();
+  assert.equal(await f.p.authorizeHeld(r,true),'unsigned');
+ }finally{fs.fsyncSync=fsyncSync;fs.openSync=openSync;syncBuiltinESMExports();}
+ assert.equal((await openSignRows(f)).length,1);
+ return{f,r};
+}
+for(const [label,end] of [['decided again',(f,r)=>f.p.decide(r)],['released',(f,r)=>f.p.releaseHeld(r,'operator-released')],['settled as released',(f,r)=>f.p.settle(r,'released')]])
+ test(`a request whose sign line failed to sync and clean up stays readable when it is ${label}`,async t=>{
+  const{f,r}=await unsyncedSignLine(t);await end(f,r);
+  assert.equal((await openSignRows(f)).length,1);assert.equal((await f.policyFor().reconcile()).held.length,1);
+ });
