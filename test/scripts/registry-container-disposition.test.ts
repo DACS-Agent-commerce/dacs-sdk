@@ -234,7 +234,10 @@ async function runToConsumerStage(complete = false, failStart = false) {
   writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/index.js"), "exports.publish = async () => {};\n");
   const npmEntry = process.env.npm_execpath;
   if (!npmEntry) throw new Error("driver fixture needs the executing npm parser");
-  symlinkSync(dirname(createRequire(npmEntry).resolve("npm-package-arg/package.json")), join(npmRoot, "npm/node_modules/npm-package-arg"));
+  // The dependency grammar and the audit policy's advisory ranges read these npm modules.
+  for (const name of ["npm-package-arg", "semver"]) {
+    symlinkSync(dirname(createRequire(npmEntry).resolve(`${name}/package.json`)), join(npmRoot, "npm/node_modules", name));
+  }
   const server = createServer((request, response) => {
     const archive = archives[request.url ?? ""]; const record = served[request.url ?? ""];
     response.writeHead(archive || record ? 200 : 404, { "content-type": archive ? "application/octet-stream" : "application/json" });
@@ -249,9 +252,10 @@ async function runToConsumerStage(complete = false, failStart = false) {
   const manifest = { name: "one-click-agent", version, dependencies };
   const lock: Record<string, unknown> = { "": manifest };
   const inventory: Array<{ location: string; name: string; version: string }> = [];
-  for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"]) {
-    const location = "node_modules/" + name; const record = packages[name]; if (!record) throw new Error("missing fixture archive");
-    lock[location] = { version, resolved: `${registry}/${name}.tgz`, integrity: record.integrity };
+  // The audit policy resolves every direct dependency in the lock; non-candidates get placeholder bytes.
+  for (const name of Object.keys(dependencies)) {
+    const location = "node_modules/" + name; const integrity = packages[name]?.integrity ?? sri(Buffer.from(name));
+    lock[location] = { version, resolved: `${registry}/${name}.tgz`, integrity };
     mkdirSync(join(project, location), { recursive: true }); writeFileSync(join(project, location, "package.json"), JSON.stringify({ name, version }));
     inventory.push({ location, name, version });
   }
