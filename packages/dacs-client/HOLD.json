@@ -104,8 +104,8 @@
         },
         {
           "id": "d11-transaction-contract",
-          "what": "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls using savepoints and successful writes committing with the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart.",
-          "why": "Factories use the concrete package SQLite adapter and exported buyer-state DDL; isolated tests exercise that adapter. Host operation-store integration, schema migrations, durable configuration and live admission still require qualification."
+          "what": "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls joining the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart.",
+          "why": "The current production PurchaseStore seam throws; isolated tests use source-bound test-only helpers, so they do not establish the real adapter contract."
         },
         {
           "id": "dec16-testnet-admission",
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "4d543d600b95ed61ea88c0d548c78f200467201c"
+        "blob": "f2e59101d5588673bfe931425da2e00aea293517"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
