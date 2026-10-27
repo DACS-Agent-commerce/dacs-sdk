@@ -1450,10 +1450,12 @@ describe("acceptance failure class", () => {
       vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
         via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
     writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(report, null, 2));
+    writeFileSync(join(stage, "generated-package-lock.json"), JSON.stringify(auditLock({})));
     const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
-      join(stage, "npm-audit.json"), join(stage, "audit-policy.json")], { cwd: repoRoot, encoding: "utf8" });
+      join(stage, "npm-audit.json"), join(stage, "generated-package-lock.json"), join(stage, "audit-policy.json")],
+      { cwd: repoRoot, encoding: "utf8" });
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain("npm audit advisory URL missing");
+    expect(policy.stderr).toContain("incomplete npm audit advisory for x");
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
       "audit-policy", String(policy.status)], { cwd: repoRoot, encoding: "utf8" });
     expect(result.stdout).toContain("::error title=Registry/container acceptance policy failure::stopped at stage audit-policy");
