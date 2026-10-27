@@ -9,6 +9,7 @@ import { truncateSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
+import { deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
 
 const sha=(value)=>createHash('sha256').update(value).digest('hex');
 const OS=/^(0|[1-9][0-9]*)$/,POSITIVE_OS=/^[1-9][0-9]*$/,HASH=/^[0-9a-f]{64}$/;
@@ -279,10 +280,11 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}
 
 // budgetRefusal for the one write being decided, read under the policy lock (throws when unreadable), with
 // unheld in-memory preparations. A manual confirmation, or a matching preparation or sign-authorized
-// reservation, already has its budget.
-async function writeBudgetRefusal({evidencePath,jobId,artifactKind,totalOs,at,limits,manualApproved,provisional,ledgerHeld}){
+// reservation, already has its budget. A preparation (signing: its approvalHash) whose exact request still has open sign authority (also from before a restart) is refused.
+async function writeBudgetRefusal({evidencePath,jobId,artifactKind,totalOs,at,limits,manualApproved,provisional,ledgerHeld,signing}){
   if(manualApproved||(provisional&&ledgerHeld))return null;
   const snapshot=await readPolicyLedger(evidencePath);
+  if(signing&&snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.approvalHash===signing))return 'sign-authorization-open';
   if(provisional)return null;
   snapshot.rows.push(...[...(provisionalHolds.get(resolve(evidencePath))??[])].filter(hold=>!snapshot.attempts.has(hold.attemptId)));
   return budgetRefusal({jobId,totalOs,at,limits,writes:1,snapshot,converting:{jobId,artifactKind}});
@@ -410,7 +412,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     preparations.delete(request);
   };
   const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
-  let stopped=false,idle=null;const pauses=new Set(),flights=new Set();
+  let stopped=false,idle=null;const pauses=new Set(),flights=new Set(),halt=new AbortController();
   const live=()=>{if(stopped)throw stoppedError(APPROVAL_STOPPED);};
   const track=(work)=>{
     if(stopped)return Promise.reject(stoppedError(APPROVAL_STOPPED));
@@ -492,7 +494,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
         if(held&&HOLD_REASONS.has(policyReason))policyReason=null;
         const hold=!held&&HOLD_REASONS.has(policyReason)?policyReason:null;
         if(!policyReason||hold){try{policyReason=(await writeBudgetRefusal({evidencePath,jobId:request.content.jobId,artifactKind:request.content.artifactKind,totalOs:total,at,limits:settings,manualApproved,
-          provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null}))??hold;}
+          provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null,signing:preparing&&approvalHash}))??hold;}
           catch(error){if(waitsForLedger){await ledgerUnreadable(error,request,waited++);at=now();continue;}policyReason='evidence-unreadable';}}
         live();
         if(waited)ledgerReadable(request);
@@ -501,7 +503,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       if(!policyReason&&signRecords&&validity!==undefined&&!manualApproved&&authorized?.approvalHash!==approvalHash)policyReason='sign-authorization-missing';
       accepted=policyReason===null;
     }else{
-      closeSignal=askSignal();
+      closeSignal=AbortSignal.any([askSignal()??halt.signal,halt.signal]);
       if(closeSignal?.aborted)throw closingError();
       if(authorize){
         const answer=await unlessStopped(authorize(Object.freeze({approvalHash,request:structuredClone(request),...(notice?{notice}:{})})),closeSignal);
@@ -523,7 +525,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     // Sign authority must be durable before preparation can approve.
     if(preparing&&accepted&&signRecords){
-      try{live();policyReason=await stillOpenBeforePayment(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
+      try{live();policyReason=await stillAuthorizedToSign(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
       catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
     }
     if(preparing&&accepted){live();return true;}
@@ -541,7 +543,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   };
   const approve=async(request,validity,options={})=>{
     try{
-      if(!policyMode){live();return await decide(request,undefined,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?{attemptId:options.attemptId}:{});}
+      if(!policyMode)return await track(()=>decide(request,undefined,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?{attemptId:options.attemptId}:{}));
       const snapshot=structuredClone(request);
       return await track(()=>serializedPolicy(evidencePath,async()=>{
         live();
@@ -575,7 +577,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   approve.prepare=(request)=>approve(request,undefined,{preparing:true});
   approve.pause=pause;
   approve.stop=()=>{
-    stopped=true;for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
+    stopped=true;halt.abort();for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
     return idle??=(async()=>{while(flights.size)await Promise.allSettled([...flights]);})();
   };
   approve.heldForManual=(request)=>heldRequests.has(request);
@@ -747,12 +749,17 @@ function expectedLogicalAddress(c,artifact,policy){
   if(c.artifactKind==='FinalityCommitmentRecord')return finalityCommitmentAddress(c.jobId);
   if(c.artifactKind==='Deliverable')return `dacs4:deliverable:${c.jobId}`;
   if(artifact.phase==='pay-dem'){
-    // The host reads this index from protocolSupport(its verified Listing).
-    // Missing phase context cannot authorize an automatic payment-evidence write.
-    const index=typeof policy.paymentPhaseIndex==='function'?policy.paymentPhaseIndex():null;
-    return Number.isSafeInteger(index)&&!Object.is(index,-0)&&index>=0?paymentEvidenceAddress(c.jobId,'demos-native:DEM',index):null;
+    const index=listingPhaseIndex(policy.paymentPhaseIndex);
+    return index===null?null:paymentEvidenceAddress(c.jobId,'demos-native:DEM',index);
   }
   return artifact.phase==='deliver-storage-program'?`dacs4:evidence:${c.jobId}`:null;
+}
+
+// The host reads phase indexes from protocolSupport(its verified Listing).
+// Missing phase context (null) cannot authorize an automatic phase write.
+function listingPhaseIndex(read){
+  const index=typeof read==='function'?read():null;
+  return Number.isSafeInteger(index)&&!Object.is(index,-0)&&index>=0?index:null;
 }
 
 // CORE CF-5: a request's exact JSON (its CREATE and stored artifact) admitted
@@ -772,9 +779,18 @@ function purchaseBindingRefusal(c,artifact,purchase,policy,unbound){
     ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||(purchase.prePaymentOpen!==null&&typeof purchase.prePaymentOpen!=='boolean')||!POSITIVE_OS.test(purchase.amountOs??'')
     ||!same(purchase.listingPin,policy.listingPin())||!(unbound||sameNetwork(purchase.sourceBinding,policy.sourceBinding)))return 'purchase';
   if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
-  if([artifact.listingPin,artifact.listing,artifact.listingRef].some(value=>value&&!same(value,purchase.listingPin)))return 'listing';
-  if(artifact.agreementHash&&artifact.agreementHash!==purchase.agreementHash)return 'agreement';
+  if(listingRefusal(c,artifact,purchase.listingPin))return 'listing';
+  if((NAMES_AGREEMENT.has(c.artifactKind)||Object.hasOwn(artifact,'agreementHash'))&&(!HASH.test(artifact.agreementHash??'')||artifact.agreementHash!==purchase.agreementHash))return 'agreement';
   return null;
+}
+
+// True unless the artifact's listing fields name exactly this pin: a kind that
+// names its listing must carry it, and any listing field present (even null)
+// must equal it. A Vet record precedes the Agreement and may name none.
+function listingRefusal(c,artifact,pin){
+  const required=LISTING_FIELD[c.artifactKind];
+  return (required!==undefined&&!Object.hasOwn(artifact,required))
+    ||['listingPin','listing','listingRef'].some(key=>Object.hasOwn(artifact,key)&&!same(artifact[key],pin));
 }
 
 /** Validate an exact seller request; return null or its retained refusal reason.
@@ -807,7 +823,8 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
   if(artifact===null||!exact(op,['operation','storageAddress','programName','salt','data','encoding','acl','storageLocation','metadata'])
     ||op.operation!=='CREATE_STORAGE_PROGRAM'||op.salt!==''||op.encoding!=='json'||op.storageLocation!=='onchain'||!exact(op.acl,['mode'])||op.acl.mode!=='public'
     ||op.storageAddress!==c.storageAddress||op.programName!==c.programName||c.programName!==c.logicalAddress.replace(/:/g,'%3A')
-    ||!same(op.data,artifact)||artifact.jobId!==c.jobId||contentHash(artifact)!==c.contentHash||sha(canonicalize(artifact))!==c.envelopeHash
+    ||c.storageAddress!==deriveStorageAddress(c.wallet,c.programName,c.nonce,'')
+    ||JSON.stringify(op.data)!==c.exactStorageBytes||artifact.jobId!==c.jobId||contentHash(artifact)!==c.contentHash||sha(canonicalize(artifact))!==c.envelopeHash
     ||c.storageBytes!==Buffer.byteLength(c.exactStorageBytes)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/10240)))*1_000_000_000n
     ||metadata?.logicalAddress!==c.logicalAddress||metadata.artifactKind!==c.artifactKind||metadata.contentHash!==c.contentHash||metadata.envelopeHash!==c.envelopeHash
     ||!same(metadata.networkBinding,policy.sourceBinding))return 'create-bytes';
@@ -817,8 +834,7 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
   if(sellerRecords&&purchase===null&&c.artifactKind==='CompositeVerificationRecord'){
     if(!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
     if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
-    const pin=policy.listingPin();
-    if([artifact.listingPin,artifact.listing,artifact.listingRef].some(value=>value&&!same(value,pin)))return 'listing';
+    if(listingRefusal(c,artifact,policy.listingPin()))return 'listing';
     return 'seller-record-missing';
   }
   // A vet record held with no record may reach confirmation once the proposal
@@ -836,10 +852,11 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
     ||demOs(artifact.paymentAmount.amount)!==BigInt(purchase.amountOs)))return 'payment-amount';
   if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
   if(c.artifactKind==='Deliverable'){
-    const binding=c.deliveryBinding;
-    if(!exact(binding,['version','profile','jobId','phase','phaseIndex','listing','agreementHash','fulfilmentId','purchaseAmount','payloadHash'])
+    // The seller produces its Deliverable, for the verified Listing's delivery phase.
+    const binding=c.deliveryBinding,deliveryIndex=listingPhaseIndex(policy.deliveryPhaseIndex);
+    if(artifact.producer!==policy.seller||!exact(binding,['version','profile','jobId','phase','phaseIndex','listing','agreementHash','fulfilmentId','purchaseAmount','payloadHash'])
       ||binding.version!=='1'||binding.profile!=='dacs-native-delivery-publication/v1'||binding.jobId!==c.jobId||binding.phase!=='deliver-storage-program'
-      ||!Number.isSafeInteger(binding.phaseIndex)||binding.phaseIndex<0||!same(binding.listing,purchase.listingPin)||binding.agreementHash!==purchase.agreementHash
+      ||deliveryIndex===null||!Object.is(binding.phaseIndex,deliveryIndex)||!same(binding.listing,purchase.listingPin)||binding.agreementHash!==purchase.agreementHash
       ||typeof binding.fulfilmentId!=='string'||!binding.fulfilmentId||binding.fulfilmentId.length>128||binding.payloadHash!==c.contentHash
       ||!exact(binding.purchaseAmount,['amount','currency'])||binding.purchaseAmount.currency!=='DEM'||demOs(binding.purchaseAmount.amount)!==BigInt(purchase.amountOs)
       ||!same(metadata.deliveryBinding,binding))return 'delivery-binding';
@@ -850,24 +867,41 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
 
 
 /** Return exact confirmed sender removals in OS, or null for an invalid confirmation. */
-// Node 61b8e75 applies storage/gas balance removals for CREATEs; its
-// additional transaction_fee distribution is native-only. Numbers are legacy
-// whole DEM, canonical strings are OS. Never round or coerce fee values.
+// Node 61b8e75 executes this exact CREATE: the request's destination, network
+// and fees, and exactly its four sender edits (confirmedEditsMatch). Numbers
+// are legacy whole DEM, canonical strings are OS. Never round or coerce fee values.
 export function confirmedWriteOs(validity,request){
-  const data=validity?.response?.data,c=data?.transaction?.content,r=request.content;
+  const data=validity?.response?.data,tx=data?.transaction,c=tx?.content,r=request.content,d=r.debit;
   const postFork=c?.amount==='0';
   const wireOs=(value)=>postFork?(typeof value==='string'&&OS.test(value)?BigInt(value):null)
     :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*1_000_000_000n:null;
-  if(validity?.result!==200||data?.valid!==true||data.gas_operation!=null||data.custom_charges!=null
-    ||c?.type!=='storageProgram'||(c.amount!==0&&c.amount!=='0')||c.from!==r.wallet||c.nonce!==r.nonce||c.timestamp!==r.timestamp
-    ||!Array.isArray(c.data)||c.data.length!==2||c.data[0]!=='storageProgram'||JSON.stringify(c.data[1])!==r.exactCreate||!Array.isArray(c.gcr_edits))return null;
+  const [storageFee,gas,...fees]=['storageFeeDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem'].map(key=>demOs(d?.[key]));
+  let op;try{op=admittedJson(r.exactCreate);}catch{return null;}
+  if(validity?.result!==200||data?.valid!==true||data.gas_operation!=null||data.custom_charges!=null||[storageFee,gas,...fees].includes(null)
+    ||!exact(c,CONFIRMED_CONTENT_KEYS)||c.type!=='storageProgram'||(c.amount!==0&&c.amount!=='0')||c.from!==r.wallet||c.from_ed25519_address!==r.wallet
+    ||c.to!==r.storageAddress||c.nonce!==r.nonce||c.timestamp!==r.timestamp||c.network!==r.network||c.chainIdentity!==r.chainIdentity
+    ||!Array.isArray(c.data)||c.data.length!==2||c.data[0]!=='storageProgram'||JSON.stringify(c.data[1])!==r.exactCreate)return null;
   const fee=c.transaction_fee;
-  if(!fee||['network_fee','rpc_fee','additional_fee'].some(key=>wireOs(fee[key])===null))return null;
-  const removals=c.gcr_edits.filter(edit=>edit?.type==='balance');
-  if(removals.length!==2||removals.some(edit=>edit.operation!=='remove'||edit.account!==r.wallet))return null;
-  const amounts=removals.map(edit=>wireOs(edit.amount));
-  if(amounts.some(value=>value===null)||amounts[0]!==demOs(r.debit.storageFeeDem))return null;
-  return amounts.reduce((sum,value)=>sum+value,0n);
+  if(!exact(fee,['network_fee','rpc_fee','additional_fee','rpc_address'])||fee.rpc_address!==null
+    ||['network_fee','rpc_fee','additional_fee'].some((key,i)=>wireOs(fee[key])!==fees[i]))return null;
+  return confirmedEditsMatch(c.gcr_edits,r,op.metadata,[storageFee,gas],wireOs,tx.hash)?storageFee+gas:null;
+}
+
+// The executed edits of one storage CREATE, in order: the storage fee removal,
+// this exact CREATE at its address, the SDK gas removal and a one-step nonce
+// increment, each the wallet's and none rolled back (as sdk-provider.mjs
+// anchorEditsMatch checks them in the client).
+function confirmedEditsMatch(edits,r,metadata,[storageFee,gas],wireOs,txHash){
+  if(!Array.isArray(edits)||edits.length!==4)return false;
+  const expected=[['balance','remove',storageFee],['storageProgram'],['balance','remove',gas],['nonce','add']];
+  return edits.every((e,i)=>{
+    if(e?.type!==expected[i][0]||e.isRollback!==false||!(e.txhash===''||(HASH.test(txHash??'')&&e.txhash===txHash)))return false;
+    if(i===1)return exact(e,['type','target','isRollback','txhash','context'])&&e.target===r.storageAddress
+      &&exact(e.context,['operation','sender','data'])&&e.context.operation==='CREATE_STORAGE_PROGRAM'&&e.context.sender===r.wallet
+      &&exact(e.context.data,['variables','metadata'])&&JSON.stringify(e.context.data.variables)===r.exactCreate&&JSON.stringify(e.context.data.metadata)===JSON.stringify(metadata);
+    return exact(e,['type','operation','isRollback','account','txhash','amount'])&&e.operation===expected[i][1]&&e.account===r.wallet
+      &&(i===3?e.amount===1:wireOs(e.amount)===expected[i][2]);
+  });
 }
 
 
@@ -902,6 +936,15 @@ const BEFORE_PAYMENT=new Set(['CompositeVerificationRecord','FinalityCommitmentR
 
 const AFTER_PAYMENT=new Set(['SettlementEvidence','Deliverable']);
 
+// The listing field each kind must carry (DACS-3 FinalityCommitmentRecord
+// listingRef; a Deliverable's listing), and the kinds that name their Agreement.
+const LISTING_FIELD={FinalityCommitmentRecord:'listingRef',Deliverable:'listing'};
+
+const NAMES_AGREEMENT=new Set(['FinalityCommitmentRecord','Deliverable']);
+
+// The executed CREATE content keys (Node 61b8e75, as the client checks them).
+const CONFIRMED_CONTENT_KEYS=['type','from','from_ed25519_address','to','amount','data','nonce','timestamp','transaction_fee','network','chainIdentity','gcr_edits'];
+
 const CLAIM=/^did:demos:agent:[0-9a-f]{64}$/;
 
 const same=(a,b)=>canonicalize(a)===canonicalize(b);
@@ -923,6 +966,16 @@ export async function stillOpenBeforePayment(request,policy,held){
   if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&vet&&purchase===null)return null;
   const refusal=purchaseBindingRefusal(c,admittedJson(c.exactStorageBytes),purchase,policy,Boolean(held)&&vet&&purchase?.sourceBinding===null);
   return refusal??((purchase.prePaymentOpen===true||(held&&purchase.prePaymentOpen===null))&&purchase.paymentObserved===false?null:'purchase-closed');
+}
+
+/** Await fresh purchase authority immediately before sign authority, for any kind: stillOpenBeforePayment
+ * before payment; after payment, null while the purchase is still the one its exact artifact names and
+ * still paid, else a refusal reason. Throws as stillOpenBeforePayment; callers append synchronously after. */
+export async function stillAuthorizedToSign(request,policy,held){
+  const c=request.content;
+  if(!AFTER_PAYMENT.has(c.artifactKind))return stillOpenBeforePayment(request,policy,held);
+  const purchase=await policy.resolvePurchase(c.jobId);
+  return purchaseBindingRefusal(c,admittedJson(c.exactStorageBytes),purchase,policy,false)??(purchase.paymentObserved===true?null:'payment-not-observed');
 }
 
 let ttyPrompts=0;
