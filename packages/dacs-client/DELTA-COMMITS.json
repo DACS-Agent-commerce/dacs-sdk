@@ -615,5 +615,19 @@
       "packages/dacs-client/test/price-bound.test.mjs",
       "packages/dacs-client/test/storage-read-nonobservation.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 drop node-supplied writeProof from native transport answers",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "packages/dacs-client/test/native-broadcast-once.test.mjs"
+    ]
   }
 ]
