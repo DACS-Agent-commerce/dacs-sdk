@@ -104,8 +104,8 @@
         },
         {
           "id": "d11-transaction-contract",
-          "what": "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls using savepoints and successful writes committing with the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart.",
-          "why": "Factories use the concrete package SQLite adapter and exported buyer-state DDL; isolated tests exercise that adapter. Host operation-store integration, schema migrations, durable configuration and live admission still require qualification."
+          "what": "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls joining the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart.",
+          "why": "The current production PurchaseStore seam throws; isolated tests use source-bound test-only helpers, so they do not establish the real adapter contract."
         },
         {
           "id": "dec16-testnet-admission",
@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5adb5b4ad41a62840a901e99d56569ec3f7c0856"
+        "blob": "1cc1ca9dfbb6aa9333df9a09496acb5c9041519a"
       },
       "DELTA-LEDGER.json": {
-        "blob": "8f83c728ee6971b8fc5646af57ea89f6bbc3df5f"
+        "blob": "783b5e6234f44d110944076fd9bbca63a7233316"
       },
       "DELTA-MAP.md": {
-        "blob": "57ac14ed33f2ff50904093544d2a4f005c132d04"
+        "blob": "a1e033543552f4941dbe52e6c34968887004e88a"
       },
       "DELTA-NOTES.md": {
         "blob": "5687e6a7a7e80c593890d0d7f500be0049ab116b"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "184e0b867900a85d13401de818d17e09159631f4"
+        "blob": "e2ff6e25b5872b7460f9462ef9f94be85eaf4155"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
