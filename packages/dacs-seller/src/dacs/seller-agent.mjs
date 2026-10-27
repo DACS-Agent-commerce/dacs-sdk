@@ -572,7 +572,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               let record;
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
-              const problem = await vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now });
+              let problem;
+              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, evidence: admission.vetEvidence }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet evidence is unavailable`); }
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
               // only with its SR-2 receipt at `accepted` or later, before any signature.
