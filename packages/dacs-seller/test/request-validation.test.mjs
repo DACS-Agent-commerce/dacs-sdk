@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { canonicalize,contentHash,compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { policyRefusal,confirmedWriteOs,stillOpenBeforePayment,stillAuthorizedToSign,SELLER_POLICY_DEFAULTS } from '../src/devnet-demo/operator-approval.mjs';
 import { sellerRecordsPurchaseResolver } from '../src/devnet-demo/seller-purchase-source.mjs';
-import { address,seller,buyer,pin,agreementHash,sourceBinding,artifactAuthority,JOBS,requestFor,confirmationFor,realPurchaseResolver,draftPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
+import { address,seller,buyer,pin,agreementHash,sourceBinding,artifactAuthority,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor,realPurchaseResolver,draftPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
 
 const outsider=`did:demos:agent:${'2'.repeat(64)}`;
-const projection=(change={})=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash,amountOs:'1000000000',paymentObserved:false,prePaymentOpen:true,...change});
+const projection=(change={})=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash,amountOs:'1000000000',paymentObserved:false,paymentTxRef:null,prePaymentOpen:true,...change});
+const paidProjection=(change={})=>projection({paymentObserved:true,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:null,...change});
 // Purchase resolver answers, one per purchase state.
 const STATES={
   none:()=>null,
@@ -14,11 +15,12 @@ const STATES={
   draft:()=>projection({agreementHash:null,sourceBinding:null,paymentObserved:null,prePaymentOpen:null}),
   'agreed-open':()=>projection(),
   'agreed-cancellation-unknown':()=>projection({prePaymentOpen:null}),
-  paid:()=>projection({paymentObserved:true,prePaymentOpen:null}),
+  paid:()=>paidProjection(),
   ended:()=>projection({prePaymentOpen:false}),
   indeterminate:()=>projection({paymentObserved:null,prePaymentOpen:null}),
 };
-const policy=(resolvePurchase=STATES['agreed-open'],change={})=>({address,seller,sourceBinding,artifactAuthority,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3,...change});
+const policy=(resolvePurchase=STATES['agreed-open'],change={})=>({address,seller,sourceBinding,artifactAuthority,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3,
+  deliveredPayloadHash:deliveredHashFor,...change});
 const refusal=(r,p=policy(),options)=>policyRefusal(r,p,SELLER_POLICY_DEFAULTS,options);
 // Each row of the write-kind table, and whether it is written before payment.
 const WRITES=[
@@ -57,11 +59,16 @@ function* variants(value,free=[]){
   }
 }
 const replaceWith=(copy)=>(target)=>{for(const key of Object.keys(target))delete target[key];Object.assign(target,structuredClone(copy));};
-// Display text, the wallet's own timestamp, and artifact members no seller authority decides.
+// Display text and the wallet's own timestamp. Artifact members the seller itself
+// produces, which no purchase authority decides: its Vet evaluation and signature
+// values, record times, the report's title and text, the settlement id it bound at
+// handoff and its own handoff audit hash. Payment transactions and delivered
+// payload hashes are not free: the purchase's paymentTxRef and
+// policy.deliveredPayloadHash decide them.
 const FREE_REQUEST=['purpose','content.evidence','content.sending','content.debit.note','content.timestamp'];
 const FREE_ARTIFACT={CompositeVerificationRecord:['bundleHash','requirementHash','overallDecision','generatedAt','signature.value'],FinalityCommitmentRecord:['createdAt','signature.value'],
-  Deliverable:['title','settlementId','content.text'],'pay-dem':['paymentTxRefs.0.txHash','paymentTxRefs.0.blockNumber','signature.value'],
-  'deliver-storage-program':['dacsSdkAuditSourceHash','deliverableContentHash','observedAt','signature.value']};
+  Deliverable:['title','settlementId','content.text'],'pay-dem':['signature.value'],
+  'deliver-storage-program':['dacsSdkAuditSourceHash','observedAt','signature.value']};
 for(const [label,write,before] of WRITES){
   test(`the sweep refuses every changed, missing or extra request member of ${label}`,async()=>{
     for(const [name,r] of variants(requestFor(write),FREE_REQUEST))assert.notEqual(await refusal(r,approvable(before)),null,name);
@@ -194,9 +201,9 @@ for(const [label,write,purchase,reason] of [
   ['a Vet record evaluating a third party',{artifactKind:'CompositeVerificationRecord',party:outsider},STATES['agreed-open'],'evaluated-party'],
   ['a finality record for another Agreement',{artifactKind:'FinalityCommitmentRecord'},()=>projection({agreementHash:'f'.repeat(64)}),'agreement'],
   ['a finality record naming another party',{artifactKind:'FinalityCommitmentRecord',artifact:{parties:[outsider,seller]}},STATES['agreed-open'],'parties'],
-  ['payment evidence for another amount',payment,()=>projection({paymentObserved:true,amountOs:'2000000000'}),'payment-amount'],
-  ['a Deliverable for another amount',{artifactKind:'Deliverable'},()=>projection({paymentObserved:true,amountOs:'2000000000'}),'delivery-binding'],
-  ['a Deliverable for another Agreement',{artifactKind:'Deliverable'},()=>projection({paymentObserved:true,agreementHash:'f'.repeat(64)}),'agreement'],
+  ['payment evidence for another amount',payment,()=>paidProjection({amountOs:'2000000000'}),'payment-amount'],
+  ['a Deliverable for another amount',{artifactKind:'Deliverable'},()=>paidProjection({amountOs:'2000000000'}),'delivery-binding'],
+  ['a Deliverable for another Agreement',{artifactKind:'Deliverable'},()=>paidProjection({agreementHash:'f'.repeat(64)}),'agreement'],
   ['a purchase of another listing',{artifactKind:'FinalityCommitmentRecord'},()=>projection({listingPin:{...pin,version:2}}),'purchase'],
   ['a purchase on another network',{artifactKind:'FinalityCommitmentRecord'},()=>projection({sourceBinding:{...sourceBinding,chainIdentity:'f'.repeat(64)}}),'purchase'],
   ['a purchase from another seller',{artifactKind:'FinalityCommitmentRecord'},()=>projection({seller:outsider}),'purchase'],
@@ -280,4 +287,101 @@ test('a confirmation of a request with no exact debit counts nothing',()=>{
 });
 test('the fixture artifacts carry the hashes their requests name',()=>{
   for(const [,write] of WRITES){const r=requestFor(write);assert.equal(contentHash(JSON.parse(r.content.exactStorageBytes)),r.content.contentHash);}
+});
+
+// The purchase parties are the Agreement's own claims, compared as the SDK compares them (D-1).
+const qualifiedBuyer=`${buyer}?network=demos`,qualifiedSeller=`${seller}?network=demos`;
+const vet=(party)=>({artifactKind:'CompositeVerificationRecord',party}),finality=(parties)=>({artifactKind:'FinalityCommitmentRecord',artifact:{parties}});
+for(const [label,write,purchase] of [
+  ['a Deliverable',{artifactKind:'Deliverable'},()=>paidProjection({buyer:qualifiedBuyer})],
+  ['payment evidence',payment,()=>paidProjection({buyer:qualifiedBuyer})],
+  ['delivery evidence',{artifactKind:'SettlementEvidence',phase:'deliver-storage-program'},()=>paidProjection({buyer:qualifiedBuyer})],
+  ['a Vet record of the buyer',vet(qualifiedBuyer),()=>projection({buyer:qualifiedBuyer})],
+  ['a finality record',finality([qualifiedBuyer,seller]),()=>projection({buyer:qualifiedBuyer})],
+  ['a finality record under a qualified seller claim',finality([buyer,qualifiedSeller]),()=>projection({seller:qualifiedSeller})],
+  ['a Vet record of a qualified seller claim',vet(qualifiedSeller),()=>projection({seller:qualifiedSeller})],
+  ['a Deliverable under a qualified seller claim',{artifactKind:'Deliverable'},()=>paidProjection({seller:qualifiedSeller})],
+])test(`${label} for an Agreement with a qualified party claim is approved (D-1)`,async()=>{
+  const r=requestFor(write),p=policy(purchase);
+  assert.equal(await refusal(r,p),null);assert.equal(await stillAuthorizedToSign(r,p),null);
+});
+test('artifacts name the parties in the Agreement\'s own spelling, not another spelling of the same identity (D-1)',async()=>{
+  const p=policy(()=>projection({buyer:qualifiedBuyer}));
+  assert.equal(await refusal(requestFor(vet(`${buyer}?network=x`)),p),'evaluated-party');
+  assert.equal(await refusal(requestFor(finality([buyer,seller])),p),'parties');
+  assert.equal(await refusal(requestFor(finality([buyer,seller])),policy(()=>projection({seller:qualifiedSeller}))),'parties');
+});
+for(const [label,change] of [
+  ['a non-canonical buyer key',{buyer:`did:demos:agent:${'A'.repeat(64)}`}],
+  ['a non-canonical buyer scheme',{buyer:`DID:demos:agent:${'1'.repeat(64)}`}],
+  ['a buyer with the seller\'s identity',{buyer:qualifiedSeller}],
+  ['a buyer outside the Demos agent profile',{buyer:'did:web:x'}],
+  ['a buyer that is not text',{buyer:7}],
+  ['another seller identity',{seller:outsider}],
+  ['a seller that is not a claim',{seller:'TEST seller'}],
+])for(const [kind,write,purchase] of [['finality',{artifactKind:'FinalityCommitmentRecord'},projection],['Deliverable',{artifactKind:'Deliverable'},paidProjection]])
+  test(`a purchase with ${label} refuses a ${kind} write at every check (D-1)`,async()=>{
+    const r=requestFor(write),p=policy(()=>purchase(change));
+    assert.equal(await refusal(r,p),'purchase');assert.equal(await stillAuthorizedToSign(r,p),'purchase');
+    assert.equal(await stillOpenBeforePayment(r,p),kind==='finality'?'purchase':null);
+  });
+test('the real seller projection of a qualified Agreement buyer holds a finality record naming it (D-1)',async()=>{
+  const resolve=realPurchaseResolver({buyerClaim:qualifiedBuyer}),found=await resolve(JOBS[0]);
+  assert.equal(found.buyer,qualifiedBuyer);
+  const r=requestFor({artifactKind:'FinalityCommitmentRecord',artifact:{parties:[qualifiedBuyer,seller],agreementHash:found.agreementHash}});
+  assert.equal(await refusal(r,policy(resolve)),'cancellation-unknown');
+});
+
+// The Agreement's transport binding is the policy's, every member (D-2).
+for(const key of [...Object.keys(sourceBinding),'TEST'])test(`a purchase whose transport binding has ${key==='TEST'?'an extra member':`another ${key}`} refuses at every check (D-2)`,async()=>{
+  const binding={...sourceBinding,[key]:`${sourceBinding[key]??''}0`};
+  const before=requestFor({artifactKind:'FinalityCommitmentRecord'}),after=requestFor(),open=policy(()=>projection({sourceBinding:binding})),paid=policy(()=>paidProjection({sourceBinding:binding}));
+  assert.equal(await refusal(before,open),'purchase');assert.equal(await stillOpenBeforePayment(before,open),'purchase');
+  assert.equal(await refusal(after,paid),'purchase');assert.equal(await stillAuthorizedToSign(after,paid),'purchase');
+});
+
+// Payment evidence names the transaction the observer verified (D-3).
+for(const [label,ref] of [['another transaction hash',{txHash:'f'.repeat(64)}],['another block',{blockNumber:123456}]])test(`payment evidence naming ${label} refuses at preparation and before signing (D-3)`,async()=>{
+  const r=requestFor({...payment,artifact:{paymentTxRefs:[{...PAYMENT_TX_REF,...ref}]}}),p=approvable(false);
+  assert.equal(await refusal(r,p),'payment-tx');assert.equal(await stillAuthorizedToSign(r,p),'payment-tx');
+});
+test('payment evidence naming the verified transaction at block 0 is approved (D-3)',async()=>{
+  const ref={...PAYMENT_TX_REF,blockNumber:0},r=requestFor({...payment,artifact:{paymentTxRefs:[ref]}}),p=policy(()=>paidProjection({paymentTxRef:ref}));
+  assert.equal(await refusal(r,p),null);assert.equal(await stillAuthorizedToSign(r,p),null);
+});
+test('payment evidence approved at preparation refuses at signing once the verified transaction changes (D-3)',async()=>{
+  let ref=PAYMENT_TX_REF;const r=requestFor(payment),p=policy(()=>paidProjection({paymentTxRef:{...ref}}));
+  assert.equal(await refusal(r,p),null);ref={...PAYMENT_TX_REF,txHash:'f'.repeat(64)};assert.equal(await stillAuthorizedToSign(r,p),'payment-tx');
+});
+for(const [label,change] of [
+  ['paid with no payment transaction',{paymentTxRef:null}],
+  ['paid with an upper-case transaction hash',{paymentTxRef:{...PAYMENT_TX_REF,txHash:'A'.repeat(64)}}],
+  ['paid with a negative block',{paymentTxRef:{...PAYMENT_TX_REF,blockNumber:-1}}],
+  ['paid with a fractional block',{paymentTxRef:{...PAYMENT_TX_REF,blockNumber:1.5}}],
+  ['paid with an extra transaction member',{paymentTxRef:{...PAYMENT_TX_REF,TEST:'extra'}}],
+  ['paid with another transaction kind',{paymentTxRef:{...PAYMENT_TX_REF,kind:'TEST'}}],
+  ['unpaid naming a payment transaction',{paymentObserved:false,prePaymentOpen:true}],
+  ['with no payment transaction member',{paymentTxRef:undefined}],
+])test(`a purchase ${label} is indeterminate (D-3)`,async()=>{
+  const p=policy(()=>JSON.parse(JSON.stringify(paidProjection(change))));
+  assert.equal(await refusal(requestFor(payment),p),'purchase');assert.equal(await refusal(requestFor({artifactKind:'FinalityCommitmentRecord'}),p),'purchase');
+});
+test('a draft naming a payment transaction is indeterminate (D-3)',async()=>{
+  const p=policy(()=>projection({agreementHash:null,sourceBinding:null,paymentObserved:null,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:null}));
+  assert.equal(await refusal(requestFor({artifactKind:'CompositeVerificationRecord'}),p),'purchase');
+});
+
+// Delivery evidence commits to the seller's verified, retained Deliverable (D-4).
+const delivery={artifactKind:'SettlementEvidence',phase:'deliver-storage-program'};
+for(const [label,r,p] of [
+  ['another payload hash',()=>requestFor({...delivery,artifact:{deliverableContentHash:'f'.repeat(64)}}),()=>approvable(false)],
+  ['no retained Deliverable',()=>requestFor(delivery),()=>policy(STATES.paid,{deliveredPayloadHash:()=>null})],
+  ['no delivered payload input',()=>requestFor(delivery),()=>policy(STATES.paid,{deliveredPayloadHash:undefined})],
+  ['a malformed delivered payload hash',()=>requestFor(delivery),()=>policy(STATES.paid,{deliveredPayloadHash:()=>'TEST'})],
+])test(`delivery evidence with ${label} refuses at preparation and before signing (D-4)`,async()=>{
+  assert.equal(await refusal(r(),p()),'deliverable');assert.equal(await stillAuthorizedToSign(r(),p()),'deliverable');
+});
+test('delivery evidence approved at preparation refuses at signing once the retained Deliverable changes (D-4)',async()=>{
+  let hash=deliveredHashFor(JOBS[0]);const r=requestFor(delivery),p=policy(STATES.paid,{deliveredPayloadHash:()=>hash});
+  assert.equal(await refusal(r,p),null);hash='f'.repeat(64);assert.equal(await stillAuthorizedToSign(r,p),'deliverable');
 });
