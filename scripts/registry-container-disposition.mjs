@@ -1101,8 +1101,9 @@ export function extractPolicyFindings(readInput) {
     engine: { exitCode: source.exitCode("engine-strict.exit-code"), code: npmErrorCode(strictLog),
       // npm stops at the first incompatible package, so a log naming several is
       // not one a listed violation can account for (the joined name matches none).
-      reportedPackage: Array.from((strictLog ?? "").matchAll(/Not compatible with your version of node\/npm: (\S+)/g),
-        match => match[1]).join(" ") || null,
+      // npm names that package on both its `engine` and `notsup` lines.
+      reportedPackage: [...new Set(Array.from((strictLog ?? "").matchAll(/Not compatible with your version of node\/npm: (\S+)/g),
+        match => match[1]))].join(" ") || null,
       scan, scanComplete, violations },
     lockSbom: sbom("consumer-lock-sbom"),
     physicalSbom: sbom("consumer-physical-sbom"),
