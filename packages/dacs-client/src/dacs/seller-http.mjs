@@ -7,6 +7,7 @@
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
 import { SellerAgentError } from './seller-agent-error.mjs';
+import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 
@@ -229,19 +230,20 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       phase = 'other';
       signal = AbortSignal.timeout(timeoutMs);
       hasDispatched = true;
-      const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [SELLER_TRANSPORT_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
+      const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [SELLER_TRANSPORT_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
       phase = 'response-auth';
       const declared = response.headers.get('content-length');
-      if (declared !== null && Number(declared) > SELLER_TRANSPORT_MAX_RESPONSE) { await response.body?.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
+      if (declared !== null && Number(declared) > SELLER_TRANSPORT_MAX_RESPONSE) { cancelResponseBody(response); throw new Error('response exceeds byte limit'); }
       const chunks = [];
       let size = 0;
       if (response.body) {
         const reader = response.body.getReader();
+        signal.addEventListener('abort', () => { reader.cancel().catch(() => {}); }, { once: true });
         for (;;) {
-          const { done, value } = await reader.read();
+          const { done, value } = await settleOnAbort(reader.read(), signal);
           if (done) break;
           size += value.byteLength;
-          if (size > SELLER_TRANSPORT_MAX_RESPONSE) { await reader.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
+          if (size > SELLER_TRANSPORT_MAX_RESPONSE) { reader.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
           chunks.push(value);
         }
       }

@@ -10,10 +10,34 @@ export class OutboundError extends Error {
   }
 }
 
+/** Cancel a response body that will not be read. Never throws; returns nothing. */
+export function cancelResponseBody(response) {
+  response?.body?.cancel().catch(() => {});
+}
+
+/** Wait for `pending`, but stop waiting when `signal` aborts, even if the
+ * operation behind `pending` ignores the signal. Returns the settled value, or
+ * rejects with the signal's reason. A value that arrives after the abort is
+ * passed to `discardLate` (to release it); a late failure is dropped.
+ */
+export function settleOnAbort(pending, signal, discardLate = () => {}) {
+  return new Promise((resolve, reject) => {
+    let abandoned = false;
+    const abandon = () => { abandoned = true; reject(signal.reason); };
+    Promise.resolve(pending).then(
+      (value) => { signal.removeEventListener('abort', abandon); if (abandoned) discardLate(value); else resolve(value); },
+      (error) => { signal.removeEventListener('abort', abandon); if (!abandoned) reject(error); },
+    );
+    // A result that is already available when an aborted signal is seen still
+    // wins, so the caller can report its own abort reason on it.
+    if (signal.aborted) queueMicrotask(abandon); else signal.addEventListener('abort', abandon, { once: true });
+  });
+}
+
 async function readCapped(response, maxBytes, signal) {
   const declared = response.headers.get('content-length');
   if (declared !== null && Number(declared) > maxBytes) {
-    await response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('invalid', 'response exceeds byte limit');
   }
   if (!response.body) return new Uint8Array();
@@ -25,12 +49,12 @@ async function readCapped(response, maxBytes, signal) {
   try {
     for (;;) {
       signal.throwIfAborted();
-      const { done, value } = await reader.read();
+      const { done, value } = await settleOnAbort(reader.read(), signal);
       signal.throwIfAborted();
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
+        reader.cancel().catch(() => {});
         throw new OutboundError('invalid', 'response exceeds byte limit');
       }
       chunks.push(value);
@@ -52,7 +76,7 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
   let response;
   try {
     cancellation.throwIfAborted();
-    response = await fetchImpl(target, {
+    response = await settleOnAbort(fetchImpl(target, {
       method,
       headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -60,29 +84,29 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
       credentials: 'omit',
       cache: 'no-store',
       signal: cancellation,
-    });
+    }), cancellation, cancelResponseBody);
   } catch (error) {
     throw new OutboundError('unavailable', error?.name === 'TimeoutError' ? 'request timed out' : 'request failed');
   }
   if (cancellation.aborted) {
-    response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     cancellation.throwIfAborted();
   }
   if (response.status >= 300 && response.status < 400) {
-    await response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('invalid', 'unexpected redirect', { status: response.status });
   }
   if (response.status === 404) {
-    await response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('not-found', 'not found', { status: 404 });
   }
   if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('unavailable', `upstream returned HTTP ${response.status}`, { status: response.status });
   }
   const type = response.headers.get('content-type') ?? '';
   if (!/^application\/(?:[\w.+-]+\+)?json\b/i.test(type)) {
-    await response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('invalid', 'upstream did not return JSON');
   }
   const bytes = await readCapped(response, maxBytes, cancellation);
