@@ -213,6 +213,8 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 
 Persistent admission also reads main.synchronous on every attempt: WAL requires FULL or EXTRA, and rollback journals require EXTRA for power-loss durability. Weaker settings are refused before transactions or callbacks, without changing the connection configuration or host work. Volatile main databases have no persistent synchronization requirement.
 
+Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -914,6 +916,14 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 4e3f8fe3e81c3706b802f289d12c48f05d3763cb |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e7bf7a95fd5f8ce536b3834a27859b79dd607f22 |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | c27c8df3b9da919daca704a40375be52dae7e89c |
+| D11 | fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 70e4369be0d0a9546ea5a0a96367cfb750fdf47b |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | e45c8004ff9c71bb2c212912d5f44e50be256843 |
+| | `packages/dacs-client/test/helpers/collect-garbage.mjs:1` | 1d8aad9d5a61666d767c767388215560e5c48fcd |
+| | `packages/dacs-client/test/purchase-tx-nesting.test.mjs:1` | 124ddbf578822f8bfe3298e01e83626f40de071d |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | b2a3acd0b40dfab8d88586e7fe6326fbbb11a697 |
+| | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 3cd9965ac3a3fcf7191550d7bffae2b67b8841a2 |
+| | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2 |
 
 ## Complete commit and file inventory
 
@@ -2533,6 +2543,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/helpers/collect-garbage.mjs:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/purchase-tx-nesting.test.mjs:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
+| fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
 
 ## Original moved files
 

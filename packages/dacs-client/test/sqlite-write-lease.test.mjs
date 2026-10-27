@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sqliteWriteLease, retireSqliteHandle, isSqliteHandleRetired } from '../src/util/sqlite-write-lease.mjs';
+import { collectGarbage } from './helpers/collect-garbage.mjs';
 
 function database(t) {
   const db = new DatabaseSync(':memory:');
@@ -31,6 +32,18 @@ test('a lease blocks commit until its private write iterator is finished', t => 
   lease.disarm();
   db.exec('COMMIT');
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
+});
+
+test('a lease keeps its commit barrier usable across garbage collections', t => {
+  const db = database(t), lease = sqliteWriteLease(db);
+  begin(db, lease);
+  const barrier = lease.blockCommit();
+  collectGarbage();
+  assert.throws(() => db.exec('COMMIT'), /SQL statements in progress/);
+  collectGarbage();
+  barrier.return();
+  lease.disarm();
+  db.exec('COMMIT');
 });
 
 test('automatic rollback leaves the lease armed and prevents later table writes', t => {

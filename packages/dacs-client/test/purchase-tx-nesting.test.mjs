@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { purchaseDatabase, durableIds, LegacyDatabase } from './helpers/purchase-tx-fixtures.mjs';
+import { collectGarbage } from './helpers/collect-garbage.mjs';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const ended = /transaction ended|closed|not open|finalized/i;
@@ -51,6 +52,17 @@ for (const [runtime, Database] of RUNTIMES) {
       throw new Error('TEST-after-control');
     }), /TEST-after-control/);
     assert.deepEqual(durableIds(db, path), []);
+  });
+  test(`a garbage collection in a root or nested body keeps the commit barrier and the commit: ${runtime}`, t => {
+    const { db, path, store, write } = world(t, Database);
+    store.transaction(db, () => {
+      write('TEST-root');
+      collectGarbage();
+      store.transaction(db, () => { collectGarbage(); write('TEST-nested'); });
+      collectGarbage();
+      assert.throws(() => db.exec('COMMIT'), /statements in progress/);
+    });
+    assert.deepEqual(durableIds(db, path), ['TEST-nested', 'TEST-root']);
   });
   test(`guessed package savepoint names cannot be rolled back: ${runtime}`, t => {
     const { db, path, store, write } = world(t, Database);
