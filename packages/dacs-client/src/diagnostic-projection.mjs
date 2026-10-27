@@ -13,9 +13,12 @@ const CONTAINER_CHARS = 3;
 const OPERATION_STATE_FIELDS = ['preparedVerification', 'protocol'];
 const PROTOCOL_STATE_FIELDS = ['stage', 'revision', 'notSaved', 'listing', 'agreement', 'commitment', 'claim', 'paymentEvidence',
   'delivery', 'bundle', 'nativeEvidence', 'attempts', 'deliveryDeadline', 'storageGap', 'agreementContext'];
-const SIGNING_MATERIAL_KEYS = new Set(['payload', 'message', 'agreementMessage', 'anchorMessage', 'signature', 'signatures',
-  'buyerSignature', 'sellerSignature', 'planned', 'buyerBundle', 'rawTransaction']);
+// Signatures are matched by name, whatever record holds them; rootBinding is the DACS-1 session-key
+// presentation's root signature, the one Standard signature field not named as one.
+const SIGNATURE_KEY = /signature/i;
+const SIGNING_MATERIAL_KEYS = new Set(['payload', 'message', 'agreementMessage', 'anchorMessage', 'rootBinding', 'planned', 'buyerBundle', 'rawTransaction']);
 
+const isSigningMaterial = key => SIGNATURE_KEY.test(key) || SIGNING_MATERIAL_KEYS.has(key);
 const isPlainRecord = value => value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const pick = (record, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(record, field)).map(field => [field, record[field]]));
 const exhausted = budget => budget.chars <= 0;
@@ -50,7 +53,7 @@ function copyRecord(record, budget, depth) {
   if (keys.length > DIAGNOSTIC_LIMITS.collectionItems) return omit(budget);
   const entries = [];
   for (const key of keys) {
-    if (SIGNING_MATERIAL_KEYS.has(key)) continue;
+    if (isSigningMaterial(key)) continue;
     const cost = key.length > DIAGNOSTIC_LIMITS.stringChars ? Infinity : JSON.stringify(key).length + 1;
     if (exhausted(budget) || cost > budget.chars) { entries.push(['omitted', omit(budget)]); break; }
     budget.chars -= cost;
@@ -79,12 +82,14 @@ export function projectDiagnostic(value) {
 
 /**
  * Projects a saved purchase operation: only the listed state fields are kept, then the limits apply.
- * @throws {TypeError} when operation is null or undefined
+ * A state or protocol state that is not a plain record projects as an empty record.
+ * @throws {TypeError} when operation is not a plain record
  * @returns {object} a fresh operation without planned requests, bundles to sign, identities or delegations
  */
 export function projectDiagnosticOperation(operation) {
+  if (!isPlainRecord(operation)) throw new TypeError('a diagnostic operation must be a plain record');
   const { state, ...fields } = operation;
   const saved = pick(isPlainRecord(state) ? state : {}, OPERATION_STATE_FIELDS);
-  if (isPlainRecord(saved.protocol)) saved.protocol = pick(saved.protocol, PROTOCOL_STATE_FIELDS);
+  if (Object.hasOwn(saved, 'protocol')) saved.protocol = pick(isPlainRecord(saved.protocol) ? saved.protocol : {}, PROTOCOL_STATE_FIELDS);
   return projectDiagnostic({ ...fields, state: saved });
 }
