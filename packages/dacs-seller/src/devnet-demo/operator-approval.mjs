@@ -967,6 +967,16 @@ export async function stillOpenBeforePayment(request,policy,held){
   return refusal??((purchase.prePaymentOpen===true||(held&&purchase.prePaymentOpen===null))&&purchase.paymentObserved===false?null:'purchase-closed');
 }
 
+/** Await fresh purchase authority immediately before sign authority, for any kind: stillOpenBeforePayment
+ * before payment; after payment, null while the purchase is still the one its exact artifact names and
+ * still paid, else a refusal reason. Throws as stillOpenBeforePayment; callers append synchronously after. */
+export async function stillAuthorizedToSign(request,policy,held){
+  const c=request.content;
+  if(!AFTER_PAYMENT.has(c.artifactKind))return stillOpenBeforePayment(request,policy,held);
+  const purchase=await policy.resolvePurchase(c.jobId);
+  return purchaseBindingRefusal(c,admittedJson(c.exactStorageBytes),purchase,policy,false)??(purchase.paymentObserved===true?null:'payment-not-observed');
+}
+
 let ttyPrompts=0;
 /** Return whether an interactive non-Listing approval prompt is pending. */
 export const ttyApprovalPending=()=>ttyPrompts>0;

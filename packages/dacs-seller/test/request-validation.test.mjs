@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { policyRefusal,confirmedWriteOs,stillOpenBeforePayment,SELLER_POLICY_DEFAULTS } from '../src/devnet-demo/operator-approval.mjs';
+import { policyRefusal,confirmedWriteOs,stillOpenBeforePayment,stillAuthorizedToSign,SELLER_POLICY_DEFAULTS } from '../src/devnet-demo/operator-approval.mjs';
 import { sellerRecordsPurchaseResolver } from '../src/devnet-demo/seller-purchase-source.mjs';
 import { address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor,realPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
 const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,prePaymentOpen:false});
@@ -173,4 +173,25 @@ for(const [label,mutate] of [
   const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'}),v=confirmationFor(r,{legacy});
   mutate(v.response.data.transaction.content);assert.equal(confirmedWriteOs(v,r),null,legacy?'legacy':'native');
  }
+});
+
+// Sign authority for a write after payment rereads a still-paid purchase that is still the one the artifact names.
+for(const [label,artifactKind,phase] of [['payment evidence','SettlementEvidence','pay-dem'],['a Deliverable','Deliverable','deliver-storage-program']]){
+ test(`the fresh check before signing ${label} accepts a still-paid purchase`,async()=>{
+  assert.equal(await stillAuthorizedToSign(requestFor({artifactKind,phase}),policy(),null),null);
+ });
+ for(const [state,resolvePurchase,reason] of [
+  ['an unpaid',()=>({...purchase(),paymentObserved:false}),'payment-not-observed'],
+  ['an indeterminate',()=>({...purchase(),paymentObserved:null}),'purchase'],
+  ['a missing',async()=>null,'purchase'],
+  ['another seller in the',()=>({...purchase(),seller:`did:demos:agent:${'4'.repeat(64)}`}),'purchase'],
+  ...(artifactKind==='Deliverable'?[['another Agreement in the',()=>({...purchase(),agreementHash:'f'.repeat(64)}),'agreement']]:[]),
+ ])test(`the fresh check before signing ${label} refuses ${state} purchase`,async()=>{
+  assert.equal(await stillAuthorizedToSign(requestFor({artifactKind,phase}),policy(resolvePurchase),null),reason);
+ });
+}
+test('the fresh check before signing a pre-payment write is the pre-payment check',async()=>{
+ const r=requestFor({artifactKind:'FinalityCommitmentRecord'});
+ assert.equal(await stillAuthorizedToSign(r,policy(()=>({...purchase(),paymentObserved:false,prePaymentOpen:true})),'cancellation-unknown'),null);
+ assert.equal(await stillAuthorizedToSign(r,policy(()=>({...purchase(),paymentObserved:true,prePaymentOpen:null})),'cancellation-unknown'),'purchase-closed');
 });
