@@ -27,7 +27,7 @@ import {
   sha256Hex,
 } from '@kynesyslabs/dacs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, demosSr2TxRef } from '../dacs/demos-sr2-adapter.mjs';
-import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
+import { buildStorageProgramCreatePayload, deriveStorageAddress, MAX_STORAGE_ARTIFACT_BYTES } from '../dacs/wallet-transactions.mjs';
 import { addressForClaim, verifyDemosSignature } from '../dacs/demos-claims.mjs';
 import {
   DEVNET_AGREEMENT_PROFILE,
@@ -50,6 +50,13 @@ const HASH=/^[0-9a-f]{64}$/;
 const NO_INTENT_ABSENT='no seller-owned demo CREATE intent';
 const UNSIGNED_ABSENT='the wallet never signed this CREATE (no signed transaction is retained for it); publishing it asks again';
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
+// Every node read made while the shared wallet nonce lane is held has a reply
+// byte cap the source applies before decoding, and a deadline enforced here.
+const NONCE_READ_LIMITS=Object.freeze({maxBytes:4096,timeoutMs:10_000});
+// A signed CREATE carries one artifact of at most MAX_STORAGE_ARTIFACT_BYTES
+// plus its fixed CREATE fields and bindings; a caller's projection larger than
+// this is refused before it is hashed.
+const SIGNED_CREATE_MAX_BYTES=4*MAX_STORAGE_ARTIFACT_BYTES;
 
 // The caller authenticates expectedSigner: the Vet verifier or commitment
 // orchestrator, which may differ from the native storage owner.
@@ -146,6 +153,23 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     }
     return rows.filter(([,row])=>!unsigned.has(row)).filter(([,row])=>!rejected.some(done=>canonicalize(done.transaction.content)===canonicalize((row?.signedTransaction??row?.transaction)?.content??null)))
       .filter(([,row])=>!(!row?.hash&&!row?.signedTransaction&&(['closing','unsigned','rejected'].includes(row?.stage)||(row?.stage==='denied'&&row.error==='user_rejected'))));
+  }
+
+  // The seller account nonce, read under the shared nonce lane: the source caps
+  // the reply at NONCE_READ_LIMITS.maxBytes before decoding and honors signal;
+  // a reply that misses the deadline, decodes larger or is malformed releases
+  // the lane as indeterminate, and nothing is signed.
+  async function accountNonce() {
+    const controller=new AbortController(),timedOut=Symbol('timed out');let timer;
+    const deadline=new Promise(resolve=>{timer=setTimeout(()=>{controller.abort();resolve(timedOut);},NONCE_READ_LIMITS.timeoutMs);});
+    try{
+      const response=await Promise.race([sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},{...NONCE_READ_LIMITS,signal:controller.signal}),deadline]);
+      if(response===timedOut) fail('indeterminate',`seller nonce read exceeded its ${NONCE_READ_LIMITS.timeoutMs} ms deadline`);
+      if(Buffer.byteLength(JSON.stringify(response)??'')>NONCE_READ_LIMITS.maxBytes) fail('indeterminate','seller nonce reply exceeds its byte limit');
+      const current=storageWriteAccountNonce(response?.response);
+      if(!rpcEnvelope(response,200,null) || current===null) fail('indeterminate','seller nonce is unavailable');
+      return current;
+    }finally{clearTimeout(timer);controller.abort();}
   }
 
   async function liveSourceRows() {
@@ -292,9 +316,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       // only retained accepted storage bytes can qualify for recovery.
       await reconcilePriorSourceLane();
       await reconcilePriorWalletLane();
-      const response=await sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]});
-      const current=storageWriteAccountNonce(response?.response);
-      if(!rpcEnvelope(response,200,null) || current===null) fail('indeterminate','seller nonce is unavailable');
+      const current=await accountNonce();
       // Retained signed or reserved bytes fence this nonce even after inclusion.
       // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
       const priorRows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
@@ -421,13 +443,20 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     try { authorizeRetained(retained); } catch { return null; }
     return structuredClone(retained.signedProjection);
   }
-  // A projection is caller data until it authenticates locally: its hash is
-  // the hash of its own content, the seller signed that hash, and the receipt
-  // names that transaction. Only then may its job and kind choose the access check.
-  const projectionAuthentic=(projection,receipt)=>HASH.test(projection?.hash ?? '') && projection.content!==null && typeof projection.content==='object'
-    && sha256Hex(JSON.stringify(projection.content))===projection.hash
-    && projection.signature?.type==='ed25519' && verifyDemosSignature({address:owner,message:projection.hash,signature:projection.signature.data})
-    && receipt.transactionRef.value===projection.hash;
+  // A projection is caller data until it authenticates locally: its content is
+  // JSON within one signed CREATE's size, its hash is the hash of that content,
+  // the seller signed that hash, and the receipt names that transaction. Only
+  // then may its job and kind choose the access check.
+  const projectionContentText=(content)=>{
+    if(content===null || typeof content!=='object') return null;
+    try { const text=JSON.stringify(content); return Buffer.byteLength(text,'utf8')<=SIGNED_CREATE_MAX_BYTES ? text : null; } catch { return null; }
+  };
+  const projectionAuthentic=(projection,receipt)=>{
+    const text=HASH.test(projection?.hash ?? '') ? projectionContentText(projection.content) : null;
+    return text!==null && sha256Hex(text)===projection.hash
+      && projection.signature?.type==='ed25519' && verifyDemosSignature({address:owner,message:projection.hash,signature:projection.signature.data})
+      && receipt.transactionRef.value===projection.hash;
+  };
   async function verifyReceipt({logicalAddress,artifact,artifactKind,receipt,writer=claim,verifier=writer,signedProjection,deliveryBinding,fresh=false}) {
     // The request itself is checked first, with no read: this anchor's writer,
     // an artifact of a kind it publishes in that writer's signed shape, and a
