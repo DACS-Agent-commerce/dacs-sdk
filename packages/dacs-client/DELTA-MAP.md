@@ -919,6 +919,10 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 0bc483eefebd7e8bb05b127a32438855a5271b84 |
 | D11 | fix(client): D11 document the store-first factory order and offline validation | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | e89f5fc167efeb889e0397f22ceb4db6891fe7c3 |
+| D11 | fix(client): D11 record the chosen blobs of three parallel-record paths | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 
 ## Complete commit and file inventory
 
@@ -2548,6 +2552,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 document the store-first factory order and offline validation | `packages/dacs-client/README.md:1` |
 | fix(client): D11 document the store-first factory order and offline validation | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 document the store-first factory order and offline validation | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
 
 ## Original moved files
 
