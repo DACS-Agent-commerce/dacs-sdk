@@ -75,6 +75,18 @@ test('operation projection of a non-record state yields an empty state', () => {
   assert.deepEqual(projectDiagnosticOperation({ id: 'TEST-op', state: 'TEST-not-a-record' }), { id: 'TEST-op', state: {} });
 });
 
+for (const [name, protocol] of [['list', [{ private: REPLAY, identity: { key: REPLAY } }]], ['string', REPLAY], ['number', 5], ['null', null]]) {
+  test(`operation projection of a ${name} protocol state yields an empty protocol`, () => {
+    assert.deepEqual(projectDiagnosticOperation({ id: 'TEST-op', state: { protocol } }), { id: 'TEST-op', state: { protocol: {} } });
+  });
+}
+
+for (const [name, operation] of [['string', REPLAY], ['list', [{ state: { protocol: { identity: { key: REPLAY } } } }]], ['null', null]]) {
+  test(`operation projection refuses a ${name} operation`, () => {
+    assert.throws(() => projectDiagnosticOperation(operation), TypeError);
+  });
+}
+
 for (const [name, project] of [
   ['value', projectDiagnostic],
   ['operation', value => projectDiagnosticOperation({ state: { protocol: { listing: value } } }).state.protocol.listing],
@@ -108,6 +120,30 @@ test('saved bundle signatures are removed by both projections', () => {
   assert.deepEqual(projectDiagnosticOperation(operation).state.protocol.bundle, expected);
   assert.equal(bundle.buyerSignature, REPLAY);
   assert.equal(bundle.sellerSignature, REPLAY);
+});
+
+// The four DACS-1 IdentityBundle presentation kinds; every one carries a signature.
+for (const [presentation, kept] of [
+  [{ kind: 'siwd', message: REPLAY, signature: REPLAY, address: 'TEST-address' }, { kind: 'siwd', address: 'TEST-address' }],
+  [{ kind: 'per-claim', signatures: [{ ref: 'TEST-ref', signature: REPLAY }] }, { kind: 'per-claim' }],
+  [{ kind: 'session-key', key: 'TEST-key', signature: REPLAY, rootBinding: REPLAY }, { kind: 'session-key', key: 'TEST-key' }],
+  [{ kind: 'sr1-root', rootClaim: 'TEST-root', aggregateSignature: REPLAY }, { kind: 'sr1-root', rootClaim: 'TEST-root' }],
+]) {
+  test(`both projections remove the signatures of a ${presentation.kind} identity presentation`, () => {
+    const operation = { id: 'TEST-op', state: { protocol: { listing: { presentedBy: 'TEST-ref', presentation } } } };
+    for (const projected of [projectDiagnostic(operation), projectDiagnosticOperation(operation)]) {
+      assert.deepEqual(projected.state.protocol.listing, { presentedBy: 'TEST-ref', presentation: kept });
+    }
+  });
+}
+
+test('both projections remove every field named as a signature', () => {
+  const agreement = { delegationSignature: REPLAY, countersignature: REPLAY, presentationSignature: REPLAY, Signature: REPLAY,
+    signatureBytes: REPLAY, agreementHash: 'TEST-hash' };
+  const operation = { id: 'TEST-op', state: { protocol: { agreement } } };
+  for (const projected of [projectDiagnostic(operation), projectDiagnosticOperation(operation)]) {
+    assert.deepEqual(projected.state.protocol.agreement, { agreementHash: 'TEST-hash' });
+  }
 });
 
 // Full lists of the same JSON value, nested `levels` deep.
