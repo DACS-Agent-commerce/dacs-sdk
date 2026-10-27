@@ -41,9 +41,10 @@ const host = await startSellerHost({
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
-                         // readRevocationSurfaces, readRevocationMarker }: the seller-owned session admission,
-                         // Vet record reader, receipt reader and receipt verifier, and revocation readers
-                         // (src/dacs/session-admission.mjs)
+                         // readRevocationSurfaces, readRevocationMarker, readSessionRecipeRegistryPin? }: the
+                         // seller-owned session admission, Vet record reader, receipt reader and receipt
+                         // verifier, revocation readers, and the optional registry pin reader that a
+                         // presence-only Vet requirement needs (src/dacs/session-admission.mjs)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
 });
@@ -403,12 +404,21 @@ per-client limiter so one client cannot exhaust the shared request budget.
   check (`sellerFulfilmentVetRequirementsViolation`) before it signs: exactly
   one per record, evaluating its party, naming that counterparty as
   verifier, the Listing's `buyerRequirement` for the buyer's record, and
-  every required claim covered by a result for this job. Each record must
+  every required claim covered by a result for this job, except a
+  presence-only claim (`verificationRequired: false`), which has no result
+  (DACS-2 forbids a synthetic one). Each record must
   also pass the SDK's strict CompositeVerificationRecord check against its
   invocation: its `requirementHash` is the hash of that exact requirement
   and its decision replays from the invocation's results (DACS-2 §7.7.1).
+  A presence-only claim is counted in the party's exact bundle, whose
+  presentation is verified, against the registry snapshot the operator
+  pinned for the job: the optional `readSessionRecipeRegistryPin({ jobId })`
+  returns its sha-256 hash (read once, only for such a requirement, with the
+  other readers' byte, list and time limits). Without that reader, or with an
+  answer that is not a hash, a presence-only requirement is refused; a reader
+  that fails or times out makes the check indeterminate.
   This package resolves no VerifyResult, so a requirement with a required
-  claim is refused. Otherwise the Agreement is not signed, before any
+  claim that needs one is refused. Otherwise the Agreement is not signed, before any
   payment. A session
   in flight, signed under its pin, continues without a new admission or
   revocation check. The agent's startup check reads only the Listing's own

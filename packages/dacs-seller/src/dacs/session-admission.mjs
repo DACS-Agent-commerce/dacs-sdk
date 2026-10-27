@@ -34,7 +34,13 @@
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
-//    `requirementHash` and replayed aggregation are checked here.
+//    `requirementHash` and replayed aggregation are checked here. A
+//    presence-only claim is replayed over the exact bundle with its presentation
+//    verified and the registry snapshot the operator pinned:
+//  - readSessionRecipeRegistryPin({ jobId }) (optional) answers that snapshot's
+//    sha-256 hash. It is read once, and only for a requirement that names a
+//    presence-only claim; without it, or with another answer, such a
+//    requirement is refused.
 //  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
@@ -83,19 +89,27 @@ export function sellerSessionPresentationProblem(bundle, listingIdentity) {
   if (!isIdentityBundle(bundle)) return 'the seller bundle is not an IdentityBundle';
   const fixed = ({ presentedAt: _at, sessionNonce: _nonce, presentation: _presentation, ...rest }) => rest;
   if (!same(fixed(bundle), fixed(listingIdentity))) return 'the seller bundle is not a presentation of the Listing identity';
-  const proof = bundle.presentation?.kind === 'per-claim' && Array.isArray(bundle.presentation.signatures)
+  return identityPresentationValid(bundle, identityBundleHash(bundle)) ? null : 'the seller bundle presentation does not verify';
+}
+
+// DACS-1 BP-4 for a per-claim presentation: whether the presenter signed the
+// bundle's hash. Never throws on a bundle that has no such presentation.
+export function identityPresentationValid(bundle, bundleHash) {
+  const proof = bundle?.presentation?.kind === 'per-claim' && Array.isArray(bundle.presentation.signatures)
     && bundle.presentation.signatures.find((entry) => sameCanonicalClaimIdentity(entry?.ref, bundle.presentedBy));
-  const valid = proof && typeof proof.signature === 'string' && proof.signature.length === 86 && isCanonicalBase64Url(proof.signature) && verifyComponent({
-    signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
+  return Boolean(proof && typeof proof.signature === 'string' && proof.signature.length === 86 && isCanonicalBase64Url(proof.signature) && verifyComponent({
+    signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${bundleHash}`, 'utf8'),
     signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature },
-  });
-  return valid ? null : 'the seller bundle presentation does not verify';
+  }));
 }
 
 export function sessionAdmissionConfig(value) {
   if (value == null) return null;
   if (!object(value) || ['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
     throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker');
+  }
+  if (value.readSessionRecipeRegistryPin !== undefined && typeof value.readSessionRecipeRegistryPin !== 'function') {
+    throw new TypeError('sessionAdmission.readSessionRecipeRegistryPin must be a function when given');
   }
   return value;
 }
@@ -139,6 +153,7 @@ function boundedRevocationValue(value) {
 }
 
 const ADMISSION_MAX_LIST_ITEMS=256;
+const REGISTRY_PIN_PATTERN = /^[0-9a-f]{64}$/;
 // Admission capabilities cap wire bytes before decoding and honor this signal.
 // Returned representations also receive independent byte/value/list bounds.
 export async function readAdmissionCapability(admission,method,input){
@@ -153,6 +168,20 @@ export async function readAdmissionCapability(admission,method,input){
       return result;
     }),deadline]);
   }finally{clearTimeout(timer);controller.abort();}
+}
+
+// The recipe registry snapshot hash the operator pinned for the job (CRQ-1), or
+// null when it configured no `readSessionRecipeRegistryPin`. The read is bounded
+// like any admission capability and throws, keeping its cause, when it fails.
+export async function readRegistryPin(admission, jobId) {
+  return typeof admission.readSessionRecipeRegistryPin === 'function' ? readAdmissionCapability(admission, 'readSessionRecipeRegistryPin', { jobId }) : null;
+}
+
+// Whether a BundleRequirement names a presence-only claim, which its Vet record
+// replays over the exact bundle (PCR-6) instead of through a VerifyResult.
+export function hasPresenceOnlyClaim(requirement) {
+  const claims = [...(Array.isArray(requirement?.required) ? requirement.required : []), ...(Array.isArray(requirement?.oneOf) ? requirement.oneOf.flat() : [])];
+  return claims.some((claim) => claim?.verificationRequired === false);
 }
 
 export async function listingRevocationProblem(admission, input) {
@@ -215,8 +244,12 @@ export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
 // the invocation's exact BundleRequirement (`requirementHash`) and its
 // decision must replay from the invocation's expected results under the core
 // strict verifier. No VerifyResult resolver is configured, so a requirement
-// whose decision needs a result body is unresolved and refused.
-export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, verifier, invocation, now }) {
+// whose decision needs a result body is unresolved and refused. A presence-only
+// claim needs none (DACS-2 forbids a synthetic result for it): its record is
+// replayed over the exact `presence.bundle`, whose presentation is verified
+// (BP-4), against the operator's `presence.registryPin` (PCR-6, CRQ-1), and is
+// refused without a valid pin.
+export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, verifier, invocation, now, presence }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
@@ -224,13 +257,18 @@ export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, 
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
+  const presenceOnly = hasPresenceOnlyClaim(invocation.requirement);
+  const registryPin = presence?.registryPin;
+  if (presenceOnly && !REGISTRY_PIN_PATTERN.test(registryPin)) return 'the Vet requirement names a presence-only claim and no pinned registry authority was supplied';
   let strict;
   try {
     strict = await verifyCompositeVerificationRecord(record,
-      { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: invocation.freshness, dealSpecific: invocation.dealSpecific },
+      { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: invocation.freshness, dealSpecific: invocation.dealSpecific,
+        ...(presenceOnly ? { presence: { bundle: presence.bundle, sessionRecipeRegistrySnapshotHash: registryPin } } : {}) },
       { nowMs: now, resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
         resolvePublicKey: (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : null), verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
-        verifyAuthorityAttestation: () => 'unresolved' });
+        verifyAuthorityAttestation: () => 'unresolved', isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
+        verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash) });
   } catch (error) { return `the Vet record does not verify against its requirement: ${String(error?.message ?? error).slice(0, 120)}`; }
   if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;
   return null;
