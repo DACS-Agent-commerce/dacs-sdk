@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "41cfc440861401671a8ada1ed180a30d9edbdcb0"
+        "blob": "54f4544fb60314d770dc217a675b87fddae7a5fd"
       },
       "DELTA-LEDGER.json": {
-        "blob": "509e6c372be23f49e06e1d095d76c1d4ceb2ed77"
+        "blob": "4b602e30188439589436646cf765354c363ea7b2"
       },
       "DELTA-MAP.md": {
-        "blob": "66ff9438a8009c4578caf17e8d9b4eda2876b3de"
+        "blob": "122aeb055b589a8325e6715bc5aaf56ae080dd7f"
       },
       "DELTA-NOTES.md": {
         "blob": "807c7f000f85b2d92b92008c939092c5403d53e3"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "2cd0fe7e033ef6b9286171b1b456186bb1ef568c"
+        "blob": "82a16de2cef7e8bd5146c913660a89d7a0f50266"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1100,7 +1100,7 @@
         "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
-        "blob": "eec990d9a159949d76de6835c5a2553a507b1250"
+        "blob": "d038c47516fd96b5ccfb57ea2fdfe11d12bd6c19"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
@@ -1244,7 +1244,7 @@
         "blob": "631654f861dddd1f1b3cbce70da004c96933d5f4"
       },
       "src/util/http.mjs": {
-        "blob": "1a0af8b42041b4f02f3de51cd6b854b959d91f7e"
+        "blob": "e07573bbe5b87af05f35f0d74d371116aedc0241"
       },
       "src/util/ids.mjs": {
         "blob": "6cb275e260df92ea17a4dd7c2417206a7ed7cc2a"
@@ -1268,7 +1268,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "9292671d5d09efee2a37d422bdd0788912191377"
+        "blob": "9018d0a80024f1fd86ef81953388c933424df23e"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
@@ -1517,7 +1517,7 @@
         "blob": "7734d2e4d975a99a9bd05b9d5c9cb1202e060409"
       },
       "test/helpers/passive-native-world.mjs": {
-        "blob": "52bd9a8ae7722567256902d1e56adc08d17f53e5"
+        "blob": "b3613746bd86f461bab85ce8a9db8e6df5675315"
       },
       "test/helpers/portal-auto-dom.mjs": {
         "blob": "f7711a43162e316b145aa9de78850fab53462484"
@@ -1643,7 +1643,7 @@
         "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "f69db84f915c305d762633b3f0f080a2dc2bfbda"
+        "blob": "5a4caa3a87c7a5e41f890a318b6b17486e53d1df"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
