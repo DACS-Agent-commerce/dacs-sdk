@@ -956,10 +956,24 @@ describe("registry/container evidence", () => {
     expect(result.status).not.toBe(0);
   }, 30_000);
 
+  it("builds and records the lock as measured when package code rewrites it afterwards", async () => {
+    const { output, result, commands, lockText, builtLock } = await runToConsumerStage(true, false, {
+      execute: `  printf '%s' '{"packages":{"node_modules/viem":{"resolved":"https://codeload.github.com/fixture/viem/tar.gz/main"}}}' > "$work/one-click-agent/package-lock.json"`,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(builtLock, "utf8")).toBe(lockText);
+    expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe(lockText);
+    expect(JSON.parse(readFileSync(join(output, "sealed-context.json"), "utf8")).files["package-lock.json"])
+      .toBe(createHash("sha256").update(lockText).digest("hex"));
+    const build = readFileSync(commands, "utf8").split("\n").find(line => line.startsWith("build "));
+    expect(build).toMatch(/--file \S+\/sealed\/context\/Dockerfile\.acceptance .* \S+\/sealed\/context\s*$/);
+  }, 30_000);
+
   it.each([
     ["execute", "evidence-collect", ['  rm -f "$out/doctor.json" "$out/doctor.log"', "  ln -s HOST/target.json \"$out/doctor.json\"",
       '  ln -s HOST/secret "$out/doctor.log"', '  ln -s HOST/target.json "$work/one-click-agent/Dockerfile.acceptance"',
       '  rm "$work/one-click-agent/.dockerignore"', '  ln -s HOST/secret "$work/one-click-agent/.dockerignore"']],
+    ["install", "evidence-seal", ['  rm "$work/one-click-agent/.dockerignore"', '  ln -s HOST/secret "$work/one-click-agent/.dockerignore"']],
   ])("refuses links planted in the %s phase without changing or exporting a host file", async (phase, failedStage, plant) => {
     const host = mkdtempSync(join(tmpdir(), "dacs-registry-host-")); scratch.push(host);
     writeFileSync(join(host, "secret"), "host-only value\n"); writeFileSync(join(host, "target.json"), "{}\n");

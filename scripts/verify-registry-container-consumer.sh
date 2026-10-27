@@ -50,12 +50,13 @@ release_set="$acceptance_root/release-set"
 registry_config="$acceptance_root/verdaccio.yaml"
 # Consumer containers write only gen/, measure-out/ and exec-out/. The host
 # reads them only through acceptance-seal.mjs, which never follows a link, and
-# no container mounts the evidence stage.
+# no container mounts the sealed build context or the evidence stage.
 generated_root="$acceptance_root/gen"
+sealed_root="$acceptance_root/sealed"
 measure_out="$acceptance_root/measure-out"
 execute_out="$acceptance_root/exec-out"
 artifact_stage="$acceptance_root/artifacts"
-mkdir "$generated_root" "$measure_out" "$execute_out" "$artifact_stage"
+mkdir "$generated_root" "$sealed_root" "$measure_out" "$execute_out" "$artifact_stage"
 registry_log="$artifact_stage/registry.log"
 measure_evidence=(dependency-policy.json dependency-policy.exit-code npm-audit.json npm-audit.exit-code
   consumer-physical.cdx.json consumer-physical-sbom.err consumer-physical-sbom.exit-code consumer-lock.cdx.json
@@ -214,8 +215,18 @@ run_bounded docker run --rm --name "$consumer_container-install" --init \
     npm install --ignore-scripts
   ' 2>&1 | tee "$artifact_stage/generation.log"
 
-stage=evidence-collect
-project="$generated_root/one-click-agent"
+stage=evidence-seal
+# The host builds, composes and records only this copy of the generator's
+# closed file list, taken before any package code runs.
+template_list=$(node --input-type=module -e '
+const { projectTemplates } = await import(process.argv[1]);
+const [mode, role, rails] = process.argv.slice(2);
+console.log(Object.keys(projectTemplates({ packageName: "one-click-agent", deployment: "docker", mode, role, rails })).join(" "));
+' "$repo_root/packages/create-dacs-agent/dist/templates.js" "$generated_mode" "$generated_role" "$generated_rails")
+read -ra project_files <<< "$template_list package-lock.json"
+project="$sealed_root/context"
+node scripts/acceptance-seal.mjs seal "$generated_root/one-click-agent" "$project" \
+  "$artifact_stage/sealed-context.json" "${project_files[@]}"
 node scripts/acceptance-seal.mjs collect "$project" "$artifact_stage" \
   package.json=generated-package.json package-lock.json=generated-package-lock.json
 
