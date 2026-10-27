@@ -7,14 +7,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSellerApproval,createExactOperatorApproval,parsePolicyLedger,heldPolicyBudget,SELLER_LEDGER_HEADER_FORMAT,SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
 import { sellerRecordsPurchaseResolver } from '../src/devnet-demo/seller-purchase-source.mjs';
-import { address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor,realPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
-const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,prePaymentOpen:false});
-async function fixture(t,resolvePurchase=()=>null){
+import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor,realPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
+const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:false});
+// An Agreement still unpaid, as seller records see it (buyer cancellation unknown).
+const unpaid=()=>({...purchase(),paymentObserved:false,paymentTxRef:null,prePaymentOpen:null});
+const policyInputs=(resolvePurchase,change={})=>({address,seller,sourceBinding,artifactAuthority,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3,deliveredPayloadHash:deliveredHashFor,...change});
+async function fixture(t,resolvePurchase=()=>null,{limits={},ledgerRetryMs}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-approval-regression-'));t.after(()=>rm(dir,{recursive:true,force:true}));
  const evidencePath=join(dir,'ledger');
  const settings={maxTotalOs:'10000000000',evidencePath,now:()=>T0};
- const p=createExactOperatorApproval({...settings,sellerApproval:{mode:'policy'},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3}});
- return {p,evidencePath,settings,read:async()=>parsePolicyLedger(await readFile(evidencePath,'utf8'))};
+ const policyFor=(resolve=resolvePurchase)=>createExactOperatorApproval({...settings,sellerApproval:{mode:'policy',...limits},policy:policyInputs(resolve),...(ledgerRetryMs?{ledgerRetryMs}:{})});
+ return {p:policyFor(),policyFor,evidencePath,settings,read:async()=>parsePolicyLedger(await readFile(evidencePath,'utf8'))};
 }
 
 test('C-1 real asynchronous seller resolver completes a manually approved unknown Vet',async t=>{
@@ -57,9 +60,9 @@ test('D-1 direct manual approval refuses changed bytes and retains immutable app
 });
 
 for(const [state,found] of [
- ['closed',{...purchase(),paymentObserved:false,prePaymentOpen:false}],
- ['paid',{...purchase(),paymentObserved:true,prePaymentOpen:null}],
- ['indeterminate',{...purchase(),paymentObserved:null,prePaymentOpen:null}],
+ ['closed',{...unpaid(),prePaymentOpen:false}],
+ ['paid',{...purchase(),prePaymentOpen:null}],
+ ['indeterminate',{...unpaid(),paymentObserved:null}],
  ['access-refused',false],
 ])test(`D-2 a held purchase becoming ${state} during manual approval is released without sign authority`,async t=>{
  let current=null;const f=await fixture(t,async()=>current);let prompts=0;
@@ -80,10 +83,10 @@ test('a purchase resolver failure before payment leaves a Vet undecided, and a r
  await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
  assert.equal(await a(r),true);assert.equal(prompts,1);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized).length,1);
 });
-for(const [read,failOn] of [['policy read',1],['final reread',2]])test(`a purchase resolver failure at confirmation (${read}) leaves a held Vet unconfirmed and not rejected`,async t=>{
+test('a purchase resolver failure at confirmation (its purchase reread) leaves a held Vet unconfirmed and not rejected',async t=>{
  let reads=0,failAt=null;const f=await fixture(t,async()=>{if(++reads===failAt)throw timeout();return null;});
  const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>true}),r=requestFor({artifactKind:'CompositeVerificationRecord'});
- assert.equal(await a(r),true);failAt=reads+failOn;
+ assert.equal(await a(r),true);failAt=reads+1;
  await assert.rejects(a.confirm(confirmationFor(r)),{code:'ETIMEDOUT'});
  assert.deepEqual(await policyChecksFailed(f),[]);assert.equal((await f.read()).rows.find(row=>row.signAuthorized).outcome,null);
  await a.settle(r,'released');assert.equal(heldPolicyBudget((await f.read()).rows,T0).writes,0);
@@ -145,8 +148,8 @@ test('C-5 manual approval publishes its newly created ledger directory before re
 test('D-1 direct held authorization cannot change retained bytes during its final resolver read',async t=>{
  const r=requestFor({artifactKind:'CompositeVerificationRecord'});let reads=0;
  const f=await fixture(t,async()=>{if(++reads===2)r.content.exactCreate='{"changed":true}';return null;});
- assert.equal(await f.p.prepare(r),false);assert.equal(f.p.heldForManual(r),true);
- assert.equal(await f.p.authorizeSign(r),false);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+ assert.equal((await f.p.decide(r)).outcome,'held');
+ assert.equal(await f.p.authorizeHeld(r,true),'refused');assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
  await f.p.settle(r,'released');assert.equal(heldPolicyBudget((await f.read()).rows,T0).writes,0);
 });
 
@@ -155,7 +158,7 @@ const lastLine=async(f)=>JSON.parse((await readFile(f.evidencePath,'utf8')).trim
 // Sign authority for a write after payment rereads the paid purchase immediately before its append.
 for(const [label,request] of [['payment evidence',()=>requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'})],['a Deliverable',()=>requestFor()]]){
  test(`a paid purchase that is no longer paid before sign authority gives ${label} no sign authority`,async t=>{
-  let reads=0;const f=await fixture(t,async()=>({...purchase(),paymentObserved:++reads===1}));
+  let reads=0;const f=await fixture(t,async()=>++reads===1?purchase():unpaid());
   assert.equal(await f.p.prepare(request()),false);assert.equal(reads,2);
   assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);assert.equal((await lastLine(f)).policyReason,'payment-not-observed');
  });
@@ -169,7 +172,7 @@ for(const [label,request] of [['payment evidence',()=>requestFor({artifactKind:'
 for(const [label,again] of [
  ['the same request',(f,r)=>f.p.prepare(r)],
  ['an exact copy',(f,r)=>f.p.prepare(structuredClone(r))],
- ['an exact copy after a restart',(f,r)=>createExactOperatorApproval({...f.settings,sellerApproval:{mode:'policy'},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase:purchase,paymentPhaseIndex:()=>2}}).prepare(structuredClone(r))],
+ ['an exact copy after a restart',(f,r)=>f.policyFor().prepare(structuredClone(r))],
 ])test(`repeating an exact preparation as ${label} adds no second open sign authority`,async t=>{
  const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
  assert.equal(await f.p.prepare(r),true);assert.equal(await again(f,r),false);
@@ -188,6 +191,121 @@ test('a policy approval of an artifact that is not valid for its kind is rejecte
  assert.equal((await lastLine(f)).decision,'rejected');assert.equal((await lastLine(f)).policyReason,'artifact-structure');
  assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
 });
+
+// The rebuilt lifecycle: fixed policy outcomes, one closed manual table, one sign gate (rvd-sdk-365-21c-r4).
+const payDem=()=>requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
+const ledgerLines=async(f)=>(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
+const openSignRows=async(f)=>(await f.read()).rows.filter(row=>row.signAuthorized&&row.outcome===null);
+const OVER_CAP={limits:{maxWriteTotalOs:'1000000000'}};
+test('D-1 a copy with another purpose at the same wallet nonce gets no second open sign authority',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),other=structuredClone(r);other.purpose='TEST another purpose';
+ assert.equal(await f.p.prepare(r),true);assert.equal(await f.p.prepare(other),false);
+ assert.equal((await lastLine(f)).policyReason,'sign-authorization-open');assert.equal((await openSignRows(f)).length,1);
+});
+test('D-2 a purchase that turns unpaid during the manual wait gets neither sign authority nor confirmation',async t=>{
+ let current=purchase();const f=await fixture(t,async()=>current,OVER_CAP);
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{current=unpaid();return true;}});
+ assert.equal(await a(payDem()),false);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+ assert.equal([...(await f.read()).attempts.values()][0].reason,'confirmation-refused');
+ current=purchase();const b=composeSellerApproval({mode:'policy',policy:(await fixture(t,async()=>current)).p,manual:()=>assert.fail('no prompt')}),r=payDem();
+ assert.equal(await b(r),true);current=unpaid();assert.equal(await b.confirm(confirmationFor(r)),false);
+});
+test('D-3 a purchase read that times out after payment rejects with no prompt and no decision line',async t=>{
+ const f=await fixture(t,async()=>{throw timeout();},OVER_CAP);let prompts=0;
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}});
+ for(const r of [payDem(),requestFor()])await assert.rejects(a(r),{code:'ETIMEDOUT'});
+ assert.equal(prompts,0);await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
+});
+// Resolves once the policy reports the ledger unreadable (it then waits, unsigned and not refused).
+function ledgerWait(t){
+ const write=process.stderr.write;let seen;const waiting=new Promise(done=>{seen=done;});
+ process.stderr.write=function(text,...rest){if(String(text).startsWith('seller-policy-ledger unreadable'))seen();return write.call(this,text,...rest);};
+ t.after(()=>{process.stderr.write=write;});
+ return waiting;
+}
+for(const [label,end] of [['stop ends the wait',async(f,a,pending)=>{await f.p.stop();await assert.rejects(pending,{code:'seller_approval_stopped'});}],
+ ['a repaired ledger is decided again',async(f,a,pending)=>{await writeFile(f.evidencePath,'');assert.equal(await pending,true);}]])test(`D-4 a torn ledger at restart holds paid evidence with no prompt: ${label}`,async t=>{
+ const f=await fixture(t,purchase,{...OVER_CAP,ledgerRetryMs:1});let prompts=0;await writeFile(f.evidencePath,'{"format":');
+ const waiting=ledgerWait(t),a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}}),pending=a(payDem());
+ await waiting;assert.equal(prompts,0);await end(f,a,pending);
+});
+test('D-5 a second composer on the same ledger is not asked to approve a copy with open sign authority',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=payDem();let prompts=0;const manual=()=>{prompts++;return true;};
+ assert.equal(await composeSellerApproval({mode:'policy',policy:f.p,manual})(r),true);assert.equal(prompts,1);
+ assert.equal(await composeSellerApproval({mode:'policy',policy:f.policyFor(),manual})(structuredClone(r)),false);
+ assert.equal(prompts,1);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized).length,1);
+});
+test('(a) two held copies of one write: only the first manual answer gets sign authority',async t=>{
+ const f=await fixture(t),first=requestFor({artifactKind:'CompositeVerificationRecord'}),second=structuredClone(first);
+ for(const r of [first,second])assert.equal((await f.p.decide(r)).outcome,'held');
+ assert.equal(await f.p.authorizeHeld(first,true),'signed');assert.equal(await f.p.authorizeHeld(second,true),'refused');
+ assert.equal((await openSignRows(f)).length,1);assert.deepEqual([...(await f.read()).attempts.values()].map(attempt=>attempt.outcome),[null,'released']);
+});
+test('(b) a manual answer after payment is one attempt: a hold line, then a sign line, counted before approval returns',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP);let lines=null;
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:async()=>{lines=await ledgerLines(f);return true;}});
+ assert.equal(await a(payDem()),true);
+ assert.deepEqual(lines.map(line=>[line.policyReason,Boolean(line.attemptId)]),[['write-fee-cap',true]]);
+ const after=await ledgerLines(f);assert.equal(after.length,2);assert.equal(after[1].attemptId,lines[0].attemptId);
+ assert.equal(heldPolicyBudget((await f.read()).rows,T0).writes,1);
+});
+test('(c) payment not observed is final: it is never offered for manual approval',async t=>{
+ const f=await fixture(t,unpaid);let prompts=0;
+ assert.equal(await composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}})(payDem()),false);
+ assert.equal(prompts,0);const line=await lastLine(f);assert.equal(line.policyReason,'payment-not-observed');assert.equal(line.attemptId,undefined);
+});
+test('D-6 confirm after a Listing or manual-mode approval is false and writes nothing',async t=>{
+ const f=await fixture(t),listing=requestFor();listing.content.artifactKind='Listing';
+ for(const [mode,r] of [['policy',listing],['manual',requestFor()]]){
+  const a=composeSellerApproval({mode,policy:f.p,manual:()=>true});
+  assert.equal(await a(r),true);assert.equal(await a.confirm(confirmationFor(r)),false);
+ }
+ await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
+});
+test('a shutdown that ends a held manual answer releases the attempt and keeps the closing error',async t=>{
+ const f=await fixture(t),closing=Object.assign(new Error('TEST closing'),{code:'operator_closing'});
+ await assert.rejects(composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{throw closing;}})(requestFor({artifactKind:'CompositeVerificationRecord'})),closing);
+ assert.equal([...(await f.read()).attempts.values()][0].reason,'operator-released');
+});
+test('a confirmation retains the executed transaction it checked, not the rest of the node answer',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),v=confirmationFor(r);v.response.data.message='x'.repeat(2_000_000);
+ assert.equal(await f.p.prepare(r),true);assert.equal(await f.p(r,v),true);
+ assert.ok((await readFile(f.evidencePath)).length<64*1024);
+});
+
+// The closed manual table, for every write kind and every reason a policy can give.
+const REASONS=['request-shape','debit','write-fee-cap','create-bytes','artifact','logical-address','purchase','purchase-closed','payment-not-observed','payment-already-observed',
+ 'seller-record-missing','cancellation-unknown','evaluated-party','listing','agreement','parties','payment-amount','payment-tx','deliverable','delivery-binding','request-changed',
+ 'sign-authorization-open','operator-fee-budget','job-write-limit','hourly-write-limit','hourly-dem-limit'];
+const MANUAL_TABLE={before:['seller-record-missing','cancellation-unknown'],after:['write-fee-cap','job-write-limit','hourly-write-limit','hourly-dem-limit']};
+for(const [kind,phase] of [['CompositeVerificationRecord','before'],['FinalityCommitmentRecord','before'],['Deliverable','after'],['SettlementEvidence','after']])test(`the composer asks manual for a held ${kind} only for its table reasons`,async()=>{
+ const asked=[];
+ for(const reason of REASONS){
+  const policy={decide:async()=>({outcome:'held',reason,attemptId:'TEST'}),authorizeHeld:async()=>'refused',releaseHeld:async()=>{},settle:async()=>{}};
+  await composeSellerApproval({mode:'policy',policy,manual:()=>{asked.push(reason);return true;}})({content:{artifactKind:kind}});
+ }
+ assert.deepEqual(asked,MANUAL_TABLE[phase]);
+});
+
+// Purchase authority read last before every sign and confirmation line: a purchase that changes on that read
+// stops the line (rvc r2 C-1 for the confirmation).
+for(const [label,write,current,changed,options] of [
+ ['an automatic write after payment',payDem,purchase,unpaid,{}],
+ ['a held write after payment',payDem,purchase,unpaid,OVER_CAP],
+ ['a held write before payment',()=>requestFor({artifactKind:'FinalityCommitmentRecord'}),unpaid,()=>({...unpaid(),prePaymentOpen:false}),{}],
+]){
+ const run=async(t,flipAt)=>{
+  let reads=0;const f=await fixture(t,async()=>++reads===flipAt?changed():current(),options);
+  const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>true}),r=write(),signed=await a(r),signReads=reads;
+  return{f,r,signed,signReads,confirmed:signed&&await a.confirm(confirmationFor(r)),confirmReads:reads};
+ };
+ test(`${label}: the last purchase read before its sign line and before its confirmation line decides`,async t=>{
+  const clean=await run(t,0);assert.deepEqual([clean.signed,clean.confirmed],[true,true]);
+  const beforeSign=await run(t,clean.signReads);assert.equal(beforeSign.signed,false);assert.equal((await beforeSign.f.read()).rows.some(row=>row.signAuthorized),false);
+  const beforeConfirm=await run(t,clean.confirmReads);assert.deepEqual([beforeConfirm.signed,beforeConfirm.confirmed],[true,false]);
+  assert.equal((await beforeConfirm.f.read()).rows.find(row=>row.signAuthorized).outcome,'released');
+ });
+}
 
 // Stop ends a pending manual callback even with no external signal, and records no decision.
 test('stop ends an unanswered manual callback with no external signal',async t=>{
