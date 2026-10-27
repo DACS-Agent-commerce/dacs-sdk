@@ -926,6 +926,10 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:113`, `packages/dacs-client/src/dacs/seller-http.mjs:233`, `packages/dacs-client/src/dacs/seller-http.mjs:236`, `packages/dacs-client/src/dacs/seller-http.mjs:241`, `packages/dacs-client/src/dacs/seller-http.mjs:243`, `packages/dacs-client/src/dacs/seller-http.mjs:246`, `packages/dacs-client/src/dacs/seller-http.mjs:250`, `packages/dacs-client/src/dacs/seller-http.mjs:256`, `packages/dacs-client/src/dacs/seller-http.mjs:265` | 3b37b663b20165b7a8a14a8a25ee62bf662cc5e6 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:13`, `packages/dacs-client/src/util/http.mjs:40`, `packages/dacs-client/src/util/http.mjs:43`, `packages/dacs-client/src/util/http.mjs:45`, `packages/dacs-client/src/util/http.mjs:48`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:60`, `packages/dacs-client/src/util/http.mjs:62`, `packages/dacs-client/src/util/http.mjs:65`, `packages/dacs-client/src/util/http.mjs:69`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:86`, `packages/dacs-client/src/util/http.mjs:91`, `packages/dacs-client/src/util/http.mjs:96`, `packages/dacs-client/src/util/http.mjs:100`, `packages/dacs-client/src/util/http.mjs:104`, `packages/dacs-client/src/util/http.mjs:109`, `packages/dacs-client/src/util/http.mjs:112`, `packages/dacs-client/src/util/http.mjs:136` | 6ffe3f7530051667d25cc65e0007486d8970c360 |
 | | `packages/dacs-client/test/fetch-abort-settle.test.mjs:1` | fe69899c2f8553c5615335ef2bac09a47113fd17 |
+| D11 | fix(client): D11 record the chosen blobs of three parallel-record paths | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 
 ## Complete commit and file inventory
 
@@ -2578,6 +2582,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 settle bounded fetches when fetchImpl ignores abort | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:113`, `packages/dacs-client/src/dacs/seller-http.mjs:233`, `packages/dacs-client/src/dacs/seller-http.mjs:236`, `packages/dacs-client/src/dacs/seller-http.mjs:241`, `packages/dacs-client/src/dacs/seller-http.mjs:243`, `packages/dacs-client/src/dacs/seller-http.mjs:246`, `packages/dacs-client/src/dacs/seller-http.mjs:250`, `packages/dacs-client/src/dacs/seller-http.mjs:256`, `packages/dacs-client/src/dacs/seller-http.mjs:265` |
 | fix(client): D11 settle bounded fetches when fetchImpl ignores abort | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:13`, `packages/dacs-client/src/util/http.mjs:40`, `packages/dacs-client/src/util/http.mjs:43`, `packages/dacs-client/src/util/http.mjs:45`, `packages/dacs-client/src/util/http.mjs:48`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:60`, `packages/dacs-client/src/util/http.mjs:62`, `packages/dacs-client/src/util/http.mjs:65`, `packages/dacs-client/src/util/http.mjs:69`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:86`, `packages/dacs-client/src/util/http.mjs:91`, `packages/dacs-client/src/util/http.mjs:96`, `packages/dacs-client/src/util/http.mjs:100`, `packages/dacs-client/src/util/http.mjs:104`, `packages/dacs-client/src/util/http.mjs:109`, `packages/dacs-client/src/util/http.mjs:112`, `packages/dacs-client/src/util/http.mjs:136` |
 | fix(client): D11 settle bounded fetches when fetchImpl ignores abort | `packages/dacs-client/test/fetch-abort-settle.test.mjs:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
 
 ## Original moved files
 
