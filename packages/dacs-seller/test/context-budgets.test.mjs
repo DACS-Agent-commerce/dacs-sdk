@@ -103,6 +103,38 @@ test('backward release clock cannot append an invalid completion', async t => {
   await assert.rejects(releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 299 })); assert.equal(await text(f), before);
 });
 
+// A crash mid-append leaves the last context line torn: no newline and no complete JSON.
+const torn = row => { const line = JSON.stringify({ format: 'dacs-node2-seller-context-admission/v1', ...row }); return line.slice(0, line.length - 12); };
+const tornHold = torn({ event: 'hold', holdId: 'TEST hold', jobId: JOB, effect, writes: 1, totalOs: '4', recordedAt: 300 });
+const tornRelease = torn({ event: 'release', holdId: 'TEST hold', jobId: JOB, recordedAt: 300 });
+test('a hold line torn by a crash is cut and the exact reserve retry reserves once', async t => {
+  const f = await fixture(t); await writeFile(f.evidencePath, tornHold);
+  assert.equal(await f.admission.reserve(f.reserve), null);
+  assert.deepEqual(parsePolicyLedger(await text(f)).rows.map(row => [row.contextHold, row.released]), [['TEST hold', false]]);
+});
+test('a hold line torn by a crash does not block releasing an earlier hold', async t => {
+  const f = await fixture(t), second = { ...f.reserve, jobId: otherJob, hold: 'TEST second' };
+  await f.admission.reserve(second); await appendFile(f.evidencePath, tornHold);
+  assert.deepEqual(await releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: otherJob, now: () => 300 }), ['TEST second']);
+  assert.deepEqual(parsePolicyLedger(await text(f)).rows.map(row => [row.contextHold, row.released]), [['TEST second', true]]);
+});
+test('a release line torn by a crash is cut and the release retry ends the hold', async t => {
+  const f = await fixture(t); await f.admission.reserve(f.reserve); await appendFile(f.evidencePath, tornRelease);
+  assert.deepEqual(await releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 300 }), ['TEST hold']);
+  assert.equal(parsePolicyLedger(await text(f)).rows[0].released, true);
+});
+test('a release line torn by a crash does not block a reserve for another job and keeps the hold open', async t => {
+  const f = await fixture(t); await f.admission.reserve(f.reserve); await appendFile(f.evidencePath, tornRelease);
+  assert.equal(await f.admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), null);
+  assert.deepEqual(parsePolicyLedger(await text(f)).rows.map(row => [row.contextHold, row.released]), [['TEST hold', false], ['TEST second', false]]);
+});
+for (const [label, value] of [['a complete malformed context line', `${tornHold}\n`], ['an unterminated line not shown to be a context line', '{"format":"dacs-node2-se']]) test(`${label} is still refused and kept`, async t => {
+  const f = await fixture(t); await writeFile(f.evidencePath, value);
+  await assert.rejects(f.admission.reserve(f.reserve), error => error.code === 'seller_context_ledger_unreadable');
+  await assert.rejects(f.admission.release({ jobId: JOB, hold: f.reserve.hold }));
+  assert.equal(await text(f), value);
+});
+
 // The hold is taken at 300. Each clock gives the attempt's five lines their times.
 const clocks = { earlier: [290, 291, 292, 293, 294], forward: [290, 305, 310, 311, 312], equal: [300, 300, 300, 300, 300], later: [310, 311, 312, 313, 314], backward: [330, 320, 310, 290, 310] };
 for (const [clock, times] of Object.entries(clocks)) {
