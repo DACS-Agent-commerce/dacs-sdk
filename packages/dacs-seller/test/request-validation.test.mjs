@@ -1,205 +1,285 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { canonicalize,contentHash,compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { policyRefusal,confirmedWriteOs,stillOpenBeforePayment,stillAuthorizedToSign,SELLER_POLICY_DEFAULTS } from '../src/devnet-demo/operator-approval.mjs';
 import { sellerRecordsPurchaseResolver } from '../src/devnet-demo/seller-purchase-source.mjs';
-import { address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor,realPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
-const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,prePaymentOpen:false});
-const policy=(resolvePurchase=purchase)=>({address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3});
+import { address,seller,buyer,pin,agreementHash,sourceBinding,artifactAuthority,JOBS,requestFor,confirmationFor,realPurchaseResolver,draftPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
 
-test('request validation accepts exact paid writes and exact confirmed balance removals',async()=>{
- const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
- assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),null);
- assert.equal(confirmedWriteOs(confirmationFor(r),r),2000000000n);
- for(const mutate of [v=>v.response.data.valid=false,v=>v.response.data.transaction.content.nonce++,v=>v.response.data.transaction.content.data[1].salt='changed',v=>v.response.data.transaction.content.gcr_edits[0].amount='2']){
-  const v=confirmationFor(r);mutate(v);assert.equal(confirmedWriteOs(v,r),null);
- }
+const outsider=`did:demos:agent:${'2'.repeat(64)}`;
+const projection=(change={})=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash,amountOs:'1000000000',paymentObserved:false,prePaymentOpen:true,...change});
+// Purchase resolver answers, one per purchase state.
+const STATES={
+  none:()=>null,
+  'buyer-access-closed':()=>false,
+  draft:()=>projection({agreementHash:null,sourceBinding:null,paymentObserved:null,prePaymentOpen:null}),
+  'agreed-open':()=>projection(),
+  'agreed-cancellation-unknown':()=>projection({prePaymentOpen:null}),
+  paid:()=>projection({paymentObserved:true,prePaymentOpen:null}),
+  ended:()=>projection({prePaymentOpen:false}),
+  indeterminate:()=>projection({paymentObserved:null,prePaymentOpen:null}),
+};
+const policy=(resolvePurchase=STATES['agreed-open'],change={})=>({address,seller,sourceBinding,artifactAuthority,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3,...change});
+const refusal=(r,p=policy(),options)=>policyRefusal(r,p,SELLER_POLICY_DEFAULTS,options);
+// Each row of the write-kind table, and whether it is written before payment.
+const WRITES=[
+  ['a Vet record',{artifactKind:'CompositeVerificationRecord'},true],
+  ['a finality record',{artifactKind:'FinalityCommitmentRecord'},true],
+  ['a Deliverable',{artifactKind:'Deliverable'},false],
+  ['payment evidence',{artifactKind:'SettlementEvidence',phase:'pay-dem'},false],
+  ['delivery evidence',{artifactKind:'SettlementEvidence',phase:'deliver-storage-program'},false],
+];
+const approvable=(before)=>policy(before?STATES['agreed-open']:STATES.paid);
+const payment={artifactKind:'SettlementEvidence',phase:'pay-dem'};
+
+for(const [label,write,before] of WRITES)test(`policy approves exact ${label} and counts its executed CREATE in each wire form`,async()=>{
+  const r=requestFor(write);
+  assert.equal(await refusal(r,approvable(before)),null);
+  for(const form of [{},{legacy:true},{executed:true}])assert.equal(confirmedWriteOs(confirmationFor(r,form),r),2000000000n,JSON.stringify(form));
 });
-for(const [reason,mutate] of [
- ['request-shape',r=>r.address='0x'+'f'.repeat(64)],
- ['debit',r=>r.content.debit.totalOs='04'],
- ['create-bytes',r=>r.content.exactCreate='{}'],
-])test(`request validation refuses ${reason}`,async()=>{
- const r=requestFor();mutate(r);assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),reason);
+
+// Mutation sweep: every member changed, every member deleted and a sibling
+// added to every object and array must refuse, except the named free fields.
+function* paths(value,path=[]){
+  if(value===null||typeof value!=='object')return;
+  for(const key of Object.keys(value)){const next=[...path,Array.isArray(value)?Number(key):key];yield next;yield* paths(value[key],next);}
+}
+const at=(root,path)=>path.reduce((node,key)=>node[key],root);
+const changed=(value)=>typeof value==='string'?`${value}0`:typeof value==='number'?value+1:typeof value==='boolean'?!value:'TEST';
+function* variants(value,free=[]){
+  for(const path of [[],...paths(value)]){
+    const node=at(value,path),name=path.join('.');
+    if(node!==null&&typeof node==='object'){const copy=structuredClone(value),target=at(copy,path);if(Array.isArray(target))target.push('TEST');else target.TEST='TEST';yield [`a sibling in ${name||'the root'}`,copy];}
+    if(!path.length)continue;
+    const remove=structuredClone(value),parent=at(remove,path.slice(0,-1));
+    if(Array.isArray(parent))parent.splice(path.at(-1),1);else delete parent[path.at(-1)];
+    yield [`no ${name}`,remove];
+    if(!free.includes(name)){const change=structuredClone(value);at(change,path.slice(0,-1))[path.at(-1)]=changed(node);yield [`another ${name}`,change];}
+  }
+}
+const replaceWith=(copy)=>(target)=>{for(const key of Object.keys(target))delete target[key];Object.assign(target,structuredClone(copy));};
+// Display text, the wallet's own timestamp, and artifact members no seller authority decides.
+const FREE_REQUEST=['purpose','content.evidence','content.sending','content.debit.note','content.timestamp'];
+const FREE_ARTIFACT={CompositeVerificationRecord:['bundleHash','requirementHash','overallDecision','generatedAt','signature.value'],FinalityCommitmentRecord:['createdAt','signature.value'],
+  Deliverable:['title','settlementId','content.text'],'pay-dem':['paymentTxRefs.0.txHash','paymentTxRefs.0.blockNumber','signature.value'],
+  'deliver-storage-program':['dacsSdkAuditSourceHash','deliverableContentHash','observedAt','signature.value']};
+for(const [label,write,before] of WRITES){
+  test(`the sweep refuses every changed, missing or extra request member of ${label}`,async()=>{
+    for(const [name,r] of variants(requestFor(write),FREE_REQUEST))assert.notEqual(await refusal(r,approvable(before)),null,name);
+  });
+  test(`the sweep refuses every changed, missing or extra CREATE and metadata member of ${label}`,async()=>{
+    const base=requestFor(write);
+    for(const [name,op] of variants(JSON.parse(base.content.exactCreate))){
+      const r=structuredClone(base);r.content.exactCreate=canonicalize(op);assert.notEqual(await refusal(r,approvable(before)),null,name);
+    }
+  });
+  test(`the sweep refuses every changed, missing or extra artifact member of ${label}, rebuilt consistently`,async()=>{
+    const base=requestFor(write),artifact=JSON.parse(base.content.exactStorageBytes);
+    for(const [name,copy] of variants(artifact,FREE_ARTIFACT[write.phase??write.artifactKind])){
+      const r=requestFor({...write,logicalAddress:base.content.logicalAddress,editArtifact:replaceWith(copy)});assert.notEqual(await refusal(r,approvable(before)),null,name);
+    }
+  });
+  for(const form of [{},{legacy:true},{executed:true}])test(`the sweep counts nothing for a changed, missing or extra confirmation member of ${label} (${JSON.stringify(form)})`,()=>{
+    const r=requestFor(write),base=confirmationFor(r,form);
+    for(const [name,content] of variants(base.response.data.transaction.content)){
+      const v=structuredClone(base);v.response.data.transaction.content=content;assert.equal(confirmedWriteOs(v,r),null,name);
+    }
+  });
+}
+test('the sweep refuses every changed, missing or extra delivery binding member but its fulfilment id',async()=>{
+  const binding=JSON.parse(requestFor().content.exactCreate).metadata.deliveryBinding;
+  for(const [name,copy] of variants(binding,['fulfilmentId']))assert.notEqual(await refusal(requestFor({editDeliveryBinding:replaceWith(copy)}),approvable(false)),null,name);
+});
+test('free display fields, the timestamp, the fulfilment id and the report text do not change the decision',async()=>{
+  const r=requestFor();Object.assign(r,{purpose:'other'});Object.assign(r.content,{evidence:'other',sending:'other',timestamp:8});r.content.debit.note='other';
+  assert.equal(await refusal(r,approvable(false)),null);
+  assert.equal(await refusal(requestFor({editDeliveryBinding:b=>{b.fulfilmentId='TEST-other';},artifact:{title:'Other',content:{mediaType:'text/plain; charset=utf-8',text:'Other bytes'}}}),approvable(false)),null);
 });
 
-test('request validation refuses a consistently encoded wrong logical address',async()=>{
- assert.equal(await policyRefusal(requestFor({logicalAddress:'dacs4:wrong'}),policy(),SELLER_POLICY_DEFAULTS),'logical-address');
+// Purchase state x write kind: [state, Vet, finality, after payment, held Vet, held finality].
+const MATRIX=[
+  ['none','seller-record-missing','purchase','purchase',null,'purchase'],
+  ['buyer-access-closed','purchase-closed','purchase-closed','purchase-closed','purchase-closed','purchase-closed'],
+  ['draft','seller-record-missing','purchase','purchase',null,'purchase'],
+  ['agreed-open',null,null,'payment-not-observed',null,null],
+  ['agreed-cancellation-unknown','cancellation-unknown','cancellation-unknown','payment-not-observed',null,null],
+  ['paid','payment-already-observed','payment-already-observed',null,'payment-already-observed','payment-already-observed'],
+  ['ended','purchase-closed','purchase-closed','purchase-closed','purchase-closed','purchase-closed'],
+  ['indeterminate','purchase','purchase','purchase','purchase','purchase'],
+];
+for(const [state,vet,finality,after,vetHeld,finalityHeld] of MATRIX)for(const [label,write,before] of WRITES)test(`${label} under a ${state} purchase is decided the same by every check`,async()=>{
+  const r=requestFor(write),p=policy(STATES[state]);
+  const [unheld,held]=write.artifactKind==='CompositeVerificationRecord'?[vet,vetHeld]:write.artifactKind==='FinalityCommitmentRecord'?[finality,finalityHeld]:[after,after];
+  assert.equal(await refusal(r,p),unheld);assert.equal(await refusal(r,p,{held:true}),held);
+  assert.equal(await stillOpenBeforePayment(r,p),before?unheld:null);assert.equal(await stillOpenBeforePayment(r,p,true),before?held:null);
+  assert.equal(await stillAuthorizedToSign(r,p),unheld);assert.equal(await stillAuthorizedToSign(r,p,true),held);
+});
+test('only held:true waives a hold',async()=>{
+  const r=requestFor({artifactKind:'FinalityCommitmentRecord'}),p=policy(STATES['agreed-cancellation-unknown']);
+  for(const held of ['cancellation-unknown',1,null])assert.equal(await stillOpenBeforePayment(r,p,held),'cancellation-unknown');
+});
+test('the real seller projection holds a finality record while buyer cancellation is unknown',async()=>{
+  const resolve=realPurchaseResolver(),found=await resolve(JOBS[0]),r=requestFor({artifactKind:'FinalityCommitmentRecord',artifact:{agreementHash:found.agreementHash}});
+  assert.equal(await refusal(r,policy(resolve)),'cancellation-unknown');
+  assert.equal(await stillOpenBeforePayment(r,policy(resolve),true),null);
+});
+test('the real seller projection of a proposal draft holds a Vet record and refuses a finality record',async()=>{
+  const p=policy(draftPurchaseResolver());
+  assert.equal(await refusal(requestFor({artifactKind:'CompositeVerificationRecord'}),p),'seller-record-missing');
+  assert.equal(await stillOpenBeforePayment(requestFor({artifactKind:'CompositeVerificationRecord'}),p,true),null);
+  assert.equal(await refusal(requestFor({artifactKind:'CompositeVerificationRecord',party:outsider}),p),'evaluated-party');
+  assert.equal(await stillOpenBeforePayment(requestFor({artifactKind:'FinalityCommitmentRecord'}),p,true),'purchase');
+});
+test('a Vet record with no seller record of its job is held',async()=>{
+  const p=policy(sellerRecordsPurchaseResolver({sessionOf:()=>null}));
+  assert.equal(await refusal(requestFor({artifactKind:'CompositeVerificationRecord'}),p),'seller-record-missing');
+  assert.equal(await stillOpenBeforePayment(requestFor({artifactKind:'CompositeVerificationRecord'}),p,true),null);
 });
 
-test('C-1 final pre-payment check awaits the real resolver for an unknown Vet',async()=>{
- const resolve=sellerRecordsPurchaseResolver({sessionOf:()=>null});
- const r=requestFor({artifactKind:'CompositeVerificationRecord'});
- assert.equal(await policyRefusal(r,policy(resolve),SELLER_POLICY_DEFAULTS),'seller-record-missing');
- assert.equal(await stillOpenBeforePayment(r,policy(resolve),'seller-record-missing'),null);
+// Named regressions of earlier review findings.
+test('there is no manual approval option or caller total: an over-cap or malformed request refuses with them (D-1, D-2)',async()=>{
+  const options={manualApproved:true,countedTotal:0n,confirmedTotal:0n},malformed=requestFor();malformed.content.exactCreate='{';
+  assert.equal(await refusal(requestFor({rpcFeeDem:'10'}),approvable(false),options),'write-fee-cap');
+  assert.equal(await refusal(malformed,approvable(false),options),'create-bytes');
 });
-
-
-test('C-2 real seller projection holds unknown cancellation authority for exact manual approval',async()=>{
- const resolve=realPurchaseResolver(),found=await resolve(JOBS[0]);
- const r=requestFor({artifactKind:'FinalityCommitmentRecord',artifact:{agreementHash:found.agreementHash}});
- assert.equal(await policyRefusal(r,policy(resolve),SELLER_POLICY_DEFAULTS),'cancellation-unknown');
- assert.equal(await stillOpenBeforePayment(r,policy(resolve),'cancellation-unknown'),null);
+for(const [label,mutate] of [
+  ['stored bytes with whitespace',r=>{r.content.exactStorageBytes=` ${r.content.exactStorageBytes}`;r.content.storageBytes++;}],
+  ['stored bytes in another member order (D-3)',r=>{const text=JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(r.content.exactStorageBytes)).reverse()));r.content.exactStorageBytes=text;}],
+  ['a storage address not derived from the wallet, name and nonce (D-5)',r=>{const other=`stor-${'f'.repeat(40)}`;r.content.exactCreate=r.content.exactCreate.replace(r.content.storageAddress,other);r.content.storageAddress=other;}],
+  ['a storage address derived for another nonce (D-5)',r=>{r.content.nonce=2;}],
+  ['an extra CREATE metadata member',r=>{const op=JSON.parse(r.content.exactCreate);op.metadata.TEST='extra';r.content.exactCreate=canonicalize(op);}],
+  ['a CREATE in builder member order',r=>{const op=JSON.parse(r.content.exactCreate);r.content.exactCreate=JSON.stringify({operation:op.operation,...op});}],
+  ['a storage fee other than its byte count',r=>{Object.assign(r.content.debit,{storageFeeDem:'2',rpcFeeDem:'0',totalDem:'4',totalOs:'4000000000'});}],
+])test(`request validation refuses ${label} as create-bytes`,async()=>{
+  const r=requestFor(payment);mutate(r);assert.equal(await refusal(r,approvable(false)),'create-bytes');
+});
+test('the CREATE names the demo artifact authority the policy supplies',async()=>{
+  assert.equal(await refusal(requestFor(),policy(STATES.paid,{artifactAuthority:'TEST-RUN-another-authority'})),'create-bytes');
+  assert.equal(await refusal(requestFor(),policy(STATES.paid,{artifactAuthority:undefined})),'create-bytes');
+  assert.equal(await refusal(requestFor({editCreate:op=>{delete op.metadata.artifactBinding;}}),approvable(false)),'create-bytes');
+  assert.equal(await refusal(requestFor({...payment,editCreate:op=>{op.metadata.artifactBinding={};}}),approvable(false)),'create-bytes');
+});
+for(const value of [null,7,{}])test(`a ${JSON.stringify(value)} logical address refuses without throwing (D-4)`,async()=>{
+  const r=requestFor();r.content.logicalAddress=value;assert.equal(await refusal(r,approvable(false)),'request-shape');
+});
+for(const [label,request] of [['no request',null],['no content',{method:'sendTransaction',address,purpose:'',content:null}]])test(`request validation refuses ${label}`,async()=>{
+  assert.equal(await refusal(request,approvable(false)),'request-shape');
+});
+for(const [label,debit] of [['a non-canonical total',{totalOs:'04'}],['a non-canonical fee',{networkFeeDem:'1.0'}],['SDK gas other than its fixed 1 DEM',{sdkGasDem:'2',totalDem:'5',totalOs:'5000000000'}],
+  ['an additional fee',{additionalFeeDem:'1',totalDem:'5',totalOs:'5000000000'}],['a seller amount',{sellerAmountDem:'1'}],['no debit',null]])test(`request validation refuses ${label} as debit`,async()=>{
+  const r=requestFor();if(debit===null)r.content.debit=null;else Object.assign(r.content.debit,debit);
+  assert.equal(await refusal(r,approvable(false)),'debit');
+});
+for(const [label,write] of WRITES)test(`${label} under the other request kind refuses (D-14)`,async()=>{
+  const r=requestFor(write);r.content.kind=r.content.kind==='devnet-demo-artifact-storage-create'?'devnet-settlement-evidence-storage-create':'devnet-demo-artifact-storage-create';
+  assert.equal(await refusal(r,approvable(true)),'request-shape');
+});
+for(const [label,write,artifact] of [
+  ['a finality record with no listing (D-6, C-2)',{artifactKind:'FinalityCommitmentRecord'},{listingRef:undefined}],
+  ['a finality record with no Agreement hash (D-7, C-2)',{artifactKind:'FinalityCommitmentRecord'},{agreementHash:undefined}],
+  ['a Deliverable with a null listing (D-6)',{artifactKind:'Deliverable'},{listing:null}],
+  ['a Deliverable with no Agreement hash (D-7)',{artifactKind:'Deliverable'},{agreementHash:undefined}],
+  ['a Deliverable produced by the buyer (D-8)',{artifactKind:'Deliverable'},{producer:buyer}],
+  ['a Deliverable with an extra member (A-1)',{artifactKind:'Deliverable'},{TEST:'extra'}],
+  ['payment evidence naming a payee (A-1)',payment,{payee:buyer}],
+  ['failed payment evidence (A-1)',payment,{outcome:'failure'}],
+  ['delivery evidence for another deliverable',{artifactKind:'SettlementEvidence',phase:'deliver-storage-program'},{deliverableAnchor:{kind:'storage-program',locator:`dacs4:deliverable:${JOBS[1]}`}}],
+  ['a Vet record signed by the buyer (A-2)',{artifactKind:'CompositeVerificationRecord'},{signature:{algorithm:'ed25519',signer:buyer,value:'A'.repeat(86)}}],
+  ['a Vet record with no signature (A-2)',{artifactKind:'CompositeVerificationRecord'},{signature:undefined}],
+  ['a Vet record naming a verifier member (A-2)',{artifactKind:'CompositeVerificationRecord'},{verifier:seller}],
+  ['a Vet record with a listing member',{artifactKind:'CompositeVerificationRecord'},{listingRef:null}],
+])test(`request validation refuses ${label}`,async()=>{
+  assert.equal(await refusal(requestFor({...write,artifact}),approvable(write.artifactKind==='CompositeVerificationRecord'||write.artifactKind==='FinalityCommitmentRecord')),'artifact');
+});
+for(const [label,write,purchase,reason] of [
+  ['a Vet record evaluating a third party',{artifactKind:'CompositeVerificationRecord',party:outsider},STATES['agreed-open'],'evaluated-party'],
+  ['a finality record for another Agreement',{artifactKind:'FinalityCommitmentRecord'},()=>projection({agreementHash:'f'.repeat(64)}),'agreement'],
+  ['a finality record naming another party',{artifactKind:'FinalityCommitmentRecord',artifact:{parties:[outsider,seller]}},STATES['agreed-open'],'parties'],
+  ['payment evidence for another amount',payment,()=>projection({paymentObserved:true,amountOs:'2000000000'}),'payment-amount'],
+  ['a Deliverable for another amount',{artifactKind:'Deliverable'},()=>projection({paymentObserved:true,amountOs:'2000000000'}),'delivery-binding'],
+  ['a Deliverable for another Agreement',{artifactKind:'Deliverable'},()=>projection({paymentObserved:true,agreementHash:'f'.repeat(64)}),'agreement'],
+  ['a purchase of another listing',{artifactKind:'FinalityCommitmentRecord'},()=>projection({listingPin:{...pin,version:2}}),'purchase'],
+  ['a purchase on another network',{artifactKind:'FinalityCommitmentRecord'},()=>projection({sourceBinding:{...sourceBinding,chainIdentity:'f'.repeat(64)}}),'purchase'],
+  ['a purchase from another seller',{artifactKind:'FinalityCommitmentRecord'},()=>projection({seller:outsider}),'purchase'],
+])test(`fresh purchase authority refuses ${label} at preparation and before signing`,async()=>{
+  const r=requestFor(write),p=policy(purchase);
+  assert.equal(await refusal(r,p),reason);assert.equal(await stillAuthorizedToSign(r,p),reason);
+});
+for(const [label,mutate,p] of [
+  ['another phase index in the request and CREATE (D-9)',{editDeliveryBinding:b=>{b.phaseIndex=999;}},approvable(false)],
+  ['no delivery phase from the Listing (D-9)',{},policy(STATES.paid,{deliveryPhaseIndex:undefined})],
+  ['an unreadable delivery phase from the Listing (D-9)',{},policy(STATES.paid,{deliveryPhaseIndex:()=>-1})],
+])test(`request validation refuses a Deliverable with ${label}`,async()=>{
+  assert.equal(await refusal(requestFor(mutate),p),'delivery-binding');
+});
+test('payment evidence at another phase index refuses',async()=>{
+  assert.equal(await refusal(requestFor(payment),policy(STATES.paid,{paymentPhaseIndex:()=>3})),'logical-address');
+  assert.equal(await refusal(requestFor({artifactKind:'CompositeVerificationRecord',logicalAddress:compositeVerificationAddress(JOBS[0],seller)}),approvable(true)),'logical-address');
 });
 
 // CORE CF-5: the exact JSON a request stores or signs is admitted as raw JSON, not leniently parsed.
 const intoMetadata=(r,member)=>{r.content.exactCreate=r.content.exactCreate.replace('"metadata":{',`"metadata":{${member},`);};
 for(const [label,mutate] of [
- ['a duplicate member in the stored artifact',r=>{r.content.exactStorageBytes=r.content.exactStorageBytes.replace('{',`{"jobId":"${JOBS[1]}",`);r.content.storageBytes=Buffer.byteLength(r.content.exactStorageBytes);}],
- ['a duplicate member in the CREATE',r=>{r.content.exactCreate=r.content.exactCreate.replace('{','{"salt":"TEST",');}],
- ['a duplicate member in the CREATE metadata',r=>intoMetadata(r,'"logicalAddress":"dacs4:TEST-other"')],
- ['a lone surrogate escape in the CREATE metadata',r=>intoMetadata(r,'"TEST":"\\ud800"')],
- ['an unsafe number in the CREATE metadata',r=>intoMetadata(r,'"TEST":9007199254740993')],
- ['nesting deeper than 128 in the CREATE metadata',r=>intoMetadata(r,`"TEST":${'['.repeat(130)}${']'.repeat(130)}`)],
- ['an unpaired surrogate in the CREATE text',r=>intoMetadata(r,`"TEST":"${String.fromCharCode(0xd800)}"`)],
- ['a CREATE that is not JSON',r=>{r.content.exactCreate='{';}],
- ['a stored artifact that is not an object',r=>{r.content.exactStorageBytes='null';r.content.storageBytes=4;}],
+  ['a duplicate member in the stored artifact',r=>{r.content.exactStorageBytes=r.content.exactStorageBytes.replace('{',`{"jobId":"${JOBS[1]}",`);r.content.storageBytes=Buffer.byteLength(r.content.exactStorageBytes);}],
+  ['a duplicate member in the CREATE',r=>{r.content.exactCreate=r.content.exactCreate.replace('{','{"salt":"TEST",');}],
+  ['a duplicate member in the CREATE metadata',r=>intoMetadata(r,'"logicalAddress":"dacs4:TEST-other"')],
+  ['a lone surrogate escape in the CREATE metadata',r=>intoMetadata(r,'"TEST":"\\ud800"')],
+  ['an unsafe number in the CREATE metadata',r=>intoMetadata(r,'"TEST":9007199254740993')],
+  ['nesting deeper than 128 in the CREATE metadata',r=>intoMetadata(r,`"TEST":${'['.repeat(130)}${']'.repeat(130)}`)],
+  ['an unpaired surrogate in the CREATE text',r=>intoMetadata(r,`"TEST":"${String.fromCharCode(0xd800)}"`)],
+  ['a CREATE that is not JSON',r=>{r.content.exactCreate='{';}],
+  ['a stored artifact that is not an object',r=>{r.content.exactStorageBytes='null';r.content.storageBytes=4;}],
 ])test(`request validation refuses ${label} as create-bytes`,async()=>{
- const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});mutate(r);
- assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),'create-bytes');
+  const r=requestFor(payment);mutate(r);assert.equal(await refusal(r,approvable(false)),'create-bytes');
 });
 
-// Only a Vet record is held before the seller has any record of its job.
-for(const held of ['seller-record-missing','cancellation-unknown'])test(`a finality record with no seller record of its job is refused, also when held as ${held}`,async()=>{
- const p=policy(async()=>null),r=requestFor({artifactKind:'FinalityCommitmentRecord'});
- assert.equal(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS),'purchase');
- assert.equal(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS,{held}),'purchase');
- assert.equal(await stillOpenBeforePayment(r,p,held),'purchase');
-});
-
-// The fresh pre-payment check binds the purchase to what the exact request names.
-const openPurchase=()=>({...purchase(),paymentObserved:false,prePaymentOpen:true});
-for(const [label,kind,change,reason] of [
- ['another Agreement','FinalityCommitmentRecord',{agreementHash:'f'.repeat(64)},'agreement'],
- ['another buyer than the evaluated party','CompositeVerificationRecord',{buyer:`did:demos:agent:${'3'.repeat(64)}`},'evaluated-party'],
- ['another listing','FinalityCommitmentRecord',{listingPin:{...pin,version:2}},'purchase'],
- ['another network','FinalityCommitmentRecord',{sourceBinding:{...sourceBinding,chainIdentity:'f'.repeat(64)}},'purchase'],
- ['another seller','FinalityCommitmentRecord',{seller:`did:demos:agent:${'4'.repeat(64)}`},'purchase'],
-])test(`the fresh pre-payment check refuses a held ${kind} whose purchase now names ${label}`,async()=>{
- const r=requestFor({artifactKind:kind});
- assert.equal(await stillOpenBeforePayment(r,policy(openPurchase),'cancellation-unknown'),null);
- assert.equal(await stillOpenBeforePayment(r,policy(()=>({...openPurchase(),...change})),'cancellation-unknown'),reason);
-});
-
-for(const [label,mutate] of [['another data discriminator',data=>{data[0]='different';}],['an extra data element',data=>{data.push('TEST');}],['no data array',(data,content)=>{content.data={0:data[0],1:data[1]};}]])test(`a confirmation with ${label} counts nothing`,()=>{
- const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'}),v=confirmationFor(r),content=v.response.data.transaction.content;
- mutate(content.data,content);assert.equal(confirmedWriteOs(v,r),null);
-});
-
-for(const [state,change] of [['closed',{paymentObserved:false,prePaymentOpen:false}],['paid',{paymentObserved:true,prePaymentOpen:null}],['indeterminate',{paymentObserved:null,prePaymentOpen:null}]])test(`fresh pre-payment check refuses ${state} purchase even with manual approval`,async()=>{
- const p=policy(()=>({...purchase(),...change})),r=requestFor({artifactKind:'FinalityCommitmentRecord'});
- assert.notEqual(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS),null);
- assert.notEqual(await stillOpenBeforePayment(r,p,'cancellation-unknown'),null);
-});
-
-// The stored artifact is the CREATE's artifact byte for byte, at the address the wallet derives.
-const reencode=(r,text)=>{r.content.exactStorageBytes=text;r.content.storageBytes=Buffer.byteLength(text);};
-for(const [label,mutate] of [
- ['stored bytes that differ from the CREATE artifact bytes',r=>reencode(r,` ${r.content.exactStorageBytes}`)],
- ['stored bytes in another member order',r=>reencode(r,JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(r.content.exactStorageBytes)).reverse())))],
- ['a storage address not derived from the wallet, name and nonce',r=>{const other=`stor-${'f'.repeat(40)}`;r.content.exactCreate=r.content.exactCreate.replace(r.content.storageAddress,other);r.content.storageAddress=other;}],
- ['a storage address derived for another nonce',r=>{r.content.nonce=2;}],
-])test(`request validation refuses ${label} as create-bytes`,async()=>{
- const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});mutate(r);
- assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),'create-bytes');
-});
-
-// Each kind that names its listing and Agreement must carry and bind both.
-const openPrePayment=()=>({...purchase(),paymentObserved:false,prePaymentOpen:true});
-test('request validation accepts an exact paid Deliverable for its seller and delivery phase',async()=>{
- assert.equal(await policyRefusal(requestFor(),policy(),SELLER_POLICY_DEFAULTS),null);
-});
-for(const [label,kind,artifact,reason] of [
- ['a Deliverable with a null listing','Deliverable',{listing:null},'listing'],
- ['a Deliverable with no listing','Deliverable',{listing:undefined},'listing'],
- ['a Deliverable with a null Agreement hash','Deliverable',{agreementHash:null},'agreement'],
- ['a Deliverable with no Agreement hash','Deliverable',{agreementHash:undefined},'agreement'],
- ['a Deliverable produced by the buyer','Deliverable',{producer:buyer},'delivery-binding'],
- ['a Deliverable with no producer','Deliverable',{producer:undefined},'delivery-binding'],
- ['a finality record with no listing','FinalityCommitmentRecord',{listingRef:undefined},'listing'],
- ['a finality record with a null listing','FinalityCommitmentRecord',{listingRef:null},'listing'],
- ['a finality record with no Agreement hash','FinalityCommitmentRecord',{agreementHash:undefined},'agreement'],
- ['a Vet record with a null listing','CompositeVerificationRecord',{listingRef:null},'listing'],
-])test(`request validation refuses ${label}`,async()=>{
- const r=requestFor({artifactKind:kind,artifact});
- const p=policy(kind==='Deliverable'?purchase:openPrePayment);
- assert.equal(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS),reason);
- if(kind!=='Deliverable')assert.equal(await stillOpenBeforePayment(r,p,'cancellation-unknown'),reason);
-});
-test('request validation refuses a Vet record with a null listing before any seller record of its job exists',async()=>{
- const r=requestFor({artifactKind:'CompositeVerificationRecord',artifact:{listingRef:null}});
- assert.equal(await policyRefusal(r,policy(async()=>null),SELLER_POLICY_DEFAULTS),'listing');
-});
-
-// A Deliverable's phase index is the verified Listing's delivery phase.
-const withPhaseIndex=(r,index)=>{
- r.content.deliveryBinding.phaseIndex=index;
- const op=JSON.parse(r.content.exactCreate);op.metadata.deliveryBinding.phaseIndex=index;r.content.exactCreate=JSON.stringify(op);
-};
-for(const [label,mutate,p] of [
- ['another phase index in the request and CREATE',r=>withPhaseIndex(r,999),policy()],
- ['no delivery phase from the Listing',()=>{},{...policy(),deliveryPhaseIndex:undefined}],
- ['an unreadable delivery phase from the Listing',()=>{},{...policy(),deliveryPhaseIndex:()=>-1}],
-])test(`request validation refuses a Deliverable with ${label}`,async()=>{
- const r=requestFor();mutate(r);
- assert.equal(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS),'delivery-binding');
-});
-
-// The confirmation is the node's executed CREATE of this exact request: no
-// other content, fee, destination, network or edit.
-test('a legacy whole-DEM confirmation of the exact CREATE counts its removals',()=>{
- const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
- assert.equal(confirmedWriteOs(confirmationFor(r,{legacy:true}),r),2000000000n);
-});
+// The confirmation is the node's executed CREATE of this exact request (the diagnose list).
 const editsOf=(content)=>content.gcr_edits;
 for(const [label,mutate] of [
- ['no storage CREATE edit',c=>editsOf(c).splice(1,1)],
- ['no nonce edit',c=>editsOf(c).pop()],
- ['a doubled nonce edit',c=>editsOf(c).push(structuredClone(editsOf(c)[3]))],
- ['a nonce step of two',c=>{editsOf(c)[3].amount=2;}],
- ['an extra storage CREATE edit',c=>editsOf(c).push(structuredClone(editsOf(c)[1]))],
- ['an extra identity edit',c=>editsOf(c).push({type:'identity',operation:'remove',account:c.from})],
- ['reordered edits',c=>editsOf(c).reverse()],
- ['a rolled-back edit',c=>{editsOf(c)[0].isRollback=true;}],
- ['a CREATE edit at another storage address',c=>{editsOf(c)[1].target=`stor-${'f'.repeat(40)}`;}],
- ['a CREATE edit with other variables',c=>{editsOf(c)[1].context.data.variables={...editsOf(c)[1].context.data.variables,salt:'TEST'};}],
- ['an edit for another account',c=>{editsOf(c)[2].account=`0x${'f'.repeat(64)}`;}],
- ['gas other than the declared SDK gas',c=>{editsOf(c)[2].amount=c.amount===0?2:'2000000000';}],
- ['another destination',c=>{c.to=`0x${'f'.repeat(64)}`;}],
- ['another network',c=>{c.network='other';}],
- ['another chain identity',c=>{c.chainIdentity='f'.repeat(64);}],
- ['an extra content key',c=>{c.TEST='extra';}],
- ['a network fee other than declared',c=>{c.transaction_fee.network_fee=c.amount===0?9:'9000000000';}],
- ['an RPC fee other than declared',c=>{c.transaction_fee.rpc_fee=0;}],
- ['an additional fee',c=>{c.transaction_fee.additional_fee=c.amount===0?1:'1';}],
- ['an RPC address',c=>{c.transaction_fee.rpc_address='TEST';}],
- ['another ed25519 sender',c=>{c.from_ed25519_address=`0x${'f'.repeat(64)}`;}],
- ['an edit carrying another transaction hash',c=>{editsOf(c)[0].txhash='f'.repeat(64);}],
+  ['another data discriminator',c=>{c.data[0]='different';}],
+  ['an extra data element',c=>{c.data.push('TEST');}],
+  ['no data array',c=>{c.data={0:c.data[0],1:c.data[1]};}],
+  ['no storage CREATE edit',c=>editsOf(c).splice(1,1)],
+  ['no nonce edit',c=>editsOf(c).pop()],
+  ['a doubled nonce edit',c=>editsOf(c).push(structuredClone(editsOf(c)[3]))],
+  ['an extra storage CREATE edit',c=>editsOf(c).push(structuredClone(editsOf(c)[1]))],
+  ['reordered edits',c=>editsOf(c).reverse()],
+  ['a rolled-back edit',c=>{editsOf(c)[0].isRollback=true;}],
+  ['a CREATE edit at another storage address',c=>{editsOf(c)[1].target=`stor-${'f'.repeat(40)}`;}],
+  ['another destination',c=>{c.to=`0x${'f'.repeat(64)}`;}],
+  ['an extra content key',c=>{c.TEST='extra';}],
+  ['gas other than the declared SDK gas',c=>{editsOf(c)[2].amount=c.amount===0?2:'2000000000';}],
+  ['a network fee other than declared',c=>{c.transaction_fee.network_fee=c.amount===0?9:'9000000000';}],
+  ['an RPC fee other than declared',c=>{c.transaction_fee.rpc_fee=0;}],
+  ['an additional fee',c=>{c.transaction_fee.additional_fee=c.amount===0?1:'1';}],
+  ['an RPC address',c=>{c.transaction_fee.rpc_address='TEST';}],
+  ['an edit carrying another transaction hash',c=>{editsOf(c)[0].txhash='f'.repeat(64);}],
 ])test(`a confirmation with ${label} counts nothing`,()=>{
- for(const legacy of [false,true]){
-  const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'}),v=confirmationFor(r,{legacy});
-  mutate(v.response.data.transaction.content);assert.equal(confirmedWriteOs(v,r),null,legacy?'legacy':'native');
- }
+  for(const legacy of [false,true]){
+    const r=requestFor(payment),v=confirmationFor(r,{legacy});
+    mutate(v.response.data.transaction.content);assert.equal(confirmedWriteOs(v,r),null,legacy?'legacy':'native');
+  }
 });
-
-// Sign authority for a write after payment rereads a still-paid purchase that is still the one the artifact names.
-for(const [label,artifactKind,phase] of [['payment evidence','SettlementEvidence','pay-dem'],['a Deliverable','Deliverable','deliver-storage-program']]){
- test(`the fresh check before signing ${label} accepts a still-paid purchase`,async()=>{
-  assert.equal(await stillAuthorizedToSign(requestFor({artifactKind,phase}),policy(),null),null);
- });
- for(const [state,resolvePurchase,reason] of [
-  ['an unpaid',()=>({...purchase(),paymentObserved:false}),'payment-not-observed'],
-  ['an indeterminate',()=>({...purchase(),paymentObserved:null}),'purchase'],
-  ['a missing',async()=>null,'purchase'],
-  ['another seller in the',()=>({...purchase(),seller:`did:demos:agent:${'4'.repeat(64)}`}),'purchase'],
-  ...(artifactKind==='Deliverable'?[['another Agreement in the',()=>({...purchase(),agreementHash:'f'.repeat(64)}),'agreement']]:[]),
- ])test(`the fresh check before signing ${label} refuses ${state} purchase`,async()=>{
-  assert.equal(await stillAuthorizedToSign(requestFor({artifactKind,phase}),policy(resolvePurchase),null),reason);
- });
-}
-test('the fresh check before signing a pre-payment write is the pre-payment check',async()=>{
- const r=requestFor({artifactKind:'FinalityCommitmentRecord'});
- assert.equal(await stillAuthorizedToSign(r,policy(()=>({...purchase(),paymentObserved:false,prePaymentOpen:true})),'cancellation-unknown'),null);
- assert.equal(await stillAuthorizedToSign(r,policy(()=>({...purchase(),paymentObserved:true,prePaymentOpen:null})),'cancellation-unknown'),'purchase-closed');
+for(const [label,mutate] of [
+  ['a node fee view other than the declared fees',data=>{data.gas_operation.fees.rpc_fee='2000000000';}],
+  ['a node fee view with an extra fee',data=>{data.gas_operation.fees.TEST='1';}],
+  ['decimal-string integers not bound to a transaction hash',data=>{data.transaction.hash='';}],
+  ['custom charges',data=>{data.custom_charges={};}],
+  ['an invalid answer',data=>{data.valid=false;}],
+])test(`an executed confirmation with ${label} counts nothing`,()=>{
+  const r=requestFor(payment),v=confirmationFor(r,{executed:true});mutate(v.response.data);assert.equal(confirmedWriteOs(v,r),null);
+});
+test('a numeric post-fork confirmation stays refused without fork authority',()=>{
+  const r=requestFor(payment),v=confirmationFor(r),c=v.response.data.transaction.content,number=(value)=>Number(value);
+  c.amount=0;for(const key of ['network_fee','rpc_fee','additional_fee'])c.transaction_fee[key]=number(c.transaction_fee[key]);
+  for(const index of [0,2])c.gcr_edits[index].amount=number(c.gcr_edits[index].amount);
+  assert.equal(confirmedWriteOs(v,r),null);
+});
+test('a confirmation of a request with no exact debit counts nothing',()=>{
+  const r=requestFor(payment),v=confirmationFor(r);r.content.debit.totalOs='04';assert.equal(confirmedWriteOs(v,r),null);
+  assert.equal(confirmedWriteOs(v,null),null);
+});
+test('the fixture artifacts carry the hashes their requests name',()=>{
+  for(const [,write] of WRITES){const r=requestFor(write);assert.equal(contentHash(JSON.parse(r.content.exactStorageBytes)),r.content.contentHash);}
 });
 
 // The stored artifact must be valid for its kind (DACS structure) before the policy approves or holds it.
