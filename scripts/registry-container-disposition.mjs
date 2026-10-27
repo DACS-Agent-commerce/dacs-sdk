@@ -219,6 +219,14 @@ function repeatsTopLevelKey(text) {
   return false;
 }
 
+// Whether a package scope or module named `name` is how require() reaches the
+// candidate `candidateName`. Node matches a scope by prefix, so a scope named
+// for the candidate's own scope or a subpath of it captures the candidate too.
+function namesCandidate(name, candidateName) {
+  return typeof name === "string" &&
+    (name === candidateName || candidateName.startsWith(name + "/") || name.startsWith(candidateName + "/"));
+}
+
 // The name require() reaches the entry `item` of `directory` by, or null when
 // it is no module root: a scope folder, or a path inside a package.
 function moduleRootName(directory, item) {
@@ -302,7 +310,7 @@ function candidateAliasErrors(manifest, lock, inventory, candidates) {
 // one: it may not name a candidate, nor repeat a key a runtime may read instead.
 function projectScopeErrors(manifestText, manifest, candidates) {
   if (repeatsTopLevelKey(manifestText)) return ["cannot read the project package.json: it repeats a top-level key"];
-  return candidates.filter(({ name }) => manifest.name === name)
+  return candidates.filter(({ name }) => namesCandidate(manifest.name, name))
     .map(({ name }) => "the project is named for candidate package " + name);
 }
 
@@ -345,7 +353,7 @@ function authenticateCandidateInventory(closure, inventory, candidates, registry
     const names = [module.name, module.entry?.name, module.manifest?.name,
       ...MODULE_FILE_EXTENSIONS.filter(extension => module.name?.endsWith(extension))
         .map(extension => module.name.slice(0, -extension.length))];
-    const identities = candidates.filter(candidate => names.includes(candidate.name));
+    const identities = candidates.filter(candidate => names.some(name => namesCandidate(name, candidate.name)));
     if (!module.entry && (identities.length || module.unreadable)) {
       errors.push(module.generated ? `cannot authenticate an npm-generated package scope: ${location}`
         : `cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
