@@ -13,6 +13,8 @@
 /scripts/bounded-transport.sh @randomblocker
 /scripts/runtime-image-inventory.mjs @randomblocker
 /scripts/verify-registry-container-consumer.sh @randomblocker
+/scripts/acceptance-seal.mjs @randomblocker
+/scripts/registry-container-registry.sh @randomblocker
 /scripts/publish-exact-local-registry.mjs @randomblocker
 /scripts/check-publish-environment.mjs @randomblocker
 /scripts/require-publish-environment.sh @randomblocker
