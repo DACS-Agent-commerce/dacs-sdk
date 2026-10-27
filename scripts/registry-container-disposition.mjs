@@ -5,6 +5,7 @@ import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { createRequire } from "node:module";
 import { join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { collectAuditVersions } from "./check-npm-advisories.mjs";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
 import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
@@ -48,12 +49,17 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
 // npm audit's JSON report, read through a closed shape. npm aggregates the
 // installed versions of a package by name, so a package's severity need not
 // equal any one advisory's: its own advisories bound it below, and every
-// advisory reachable through its `via` names bounds it above.
+// advisory reachable through its `via` names bounds it above. For the same
+// reason its `isDirect` says only that some copy of the name is direct.
 export const AUDIT_POLICY_SCHEMA = "dacs-registry-audit-policy/v1";
 const AUDIT_SEVERITIES = ["info", "low", "moderate", "high", "critical"];
 const DIRECT_BLOCKING_SEVERITIES = ["high", "critical"];
 const MAX_AUDIT_PACKAGES = 100_000;
 const MAX_ADVISORY_EDGES = 1000;
+// How npm tests an installed version against an advisory's range
+// (@npmcli/metavuln-calculator).
+const NPM_ADVISORY_SEMVER = { includePrerelease: true, loose: true };
+const ROOT_FIELDS_AUDITED_AS_DIRECT = ["dependencies", "optionalDependencies", "devDependencies", "peerDependencies"];
 const severityRank = severity => AUDIT_SEVERITIES.indexOf(severity);
 const advisoryUrlId = url => url.replace(/^https:\/\/github\.com\/advisories\//, "");
 
@@ -121,7 +127,7 @@ function auditAdvisories(audit) {
         dependents.get(via).push(name);
       } else if (isPlainObject(via)) {
         const advisory = auditAdvisory(via, name);
-        advisories.push({ ...advisory, packageIsDirect: value.isDirect });
+        advisories.push(advisory);
         own.set(name, Math.max(own.get(name) ?? -1, severityRank(advisory.severity)));
       } else throw new Error("incomplete npm audit advisory graph");
     }
@@ -130,16 +136,59 @@ function auditAdvisories(audit) {
   return advisories;
 }
 
-/** The audit policy of an `npm audit --json` report: its counts and observed
- * advisory IDs classified against `baseline`, with the high/critical IDs on
- * direct dependencies. `passed` when every observed ID is an assessed
- * transitive one. Throws when the report is malformed or inconsistent. */
-export function registryAuditPolicy(audit, baseline) {
+const unevaluated = reason => new Error("advisory applicability unevaluated: " + reason);
+
+// The exact versions each package name is installed at as a direct dependency
+// of the lock root, aliases resolved to the installed name, as the CI audit
+// gate collects them. Every root field npm can audit counts. Only a single
+// registry project is read: workspaces and links have other direct copies.
+function directVersions(lock) {
+  const root = lock?.packages?.[""];
+  if (!isPlainObject(root)) throw unevaluated("the lock has no root package");
+  const nonRegistry = Object.entries(lock.packages).filter(([location, entry]) => location !== "" &&
+    (!location.startsWith("node_modules/") || entry?.link === true));
+  if (root.workspaces !== undefined || nonRegistry.length > 0) {
+    throw unevaluated("workspaces and linked packages are unsupported");
+  }
+  const fields = ROOT_FIELDS_AUDITED_AS_DIRECT.filter(field => root[field] !== undefined);
+  if (fields.some(field => !isPlainObject(root[field]))) throw unevaluated("a root dependency map is not an object");
+  const dependencies = Object.assign({}, ...fields.map(field => root[field]));
+  try {
+    return collectAuditVersions({ packages: { ...lock.packages, "": { dependencies } } }, { scope: "direct" });
+  } catch (error) { throw unevaluated(error.message); }
+}
+
+// The high/critical advisory IDs whose range, as npm reads it, covers a
+// direct version of their package.
+function directAdvisoryIds(advisories, lock) {
+  const semver = npmModule("semver");
+  const versions = directVersions(lock);
+  const direct = new Set();
+  for (const advisory of advisories) {
+    if (semver.validRange(advisory.range, NPM_ADVISORY_SEMVER) === null) {
+      throw unevaluated(`unreadable range ${JSON.stringify(advisory.range)} for ${advisory.name}`);
+    }
+    const installed = versions[advisory.name] ?? [];
+    const unreadable = installed.find(version => semver.valid(version, NPM_ADVISORY_SEMVER) === null);
+    if (unreadable !== undefined) throw unevaluated(`unreadable version ${JSON.stringify(unreadable)} of ${advisory.name}`);
+    if (DIRECT_BLOCKING_SEVERITIES.includes(advisory.severity) &&
+        installed.some(version => semver.satisfies(version, advisory.range, NPM_ADVISORY_SEMVER))) {
+      direct.add(advisoryUrlId(advisory.url));
+    }
+  }
+  return [...direct];
+}
+
+/** The audit policy of an `npm audit --json` report and the lock it audited:
+ * its counts and observed advisory IDs classified against `baseline`, with the
+ * high/critical IDs whose range covers a direct dependency's locked version.
+ * `passed` when every observed ID is an assessed transitive one. Throws when
+ * the report is malformed, or ("advisory applicability unevaluated") when the
+ * lock, a range or a version cannot be read. */
+export function registryAuditPolicy(audit, lock, baseline) {
   const advisories = auditAdvisories(audit);
-  const direct = advisories.filter(advisory => advisory.packageIsDirect &&
-    DIRECT_BLOCKING_SEVERITIES.includes(advisory.severity));
   const policy = classifyRegistryAudit([...new Set(advisories.map(advisory => advisoryUrlId(advisory.url)))], baseline,
-    [...new Set(direct.map(advisory => advisoryUrlId(advisory.url)))]);
+    directAdvisoryIds(advisories, lock));
   const passed = policy.assessedAdvisories.length === policy.observedAdvisories.length && policy.directAdvisories.length === 0;
   return { schema: AUDIT_POLICY_SCHEMA, observed: audit.metadata.vulnerabilities, ...policy, passed };
 }
@@ -190,16 +239,24 @@ function validIntegrity(value) {
 const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
 
+// A module of the executing npm. Acceptance pins npm, so dependency grammar
+// and advisory ranges are read exactly as it reads them.
+let npmRequire;
+function npmModule(name) {
+  if (!npmRequire) {
+    const npmEntry = process.env.npm_execpath ?? join(execFileSync("npm", ["root", "--global"],
+      { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js");
+    npmRequire = createRequire(npmEntry);
+  }
+  return npmRequire(name);
+}
+
 // Use the executing npm's parser, including loose semver and alias-name rules.
-// Acceptance pins npm; this keeps dependency grammar separate from engine ranges.
+// This keeps dependency grammar separate from engine ranges.
 let npmPackageArg;
 function registrySourceSpec(value) {
   if (typeof value !== "string") return false;
-  if (!npmPackageArg) {
-    const npmEntry = process.env.npm_execpath ?? join(execFileSync("npm", ["root", "--global"],
-      { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js");
-    npmPackageArg = createRequire(npmEntry)("npm-package-arg");
-  }
+  npmPackageArg ??= npmModule("npm-package-arg");
   try {
     const parsed = npmPackageArg.resolve("dependency", value);
     // Older npm parsers (npm 10.8) read `npm:node_modules` as an alias with no
@@ -750,11 +807,15 @@ function invalidateReport(output, inputs) {
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [mode] = process.argv.slice(2);
   if (mode === "--audit-policy") {
-    const [auditPath, output] = process.argv.slice(3);
-    if (!auditPath || !output) throw new Error("usage: --audit-policy <npm-audit.json> <output>");
-    invalidateReport(output, [auditPath]);
+    const [auditPath, lockPath, output] = process.argv.slice(3);
+    if (!auditPath || !lockPath || !output) {
+      throw new Error("usage: --audit-policy <npm-audit.json> <generated-package-lock.json> <output>");
+    }
+    invalidateReport(output, [auditPath, lockPath]);
     const audit = JSON.parse(readFileSync(auditPath, "utf8"));
-    const policy = registryAuditPolicy(audit, JSON.parse(readFileSync(baselinePath, "utf8")));
+    let lock = null;
+    try { lock = JSON.parse(readFileSync(lockPath, "utf8")); } catch { /* unreadable: applicability is unevaluated */ }
+    const policy = registryAuditPolicy(audit, lock, JSON.parse(readFileSync(baselinePath, "utf8")));
     writeFileSync(output, JSON.stringify(policy, null, 2) + "\n");
     process.stdout.write(JSON.stringify(policy.observed) + "\n");
   } else if (mode === "--dependency-policy") {

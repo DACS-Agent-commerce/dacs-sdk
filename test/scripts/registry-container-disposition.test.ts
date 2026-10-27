@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
+import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
@@ -155,16 +156,15 @@ describe("npm audit graph severity", () => {
   const edge = (name: string, severity: string, url = `https://github.com/advisories/${id}`) =>
     ({ name, url, severity, range: "*" });
   type PackageFinding = { severity: string; isDirect: boolean; via: (string | ReturnType<typeof edge>)[] };
+  // Each package marked isDirect is a root dependency in the audited lock.
   function auditFixture() {
     const directory = mkdtempSync(join(tmpdir(), "dacs-audit-severity-"));
     scratch.push(directory);
-    const input = join(directory, "audit.json"), output = join(directory, "policy.json");
+    const input = join(directory, "audit.json"), lock = join(directory, "lock.json"), output = join(directory, "policy.json");
     const run = (vulnerabilities: Record<string, PackageFinding>) => {
-      const packages = Object.values(vulnerabilities);
-      const counts = Object.fromEntries(severities.map(severity => [severity,
-        packages.filter(value => value.severity === severity).length]));
-      writeFileSync(input, JSON.stringify({ metadata: { vulnerabilities: { ...counts, total: packages.length } }, vulnerabilities }));
-      return spawnSync(process.execPath, [join(repoRoot, "scripts/registry-container-disposition.mjs"), "--audit-policy", input, output],
+      writeFileSync(input, JSON.stringify(auditReport(vulnerabilities)));
+      writeFileSync(lock, JSON.stringify(auditLock(vulnerabilities)));
+      return spawnSync(process.execPath, [join(repoRoot, "scripts/registry-container-disposition.mjs"), "--audit-policy", input, lock, output],
         { cwd: repoRoot, encoding: "utf8" });
     };
     return { run, output };
