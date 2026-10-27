@@ -1,0 +1,955 @@
+{
+  "baseline": "aac03055bdbeabc7c0771642d99f0c4baf7e3de9",
+  "files": [
+    {
+      "original": "scripts/stale-pointer.probe.test.mjs",
+      "path": "evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt",
+      "blob": "d2f167dfb61076ef6dc9e92b300163a6c11ef762"
+    },
+    {
+      "original": "test/agreement-anchor-node-junk.test.mjs",
+      "path": "evidence/source-tests/test/agreement-anchor-node-junk.test.mjs.txt",
+      "blob": "165224e85e4eb50e9b8de3c7f8f21998f96d53a5"
+    },
+    {
+      "original": "test/agreement-context-durable-vet.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-durable-vet.test.mjs.txt",
+      "blob": "b0a38b796a121d15243b049904e66ac511cf2a37"
+    },
+    {
+      "original": "test/agreement-context-integration.browser.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-integration.browser.test.mjs.txt",
+      "blob": "b7452f47ac9b6288476d3276e351e63e2894e1a6"
+    },
+    {
+      "original": "test/agreement-context-integration.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-integration.test.mjs.txt",
+      "blob": "ae9502b5dc105e5017d2290936b890a8da99d602"
+    },
+    {
+      "original": "test/agreement-context-interactions.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-interactions.test.mjs.txt",
+      "blob": "e8ac917d67218d5bfbc2c4a56bb3cdddf200e0a5"
+    },
+    {
+      "original": "test/agreement-context-legacy-ops-health.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-legacy-ops-health.test.mjs.txt",
+      "blob": "ecd5a865c34ebf6701d4db6859d077efaf84f1c8"
+    },
+    {
+      "original": "test/agreement-context-replay-resend.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-replay-resend.test.mjs.txt",
+      "blob": "9442b85b89f5c3fc25737d144cd6e004812cfe18"
+    },
+    {
+      "original": "test/agreement-context-single-vet.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-single-vet.test.mjs.txt",
+      "blob": "6a1f4ed05facd9b0a9c9542bf50a5bf8c121cca9"
+    },
+    {
+      "original": "test/agreement-context-write-effect.test.mjs",
+      "path": "evidence/source-tests/test/agreement-context-write-effect.test.mjs.txt",
+      "blob": "6dfb653a365d8910cd47f745880964ffd7c3b350"
+    },
+    {
+      "original": "test/agreement-plan-route-single-vet.test.mjs",
+      "path": "evidence/source-tests/test/agreement-plan-route-single-vet.test.mjs.txt",
+      "blob": "0b1a54b31bfb6857b0ae139bf0bf817a38821e9e"
+    },
+    {
+      "original": "test/agreement-plan-single-flight.test.mjs",
+      "path": "evidence/source-tests/test/agreement-plan-single-flight.test.mjs.txt",
+      "blob": "c50c9f25d5244f0491021ac7185ab18a4f3446c8"
+    },
+    {
+      "original": "test/agreement-plan-speed-composition.test.mjs",
+      "path": "evidence/source-tests/test/agreement-plan-speed-composition.test.mjs.txt",
+      "blob": "8260ad26219dc1a1258120b37b06ceb986cf6be8"
+    },
+    {
+      "original": "test/browser/dacs-storage-anchor-wallet.browser.test.mjs",
+      "path": "evidence/source-tests/test/browser/dacs-storage-anchor-wallet.browser.test.mjs.txt",
+      "blob": "fce110d3f6e66d93d2e95f51e93d1224727dabd9"
+    },
+    {
+      "original": "test/buyer-chain-readback-commit-on-signature.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-commit-on-signature.test.mjs.txt",
+      "blob": "a6fd4b3caa8c0ab69e662c39426dfcdece59b638"
+    },
+    {
+      "original": "test/buyer-chain-readback-final-hold.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-final-hold.test.mjs.txt",
+      "blob": "f99ba15d85fe52bff0aa6f40aba71870da299c1d"
+    },
+    {
+      "original": "test/buyer-chain-readback-in-flight.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-in-flight.test.mjs.txt",
+      "blob": "6e0a3dc336002d136c6c88819d9ce27e29db67c3"
+    },
+    {
+      "original": "test/buyer-chain-readback-off-identity.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-off-identity.test.mjs.txt",
+      "blob": "fdcb5f583d9110658db8e75025b1fceaf3972fdf"
+    },
+    {
+      "original": "test/buyer-chain-readback-proof.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-proof.test.mjs.txt",
+      "blob": "fac9a852c54dea9450a367b82646d4065da469a1"
+    },
+    {
+      "original": "test/buyer-chain-readback-source-native.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-source-native.test.mjs.txt",
+      "blob": "4d690c0a6fe187d669f393bb29f1cdb6a676a8d6"
+    },
+    {
+      "original": "test/buyer-chain-readback-unit.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-unit.test.mjs.txt",
+      "blob": "e2adf9a20edc66da14fb83f279837402f8a7cd9f"
+    },
+    {
+      "original": "test/buyer-chain-readback-unmarked-invalid.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback-unmarked-invalid.test.mjs.txt",
+      "blob": "558e4f7388d1455f8ed7674ffaeec0f7bcebca5c"
+    },
+    {
+      "original": "test/buyer-chain-readback.test.mjs",
+      "path": "evidence/source-tests/test/buyer-chain-readback.test.mjs.txt",
+      "blob": "e7054a6458185949ec040218cd081aabe41db872"
+    },
+    {
+      "original": "test/catalog-observed-at.test.mjs",
+      "path": "evidence/source-tests/test/catalog-observed-at.test.mjs.txt",
+      "blob": "55fdbc46647f4478849de7623006639408b38792"
+    },
+    {
+      "original": "test/closed-access-boundaries.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-boundaries.test.mjs.txt",
+      "blob": "4a45912824137080eb3439104737bc662c55a5be"
+    },
+    {
+      "original": "test/closed-access-guard-unit.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-guard-unit.test.mjs.txt",
+      "blob": "529d33024d5204e4a54eb580167041d46ebf627f"
+    },
+    {
+      "original": "test/closed-access-paid-recovery.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-paid-recovery.test.mjs.txt",
+      "blob": "cb2272f32d6850564b40a5320d6da9ce2ff4e3bc"
+    },
+    {
+      "original": "test/closed-access-readback.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-readback.test.mjs.txt",
+      "blob": "e381b9323a0f5c1be848ed866a915cbc5a5998fa"
+    },
+    {
+      "original": "test/closed-access-receipt-verify.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-receipt-verify.test.mjs.txt",
+      "blob": "bf8840ea3aec8ea7d23bfd9696c53735a977911c"
+    },
+    {
+      "original": "test/closed-access-resend-notice.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-resend-notice.test.mjs.txt",
+      "blob": "5e7fa8615a9e4b04e8a8b508fb75233d7c459352"
+    },
+    {
+      "original": "test/closed-access-retained-resend.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-retained-resend.test.mjs.txt",
+      "blob": "2f3a9862e7d15339b2cbb3c2a13d3ad9e7998eb5"
+    },
+    {
+      "original": "test/closed-access-rpc-auth.test.mjs",
+      "path": "evidence/source-tests/test/closed-access-rpc-auth.test.mjs.txt",
+      "blob": "d79d1120647b80c3bf55a4710d953b84cafa9076"
+    },
+    {
+      "original": "test/closure-identity-recovery.test.mjs",
+      "path": "evidence/source-tests/test/closure-identity-recovery.test.mjs.txt",
+      "blob": "d6a63139981da26fcac23139708bac87c76f8f29"
+    },
+    {
+      "original": "test/closure-identity-sdk.test.mjs",
+      "path": "evidence/source-tests/test/closure-identity-sdk.test.mjs.txt",
+      "blob": "3959113db6977399b99cde4b1b1a41c810525006"
+    },
+    {
+      "original": "test/closure-identity-witness.test.mjs",
+      "path": "evidence/source-tests/test/closure-identity-witness.test.mjs.txt",
+      "blob": "cda627ffbcd931b325378ae231a567c781e0edd1"
+    },
+    {
+      "original": "test/commit-on-signature-authorization.test.mjs",
+      "path": "evidence/source-tests/test/commit-on-signature-authorization.test.mjs.txt",
+      "blob": "20d1c4874f7355f799b99635688d027f13ca400c"
+    },
+    {
+      "original": "test/commit-on-signature-journal.test.mjs",
+      "path": "evidence/source-tests/test/commit-on-signature-journal.test.mjs.txt",
+      "blob": "836d312bd9ab20fe3915ecef7c80bace1d4f40be"
+    },
+    {
+      "original": "test/commit-on-signature-native.test.mjs",
+      "path": "evidence/source-tests/test/commit-on-signature-native.test.mjs.txt",
+      "blob": "a4024302e97d79d662eae43bd0a81573f8224a91"
+    },
+    {
+      "original": "test/commit-on-signature-recovery.test.mjs",
+      "path": "evidence/source-tests/test/commit-on-signature-recovery.test.mjs.txt",
+      "blob": "d3fe0fef1685f502c360396cf042aa168ca5eee1"
+    },
+    {
+      "original": "test/commit-on-signature.test.mjs",
+      "path": "evidence/source-tests/test/commit-on-signature.test.mjs.txt",
+      "blob": "b8a44082e3670bd86db9e165293bb67cfe0dfcb4"
+    },
+    {
+      "original": "test/commitment-consumer-proof-indeterminate.test.mjs",
+      "path": "evidence/source-tests/test/commitment-consumer-proof-indeterminate.test.mjs.txt",
+      "blob": "f4a52f887f66d0057e7b3e53bd6301fcb98c5352"
+    },
+    {
+      "original": "test/commitment-node-junk-purchase-chain-readback.test.mjs",
+      "path": "evidence/source-tests/test/commitment-node-junk-purchase-chain-readback.test.mjs.txt",
+      "blob": "d56b0160f8166ce49a06b07400efccab318aecdb"
+    },
+    {
+      "original": "test/commitment-node-junk-purchase-cos-chain-readback.test.mjs",
+      "path": "evidence/source-tests/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs.txt",
+      "blob": "304d76244f718222ca561f73c0c10824a2d06efc"
+    },
+    {
+      "original": "test/commitment-node-junk-purchase-cos.test.mjs",
+      "path": "evidence/source-tests/test/commitment-node-junk-purchase-cos.test.mjs.txt",
+      "blob": "8891faf4aac4a7f3deff796466833dbf04962023"
+    },
+    {
+      "original": "test/commitment-node-junk-purchase.test.mjs",
+      "path": "evidence/source-tests/test/commitment-node-junk-purchase.test.mjs.txt",
+      "blob": "13b415baaada4ffb50a8d28c885b429204f1fba7"
+    },
+    {
+      "original": "test/commitment-node-junk-reader.test.mjs",
+      "path": "evidence/source-tests/test/commitment-node-junk-reader.test.mjs.txt",
+      "blob": "e83b763550bfb44688f082804e7bd6b3e127f26a"
+    },
+    {
+      "original": "test/completion-readiness.test.mjs",
+      "path": "evidence/source-tests/test/completion-readiness.test.mjs.txt",
+      "blob": "7c7da91c6deedcdf4afc14314a73110240fee3d1"
+    },
+    {
+      "original": "test/config-equivalence.test.mjs",
+      "path": "evidence/source-tests/test/config-equivalence.test.mjs.txt",
+      "blob": "4a210e595ccf64840c482281adddc08419d88167"
+    },
+    {
+      "original": "test/current-delivery-readback.test.mjs",
+      "path": "evidence/source-tests/test/current-delivery-readback.test.mjs.txt",
+      "blob": "88a16f2b3d361cdd85831b3bdeae3b9c6448b844"
+    },
+    {
+      "original": "test/dacs-demos-sr2-wallet.test.mjs",
+      "path": "evidence/source-tests/test/dacs-demos-sr2-wallet.test.mjs.txt",
+      "blob": "2937af523b7d565cadd8902b553151d3f67598a9"
+    },
+    {
+      "original": "test/dacs-demos-sr2.test.mjs",
+      "path": "evidence/source-tests/test/dacs-demos-sr2.test.mjs.txt",
+      "blob": "a873dd4dadf009def8d24aeb549d9ea9cc7aada7"
+    },
+    {
+      "original": "test/dacs-network-binding.test.mjs",
+      "path": "evidence/source-tests/test/dacs-network-binding.test.mjs.txt",
+      "blob": "b1ec40864360733e25cfcf1df497d1523583e78d"
+    },
+    {
+      "original": "test/dacs-offline-agreement-runtime.test.mjs",
+      "path": "evidence/source-tests/test/dacs-offline-agreement-runtime.test.mjs.txt",
+      "blob": "de3ddc481243b4611942312d32bafd41feb25898"
+    },
+    {
+      "original": "test/dacs-offline-browser-broker-coverage.test.mjs",
+      "path": "evidence/source-tests/test/dacs-offline-browser-broker-coverage.test.mjs.txt",
+      "blob": "f5af04210c5711b44df5142b8da5dabf8a784af7"
+    },
+    {
+      "original": "test/dacs-offline-browser-broker.test.mjs",
+      "path": "evidence/source-tests/test/dacs-offline-browser-broker.test.mjs.txt",
+      "blob": "d155af03d8b3ccc59d4ec5597879d48ea9c62d38"
+    },
+    {
+      "original": "test/dacs-purchase.test.mjs",
+      "path": "evidence/source-tests/test/dacs-purchase.test.mjs.txt",
+      "blob": "ab836aa9a6e2ac3b676bb5aaf4368006392ab278"
+    },
+    {
+      "original": "test/dacs-seller-recovery.test.mjs",
+      "path": "evidence/source-tests/test/dacs-seller-recovery.test.mjs.txt",
+      "blob": "fadbd6ae9cacbb18ade3c3aa4c36772d38b76655"
+    },
+    {
+      "original": "test/dacs-seller-transport.test.mjs",
+      "path": "evidence/source-tests/test/dacs-seller-transport.test.mjs.txt",
+      "blob": "9a65731deee638b944283dae0b6379a87d682573"
+    },
+    {
+      "original": "test/dacs-storage-anchor-wallet.test.mjs",
+      "path": "evidence/source-tests/test/dacs-storage-anchor-wallet.test.mjs.txt",
+      "blob": "02b4abc02f8c88e54f5cbb894dcb266e1b7a5b87"
+    },
+    {
+      "original": "test/delivery-deadline-watch.test.mjs",
+      "path": "evidence/source-tests/test/delivery-deadline-watch.test.mjs.txt",
+      "blob": "62348902519cf5979f9d691d92b897a99557a681"
+    },
+    {
+      "original": "test/denied-agreement-recovery.test.mjs",
+      "path": "evidence/source-tests/test/denied-agreement-recovery.test.mjs.txt",
+      "blob": "0d78e9cf8bc75d432ea663e0261ab276941b712e"
+    },
+    {
+      "original": "test/devnet-agreement-transport.test.mjs",
+      "path": "evidence/source-tests/test/devnet-agreement-transport.test.mjs.txt",
+      "blob": "d19fb5e178922c2a2ae77f3db4a34b69e7b9bd43"
+    },
+    {
+      "original": "test/devnet-buyer-access-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/devnet-buyer-access-prefixed.test.mjs.txt",
+      "blob": "23bfb2cd91a8502cf1a02cb7bf16a90343ac6fdf"
+    },
+    {
+      "original": "test/devnet-demo-anchor-recovery.test.mjs",
+      "path": "evidence/source-tests/test/devnet-demo-anchor-recovery.test.mjs.txt",
+      "blob": "a99e514f1d168ea1b315a9496bb1ce5f68ec918c"
+    },
+    {
+      "original": "test/devnet-live-composition-app.test.mjs",
+      "path": "evidence/source-tests/test/devnet-live-composition-app.test.mjs.txt",
+      "blob": "fa21c5fb1c20a5a4a7e5a8776f6579b5cde8c5ca"
+    },
+    {
+      "original": "test/devnet-live-composition-artifacts.test.mjs",
+      "path": "evidence/source-tests/test/devnet-live-composition-artifacts.test.mjs.txt",
+      "blob": "ef4c78fcbf8b1de074ef6303d8c948b52b570ff9"
+    },
+    {
+      "original": "test/devnet-live-composition-builder.test.mjs",
+      "path": "evidence/source-tests/test/devnet-live-composition-builder.test.mjs.txt",
+      "blob": "ebd2e70614ac7548502173b3cac7a725b8b2f7a4"
+    },
+    {
+      "original": "test/devnet-native-blockzero-fallback-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/devnet-native-blockzero-fallback-prefixed.test.mjs.txt",
+      "blob": "b79eb794301316fee06fe03492bcde907d38b930"
+    },
+    {
+      "original": "test/devnet-native-inclusion-wait.test.mjs",
+      "path": "evidence/source-tests/test/devnet-native-inclusion-wait.test.mjs.txt",
+      "blob": "c9cdcc8e449257d34636f63df0fcb849f1a6f65d"
+    },
+    {
+      "original": "test/devnet-native-transport.browser.test.mjs",
+      "path": "evidence/source-tests/test/devnet-native-transport.browser.test.mjs.txt",
+      "blob": "2dae8bda731c7008cb33e8a24384541baf11a8c3"
+    },
+    {
+      "original": "test/devnet-native-transport.test.mjs",
+      "path": "evidence/source-tests/test/devnet-native-transport.test.mjs.txt",
+      "blob": "6fbc6752ea280a561acc7243301867426227fe88"
+    },
+    {
+      "original": "test/devnet-operator-approval-deadline.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-approval-deadline.test.mjs.txt",
+      "blob": "633290ff57ca8c8c82a470d9440b3bf3a7435355"
+    },
+    {
+      "original": "test/devnet-operator-construction-cleanup.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-construction-cleanup.test.mjs.txt",
+      "blob": "0fa804bd74e7c82630d236bab3e936bdaf26ebac"
+    },
+    {
+      "original": "test/devnet-operator-node2-blockone-layout-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs.txt",
+      "blob": "c005a6d8ac41edbfdbf46de5135301adbc8ea6de"
+    },
+    {
+      "original": "test/devnet-operator-node2-fallback-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-node2-fallback-prefixed.test.mjs.txt",
+      "blob": "95e44e787d1ad975ab21ced0a095be4c43001e1c"
+    },
+    {
+      "original": "test/devnet-operator-plan-shutdown-owned.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-plan-shutdown-owned.test.mjs.txt",
+      "blob": "0701bfa1c340b965b9ff386b6df363d8b7105ac4"
+    },
+    {
+      "original": "test/devnet-operator-prefixed-controls.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-prefixed-controls.test.mjs.txt",
+      "blob": "7f52d9a8dbd81f24f2927fd33e1a9f89871f82fa"
+    },
+    {
+      "original": "test/devnet-operator-prefixed-startup.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-prefixed-startup.test.mjs.txt",
+      "blob": "2e719c32422b8bafad9db62b6ec86cf88ff59f66"
+    },
+    {
+      "original": "test/devnet-operator-seller-tls.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-seller-tls.test.mjs.txt",
+      "blob": "1f5dce6ce65d541b20de3622cb646fdb645cb064"
+    },
+    {
+      "original": "test/devnet-operator-sequential-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/devnet-operator-sequential-prefixed.test.mjs.txt",
+      "blob": "4e270efcd1c119deee58172caf83ad40903b2083"
+    },
+    {
+      "original": "test/devnet-storage-write-recovery.test.mjs",
+      "path": "evidence/source-tests/test/devnet-storage-write-recovery.test.mjs.txt",
+      "blob": "f122a6ac3311e3b0fed22a228a932c04960abecf"
+    },
+    {
+      "original": "test/durable-wallet-journal.test.mjs",
+      "path": "evidence/source-tests/test/durable-wallet-journal.test.mjs.txt",
+      "blob": "8b3228f152227f6f8042c595422805c21e41282e"
+    },
+    {
+      "original": "test/embedded-wallet-contract.test.mjs",
+      "path": "evidence/source-tests/test/embedded-wallet-contract.test.mjs.txt",
+      "blob": "31d105b6b8efb545f175b1f8588879a15be20e87"
+    },
+    {
+      "original": "test/embedded-wallet-flow.test.mjs",
+      "path": "evidence/source-tests/test/embedded-wallet-flow.test.mjs.txt",
+      "blob": "7b0c1438cb608366584774add49d9e8806758304"
+    },
+    {
+      "original": "test/embedded-wallet-sdk.test.mjs",
+      "path": "evidence/source-tests/test/embedded-wallet-sdk.test.mjs.txt",
+      "blob": "4056ae83be29e7efb7e768ac313ada62e9f01505"
+    },
+    {
+      "original": "test/embedded-wallet-transaction.test.mjs",
+      "path": "evidence/source-tests/test/embedded-wallet-transaction.test.mjs.txt",
+      "blob": "ce227ccbced6b39504c1e51890faf38eae3af999"
+    },
+    {
+      "original": "test/env-contract-defaults.test.mjs",
+      "path": "evidence/source-tests/test/env-contract-defaults.test.mjs.txt",
+      "blob": "7ad2209623612abbd29fb558b3e65d60887e1ffa"
+    },
+    {
+      "original": "test/fee-approval-recovery-offline.test.mjs",
+      "path": "evidence/source-tests/test/fee-approval-recovery-offline.test.mjs.txt",
+      "blob": "015f4a680b9902c5f1eaccc00285a7f4802af1fe"
+    },
+    {
+      "original": "test/funding-help.test.mjs",
+      "path": "evidence/source-tests/test/funding-help.test.mjs.txt",
+      "blob": "7f0243bfdc78cf6b4c5ea9d6430a8bd3a1956774"
+    },
+    {
+      "original": "test/github-signals-integration.test.mjs",
+      "path": "evidence/source-tests/test/github-signals-integration.test.mjs.txt",
+      "blob": "00c86be32e848ec683826242e72644d62fae55ed"
+    },
+    {
+      "original": "test/github-signals.test.mjs",
+      "path": "evidence/source-tests/test/github-signals.test.mjs.txt",
+      "blob": "8e26c17fda4b5e0aceaa41285c36822224a9df98"
+    },
+    {
+      "original": "test/identities.test.mjs",
+      "path": "evidence/source-tests/test/identities.test.mjs.txt",
+      "blob": "08d742ef7fdf29ae97679557b92955f24a420918"
+    },
+    {
+      "original": "test/identity-actions.test.mjs",
+      "path": "evidence/source-tests/test/identity-actions.test.mjs.txt",
+      "blob": "fd197db0ad13e9754e8094315232f5a0c6717990"
+    },
+    {
+      "original": "test/immutable-readbacks.test.mjs",
+      "path": "evidence/source-tests/test/immutable-readbacks.test.mjs.txt",
+      "blob": "f8dd18c87541eacb81c19031caa1e43d19c14723"
+    },
+    {
+      "original": "test/live-directory-check.test.mjs",
+      "path": "evidence/source-tests/test/live-directory-check.test.mjs.txt",
+      "blob": "896a37d7d504eaa7871271247c98007caa1c06b6"
+    },
+    {
+      "original": "test/mcp-seller-content-integration.test.mjs",
+      "path": "evidence/source-tests/test/mcp-seller-content-integration.test.mjs.txt",
+      "blob": "6864f583776866930efd4f4b6f61594bdbce22f9"
+    },
+    {
+      "original": "test/mcp-seller-content.test.mjs",
+      "path": "evidence/source-tests/test/mcp-seller-content.test.mjs.txt",
+      "blob": "7186af1b00de543bd9db977eb43c5954bb0de893"
+    },
+    {
+      "original": "test/mcp-seller-diagnostics-errors.test.mjs",
+      "path": "evidence/source-tests/test/mcp-seller-diagnostics-errors.test.mjs.txt",
+      "blob": "0b0d5f0bbae55afd9cefbb37b9e8187ef328d71e"
+    },
+    {
+      "original": "test/mcp-seller-diagnostics-settlement.test.mjs",
+      "path": "evidence/source-tests/test/mcp-seller-diagnostics-settlement.test.mjs.txt",
+      "blob": "aede5d12f06253cff8b55874972502ec990f3d5d"
+    },
+    {
+      "original": "test/mcp-seller-diagnostics.test.mjs",
+      "path": "evidence/source-tests/test/mcp-seller-diagnostics.test.mjs.txt",
+      "blob": "541702b3ad6d252938557ac21bb7f990a4573d69"
+    },
+    {
+      "original": "test/native-agreement-payment.test.mjs",
+      "path": "evidence/source-tests/test/native-agreement-payment.test.mjs.txt",
+      "blob": "6ca9fda96702a116649d2772b8e3e4c227de4fdd"
+    },
+    {
+      "original": "test/native-agreement-readback-cache.test.mjs",
+      "path": "evidence/source-tests/test/native-agreement-readback-cache.test.mjs.txt",
+      "blob": "f8bc67391ae08b4b52b0e903cba08da52285a4d1"
+    },
+    {
+      "original": "test/native-payment-cancel-equivalent.test.mjs",
+      "path": "evidence/source-tests/test/native-payment-cancel-equivalent.test.mjs.txt",
+      "blob": "7ca9619279addee3ae172dbde6c33537e8c3419f"
+    },
+    {
+      "original": "test/native-payment-cancel-failed-lane.test.mjs",
+      "path": "evidence/source-tests/test/native-payment-cancel-failed-lane.test.mjs.txt",
+      "blob": "6ea6e31233b6bc5eff72f25430ecd4344a05ba60"
+    },
+    {
+      "original": "test/native-payment-cancel-out-of-order.test.mjs",
+      "path": "evidence/source-tests/test/native-payment-cancel-out-of-order.test.mjs.txt",
+      "blob": "3c13d5f7ed51f4ba2bf1ec94bb624c9330dc70dd"
+    },
+    {
+      "original": "test/native-payment-cancel-refused.test.mjs",
+      "path": "evidence/source-tests/test/native-payment-cancel-refused.test.mjs.txt",
+      "blob": "8db37e978f0810751910e61bc41f21dedbaee736"
+    },
+    {
+      "original": "test/native-payment-cancel-send.test.mjs",
+      "path": "evidence/source-tests/test/native-payment-cancel-send.test.mjs.txt",
+      "blob": "c6fcbf02f0cfcb79a6e1622f37498e6b839e4064"
+    },
+    {
+      "original": "test/native-payment-evidence.test.mjs",
+      "path": "evidence/source-tests/test/native-payment-evidence.test.mjs.txt",
+      "blob": "8b621484673ce423199ee32ae9810dc030e6912f"
+    },
+    {
+      "original": "test/native-settlement-consumer.test.mjs",
+      "path": "evidence/source-tests/test/native-settlement-consumer.test.mjs.txt",
+      "blob": "7dc4758f418dadf71d5ec87eb32485d71c78b8a8"
+    },
+    {
+      "original": "test/node2-native-transfer-readback-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/node2-native-transfer-readback-prefixed.test.mjs.txt",
+      "blob": "3d349d684805b944bf99562924db227123c17238"
+    },
+    {
+      "original": "test/offline-tester.test.mjs",
+      "path": "evidence/source-tests/test/offline-tester.test.mjs.txt",
+      "blob": "082153dc66ddf530f555fafc1888654066bf59fe"
+    },
+    {
+      "original": "test/operator-approval-closing.test.mjs",
+      "path": "evidence/source-tests/test/operator-approval-closing.test.mjs.txt",
+      "blob": "81b0fc28526d6beee1718fad2cd850bbae9c1901"
+    },
+    {
+      "original": "test/ops-health-lost-attempt.test.mjs",
+      "path": "evidence/source-tests/test/ops-health-lost-attempt.test.mjs.txt",
+      "blob": "3c6377eb0b648d72493db93a3256a90a0f895b96"
+    },
+    {
+      "original": "test/ops-health.test.mjs",
+      "path": "evidence/source-tests/test/ops-health.test.mjs.txt",
+      "blob": "b88578207a349f2186509bc8a70ce1a22310d650"
+    },
+    {
+      "original": "test/overnight-acceptance-core.test.mjs",
+      "path": "evidence/source-tests/test/overnight-acceptance-core.test.mjs.txt",
+      "blob": "fc269dbb6ceae5fbe3296b843857a82c3569c2dc"
+    },
+    {
+      "original": "test/overnight-core-identities-wire.test.mjs",
+      "path": "evidence/source-tests/test/overnight-core-identities-wire.test.mjs.txt",
+      "blob": "ca7ce99d01179e786bed3e163d7f424df9d715dc"
+    },
+    {
+      "original": "test/overnight-core-seller.test.mjs",
+      "path": "evidence/source-tests/test/overnight-core-seller.test.mjs.txt",
+      "blob": "29f335f36d7bb40a05337c8d13931146f0c174d6"
+    },
+    {
+      "original": "test/portal-auto-advance-hooks.test.mjs",
+      "path": "evidence/source-tests/test/portal-auto-advance-hooks.test.mjs.txt",
+      "blob": "eaf08c7693f2c5ee3173310dc7750801eaddcbcd"
+    },
+    {
+      "original": "test/portal-auto-assets.test.mjs",
+      "path": "evidence/source-tests/test/portal-auto-assets.test.mjs.txt",
+      "blob": "b10e39e464ac68ac890b2ef23a942ec960d691a9"
+    },
+    {
+      "original": "test/portal-auto-create-reload.test.mjs",
+      "path": "evidence/source-tests/test/portal-auto-create-reload.test.mjs.txt",
+      "blob": "717d660fa15e289ac7344463557b3a3d6f9db867"
+    },
+    {
+      "original": "test/portal-delivery-evidence-label.test.mjs",
+      "path": "evidence/source-tests/test/portal-delivery-evidence-label.test.mjs.txt",
+      "blob": "5ab19a93ca73f82d8d9493498a2c4cb617957c96"
+    },
+    {
+      "original": "test/portal-seller-session-delegation.test.mjs",
+      "path": "evidence/source-tests/test/portal-seller-session-delegation.test.mjs.txt",
+      "blob": "c6fac8465fa420880661236808c00e7b8239fd4d"
+    },
+    {
+      "original": "test/protocol-revision-races.test.mjs",
+      "path": "evidence/source-tests/test/protocol-revision-races.test.mjs.txt",
+      "blob": "9563926720abb31a483bd86da057952c8d34d375"
+    },
+    {
+      "original": "test/public-sr2-projection.test.mjs",
+      "path": "evidence/source-tests/test/public-sr2-projection.test.mjs.txt",
+      "blob": "7a9d2bc74e19595d45f5ec8a9f108a8fdb7fbe8a"
+    },
+    {
+      "original": "test/public-text-report-storage.test.mjs",
+      "path": "evidence/source-tests/test/public-text-report-storage.test.mjs.txt",
+      "blob": "b52c158dd3aee5b2db75e399c9f6cb6eca5424e0"
+    },
+    {
+      "original": "test/purchase-abuse-limits.test.mjs",
+      "path": "evidence/source-tests/test/purchase-abuse-limits.test.mjs.txt",
+      "blob": "f3712e8ad39d5771e734bd86c4ae691a36ccb24e"
+    },
+    {
+      "original": "test/purchase-model-view.test.mjs",
+      "path": "evidence/source-tests/test/purchase-model-view.test.mjs.txt",
+      "blob": "133e2ca73c4085eec0a04bbc365de619c3dbcd7c"
+    },
+    {
+      "original": "test/purchase-readback-cache.test.mjs",
+      "path": "evidence/source-tests/test/purchase-readback-cache.test.mjs.txt",
+      "blob": "e5630402e08a42858f3a8aea3d8c7c54b2d8295e"
+    },
+    {
+      "original": "test/purchase-receipt.test.mjs",
+      "path": "evidence/source-tests/test/purchase-receipt.test.mjs.txt",
+      "blob": "918fcc4bf385fb93ce601ff217c5be6b9a69e7ec"
+    },
+    {
+      "original": "test/purchase.test.mjs",
+      "path": "evidence/source-tests/test/purchase.test.mjs.txt",
+      "blob": "4e202c7cd7505a88d76638b53d2b745142a8b153"
+    },
+    {
+      "original": "test/purchased-report.test.mjs",
+      "path": "evidence/source-tests/test/purchased-report.test.mjs.txt",
+      "blob": "c611c8f74749302c3a6dfa62973f84817a1c8379"
+    },
+    {
+      "original": "test/review-cli-recovery-coverage-operator-buyer.test.mjs",
+      "path": "evidence/source-tests/test/review-cli-recovery-coverage-operator-buyer.test.mjs.txt",
+      "blob": "3b07a098e7edf4199ba74e0dbb80250be501b4a0"
+    },
+    {
+      "original": "test/review-cli-recovery-coverage-seller-commitment.test.mjs",
+      "path": "evidence/source-tests/test/review-cli-recovery-coverage-seller-commitment.test.mjs.txt",
+      "blob": "4a1c74beea4a7c4beacdab4e3870c5d570d02335"
+    },
+    {
+      "original": "test/review-commit-phase-coverage-adoption.test.mjs",
+      "path": "evidence/source-tests/test/review-commit-phase-coverage-adoption.test.mjs.txt",
+      "blob": "9e35cfff0efbd2d92e94803326d3b18d1b60c415"
+    },
+    {
+      "original": "test/review-commit-retry-coverage-interactions.test.mjs",
+      "path": "evidence/source-tests/test/review-commit-retry-coverage-interactions.test.mjs.txt",
+      "blob": "d4742c463a8f708bdea186919d963c58599f4d45"
+    },
+    {
+      "original": "test/review-native-delivery-coverage.test.mjs",
+      "path": "evidence/source-tests/test/review-native-delivery-coverage.test.mjs.txt",
+      "blob": "17a2711510acb07160b72b6a94b76dd7d0d8c876"
+    },
+    {
+      "original": "test/review-native-payment-coverage.test.mjs",
+      "path": "evidence/source-tests/test/review-native-payment-coverage.test.mjs.txt",
+      "blob": "59d7dc787d1a1c7a3467aeeea1038a443879fad0"
+    },
+    {
+      "original": "test/review-native-readback-current-coverage.test.mjs",
+      "path": "evidence/source-tests/test/review-native-readback-current-coverage.test.mjs.txt",
+      "blob": "3400babde0aead0fd782be6ae416a2b98e8cdb17"
+    },
+    {
+      "original": "test/review-node2-current-coverage-block-zero.test.mjs",
+      "path": "evidence/source-tests/test/review-node2-current-coverage-block-zero.test.mjs.txt",
+      "blob": "87cd444e711e822bf01ae1a1ecb52db8ee813e76"
+    },
+    {
+      "original": "test/review-node2-current-coverage-consumers.test.mjs",
+      "path": "evidence/source-tests/test/review-node2-current-coverage-consumers.test.mjs.txt",
+      "blob": "eda77c8352c0aeea96c5c59c57b45abb3c168703"
+    },
+    {
+      "original": "test/review-node2-current-coverage-layout.test.mjs",
+      "path": "evidence/source-tests/test/review-node2-current-coverage-layout.test.mjs.txt",
+      "blob": "4b47c6ac83edadc85cbd0f20357a1e8243fb5684"
+    },
+    {
+      "original": "test/review-node2-current-coverage-lifecycle.test.mjs",
+      "path": "evidence/source-tests/test/review-node2-current-coverage-lifecycle.test.mjs.txt",
+      "blob": "771bdc91bb3d5eb1edf0896e76d87a900a3049cc"
+    },
+    {
+      "original": "test/review-sr2-binding-coverage-interactions.test.mjs",
+      "path": "evidence/source-tests/test/review-sr2-binding-coverage-interactions.test.mjs.txt",
+      "blob": "be3f15eddc486b8a4ee6e025776eafc45890e787"
+    },
+    {
+      "original": "test/seller-durable-state-locks.test.mjs",
+      "path": "evidence/source-tests/test/seller-durable-state-locks.test.mjs.txt",
+      "blob": "7ea6ed6c1bc0edb03eac34806ca5d8b9cc52e919"
+    },
+    {
+      "original": "test/seller-http-failure-cause.test.mjs",
+      "path": "evidence/source-tests/test/seller-http-failure-cause.test.mjs.txt",
+      "blob": "a9c5aef97f8154da66d37b6b464e1b68b7a1dade"
+    },
+    {
+      "original": "test/seller-identities-integration.test.mjs",
+      "path": "evidence/source-tests/test/seller-identities-integration.test.mjs.txt",
+      "blob": "2fadd9540264b72c9379b787e20dc6994f0f529a"
+    },
+    {
+      "original": "test/seller-identities.test.mjs",
+      "path": "evidence/source-tests/test/seller-identities.test.mjs.txt",
+      "blob": "3c327c21a6c463ab12c3ff7144f14b8280b83572"
+    },
+    {
+      "original": "test/seller-payment-recovery-repair-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/seller-payment-recovery-repair-prefixed.test.mjs.txt",
+      "blob": "c1599b3f0d78e3ad7225347b331d129aff6a6dc3"
+    },
+    {
+      "original": "test/seller-policy-delivery-evidence.test.mjs",
+      "path": "evidence/source-tests/test/seller-policy-delivery-evidence.test.mjs.txt",
+      "blob": "61af4bb4eae46cf9f65c77ee6c488599f82074ab"
+    },
+    {
+      "original": "test/seller-session-final-recheck.test.mjs",
+      "path": "evidence/source-tests/test/seller-session-final-recheck.test.mjs.txt",
+      "blob": "23b22e5b3bccb3cc1f5565e9586b9639a0b4defe"
+    },
+    {
+      "original": "test/seller-session-key-retirement.test.mjs",
+      "path": "evidence/source-tests/test/seller-session-key-retirement.test.mjs.txt",
+      "blob": "a212a34ad9c75964b21cfc5ad16d76810fa38201"
+    },
+    {
+      "original": "test/seller-session-keys.test.mjs",
+      "path": "evidence/source-tests/test/seller-session-keys.test.mjs.txt",
+      "blob": "6ef16aa92fb424bc27214ade72a01d90211de342"
+    },
+    {
+      "original": "test/seller-session-open-access.test.mjs",
+      "path": "evidence/source-tests/test/seller-session-open-access.test.mjs.txt",
+      "blob": "7502bf1a33d3e0ded0c9628ee30798a39766bf8e"
+    },
+    {
+      "original": "test/seller-sr2-agreement.test.mjs",
+      "path": "evidence/source-tests/test/seller-sr2-agreement.test.mjs.txt",
+      "blob": "c08ee672a374af1f78d65c74bb8523da9d79b1a2"
+    },
+    {
+      "original": "test/seller-uncertain-payment-recovery-prefixed.test.mjs",
+      "path": "evidence/source-tests/test/seller-uncertain-payment-recovery-prefixed.test.mjs.txt",
+      "blob": "1ca8e17dea986f477b092d579b257073604a3471"
+    },
+    {
+      "original": "test/seller-write-batch.test.mjs",
+      "path": "evidence/source-tests/test/seller-write-batch.test.mjs.txt",
+      "blob": "a46c75199640332c7a959031147408c458b611db"
+    },
+    {
+      "original": "test/server-hosting.test.mjs",
+      "path": "evidence/source-tests/test/server-hosting.test.mjs.txt",
+      "blob": "14455535f7617f046e9dfc6e23f56ac9d45c5c17"
+    },
+    {
+      "original": "test/service-request-binding-doc.test.mjs",
+      "path": "evidence/source-tests/test/service-request-binding-doc.test.mjs.txt",
+      "blob": "2eb4e8f564912eb6ad2574ae75d9cd0b0e72d3f9"
+    },
+    {
+      "original": "test/settlement-kind-bridge.test.mjs",
+      "path": "evidence/source-tests/test/settlement-kind-bridge.test.mjs.txt",
+      "blob": "ed0a5ccf289098e042ad24c0043ce59754744be0"
+    },
+    {
+      "original": "test/showcase-ledger-integration.test.mjs",
+      "path": "evidence/source-tests/test/showcase-ledger-integration.test.mjs.txt",
+      "blob": "4b8b609a9e07e85195c17071ae950c15219f61de"
+    },
+    {
+      "original": "test/showcase-live-operator.test.mjs",
+      "path": "evidence/source-tests/test/showcase-live-operator.test.mjs.txt",
+      "blob": "9cadab583d3bdbc949e65c5826f62c955172349d"
+    },
+    {
+      "original": "test/showcase-progress.test.mjs",
+      "path": "evidence/source-tests/test/showcase-progress.test.mjs.txt",
+      "blob": "35cea9e295296320b0d7b5c4f25db2e9ef5bf83e"
+    },
+    {
+      "original": "test/showcase-publication-view.test.mjs",
+      "path": "evidence/source-tests/test/showcase-publication-view.test.mjs.txt",
+      "blob": "5d2107d7f65e019b6544e78fc693e83b6241ff80"
+    },
+    {
+      "original": "test/showcase-receipt-config.test.mjs",
+      "path": "evidence/source-tests/test/showcase-receipt-config.test.mjs.txt",
+      "blob": "027c9dce0615af772abc25cab8d62948acf8fff3"
+    },
+    {
+      "original": "test/showcase-report-commit-on-signature.test.mjs",
+      "path": "evidence/source-tests/test/showcase-report-commit-on-signature.test.mjs.txt",
+      "blob": "e90b0774ec7445c3139582d781d6f1e203cf50da"
+    },
+    {
+      "original": "test/showcase-report-main-switches.test.mjs",
+      "path": "evidence/source-tests/test/showcase-report-main-switches.test.mjs.txt",
+      "blob": "2909ef6bc824912cc9b7407e84310c08cda9aec0"
+    },
+    {
+      "original": "test/showcase-report-seller-identities.test.mjs",
+      "path": "evidence/source-tests/test/showcase-report-seller-identities.test.mjs.txt",
+      "blob": "c98aed962d208536da8a5c7f4f7c5e445f6ebde5"
+    },
+    {
+      "original": "test/showcase-report-settlement.test.mjs",
+      "path": "evidence/source-tests/test/showcase-report-settlement.test.mjs.txt",
+      "blob": "789589876aa24628127b3dac244674fa5f1247d7"
+    },
+    {
+      "original": "test/showcase-safety.test.mjs",
+      "path": "evidence/source-tests/test/showcase-safety.test.mjs.txt",
+      "blob": "33592ba9db541a08c7da0b6ab3886e11aba9ba44"
+    },
+    {
+      "original": "test/showcase-walkthrough.test.mjs",
+      "path": "evidence/source-tests/test/showcase-walkthrough.test.mjs.txt",
+      "blob": "6ba82ac4aaf12f7a90ae9e2e1f10744d73c6f17e"
+    },
+    {
+      "original": "test/source-demo-e2e.test.mjs",
+      "path": "evidence/source-tests/test/source-demo-e2e.test.mjs.txt",
+      "blob": "f434aa15f6507683b7729b508519aa9d1e8c1cd3"
+    },
+    {
+      "original": "test/st11-finalizers.test.mjs",
+      "path": "evidence/source-tests/test/st11-finalizers.test.mjs.txt",
+      "blob": "61de42a53ec0b878cf50b0e9b1b31791445cbf10"
+    },
+    {
+      "original": "test/start-intent-compose.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-compose.test.mjs.txt",
+      "blob": "d5d458db5217bb07ca3ab279e5a12f481b51f3db"
+    },
+    {
+      "original": "test/start-intent-create-fence.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-create-fence.test.mjs.txt",
+      "blob": "826a4d8f62ffa5c7d7e0587911dd0ae6b942a364"
+    },
+    {
+      "original": "test/start-intent-devnet.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-devnet.test.mjs.txt",
+      "blob": "8d340e3cbac6066652a35e3eb1e7a1837a0e1cd7"
+    },
+    {
+      "original": "test/start-intent-operator-auth.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-operator-auth.test.mjs.txt",
+      "blob": "8355ae8a0273c7396ed57ccf35a9ff289735f71e"
+    },
+    {
+      "original": "test/start-intent-peer-write.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-peer-write.test.mjs.txt",
+      "blob": "b275c67d75befb4ac3e337af11a4bfce79f2bfdc"
+    },
+    {
+      "original": "test/start-intent-production.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-production.test.mjs.txt",
+      "blob": "0d79405dea10af3ff55718eb5c370f2e780471a8"
+    },
+    {
+      "original": "test/start-intent-retry.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-retry.test.mjs.txt",
+      "blob": "846ce19be4f36bf41900fdb30e064e10e8823aad"
+    },
+    {
+      "original": "test/start-intent-review-wallet.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-review-wallet.test.mjs.txt",
+      "blob": "cc3f3dccb38a79c1e7ba39b672f969aa95ec1e9d"
+    },
+    {
+      "original": "test/start-intent-switch.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-switch.test.mjs.txt",
+      "blob": "bfd12a5d743a1b6441f5f9bfd05b894a951e9ca6"
+    },
+    {
+      "original": "test/start-intent-wallet.test.mjs",
+      "path": "evidence/source-tests/test/start-intent-wallet.test.mjs.txt",
+      "blob": "d3f0b6c95036be12c1303de8eb03a209dfd12de5"
+    },
+    {
+      "original": "test/switch-registry.test.mjs",
+      "path": "evidence/source-tests/test/switch-registry.test.mjs.txt",
+      "blob": "24fe16ee6f204222fcd09e908bdfec0b653f25cb"
+    },
+    {
+      "original": "test/tester-quickstart.test.mjs",
+      "path": "evidence/source-tests/test/tester-quickstart.test.mjs.txt",
+      "blob": "8b3c5d7666d5758602aa7622cd80b78c3c9645a6"
+    },
+    {
+      "original": "test/ui-status.test.mjs",
+      "path": "evidence/source-tests/test/ui-status.test.mjs.txt",
+      "blob": "eebbba6c3aac998a9321d4d39bfc061897787583"
+    },
+    {
+      "original": "test/unit.test.mjs",
+      "path": "evidence/source-tests/test/unit.test.mjs.txt",
+      "blob": "a032de79e0a399ba4889a4108d6c7abb5b1c5f46"
+    },
+    {
+      "original": "test/wallet-demo-plan-admission.test.mjs",
+      "path": "evidence/source-tests/test/wallet-demo-plan-admission.test.mjs.txt",
+      "blob": "b608db84f142991e7d4347cbe6cece89828b41f2"
+    },
+    {
+      "original": "test/wallet-extension-probe-routes.test.mjs",
+      "path": "evidence/source-tests/test/wallet-extension-probe-routes.test.mjs.txt",
+      "blob": "91b20906b7c9a998cb7407aa8875053e0592a144"
+    },
+    {
+      "original": "test/wallet-extension-probe.test.mjs",
+      "path": "evidence/source-tests/test/wallet-extension-probe.test.mjs.txt",
+      "blob": "027c7e0e586105b5481c9ee502276761c44fa441"
+    },
+    {
+      "original": "test/wallet-write-batch.test.mjs",
+      "path": "evidence/source-tests/test/wallet-write-batch.test.mjs.txt",
+      "blob": "595f482da255f373328c30ee634af20c4911f7f4"
+    }
+  ]
+}

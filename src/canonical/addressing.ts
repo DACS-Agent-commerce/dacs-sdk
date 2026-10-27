@@ -94,15 +94,13 @@ export function listingAddress(
   listingId: string,
   version: number | string,
 ): string {
-  const v =
-    typeof version === "number"
-      ? `v${version}`
-      : version.startsWith("v")
-        ? version
-        : `v${version}`;
-  if (typeof version === "number" && (!Number.isInteger(version) || version < 0)) {
-    throw new DacsError(`listing address version must be a non-negative integer: ${version}`);
+  // CF-4 keeps version structural; CF-5 bounds the underlying JSON number.
+  const digits = typeof version === "number" ? String(version)
+    : typeof version === "string" ? version.replace(/^v/, "") : "";
+  if (!/^(0|[1-9][0-9]*)$/.test(digits) || !Number.isSafeInteger(Number(digits))) {
+    throw new DacsError("listing address version must be a canonical non-negative safe integer");
   }
+  const v = `v${digits}`;
   return `dacs1:${encodeAddressSegment(sellerPrimaryClaim)}:${encodeAddressSegment(listingId)}:${v}`;
 }
 

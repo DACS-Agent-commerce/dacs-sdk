@@ -306,15 +306,14 @@ function snapshotAnchorWriteResult(
 }
 
 function listingHistoryPrefix(listing: ListingDraft): string {
-  // Passing the already-prefixed version token "v" yields the logical prefix
-  // `...:v`; the storage binding is idempotently colon-encoded.
-  return logicalToStorageProgramName(
-    listingAddress(
-      listing.seller.identity.presentedBy,
-      listing.listingId,
-      "v",
-    ),
+  // A history prefix is not a complete logical address. Derive a valid v0
+  // address, then remove only its known final digit to retain the ...:v prefix.
+  const firstVersionAddress = listingAddress(
+    listing.seller.identity.presentedBy,
+    listing.listingId,
+    0,
   );
+  return logicalToStorageProgramName(firstVersionAddress.slice(0, -1));
 }
 
 function assertContiguousHistory(

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -20,6 +21,8 @@ jobs:
     name: build-test (node ${{ matrix.node-version }})
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -44,6 +47,10 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check held client snapshot and native authorization contracts
+        if: matrix.node-version == '22'
+        run: npm test --workspace @kynesyslabs/dacs-client
 
       - name: Build Node host kit
         run: npm run host:build
@@ -353,6 +360,28 @@ jobs:
       # Optional live peers are audited by the applications that install them.
       - name: Fail on direct-dependency high/critical advisories
         run: node scripts/check-npm-advisories.mjs --scope direct --omit dev --threshold high --summary
+
+      # The locked demosdk 4.0.16 declarations do not resolve with NodeNext, so
+      # its NetworkInfo/AddressInfo and web2 types are `any` in the checks above.
+      # 4.0.18 resolves them; typecheck and run the demosdk-related tests
+      # against it (#339). The step fails once a newer version is published in
+      # ^4.0.16, because consumers would then resolve an unchecked version, and
+      # when the registry cannot be read. The PR that hits the newer version
+      # replaces every 4.0.18 in this step with it and fixes what then fails.
+      # Last step: it replaces the installed SDK for the rest of this job.
+      - name: Typecheck and test against demosdk 4.0.18
+        if: matrix.node-version == '22'
+        run: |
+          newest="$(npm view '@kynesyslabs/demosdk@^4.0.16' version --json | node -e 'console.log([].concat(JSON.parse(require("fs").readFileSync(0, "utf8"))).at(-1))')"
+          if [ "$newest" != "4.0.18" ]; then
+            echo "::error::@kynesyslabs/demosdk $newest is the newest in ^4.0.16; update this step from 4.0.18"
+            exit 1
+          fi
+          npm install --no-save --no-audit @kynesyslabs/demosdk@4.0.18
+          test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
+          npm run typecheck
+          npm run host:typecheck
+          npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
 
   postgres-wallet-authority:
     runs-on: ubuntu-latest

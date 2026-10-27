@@ -1,0 +1,56 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { canonicalize } from '@kynesyslabs/dacs';
+import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
+import { decodeSellerDataEnvelope } from '../src/mcp/seller-content.mjs';
+import { createSequentialOperatorNode2, effectCounts, exactSequentialApprovals, transactionApprovalCount } from './helpers/devnet-operator-sequential-node2.mjs';
+
+async function sellerJournalSnapshot(h){
+  const journal=openDurableWalletJournal({path:join(h.root,'state','seller-wallet.sqlite'),mode:'open'});
+  try{return(await journal.entries()).map(([key,value])=>({key,stage:value?.stage??null,hash:value?.hash??value?.transactionHash??null,logicalAddress:value?.logicalAddress??value?.approved?.logicalAddress??null,planId:value?.planId??null,recordHash:createHash('sha256').update(canonicalize(value)).digest('hex')}));}
+  finally{journal.close();}
+}
+const logicalRecordHashes=(entries)=>entries.map(({key,recordHash})=>({key,recordHash})).sort((a,b)=>a.key.localeCompare(b.key));
+
+test('two distinct buyer keys complete independently and both resume after restart without another effect',{timeout:240000},async t=>{
+  const approvals=exactSequentialApprovals(),h=await createSequentialOperatorNode2(approvals);t.after(()=>h.close());
+  const first=await h.operator.createBuyerDriver({composition:h.composition}).purchase({idempotencyKey:'operator-sequential-complete-a'}),afterFirst=effectCounts(h),firstBuyerApprovals=approvals.buyer.length,firstSellerApprovals=approvals.seller.length;
+  const second=await h.operator.createBuyerDriver({composition:h.composition}).purchase({idempotencyKey:'operator-sequential-complete-b'}),afterSecond=effectCounts(h),secondBuyerApprovals=approvals.buyer.length-firstBuyerApprovals,secondSellerApprovals=approvals.seller.length-firstSellerApprovals;
+  assert.equal(first.status,'delivery-ready');assert.equal(second.status,'delivery-ready');assert.notEqual(first.operationId,second.operationId);assert.notEqual(first.jobId,second.jobId);assert.notEqual(first.agreementHash,second.agreementHash);assert.notEqual(first.payment.transactionHash,second.payment.transactionHash);assert.notEqual(first.reportHash,second.reportHash);
+  assert.deepEqual(afterFirst,{creates:7,payments:1});assert.deepEqual(afterSecond,{creates:13,payments:2});assert.equal(firstBuyerApprovals,7);assert.equal(secondBuyerApprovals,7);assert.equal(firstSellerApprovals,6);assert.equal(secondSellerApprovals,5);
+  assert.deepEqual([...new Set(first.partyVet.map((entry)=>entry.evaluatedParty))].sort(),[first.buyer,first.seller].sort());assert.deepEqual([...new Set(second.partyVet.map((entry)=>entry.evaluatedParty))].sort(),[second.buyer,second.seller].sort());assert.ok(first.partyVet.length>=2);assert.ok(second.partyVet.length>=2);assert.ok([...first.partyVet,...second.partyVet].every((entry)=>entry.strictStatus==='valid'));
+  const approvalsBeforeResume={buyer:approvals.buyer.length,seller:approvals.seller.length,transactions:transactionApprovalCount(approvals.buyer)},effectsBeforeResume=effectCounts(h);
+  await h.stop();const beforeRestartJournal=await sellerJournalSnapshot(h),walletBefore=beforeRestartJournal.find((entry)=>entry.key.startsWith('sr2/wallet/'));assert.ok(walletBefore);assert.equal(beforeRestartJournal.filter((entry)=>entry.key.startsWith('sr2/adapter/')&&entry.stage==='verified').length,2);assert.equal(beforeRestartJournal.some((entry)=>entry.key.startsWith('["demos-devnet",')),false);
+  await h.start();const firstResumed=await h.operator.createBuyerDriver({composition:h.composition}).resume({idempotencyKey:'operator-sequential-complete-a'}),secondResumed=await h.operator.createBuyerDriver({composition:h.composition}).resume({idempotencyKey:'operator-sequential-complete-b'});
+  assert.equal(firstResumed.reportHash,first.reportHash);assert.equal(firstResumed.payment.transactionHash,first.payment.transactionHash);assert.deepEqual(firstResumed.report,first.report);assert.equal(secondResumed.reportHash,second.reportHash);assert.equal(secondResumed.payment.transactionHash,second.payment.transactionHash);assert.deepEqual(secondResumed.report,second.report);
+  assert.deepEqual(effectCounts(h),effectsBeforeResume);assert.equal(approvals.seller.length,approvalsBeforeResume.seller);assert.equal(transactionApprovalCount(approvals.buyer),approvalsBeforeResume.transactions);assert.deepEqual(approvals.buyer.slice(approvalsBeforeResume.buyer).map((entry)=>entry.scope.kind),['oauth-wallet-login','oauth-wallet-login']);
+  await h.stop();const afterRestartJournal=await sellerJournalSnapshot(h),walletAfter=afterRestartJournal.find((entry)=>entry.key.startsWith('sr2/wallet/'));assert.deepEqual(walletAfter,walletBefore);assert.deepEqual(logicalRecordHashes(afterRestartJournal),logicalRecordHashes(beforeRestartJournal));assert.equal(afterRestartJournal.filter((entry)=>entry.key.startsWith('sr2/adapter/')&&entry.stage==='verified').length,2);
+  t.diagnostic(JSON.stringify({case:'two-sequential-complete-restart',first:{operationId:first.operationId,jobId:first.jobId,agreementHash:first.agreementHash,paymentHash:first.payment.transactionHash,reportHash:first.reportHash,partyVet:first.partyVet.length},second:{operationId:second.operationId,jobId:second.jobId,agreementHash:second.agreementHash,paymentHash:second.payment.transactionHash,reportHash:second.reportHash,partyVet:second.partyVet.length},afterFirst,afterSecond,approvals:{firstBuyer:firstBuyerApprovals,secondBuyer:secondBuyerApprovals,firstSeller:firstSellerApprovals,secondSeller:secondSellerApprovals,resumeOAuthSignatures:2,additionalTransactionApprovalsOnResume:0},restart:{firstReport:firstResumed.reportHash,secondReport:secondResumed.reportHash,effects:effectCounts(h),latestWalletLaneUnchanged:true},publicJournal:{verifiedAdapterPlans:2,prefixedWalletLanes:1,unprefixedWalletLanes:0},listingReused:true,publicTransactions:0}));
+});
+
+test('unavailable exact source readback holds the retained handoff and a later key without resend or overwrite',{timeout:240000},async t=>{
+  const approvals=exactSequentialApprovals(),h=await createSequentialOperatorNode2(approvals);t.after(()=>h.close());
+  const first=await h.operator.createBuyerDriver({composition:h.composition}).purchase({idempotencyKey:'operator-sequential-unavailable-a'});assert.equal(first.status,'delivery-ready');
+  h.makeNextSettlementReadbackUnavailable();
+  await assert.rejects(h.operator.createBuyerDriver({composition:h.composition}).purchase({idempotencyKey:'operator-sequential-unavailable-b'}),error=>{
+    const prefix='purchase did not reach authenticated native delivery-ready readback: ';assert.ok(error.message.startsWith(prefix));
+    const outcome=JSON.parse(error.message.slice(prefix.length));assert.equal(outcome.status,'settled_verified');assert.equal(outcome.stage,'native-payment-evidence-held');assert.equal(outcome.sellerDelivery,null);
+    assert.equal(outcome.nativeEvidence.status,'held');assert.equal(outcome.nativeEvidence.nativeReadback,'indeterminate');assert.equal(outcome.nativeEvidence.anchorAttempt,'issued-once');
+    // The driver's error carries verify_deal's model copy, where the reader's text is a seller-data envelope.
+    const readReason=decodeSellerDataEnvelope(outcome.nativeEvidence.nativeReadReason);
+    // DACS_BUYER_CHAIN_READBACK=on reads only the signed bytes the buyer was given; the seller's own write is held, so there are none and no read is made.
+    if(h.prepared.config.buyerChainReadback==='on'){assert.equal(outcome.nativeEvidence.nativeReadStatus,'public-projection-missing');assert.equal(readReason,'original-public-signed-create-projection-unavailable');}
+    else assert.equal(readReason,'source-bound chain identity observation unavailable: unavailable');return true;
+  });
+  const second=await h.readBuyerReceipt('operator-sequential-unavailable-b');assert.equal(second.stage,'payment-issued');assert.match(second.operationId,/^pur_/);assert.match(second.jobId,/^[0-9A-Z]{26}$/);assert.match(second.payment.transactionHash,/^[0-9a-f]{64}$/);
+  const afterSecond=effectCounts(h),approvalsAfterSecond={buyer:approvals.buyer.length,seller:approvals.seller.length,transactions:transactionApprovalCount(approvals.buyer)};
+  const third=await h.operator.createBuyerDriver({composition:h.composition}).purchase({idempotencyKey:'operator-sequential-unavailable-c'});
+  assert.equal(h.sourceReadbackUnavailable,true);assert.equal(third.status,'held');assert.equal(third.operationId,null);assert.equal(third.jobId,null);assert.equal(third.noResend,true);assert.match(third.reason,/retained seller evidence plan.*readback is indeterminate/);
+  assert.deepEqual(effectCounts(h),afterSecond);assert.deepEqual({buyer:approvals.buyer.length,seller:approvals.seller.length,transactions:transactionApprovalCount(approvals.buyer)},approvalsAfterSecond);
+  await h.stop();const pendingBefore=await sellerJournalSnapshot(h),pendingPlanBefore=pendingBefore.find((entry)=>entry.key.startsWith('sr2/adapter/')&&entry.stage!=='verified'),walletBefore=pendingBefore.find((entry)=>entry.key.startsWith('sr2/wallet/'));assert.ok(pendingPlanBefore);assert.ok(walletBefore);
+  h.restoreSourceReadback();await h.start();const old=await h.operator.createBuyerDriver({composition:h.composition}).resume({idempotencyKey:'operator-sequential-unavailable-a'});assert.equal(old.status,'delivery-ready');assert.equal(old.reportHash,first.reportHash);assert.equal(old.payment.transactionHash,first.payment.transactionHash);assert.deepEqual(effectCounts(h),afterSecond);assert.equal(approvals.seller.length,approvalsAfterSecond.seller);assert.equal(transactionApprovalCount(approvals.buyer),approvalsAfterSecond.transactions);assert.deepEqual(approvals.buyer.slice(approvalsAfterSecond.buyer).map((entry)=>entry.scope.kind),['oauth-wallet-login']);
+  await h.stop();const pendingAfter=await sellerJournalSnapshot(h),pendingPlanAfter=pendingAfter.find((entry)=>entry.planId===pendingPlanBefore.planId),walletAfter=pendingAfter.find((entry)=>entry.key===walletBefore.key);assert.deepEqual(pendingPlanAfter,pendingPlanBefore);assert.deepEqual(walletAfter,walletBefore);assert.deepEqual(logicalRecordHashes(pendingAfter),logicalRecordHashes(pendingBefore));
+  t.diagnostic(JSON.stringify({case:'unavailable-source-holds',first:{operationId:first.operationId,jobId:first.jobId,reportHash:first.reportHash},second:{stage:second.stage,operationId:second.operationId,jobId:second.jobId,paymentHash:second.payment.transactionHash},third:{status:third.status,operationId:third.operationId,jobId:third.jobId,reason:third.reason},afterSecond,additionalAfterHeld:{creates:effectCounts(h).creates-afterSecond.creates,payments:effectCounts(h).payments-afterSecond.payments,transactionApprovals:transactionApprovalCount(approvals.buyer)-approvalsAfterSecond.transactions},pendingPlan:{stage:pendingPlanBefore.stage,logicalAddress:pendingPlanBefore.logicalAddress,unchangedAfterOlderRead:true},walletLane:{stage:walletBefore.stage,unchangedAfterOlderRead:true},oldResume:{status:old.status,reportHash:old.reportHash,freshOAuthSignatures:1,additionalTransactionApprovals:0},publicTransactions:0}));
+});

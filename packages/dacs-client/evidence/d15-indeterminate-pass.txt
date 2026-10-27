@@ -1,0 +1,9 @@
+Pre-D15 source: f10db24 (for *first files); destination D15 source: current commit (for *pass files).
+ok 1 - \the source change unmarked adapter invalid stays indeterminate
+ok 2 - \the source change foreign invalid stays indeterminate
+ok 3 - \the source change invalid lookalike stays indeterminate
+ok 4 - \the source change an SDK permanent error before commitment authentication stays indeterminate
+# tests 4
+# pass 4
+# fail 0
+# skipped 0

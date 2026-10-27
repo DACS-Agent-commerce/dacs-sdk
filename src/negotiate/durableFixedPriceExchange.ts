@@ -14,6 +14,7 @@ import {
 import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import type { AnchorBinding } from "../discovery/binding.js";
 import { DacsError, SubstrateError } from "../errors.js";
+import { requireCanonicalJobId } from "./jobId.js";
 import {
   FENCED_SESSION_STORE_VERSION,
   sessionRecordShapeViolation,
@@ -959,7 +960,7 @@ function retainedProgressSignal(error: unknown): ProgressSignal | undefined {
 
 /** Canonical logical SR-2 address used by the durable fixed-price exchange. */
 export function fixedPriceAgreementLogicalAddress(jobId: string): string {
-  if (!isNonEmpty(jobId)) throw new DacsError("agreement jobId must be canonical and non-empty");
+  requireCanonicalJobId(jobId, "agreement jobId");
   return `dacs3:agreement:${jobId}`;
 }
 

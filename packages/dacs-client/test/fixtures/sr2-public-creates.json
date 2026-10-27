@@ -1,0 +1,178 @@
+{
+  "note": "Offline test-owned public CREATE authorizations. No private key is retained. No test signs or broadcasts.",
+  "pins": {
+    "network": "testnet",
+    "chainIdentity": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "pinVersion": "TEST-sr2",
+    "endpoint": "https://rpc.invalid/",
+    "transportAuthority": "TEST-sr2-owner"
+  },
+  "logical": "dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "owner": "0xfa32cc1ccfd9c2bc423efc19083732b42a725c7cb0673ed9cedb3c1b64db4756",
+  "artifact": {
+    "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "TEST": "retained-public-CREATE"
+  },
+  "valid": {
+    "hash": "e516e4def27485439ab0f2d878beabd3f8147d4aeb1b407245740b2660012a10",
+    "content": {
+      "type": "storageProgram",
+      "from": "0xfa32cc1ccfd9c2bc423efc19083732b42a725c7cb0673ed9cedb3c1b64db4756",
+      "from_ed25519_address": "0xfa32cc1ccfd9c2bc423efc19083732b42a725c7cb0673ed9cedb3c1b64db4756",
+      "to": "stor-80d4f023109fa236828d14dc59f766141219b48b",
+      "amount": 0,
+      "nonce": 1,
+      "timestamp": 1790000000000,
+      "network": "testnet",
+      "chainIdentity": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "transaction_fee": {
+        "network_fee": 1,
+        "rpc_fee": 1,
+        "additional_fee": 0,
+        "rpc_address": null
+      },
+      "data": [
+        "storageProgram",
+        {
+          "operation": "CREATE_STORAGE_PROGRAM",
+          "programName": "dacs3%3Aagreement%3A01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "storageAddress": "stor-80d4f023109fa236828d14dc59f766141219b48b",
+          "encoding": "json",
+          "salt": "",
+          "data": {
+            "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "TEST": "retained-public-CREATE"
+          },
+          "metadata": {
+            "logicalAddress": "dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "contentHash": "83e9c20f284f6985a5aa2f618cef60aee12e526c05876e8067128a1d236a8cca",
+            "envelopeHash": "83e9c20f284f6985a5aa2f618cef60aee12e526c05876e8067128a1d236a8cca",
+            "artifactKind": "Agreement",
+            "networkBinding": {
+              "source": "devnet-agreement-transport/v1",
+              "bindingVersion": "dacs-demos-network-binding/v1",
+              "bindingId": "f3220f64f36a166d76e72d8e48eb64d92db60a5499eb3753cd0112f8dedc6a4b",
+              "network": "testnet",
+              "chainIdentity": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "pinVersion": "TEST-sr2",
+              "endpoint": "https://rpc.invalid/",
+              "transportAuthority": "TEST-sr2-owner"
+            }
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "ed25519",
+      "data": "0x09f7337801b7eae95adf18f983125ad1e005087d4f12ce65ec9335a0e3e8773679f2a54c1caae60ae7e55ebbf86230c57d3f97fa82a305b92a8e385573e9be08"
+    }
+  },
+  "wrongNonce": {
+    "hash": "40035d0a5b9963240e72333088f7591564a15f61600c5d47c4fe166f2df15ed2",
+    "content": {
+      "type": "storageProgram",
+      "from": "0xfa32cc1ccfd9c2bc423efc19083732b42a725c7cb0673ed9cedb3c1b64db4756",
+      "from_ed25519_address": "0xfa32cc1ccfd9c2bc423efc19083732b42a725c7cb0673ed9cedb3c1b64db4756",
+      "to": "stor-80d4f023109fa236828d14dc59f766141219b48b",
+      "amount": 0,
+      "nonce": 2,
+      "timestamp": 1790000000000,
+      "network": "testnet",
+      "chainIdentity": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "transaction_fee": {
+        "network_fee": 1,
+        "rpc_fee": 1,
+        "additional_fee": 0,
+        "rpc_address": null
+      },
+      "data": [
+        "storageProgram",
+        {
+          "operation": "CREATE_STORAGE_PROGRAM",
+          "programName": "dacs3%3Aagreement%3A01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "storageAddress": "stor-80d4f023109fa236828d14dc59f766141219b48b",
+          "encoding": "json",
+          "salt": "",
+          "data": {
+            "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "TEST": "retained-public-CREATE"
+          },
+          "metadata": {
+            "logicalAddress": "dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "contentHash": "83e9c20f284f6985a5aa2f618cef60aee12e526c05876e8067128a1d236a8cca",
+            "envelopeHash": "83e9c20f284f6985a5aa2f618cef60aee12e526c05876e8067128a1d236a8cca",
+            "artifactKind": "Agreement",
+            "networkBinding": {
+              "source": "devnet-agreement-transport/v1",
+              "bindingVersion": "dacs-demos-network-binding/v1",
+              "bindingId": "f3220f64f36a166d76e72d8e48eb64d92db60a5499eb3753cd0112f8dedc6a4b",
+              "network": "testnet",
+              "chainIdentity": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "pinVersion": "TEST-sr2",
+              "endpoint": "https://rpc.invalid/",
+              "transportAuthority": "TEST-sr2-owner"
+            }
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "ed25519",
+      "data": "0xfeaeaef6fcc01763239f92fa358dad738648befba3c7ec840b5f1867b7175aace58f0a556e943c6748a8229326f3bd6258705d977c665e737e8b27eea15ec904"
+    }
+  },
+  "wrongFrom": {
+    "hash": "c6f73aebf71e76f676c4ac2c271e086df7e32a2c58c122f23d2c30b6f0eac433",
+    "content": {
+      "type": "storageProgram",
+      "from": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "from_ed25519_address": "0xfa32cc1ccfd9c2bc423efc19083732b42a725c7cb0673ed9cedb3c1b64db4756",
+      "to": "stor-80d4f023109fa236828d14dc59f766141219b48b",
+      "amount": 0,
+      "nonce": 1,
+      "timestamp": 1790000000000,
+      "network": "testnet",
+      "chainIdentity": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "transaction_fee": {
+        "network_fee": 1,
+        "rpc_fee": 1,
+        "additional_fee": 0,
+        "rpc_address": null
+      },
+      "data": [
+        "storageProgram",
+        {
+          "operation": "CREATE_STORAGE_PROGRAM",
+          "programName": "dacs3%3Aagreement%3A01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "storageAddress": "stor-80d4f023109fa236828d14dc59f766141219b48b",
+          "encoding": "json",
+          "salt": "",
+          "data": {
+            "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "TEST": "retained-public-CREATE"
+          },
+          "metadata": {
+            "logicalAddress": "dacs3:agreement:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "contentHash": "83e9c20f284f6985a5aa2f618cef60aee12e526c05876e8067128a1d236a8cca",
+            "envelopeHash": "83e9c20f284f6985a5aa2f618cef60aee12e526c05876e8067128a1d236a8cca",
+            "artifactKind": "Agreement",
+            "networkBinding": {
+              "source": "devnet-agreement-transport/v1",
+              "bindingVersion": "dacs-demos-network-binding/v1",
+              "bindingId": "f3220f64f36a166d76e72d8e48eb64d92db60a5499eb3753cd0112f8dedc6a4b",
+              "network": "testnet",
+              "chainIdentity": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "pinVersion": "TEST-sr2",
+              "endpoint": "https://rpc.invalid/",
+              "transportAuthority": "TEST-sr2-owner"
+            }
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "ed25519",
+      "data": "0x61411dfa287eb541c33f5c16697790179ee3e021172f16d04e03010c313cd6d202cd94ba64cc14675bc37c92f69a2fcd3c246c3e8ca568f1adbaa068d7756208"
+    }
+  }
+}

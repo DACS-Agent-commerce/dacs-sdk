@@ -1,0 +1,89 @@
+# Subtest: readAgreement: adapter invalid
+ok 1 - readAgreement: adapter invalid
+# Subtest: recheckAgreement: adapter invalid
+ok 2 - recheckAgreement: adapter invalid
+# Subtest: readAgreement: foreign invalid
+ok 3 - readAgreement: foreign invalid
+# Subtest: recheckAgreement: foreign invalid
+ok 4 - recheckAgreement: foreign invalid
+# Subtest: readAgreement: permanent
+ok 5 - readAgreement: permanent
+# Subtest: recheckAgreement: permanent
+ok 6 - recheckAgreement: permanent
+# Subtest: readAgreement: unavailable
+ok 7 - readAgreement: unavailable
+# Subtest: recheckAgreement: unavailable
+ok 8 - recheckAgreement: unavailable
+# Subtest: readAgreement: marked contradiction
+ok 9 - readAgreement: marked contradiction
+# Subtest: recheckAgreement: marked contradiction
+ok 10 - recheckAgreement: marked contradiction
+# Subtest: payment gate carries adapter invalid classification, cache false
+ok 11 - payment gate carries adapter invalid classification, cache false
+# Subtest: payment gate carries foreign invalid classification, cache false
+ok 12 - payment gate carries foreign invalid classification, cache false
+# Subtest: payment gate carries permanent classification, cache false
+ok 13 - payment gate carries permanent classification, cache false
+# Subtest: payment gate carries unavailable classification, cache false
+ok 14 - payment gate carries unavailable classification, cache false
+# Subtest: payment gate carries marked contradiction classification, cache false
+ok 15 - payment gate carries marked contradiction classification, cache false
+# Subtest: payment gate carries adapter invalid classification, cache true
+ok 16 - payment gate carries adapter invalid classification, cache true
+# Subtest: payment gate carries foreign invalid classification, cache true
+ok 17 - payment gate carries foreign invalid classification, cache true
+# Subtest: payment gate carries permanent classification, cache true
+ok 18 - payment gate carries permanent classification, cache true
+# Subtest: payment gate carries unavailable classification, cache true
+ok 19 - payment gate carries unavailable classification, cache true
+# Subtest: payment gate carries marked contradiction classification, cache true
+ok 20 - payment gate carries marked contradiction classification, cache true
+# Subtest: payment evidence: adapter invalid
+ok 21 - payment evidence: adapter invalid
+# Subtest: payment evidence: foreign invalid
+ok 22 - payment evidence: foreign invalid
+# Subtest: payment evidence: permanent
+ok 23 - payment evidence: permanent
+# Subtest: payment evidence: unavailable
+ok 24 - payment evidence: unavailable
+# Subtest: payment evidence: marked contradiction
+ok 25 - payment evidence: marked contradiction
+# Subtest: unmarked invalid evidence result is indeterminate
+ok 26 - unmarked invalid evidence result is indeterminate
+# Subtest: unmarked rejected evidence result is indeterminate
+ok 27 - unmarked rejected evidence result is indeterminate
+# Subtest: unmarked unknown evidence result is indeterminate
+ok 28 - unmarked unknown evidence result is indeterminate
+# Subtest: delivery evidence: adapter invalid
+ok 29 - delivery evidence: adapter invalid
+# Subtest: delivery evidence: foreign invalid
+ok 30 - delivery evidence: foreign invalid
+# Subtest: delivery evidence: permanent
+ok 31 - delivery evidence: permanent
+# Subtest: delivery evidence: unavailable
+ok 32 - delivery evidence: unavailable
+# Subtest: delivery evidence: marked contradiction
+ok 33 - delivery evidence: marked contradiction
+# Subtest: delivered purchase recheck: adapter invalid
+ok 34 - delivered purchase recheck: adapter invalid
+# Subtest: delivered purchase recheck: foreign invalid
+ok 35 - delivered purchase recheck: foreign invalid
+# Subtest: delivered purchase recheck: permanent
+ok 36 - delivered purchase recheck: permanent
+# Subtest: delivered purchase recheck: unavailable
+ok 37 - delivered purchase recheck: unavailable
+# Subtest: delivered purchase recheck: marked contradiction
+ok 38 - delivered purchase recheck: marked contradiction
+# Subtest: malformed seller CREATE pointer cannot terminate the purchase
+ok 39 - malformed seller CREATE pointer cannot terminate the purchase
+# Subtest: buyer receipt verification: unmarked error
+ok 40 - buyer receipt verification: unmarked error
+# Subtest: buyer receipt verification: unknown verdict
+ok 41 - buyer receipt verification: unknown verdict
+# Subtest: buyer receipt verification: marked contradiction
+ok 42 - buyer receipt verification: marked contradiction
+1..42
+# tests 42
+# pass 42
+# fail 0
+# skipped 0

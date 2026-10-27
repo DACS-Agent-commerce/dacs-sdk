@@ -1,0 +1,8 @@
+Destination 220b11b405f003a7cc25631407efcee52e6f130d
+Command: npm test --workspace @kynesyslabs/dacs-client
+# tests 83
+# pass 83
+# fail 0
+# skipped 0
+Full output: workspace logs/reachability-package.log
+Freeze: retained; exports: {}; no main or bin.

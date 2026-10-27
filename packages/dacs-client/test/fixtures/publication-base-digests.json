@@ -1,0 +1,15 @@
+{
+  "source": "Plugin main bcdb2cf plus PR the source change, with the showcase publication view off (test/helpers/publication-base-surface.mjs, captured 2026-10-11 from the integration working tree). results and html are main bcdb2cf's unchanged. tools differs from main bcdb2cf's 3ecfa76a only by the source change's change: terms.amount and terms.amountOs of prepare_purchase, get_purchase_status and verify_deal also accept a seller-data envelope. History: main 5f8eb9b; refreshed 2026-10-09 when the source change moved the listings view to v3; the source change re-captured tools 2026-10-10 on main da459ee. The review of the source change re-captured the status-v2 html on main 06958bb (was a0718fdd…): its purchase card shows an over-long terms.amount envelope by its label; tools, results and listings-v3 are unchanged. an earlier review of the source change's review moved the status view to status-v5 (hosts cache templates by URI): its purchase card writes the amount as text and shows an over-long envelope as fixed prose (html was 0922340c…); tools changed only by that URI (with status-v2 put back it hashes to the previous a4dc84b4…); results and listings-v3 are unchanged. The final review of the source change changed the status-v5 account card to show people plain prose for an over-long stored price instead of the model's pointer to get_purchase_status (html was 377be839…); status-v5 is new in the source change, so its URI stays; tools, results and listings-v3 are unchanged.",
+  "tools": "dad29e02a7331c4edbd5257a19501c584f47423ec6127a6459324fb7678310e6",
+  "results": "9f306d22b4674f67e20a76e7823117f65625353008eee3fe312fd933e326a024",
+  "html": [
+    {
+      "uri": "ui://dacs/listings-v3.html",
+      "sha256": "717983175bb1ba4c47d7853a1a59ffcb47abbc8c46f01125f8aee126d669a87a"
+    },
+    {
+      "uri": "ui://dacs/status-v5.html",
+      "sha256": "acb1e65cc2b9bf5038fb85a811595bec89bfb4c32aaa37b5eed7d35eac054f0e"
+    }
+  ]
+}

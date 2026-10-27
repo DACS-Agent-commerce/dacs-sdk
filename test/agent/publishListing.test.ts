@@ -873,9 +873,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("reads an existing legacy MVP version only through the compatibility boundary", async () => {
     const deps = fakeDeps();
-    const prefix = logicalToStorageProgramName(
-      listingAddress(SELLER, "market-data", "v"),
-    );
+    const prefix = "dacs1%3Adid%3Ademos%3Aseller%3Amarket-data%3Av";
     deps.scanOwnAnchorsByNamePrefix = async () => ({
       status: "ok",
       anchors: [
@@ -907,9 +905,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("fails closed when the visible owner-bound history already has a gap", async () => {
     const deps = fakeDeps();
-    const prefix = logicalToStorageProgramName(
-      listingAddress(SELLER, "market-data", "v"),
-    );
+    const prefix = "dacs1%3Adid%3Ademos%3Aseller%3Amarket-data%3Av";
     deps.scanOwnAnchorsByNamePrefix = async () => ({
       status: "ok",
       anchors: [
@@ -1056,4 +1052,18 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     ).rejects.toThrow(/normative unsigned DACS-1/);
     expect(deps.stats.creates).toBe(0);
   });
+});
+
+
+test("history prefix remains stable after version-address validation", async () => {
+  const deps = fakeDeps();
+  const scan = deps.scanOwnAnchorsByNamePrefix;
+  const prefixes: string[] = [];
+  deps.scanOwnAnchorsByNamePrefix = async (prefix) => {
+    prefixes.push(prefix);
+    return scan(prefix);
+  };
+  await publishListingCore(listing({ listingId: "my-listing" }), deps);
+  expect(prefixes).toEqual(["dacs1%3Adid%3Ademos%3Aseller%3Amy-listing%3Av"]);
+  expect(deps.stats.creates).toBe(1);
 });

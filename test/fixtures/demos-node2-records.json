@@ -1,0 +1,219 @@
+{
+  "source": {
+    "node": "https://node2.demos.sh",
+    "reportedVersion": "0.9.9 RC",
+    "reportedCommit": "kynesyslabs/node stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+    "sourcePin": "none: node2 reports a dirty build (nodeVersion.dirty is true), so the reported commit is the nearest source, not the deployed source; the tests use only these recorded envelopes",
+    "read": "2026-10-15, read-only nodeCall; raw JSON-RPC envelopes as served",
+    "note": "demosdk's getTxByHash resolves the envelope's response member (nodeCall unwraps response.data.response).",
+    "buildMetadataRead": "versionEnvelope and networkInfoEnvelope: read-only, 2026-10-18 by 15:33Z, when node2 ran the dirty build with builtAt 2026-10-14T16:45:24Z; node2 was rebuilt from the same dirty commit at 2026-10-18T15:59:30Z (seen 2026-10-20) and the envelopes are kept as recorded; reported commit is not an exact deployed-source pin because nodeVersion.dirty is true",
+    "versionNote": "GET /version reports 0.9.9 RC and getNetworkInfo nodeVersion reports 0.9.8 for the same dirty build; these are recorded responses, not a source pin",
+    "failedStatusRead": "2026-10-19, read-only getTransactionStatus for the failed hash: the node reports a stored failed transaction as included",
+    "versionEnvelope": {
+      "version": "0.9.9 RC",
+      "commit": "<stabilisation>61b8e75aa8db5e408c49e1c3a89db4d673f45578"
+    },
+    "networkInfoEnvelope": {
+      "result": 200,
+      "response": {
+        "forks": {
+          "osDenomination": {
+            "activationHeight": 0,
+            "activated": true,
+            "currentHeight": 560647
+          }
+        },
+        "nodeVersion": {
+          "name": "demos-node-software",
+          "version": "0.9.8",
+          "commit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+          "commitShort": "61b8e75",
+          "commitMessage": "verify anchor peer pairing signature",
+          "branch": "stabilisation",
+          "dirty": true,
+          "builtAt": "2026-10-14T16:45:24Z"
+        }
+      },
+      "require_reply": false,
+      "extra": null
+    }
+  },
+  "getTxByHash": {
+    "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918": {
+      "result": 200,
+      "response": {
+        "content": {
+          "type": "native",
+          "from": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+          "to": "0x706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1",
+          "from_ed25519_address": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+          "amount": 9500000000,
+          "nonce": "28",
+          "timestamp": "1791649642726",
+          "transaction_fee": {
+            "network_fee": 1000000000,
+            "rpc_fee": 1000000000,
+            "additional_fee": 0,
+            "rpc_address": null
+          },
+          "data": [
+            "native",
+            {
+              "nativeOperation": "send",
+              "args": [
+                "706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1",
+                "9500000000"
+              ]
+            }
+          ],
+          "gcr_edits": [
+            {
+              "type": "balance",
+              "operation": "remove",
+              "isRollback": false,
+              "account": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+              "txhash": "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918",
+              "amount": "9500000000"
+            },
+            {
+              "type": "balance",
+              "operation": "add",
+              "isRollback": false,
+              "account": "0x706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1",
+              "txhash": "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918",
+              "amount": "9500000000"
+            },
+            {
+              "type": "balance",
+              "account": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+              "operation": "remove",
+              "amount": "1000000000",
+              "txhash": "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918",
+              "isRollback": false
+            },
+            {
+              "type": "nonce",
+              "operation": "add",
+              "account": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+              "amount": 1,
+              "txhash": "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918",
+              "isRollback": false
+            }
+          ]
+        },
+        "signature": {
+          "type": "ed25519",
+          "data": "0x2472d5b8de055b120224faf25c827afaca90f8c3e46e08f3a4f8bdd23fa72cdfd2972a28886781bf4522ee485e88e02ec5d0108d42a9e4af9a240154a4311a0f"
+        },
+        "ed25519_signature": null,
+        "hash": "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918",
+        "status": "confirmed",
+        "blockNumber": 498447,
+        "attrs": {
+          "reference_block": 498446
+        }
+      },
+      "require_reply": false,
+      "extra": null
+    },
+    "85b8fcdcee48822742a39e1b9877f5e2f8dde36430e8e486e3a8b0c9a7744cbd": {
+      "result": 200,
+      "response": {
+        "content": {
+          "type": "native",
+          "from": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+          "to": "0x706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1",
+          "from_ed25519_address": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+          "amount": 9500000000,
+          "nonce": "9",
+          "timestamp": "1791472478547",
+          "transaction_fee": {
+            "network_fee": 1000000000,
+            "rpc_fee": 1000000000,
+            "additional_fee": 0,
+            "rpc_address": null
+          },
+          "data": [
+            "native",
+            {
+              "nativeOperation": "send",
+              "args": [
+                "706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1",
+                "9500000000"
+              ]
+            }
+          ],
+          "gcr_edits": [
+            {
+              "type": "balance",
+              "operation": "remove",
+              "isRollback": false,
+              "account": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+              "txhash": "",
+              "amount": "9500000000"
+            },
+            {
+              "type": "balance",
+              "operation": "add",
+              "isRollback": false,
+              "account": "0x706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1",
+              "txhash": "",
+              "amount": "9500000000"
+            },
+            {
+              "type": "balance",
+              "account": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+              "operation": "remove",
+              "amount": "1000000000",
+              "txhash": "",
+              "isRollback": false
+            },
+            {
+              "type": "nonce",
+              "operation": "add",
+              "account": "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a",
+              "amount": 1,
+              "txhash": "",
+              "isRollback": false
+            }
+          ]
+        },
+        "signature": {
+          "type": "ed25519",
+          "data": "0x259298fb483ea5849db23614ccf9f92cfa4d8dbfda59cb230b1ad2f36f8d9ce888668b80f4082eb04bff8a4820e22682f4fd9b019ad3c05f6c23b8cfc14bf70b"
+        },
+        "ed25519_signature": null,
+        "hash": "85b8fcdcee48822742a39e1b9877f5e2f8dde36430e8e486e3a8b0c9a7744cbd",
+        "status": "failed",
+        "blockNumber": 480877,
+        "attrs": {
+          "code": "TX_NONCE_INVALID_LOW",
+          "message": "Invalid nonce edit. Expected 10, got 9",
+          "reference_block": 480875
+        }
+      },
+      "require_reply": false,
+      "extra": null
+    }
+  },
+  "getTransactionStatus": {
+    "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918": {
+      "result": 200,
+      "response": {
+        "state": "included",
+        "blockNumber": 498447
+      },
+      "extra": "",
+      "require_reply": false
+    },
+    "85b8fcdcee48822742a39e1b9877f5e2f8dde36430e8e486e3a8b0c9a7744cbd": {
+      "result": 200,
+      "response": {
+        "state": "included",
+        "blockNumber": 480877
+      },
+      "extra": "",
+      "require_reply": false
+    }
+  }
+}

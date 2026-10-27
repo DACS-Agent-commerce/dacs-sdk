@@ -1,0 +1,20 @@
+{
+  "recordedFrom": "main-8473033 (8473033) src/ with this tree's capture test overlaid; base and merged-tree captures byte-identical, 2 run(s) each",
+  "sections": {
+    "routes": "f486391dc6d1a37d1bf434a72a43028cbd0084924ab5975bf19fc70aff9beb4a",
+    "tools": "46aff7dcd3c0f030a9cb4e720b08b9f8016633624951730ab930eadfa71dfe76",
+    "toolOutputs": "51ce867180b862a2294f536228350e2ace760ecf57841613aaa19665a3d37e0b",
+    "listing": "060075e6e36e3cf0808049fa8dba363b86589970110085a70ef2507dd2350515",
+    "agreement": "493d93a375f25fd4b38c1ce50b573a638c6e20bd72c30bb7cf46a4722114aac6",
+    "createPayloads": "342851e3cc63436e2d2e4f73bb15ddde1f0ff459ab5451e8b6b0aa4db1e0478d",
+    "transportBinding": "692909390a31de9b09676088831e966376483f98c62af89619368140cadecdf2",
+    "sellerAnswers": "c73de88b87a56572423a30738cb2f864fd0f02c7b76b00530a197a2efd0a84d7",
+    "servedResponses": "1629367eb913b43912d05bddcec3a520fc60f725d0e8c7b5b1437c5325283752",
+    "rows.application": "ecdec45052f42c15b6165ada0b5b4342e1825edb217be6ffe5a758fe6f380a73",
+    "rows.sourceJournal": "4bd853986646b1a762ca2ce2fd4624b0bcea9717980adf7ec0e8bf187eff7249",
+    "rows.sellerArtifactJournal": "e2eea07c20589892d40819f63cae1cd0571c06e94be35a483167bd2e5e3e7d57",
+    "rows.sellerWalletJournal": "8110a05ab616fd6ca979905d7a6049187766a966e386375421f1af3f35fa61d3",
+    "rows.sellerTransport": "5a7262691d46fab9e25ac894a3520bde5014f1aee0abeca5d865ef01257e2511",
+    "rows.sellerState": "70afdd58db193732fb2f71189451e1f7e615dc24aa9925df12890fd82973d051"
+  }
+}
