@@ -9,6 +9,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
+import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
@@ -160,7 +161,8 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   scratch.push(directory);
   const checkout = join(directory, "checkout");
   mkdirSync(join(checkout, "scripts"), { recursive: true });
-  for (const name of ["registry-container-disposition.mjs", "runtime-image-inventory.mjs", "acceptance-evidence-io.mjs"]) {
+  for (const name of ["registry-container-disposition.mjs", "runtime-image-inventory.mjs", "acceptance-evidence-io.mjs",
+    "check-npm-advisories.mjs"]) {
     writeFileSync(join(checkout, "scripts", name), readFileSync(join(repoRoot, "scripts", name)));
   }
   // The disposition reads the release version from the checkout's manifest.
@@ -225,21 +227,25 @@ describe("registry/container acceptance disposition", () => {
       { packageVersion: "1.2.3" }).exitCode).toBe(4);
   });
 
+  // Each gate reads the extracted findings only; the composer's flags repeat them.
+  const unrecordedPackage = { name: "unrecorded", location: "node_modules/unrecorded", version: "1.0.0", integrity: null };
+  const sbomFailure = { exitCode: 1, code: "ESBOMPROBLEMS", problems: ["missing: unrecorded@1.0.0, required by consumer@1.0.0"] };
   it.each([
     ["a registry dependency policy violation", (s: ReturnType<typeof baselineOnlySummary>) => {
-      s.securityGate.registryDependencyPolicyPassed = false;
+      s.securityGate.findings.gitDependencies = [{ ...unrecordedPackage, field: "dependencies.git", value: "github:owner/repo" }];
     }],
     ["a production image dependency violation", (s: ReturnType<typeof baselineOnlySummary>) => {
-      s.securityGate.productionImageDependencyPolicyPassed = false;
+      s.securityGate.findings.productionImageDependencies = [unrecordedPackage];
     }],
     ["an engine-strict failure", (s: ReturnType<typeof baselineOnlySummary>) => {
-      s.securityGate.engineStrictExitCode = 1;
+      s.securityGate.findings.engine = { exitCode: 1, code: "EBADENGINE", scanComplete: true, reportedPackage: "unrecorded@1.0.0",
+        violations: [{ package: "unrecorded@1.0.0", location: "node_modules/unrecorded", integrity: null, required: { node: ">=99" } }] };
     }],
     ["a lockfile SBOM failure", (s: ReturnType<typeof baselineOnlySummary>) => {
-      s.securityGate.lockSbomExitCode = 1;
+      s.securityGate.findings.lockSbom = sbomFailure;
     }],
     ["a physical SBOM failure", (s: ReturnType<typeof baselineOnlySummary>) => {
-      s.securityGate.physicalSbomExitCode = 1;
+      s.securityGate.findings.physicalSbom = sbomFailure;
     }],
     ["a failed audit with no findings", (s: ReturnType<typeof baselineOnlySummary>) => {
       s.audit.total = 0;
@@ -272,7 +278,7 @@ describe("registry/container acceptance disposition", () => {
   });
 
   it("cross-checks the unlisted advisory IDs the summary recorded", () => {
-    // R5-228a: an unlisted ID dropped from the recorded list is a tampered summary.
+    // An unlisted ID dropped from the recorded list is an inconsistent summary.
     const summary = baselineOnlySummary();
     summary.audit.observedAdvisories.push("GHSA-2222-3333-4444");
     expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3,
@@ -852,18 +858,18 @@ function writeSummary(overrides: Record<string, string> = {}) {
 describe("npm audit graph severity", () => {
   const severities = ["info", "low", "moderate", "high", "critical"];
   const id = "GHSA-23hp-3jrh-7fpw";
-  const edge = (severity: string) => ({ url: `https://github.com/advisories/${id}`, severity });
+  const edge = (name: string, severity: string, url = `https://github.com/advisories/${id}`) =>
+    ({ name, url, severity, range: "*" });
   type PackageFinding = { severity: string; isDirect: boolean; via: (string | ReturnType<typeof edge>)[] };
+  // Each package marked isDirect is a root dependency in the audited lock.
   function auditFixture() {
     const directory = mkdtempSync(join(tmpdir(), "dacs-audit-severity-"));
     scratch.push(directory);
-    const input = join(directory, "audit.json"), output = join(directory, "policy.json");
+    const input = join(directory, "audit.json"), lock = join(directory, "lock.json"), output = join(directory, "policy.json");
     const run = (vulnerabilities: Record<string, PackageFinding>) => {
-      const packages = Object.values(vulnerabilities);
-      const counts = Object.fromEntries(severities.map(severity => [severity,
-        packages.filter(value => value.severity === severity).length]));
-      writeFileSync(input, JSON.stringify({ metadata: { vulnerabilities: { ...counts, total: packages.length } }, vulnerabilities }));
-      return spawnSync(process.execPath, [join(repoRoot, "scripts/registry-container-disposition.mjs"), "--audit-policy", input, output],
+      writeFileSync(input, JSON.stringify(auditReport(vulnerabilities)));
+      writeFileSync(lock, JSON.stringify(auditLock(vulnerabilities)));
+      return spawnSync(process.execPath, [join(repoRoot, "scripts/registry-container-disposition.mjs"), "--audit-policy", input, lock, output],
         { cwd: repoRoot, encoding: "utf8" });
     };
     return { run, output };
@@ -873,7 +879,7 @@ describe("npm audit graph severity", () => {
     .flatMap(via => [true, false].map(isDirect => ({ severity, via, isDirect }))))) (
     "refuses a $severity package with only a $via advisory (direct: $isDirect)", ({ severity, via, isDirect }) => {
       const fixture = auditFixture();
-      const result = fixture.run({ fixture: { severity, isDirect, via: [edge(via)] } });
+      const result = fixture.run({ fixture: { severity, isDirect, via: [edge("fixture", via)] } });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("npm audit package severity disagrees with reachable advisories");
       expect(existsSync(fixture.output)).toBe(false);
@@ -881,9 +887,9 @@ describe("npm audit graph severity", () => {
 
   it.each([
     { root: { severity: "high", isDirect: true, via: ["leaf"] },
-      leaf: { severity: "low", isDirect: false, via: [edge("low")] } },
+      leaf: { severity: "low", isDirect: false, via: [edge("leaf", "low")] } },
     { root: { severity: "high", isDirect: true, via: ["leaf"] },
-      leaf: { severity: "high", isDirect: false, via: ["root", edge("low")] } },
+      leaf: { severity: "high", isDirect: false, via: ["root", edge("leaf", "low")] } },
   ])("refuses contradictory inherited severities %j", graph => {
     const fixture = auditFixture();
     const result = fixture.run(graph);
@@ -897,7 +903,7 @@ describe("npm audit graph severity", () => {
     "accepts $severity inherited from aggregated $via evidence (direct: $isDirect)", ({ severity, via, isDirect }) => {
       const fixture = auditFixture();
       const result = fixture.run({ root: { severity, isDirect, via: ["leaf"] },
-        leaf: { severity: via, isDirect: false, via: [edge(via)] } });
+        leaf: { severity: via, isDirect: false, via: [edge("leaf", via)] } });
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(readFileSync(fixture.output, "utf8"))).toMatchObject({
         observedAdvisories: [id], directAdvisories: [] });
@@ -910,8 +916,8 @@ describe("npm audit graph severity", () => {
     { severity: "high", own: "high", inherited: "critical", accepted: true },
   ])("bounds mixed evidence by own and reachable advisories: %j", ({ severity, own, inherited, accepted }) => {
     const fixture = auditFixture();
-    const result = fixture.run({ root: { severity, isDirect: true, via: [edge(own), "leaf"] },
-      leaf: { severity: inherited, isDirect: false, via: [edge(inherited)] } });
+    const result = fixture.run({ root: { severity, isDirect: true, via: [edge("root", own), "leaf"] },
+      leaf: { severity: inherited, isDirect: false, via: [edge("leaf", inherited)] } });
     expect(result.status === 0, result.stderr).toBe(accepted);
     expect(existsSync(fixture.output)).toBe(accepted);
     if (accepted) expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories)
@@ -923,8 +929,8 @@ describe("npm audit graph severity", () => {
     // npm groups leaf@1 (moderate) and leaf@2 (high) into one name-level record.
     const graph = { parent: { severity: "moderate", isDirect: true, via: ["leaf"] },
       other: { severity: "high", isDirect: true, via: ["leaf"] },
-      leaf: { severity: "high", isDirect: false, via: [edge("moderate"),
-        { ...edge("high"), url: "https://github.com/advisories/GHSA-2pr8-phx7-x9h3" }] } };
+      leaf: { severity: "high", isDirect: false, via: [edge("leaf", "moderate"),
+        edge("leaf", "high", "https://github.com/advisories/GHSA-2pr8-phx7-x9h3")] } };
     const result = fixture.run(reversed ? Object.fromEntries(Object.entries(graph).reverse()) : graph);
     expect(result.status, result.stderr).toBe(0);
     const policy = JSON.parse(readFileSync(fixture.output, "utf8"));
@@ -938,32 +944,38 @@ describe("npm audit graph severity", () => {
 
   it.each([["low", "critical"], ["critical", "low"]])("uses the maximum own severity in order %j, %j", (first, second) => {
     const fixture = auditFixture();
-    expect(fixture.run({ fixture: { severity: "critical", isDirect: true, via: [edge(first), edge(second)] } }).status).toBe(0);
+    expect(fixture.run({ fixture: { severity: "critical", isDirect: true, via: [edge("fixture", first), edge("fixture", second)] } }).status).toBe(0);
     expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories).toEqual([id]);
   });
 
   it("propagates a higher severity through an already reached inherited cycle", () => {
     const fixture = auditFixture();
     expect(fixture.run({
-      low: { severity: "low", isDirect: false, via: [edge("low")] },
+      low: { severity: "low", isDirect: false, via: [edge("low", "low")] },
       root: { severity: "critical", isDirect: true, via: ["low", "middle"] },
       middle: { severity: "critical", isDirect: false, via: ["root", "critical"] },
-      critical: { severity: "critical", isDirect: false, via: [edge("critical")] },
+      critical: { severity: "critical", isDirect: false, via: [edge("critical", "critical")] },
     }).status).toBe(0);
     expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories).toEqual([]);
   });
 
-  it("stops acceptance when repeated direct evidence contradicts its package severity", () => {
+  it("refuses direct evidence whose own advisory is below its package severity", () => {
     const fixture = auditFixture();
-    expect(fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("high")] } }).status).toBe(0);
+    expect(fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("fixture", "high")] } }).status).toBe(0);
+    expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories).toEqual([id]);
+    const result = fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("fixture", "low")] } });
+    expect(result.status).not.toBe(0);
+    expect(existsSync(fixture.output)).toBe(false);
+  });
+
+  it("blocks a recorded direct high advisory, and classifies the stopped audit stage as policy", () => {
+    const fixture = auditFixture();
+    expect(fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("fixture", "high")] } }).status).toBe(0);
     const policy = JSON.parse(readFileSync(fixture.output, "utf8"));
     const summary = baselineOnlySummary();
     Object.assign(summary.audit, policy.observed, { observedAdvisories: policy.observedAdvisories,
       unlistedAdvisories: policy.unlistedAdvisories, directAdvisories: policy.directAdvisories });
     expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
-    const result = fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("low")] } });
-    expect(result.status).not.toBe(0);
-    expect(existsSync(fixture.output)).toBe(false);
     expect(registryContainerDisposition({ ...summary, complete: false, failedStage: "audit-policy", failureClass: "policy" }))
       .toMatchObject({ exitCode: 1, failureClass: "policy" });
   });
@@ -1792,21 +1804,23 @@ describe("assessed advisories", () => {
     expect(registryContainerDisposition(cleared(null), assessed)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
   });
 
-  it("records directness from npm's report and lets the summary pass the gate", () => {
+  it("records directness from the audited lock and lets the summary pass the gate", () => {
     const directory = mkdtempSync(join(tmpdir(), "dacs-registry-audit-policy-"));
     scratch.push(directory);
-    const via = (id: string, severity: string) => ({ source: 1, name: "x", dependency: "x", title: "t",
+    const via = (name: string, id: string, severity: string) => ({ source: 1, name, dependency: name, title: "t",
       url: `https://github.com/advisories/${id}`, severity, cwe: [], cvss: {}, range: "<2" });
     const report = { auditReportVersion: 2, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 1, high: 2, critical: 0, total: 3 } },
       vulnerabilities: {
-        direct: { name: "direct", severity: "high", isDirect: true, via: [via("GHSA-3333-4444-5555", "high"), "transitive"] },
-        moderate: { name: "moderate", severity: "moderate", isDirect: true, via: [via("GHSA-4444-5555-6666", "moderate")] },
-        transitive: { name: "transitive", severity: "high", isDirect: false, via: [via("GHSA-23hp-3jrh-7fpw", "high")] },
+        direct: { name: "direct", severity: "high", isDirect: true, via: [via("direct", "GHSA-3333-4444-5555", "high"), "transitive"] },
+        moderate: { name: "moderate", severity: "moderate", isDirect: true, via: [via("moderate", "GHSA-4444-5555-6666", "moderate")] },
+        transitive: { name: "transitive", severity: "high", isDirect: false, via: [via("transitive", "GHSA-23hp-3jrh-7fpw", "high")] },
       } };
     writeFileSync(join(directory, "npm-audit.json"), JSON.stringify(report));
+    // The root declares direct@1.0.0 and moderate@1.0.0, not transitive.
+    writeFileSync(join(directory, "package-lock.json"), JSON.stringify(auditLock(report.vulnerabilities)));
     const policyPath = join(directory, "audit-policy.json");
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
-      join(directory, "npm-audit.json"), policyPath], { cwd: repoRoot, encoding: "utf8" });
+      join(directory, "npm-audit.json"), join(directory, "package-lock.json"), policyPath], { cwd: repoRoot, encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(readFileSync(policyPath, "utf8"))).toMatchObject({
       observedAdvisories: ["GHSA-23hp-3jrh-7fpw", "GHSA-3333-4444-5555", "GHSA-4444-5555-6666"],
@@ -2432,10 +2446,12 @@ describe("acceptance failure class", () => {
       vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
         via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
     writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(report, null, 2));
+    writeFileSync(join(stage, "generated-package-lock.json"), JSON.stringify(auditLock({})));
     const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
-      join(stage, "npm-audit.json"), join(stage, "audit-policy.json")], { cwd: repoRoot, encoding: "utf8" });
+      join(stage, "npm-audit.json"), join(stage, "generated-package-lock.json"), join(stage, "audit-policy.json")],
+      { cwd: repoRoot, encoding: "utf8" });
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain("npm audit advisory URL missing");
+    expect(policy.stderr).toContain("incomplete npm audit advisory for x");
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
       "audit-policy", String(policy.status)], { cwd: repoRoot, encoding: "utf8" });
     expect(result.stdout).toContain("::error title=Registry/container acceptance policy failure::stopped at stage audit-policy");
@@ -2502,20 +2518,15 @@ it("pins the recorded pqcrypto image version while accepting its recorded metada
 describe("baseline Git and image archive identities", () => {
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
   it.each([
-    ["Git", "gitDependencies", "registryDependencyPolicyPassed", "registryDependency"],
-    ["typescript", "productionImageDependencies", "productionImageDependencyPolicyPassed", "productionImage"],
-    ["pqcrypto", "productionImageDependencies", "productionImageDependencyPolicyPassed", "productionImage"],
-  ] as const)("pins the recorded version and integrity of %s findings at the same location", (name, group, flag, check) => {
+    ["Git", "gitDependencies", "registryDependency"],
+    ["typescript", "productionImageDependencies", "productionImage"],
+    ["pqcrypto", "productionImageDependencies", "productionImage"],
+  ] as const)("pins the recorded version and integrity of %s findings at the same location", (name, group, check) => {
     const known = name === "Git" ? baseline.policyFindings[group][0]
       : baseline.policyFindings[group].find((entry: { name: string }) => entry.name === name);
     const classify = (finding: Record<string, unknown>) => {
       const summary = baselineOnlySummary();
-      summary.securityGate[flag] = false;
       summary.securityGate.findings[group] = [finding];
-      if (check === "productionImage") {
-        summary.docker.policy.productionDependencyPolicyPassed = false;
-        summary.docker.policy.typescriptPresent = name === "typescript";
-      }
       return { check: classifyPolicyChecks(summary, baseline)[check], exit: registryContainerDisposition(summary, baseline).exitCode };
     };
     expect(classify(known)).toEqual({ check: "baseline", exit: 4 });
@@ -2529,7 +2540,6 @@ describe("baseline Git and image archive identities", () => {
     const known = baseline.policyFindings.engineViolations[0];
     const classify = (violation: Record<string, unknown>) => {
       const summary = baselineOnlySummary();
-      summary.securityGate.engineStrictExitCode = 1;
       summary.securityGate.findings.engine = { exitCode: 1, code: "EBADENGINE", scanComplete: true,
         violations: [violation], reportedPackage: violation.package };
       return { check: classifyPolicyChecks(summary, baseline).engineStrict, exit: registryContainerDisposition(summary, baseline).exitCode };
@@ -3270,10 +3280,12 @@ describe("acceptance failure class", () => {
       vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
         via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
     writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(report, null, 2));
+    writeFileSync(join(stage, "generated-package-lock.json"), JSON.stringify(auditLock({})));
     const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
-      join(stage, "npm-audit.json"), join(stage, "audit-policy.json")], { cwd: repoRoot, encoding: "utf8" });
+      join(stage, "npm-audit.json"), join(stage, "generated-package-lock.json"), join(stage, "audit-policy.json")],
+      { cwd: repoRoot, encoding: "utf8" });
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain("npm audit advisory URL missing");
+    expect(policy.stderr).toContain("incomplete npm audit advisory for x");
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
       "audit-policy", String(policy.status)], { cwd: repoRoot, encoding: "utf8" });
     expect(result.stdout).toContain("::error title=Registry/container acceptance policy failure::stopped at stage audit-policy");

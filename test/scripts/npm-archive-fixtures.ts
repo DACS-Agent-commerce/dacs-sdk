@@ -75,8 +75,8 @@ export async function serveArchives(archives: Map<string, Buffer>) {
   return { registry, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 
-// The npm running these tests, or the one on PATH.
-const npmCli = process.env.npm_execpath
+/** The npm CLI entry running these tests, or the one on PATH. */
+export const npmCli = process.env.npm_execpath
   ? join(dirname(process.env.npm_execpath), "npm-cli.js")
   : join(execFileSync("npm", ["root", "--global"], { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js");
 
