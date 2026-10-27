@@ -275,7 +275,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     catch(error) { if(error.code!=='settlement_collision')throw error;copy.settlementCredit='indeterminate';copy.stage='settlement-indeterminate'; }
     return copy;
   };
+  // The Deliverable is the exact canonical report the seller submitted: once
+  // it is retained (session.deliverySentReport, kept before the CREATE is
+  // asked) every readback and verification uses those bytes, never what the
+  // producer answers now.
   const deliveryReport=(session,settlementId)=>{
+    if(session.deliverySentReport?.settlementId===settlementId)return JSON.parse(session.deliverySentReport.canonical);
     const report=deliverableProducer ? deliverableProducer({agreement:structuredClone(session.agreement),listing:structuredClone(listing),settlementId}) : buildReport({agreement:session.agreement,listing,settlementId});
     if (report && typeof report.then === 'function') {
       Promise.resolve(report).catch(() => {});
@@ -1015,6 +1020,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           heldFor(session.jobId)?.();
           // Kept before the capability is asked: from here on only a readback
           // (or the reader's proven absence) tells whether this CREATE exists.
+          session.deliverySentReport={settlementId:work.intake.settlementId,canonical:canonicalize(report)};
           session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
           persist(session);

@@ -1339,6 +1339,40 @@ test('a retained delivery is held while its payment evidence cannot be read back
   assert.equal(w.createsAt(deliverable), 1);
 });
 
+// The Deliverable is what the seller first sent. A producer that answers
+// differently later (here after a restart, or after the answer to the first
+// CREATE was lost with the job's records) never changes what is read back.
+test('a delivery is read back from the bytes that were sent, not from what the producer answers after a restart', async (t) => {
+  let body = 'TEST report body old';
+  const w = await world(t, { deliverableProducer: (input) => report({ body: [body] })(input) });
+  const p = await w.purchase(), tx = p.pay();
+  const first = await p.claim(tx);
+  assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
+  body = 'TEST report body new';
+  const agent = await w.agentFor();
+  try {
+    const again = await agent.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+    assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
+    assert.equal(again.delivery.contentHash, first.delivery.contentHash, 'the original bytes are verified');
+  } finally { agent.close(); }
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('a Deliverable that landed while the job\'s records were lost is recovered from the bytes that were sent, whatever the producer answers after the restart', async (t) => {
+  let body = 'TEST report body old';
+  const w = await world(t, { deliverableProducer: (input) => report({ body: [body] })(input) });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('land-lose-lock');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the job lost its lock during the submission');
+  body = 'TEST report body new';
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
+  assert.equal(w.createsAt(deliverable), 1);
+  assert.equal(core.sha256Hex(core.canonicalize(w.writtenAt(deliverable))), answer.delivery.contentHash, 'the original bytes are verified');
+});
+
 
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
   const first=await world(t),second=await world(t);
