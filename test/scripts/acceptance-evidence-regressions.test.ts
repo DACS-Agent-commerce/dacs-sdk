@@ -85,6 +85,20 @@ describe("closed acceptance sources", () => {
     expect(classifyPolicyChecks(withFindings(findings), baseline).registryDependency).toBe("blocked");
   });
 
+  it.each([
+    {},
+    { packages: {} },
+    { packages: [] },
+    { packages: { "": null, "node_modules/a": { version: "1.0.0" } } },
+    { packages: { "node_modules/a": { version: "1.0.0" } } },
+  ])("blocks every gate the generated lock feeds when it lacks a packages map or root entry %j", lock => {
+    const findings = extracted({ ...passingSources(), "generated-package-lock.json": JSON.stringify(lock) });
+    for (const key of ["gitDependencies", "engine", "productionImageDependencies", "productionImageInventory"]) {
+      expect(findings[key], key).toEqual({ incomplete: ["generated-package-lock.json"] });
+    }
+    expectGatesBlockedBy(classifyPolicyChecks(withFindings(findings), baseline), "generated-package-lock.json");
+  });
+
   it.each(["", " ", "bad", "-1", "256", "1.5"])("does not decode invalid exit evidence %j as success", text => {
     const findings = extracted({ ...passingSources(), "engine-strict.exit-code": text });
     expect(findings.engine).toEqual({ incomplete: ["engine-strict.exit-code"] });
