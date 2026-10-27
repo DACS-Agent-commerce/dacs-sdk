@@ -125,6 +125,10 @@ for(const [label,kind,artifact,reason] of [
  assert.equal(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS),reason);
  if(kind!=='Deliverable')assert.equal(await stillOpenBeforePayment(r,p,'cancellation-unknown'),reason);
 });
+test('request validation refuses a Vet record with a null listing before any seller record of its job exists',async()=>{
+ const r=requestFor({artifactKind:'CompositeVerificationRecord',artifact:{listingRef:null}});
+ assert.equal(await policyRefusal(r,policy(async()=>null),SELLER_POLICY_DEFAULTS),'listing');
+});
 
 // A Deliverable's phase index is the verified Listing's delivery phase.
 const withPhaseIndex=(r,index)=>{
@@ -168,6 +172,8 @@ for(const [label,mutate] of [
  ['an RPC fee other than declared',c=>{c.transaction_fee.rpc_fee=0;}],
  ['an additional fee',c=>{c.transaction_fee.additional_fee=c.amount===0?1:'1';}],
  ['an RPC address',c=>{c.transaction_fee.rpc_address='TEST';}],
+ ['another ed25519 sender',c=>{c.from_ed25519_address=`0x${'f'.repeat(64)}`;}],
+ ['an edit carrying another transaction hash',c=>{editsOf(c)[0].txhash='f'.repeat(64);}],
 ])test(`a confirmation with ${label} counts nothing`,()=>{
  for(const legacy of [false,true]){
   const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'}),v=confirmationFor(r,{legacy});
