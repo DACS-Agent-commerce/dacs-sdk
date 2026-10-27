@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ARTIFACT_SEPARATORS, paymentEvidenceAddress, signComponentArtifact } from '@kynesyslabs/dacs';
 import { createNativePaymentEvidenceConsumer, nativeEvidenceReadOutcome } from '../src/dacs/native-payment-evidence-consumer.mjs';
+import { DEMOS_SR2_REPLY_BYTES } from '../src/dacs/demos-sr2-adapter.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
 import { buyer, seller, protocolFixture, NOW } from './helpers/protocol-fixture.mjs';
 
@@ -77,6 +78,24 @@ test('an authenticated signed artifact with the wrong payment amount remains rej
   const result = await f.consumer.readEvidence(f.input);
   assert.equal(result.disposition, 'rejected'); assert.equal(result.authenticated, true);
   assert.equal(result.reason, 'native-payment-evidence-scope-mismatch');
+});
+
+test('a projection-only read without a signed projection stays indeterminate before any read', async () => {
+  const f = await consumerFixture();
+  const result = await f.consumer.readEvidence({ ...f.input, signedProjection: undefined });
+  assert.equal(result.disposition, 'indeterminate'); assert.equal(result.nativeReadStatus, 'public-projection-missing');
+  assert.equal(f.calls.length, 0);
+});
+
+for (const [label, projection] of [
+  ['oversized', f => ({ ...f.signed, padding: 'x'.repeat(DEMOS_SR2_REPLY_BYTES) })],
+  ['a string', () => 'TEST projection'], ['an array', f => [f.signed]], ['a class instance', f => Object.assign(new Map(), f.signed)],
+  ['unserializable', f => ({ ...f.signed, amount: 1n })],
+]) test(`a signed projection is refused before the adapter reads when it is ${label}`, async () => {
+  const f = await consumerFixture();
+  const result = await f.consumer.readEvidence({ ...f.input, signedProjection: projection(f) });
+  assert.equal(result.disposition, 'indeterminate'); assert.equal(result.nativeReadStatus, 'public-projection-malformed');
+  assert.equal(f.calls.length, 0);
 });
 
 test('matching signed evidence and observed transfer remain present', async () => {
