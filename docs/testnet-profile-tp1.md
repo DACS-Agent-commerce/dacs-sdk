@@ -31,20 +31,20 @@ The machine-readable record is `TESTNET_PROFILE_TP1` in
 | Identifier | `dacs-testnet-tp1` |
 | Revision | `TP-1` (later revisions are new values, each with its own base; see [Revisions](#revisions)) |
 | Base | Proposed reference revision: DACS-Standard `next` `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, subject to Composition qualification; tuple CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5 (`spec/PROFILE.md:43-50` at `d45c0a2`) |
-| Network | Demos testnet only. approved identity record `dacs-demos-testnet-identity/2026-10-20`, approved by the owner on 2026-10-20: chain identity `d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc`, pin version `dacs-demos-testnet-identity/2026-10-20`, source kind `confirmed-block-one-predecessor`. The wire refuses unapproved identities before signing, including the previous record `dacs-demos-testnet-identity/2026-10-15`; broadcast refusal in the intended composition is not checked (see "Blocked" below) |
+| Network | Demos testnet only. approved identity record `dacs-demos-testnet-identity/2026-10-21`, approved by the owner on 2026-10-20: chain identity `d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc`, pin version `dacs-demos-testnet-identity/2026-10-21`, source kind `confirmed-block-one-predecessor`. The wire refuses unapproved identities before signing, including the previous record `dacs-demos-testnet-identity/2026-10-15`; broadcast refusal in the intended composition is not checked (see "Blocked" below) |
 | Capability | FP-DEM with these restrictions: `negotiate-fixed-price`, `pay-dem`, delivery through Demos storage at `dacs4:deliverable:{jobId}` (`spec/DACS-4-SETTLE.md:839` at `d45c0a2`); `fixed-text` and explicitly configured pure, deterministic, synchronous text modules only, in the bounded UTF-8 report envelope the buyer plugins produce and read today (at most 16,384 characters, synchronous only: `TP1_CAPABILITIES` in `src/wire/profile.ts`, pinned by `test/wire/wire.test.ts`; that the plugins' producer accepts only this is taken from the plugin implementation and not yet independently checked, composition checks qualify it); no buyer request input. Any other Listing is refused before approval or signing; buyers provide an authenticated, content-hash-bound `readListingEligibility` decision to `verifyEndpointProof` before approval, and the wire rechecks selected terms before each request signature |
 | Wire | [`dacs-seller-http/v1`](dacs-seller-http-v1.md): buyer-initiated HTTPS, discovery at `/.well-known/dacs-seller.json` |
 | Claims | `did:demos:agent:<64 lowercase hex>` for both parties |
 
 The approved record is `TP1_APPROVED_IDENTITY_RECORD` in `src/wire/profile.ts`.
-Its canonical SHA-256 is `5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330`,
+Its canonical SHA-256 is `4118a9181f5d6e475c446d44eebeb9fde703eba3fe4fde37ddfee40369f48066`,
 pinned in `TP1_APPROVED_IDENTITY_RECORD_DIGESTS` in `src/wire/approval.ts`.
 The SDK representation adds `format` and uses the pin version as `recordId`;
 `approvedBy` is "the owner", `approvedAt` is `2026-10-20`, and
 `source` is "Approved Demos testnet identity record (2026-10-20)". Provenance also
 includes the source kind above and the exact fallback documentation:
 
-> Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: "0"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-20`.
+> Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: "0"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-21`.
 
 Numeric `blockNumber: 0` returns RPC `result: 400` inside HTTP 200, while
 string `blockNumber: "0"` returns genesis successfully; the node limitation

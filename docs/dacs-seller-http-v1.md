@@ -625,7 +625,7 @@ identity record. The integrator supplies the record; the SDK approves it.
 `TP1_APPROVED_IDENTITY_RECORD_DIGESTS` (`src/wire/approval.ts`, a frozen list)
 and takes no approval list from its caller. The list pins the canonical digest
 of `TP1_APPROVED_IDENTITY_RECORD`, approved by the owner on 2026-10-20:
-record identifier and pin version `dacs-demos-testnet-identity/2026-10-20`,
+record identifier and pin version `dacs-demos-testnet-identity/2026-10-21`,
 source kind `confirmed-block-one-predecessor`, with its documented fallback.
 The 2026-10-15 record, for the chain node2 served before its 2026-10-20
 rebuild, is no longer listed and is refused.

@@ -341,13 +341,13 @@ describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
   it("ships no approval injection: no compiled module or declaration names one, and approval.js holds only the SDK's frozen 2026-10-20 approval list", () => {
     expect(shipped.files).toContain("approval.js");
     expect(shipped.filesNamingTestApproval).toEqual([]);
-    expect(shipped.approvalModule).toEqual({ names: ["TP1_APPROVED_IDENTITY_RECORD_DIGESTS", "TP1_REFUSED_CHAIN_IDENTITIES"], list: ["5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330"], frozen: true, sameAsWire: true });
+    expect(shipped.approvalModule).toEqual({ names: ["TP1_APPROVED_IDENTITY_RECORD_DIGESTS", "TP1_REFUSED_CHAIN_IDENTITIES"], list: ["4118a9181f5d6e475c446d44eebeb9fde703eba3fe4fde37ddfee40369f48066"], frozen: true, sameAsWire: true });
     expect(shipped.functionsBeyondWire.filter((f: string) => /^(approval|profile)\.js:/.test(f))).toEqual([]);
     expect(shipped.functionsBeyondWire.some((f: string) => /bind|approv/i.test(f))).toBe(false);
   });
 
   it("the shipped approval from 2026-10-20 binds two endpoints and verifies request and response signatures", () => {
-    expect(shipped.approvedIdentity).toEqual({ recordDigest: "5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330", sameProfile: true, differentEndpoints: true, verifiedSeller: true, signatures: 2 });
+    expect(shipped.approvedIdentity).toEqual({ recordDigest: "4118a9181f5d6e475c446d44eebeb9fde703eba3fe4fde37ddfee40369f48066", sameProfile: true, differentEndpoints: true, verifiedSeller: true, signatures: 2 });
   });
 
   it("the shipped approval binds node2's 2026-10-20 chain and refuses the 2026-10-15 record and its chain before signing", () => {

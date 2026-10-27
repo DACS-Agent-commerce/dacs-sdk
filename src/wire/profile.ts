@@ -61,16 +61,16 @@ export const TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES: readonly string[] = Object.fr
 /** SDK representation of the approved record; actor-local fields are excluded. */
 export const TP1_APPROVED_IDENTITY_RECORD = deepFreeze({
   format: "dacs-testnet-identity-record/v1",
-  recordId: "dacs-demos-testnet-identity/2026-10-20",
+  recordId: "dacs-demos-testnet-identity/2026-10-21",
   network: "demos-testnet",
   chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
-  pinVersion: "dacs-demos-testnet-identity/2026-10-20",
+  pinVersion: "dacs-demos-testnet-identity/2026-10-21",
   provenance: {
     approvedBy: "the owner",
     approvedAt: "2026-10-20",
     source: "Approved Demos testnet identity record (2026-10-20)",
     sourceKind: "confirmed-block-one-predecessor",
-    documentation: "Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-20`.",
+    documentation: "Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-21`.",
   },
 } satisfies TestnetIdentityRecord);
 

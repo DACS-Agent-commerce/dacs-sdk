@@ -21,7 +21,7 @@ const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournal } = journalFixture(fixtureWire);
 
 const RECORD = TP1_APPROVED_IDENTITY_RECORD;
-const DIGEST = "5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330";
+const DIGEST = "4118a9181f5d6e475c446d44eebeb9fde703eba3fe4fde37ddfee40369f48066";
 // The record approved on 2026-10-15 for the chain node2 served before its 2026-10-20 rebuild. No longer approved.
 const PREVIOUS_CHAIN = "83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4";
 const PREVIOUS_RECORD = {
@@ -73,11 +73,11 @@ async function request(buyer: ReturnType<typeof party>, seller: ReturnType<typeo
 
 describe("identity approved on 2026-10-20 using shipped approval", () => {
   it("pins the complete canonical record, including provenance and fallback documentation", async () => {
-    expect(RECORD.recordId).toBe("dacs-demos-testnet-identity/2026-10-20");
+    expect(RECORD.recordId).toBe("dacs-demos-testnet-identity/2026-10-21");
     expect(RECORD.chainIdentity).toBe("d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc");
     expect(RECORD.pinVersion).toBe(RECORD.recordId);
     expect(RECORD.provenance).toMatchObject({ approvedBy: "the owner", approvedAt: "2026-10-20", sourceKind: "confirmed-block-one-predecessor" });
-    expect(RECORD.provenance.documentation).toBe("Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-20`.");
+    expect(RECORD.provenance.documentation).toBe("Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-21`.");
     expect(hash(canonicalize(RECORD))).toBe(DIGEST);
     expect(TP1_APPROVED_IDENTITY_RECORD_DIGESTS).toEqual([DIGEST]);
     expect(Object.isFrozen(RECORD) && Object.isFrozen(RECORD.provenance)).toBe(true);
@@ -90,7 +90,7 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     expect(hash(canonicalize(PREVIOUS_RECORD))).toBe(PREVIOUS_DIGEST);
     expect(TP1_APPROVED_IDENTITY_RECORD_DIGESTS).not.toContain(PREVIOUS_DIGEST);
     const bound = (await bindTp1Fixture({ record: structuredClone(RECORD), local: A }));
-    expect(bound.profile).toMatchObject({ chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc", pinVersion: "dacs-demos-testnet-identity/2026-10-20" });
+    expect(bound.profile).toMatchObject({ chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc", pinVersion: "dacs-demos-testnet-identity/2026-10-21" });
     expect(bound.recordDigest).toBe(DIGEST);
     const buyer = party(), seller = party();
     const transport = { send: vi.fn<(header: string) => void>() };

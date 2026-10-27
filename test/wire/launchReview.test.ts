@@ -460,9 +460,9 @@ describe("wallet signatures on the delegation path", () => {
   // About one canonical base64url signature in 2,048 begins with "0x" or "0X": it is read as written, never stripped.
   it("keeps a canonical base64url wallet signature that begins with 0x", async () => {
     const x = (await world()), wallet = party(58);
-    const payload = { ...delegationFor(x, wallet, NOW - 1000 - 1160), sessionPublicKey: party(59).key };
+    const payload = { ...delegationFor(x, wallet, NOW - 1000 - 492), sessionPublicKey: party(59).key };
     const raw = wallet.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(payload)));
-    expect(raw.toString("base64url")).toBe("0XbSePmE6hvYBe1T1BNCStjdCj_ESwpSugXiezimsTxgzQ7Xl2wdxiaLk38tarYlgVxLO8ouEmxB_4kw2pD3Dw");
+    expect(raw.toString("base64url")).toBe("0X4En-D_dSJOc3K-DUrVZTKRQ_sOlAtIvaMiqJM-ZrWibKcJOyDGP79_GTeJmuAzjzFuO0PZnW9t6bN47lUsBQ");
     expect(walletSignatureBytes(raw.toString("base64url"))).toEqual(raw);
     const delegation = await wire.signSellerSessionDelegation(payload, { claim: wallet.claim, sign: () => raw.toString("base64url") }, x.context.binding, LOCAL);
     expect(delegation.signature).toBe(raw.toString("base64url"));

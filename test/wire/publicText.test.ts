@@ -82,7 +82,7 @@ it("pins register identity, tuple and qualification references independently", (
   expect(register.base.commit).toBe("d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20");
   expect(register.tuple).toEqual({ CORE: "0.3", "DACS-1": "0.7", "DACS-2": "0.6", "DACS-3": "0.5", "DACS-4": "0.8", "DACS-5": "0.5" });
   const digest = createHash("sha256").update(canonicalize(register.network.record)).digest("hex");
-  expect(digest).toBe("5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330");
+  expect(digest).toBe("4118a9181f5d6e475c446d44eebeb9fde703eba3fe4fde37ddfee40369f48066");
   expect(register.network.canonicalDigest).toBe(digest);
   const ids = ["L1", "L2", "L3", "L4", ...Array.from({ length: 12 }, (_, i) => `G${i + 1}`)];
   expect(register.rows.map(row => row.id)).toEqual(ids);
