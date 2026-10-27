@@ -1374,6 +1374,76 @@ test('a Deliverable that landed while the job\'s records were lost is recovered 
 });
 
 
+// Delivery evidence publication (deliveryEvidenceEnabled): the SettlementEvidence
+// of a delivered order is one native CREATE, read back before the answer says
+// `delivered`, and only ever read back once it was asked.
+const evidenceAddress = (p) => `dacs4:evidence:${p.jobId}`;
+const publishedEvidence = (w) => w.effects.published.filter((kind) => kind === 'SettlementEvidence').length;
+const resumed = async (w, p, options) => {
+  const agent = await w.agentFor(options);
+  try { return await agent.resume({ jobId: p.jobId }); } finally { agent.close(); }
+};
+
+test('without delivery evidence enabled a delivered order is delivery-ready and its evidence is left to the SDK finaliser', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), answer = await p.claim(p.pay());
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(answer.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
+  assert.equal(publishedEvidence(w), 0);
+  assert.equal(w.createsAt(evidenceAddress(p)), 0);
+});
+
+test('with delivery evidence enabled the SettlementEvidence is published once and read back: the answer is delivered, and repeats and a restart send nothing', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivered', shown(answer));
+  assert.equal(answer.delivery.evidencePublication, 'native-read-back');
+  assert.equal(answer.delivery.evidenceRef.anchor.locator, address);
+  assert.equal(w.createsAt(address), 1);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivered');
+  const again = await resumed(w, p);
+  assert.equal(again.delivery?.status, 'delivered', shown(again));
+  assert.equal(publishedEvidence(w), 1);
+  assert.equal(w.createsAt(address), 1);
+  assert.deepEqual(w.effects.deliverySubmit, [`dacs4:deliverable:${p.jobId}`], 'the Deliverable is sent once');
+});
+
+test('a delivery evidence CREATE whose answer was lost is only read back: held while the readback is unknown, then delivered with one CREATE, across a restart', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence:land-throw');
+  const lost = await p.claim(tx);
+  assert.equal(lost.delivery?.status, 'delivery-ready', shown(lost));
+  assert.equal(lost.delivery.evidencePublication, 'held-readback-only');
+  assert.equal(w.createsAt(address), 1, 'the CREATE landed before the answer was lost');
+  const evidenceCreate = w.signedCreate(address).hash;
+  w.node.faults.transactionDown = (hash) => hash === evidenceCreate;
+  const unknown = await p.claim(tx);
+  assert.equal(unknown.delivery?.evidencePublication, 'held-readback-only', shown(unknown));
+  assert.equal(publishedEvidence(w), 1, 'an unknown readback sends nothing');
+  w.node.faults.transactionDown = () => false;
+  await w.restart();
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(publishedEvidence(w), 1, 'the CREATE was asked once');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('a delivery evidence publication that never reached the wallet is published again, once', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence');
+  const held = await p.claim(tx);
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  assert.equal(w.createsAt(address), 0, 'nothing was created');
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(publishedEvidence(w), 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
   const first=await world(t),second=await world(t);
   assert.notEqual((await first.purchase()).jobId,(await second.purchase()).jobId);
