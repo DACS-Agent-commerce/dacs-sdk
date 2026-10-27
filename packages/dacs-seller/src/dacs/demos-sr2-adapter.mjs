@@ -1,6 +1,7 @@
 // Offline SR-2 fixture readback authenticates exact CREATE authorization,
 // confirmed inclusion and native contents. Literal marked loopback replies
-// establish simulated-fixture evidence only, never real consensus or finality.
+// establish simulated-fixture evidence only, never real consensus or finality:
+// their receipts carry the DEMOS_SR2_FIXTURE_RECEIPT labels, not Demos ones.
 // The adapter owns no key and never broadcasts.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
@@ -20,6 +21,17 @@ import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { isDevnetAgreementTransport } from './devnet-source.mjs';
 
 export const DEMOS_SR2_EVIDENCE_MODE = 'simulated-fixture';
+/** Labels on every receipt a marked loopback fixture issues: simulated inclusion only, never Demos BFT finality. */
+export const DEMOS_SR2_FIXTURE_RECEIPT = Object.freeze({
+  substrate: 'demos-sr2-simulated-fixture', finalityProfile: 'simulated-fixture-inclusion-only', state: 'included', evidenceKind: 'demos-sr2-simulated-fixture-proof-v1',
+});
+const DEMOS_FINALITY_RECEIPT = Object.freeze({
+  substrate: 'demos', finalityProfile: 'demos-bft-confirmed-native-read', state: 'finalized', evidenceKind: 'demos-bft-write-proof-v1',
+});
+const labelReceipt = (receipt, labels) => ({ ...receipt, substrate: labels.substrate, finalityProfile: labels.finalityProfile,
+  state: labels.state, evidence: { kind: labels.evidenceKind, value: receipt.evidence.value } });
+const hasReceiptLabels = (receipt, labels) => receipt.substrate === labels.substrate && receipt.finalityProfile === labels.finalityProfile
+  && receipt.state === labels.state && receipt.evidence.kind === labels.evidenceKind;
 export const DEMOS_SR2_FIXTURE_CHAIN_IDENTITY = sha256Hex('dacs-chatgpt-plugin/demos-sr2-sdk-wire-fixture/v1');
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
 const MAX_NATIVE_CANDIDATES = 32;
@@ -112,6 +124,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   const base = endpoint.origin;
   const expectedIdentity=sourceCapability?.pins.chainIdentity ?? DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
   const mode=sourceCapability ? 'explicit-pinned-transport-single-node' : DEMOS_SR2_EVIDENCE_MODE;
+  const receiptLabels = sourceCapability ? DEMOS_FINALITY_RECEIPT : DEMOS_SR2_FIXTURE_RECEIPT;
   const scope = canonicalize([base, expectedIdentity,...(sourceCapability?[sourceCapability.transportBinding.bindingId]:[])]);
   const ownRecords = async () => (await journal.records()).filter((r) => r.scope === scope);
   const retained = async (logicalAddress, writer) => (await ownRecords()).find((r) => r.logicalAddress === logicalAddress && r.writer === writer);
@@ -183,13 +196,14 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
 
   // Do not guess a nonce-derived physical address for another writer. Search
   // all bounded pages, then authenticate EACH native candidate and its owner.
+  // A supplied native address is one more candidate, never a skipped search.
   async function resolve(logicalAddress, expectedWriter, nativeAddress) {
     const owner = addressForClaim(expectedWriter);
     const programName = logicalToStorageProgramName(logicalAddress);
     await chainIdentity();
     const candidates = new Map();
-    let complete = nativeAddress !== undefined;
-    if (complete) { if (!NATIVE_ADDRESS.test(nativeAddress)) reject('invalid', 'malformed supplied native address'); candidates.set(nativeAddress, { programName }); }
+    let complete = false;
+    if (nativeAddress !== undefined) { if (!NATIVE_ADDRESS.test(nativeAddress)) reject('invalid', 'malformed supplied native address'); candidates.set(nativeAddress, { programName }); }
     for (let page = 0; page < 8 && !complete; page += 1) {
       const rows = await nodeCall('searchStoragePrograms', { query: programName, options: { exactMatch: true, limit: 50, offset: page * 50 } });
       if (!Array.isArray(rows) || rows.length > 50) reject('indeterminate', 'malformed name-index page');
@@ -281,7 +295,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       nativeRead: { owner, programName: native.programName, valueHash: exactHash(native.data), metadataHash: exactHash(native.metadata), observedAt },
     };
     assertDemosWriteEvidence(evidence);
-    const receipt = demosWriteEvidenceToAnchorReceipt({ logicalAddress, contentHash: op.metadata.contentHash, writer: expectedWriter, evidence });
+    const receipt = labelReceipt(demosWriteEvidenceToAnchorReceipt({ logicalAddress, contentHash: op.metadata.contentHash, writer: expectedWriter, evidence }), receiptLabels);
     return { status: 'present', artifact: clone(native.data), ...(native.metadata.artifactKind !== undefined ? { artifactKind: native.metadata.artifactKind } : {}), receipt, demosEvidence: evidence, evidenceMode: mode,...(sourceCapability?{networkBinding:clone(sourceCapability.transportBinding),finality:'not-established'}:{}) };
   }
 
@@ -309,12 +323,13 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   async function recheck(receipt, { expectedWriter, signedProjection } = {}) {
     return boundedRead(async () => {
       if (!isAnchorReceipt(receipt) || !expectedWriter || receipt.writer !== expectedWriter) reject('invalid', 'an exact writer-bound receipt is required');
-      const proof = decodeDemosAnchorReceiptProof(receipt);
+      if (!hasReceiptLabels(receipt, receiptLabels)) reject('invalid', `receipt does not carry the ${mode} labels`);
+      const proof = decodeDemosAnchorReceiptProof(labelReceipt(receipt, DEMOS_FINALITY_RECEIPT));
       if (proof.chainIdentity !== expectedIdentity || (signedProjection !== undefined && signedProjection?.hash !== receipt.transactionRef.value)) reject('invalid', 'receipt binds another chain or projection');
       const fresh = await read(receipt.logicalAddress, { expectedWriter, signedProjection, nativeAddress: receipt.nativeAddress });
       fresh.demosEvidence.nativeRead.observedAt = receipt.observedAt;
       if (!demosWriteEvidenceBindsReceiptContent(fresh.demosEvidence, receipt.logicalAddress, receipt.contentHash)) reject('invalid', 'receipt content hash differs');
-      const expected = demosWriteEvidenceToAnchorReceipt({ logicalAddress: receipt.logicalAddress, contentHash: receipt.contentHash, writer: expectedWriter, evidence: fresh.demosEvidence });
+      const expected = labelReceipt(demosWriteEvidenceToAnchorReceipt({ logicalAddress: receipt.logicalAddress, contentHash: receipt.contentHash, writer: expectedWriter, evidence: fresh.demosEvidence }), receiptLabels);
       if (canonicalize(expected) !== canonicalize(receipt)) reject('invalid', 'receipt differs from current authenticated evidence');
       return { status: 'present', evidenceMode: mode };
     });
