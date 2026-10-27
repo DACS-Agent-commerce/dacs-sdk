@@ -958,6 +958,10 @@ Engine floors, tests and refusal: a new iterator whose own `next` is not a funct
 | | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` | f11b772c4912bbd399a17ebc0b7cf061de341ce6 |
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | 5fa4b7cbc5b7c5b758afbb9f257ab6500da7a5c8 |
 | | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` | bb118dd861e66c1f7f15d9268ae8e721103efd9d |
+| D11 | fix(client): D11 record the chosen blobs of three parallel-record paths | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 
 ## Complete commit and file inventory
 
@@ -2652,6 +2656,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` |
 | fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 | fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
 
 ## Original moved files
 

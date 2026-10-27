@@ -39,12 +39,6 @@ export function table(data = ledger()) {
     lines.push(`| ${change.delta} | ${change.subject} | Git subject selector (must resolve exactly once after publication checkpoint) |`);
     for(const f of change.files) lines.push(`| | ${locate(f.path)} | ${f.after===null?'deleted':f.after} |`);
   }
-  if (data.mergeSnapshots?.length) {
-    lines.push('', '## Reviewed merge snapshots', '', '| Merge | Parents | File | Parent blobs | Merged blob |', '|---|---|---|---|---|');
-    for (const snapshot of data.mergeSnapshots) for (const file of snapshot.files) {
-      lines.push(`| ${snapshot.commit} | ${snapshot.parents.join(', ')} | ${locate(file.path)} | ${file.parentBlobs.join(', ')} | ${file.after} |`);
-    }
-  }
   const inventory=JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'));
   lines.push('', '## Complete commit and file inventory', '', 'Full hashes below bind completed commits. Unhashed record commits use unique exact subjects to avoid self-referential hashes. Source/test coordinates are generated from baseline-to-current Git hunks, so they name changed ranges at the current head; metadata starts at line 1 and deletions are explicit. The delta sections explain the reason for each group.', '', '| Commit / exact selector | Touched file:line |', '|---|---|');
   for(const c of inventory) for(const path of c.files) lines.push(`| ${c.sha??c.subject} | ${locate(path)} |`);
@@ -57,57 +51,17 @@ export function table(data = ledger()) {
   }
   return publicationText(lines.join('\n')+'\n');
 }
-// Source records form a DAG. A commit's blob is reviewed when a record or merge
-// snapshot names it there, or when a reviewed parent holds the same blob. A merge
-// may therefore choose a reviewed parent blob but cannot bring back one that no
-// parent holds; synthesizing a different blob requires its own immutable
-// commit/parent pins. Returns each recorded path with the one blob HEAD may hold.
-function terminalBlobs(data, history, failures) {
-  const graph = new Map(git('rev-list', '--parents', BASELINE+'..HEAD').split('\n').map(row => { const [sha,...parents]=row.split(' '); return [sha,parents]; }));
-  const events = new Map(), add = (sha,file) => {
-    const rows=events.get(file.path) ?? new Map(); rows.set(sha,file.after); events.set(file.path,rows);
-  };
-  for (const change of data.changes) {
-    const matches=history.filter(row=>row.subject===change.subject);
-    if (matches.length===1) for (const file of change.files) add(matches[0].sha,file);
-  }
-  const seen = new Set(), at = (rev,path) => { try { return git('rev-parse','--verify',`${rev}:${path}`); } catch { return null; } };
-  for (const snapshot of data.mergeSnapshots ?? []) {
-    const refuse = () => failures.push(`invalid merge snapshot ${snapshot.commit}`);
-    if (seen.has(snapshot.commit)) failures.push(`duplicate merge snapshot ${snapshot.commit}`);
-    seen.add(snapshot.commit);
-    if (!/^[0-9a-f]{40}$/.test(snapshot.commit) || !graph.has(snapshot.commit)
-      || !Array.isArray(snapshot.parents) || snapshot.parents.length!==2
-      || JSON.stringify(snapshot.parents)!==JSON.stringify(graph.get(snapshot.commit))
-      || !Array.isArray(snapshot.files) || snapshot.files.length===0) { refuse(); continue; }
-    const paths = new Set();
-    for (const file of snapshot.files) {
-      if (typeof file.path!=='string' || !/^packages\/dacs-client\/(src|test)\//.test(file.path)
-        || file.path.split('/').some(part=>['','.','..'].includes(part)) || paths.has(file.path)
-        || JSON.stringify(file.parentBlobs)!==JSON.stringify(snapshot.parents.map(parent=>at(parent,file.path)))
-        || file.after!==at(snapshot.commit,file.path) || file.parentBlobs.includes(file.after)) { refuse(); continue; }
-      paths.add(file.path); add(snapshot.commit,file);
-    }
-  }
-  const head = git('rev-parse','HEAD'), paths = [...events.keys()];
-  const commitIds = [...new Set([BASELINE,head,...graph.keys(),...[...graph.values()].flat()])];
-  const names = commitIds.flatMap(sha=>paths.map(path=>`${sha}:${path}`));
-  const listed = sourceGit(['-C',root,'cat-file','--batch-check'],{encoding:'utf8',maxBuffer:1<<28,input:names.join('\n')+'\n'}).split('\n');
-  const blobs = new Map(names.map((name,index)=>[name,/^[0-9a-f]{40} blob /.test(listed[index]) ? listed[index].slice(0,40) : null]));
-  const blobAt = (sha,path) => blobs.get(`${sha}:${path}`);
-  const verdicts = new Map();
-  function reviewed(sha, path) {
-    const key=`${sha}:${path}`;
-    if (!verdicts.has(key)) {
-      verdicts.set(key,false);
-      const named=events.get(path).get(sha), here=blobAt(sha,path);
-      verdicts.set(key, !graph.has(sha) ? here===blobAt(BASELINE,path)
-        : named!==undefined ? named===here
-        : graph.get(sha).some(parent=>blobAt(parent,path)===here && reviewed(parent,path)));
-    }
-    return verdicts.get(key);
-  }
-  return new Map(paths.map(path => [path,reviewed(head,path) ? [blobAt(head,path)] : []]));
+// The blob a recorded path must hold comes from the commit graph, not ledger
+// order. `records` are the path's resolved records ({sha, after}); within one
+// commit the last one counts. `independent(shas)` returns the commits that no
+// other listed commit descends from (git merge-base --independent). Returns
+// {blob} when those newest records agree, or {conflict: shas} when parallel
+// branches recorded different blobs and no later record chose one.
+export function expectedBlob(records, independent) {
+  const latest=new Map(records.map(r=>[r.sha,r.after]));
+  const newest=latest.size>1?independent([...latest.keys()]):[...latest.keys()];
+  const blobs=new Set(newest.map(sha=>latest.get(sha)));
+  return blobs.size===1?{blob:[...blobs][0]}:{conflict:newest};
 }
 export function checkDeltas(packageDir=pkg) {
   const failures=[]; const data=ledger(); const history=commits();
@@ -130,7 +84,7 @@ export function checkDeltas(packageDir=pkg) {
   const sourceManifest=evidence.sourceManifest;
   if(JSON.stringify(sourceManifest)!==JSON.stringify(JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'))))) failures.push('source manifest differs from archived source/delta evidence');
   if(data.schema!=='dacs-client-deltas/v2'||data.baseline!==BASELINE) failures.push('delta ledger baseline/schema changed');
-  const subjects=new Set();
+  const subjects=new Set(), recorded=new Map();
   for(const c of data.changes) {
     if(subjects.has(c.subject)) failures.push(`duplicate delta subject ${c.subject}`);
     subjects.add(c.subject);
@@ -140,6 +94,7 @@ export function checkDeltas(packageDir=pkg) {
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
+        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,after:f.after}]);
         for(const [rev,want] of [[`${sha}^`,f.before],[sha,f.after]]) {
           let actual=null;try{actual=git('rev-parse','--verify',`${rev}:${f.path}`);}catch{}
           if(actual!==want) failures.push(`${f.path}: delta ${c.delta} blob differs at ${rev}`);
@@ -157,9 +112,8 @@ export function checkDeltas(packageDir=pkg) {
     if(!published&&!files.some(path=>path.startsWith(prefix)))continue;
     if(!item || (item.sha!==null && item.sha!==h.sha) || JSON.stringify([...item.files].sort())!==JSON.stringify(files)) failures.push(`complete commit/file inventory differs for ${h.sha}`);
   }
-  const terminals=terminalBlobs(data,history,failures);
   const originals=JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'),'utf8')).files.map(f=>f.path);
-  const allowed=new Set([...originals,...evidence.deltas.changes.flatMap(c=>c.files.map(f=>f.path)),...data.changes.flatMap(c=>c.files.map(f=>f.path)),...terminals.keys()]);
+  const allowed=new Set([...originals,...evidence.deltas.changes.flatMap(c=>c.files.map(f=>f.path)),...data.changes.flatMap(c=>c.files.map(f=>f.path))]);
   for(const h of history) {
     const changed=git('diff','--no-renames','--name-only',h.sha+'^',h.sha,'--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
     const record=data.changes.find(c=>c.subject===h.subject);
@@ -175,13 +129,21 @@ export function checkDeltas(packageDir=pkg) {
     const a=staged.get(path),b=committed.get(path);
     if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
   }
+  // Merges are not record subjects, so HEAD, the index and the working bytes
+  // must all hold the newest recorded blob; a merge that keeps a stale side,
+  // rolls back or deletes a recorded file fails here.
+  const independent=shas=>git('merge-base','--independent',...shas).split('\n');
   for(const path of allowed) {
-    let expected=terminals.get(path);
-    if(!expected) { let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{} expected=[baseline]; }
+    let expected=null;
+    if(recorded.has(path)) {
+      const result=expectedBlob(recorded.get(path),independent);
+      if(result.conflict) { failures.push(`${path}: newest records disagree (${result.conflict.join(', ')}); record the chosen blob after the merge`); continue; }
+      expected=result.blob;
+    } else try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
     const rel=path.slice(prefix.length); const local=join(packageDir,rel);
     const actual=existsSync(local)?blob(readFileSync(local)):null;
-    const selected = committed.get(path)?.hash ?? null;
-    if(!expected.includes(selected) || actual!==selected) failures.push(`${path}: current blob differs from enumerated deltas (working bytes must equal HEAD)`);
+    const head=committed.get(path)?.hash??null, index=staged.get(path)?.hash??null;
+    if(actual!==expected||head!==expected||index!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
   }
   if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(data)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
   return {failures,allowed};
