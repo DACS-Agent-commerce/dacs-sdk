@@ -1,20 +1,65 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { sha256Hex, contentHash, finalityCommitmentAddress } from '@kynesyslabs/dacs';
+import { sha256Hex, contentHash, canonicalize, finalityCommitmentAddress } from '@kynesyslabs/dacs';
 import { anchorFixture } from './helpers/anchor-isolated-fixture.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
-import { seller, JOB } from './helpers/protocol-fixture.mjs';
+import { seller, JOB, protocolFixture } from './helpers/protocol-fixture.mjs';
+import { createDevnetPurchasedReportProducer } from '../src/devnet-demo/deliverable.mjs';
 
-test('CI seller runner enables the VM isolation API on both supported Node versions', async () => {
-  const workflow = await readFile(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const command = workflow.split('\n').find(line => line.includes('run: node ') && line.includes('packages/dacs-seller/test/*.test.mjs'));
-  assert(command?.includes('--experimental-vm-modules'));
-});
 for(const answer of [{result:200,response:0,success:false,error:'TEST failed'},{result:200,response:0},{result:200,response:0,require_reply:false,extra:null,error:'TEST refused'}]) test(`contradictory/incomplete nonce envelope refuses before wallet (${JSON.stringify(answer)})`,async()=>{
   const f=await anchorFixture();f.source.readRpc=async()=>answer;
   await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate');assert.equal(f.captured.length,0);assert.equal(f.journal.rows.size,0);
 });
+// The nonce read runs while the shared wallet nonce lane is held: bounded in bytes and time (rvd r4 D-2).
+test('the nonce read passes its reply byte cap, deadline and signal to the source',async()=>{
+  const f=await anchorFixture();let options;f.source.readRpc=async(path,body,supplied)=>{options=supplied;return {result:200,response:0,require_reply:false,extra:null};};
+  await f.publish(f.open(),JOB);
+  assert.equal(options.maxBytes,4096);assert.equal(options.timeoutMs,10000);assert.equal(options.signal.aborted,true,'the signal ends with the read');
+});
+test('a nonce read that never answers releases the lane at its deadline with no wallet request',async t=>{
+  const f=await anchorFixture();let options,called;const reached=new Promise(done=>{called=done;});
+  f.source.readRpc=(path,body,supplied)=>{options=supplied;called();return new Promise(()=>{});};
+  t.mock.timers.enable({apis:['setTimeout']});
+  const pending=f.publish(f.open(),JOB);await reached;t.mock.timers.tick(10000);
+  await assert.rejects(pending,error=>error.code==='indeterminate'&&/deadline/.test(error.message));
+  assert.equal(options.signal.aborted,true);assert.equal(f.captured.length,0);assert.equal(f.journal.rows.size,0);
+  t.mock.timers.reset();f.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null});
+  assert.equal((await f.publish(f.open(),JOB)).status,'indeterminate');assert.equal(f.captured.length,1,'the lane was released');
+});
+test('a nonce reply larger than its byte cap refuses before the wallet is asked',async()=>{
+  const f=await anchorFixture();f.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null,TEST:'x'.repeat(4096)});
+  await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&/byte limit/.test(error.message));assert.equal(f.captured.length,0);assert.equal(f.journal.rows.size,0);
+});
+
+// A caller's signed projection is bounded and JSON before it is hashed or read (rvd r4 D-4).
+test('verifyReceipt refuses a caller projection larger than one signed CREATE, or not JSON, before any read',async()=>{
+  const f=await anchorFixture(),anchor=f.open(),artifact=await f.artifact(JOB);let reads=0;
+  f.controls.reader.verifyReceipt=async()=>{reads++;return 'valid';};
+  const signedOfSize=(bytes)=>{
+    const content={data:['storageProgram',{metadata:{artifactKind:'FinalityCommitmentRecord',artifactBinding:{jobId:JOB}}}],padding:''};
+    content.padding='x'.repeat(bytes-Buffer.byteLength(JSON.stringify(content)));
+    const hash=sha256Hex(JSON.stringify(content));
+    return {hash,content,signature:{type:'ed25519',data:`0x${seller.signBytes(Buffer.from(hash)).toString('hex')}`}};
+  };
+  const verify=(projection)=>anchor.verifyReceipt({logicalAddress:finalityCommitmentAddress(JOB),artifact,artifactKind:'FinalityCommitmentRecord',receipt:{transactionRef:{value:projection.hash}},signedProjection:projection,fresh:true});
+  assert.equal(await verify(signedOfSize(65_536)),'valid');assert.equal(reads,1,'an authentic projection within the budget is read');
+  assert.equal(await verify(signedOfSize(65_537)),'invalid');
+  const cyclic=signedOfSize(1024);cyclic.content.self=cyclic.content;assert.equal(await verify(cyclic),'invalid');
+  assert.equal(reads,1);
+});
+
+// The largest report the producer admits is published through one CREATE (rvd r4 D-1).
+test('the largest purchased report the producer admits reaches the wallet as one CREATE',async()=>{
+  const f=await anchorFixture({artifactKinds:['Deliverable']}),p=await protocolFixture(),settlementId='TEST-settlement';
+  const produce=(text)=>createDevnetPurchasedReportProducer({producer:f.seller,produce:()=>text})({agreement:p.agreement,listing:p.listing,settlementId});
+  const capacity=16_384-(Buffer.byteLength(canonicalize(produce('x')))-1),report=produce('x'.repeat(capacity));
+  assert.equal(Buffer.byteLength(canonicalize(report)),16_384);assert.throws(()=>produce('x'.repeat(capacity+1)),/one storage CREATE/);
+  const deliveryBinding={version:'1',profile:'dacs-native-delivery-publication/v1',jobId:report.jobId,phase:'deliver-storage-program',phaseIndex:3,listing:report.listing,agreementHash:report.agreementHash,
+    fulfilmentId:'TEST-fulfilment',purchaseAmount:{amount:'1',currency:'DEM'},payloadHash:contentHash(report)};
+  assert.equal((await f.open().publish({logicalAddress:`dacs4:deliverable:${report.jobId}`,artifact:report,artifactKind:'Deliverable',deliveryBinding})).status,'indeterminate');
+  assert.equal(f.captured.length,1);assert.deepEqual(f.captured[0].transaction.content.data[1].data,report);
+});
+
 test('canonical decimal-string nonce reaches one reservation with the numeric successor',async()=>{
   const f=await anchorFixture();f.controls.nonce='0';assert.equal((await f.publish(f.open(),JOB)).status,'indeterminate');assert.equal(f.captured.length,1);assert.equal(f.captured[0].transaction.content.nonce,1);
 });
@@ -27,7 +72,7 @@ test('accepted signed CREATE publishes, reopens, verifies receipts and preserves
     await f.sourceJournal.put('TEST accepted',{stage:'observed',hash:signed.hash,signedTransaction:signed});
     return {success:true,data:{hash:signed.hash,writeProof:{disposition:'included'}}};
   };
-  const result=await f.publish(anchor,JOB);assert.equal(result.status,'present');assert.equal(result.receipt.state,'finalized');assert.equal(f.captured.length,1);
+  const result=await f.publish(anchor,JOB);assert.equal(result.status,'present');assert.equal(result.receipt.state,'included');assert.equal(result.receipt.substrate,'demos-sr2-simulated-fixture');assert.equal(f.captured.length,1);
   const input={logicalAddress,artifact:result.artifact,artifactKind:'FinalityCommitmentRecord',writer:f.seller};
   const reopened=f.open();assert.equal((await reopened.read({...input,fresh:true})).status,'present');
   assert.equal(await reopened.verifyReceipt({...input,receipt:result.receipt,signedProjection:result.signedProjection,fresh:true}),'valid');

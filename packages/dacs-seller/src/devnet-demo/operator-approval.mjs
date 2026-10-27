@@ -1,15 +1,16 @@
-import { stopRequested, stopSignal } from './stop-request.mjs';
-import { createInterface } from 'node:readline/promises';
-import { randomUUID } from 'node:crypto';
 import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
-import { admitRawJson, compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { truncateSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline/promises';
+import { stopRequested, stopSignal } from './stop-request.mjs';
+import { admitRawJson, canonicalDemosAgentPublicKey, canonicalize, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCanonicalJobId, isCompositeVerificationRecord, isFinalityCommitmentRecord, isSettlementEvidence, paymentEvidenceAddress, sameCanonicalClaimIdentity, validateSettlementEvidenceStructure } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
-import { deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
+import { isPaymentTxRef } from './seller-purchase-source.mjs';
+import { isDevnetPurchasedReport } from './deliverable.mjs';
+import { buildStorageProgramCreatePayload } from '../dacs/wallet-transactions.mjs';
+import { DEVNET_DEMO_ARTIFACT_KIND, DEVNET_DEMO_ARTIFACT_POLICY } from '../dacs/devnet-source.mjs';
 
 const sha=(value)=>createHash('sha256').update(value).digest('hex');
 const OS=/^(0|[1-9][0-9]*)$/,POSITIVE_OS=/^[1-9][0-9]*$/,HASH=/^[0-9a-f]{64}$/;
@@ -38,6 +39,14 @@ export function sellerPurchaseSource(value){
 // for exact manual approval: the seller has no record of the job before the
 // proposal reaches it, and is never told of a buyer-side cancellation.
 const HOLD_REASONS=new Set(['seller-record-missing','cancellation-unknown']);
+// The closed manual table: the only policy reasons exact manual approval may
+// waive, by when the write happens. Before payment, the seller-records holds;
+// after payment, a write the buyer paid for that only a limit refuses. Every
+// other reason is final, and an error is never a reason.
+const MANUAL_REASONS=Object.freeze({before:HOLD_REASONS,after:new Set(['write-fee-cap','job-write-limit','hourly-write-limit','hourly-dem-limit'])});
+const HELD_REASONS=new Set([...MANUAL_REASONS.before,...MANUAL_REASONS.after]);
+const paymentPhase=(kind)=>BEFORE_PAYMENT.has(kind)?'before':'after';
+const manualReason=(kind,reason)=>MANUAL_REASONS[paymentPhase(kind)].has(reason);
 // Validates the optional operator config field. Manual stays exactly
 // {mode:'manual'}; policy may set its limits, each defaulting as above.
 // purchaseSource is validated on its own and is not part of the settings.
@@ -148,14 +157,14 @@ export function parsePolicyLedger(text){
       &&authorized.approvalHash===row.approvalHash&&authorized.attemptId===(row.attemptId??null);
     if(Object.hasOwn(row,'reservationId')&&(!policyRow||typeof row.reservationId!=='string'||!row.reservationId||(byReservationId.has(row.reservationId)&&!linked)))malformed();
     // A held write the operator approved, completed at confirmation as a policy reservation.
-    if(Object.hasOwn(row,'policyHold')&&(!policyRow||!HOLD_REASONS.has(row.policyHold)||!row.confirmation))malformed();
+    if(Object.hasOwn(row,'policyHold')&&(!policyRow||!HELD_REASONS.has(row.policyHold)||!row.confirmation))malformed();
     let attempt=null,opened=false;
     if(Object.hasOwn(row,'attemptId')){
       if(typeof row.attemptId!=='string'||!ATTEMPT_ID.test(row.attemptId)||Object.hasOwn(row,'manualApproved'))malformed();
       attempt=attempts.get(row.attemptId);
       if(policyRow&&!Object.hasOwn(row,'policyHold')){
         // The hold opens the attempt.
-        if(attempt||row.decision!=='rejected'||!HOLD_REASONS.has(row.policyReason))malformed();
+        if(attempt||row.decision!=='rejected'||!HELD_REASONS.has(row.policyReason))malformed();
         attempt={approvalHash:row.approvalHash,jobId:null,manual:false,reservation:null,outcome:null,reason:null,originLine:lineNumber};attempts.set(row.attemptId,attempt);opened=true;
       }else if(!attempt||attempt.outcome!==null||attempt.approvalHash!==row.approvalHash||(attempt.reservation&&!(linked&&attempt.reservation===authorized)))malformed();
     }
@@ -278,106 +287,47 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}
   return null;
 }
 
-// budgetRefusal for the one write being decided, read under the policy lock (throws when unreadable), with
-// unheld in-memory preparations. A manual confirmation, or a matching preparation or sign-authorized
-// reservation, already has its budget. A preparation (signing: its approvalHash) whose exact request still has open sign authority (also from before a restart) is refused.
-async function writeBudgetRefusal({evidencePath,jobId,artifactKind,totalOs,at,limits,manualApproved,provisional,ledgerHeld,signing}){
-  if(manualApproved||(provisional&&ledgerHeld))return null;
-  const snapshot=await readPolicyLedger(evidencePath);
-  if(signing&&snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.approvalHash===signing))return 'sign-authorization-open';
-  if(provisional)return null;
-  snapshot.rows.push(...[...(provisionalHolds.get(resolve(evidencePath))??[])].filter(hold=>!snapshot.attempts.has(hold.attemptId)));
-  return budgetRefusal({jobId,totalOs,at,limits,writes:1,snapshot,converting:{jobId,artifactKind}});
-}
-
-// Combines the two approval paths for the seller wallet. Listing writes are
-// always manual. A policy refusal is final for that artifact (the wallet
-// journals it as denied), so refusing a write after payment would strand a
-// purchase the buyer has already paid for: payment evidence, delivery evidence
-// and the Deliverable go to exact manual approval instead before signing.
-// A pre-payment write the policy held (seller records) goes there too. Its
-// budget reservation is kept across the manual gate: confirmation completes
-// it as the policy's own reservation, and a decline releases it. The manual
-// line carries the hold's attemptId, so the two are one attempt.
-// A refused fee at confirmation never goes to a manual override.
+/** Combine exact manual approval with the seller policy for one seller wallet; returns the wallet's approve(request),
+ * with confirm(validity) and settle(request, outcome). Listing writes and manual mode always ask manual. In policy
+ * mode the policy decides (policy.decide): an approved write is already sign-authorized; a held write is asked of
+ * manual only when its (phase, reason) is in the closed manual table, and the answer goes to the policy's sign gate
+ * (policy.authorizeHeld); every other refusal is final. Policy errors reject. confirm checks the one policy-approved
+ * write in flight at the policy's confirmation gate, and is false for any other approval. */
 export function composeSellerApproval({mode,policy,manual}){
   let prepared=null;
-  // The policy holds the same copy through preparation and confirmation;
-  // settle maps the wallet's request back to that copy.
-  const confirmedCopies=new WeakMap(),atManualGate=new WeakSet();
   const approve=async(request)=>{
     const previous=prepared;prepared=null;
-    if(previous?.policy||previous?.held)await policy.settle?.(previous.request,'released','replaced');
-    const kind=request?.content?.artifactKind;
-    const requestBytes=JSON.stringify(request);
+    if(previous)await policy.settle(previous,'released','replaced');
+    const kind=request?.content?.artifactKind,requestBytes=JSON.stringify(request);
     if(mode!=='policy'||kind==='Listing'){
-      const accepted=await manual(JSON.parse(requestBytes));
-      if(accepted!==true||JSON.stringify(request)!==requestBytes)return false;
+      if((await manual(JSON.parse(requestBytes)))!==true||JSON.stringify(request)!==requestBytes)return false;
       freezeRequest(request);return true;
     }
-    const deferred=typeof policy.prepare==='function';
-    const copy=deferred?JSON.parse(requestBytes):request;
-    const retain=async()=>{
-      if(JSON.stringify(request)!==requestBytes||JSON.stringify(copy)!==requestBytes){
-        await policy.settle?.(copy,'released','confirmation-mismatch');return false;
-      }
-      freezeRequest(request);freezeRequest(copy);return true;
-    };
-    if((await (deferred?policy.prepare(copy):policy(request)))===true){
-      if(!(await retain()))return false;
-      if(deferred){prepared={request:copy,policy:true,origin:request};confirmedCopies.set(request,copy);}
-      return true;
+    const decision=await policy.decide(request);
+    let answer=decision.outcome==='approved'?'signed':'refused';
+    if(decision.outcome==='held'&&manualReason(kind,decision.reason)){
+      let accepted;
+      // A shutdown that ends the manual answer decides nothing: the attempt is released and the error kept.
+      try{accepted=(await manual(JSON.parse(requestBytes),undefined,{attemptId:decision.attemptId}))===true;}
+      catch(error){await policy.releaseHeld(request,'operator-released').catch(()=>{});throw error;}
+      answer=await policy.authorizeHeld(request,accepted);
     }
-    const held=policy.heldForManual?.(copy)===true;
-    if(!AFTER_PAYMENT.has(kind)&&!held)return false;
-    let accepted=false;
-    const attemptId=held?policy.heldAttempt?.(copy)??null:null;
-    if(held)atManualGate.add(request);
-    try{accepted=(await (attemptId?manual(copy,undefined,{attemptId}):manual(copy)))===true;}
-    finally{atManualGate.delete(request);if(held&&deferred&&!accepted)await policy.settle?.(copy,'released','manual-declined');}
-    if(!accepted||!(await retain()))return false;
-    // Seller records: the approved held write is sign-authorized on the ledger
-    // before this answer lets the wallet sign it. If that line cannot be
-    // retained, nothing was signed and the attempt ends released. The write is
-    // not refused (before payment a refusal is final for its artifact): after
-    // a pause it is decided again from the start, as a new hold for a new
-    // exact manual approval.
-    if(deferred&&held&&typeof policy.authorizeSign==='function'&&(await policy.authorizeSign(copy))!==true){
-      try{await policy.settle?.(copy,'released','sign-authorization-failed');}
-      catch(error){process.stderr.write(`seller-policy-sign-authorization: the attempt ${attemptId} could not be ended released (${String(error?.code??error?.message).slice(0,120)}); it stays held and counted\n`);}
-      if(policy.heldForManual?.(copy)!==true)return false;
-      process.stderr.write(`seller-policy-sign-authorization failed: the ${kind} write for job ${copy?.content?.jobId} was not signed and is not refused; it is decided again, as a new hold for exact manual approval\n`);
-      await policy.pause?.();
-      return approve(request);
+    // The sign line could not be retained: nothing was signed and the attempt is released, so the write is
+    // decided again after a pause (before payment a refusal would be final for its artifact).
+    if(answer==='unsigned'){
+      process.stderr.write(`seller-policy-sign-authorization failed: the ${kind} write for job ${request.content.jobId} was not signed; it is decided again\n`);
+      await policy.pause();return approve(request);
     }
-    if(deferred&&held){prepared={request:copy,held:true,origin:request};confirmedCopies.set(request,copy);}
-    else if(deferred)prepared={request:structuredClone(request),policy:false};
-    return true;
+    if(answer==='signed')prepared=request;
+    return answer==='signed';
   };
-  // True while this exact request is at manual approval because the policy held it.
-  approve.heldForManual=(request)=>atManualGate.has(request);
-  // The operator serializes this seller wallet. Consume one prepared decision
-  // at confirmation; a failed/repeated confirmation cannot reuse it.
-  approve.confirm=async(validity)=>{
-    const current=prepared;prepared=null;
-    if(!current)return false;
-    const c=validity?.response?.data?.transaction?.content,r=current.request.content;
-    if(c?.from!==r.wallet||c.nonce!==r.nonce||c.timestamp!==r.timestamp||JSON.stringify(c.data?.[1])!==r.exactCreate){
-      if(current.policy||current.held)await policy.settle?.(current.request,'released','confirmation-mismatch');
-      return false;
-    }
-    return policy(current.request,validity,current.held?{held:true}:{manualApproved:!current.policy});
-  };
-  approve.settle=(request,outcome)=>{
-    if(outcome==='released'&&prepared?.origin===request)prepared=null;
-    return policy.settle?.(confirmedCopies.get(request)??request,outcome);
-  };
+  approve.confirm=async(validity)=>{const current=prepared;prepared=null;return current?policy(current,validity):false;};
+  approve.settle=(request,outcome)=>{if(outcome==='released'&&prepared===request)prepared=null;return policy.settle(request,outcome);};
   return approve;
 }
 
-// Seller records: how long a write before payment waits between reads of an
-// approval ledger that cannot be read (createExactOperatorApproval).
-export const SELLER_LEDGER_RETRY_MS=5_000;
+// How long a policy decision waits between reads of an approval ledger that cannot be read.
+const SELLER_LEDGER_RETRY_MS=5_000;
 const LEDGER_STOPPED='seller policy stopped while its approval ledger could not be read; nothing was decided, written or signed';
 const APPROVAL_STOPPED='seller approval stopped (operator close): this write is not approved, and nothing more is written for it';
 const stoppedError=(message)=>Object.assign(new Error(message),{code:'seller_approval_stopped'});
@@ -387,31 +337,25 @@ const stoppedError=(message)=>Object.assign(new Error(message),{code:'seller_app
 export const OPERATOR_CLOSING='operator_closing';
 const closingError=()=>Object.assign(new Error('the operator is closing: this seller approval was not decided, nothing was signed, and the next start asks again'),{code:OPERATOR_CLOSING});
 
-/** Create exact manual or bounded policy approval with durable sign reservations.
- * Returns an approval function with prepare, confirmation, settlement, stop and reconciliation methods.
- * Abort and ledger failures reject; a false answer permits no signature. */
+/** Create exact manual approval, or bounded seller policy approval with durable attempts and sign reservations.
+ * Manual mode: approve(request, undefined, {attemptId}) asks authorize (or the TTY) and records the answer.
+ * Policy mode: decide(request) resolves {outcome:'approved'|'held'|'refused', reason, attemptId}, prepare(request)
+ * its approval as a boolean; authorizeHeld(request, accepted) ends a held attempt at the sign gate ('signed',
+ * 'refused', or 'unsigned' when its sign line could not be retained); releaseHeld ends it unanswered;
+ * approve(request, validity) is the confirmation gate; settle(request, outcome) completes a reservation; reconcile()
+ * labels unresolved ones; stop() ends waits and pending manual answers. Purchase resolver and policy input errors
+ * reject with nothing decided or written; an unreadable ledger is waited for until stop(). */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
   const askSignal=()=>{const current=typeof signal==='function'?signal():signal;if(current!==null&&!(current instanceof AbortSignal))throw new TypeError('seller approval signal must be an AbortSignal');return current;};
-  const STOPPED=Symbol('stopped');
-  const unlessStopped=(answer,stopSignal)=>!stopSignal?answer:new Promise((resolve,reject)=>{
-    const stop=()=>resolve(STOPPED);if(stopSignal.aborted)stop();else stopSignal.addEventListener('abort',stop,{once:true});
-    Promise.resolve(answer).then(resolve,reject).finally(()=>stopSignal.removeEventListener('abort',stop));
-  });
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
   if(policyMode&&(!policy||typeof policy.resolvePurchase!=='function'||typeof policy.listingPin!=='function'||!policy.sourceBinding||!/^0x[0-9a-f]{64}$/.test(policy.address??'')||policy.seller!==`did:demos:agent:${policy.address.slice(2)}`))throw new TypeError('seller policy requires exact operator-owned purchase and source context');
   if(policyMode)sellerPurchaseSource(policy.purchaseSource);
-  const signRecords=policyMode&&sellerPurchaseSource(policy.purchaseSource)==='seller';
-  // Track each exact request through preparation, signing, confirmation and completion.
-  const reservations=new WeakMap(),heldRequests=new WeakMap(),heldAttempts=new WeakMap(),signAuthorized=new WeakMap();
-  const preparations=new WeakMap(),path=resolve(evidencePath),liveAttempts=new Set(),liveReservations=new Set();
-  const dropPreparation=(request)=>{
-    const hold=preparations.get(request);if(!hold)return;
-    const holds=provisionalHolds.get(path);holds.delete(hold);if(!holds.size)provisionalHolds.delete(path);
-    preparations.delete(request);
-  };
-  const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
+  // One record per request object: its exact bytes, its held attempt (attemptId and hold reason) and its open
+  // sign reservation. open: the attempt and reservation ids this process still owns (reconcile skips them).
+  const records=new WeakMap(),open=new Set();
+  const STOPPED=Symbol('stopped');
   let stopped=false,idle=null;const pauses=new Set(),flights=new Set(),halt=new AbortController();
   const live=()=>{if(stopped)throw stoppedError(APPROVAL_STOPPED);};
   const track=(work)=>{
@@ -420,232 +364,194 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     flights.add(flight);flight.then(forget,forget);
     return flight;
   };
+  const locked=(work)=>track(()=>serializedPolicy(evidencePath,async()=>{live();return work();}));
   const pause=()=>new Promise((done,fail)=>{
     if(stopped)return fail(stoppedError(LEDGER_STOPPED));
     const entry={fail,timer:setTimeout(()=>{pauses.delete(entry);done();},ledgerRetryMs)};pauses.add(entry);
   });
-  const LOG_EVERY=Math.max(1,Math.ceil(60_000/ledgerRetryMs));
-  const ledgerUnreadable=async(error,request,waited)=>{
-    if(stopped)throw stoppedError(LEDGER_STOPPED);
-    if(waited%LOG_EVERY===0)process.stderr.write(`seller-policy-ledger unreadable: ${path}${Number.isSafeInteger(error?.ledgerLine)?` line ${error.ledgerLine}`:''} (${String(error?.code??error?.message).slice(0,120)}); the ${request?.content?.artifactKind} write for job ${request?.content?.jobId} waits, unsigned and not refused, and is decided again once the ledger reads; with the operator stopped, correct the ledger (docs/SELLER-POLICY-AND-DELIVERY-EVIDENCE.md, "Resolving a held reservation by hand")\n`);
-    await pause();
-  };
-  const ledgerReadable=(request)=>process.stderr.write(`seller-policy-ledger readable again: deciding the ${request?.content?.artifactKind} write for job ${request?.content?.jobId}\n`);
-  // An unreadable pre-payment ledger holds the write until a fresh decision is possible.
-  const whenReadable=async(read,request)=>{
+  // An unreadable ledger holds the write, unsigned and not refused, until a fresh decision is possible.
+  const readableLedger=async(request)=>{
     for(let waited=0;;waited++){
       live();
-      let value;
-      try{value=await read();}catch(error){await ledgerUnreadable(error,request,waited);continue;}
-      live();
-      if(waited)ledgerReadable(request);
-      return value;
+      try{const snapshot=await readPolicyLedger(evidencePath);live();return snapshot;}
+      catch(error){
+        if(stopped)throw stoppedError(LEDGER_STOPPED);
+        if(waited%Math.max(1,Math.ceil(60_000/ledgerRetryMs))===0)process.stderr.write(`seller-policy-ledger unreadable: ${resolve(evidencePath)}${Number.isSafeInteger(error?.ledgerLine)?` line ${error.ledgerLine}`:''} (${String(error?.code??error?.message).slice(0,120)}); the ${request?.content?.artifactKind} write for job ${request?.content?.jobId} waits, unsigned and not refused, and is decided again once the ledger reads\n`);
+        await pause();
+      }
     }
   };
-  // Retain and sync the exact sign authority before allowing the wallet to sign.
-  const authorizeSigning=async(request,{reservationId=randomUUID(),attemptId=null,at=now()}={})=>{
-    const requestBytes=JSON.stringify(request),totalOs=request?.content?.debit?.totalOs;
-    if(!OS.test(totalOs??'')||!Number.isSafeInteger(at)||at<0)throw new Error('seller policy sign authorization is malformed');
-    const reservation={reservationId,approvalHash:sha(requestBytes),totalOs,...(attemptId?{attemptId}:{})};
-    try{
-      appendApprovalLedgerLine(evidencePath,{format:SIGN_FORMAT,reservationId,approvalHash:reservation.approvalHash,requestBytes,totalOs,recordedAt:at,...(attemptId?{attemptId}:{})});
-    }catch(error){
+  const declaredOs=(request)=>{const total=request?.content?.debit?.totalOs;return typeof total==='string'&&OS.test(total)?BigInt(total):null;};
+  // Every check before a sign line, on one ledger snapshot read under the policy lock: the operator maximum, the
+  // policy (its fee cap at the declared total), no open sign authority for this wallet nonce, then the fee cap and
+  // the limits. waiver: the manually approved class of a held attempt ('before': the holds, 'after': the cap and
+  // limits). Resolves null when the write may be signed, else a reason; a manual-table reason only when nothing
+  // else refuses.
+  const signRefusal=async(copy,snapshot,waiver=null)=>{
+    const c=copy?.content,total=declaredOs(copy);
+    if(total!==null&&total>BigInt(maxTotalOs))return 'operator-fee-budget';
+    const reason=await policyRefusal(copy,policy,total===null?settings:{...settings,maxWriteTotalOs:total.toString()},{held:waiver==='before'});
+    live();
+    if(reason&&!HOLD_REASONS.has(reason))return reason;
+    if(snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.request?.content?.wallet===c.wallet&&row.request.content.nonce===c.nonce))return 'sign-authorization-open';
+    if(waiver==='after')return null;
+    return (total>BigInt(settings.maxWriteTotalOs)?'write-fee-cap':budgetRefusal({jobId:c.jobId,totalOs:total,at:clock(),limits:settings,writes:1,snapshot,converting:c}))??reason;
+  };
+  // Policy ledger lines need a nonnegative integer time; a clock without one decides nothing.
+  const clock=()=>{const at=now();if(!Number.isSafeInteger(at)||at<0)throw new RangeError('seller policy time must be a nonnegative safe integer');return at;};
+  // The end of the sign gate: purchase authority reread after the last ledger await, and the request still the
+  // exact bytes checked. Resolves null when the write may be signed, else the refusal.
+  const reread=async(request,record)=>{
+    const reason=await stillAuthorizedToSign(JSON.parse(record.bytes),policy,HOLD_REASONS.has(record.reason));
+    live();
+    return reason??(JSON.stringify(request)===record.bytes?null:'request-changed');
+  };
+  // The only writer of sign lines: the exact bytes frozen, then one synchronous, synced sign line. When the line
+  // cannot be retained it rejects, after releasing whichever of its reservation or attempt is open.
+  const appendSign=async(request,record)=>{
+    freezeRequest(request);
+    const ids={reservationId:randomUUID(),approvalHash:sha(record.bytes),...(record.attemptId?{attemptId:record.attemptId}:{})};
+    try{appendApprovalLedgerLine(evidencePath,{format:SIGN_FORMAT,...ids,requestBytes:record.bytes,totalOs:JSON.parse(record.bytes).content.debit.totalOs,recordedAt:clock()});}
+    catch(error){
       try{
-        const row=(await readPolicyLedger(evidencePath)).rows.find(entry=>entry.signAuthorized&&entry.reservationId===reservationId),recordedAt=now();
-        if(!stopped&&row?.outcome===null&&Number.isSafeInteger(recordedAt)&&recordedAt>=row.recordedAt)
-          appendAttempt({reservationId,approvalHash:reservation.approvalHash,...(attemptId?{attemptId}:{}),outcome:'released',reason:'sign-authorization-failed',recordedAt});
-      }catch{}
+        const{rows,attempts}=await readPolicyLedger(evidencePath),line=rows.some(row=>row.reservationId===ids.reservationId&&row.outcome===null);
+        if(line||attempts.get(record.attemptId)?.outcome===null)appendAttempt({...(line?ids:{attemptId:ids.attemptId,approvalHash:ids.approvalHash}),outcome:'released',reason:'sign-authorization-failed',recordedAt:clock()});
+        records.delete(request);open.delete(record.attemptId);
+      }catch{/* the attempt stays open and counted; a retry or restart sees it */}
       throw error;
     }
-    signAuthorized.set(request,reservation);liveReservations.add(reservationId);
-    return reservation;
+    record.reservation=ids;open.add(ids.reservationId);records.set(request,record);
   };
-  const releaseAttempt=async(attemptId,reason)=>{
-    const attempt=(await readPolicyLedger(evidencePath)).attempts.get(attemptId);
+  const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
+  const endAttempt=(request,record,reason)=>{
+    appendAttempt({attemptId:record.attemptId,approvalHash:sha(record.bytes),outcome:'released',reason,recordedAt:clock()});
+    open.delete(record.attemptId);records.delete(request);
+  };
+  // decide: the policy's answer for one exact write. A refusal and a hold are logged; only a hold in the manual
+  // table opens an attempt, which counts its declared debit until it ends.
+  const decide=(request)=>locked(async()=>{
+    const bytes=JSON.stringify(request),copy=JSON.parse(bytes),previous=records.get(request),snapshot=await readableLedger(copy);
+    if(previous?.attemptId&&!previous.reservation&&snapshot.attempts.get(previous.attemptId)?.outcome===null)endAttempt(request,previous,'replaced');
+    const record={bytes,attemptId:null,reason:null,reservation:null};
+    const reason=await signRefusal(copy,snapshot)??await reread(request,record);
+    if(reason===null){await appendSign(request,record);return{outcome:'approved'};}
+    const attemptId=manualReason(copy?.content?.artifactKind,reason)?randomUUID():null;
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
+      decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),recordedAt:clock()});
+    if(attemptId){records.set(request,{...record,attemptId,reason});open.add(attemptId);}
+    return{outcome:attemptId?'held':'refused',reason,attemptId};
+  });
+  // The sign gate for a held attempt's manual answer: only its recorded class is waived; every other check runs
+  // again (the attempt's own hold no longer counts against its limits).
+  const authorizeHeld=(request,accepted)=>locked(async()=>{
+    const record=records.get(request);
+    if(!record?.attemptId||record.reservation)return 'refused';
+    if(accepted!==true){endAttempt(request,record,'manual-declined');return 'refused';}
+    const snapshot=await readableLedger(request),attempt=snapshot.attempts.get(record.attemptId);
+    if(attempt?.outcome!==null||attempt.reservation){records.delete(request);open.delete(record.attemptId);return 'refused';}
+    snapshot.rows=snapshot.rows.filter(row=>row.attemptId!==record.attemptId);
+    const copy=JSON.parse(record.bytes),reason=await signRefusal(copy,snapshot,paymentPhase(copy.content.artifactKind))??await reread(request,record);
+    if(reason){endAttempt(request,record,'confirmation-refused');return 'refused';}
+    try{await appendSign(request,record);}catch(error){if(stopped)throw error;return 'unsigned';}
+    return 'signed';
+  });
+  // The confirmation gate: the node's executed CREATE of exactly this request within the operator maximum, its own
+  // open sign line, and purchase authority reread before the confirmation line. A refusal releases the reservation.
+  const confirm=(request,validity)=>locked(async()=>{
+    const record=records.get(request),ids=record?.reservation;
+    if(!ids)return false;
+    const copy=JSON.parse(record.bytes),declared=declaredOs(copy),confirmed=confirmedWriteOs(validity,copy),counted=confirmed!==null&&confirmed>declared?confirmed:declared;
+    const row=await openSignLine(record);
+    if(row.confirmed!==null)return false;
+    const reason=confirmed===null?'confirmation-mismatch':counted>BigInt(maxTotalOs)?'operator-fee-budget':await stillAuthorizedToSign(copy,policy,HOLD_REASONS.has(record.reason));
     live();
-    if(!attempt||(attempt.reservation&&attempt.outcome===null))throw new Error('seller policy attempt is unavailable');
-    if(attempt.outcome===null)appendAttempt({attemptId,approvalHash:attempt.approvalHash,outcome:'released',reason,recordedAt:now()});
-    liveAttempts.delete(attemptId);
+    if(reason){completeReservation(request,record,row,'released',reason==='confirmation-mismatch'?reason:'confirmation-refused');return false;}
+    // Retained: the executed transaction confirmedWriteOs checked member by member, not the rest of the node's answer.
+    const tx=validity.response.data.transaction;
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:ids.approvalHash,requestBytes:record.bytes,method:copy.method,address:copy.address,totalOs:counted.toString(),decision:'approved',approvalMode:'policy',policyReason:null,
+      reservationId:ids.reservationId,...(record.attemptId?{attemptId:record.attemptId,policyHold:record.reason}:{}),confirmation:{hash:tx.hash??null,content:tx.content},declaredTotalOs:declared.toString(),
+      confirmedRemovalsOs:confirmed.toString(),countedTotalOs:counted.toString(),recordedAt:clock()});
+    return true;
+  });
+  // The record's sign line, still open, from a fresh ledger read (an unreadable ledger rejects).
+  const openSignLine=async(record)=>{
+    const row=(await readPolicyLedger(evidencePath)).rows.find(entry=>entry.signAuthorized&&entry.reservationId===record.reservation.reservationId);
+    live();
+    if(row?.outcome!==null)throw new Error('seller policy reservation is unavailable');
+    return row;
   };
-  const decide=async(input,validity,{preparing=false,manualApproved=false,held=null,provisional=null,attemptId=null,signed=null,origin=input}={})=>{
-    const confirmedTotal=validity===undefined?undefined:confirmedWriteOs(validity,input);
-    const declaredTotal=input?.content?.debit?.totalOs;
-    const declared=typeof declaredTotal==='string'&&OS.test(declaredTotal)?BigInt(declaredTotal):null;
-    const countedTotal=confirmedTotal===undefined?declared:confirmedTotal===null||declared===null?null:confirmedTotal>declared?confirmedTotal:declared;
-    const total=countedTotal?.toString();
-    const withinBudget=input?.method==='sendTransaction'&&OS.test(total??'')&&BigInt(total)<=BigInt(maxTotalOs);
-    if(!policyMode&&!withinBudget)return false;
-    const requestBytes=JSON.stringify(input),request=JSON.parse(requestBytes),approvalHash=sha(requestBytes);
-    const retain=()=>{
-      if(JSON.stringify(origin)!==requestBytes||JSON.stringify(input)!==requestBytes){policyReason='request-changed';return false;}
-      freezeRequest(origin);freezeRequest(input);return true;
-    };
-    let at=policyMode?now():null;
-    const authorized=signRecords&&validity!==undefined&&!manualApproved?signed:null;
-    let reservationId=authorized?authorized.reservationId:policyMode?randomUUID():null;
-    const notice=policyMode?null:sellerNotice(request);
-    let accepted=false,policyReason=null,closeSignal=null;
-    if(policyMode){
-      const waitsForLedger=signRecords&&validity===undefined&&BEFORE_PAYMENT.has(request?.content?.artifactKind);
-      for(let waited=0;;){
-        live();
-        try{policyReason=confirmedTotal===null?'debit':!withinBudget?'operator-fee-budget':await policyRefusal(request,policy,settings,{confirmedTotal,countedTotal,manualApproved,held});}catch{policyReason='policy-check-failed';}
-        live();
-        if(held&&HOLD_REASONS.has(policyReason))policyReason=null;
-        const hold=!held&&HOLD_REASONS.has(policyReason)?policyReason:null;
-        if(!policyReason||hold){try{policyReason=(await writeBudgetRefusal({evidencePath,jobId:request.content.jobId,artifactKind:request.content.artifactKind,totalOs:total,at,limits:settings,manualApproved,
-          provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null,signing:preparing&&approvalHash}))??hold;}
-          catch(error){if(waitsForLedger){await ledgerUnreadable(error,request,waited++);at=now();continue;}policyReason='evidence-unreadable';}}
-        live();
-        if(waited)ledgerReadable(request);
-        break;
-      }
-      if(!policyReason&&signRecords&&validity!==undefined&&!manualApproved&&authorized?.approvalHash!==approvalHash)policyReason='sign-authorization-missing';
-      accepted=policyReason===null;
+  const completeReservation=(request,record,row,outcome,reason)=>{
+    const at=clock();
+    if(at<row.recordedAt)throw new RangeError('seller policy completion cannot predate its sign authorization');
+    appendAttempt({...record.reservation,outcome,...(outcome==='released'?{reason:RELEASE_REASONS.has(reason)?reason:'wallet-released'}:{}),recordedAt:at});
+    open.delete(record.reservation.reservationId);open.delete(record.attemptId);records.delete(request);
+  };
+  // Exact manual approval of one request: the operator's answer, recorded with the exact bytes it approved.
+  const decideManually=async(request,attemptId)=>{
+    const declared=declaredOs(request);
+    if(request?.method!=='sendTransaction'||declared===null||declared>BigInt(maxTotalOs))return false;
+    const requestBytes=JSON.stringify(request),copy=JSON.parse(requestBytes),approvalHash=sha(requestBytes),notice=sellerNotice(copy);
+    const closeSignal=AbortSignal.any([askSignal()??halt.signal,halt.signal]);
+    if(closeSignal.aborted)throw closingError();
+    let accepted;
+    if(authorize){
+      const answer=await new Promise((done,fail)=>{
+        const stop=()=>done(STOPPED);closeSignal.addEventListener('abort',stop,{once:true});
+        Promise.resolve(authorize(Object.freeze({approvalHash,request:copy,...(notice?{notice}:{})}))).then(done,fail).finally(()=>closeSignal.removeEventListener('abort',stop));
+      });
+      if(answer===STOPPED||closeSignal.aborted)throw closingError();
+      accepted=answer===true;
     }else{
-      closeSignal=AbortSignal.any([askSignal()??halt.signal,halt.signal]);
-      if(closeSignal?.aborted)throw closingError();
-      if(authorize){
-        const answer=await unlessStopped(authorize(Object.freeze({approvalHash,request:structuredClone(request),...(notice?{notice}:{})})),closeSignal);
-        if(answer===STOPPED||closeSignal?.aborted)throw closingError();
-        accepted=answer===true;
-      }else{
-        if(!process.stdin.isTTY||!process.stderr.isTTY)throw new Error('exact seller approval requires an interactive TTY');
-        const listing=request?.content?.artifactKind==='Listing';
-        if(listing&&stopRequested())return false;
-        if(notice)process.stderr.write(`${notice}\n`);
-        process.stderr.write(`${JSON.stringify({approvalHash,request})}\n`);
-        const signals=[...(listing?[stopSignal]:[]),...(closeSignal?[closeSignal]:[])];
-        const ui=createInterface({input:process.stdin,output:process.stderr});if(!listing)ttyPrompts++;
-        try{accepted=(await ui.question(`Type APPROVE ${approvalHash} to authorize this exact seller transaction: `,signals.length?{signal:signals.length===1?signals[0]:AbortSignal.any(signals)}:{}))===`APPROVE ${approvalHash}`;}
-        catch(error){if(listing&&stopRequested())return false;if(!closeSignal?.aborted)throw error;throw closingError();}
-        finally{if(!listing)ttyPrompts--;ui.close();}
-      }
+      if(!process.stdin.isTTY||!process.stderr.isTTY)throw new Error('exact seller approval requires an interactive TTY');
+      const listing=copy.content?.artifactKind==='Listing';
+      if(listing&&stopRequested())return false;
+      if(notice)process.stderr.write(`${notice}\n`);
+      process.stderr.write(`${JSON.stringify({approvalHash,request:copy})}\n`);
+      const ui=createInterface({input:process.stdin,output:process.stderr});
+      try{accepted=(await ui.question(`Type APPROVE ${approvalHash} to authorize this exact seller transaction: `,{signal:listing?AbortSignal.any([stopSignal,closeSignal]):closeSignal}))===`APPROVE ${approvalHash}`;}
+      catch(error){if(listing&&stopRequested())return false;if(!closeSignal.aborted)throw error;throw closingError();}
+      finally{ui.close();}
     }
     live();
-    // Sign authority must be durable before preparation can approve.
-    if(preparing&&accepted&&signRecords){
-      try{live();policyReason=await stillAuthorizedToSign(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
-      catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
-    }
-    if(preparing&&accepted){live();return true;}
-    live();
-    if(closeSignal?.aborted)throw closingError();
-    // Resolve current purchase authority after the last ledger await.
-    if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,policy,held);}catch{policyReason='policy-check-failed';}live();accepted=policyReason===null;}
-    if(accepted)accepted=retain();
-    if(policyMode&&HOLD_REASONS.has(policyReason))heldRequests.set(input,policyReason);
-    if(policyMode&&HOLD_REASONS.has(policyReason)){attemptId=randomUUID();heldAttempts.set(input,attemptId);liveAttempts.add(attemptId);}
-    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:request?.method??null,address:request?.address??null,totalOs:total??null,decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),
-      ...(policyMode&&!manualApproved?{approvalMode:'policy',policyReason,reservationId,...(held?{policyHold:held}:{})}:{}),...(validity===undefined?{}:{confirmation:validity,declaredTotalOs:declaredTotal??null,confirmedRemovalsOs:confirmedTotal?.toString()??null,countedTotalOs:total??null,...(manualApproved?{manualApproved:true}:{})}),recordedAt:policyMode?at:now()});
-    if(policyMode&&accepted&&!manualApproved){reservations.set(input,{reservationId,approvalHash,...(attemptId?{attemptId}:{})});liveReservations.add(reservationId);}
+    if(closeSignal.aborted)throw closingError();
+    accepted&&=JSON.stringify(request)===requestBytes;
+    if(accepted)freezeRequest(request);
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:copy.method,address:copy.address??null,totalOs:declared.toString(),decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),recordedAt:now()});
     return accepted;
   };
-  const approve=async(request,validity,options={})=>{
-    try{
-      if(!policyMode)return await track(()=>decide(request,undefined,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?{attemptId:options.attemptId}:{}));
-      const snapshot=structuredClone(request);
-      return await track(()=>serializedPolicy(evidencePath,async()=>{
-        live();
-        if(options.preparing)dropPreparation(request);
-        const held=options.held===true?heldRequests.get(request)??null:null;
-        const attemptId=held?heldAttempts.get(request)??null:null;
-        const signed=options.preparing?null:signAuthorized.get(request)??null;
-        const accepted=await decide(snapshot,validity,{...options,origin:request,held,attemptId,signed,provisional:signed??preparations.get(request)});
-        live();
-        const heldNow=heldRequests.has(snapshot);
-        if(signAuthorized.has(snapshot))signAuthorized.set(request,signAuthorized.get(snapshot));
-        if(options.preparing&&(heldNow||(accepted&&!signAuthorized.has(snapshot)))){
-          const hold={decision:'approved',policy:true,outcome:null,jobId:snapshot.content.jobId,artifactKind:snapshot.content.artifactKind,totalOs:snapshot.content.debit.totalOs,approvalHash:sha(JSON.stringify(snapshot)),...(heldNow?{held:true,attemptId:heldAttempts.get(snapshot)}:{})};
-          if(!provisionalHolds.has(path))provisionalHolds.set(path,new Set());
-          provisionalHolds.get(path).add(hold);preparations.set(request,hold);
-        }else if(!options.preparing)dropPreparation(request);
-        if(accepted&&reservations.has(snapshot))reservations.set(request,reservations.get(snapshot));
-        if(signed&&accepted)signAuthorized.delete(request);
-        if(heldNow)heldRequests.set(request,heldRequests.get(snapshot));else heldRequests.delete(request);
-        if(heldNow)heldAttempts.set(request,heldAttempts.get(snapshot));
-        else if(attemptId&&accepted){heldAttempts.delete(request);liveAttempts.delete(attemptId);}
-        else if(signed&&!accepted){try{await completeReservation(request,signed,'released','confirmation-refused');}catch{}}
-        else if(attemptId){try{await releaseAttempt(attemptId,'confirmation-refused');heldAttempts.delete(request);}catch{}}
-        return accepted;
-      }));
-    }catch(error){
-      if(process.env.DACS_TEST_TRACE==='1')process.stderr.write(`devnet-operator-approval-error:${error.code??'failed'}:${String(error.message).slice(0,200)}\n`);
-      throw error;
-    }
+  const approve=(request,validity,options={})=>{
+    if(!policyMode)return track(()=>decideManually(request,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?options.attemptId:null));
+    return validity===undefined?approve.prepare(request):confirm(request,validity);
   };
-  approve.prepare=(request)=>approve(request,undefined,{preparing:true});
+  approve.decide=decide;
+  approve.prepare=async(request)=>(await decide(request)).outcome==='approved';
+  approve.authorizeHeld=authorizeHeld;
+  approve.releaseHeld=(request,reason)=>locked(async()=>{const record=records.get(request);if(record?.attemptId&&!record.reservation)endAttempt(request,record,reason);});
   approve.pause=pause;
   approve.stop=()=>{
     stopped=true;halt.abort();for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
     return idle??=(async()=>{while(flights.size)await Promise.allSettled([...flights]);})();
   };
-  approve.heldForManual=(request)=>heldRequests.has(request);
-  approve.heldAttempt=(request)=>heldAttempts.get(request)??null;
-  approve.authorizeSign=(request)=>{
-    if(!signRecords)return Promise.resolve(true);
-    return track(()=>serializedPolicy(evidencePath,async()=>{
-      live();
-      const attemptId=heldAttempts.get(request);
-      if(!heldRequests.has(request)||!attemptId||signAuthorized.has(request))return false;
-      try{
-        const attempt=(await whenReadable(()=>readPolicyLedger(evidencePath),request)).attempts.get(attemptId);
-        if(!attempt||attempt.outcome!==null||attempt.reservation||attempt.approvalHash!==sha(JSON.stringify(request)))return false;
-        freezeRequest(request);
-        // Reread after the manual answer and ledger wait, immediately before the synchronous append.
-        const refusal=await stillOpenBeforePayment(request,policy,heldRequests.get(request));live();
-        if(refusal){
-          await releaseAttempt(attemptId,'confirmation-refused');
-          heldAttempts.delete(request);heldRequests.delete(request);dropPreparation(request);return false;
-        }
-        await authorizeSigning(request,{attemptId});
-      }catch(error){
-        if(stopped)throw error;
-        return false;
-      }
-      live();
-      dropPreparation(request);
-      return true;
-    }));
-  };
-  const completeReservation=async(request,reservation,outcome,reason)=>{
-    const{rows}=await readPolicyLedger(evidencePath),row=rows.find(entry=>entry.reservationId===reservation.reservationId);
-    live();
-    if(!row||row.outcome!==null)throw new Error('seller policy reservation is unavailable');
-    const recordedAt=now();
-    if(!Number.isSafeInteger(recordedAt)||recordedAt<row.recordedAt)throw new Error('seller policy completion time is unavailable');
-    const confirmed=reservations.get(request)===reservation;
-    appendAttempt({reservationId:reservation.reservationId,approvalHash:reservation.approvalHash,...(reservation.attemptId?{attemptId:reservation.attemptId}:{}),outcome,
-      ...(!confirmed&&outcome==='released'?{reason:RELEASE_REASONS.has(reason)?reason:'wallet-released'}:{}),recordedAt});
-    reservations.delete(request);signAuthorized.delete(request);liveReservations.delete(reservation.reservationId);
-    if(reservation.attemptId){heldAttempts.delete(request);heldRequests.delete(request);liveAttempts.delete(reservation.attemptId);}
-  };
   approve.settle=async(request,outcome,reason='wallet-released')=>{
     if(!['spent','released','unknown'].includes(outcome))throw new TypeError('seller attempt outcome must be spent, released or unknown');
     if(outcome==='unknown')return;
-    return track(()=>serializedPolicy(evidencePath,async()=>{
-      live();
-      if(outcome==='released')dropPreparation(request);
-      const reservation=reservations.get(request)??signAuthorized.get(request);
-      if(!reservation){
-        const attemptId=heldAttempts.get(request);
-        if(attemptId&&outcome==='released'){await releaseAttempt(attemptId,RELEASE_REASONS.has(reason)?reason:'wallet-released');heldAttempts.delete(request);}
-        return;
-      }
-      await completeReservation(request,reservation,outcome,reason);
-    }));
+    return locked(async()=>{
+      const record=records.get(request);
+      if(record?.reservation)completeReservation(request,record,await openSignLine(record),outcome,reason);
+      else if(record?.attemptId&&outcome==='released')endAttempt(request,record,RELEASE_REASONS.has(reason)?reason:'wallet-released');
+    });
   };
   // Restart only labels unresolved attempts; it never resends or releases them.
-  approve.reconcile=()=>track(()=>serializedPolicy(evidencePath,async()=>{
+  approve.reconcile=()=>locked(async()=>{
     if(!policyMode)return{released:[],held:[]};
     const{rows,attempts}=await readPolicyLedger(evidencePath),held=[];
     const describe=(row,extra)=>({jobId:row?.jobId??null,artifactKind:row?.request?.content?.artifactKind??null,...extra});
     for(const[attemptId,attempt]of attempts){
-      if(attempt.outcome!==null||attempt.reservation||liveAttempts.has(attemptId))continue;
+      if(attempt.outcome!==null||attempt.reservation||open.has(attemptId))continue;
       held.push(describe(rows.find(row=>row.attemptId===attemptId),{attemptId,reservationId:null,approvalHash:attempt.approvalHash,state:attempt.manual?'approved-sign-unknown':'approval-unknown'}));
     }
     for(const row of rows){
-      if(row.openAttempt||!row.policy||row.decision!=='approved'||row.outcome!==null||liveReservations.has(row.reservationId))continue;
+      if(row.openAttempt||!row.policy||row.decision!=='approved'||row.outcome!==null||open.has(row.reservationId))continue;
       const ids={attemptId:row.attemptId,reservationId:row.reservationId??null,approvalHash:row.approvalHash};
       if(!decidedFromJournals(row)){held.push(describe(row,{...ids,state:'no-completion-record'}));continue;}
       let issuance='unknown';
@@ -653,8 +559,16 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       held.push(describe(row,{...ids,state:issuance==='issued'?'issued-outcome-unknown':'issuance-unknown'}));
     }
     return{released:[],held};
-  }));
+  });
   return approve;
+}
+
+// Freeze the wallet-facing request so its retained bytes survive later asynchronous work.
+function freezeRequest(value){
+  if(value&&typeof value==='object'){
+    for(const child of Object.values(value))freezeRequest(child);
+    Object.freeze(value);
+  }
 }
 
 // Admission of a context step's Vet writes to the policy budgets, on the same
@@ -743,16 +657,57 @@ export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Dat
   });
 }
 
-// The logical address an artifact of this kind must use for its job.
-function expectedLogicalAddress(c,artifact,policy){
-  if(c.artifactKind==='CompositeVerificationRecord')return compositeVerificationAddress(c.jobId,artifact.evaluatedParty);
-  if(c.artifactKind==='FinalityCommitmentRecord')return finalityCommitmentAddress(c.jobId);
-  if(c.artifactKind==='Deliverable')return `dacs4:deliverable:${c.jobId}`;
-  if(artifact.phase==='pay-dem'){
-    const index=listingPhaseIndex(policy.paymentPhaseIndex);
-    return index===null?null:paymentEvidenceAddress(c.jobId,'demos-native:DEM',index);
-  }
-  return artifact.phase==='deliver-storage-program'?`dacs4:evidence:${c.jobId}`:null;
+// The closed table of seller writes, keyed by artifact kind (SettlementEvidence
+// also by phase). Each row names the request kind; the artifact's exact
+// members and their authorities without a purchase (artifact: the seller signs
+// or produces it) and against the purchase (bound: null or a refusal reason);
+// and its logical address. BEFORE_PAYMENT and AFTER_PAYMENT say when the write
+// may happen. CREATE metadata adds artifactBinding for the demo request kind
+// and deliveryBinding for a Deliverable (expectedCreate). Party members carry
+// the Agreement's own claim spellings (p.buyer, p.seller), as the addresses
+// and records derived from them do; the seller signs with policy.seller.
+const SETTLEMENT_EVIDENCE_KIND='devnet-settlement-evidence-storage-create';
+const WRITE_KINDS=new Map([
+  ['CompositeVerificationRecord',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>isCompositeVerificationRecord(a)&&a.signature.signer===policy.seller,
+    bound:(a,p)=>[p.buyer,p.seller].includes(a.evaluatedParty)?null:'evaluated-party',
+    address:(c,a)=>compositeVerificationAddress(c.jobId,a.evaluatedParty)}],
+  ['FinalityCommitmentRecord',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>isFinalityCommitmentRecord(a)&&a.pattern==='fixed-price'&&a.signature.signer===policy.seller,
+    bound:(a,p)=>!same(a.listingRef,p.listingPin)?'listing':a.agreementHash!==p.agreementHash?'agreement':same([...a.parties].sort(),[p.buyer,p.seller].sort())?null:'parties',
+    address:c=>finalityCommitmentAddress(c.jobId)}],
+  ['Deliverable',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>isDevnetPurchasedReport(a,{producer:policy.seller}),
+    bound:(a,p,c,policy)=>!same(a.listing,p.listingPin)?'listing':a.agreementHash!==p.agreementHash?'agreement':deliveryBindingRefusal(c,p,policy),
+    address:c=>`dacs4:deliverable:${c.jobId}`}],
+  ['SettlementEvidence:pay-dem',{kind:SETTLEMENT_EVIDENCE_KIND,
+    artifact:(a,c,policy)=>exact(a,PAYMENT_EVIDENCE_KEYS)&&isSettlementEvidence(a)&&a.outcome==='success'&&a.paymentTxRefs.length===1&&exact(a.paymentTxRefs[0],['kind','txHash','blockNumber'])&&a.paymentTxRefs[0].kind==='demos'
+      &&a.settlementFinality.model==='bft-final'&&a.settlementFinality.finalityObservedAt===a.observedAt&&a.signature.signer===policy.seller,
+    bound:(a,p)=>!same(a.paymentAmount,{amount:demString(BigInt(p.amountOs)),currency:'DEM'})?'payment-amount':same(a.paymentTxRefs[0],p.paymentTxRef)?null:'payment-tx',
+    address:(c,a,policy)=>{const index=listingPhaseIndex(policy.paymentPhaseIndex);return index===null?null:paymentEvidenceAddress(c.jobId,'demos-native:DEM',index);}}],
+  ['SettlementEvidence:deliver-storage-program',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>exact(a,DELIVERY_EVIDENCE_KEYS)&&isSettlementEvidence(a)&&a.outcome==='success'&&HASH.test(a.dacsSdkAuditSourceHash)&&HASH.test(a.deliverableContentHash)
+      &&same(a.deliverableAnchor,{kind:'storage-program',locator:`dacs4:deliverable:${c.jobId}`})&&a.signature.signer===policy.seller,
+    bound:(a,p,c,policy)=>deliveredHash(policy,c.jobId)===a.deliverableContentHash?null:'deliverable',
+    address:c=>`dacs4:evidence:${c.jobId}`}],
+]);
+
+// The payload hash of the seller's verified, retained Deliverable for the job
+// (the hash delivery evidence commits to), read like listingPin; null when the
+// host supplies none, so no delivery evidence is approved without it.
+function deliveredHash(policy,jobId){
+  const hash=typeof policy.deliveredPayloadHash==='function'?policy.deliveredPayloadHash(jobId):null;
+  return typeof hash==='string'&&HASH.test(hash)?hash:null;
+}
+const writeKind=(c,artifact)=>WRITE_KINDS.get(c.artifactKind==='SettlementEvidence'?`SettlementEvidence:${artifact.phase}`:c.artifactKind)??null;
+
+// A Deliverable's delivery binding: its purchase, the verified Listing's
+// delivery phase and its payload. Only fulfilmentId is the seller's own.
+function deliveryBindingRefusal(c,p,policy){
+  const binding=c.deliveryBinding,phaseIndex=listingPhaseIndex(policy.deliveryPhaseIndex);
+  return phaseIndex!==null&&typeof binding?.fulfilmentId==='string'&&binding.fulfilmentId.length>0&&binding.fulfilmentId.length<=128
+    &&same(binding,{version:'1',profile:DELIVERY_PROFILE,jobId:c.jobId,phase:'deliver-storage-program',phaseIndex,listing:p.listingPin,agreementHash:p.agreementHash,
+      fulfilmentId:binding.fulfilmentId,purchaseAmount:{amount:demString(BigInt(p.amountOs)),currency:'DEM'},payloadHash:c.contentHash})?null:'delivery-binding';
 }
 
 // The host reads phase indexes from protocolSupport(its verified Listing).
@@ -770,137 +725,171 @@ function admittedJson(text){
   return admitRawJson(Buffer.from(text,'utf8'));
 }
 
-// The purchase as bound to this exact request: its shape, seller, listing and
-// network (none yet when unbound: a held Vet record before the signed
-// Agreement), and the buyer, listing and Agreement the artifact names.
-// Returns null, or 'purchase', 'evaluated-party', 'listing' or 'agreement'.
-function purchaseBindingRefusal(c,artifact,purchase,policy,unbound){
-  if(!exact(purchase,['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','prePaymentOpen'])||purchase.jobId!==c.jobId||purchase.seller!==policy.seller
-    ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||(purchase.prePaymentOpen!==null&&typeof purchase.prePaymentOpen!=='boolean')||!POSITIVE_OS.test(purchase.amountOs??'')
-    ||!same(purchase.listingPin,policy.listingPin())||!(unbound||sameNetwork(purchase.sourceBinding,policy.sourceBinding)))return 'purchase';
-  if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
-  if(listingRefusal(c,artifact,purchase.listingPin))return 'listing';
-  if((NAMES_AGREEMENT.has(c.artifactKind)||Object.hasOwn(artifact,'agreementHash'))&&(!HASH.test(artifact.agreementHash??'')||artifact.agreementHash!==purchase.agreementHash))return 'agreement';
-  return null;
+// The request as the packaged wallet shows it, before any member is used:
+// exact members, this seller's wallet and network, and well-typed coordinates.
+// purpose, evidence, sending and debit.note are display text.
+function requestShapeValid(request,policy){
+  const c=request?.content;
+  return exact(request,['method','address','purpose','content'])&&request.method==='sendTransaction'&&request.address===policy.address&&typeof request.purpose==='string'
+    &&exact(c,[...REQUEST_CONTENT_KEYS,...(c?.artifactKind==='Deliverable'?['deliveryBinding']:[])])&&c.action===CREATE_ACTION&&c.contentHashProfile===CONTENT_HASH_PROFILE
+    &&KINDS.has(c.artifactKind)&&isCanonicalJobId(c.jobId)&&c.owner===policy.seller&&c.wallet===policy.address
+    &&typeof c.logicalAddress==='string'&&c.logicalAddress.length>0&&c.logicalAddress.length<=256&&c.programName===c.logicalAddress.replace(/:/g,'%3A')
+    &&Number.isSafeInteger(c.nonce)&&c.nonce>=1&&Number.isSafeInteger(c.timestamp)&&c.timestamp>=0&&typeof c.evidence==='string'&&typeof c.sending==='string'
+    &&c.network===policy.sourceBinding.network&&c.chainIdentity===policy.sourceBinding.chainIdentity&&same(c.networkBinding,policy.sourceBinding);
 }
 
-// True unless the artifact's listing fields name exactly this pin: a kind that
-// names its listing must carry it, and any listing field present (even null)
-// must equal it. A Vet record precedes the Agreement and may name none.
-function listingRefusal(c,artifact,pin){
-  const required=LISTING_FIELD[c.artifactKind];
-  return (required!==undefined&&!Object.hasOwn(artifact,required))
-    ||['listingPin','listing','listingRef'].some(key=>Object.hasOwn(artifact,key)&&!same(artifact[key],pin));
+// The SDK (or, for the Deliverable, seller) structure validator of each kind the
+// policy writes. Structure only: no signature, anchor or purchase context is
+// verified here; the producers verify what they sign.
+const ARTIFACT_STRUCTURE_VALIDATORS={
+  CompositeVerificationRecord:isCompositeVerificationRecord,
+  FinalityCommitmentRecord:isFinalityCommitmentRecord,
+  SettlementEvidence:async(artifact)=>(await validateSettlementEvidenceStructure(artifact)).decision==='valid',
+  Deliverable:isDevnetPurchasedReport,
+};
+
+// True when the artifact is valid for its (policy-written) kind.
+async function artifactStructureValid(artifactKind,artifact){
+  return (await ARTIFACT_STRUCTURE_VALIDATORS[artifactKind](artifact))===true;
 }
 
-/** Validate an exact seller request; return null or its retained refusal reason.
- * Exact JSON that is malformed or not CF-5 raw JSON is 'create-bytes'. Propagates purchase resolver errors. */
-export async function policyRefusal(request,policy,limits,{confirmedTotal,countedTotal,manualApproved=false,held=null}={}){
-  const c=request?.content,d=c?.debit;
-  if(!exact(request,['method','address','purpose','content'])||request.method!=='sendTransaction'||typeof request.purpose!=='string'
-    ||!exact(c,['kind','action','artifactKind','jobId','owner','wallet','logicalAddress','storageAddress','programName','contentHash','contentHashProfile','envelopeHash',...(c?.artifactKind==='Deliverable'?['deliveryBinding']:[]),'storageBytes','exactStorageBytes','exactCreate','nonce','timestamp','debit','network','chainIdentity','networkBinding','evidence','sending'])
-    ||!['devnet-demo-artifact-storage-create','devnet-settlement-evidence-storage-create'].includes(c.kind)||c.contentHashProfile!=='SDK CF-1 signed scope (top-level signature/signatures omitted)'
-    ||c.action!=='immutable DACS storage anchor CREATE'||!KINDS.has(c.artifactKind)||!isCanonicalJobId(c.jobId)
-    ||request.address!==policy.address||c.wallet!==policy.address||c.owner!==policy.seller
-    ||c.network!==policy.sourceBinding.network||c.chainIdentity!==policy.sourceBinding.chainIdentity||!same(c.networkBinding,policy.sourceBinding)
-    ||!Number.isSafeInteger(c.nonce)||c.nonce<1||!Number.isSafeInteger(c.timestamp)||c.timestamp<0)return 'request-shape';
+// The declared debit in OS, [storage fee, SDK gas, network fee, RPC fee], or
+// null unless exact: canonical DEM strings, no seller amount or additional fee,
+// the SDK's fixed gas, and both totals the sum of the parts.
+function debitOs(d){
   if(!exact(d,['storageFeeDem','sellerAmountDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem','totalDem','totalOs','note'])
-    ||d.sellerAmountDem!=='0'||typeof d.totalOs!=='string'||!OS.test(d.totalOs??''))return 'debit';
-  const fees=['storageFeeDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem'].map(key=>demOs(d[key]));
-  if(fees.some(value=>value===null)||fees[0]<=0n||fees[4]!==0n
-    ||fees.reduce((a,b)=>a+b,0n)!==BigInt(d.totalOs)||demOs(d.totalDem)!==BigInt(d.totalOs))return 'debit';
-  const declared=BigInt(d.totalOs),cap=BigInt(limits.maxWriteTotalOs);
-  const total=countedTotal===undefined?declared:countedTotal;
-  if(total===null)return 'debit';
-  // Preparation checks the configured cap. Confirmation also bounds an
-  // unexpected debit by the declaration; manual approval authorizes exactly it.
-  const allowance=manualApproved||(confirmedTotal!==undefined&&declared<cap)?declared:cap;
-  if(total>allowance)return 'write-fee-cap';
-  if(manualApproved)return null;
-  let op,artifact;
-  try{op=admittedJson(c.exactCreate);artifact=admittedJson(c.exactStorageBytes);}catch{return 'create-bytes';}
-  const metadata=op?.metadata;
-  if(artifact===null||!exact(op,['operation','storageAddress','programName','salt','data','encoding','acl','storageLocation','metadata'])
-    ||op.operation!=='CREATE_STORAGE_PROGRAM'||op.salt!==''||op.encoding!=='json'||op.storageLocation!=='onchain'||!exact(op.acl,['mode'])||op.acl.mode!=='public'
-    ||op.storageAddress!==c.storageAddress||op.programName!==c.programName||c.programName!==c.logicalAddress.replace(/:/g,'%3A')
-    ||c.storageAddress!==deriveStorageAddress(c.wallet,c.programName,c.nonce,'')
-    ||JSON.stringify(op.data)!==c.exactStorageBytes||artifact.jobId!==c.jobId||contentHash(artifact)!==c.contentHash||sha(canonicalize(artifact))!==c.envelopeHash
-    ||c.storageBytes!==Buffer.byteLength(c.exactStorageBytes)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/10240)))*1_000_000_000n
-    ||metadata?.logicalAddress!==c.logicalAddress||metadata.artifactKind!==c.artifactKind||metadata.contentHash!==c.contentHash||metadata.envelopeHash!==c.envelopeHash
-    ||!same(metadata.networkBinding,policy.sourceBinding))return 'create-bytes';
-  const sellerRecords=true,purchase=await policy.resolvePurchase(c.jobId);
-  // No seller record of the job yet (Vet records only): every check that needs
-  // no purchase still refuses, as with the app, before the write is held.
-  if(sellerRecords&&purchase===null&&c.artifactKind==='CompositeVerificationRecord'){
-    if(!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
-    if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
-    if(listingRefusal(c,artifact,policy.listingPin()))return 'listing';
-    return 'seller-record-missing';
-  }
-  // A vet record held with no record may reach confirmation once the proposal
-  // draft has reached the seller but before it retained the buyer's signed
-  // Agreement CREATE. That record has no binding to compare yet; everything
-  // else it holds is still checked, as is the request's own binding above.
-  const unbound=sellerRecords&&held!==null&&c.artifactKind==='CompositeVerificationRecord'&&purchase?.sourceBinding===null;
-  const bindingRefusal=purchaseBindingRefusal(c,artifact,purchase,policy,unbound);
-  if(bindingRefusal)return bindingRefusal;
-  if(AFTER_PAYMENT.has(c.artifactKind)&&!purchase.paymentObserved)return 'payment-not-observed';
-  if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.paymentObserved)return 'payment-already-observed';
-  // A cancelled, expired or otherwise ended purchase gets no more seller writes before payment.
-  if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.prePaymentOpen===false)return 'purchase-closed';
-  if(c.artifactKind==='SettlementEvidence'&&artifact.phase==='pay-dem'&&(!exact(artifact.paymentAmount,['amount','currency'])||artifact.paymentAmount.currency!=='DEM'
-    ||demOs(artifact.paymentAmount.amount)!==BigInt(purchase.amountOs)))return 'payment-amount';
-  if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
-  if(c.artifactKind==='Deliverable'){
-    // The seller produces its Deliverable, for the verified Listing's delivery phase.
-    const binding=c.deliveryBinding,deliveryIndex=listingPhaseIndex(policy.deliveryPhaseIndex);
-    if(artifact.producer!==policy.seller||!exact(binding,['version','profile','jobId','phase','phaseIndex','listing','agreementHash','fulfilmentId','purchaseAmount','payloadHash'])
-      ||binding.version!=='1'||binding.profile!=='dacs-native-delivery-publication/v1'||binding.jobId!==c.jobId||binding.phase!=='deliver-storage-program'
-      ||deliveryIndex===null||!Object.is(binding.phaseIndex,deliveryIndex)||!same(binding.listing,purchase.listingPin)||binding.agreementHash!==purchase.agreementHash
-      ||typeof binding.fulfilmentId!=='string'||!binding.fulfilmentId||binding.fulfilmentId.length>128||binding.payloadHash!==c.contentHash
-      ||!exact(binding.purchaseAmount,['amount','currency'])||binding.purchaseAmount.currency!=='DEM'||demOs(binding.purchaseAmount.amount)!==BigInt(purchase.amountOs)
-      ||!same(metadata.deliveryBinding,binding))return 'delivery-binding';
-  }
-  if(sellerRecords&&BEFORE_PAYMENT.has(c.artifactKind))return 'cancellation-unknown';
-  return null;
+    ||d.sellerAmountDem!=='0'||d.additionalFeeDem!=='0'||typeof d.note!=='string'||typeof d.totalOs!=='string'||!OS.test(d.totalOs))return null;
+  const fees=['storageFeeDem','sdkGasDem','networkFeeDem','rpcFeeDem'].map(key=>demOs(d[key]));
+  return fees.includes(null)||fees[0]<=0n||fees[1]!==OS_PER_DEM||fees.reduce((a,b)=>a+b,0n)!==BigInt(d.totalOs)||demOs(d.totalDem)!==BigInt(d.totalOs)?null:fees;
 }
 
+// The one CREATE this seller should sign for the request's coordinates and
+// artifact: the seller CREATE builder's operation with the row's exact
+// metadata, or null when the builder refuses them.
+function expectedCreate(row,c,artifact,policy){
+  let op;
+  try{op=buildStorageProgramCreatePayload({from:c.wallet,storageAddress:c.storageAddress,programName:c.programName,logicalAddress:c.logicalAddress,signedListing:artifact,nonce:c.nonce,timestamp:c.timestamp}).content.data[1];}catch{return null;}
+  Object.assign(op.metadata,{contentHash:c.contentHash,envelopeHash:c.envelopeHash,artifactKind:c.artifactKind,networkBinding:policy.sourceBinding,
+    ...(row.kind===DEVNET_DEMO_ARTIFACT_KIND?{artifactBinding:{version:'1',policy:DEVNET_DEMO_ARTIFACT_POLICY,authority:policy.artifactAuthority,artifactKind:c.artifactKind,jobId:c.jobId,logicalAddress:c.logicalAddress,writer:policy.seller}}:{}),
+    ...(c.artifactKind==='Deliverable'?{deliveryBinding:c.deliveryBinding}:{})});
+  return op;
+}
 
-/** Return exact confirmed sender removals in OS, or null for an invalid confirmation. */
-// Node 61b8e75 executes this exact CREATE: the request's destination, network
-// and fees, and exactly its four sender edits (confirmedEditsMatch). Numbers
-// are legacy whole DEM, canonical strings are OS. Never round or coerce fee values.
+// Whether the request carries exactly the expected CREATE (in the wallet's
+// canonical bytes) and its artifact's stored bytes, hashes and byte count.
+function createMatches(row,c,artifact,policy){
+  if(row.kind===DEVNET_DEMO_ARTIFACT_KIND&&typeof policy.artifactAuthority!=='string')return false;
+  const op=expectedCreate(row,c,artifact,policy);
+  try{
+    return op!==null&&c.exactCreate===canonicalize(op)&&c.exactStorageBytes===JSON.stringify(op.data)&&c.contentHash===contentHash(artifact)
+      &&c.envelopeHash===sha(c.exactStorageBytes)&&c.storageBytes===Buffer.byteLength(c.exactStorageBytes);
+  }catch{return false;}
+}
+
+// The resolver's projection as one closed state: none (no seller record of
+// the job), closed (a buyer outside closed access, or an ended purchase),
+// draft (a proposal with no signed Agreement), agreed-unpaid, paid, or
+// indeterminate (any other projection, or unknown payment authority). The
+// parties are the Agreement's primary claims, checked as the SDK compares
+// them: a canonical Demos agent buyer, this seller by CF-3 identity, and two
+// distinct identities. The Agreement's transport binding is the policy's, whole.
+// Payment names the transaction the observer verified, and only then.
+function purchaseState(p,policy,jobId){
+  if(p===null)return 'none';
+  if(p===false)return 'closed';
+  if(!exact(p,PURCHASE_KEYS)||p.jobId!==jobId||canonicalDemosAgentPublicKey(p.buyer)===null||!sameCanonicalClaimIdentity(p.seller,policy.seller)||sameCanonicalClaimIdentity(p.buyer,p.seller)
+    ||!same(p.listingPin,policy.listingPin())||typeof p.amountOs!=='string'||!POSITIVE_OS.test(p.amountOs)||![true,false,null].includes(p.prePaymentOpen))return 'indeterminate';
+  if(p.agreementHash===null)return p.sourceBinding===null&&p.paymentObserved===null&&p.paymentTxRef===null?'draft':'indeterminate';
+  if(typeof p.agreementHash!=='string'||!HASH.test(p.agreementHash)||!same(p.sourceBinding,policy.sourceBinding)||typeof p.paymentObserved!=='boolean'
+    ||(p.paymentObserved?!isPaymentTxRef(p.paymentTxRef):p.paymentTxRef!==null))return 'indeterminate';
+  return p.paymentObserved?'paid':p.prePaymentOpen===false?'closed':'agreed-unpaid';
+}
+
+// What a purchase state allows this write: null, a refusal, or a hold for
+// exact manual approval (HOLD_REASONS): a Vet record before the seller holds
+// an Agreement, or a write before payment while buyer cancellation is
+// unknown. A held write (its exact bytes manually approved) is not held again.
+function stateRefusal(state,p,c,held){
+  if(state==='indeterminate')return 'purchase';
+  if(state==='closed')return 'purchase-closed';
+  if(AFTER_PAYMENT.has(c.artifactKind))return state==='paid'?null:state==='agreed-unpaid'?'payment-not-observed':'purchase';
+  if(state==='paid')return 'payment-already-observed';
+  if(state!=='agreed-unpaid')return c.artifactKind!=='CompositeVerificationRecord'?'purchase':held?null:'seller-record-missing';
+  return p.prePaymentOpen===true||held?null:'cancellation-unknown';
+}
+
+// Fresh purchase authority for an admitted write: its state and, with a seller
+// record, the bindings its artifact names (row.bound). A hold is returned only
+// when every other check passes.
+async function purchaseRefusal(row,c,artifact,policy,held){
+  const p=await policy.resolvePurchase(c.jobId),state=purchaseState(p,policy,c.jobId),reason=stateRefusal(state,p,c,held);
+  if(reason&&!HOLD_REASONS.has(reason))return reason;
+  return (state==='none'?null:row.bound(artifact,p,c,policy))??reason;
+}
+
+/** Validate one exact seller write request; return null when policy may approve it, else a reason.
+ * Checks, in order: the request's shape ('request-shape'), its exact debit ('debit') under limits.maxWriteTotalOs
+ * ('write-fee-cap'), its write kind (WRITE_KINDS, 'request-shape'), its exact CREATE and stored bytes against the
+ * one expected CREATE ('create-bytes'), the artifact's members ('artifact') and logical address ('logical-address'),
+ * then fresh purchase authority (purchaseRefusal). 'seller-record-missing' and 'cancellation-unknown' are holds for
+ * exact manual approval, returned only once everything else passes; held (these exact bytes were manually approved)
+ * waives them and nothing else. Payment evidence must name the purchase's verified paymentTxRef ('payment-tx');
+ * delivery evidence the hash policy.deliveredPayloadHash(jobId) returns ('deliverable'). Never throws for a
+ * malformed request; purchase resolver and policy input errors propagate. */
+export async function policyRefusal(request,policy,limits,{held=false}={}){
+  if(!requestShapeValid(request,policy))return 'request-shape';
+  const c=request.content,fees=debitOs(c.debit);
+  if(fees===null)return 'debit';
+  if(BigInt(c.debit.totalOs)>BigInt(limits.maxWriteTotalOs))return 'write-fee-cap';
+  let artifact;
+  try{admittedJson(c.exactCreate);artifact=admittedJson(c.exactStorageBytes);}catch{return 'create-bytes';}
+  if(!artifact||typeof artifact!=='object'||Array.isArray(artifact))return 'create-bytes';
+  const row=writeKind(c,artifact);
+  if(row?.kind!==c.kind)return 'request-shape';
+  if(!createMatches(row,c,artifact,policy)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/STORAGE_CHUNK_BYTES)))*OS_PER_DEM)return 'create-bytes';
+  if(artifact.jobId!==c.jobId||!row.artifact(artifact,c,policy))return 'artifact';
+  if(!await artifactStructureValid(c.artifactKind,artifact))return 'artifact-structure';
+  if(c.logicalAddress!==row.address(c,artifact,policy))return 'logical-address';
+  return purchaseRefusal(row,c,artifact,policy,held===true);
+}
+
+/** Return the sender removals in OS (storage fee plus SDK gas) a node confirmed for exactly this policy-checked
+ * request, or null. Node 61b8e75 executes the request's CREATE: its exact content keys, destination, network and
+ * chain identity, data ['storageProgram', exactCreate], the declared fees, and exactly its four sender edits in
+ * order (confirmedEditsMatch). Wire amounts are whole-DEM numbers before the denomination fork, OS strings after
+ * it (amount '0'). Bound to its transaction hash, the executed answer may also carry the nonce, timestamp and
+ * nonce step as decimal strings, and a gas_operation with exactly the declared fees, as the client reader accepts
+ * (sdk-provider.mjs anchorContentMatches). Never rounds or coerces a fee. */
 export function confirmedWriteOs(validity,request){
-  const data=validity?.response?.data,tx=data?.transaction,c=tx?.content,r=request.content,d=r.debit;
-  const postFork=c?.amount==='0';
+  const data=validity?.response?.data,tx=data?.transaction,c=tx?.content,r=request?.content,fees=debitOs(r?.debit);
+  const postFork=c?.amount==='0',hashBound=typeof tx?.hash==='string'&&HASH.test(tx.hash);
   const wireOs=(value)=>postFork?(typeof value==='string'&&OS.test(value)?BigInt(value):null)
-    :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*1_000_000_000n:null;
-  const [storageFee,gas,...fees]=['storageFeeDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem'].map(key=>demOs(d?.[key]));
-  let op;try{op=admittedJson(r.exactCreate);}catch{return null;}
-  if(validity?.result!==200||data?.valid!==true||data.gas_operation!=null||data.custom_charges!=null||[storageFee,gas,...fees].includes(null)
-    ||!exact(c,CONFIRMED_CONTENT_KEYS)||c.type!=='storageProgram'||(c.amount!==0&&c.amount!=='0')||c.from!==r.wallet||c.from_ed25519_address!==r.wallet
-    ||c.to!==r.storageAddress||c.nonce!==r.nonce||c.timestamp!==r.timestamp||c.network!==r.network||c.chainIdentity!==r.chainIdentity
-    ||!Array.isArray(c.data)||c.data.length!==2||c.data[0]!=='storageProgram'||JSON.stringify(c.data[1])!==r.exactCreate)return null;
-  const fee=c.transaction_fee;
-  if(!exact(fee,['network_fee','rpc_fee','additional_fee','rpc_address'])||fee.rpc_address!==null
-    ||['network_fee','rpc_fee','additional_fee'].some((key,i)=>wireOs(fee[key])!==fees[i]))return null;
-  return confirmedEditsMatch(c.gcr_edits,r,op.metadata,[storageFee,gas],wireOs,tx.hash)?storageFee+gas:null;
+    :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*OS_PER_DEM:null;
+  const integer=(value,expected)=>value===expected||(hashBound&&value===String(expected));
+  const feesMatch=(value,keys)=>exact(value,keys)&&['network_fee','rpc_fee','additional_fee'].every((key,i)=>wireOs(value[key])===[fees[2],fees[3],0n][i]);
+  if(fees===null||validity?.result!==200||data?.valid!==true||data.custom_charges!=null
+    ||!(data.gas_operation==null||(exact(data.gas_operation,['fees'])&&feesMatch(data.gas_operation.fees,['network_fee','rpc_fee','additional_fee'])))
+    ||!exact(c,CONFIRMED_CONTENT_KEYS)||c.type!=='storageProgram'||!(postFork||c.amount===0)||c.from!==r.wallet||c.from_ed25519_address!==r.wallet
+    ||c.to!==r.storageAddress||!integer(c.nonce,r.nonce)||!integer(c.timestamp,r.timestamp)||c.network!==r.network||c.chainIdentity!==r.chainIdentity
+    ||!Array.isArray(c.data)||c.data.length!==2||c.data[0]!=='storageProgram'||JSON.stringify(c.data[1])!==r.exactCreate
+    ||!feesMatch(c.transaction_fee,['network_fee','rpc_fee','additional_fee','rpc_address'])||c.transaction_fee.rpc_address!==null)return null;
+  return confirmedEditsMatch(c.gcr_edits,r,c.data[1].metadata,fees,wireOs,integer,hashBound?tx.hash:null)?fees[0]+fees[1]:null;
 }
 
 // The executed edits of one storage CREATE, in order: the storage fee removal,
 // this exact CREATE at its address, the SDK gas removal and a one-step nonce
 // increment, each the wallet's and none rolled back (as sdk-provider.mjs
 // anchorEditsMatch checks them in the client).
-function confirmedEditsMatch(edits,r,metadata,[storageFee,gas],wireOs,txHash){
+function confirmedEditsMatch(edits,r,metadata,[storageFee,gas],wireOs,integer,txHash){
   if(!Array.isArray(edits)||edits.length!==4)return false;
   const expected=[['balance','remove',storageFee],['storageProgram'],['balance','remove',gas],['nonce','add']];
   return edits.every((e,i)=>{
-    if(e?.type!==expected[i][0]||e.isRollback!==false||!(e.txhash===''||(HASH.test(txHash??'')&&e.txhash===txHash)))return false;
+    if(e?.type!==expected[i][0]||e.isRollback!==false||!(e.txhash===''||(txHash!==null&&e.txhash===txHash)))return false;
     if(i===1)return exact(e,['type','target','isRollback','txhash','context'])&&e.target===r.storageAddress
       &&exact(e.context,['operation','sender','data'])&&e.context.operation==='CREATE_STORAGE_PROGRAM'&&e.context.sender===r.wallet
       &&exact(e.context.data,['variables','metadata'])&&JSON.stringify(e.context.data.variables)===r.exactCreate&&JSON.stringify(e.context.data.metadata)===JSON.stringify(metadata);
     return exact(e,['type','operation','isRollback','account','txhash','amount'])&&e.operation===expected[i][1]&&e.account===r.wallet
-      &&(i===3?e.amount===1:wireOs(e.amount)===expected[i][2]);
+      &&(i===3?integer(e.amount,1):wireOs(e.amount)===expected[i][2]);
   });
 }
 
@@ -927,8 +916,6 @@ function serializedPolicy(evidencePath,work){
 }
 
 const policyTails=new Map();
-// Each ledger path's in-memory preparations (createExactOperatorApproval).
-const provisionalHolds=new Map();
 
 const KINDS=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord','SettlementEvidence','Deliverable']);
 
@@ -936,56 +923,54 @@ const BEFORE_PAYMENT=new Set(['CompositeVerificationRecord','FinalityCommitmentR
 
 const AFTER_PAYMENT=new Set(['SettlementEvidence','Deliverable']);
 
-// The listing field each kind must carry (DACS-3 FinalityCommitmentRecord
-// listingRef; a Deliverable's listing), and the kinds that name their Agreement.
-const LISTING_FIELD={FinalityCommitmentRecord:'listingRef',Deliverable:'listing'};
+const CREATE_ACTION='immutable DACS storage anchor CREATE';
+const CONTENT_HASH_PROFILE='SDK CF-1 signed scope (top-level signature/signatures omitted)';
+const DELIVERY_PROFILE='dacs-native-delivery-publication/v1';
+const OS_PER_DEM=1_000_000_000n;
+// The node charges 1 DEM of storage fee per started 10 KiB of stored bytes.
+const STORAGE_CHUNK_BYTES=10_240;
 
-const NAMES_AGREEMENT=new Set(['FinalityCommitmentRecord','Deliverable']);
+// The request content members besides a Deliverable's deliveryBinding.
+const REQUEST_CONTENT_KEYS=['kind','action','artifactKind','jobId','owner','wallet','logicalAddress','storageAddress','programName','contentHash','contentHashProfile','envelopeHash',
+  'storageBytes','exactStorageBytes','exactCreate','nonce','timestamp','debit','network','chainIdentity','networkBinding','evidence','sending'];
+
+// Exact pay-dem and delivery SettlementEvidence members, as the packaged wallet admits them.
+const PAYMENT_EVIDENCE_KEYS=['evidenceVersion','jobId','phase','outcome','paymentTxRefs','paymentAmount','settlementFinality','observedAt','signature'];
+const DELIVERY_EVIDENCE_KEYS=['evidenceVersion','jobId','phase','outcome','dacsSdkAuditSourceHash','deliverableContentHash','deliverableAnchor','observedAt','signature'];
+
+// The purchase resolver's projection members (seller-purchase-source.mjs).
+const PURCHASE_KEYS=['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','paymentTxRef','prePaymentOpen'];
 
 // The executed CREATE content keys (Node 61b8e75, as the client checks them).
 const CONFIRMED_CONTENT_KEYS=['type','from','from_ed25519_address','to','amount','data','nonce','timestamp','transaction_fee','network','chainIdentity','gcr_edits'];
 
-const CLAIM=/^did:demos:agent:[0-9a-f]{64}$/;
+// Canonical equality; anything that is not JSON is unequal.
+const same=(a,b)=>{try{return canonicalize(a)===canonicalize(b);}catch{return false;}};
 
-const same=(a,b)=>canonicalize(a)===canonicalize(b);
+// A canonical DEM decimal string in OS, or null; demString is its inverse.
+const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{0,8}[1-9])?$/.test(value)?BigInt(value.split('.')[0])*OS_PER_DEM+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;
+const demString=(os)=>{const fraction=(os%OS_PER_DEM).toString().padStart(9,'0').replace(/0+$/,'');return fraction?`${os/OS_PER_DEM}.${fraction}`:`${os/OS_PER_DEM}`;};
 
-const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/.test(value)?BigInt(value.split('.')[0])*1_000_000_000n+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;
-
-// Seller records compare the network and the chain identity only. The seller's
-// Agreement reader (demos-sr2-adapter.mjs) still requires the full transport
-// binding, so today a seller record always carries the seller's own endpoint.
-const sameNetwork=(a,b)=>typeof a?.network==='string'&&typeof a.chainIdentity==='string'&&a.network===b.network&&a.chainIdentity===b.chainIdentity;
-
-/** Await fresh purchase authority; return null for an open request whose purchase is still the one its exact
- * artifact names (purchaseBindingRefusal), or a refusal reason. Only a held Vet record goes on with no seller record.
- * Throws for exact JSON policyRefusal refuses; resolver errors propagate; callers must append synchronously after this resolves. */
-export async function stillOpenBeforePayment(request,policy,held){
-  const c=request.content,vet=c.artifactKind==='CompositeVerificationRecord';
-  if(!BEFORE_PAYMENT.has(c.artifactKind))return null;
-  const purchase=await policy.resolvePurchase(c.jobId);
-  if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&vet&&purchase===null)return null;
-  const refusal=purchaseBindingRefusal(c,admittedJson(c.exactStorageBytes),purchase,policy,Boolean(held)&&vet&&purchase?.sourceBinding===null);
-  return refusal??((purchase.prePaymentOpen===true||(held&&purchase.prePaymentOpen===null))&&purchase.paymentObserved===false?null:'purchase-closed');
+// The write kind and artifact of a request policyRefusal admitted; throws for one it refuses as malformed.
+function admittedWrite(request){
+  const c=request.content,artifact=admittedJson(c.exactStorageBytes),row=writeKind(c,artifact);
+  if(!row)throw new TypeError('the request names no seller write kind');
+  return{c,artifact,row};
 }
 
-/** Await fresh purchase authority immediately before sign authority, for any kind: stillOpenBeforePayment
- * before payment; after payment, null while the purchase is still the one its exact artifact names and
- * still paid, else a refusal reason. Throws as stillOpenBeforePayment; callers append synchronously after. */
-export async function stillAuthorizedToSign(request,policy,held){
-  const c=request.content;
-  if(!AFTER_PAYMENT.has(c.artifactKind))return stillOpenBeforePayment(request,policy,held);
-  const purchase=await policy.resolvePurchase(c.jobId);
-  return purchaseBindingRefusal(c,admittedJson(c.exactStorageBytes),purchase,policy,false)??(purchase.paymentObserved===true?null:'payment-not-observed');
+/** Await fresh purchase authority for a write before payment (null for any other write): null while its purchase
+ * is still open and still the one its exact artifact names, else a refusal or hold reason (as policyRefusal; held:
+ * true when these exact bytes were manually approved). Throws for a request policyRefusal refuses as malformed;
+ * resolver errors propagate; callers must append synchronously after this resolves. */
+export async function stillOpenBeforePayment(request,policy,held=false){
+  const{c,artifact,row}=admittedWrite(request);
+  return BEFORE_PAYMENT.has(c.artifactKind)?purchaseRefusal(row,c,artifact,policy,held===true):null;
 }
 
-let ttyPrompts=0;
-/** Return whether an interactive non-Listing approval prompt is pending. */
-export const ttyApprovalPending=()=>ttyPrompts>0;
-
-// Freeze the wallet-facing request so its retained bytes survive later asynchronous work.
-function freezeRequest(value){
-  if(value&&typeof value==='object'){
-    for(const child of Object.values(value))freezeRequest(child);
-    Object.freeze(value);
-  }
+/** Await fresh purchase authority immediately before sign authority, for any write: as stillOpenBeforePayment
+ * before payment; after payment, null while the purchase is still paid and still the one its exact artifact
+ * names (listing, Agreement, amount, payment transaction, delivered payload and delivery binding), else a refusal reason. Throws as stillOpenBeforePayment. */
+export async function stillAuthorizedToSign(request,policy,held=false){
+  const{c,artifact,row}=admittedWrite(request);
+  return purchaseRefusal(row,c,artifact,policy,held===true);
 }
