@@ -885,6 +885,12 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) | deleted |
+| D11 | fix(client): D11 charge every emitted JSON token against the diagnostic budget | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 97ec872d0d92efe8b26b20f5b1dc822838d4dda7 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | 990e51e0393a24448e0ebfc0f7ab608ee0273138 |
+| D11 | fix(client): D11 record the merged 06b purchase store snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | cae688b7514f53d290ac11bfb8303cfab7a3a7fd |
+| D11 | fix(client): D11 keep 06b delta records in the order of the branch below | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -2409,6 +2415,23 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
+| fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 charge every emitted JSON token against the diagnostic budget | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 record the merged 06b purchase store snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged 06b purchase store snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged 06b purchase store snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged 06b purchase store snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged 06b purchase store snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
