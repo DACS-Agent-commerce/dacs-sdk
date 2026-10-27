@@ -67,3 +67,20 @@ for(const state of ['accepted','included'])for(const provider of ['same','fresh'
  const result=await run();assert.equal(result.sellerVet.record.overallDecision,'pass');
  assert.equal(f.local.writes.length,2,'the retry rereads the same intent');assert.equal(f.controls.signs,signs,'nothing is signed twice');f.base.close();
 });
+test('two provider instances that both see an unattempted nonce converge on the buyer\'s retained record',async()=>{
+ const f=productionFixture(),first=await f.provider(),second=await f.provider(),input=f.input(),read=f.counterparty.readRecord;
+ let arrived=0,release;const both=new Promise(resolve=>{release=resolve;});
+ f.counterparty.readRecord=async request=>{const answer=await read(request);if(++arrived<=2){if(arrived===2)release();await both;}return answer;};
+ const runs=await Promise.all([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
+ for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
+ assert.equal(runs[0].sellerVet.recordRef.contentHash,runs[1].sellerVet.recordRef.contentHash);assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);f.base.close();
+});
+test('a failed evaluate with no retained record stays a failure that keeps its cause',async()=>{
+ const f=productionFixture(),cause=new Error('TEST evaluate failed');f.counterparty.evaluate=async()=>{throw cause;};
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause===cause);assert.equal(f.local.writes.length,1);f.base.close();
+});
+test('a retained record read after a failed evaluate is still verified against the buyer',async()=>{
+ const f=productionFixture(),evaluate=f.counterparty.evaluate;f.controls.wrongSigner=true;
+ f.counterparty.evaluate=async input=>{await evaluate(input);throw new Error('TEST reply lost');};
+ await assert.rejects(f.run(),e=>e.code==='seller_vet_invalid');assert.equal(f.local.writes.length,1);f.base.close();
+});
