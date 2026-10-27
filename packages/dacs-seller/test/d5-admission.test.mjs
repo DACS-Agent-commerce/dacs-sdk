@@ -58,9 +58,13 @@ test('A5 malformed bytes, a closed job, wrong chain, or excessive fee cannot be 
 test('A6 Listing and manual-mode writes always need exact seller approval',async t=>{
  for(const [mode,artifactKind] of [['policy','Listing'],...['Listing','CompositeVerificationRecord','Deliverable'].map(kind=>['manual',kind])]){let called=0;const a=composeSellerApproval({mode,policy:{prepare:()=>assert.fail('policy ran')},manual:()=>{called++;return false;}});assert.equal(await a({content:{artifactKind}}),false);assert.equal(called,1);}
 });
-test('A7 paid-job policy refusal remains held for exact seller approval',async t=>{
- const {p}=await policy(t,{resolvePurchase:purchase,limits:{maxWriteTotalOs:'1000000000'}});let prompts=0;const a=composeSellerApproval({mode:'policy',policy:p,manual:()=>{prompts++;return true;}});
- assert.equal(await a(requestFor({artifactKind:'Deliverable'})),true);assert.equal(prompts,1);
+test('A7 paid-job policy refusal remains held for exact seller approval, which confirms and settles',async t=>{
+ const {p,evidencePath}=await policy(t,{resolvePurchase:purchase,limits:{maxWriteTotalOs:'1000000000'}});let prompts=0;const a=composeSellerApproval({mode:'policy',policy:p,manual:()=>{prompts++;return true;}});
+ const r=requestFor({artifactKind:'Deliverable'});
+ assert.equal(await a(r),true);assert.equal(prompts,1);
+ assert.equal(await a.confirm(confirmationFor(r)),true);await a.settle(r,'spent');
+ const confirmed=JSON.parse((await readFile(evidencePath,'utf8')).trimEnd().split('\n').at(-1));
+ assert.deepEqual([confirmed.decision,confirmed.manualApproved],['approved',true]);
 });
 test('L1 policy count and amount limits refuse context capacity before any ledger line',async t=>{
  for(const limits of [{maxWritesPerHour:1},{maxTotalOsPerHour:'4000000000'}]){
