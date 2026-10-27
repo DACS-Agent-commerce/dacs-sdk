@@ -2293,133 +2293,6 @@ describe("lock engine scan", () => {
   });
 });
 
-describe("acceptance failure class", () => {
-  const reader = (files: Record<string, string>) => (name: string) => files[name];
-  it.each([
-    ["consumer", { "generation.log": "npm error code ETIMEDOUT\nnpm error network request failed" }, "network"],
-    ["consumer", { "generation.log": "npm error code E503\nnpm error 503 Service Unavailable" }, "network"],
-    ["consumer", { "generation.log": "not ok 3 - doctor rejects ECONNREFUSED port\nnpm error code 1" }, "functional"],
-    ["registry-start", { "registry.log": "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout" }, "network"],
-    ["registry-ready", {}, "network"],
-    ["registry-auth", { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 32768" }, "network"],
-    ["publish", { "registry.log": "Error: candidate integrity mismatch" }, "functional"],
-    ["audit-policy", { "npm-audit.json": '{"metadata":{}}' }, "policy"],
-    ["dependency-policy", {}, "policy"],
-    ["image-build", { "docker-build.log": "#12 3.1 npm error code ECONNRESET" }, "network"],
-    ["image-build", { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
-    ["release-set", { "generation.log": "npm error code ETIMEDOUT" }, "functional"],
-  ])("classifies a %s failure with %j as %s", (stage, files, failureClass) => {
-    expect(classifyAcceptanceFailure({ stage, read: reader(files) }).failureClass).toBe(failureClass);
-    const summary = failureSummary({ stage, exitCode: 1, read: reader(files) });
-    expect(summary).toMatchObject({ complete: false, failedStage: stage, failureClass });
-    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass });
-  });
-
-  // Captured from real npm 10.9.9 against a loopback server: `npm audit --json`
-  // stdout when the audit endpoint fails (npm's lib/utils/audit-error.js
-  // shape), and `npm install`'s error lines when the registry fails.
-  const npmOutput = (kind: string, name: string) => readFileSync(join(repoRoot, "test/scripts/fixtures", kind, name), "utf8");
-  // invalid-json-body.json is a 200 answer with an HTML page (a captive proxy's
-  // or CDN's error page); aborted-body.json is a connection dropped mid-body.
-  it.each(["503.json", "502.json", "500.json", "504.json", "429.json", "timeout.json", "econnreset.json",
-    "econnrefused.json", "socket-hang-up.json", "invalid-json-body.json", "aborted-body.json",
-  ])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
-    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
-    const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
-    expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.stringMatching(/^npm-audit\.json: audit endpoint error: /)] });
-    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "network",
-      message: "registry/container acceptance stopped at stage audit-policy (network failure)" });
-    // The scheduled drift check reports the stopped stage, not a malformed baseline.
-    const drift = registryAuditDriftDisposition(summary);
-    expect(drift).toMatchObject({ exitCode: 1, evaluated: false, failureClass: "network" });
-    expect(drift.message).toBe("Advisory-ID drift was not evaluated: acceptance stopped at stage audit-policy " +
-      "(network failure; rerun the workflow)");
-  });
-
-  it.each(["403.json", "404.json"])("classifies npm's non-transient audit endpoint answer %s as functional, not policy", (name) => {
-    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
-    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toMatchObject({ failureClass: "functional",
-      evidence: [expect.stringContaining(`${name.slice(0, 3)} `)] });
-  });
-
-  it.each([
-    ["a fetch error npm has not been seen to write", { message: "request aborted by an unknown cause" }, "network"],
-    ["a transient fetch message beside a status", { message: "invalid json response body at http://r/ reason: x",
-      statusCode: 200 }, "network"],
-    ["a status answer npm does not retry", { message: "418 I'm a teapot - POST http://r/", statusCode: 418 }, "functional"],
-  ])("classifies every npm audit-error object as an endpoint error: %s", (_label, error, failureClass) => {
-    const read = reader({ "npm-audit.json": JSON.stringify({ ...error, error: { summary: "", detail: "" } }) });
-    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toEqual({ failureClass,
-      evidence: [`npm-audit.json: audit endpoint error: ${error.message}`] });
-  });
-
-  // Daybreak r9 P3: a report the policy rejected, whose advisory title carries
-  // a network phrase, was classed network and invited a pointless rerun.
-  it("classifies a report-shaped audit the policy rejected as policy, whatever text its advisories carry", () => {
-    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-malformed-report-"));
-    scratch.push(stage);
-    const report = { auditReportVersion: 2,
-      metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 } },
-      vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
-        via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
-    writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(report, null, 2));
-    writeFileSync(join(stage, "generated-package-lock.json"), JSON.stringify(auditLock({})));
-    const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
-      join(stage, "npm-audit.json"), join(stage, "generated-package-lock.json"), join(stage, "audit-policy.json")],
-      { cwd: repoRoot, encoding: "utf8" });
-    expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain("incomplete npm audit advisory for x");
-    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
-      "audit-policy", String(policy.status)], { cwd: repoRoot, encoding: "utf8" });
-    expect(result.stdout).toContain("::error title=Registry/container acceptance policy failure::stopped at stage audit-policy");
-    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({
-      failedStage: "audit-policy", failureClass: "policy", failureEvidence: [] });
-    // Text that is not an audit document still counts as network evidence.
-    expect(classifyAcceptanceFailure({ stage: "audit-policy", read: reader({ "npm-audit.json": "socket hang up\n" }) }))
-      .toMatchObject({ failureClass: "network" });
-  });
-
-  it.each(["timeout.txt", "503.txt", "429.txt", "reset.txt", "refused.txt"])(
-    "classifies npm install's registry error %s in the consumer stage as network", (name) => {
-      const read = reader({ "generation.log": npmOutput("npm-install-network-errors", name) });
-      expect(classifyAcceptanceFailure({ stage: "consumer", read }).failureClass).toBe("network");
-    });
-
-  it("reports an audit outage as a network stop through the script's CLI and the enforced drift step", () => {
-    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-outage-"));
-    scratch.push(stage);
-    writeFileSync(join(stage, "npm-audit.json"), npmOutput("npm-audit-endpoint-errors", "503.json"));
-    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
-      "audit-policy", "1"], { cwd: repoRoot, encoding: "utf8" });
-    expect(result.stdout).toContain("::error title=Registry/container acceptance network failure::stopped at stage " +
-      "audit-policy with exit 1; npm-audit.json: audit endpoint error: 503 Service Unavailable - POST ");
-    const summary = JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"));
-    expect(summary).toMatchObject({ complete: false, failedStage: "audit-policy", failureClass: "network" });
-    const drift = runDriftStep(summary, true);
-    expect(drift.status).toBe(1);
-    expect(drift.stdout).toContain("::warning title=Registry audit advisory drift::Advisory-ID drift was not evaluated: " +
-      "acceptance stopped at stage audit-policy (network failure; rerun the workflow)");
-    expect(drift.stdout + drift.stderr).not.toContain("malformed");
-    expect(runDriftStep(summary, false).status).toBe(0);
-  });
-
-  it("records the class in the early-failure summary and its annotation", () => {
-    const { output, result } = runEarlyFailure();
-    expect(result.status).toBe(17);
-    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({
-      schema: "dacs-registry-container-acceptance/v1", complete: false, failedStage: "release-set", exitCode: 17,
-      failureClass: "functional" });
-    expect(result.stdout).toContain(
-      "::error title=Registry/container acceptance functional failure::stopped at stage release-set with exit 17");
-  });
-
-  it("does not let an early failure summary pass the exit-4 waiver", () => {
-    const summary = failureSummary({ stage: "consumer", exitCode: 4, read: () => undefined });
-    expect(runWorkflowStep(4, summary).status).toBe(4);
-  });
-});
-
-
 it("pins the recorded pqcrypto image version while accepting its recorded metadata spelling", () => {
   const known = { name: "pqcrypto", location: "node_modules/pqcrypto", version: "1.0.01" };
   const baseline = { policyFindings: { productionImageDependencies: [known] } };
@@ -3206,7 +3079,10 @@ describe("acceptance failure class", () => {
   ])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
     const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
     const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
-    expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.stringMatching(/^npm-audit\.json: audit endpoint error: /)] });
+    expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.any(String)] });
+    // The saved evidence keeps the status npm recorded, or none.
+    expect(JSON.parse(summary.failureEvidence[0])).toEqual({ message: expect.any(String),
+      statusCode: JSON.parse(npmOutput("npm-audit-endpoint-errors", name)).statusCode });
     expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "network",
       message: "registry/container acceptance stopped at stage audit-policy (network failure)" });
     // The scheduled drift check reports the stopped stage, not a malformed baseline.
@@ -3222,15 +3098,53 @@ describe("acceptance failure class", () => {
       evidence: [expect.stringContaining(`${name.slice(0, 3)} `)] });
   });
 
+  // The class written for an audit endpoint error is the one every reader of
+  // the saved summary derives from its evidence: its status, or with none, its
+  // message's transport signature.
   it.each([
-    ["a fetch error npm has not been seen to write", { message: "request aborted by an unknown cause" }, "network"],
-    ["a transient fetch message beside a status", { message: "invalid json response body at http://r/ reason: x",
-      statusCode: 200 }, "network"],
+    ["a retryable status with a message no signature knows", { statusCode: 503, message: "upstream unavailable" }, "network"],
+    ["a 502 reason phrase", { statusCode: 502, message: "Bad Gateway" }, "network"],
+    ["a 429 reason phrase", { statusCode: 429, message: "Too Many Requests" }, "network"],
+    ["a retryable status whose message is cut", { statusCode: 503,
+      message: "503 UpstreamUnavailable" + "x".repeat(350) + " - POST https://registry.npmjs.org/-/npm/v1/security/audits/quick" }, "network"],
+    ["a fetch error with a transport signature", { message: "request to https://r/ failed, reason: socket hang up" }, "network"],
+    ["a TLS connection dropped before the handshake", { message: "request to https://r/ failed, reason: Client network " +
+      "socket disconnected before secure TLS connection was established" }, "network"],
+    ["a fetch error with no transport signature", { message: "request aborted by an unknown cause" }, "functional"],
+    ["a certificate the client refused", { message: "request to https://r/ failed, reason: self-signed certificate in " +
+      "certificate chain" }, "functional"],
+    ["a transient fetch message beside a status npm does not retry", { message: "invalid json response body at http://r/ " +
+      "reason: x", statusCode: 200 }, "functional"],
     ["a status answer npm does not retry", { message: "418 I'm a teapot - POST http://r/", statusCode: 418 }, "functional"],
-  ])("classifies every npm audit-error object as an endpoint error: %s", (_label, error, failureClass) => {
+    ["a status that is not an integer", { message: "ETIMEDOUT", statusCode: "503" }, "functional"],
+  ])("classifies an npm audit-error object with %s as its summary's readers do", (_label, error: { message: string;
+    statusCode?: unknown }, failureClass) => {
     const read = reader({ "npm-audit.json": JSON.stringify({ ...error, error: { summary: "", detail: "" } }) });
-    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toEqual({ failureClass,
-      evidence: [`npm-audit.json: audit endpoint error: ${error.message}`] });
+    const { failureClass: written, evidence } = classifyAcceptanceFailure({ stage: "audit-policy", read });
+    expect(written).toBe(failureClass);
+    expect(JSON.parse(evidence[0])).toEqual({ statusCode: Number.isInteger(error.statusCode) ? error.statusCode
+      : "statusCode" in error ? null : undefined, message: error.message.slice(0, 300) });
+    const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
+    expect(registryContainerDisposition(summary).failureClass).toBe(failureClass);
+    expect(registryAuditDriftDisposition(summary).failureClass).toBe(failureClass);
+  });
+
+  it.each([
+    [{ statusCode: 503, message: "upstream unavailable" }, "network"],
+    [{ message: "request aborted by an unknown cause" }, "functional"],
+  ])("reports audit endpoint error %j as %s when written and when read back by the CLI", (error, failureClass) => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-audit-endpoint-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(error));
+    const run = (...args: string[]) => spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", ...args],
+      { cwd: repoRoot, encoding: "utf8" });
+    const annotation = `::error title=Registry/container acceptance ${failureClass} failure::`;
+    expect(run("--failure-summary", stage, "audit-policy", "1").stdout).toContain(annotation);
+    const summaryPath = join(stage, "acceptance-summary.json");
+    const read = run(summaryPath);
+    expect(read.status).toBe(1);
+    expect(read.stdout).toContain(annotation);
+    expect(read.stderr).toContain(`(${failureClass} failure)`);
   });
 
   // Daybreak r9 P3: a report the policy rejected, whose advisory title carries
@@ -3264,6 +3178,39 @@ describe("acceptance failure class", () => {
       const read = reader({ "generation.log": npmOutput("npm-install-network-errors", name) });
       expect(classifyAcceptanceFailure({ stage: "consumer", read }).failureClass).toBe("network");
     });
+
+  it("records the class in the early-failure summary and its annotation", () => {
+    const { output, result } = runEarlyFailure();
+    expect(result.status).toBe(17);
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      schema: "dacs-registry-container-acceptance/v1", complete: false, failedStage: "release-set", exitCode: 17,
+      failureClass: "functional" });
+    expect(result.stdout).toContain(
+      "::error title=Registry/container acceptance functional failure::stopped at stage release-set with exit 17");
+  });
+
+  it("reports an audit outage as a network stop through the script's CLI and the enforced drift step", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-outage-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "npm-audit.json"), npmOutput("npm-audit-endpoint-errors", "503.json"));
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
+      "audit-policy", "1"], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance network failure::stopped at stage " +
+      "audit-policy with exit 1; npm-audit.json: audit endpoint error: 503 Service Unavailable - POST ");
+    const summary = JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"));
+    expect(summary).toMatchObject({ complete: false, failedStage: "audit-policy", failureClass: "network" });
+    const drift = runDriftStep(summary, true);
+    expect(drift.status).toBe(1);
+    expect(drift.stdout).toContain("::warning title=Registry audit advisory drift::Advisory-ID drift was not evaluated: " +
+      "acceptance stopped at stage audit-policy (network failure; rerun the workflow)");
+    expect(drift.stdout + drift.stderr).not.toContain("malformed");
+    expect(runDriftStep(summary, false).status).toBe(0);
+  });
+
+  it("does not let an early failure summary pass the exit-4 waiver", () => {
+    const summary = failureSummary({ stage: "consumer", exitCode: 4, read: () => undefined });
+    expect(runWorkflowStep(4, summary).status).toBe(4);
+  });
 
 });
 
