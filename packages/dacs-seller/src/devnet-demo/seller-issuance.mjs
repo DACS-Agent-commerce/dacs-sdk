@@ -3,7 +3,6 @@ import { existsSync } from 'node:fs';
 import { link, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { openDurableWalletJournal } from '../wallet/durable-journal.mjs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
 import { decidedFromJournals, parsePolicyLedger, SELLER_ISSUANCE_JOURNALS, SELLER_LEDGER_HEADER_FORMAT, SELLER_LEDGER_LINE_FORMATS, sellerIssuanceJournalIds } from './operator-approval.mjs';
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
@@ -51,13 +50,17 @@ async function publishFile(path,text,{replace=false}={}){
   catch(error){await unlink(temporary).catch(()=>{});throw error;}
   await syncDirectory(dirname(path));
 }
-export async function openSellerIssuanceJournals({directory,opened=[],now=Date.now}){
+// The caller supplies its durable wallet journal opener: openJournal({path,mode,expectedJournalId})
+// returns {journalId,close} (as dacs-client's openDurableWalletJournal does). This module imports
+// only sources present in the seller package, so its issuance lookup always loads.
+export async function openSellerIssuanceJournals({directory,openJournal,opened=[],now=Date.now}){
+  if(typeof openJournal!=='function')throw new TypeError('seller issuance journals require a durable wallet journal opener');
   const names=SELLER_ISSUANCE_JOURNALS;
   const evidenceDirectory=join(directory,'evidence'),bindingPath=join(evidenceDirectory,'seller-issuance-journals.json'),ledgerPath=join(evidenceDirectory,'seller-approvals.jsonl');
   const openJournals=(ids)=>names.map(name=>{
     const path=join(directory,name);
     let value;
-    try{value=openDurableWalletJournal({path,mode:ids?'open':existsSync(path)?'open':'create',...(ids?{expectedJournalId:ids[name]}:{})});}
+    try{value=openJournal({path,mode:ids?'open':existsSync(path)?'open':'create',...(ids?{expectedJournalId:ids[name]}:{})});}
     catch(error){error.message=`seller issuance journal ${name} refused: ${error.message}`;throw error;}
     opened.push(()=>value.close());return value;
   });
@@ -137,9 +140,10 @@ async function bindSellerIssuanceJournals({directory,names,evidenceDirectory,bin
   if(!binding)await publishFile(bindingPath,`${JSON.stringify({format:'dacs-seller-issuance-journals/v1',journals:ids})}\n`,{replace:torn});
   const header=`${JSON.stringify({format:SELLER_LEDGER_HEADER_FORMAT,journals:ids,recordedAt:now()})}\n`;
   if(ledger===null)await publishFile(ledgerPath,header);
-  // An existing ledger is replaced whole: its exact bytes (less a torn header),
-  // a newline if its last line lacks one, then the header. A crash leaves
-  // either the old ledger or the new one, never a partial header.
-  else await publishFile(ledgerPath,Buffer.concat([kept,Buffer.from(`${kept.length&&kept.at(-1)!==0x0a?'\n':''}${header}`,'utf8')]),{replace:true});
+  // An existing ledger is replaced whole: the header (parsePolicyLedger reads
+  // it only as the first line), then its exact bytes (less a torn header) and
+  // a newline if its last line lacks one. A crash leaves either the old ledger
+  // or the new one, never a partial header.
+  else await publishFile(ledgerPath,Buffer.concat([Buffer.from(header,'utf8'),kept,Buffer.from(kept.length&&kept.at(-1)!==0x0a?'\n':'','utf8')]),{replace:true});
   return journals;
 }
