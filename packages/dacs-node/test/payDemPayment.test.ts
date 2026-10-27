@@ -61,6 +61,8 @@ const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = "did:example:pay-dem-buyer";
 const SELLER = "did:example:pay-dem-seller";
 const PAYER = "1".repeat(64);
+// The Demos adapter, and so every generated wallet policy, names the wallet `0x`-prefixed.
+const PAYER_WALLET = `0x${PAYER}`;
 const PAYEE = "2".repeat(64);
 const TX_HASH = "3".repeat(64);
 const PAYER_PUBLIC_KEY = Uint8Array.from({ length: 32 }, () => 0x11);
@@ -150,7 +152,7 @@ function recoveryReservation(
     settlementBindingHash: payment.orderLocalBindingHash,
     railId: payment.railId,
     railDefinitionHash: payment.railDescriptorHash,
-    wallet: payment.payer,
+    wallet: `0x${payment.payer}`,
     chainId: payment.network,
     payee: payment.payee,
     finality: { model: "bft-final" },
@@ -233,7 +235,7 @@ function recoveryWalletAuthority(
   return createWalletSpendAuthorityV1({
     policyVersion: "1",
     policyId: "pay-dem-recovery-test",
-    wallet: PAYER,
+    wallet: PAYER_WALLET,
     chainId: "demos",
     maximumConcurrentEffects: 1,
     maximumRetainedReservations: 10,
@@ -411,7 +413,7 @@ describe("native DEM buyer payment track", () => {
       filePath: secretPath,
     });
     let journal!: DemosWriteJournal;
-    const adapter = generatedDemosAdapter(PAYER, {
+    const adapter = generatedDemosAdapter(PAYER_WALLET, {
       async reconcileWalletJournal(lease) {
         const intent = lease.snapshot.records.find((record) =>
           record.kind === "native-transfer" && record.stage === "broadcast-intent");
@@ -526,7 +528,7 @@ describe("native DEM buyer payment track", () => {
     });
     const walletSpendAuthority = observeWalletEffectBegin(
       createAccountingTestWalletSpendAuthorityV1({
-        wallet: PAYER,
+        wallet: PAYER_WALLET,
         chainId: "demos",
         asset: "DEM",
         maximumConcurrentEffects: 1,
@@ -584,7 +586,7 @@ describe("native DEM buyer payment track", () => {
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
     const publishNotice = vi.fn();
     const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
-      wallet: PAYER,
+      wallet: PAYER_WALLET,
       chainId: "demos",
       asset: "DEM",
       maximumConcurrentEffects: 1,
@@ -685,7 +687,7 @@ describe("native DEM buyer payment track", () => {
     const generated = await composedGeneratedRail(directory, innerRail, events);
     const walletSpendAuthority = observeWalletEffectBegin(
       createAccountingTestWalletSpendAuthorityV1({
-        wallet: PAYER,
+        wallet: PAYER_WALLET,
         chainId: "demos",
         asset: "DEM",
         maximumConcurrentEffects: 1,
@@ -731,7 +733,7 @@ describe("native DEM buyer payment track", () => {
     });
     const retained = await generated.journal.acquire({
       chainIdentity: "pay-dem-composition-chain",
-      wallet: PAYER,
+      wallet: PAYER_WALLET,
     });
     expect(retained.snapshot.records).toMatchObject([{
       stage: "canonical-confirmed",
@@ -785,7 +787,7 @@ describe("native DEM buyer payment track", () => {
       };
       const generated = await composedGeneratedRail(directory, innerRail, events);
       const authority = createAccountingTestWalletSpendAuthorityV1({
-        wallet: PAYER,
+        wallet: PAYER_WALLET,
         chainId: "demos",
         asset: "DEM",
         maximumConcurrentEffects: 1,
@@ -842,12 +844,83 @@ describe("native DEM buyer payment track", () => {
       expect(await walletSpendAuthority.inspect()).toMatchObject({ activeEffects: 1 });
       const retained = await generated.journal.acquire({
         chainIdentity: "pay-dem-composition-chain",
-        wallet: PAYER,
+        wallet: PAYER_WALLET,
       });
       expect(retained.snapshot.records).toMatchObject([{ stage: "broadcast-intent" }]);
       await retained.release();
     },
   );
+
+  it("names a refused wallet reservation instead of reporting an ambiguous settlement", async () => {
+    const directory = root();
+    const database = await open(join(directory, "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const events: string[] = [];
+    instrumentPaymentDatabase(database, events);
+    let broadcasts = 0;
+    const innerRail: PayDemRail = {
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 8,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        broadcasts += 1;
+        throw new Error("unreachable broadcast fixture");
+      },
+    };
+    const generated = await composedGeneratedRail(directory, innerRail, events);
+    // A policy naming the wallet in another form makes the core validator
+    // throw on reserve, before any authority state changes.
+    const authority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER,
+      chainId: "demos",
+      asset: "DEM",
+      maximumConcurrentEffects: 1,
+    });
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: authority,
+      database,
+      workerId: "buyer-dem-reserve-refused",
+      rail: generated.rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice: vi.fn(),
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-reserve-refused",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect(broadcasts).toBe(0);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+      state: "indeterminate",
+      reasonCode: "pay-dem-wallet-reservation-failed",
+    });
+    expect(await authority.inspect()).toMatchObject({ activeEffects: 0 });
+    const retained = await generated.journal.acquire({
+      chainIdentity: "pay-dem-composition-chain",
+      wallet: PAYER_WALLET,
+    });
+    expect(retained.snapshot.records).toMatchObject([{
+      stage: "prepared",
+      txRef: TX_HASH,
+    }]);
+    await retained.release();
+  });
 
   it("keeps the generated Demos record prepared when wallet reserve is denied", async () => {
     const directory = root();
@@ -878,7 +951,7 @@ describe("native DEM buyer payment track", () => {
     };
     const generated = await composedGeneratedRail(directory, innerRail, events);
     const authority = createAccountingTestWalletSpendAuthorityV1({
-      wallet: PAYER,
+      wallet: PAYER_WALLET,
       chainId: "demos",
       asset: "DEM",
       maximumConcurrentEffects: 1,
@@ -917,7 +990,7 @@ describe("native DEM buyer payment track", () => {
     expect(await authority.inspect()).toMatchObject({ activeEffects: 1, revision: 1 });
     const retained = await generated.journal.acquire({
       chainIdentity: "pay-dem-composition-chain",
-      wallet: PAYER,
+      wallet: PAYER_WALLET,
     });
     expect(retained.snapshot.records).toMatchObject([{
       stage: "prepared",
@@ -1081,7 +1154,7 @@ describe("native DEM buyer payment track", () => {
     const publishNotice = vi.fn();
     const walletSpendAuthority = observeWalletEffectBegin(
       createAccountingTestWalletSpendAuthorityV1({
-        wallet: PAYER,
+        wallet: PAYER_WALLET,
         chainId: "demos",
         asset: "DEM",
         maximumConcurrentEffects: 1,
@@ -1162,7 +1235,7 @@ describe("native DEM buyer payment track", () => {
     const publishNotice = vi.fn();
     const walletSpendAuthority = observeWalletEffectBegin(
       createAccountingTestWalletSpendAuthorityV1({
-        wallet: PAYER,
+        wallet: PAYER_WALLET,
         chainId: "demos",
         asset: "DEM",
       }),
