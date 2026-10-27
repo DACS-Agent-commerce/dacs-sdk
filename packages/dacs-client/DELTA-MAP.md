@@ -2461,6 +2461,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep 06b delta records in the order of the branch below | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/package.json:1` |
+| fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
