@@ -29,7 +29,7 @@ function hostileResult(kind, db) {
 for (const nested of [false, true]) for (const kind of ['thenable', 'native fulfilled', 'native rejected', 'native rejected with throwing getter', 'throwing getter', 'rollback getter']) {
   test(`a ${kind} result is read at most once, never adopted, and retires the connection: nested=${nested}`, async t => {
     const { db, path, store } = purchaseDatabase(t);
-    db.exec("CREATE VIRTUAL TABLE search USING fts5(body); INSERT INTO search VALUES ('TEST-retained')");
+    db.exec("CREATE TABLE search(body TEXT); INSERT INTO search VALUES ('TEST-retained')");
     const writer = db.prepare("INSERT INTO records VALUES ('TEST-late')");
     const { result, reads, expected } = hostileResult(kind, db);
     let lateError;

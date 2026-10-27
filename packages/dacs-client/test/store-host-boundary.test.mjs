@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { checkSqlitePurchaseInput } from '../src/util/sqlite-purchase-admission.mjs';
 import { retireSqliteHandle } from '../src/util/sqlite-write-lease.mjs';
+import { inTransaction } from './helpers/sqlite-engine-floor.mjs';
 
 const callback = () => {};
 function database(t, memory = false) {
@@ -49,7 +50,7 @@ for (const mode of ['WAL', 'DELETE']) for (const memory of [false, true]) for (c
     db.prepare('ATTACH ? AS archive').run(join(dir, 'archive.sqlite'));
     if (hostTransaction) db.exec("BEGIN; INSERT INTO records VALUES ('TEST-host')");
     assert.throws(() => checkSqlitePurchaseInput(db, callback), { code: 'purchase_store_persistent_attachment' });
-    assert.equal(db.isTransaction, hostTransaction);
+    assert.equal(inTransaction(db), hostTransaction);
     assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, hostTransaction ? 1 : 0);
     if (hostTransaction) db.exec('ROLLBACK');
     db.exec('DETACH archive');

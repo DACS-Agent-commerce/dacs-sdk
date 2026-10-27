@@ -914,6 +914,16 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 4e3f8fe3e81c3706b802f289d12c48f05d3763cb |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e7bf7a95fd5f8ce536b3834a27859b79dd607f22 |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | c27c8df3b9da919daca704a40375be52dae7e89c |
+| D11 | fix(client): D11 make purchase transaction test fixtures portable to the engine floors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | ace13289bd75b0708a7819bd3203995e46a6c5fb |
+| | `packages/dacs-client/test/engine-floor-portability.test.mjs:1` | 8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5 |
+| | `packages/dacs-client/test/helpers/sqlite-engine-floor.mjs:1` | eac4f2e9c7337c76fb7478050fc95c617f5fb999 |
+| | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` | f3a58dda92a3c36b8fd238941cab931999e55fdd |
+| | `packages/dacs-client/test/purchase-tx-boundary.test.mjs:1` | 53fbeca69a87846aa9d32845aab011cbf451dd84 |
+| | `packages/dacs-client/test/purchase-tx-results.test.mjs:1` | 89418b814a42dad7fb1183ddc9e69fb17a1d4df0 |
+| | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | 0cf1690daa71819106208636318cbc955dd9ed8b |
+| | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | 169a5edac4f556d5ddec2e0278223be9a27f7f9c |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 8cb570e3a627217ee42631ff4ea5e105edfef014 |
 
 ## Complete commit and file inventory
 
@@ -2533,6 +2543,20 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/engine-floor-portability.test.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/helpers/sqlite-engine-floor.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/purchase-tx-boundary.test.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/purchase-tx-results.test.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
+| fix(client): D11 make purchase transaction test fixtures portable to the engine floors | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
 
 ## Original moved files
 
