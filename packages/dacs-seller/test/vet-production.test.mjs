@@ -9,34 +9,61 @@ test('staged Vet factory refuses before any signer, anchor or row operation',()=
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
  assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled/);assert.equal(effects,0);
 });
-test('real staged engine anchors one buyer Vet record signed by the seller',async()=>{
- const f=productionFixture(),result=await f.run();
- assert.equal(result.buyerVet.record.overallDecision,'pass');assert.equal(result.buyerVet.record.evaluatedParty,buyer.claim);assert.equal(result.buyerVet.record.signature.signer,seller.claim);
- assert.equal(result.buyerVet.recordRef.anchor.locator,compositeVerificationAddress(JOB,buyer.claim));assert.equal(f.local.writes.length,1);assert.equal(f.controls.signs,1);f.base.close();
+for(const length of [32,64])test(`real staged bilateral engine accepts a ${length}-hex verifier nonce`,async()=>{
+ const f=productionFixture();f.controls.nonce='a'.repeat(length);const result=await f.run();assert.equal(result.buyerVet.record.overallDecision,'pass');assert.equal(result.sellerVet.record.signature.signer,f.seen[0].buyer);assert.equal(f.local.writes.length,2);assert.equal(f.seen.length,1);f.base.close();
 });
-test('a repeated request for a finished job signs and writes nothing again',async()=>{
- const f=productionFixture(),p=await f.provider(),input=f.input();
- await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
- assert.equal(f.local.writes.length,1);assert.equal(f.controls.signs,1);f.base.close();
+for(const length of [31,258])test(`nonce length ${length} refuses before signing`,async()=>{
+ const f=productionFixture();f.controls.nonce='a'.repeat(length);await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);f.base.close();
 });
-test('an anchor that only relays the write never closes the buyer Vet',async()=>{
- const f=productionFixture();f.controls.relayOnly=true;await assert.rejects(f.run());assert.equal(f.local.writes.length,0);f.base.close();
+test('buyer result is recovered after a lost seller checkpoint without consuming its challenge again',async()=>{
+ const f=productionFixture();f.controls.failCounterpartySave=true;await assert.rejects(f.run(),/counterparty checkpoint lost/);assert.equal(f.seen.length,1);
+ const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(f.seen.length,1);assert.equal(f.local.writes.length,2);f.base.close();
+});
+test('unknown buyer nonce ledger never authorizes evaluation',async()=>{
+ const f=productionFixture();f.counterparty.readRecord=async()=>({status:'absent'});await assert.rejects(f.run(),e=>e.code==='seller_vet_reconciliation_required');assert.equal(f.seen.length,0);f.base.close();
+});
+test('inherited core verifier refusal of qualified CVR signer stays closed',async()=>{
+ const f=productionFixture();f.controls.qualifiedSigner=true;await assert.rejects(f.run(),e=>e.code==='seller_vet_invalid');f.base.close();
 });
 for(const state of ['accepted','included'])test(`merely ${state} receipts never close staged Vet`,async()=>{
  const f=productionFixture();f.controls.receiptState=state;f.controls.receiptVerdict='valid';await assert.rejects(f.run());f.base.close();
 });
-test('a finished job is read back again: a buyer receipt that no longer qualifies refuses the repeat',async()=>{
- const f=productionFixture(),p=await f.provider(),input=f.input();
- assert.equal((await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).buyerVet.record.overallDecision,'pass');
- f.controls.receiptStateFor=asked=>asked===compositeVerificationAddress(JOB,buyer.claim)?'accepted':'finalized';
+test('counterparty raw-byte and decoded budgets refuse oversized replies before signatures',async()=>{
+ const f=productionFixture(),issue=f.counterparty.issueChallenge;f.counterparty.issueChallenge=async args=>({...await issue(args),extra:'x'.repeat(65537)});
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause instanceof Error);assert.equal(f.controls.signs,0);f.base.close();
+});
+test('counterparty connection failures keep the actual cause',async()=>{
+ const f=productionFixture(),cause=Object.assign(new Error('TEST refused'),{code:'ECONNREFUSED'});f.counterparty.issueChallenge=async()=>{throw cause;};
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause===cause);f.base.close();
+});
+test('counterparty deadline aborts a never-settling reader',async t=>{
+ const f=productionFixture(),p=await f.provider();let entered,options;const started=new Promise(resolve=>{entered=resolve;});
+ f.counterparty.issueChallenge=(input,limits)=>{options=limits;entered();return new Promise(()=>{});};t.mock.timers.enable({apis:['setTimeout']});const input=f.input();
+ const result=assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_unavailable'&&e.cause?.name==='TimeoutError');await started;t.mock.timers.tick(10001);await result;assert.equal(options.signal.aborted,true);assert.equal(options.maxBytes,65536);assert.equal(f.controls.signs,0);f.base.close();
+});
+
+for(const state of ['accepted','included'])test(`seller-only ${state} receipt cannot close a staged Vet`,async()=>{
+ const f=productionFixture();f.controls.receiptStateFor=address=>address===compositeVerificationAddress(JOB,seller.claim)?state:'finalized';f.controls.receiptVerdict='valid';await assert.rejects(f.run(),e=>e.code==='seller_vet_receipt_invalid');f.base.close();
+});
+test('a buyer Vet kept for a retry is not reused once its receipt no longer qualifies',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();f.controls.failCounterpartySave=true;
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),/counterparty checkpoint lost/);
+ f.controls.receiptStateFor=address=>address===compositeVerificationAddress(JOB,buyer.claim)?'accepted':'finalized';
  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='party_vet_unavailable');assert.equal(f.local.writes.length,1);f.base.close();
+});
+for(const [party,address,code] of [['buyer',()=>compositeVerificationAddress(JOB,buyer.claim),'party_vet_unavailable'],['seller',()=>compositeVerificationAddress(JOB,seller.claim),'seller_vet_receipt_invalid']])test(`a finished job is read back again: a ${party} receipt that no longer qualifies refuses the repeat`,async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ assert.equal((await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).sellerVet.record.overallDecision,'pass');
+ f.controls.receiptStateFor=asked=>asked===address()?'accepted':'finalized';
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code===code);assert.equal(f.local.writes.length,2);f.base.close();
 });
 // A receipt that is not final yet is a wait: the step is retried, never kept as a terminal failure.
 for(const state of ['accepted','included'])for(const provider of ['same','fresh'])test(`a ${state} receipt for the written Vet finalizes on a retry with a ${provider} provider`,async()=>{
+ const clean=productionFixture();await clean.run();const signs=clean.controls.signs;clean.base.close();
  const f=productionFixture(),p=await f.provider(),input=f.input(),run=()=>(provider==='same'?Promise.resolve(p):f.provider()).then(use=>use.jobVet(input.scope,input.buyerIdentityBundle,()=>true));
  f.controls.receiptState=state;f.controls.receiptVerdict='valid';
  await assert.rejects(run());await assert.rejects(run(),/./,'still not final: still a wait');
  f.controls.receiptState='finalized';
- const result=await run();assert.equal(result.buyerVet.record.overallDecision,'pass');
- assert.equal(f.local.writes.length,1,'the retry rereads the same intent');assert.equal(f.controls.signs,1,'nothing is signed twice');f.base.close();
+ const result=await run();assert.equal(result.sellerVet.record.overallDecision,'pass');
+ assert.equal(f.local.writes.length,2,'the retry rereads the same intent');assert.equal(f.controls.signs,signs,'nothing is signed twice');f.base.close();
 });
