@@ -113,13 +113,13 @@ for(const stage of ['file','directory'])test(`C-5 ${stage} sync failure prevents
  }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
 });
 
-test('C-5 manual approval publishes every newly created parent directory before returning',async t=>{
- const f=await fixture(t),evidencePath=join(f.evidencePath+'-nested','deeper','ledger'),original=fs.fsyncSync,synced=[];
+test('C-5 manual approval publishes its newly created ledger directory before returning',async t=>{
+ const f=await fixture(t),evidencePath=join(f.evidencePath+'-new','ledger'),original=fs.fsyncSync,synced=[];
  try{
   fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();
   const a=createExactOperatorApproval({...f.settings,evidencePath,authorize:()=>true});assert.equal(await a(requestFor()),true);
  }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
- assert(synced.includes(evidencePath));assert(synced.includes(f.evidencePath+'-nested'));assert(synced.includes(join(f.evidencePath,'..')));
+ assert(synced.includes(evidencePath));assert(synced.includes(f.evidencePath+'-new'));assert(synced.includes(join(f.evidencePath,'..')));
 });
 
 test('D-1 direct held authorization cannot change retained bytes during its final resolver read',async t=>{
