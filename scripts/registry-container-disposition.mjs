@@ -1050,7 +1050,19 @@ function policySourceReader(read) {
 
 const closedDependencyPolicy = report => report?.schema === DEPENDENCY_POLICY_SCHEMA && Array.isArray(report.violations) &&
   report.passed === (report.violations.length === 0);
-const sbomProblems = errors => [...(errors ?? "").matchAll(/^npm error ((?:missing|invalid|extraneous): .+)$/gm)].map(match => match[1]);
+// The problems an `npm sbom` error log reports: every `npm error` line except
+// the first error code, empty lines and the log-location footer. A line outside
+// the missing/invalid/extraneous grammar stays in the list, so it can match no
+// baseline problem and blocks the gate instead of being dropped.
+function sbomProblems(errors) {
+  let codeSeen = false;
+  const problems = [];
+  for (const [, line = ""] of (errors ?? "").matchAll(/^npm error(?: (.*))?$/gm)) {
+    if (!codeSeen && /^code \S+$/.test(line)) codeSeen = true;
+    else if (line.trim() !== "" && !line.startsWith("A complete log of this run can be found in: ")) problems.push(line);
+  }
+  return problems;
+}
 const prohibitedLocation = (location, name) => typeof location === "string" &&
   (location === `node_modules/${name}` || location.endsWith(`/node_modules/${name}`));
 
@@ -1127,11 +1139,13 @@ function engineState(engine, known) {
   return reported ? listedState(engine.violations, known, engineIdentity) : "blocked";
 }
 
-// npm sbom exits 0 with no problem, or 1 (ESBOMPROBLEMS) listing them.
+// npm sbom exits 0 with no problem, or 1 (ESBOMPROBLEMS) listing at least one;
+// an exit 1 that lists none is incomplete evidence, not a clean run.
 function sbomState(sbom, known) {
   if (!Array.isArray(sbom?.problems)) return "blocked";
   if (sbom.exitCode === 0) return sbom.code === null && sbom.problems.length === 0 ? "passed" : "blocked";
-  return sbom.exitCode === 1 && sbom.code === "ESBOMPROBLEMS" ? listedState(sbom.problems, known, sbomIdentity) : "blocked";
+  const listed = sbom.exitCode === 1 && sbom.code === "ESBOMPROBLEMS" && sbom.problems.length > 0;
+  return listed ? listedState(sbom.problems, known, sbomIdentity) : "blocked";
 }
 
 const completeInventory = inventory => inventory?.scanComplete === true && Array.isArray(inventory.missing) &&
