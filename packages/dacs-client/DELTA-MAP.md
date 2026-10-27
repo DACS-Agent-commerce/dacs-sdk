@@ -849,6 +849,9 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | D11 | fix(client): D11 drop every signature field and non-record protocol from diagnostics | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/diagnostic-projection.mjs:1` | b67b106463a1819cdc0cb6204153b1b821014c9f |
 | | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | afe8bf312d0b48bf2842ef2aeb7baa8936dd1818 |
+| D11 | fix(client): D11 rebuild diagnostic projections on one checked JSON writer | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 0dcfab473d1256f9de295bc65c0f04926e1ceb62 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | cd5edb7803946051073fc731837213c0544411af |
 | D11 | fix(client): D11 require retained native intents for passive readback | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:60`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:168`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:172`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:176`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:194`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:219`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:290`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1010`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1012`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1026`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1052` | 9292671d5d09efee2a37d422bdd0788912191377 |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | 52bd9a8ae7722567256902d1e56adc08d17f53e5 |
@@ -2277,6 +2280,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
 | fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
 | fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/DELTA-MAP.md:1` |
