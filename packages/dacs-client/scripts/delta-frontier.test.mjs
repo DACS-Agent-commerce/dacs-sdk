@@ -1,0 +1,126 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { expectedBlob } from './delta-map.mjs';
+
+// A small commit graph: each commit names its parents. Returns the
+// `git merge-base --independent` view of it.
+function graph(parents) {
+  const ancestors = sha => {
+    const seen = new Set(), stack = [...(parents[sha] ?? [])];
+    while (stack.length) { const next = stack.pop(); if (!seen.has(next)) { seen.add(next); stack.push(...(parents[next] ?? [])); } }
+    return seen;
+  };
+  return shas => shas.filter(sha => !shas.some(other => other !== sha && ancestors(other).has(sha)));
+}
+const sorted = result => result.conflict ? { conflict: [...result.conflict].sort() } : result;
+
+// c1 records a; the fix c2 records b; s forks from c1 and never touches the path.
+const staleSide = graph({ c2: ['c1'], s: ['c1'], m: ['c2', 's'] });
+test('a merge that keeps a stale parent blob or deletes the file does not hold the expected blob', () => {
+  const expected = expectedBlob([{ sha: 'c1', after: 'a' }, { sha: 'c2', after: 'b' }], staleSide);
+  assert.deepEqual(expected, { blob: 'b' });
+  for (const head of ['a', null]) assert.notEqual(expected.blob, head);
+});
+test('the ledger order of records does not choose the expected blob', () => {
+  assert.deepEqual(expectedBlob([{ sha: 'c2', after: 'b' }, { sha: 'c1', after: 'a' }], staleSide), { blob: 'b' });
+});
+test('a fix recorded beside a parallel record cannot be rolled back by the merge alone', () => {
+  const parallel = graph({ c2: ['c1'], c3: ['c1'], m: ['c2', 'c3'] });
+  const records = [{ sha: 'c1', after: 'a' }, { sha: 'c2', after: 'b' }, { sha: 'c3', after: 'c' }];
+  assert.deepEqual(sorted(expectedBlob(records, parallel)), { conflict: ['c2', 'c3'] });
+});
+test('a merge cannot restore an older reviewed blob that neither parent holds', () => {
+  const linear = graph({ c2: ['c1'], c3: ['c2'], s: ['c3'], m: ['c3', 's'] });
+  const expected = expectedBlob([{ sha: 'c1', after: 'a' }, { sha: 'c2', after: 'b' }, { sha: 'c3', after: 'c' }], linear);
+  assert.deepEqual(expected, { blob: 'c' });
+  assert.notEqual(expected.blob, 'b');
+});
+test('an older sibling blob coming back through a later merge is not the expected blob', () => {
+  // c4 chose b after merging the siblings c2 and c3; r continues from c3.
+  const later = graph({ c2: ['c1'], c3: ['c1'], m1: ['c2', 'c3'], c4: ['m1'], r: ['c3'], m2: ['c4', 'r'] });
+  const records = [{ sha: 'c1', after: 'a' }, { sha: 'c2', after: 'b' }, { sha: 'c3', after: 'c' }, { sha: 'c4', after: 'b' }];
+  assert.deepEqual(expectedBlob(records, later), { blob: 'b' });
+});
+test('parallel records of the same blob agree', () => {
+  const parallel = graph({ c2: ['c1'], c3: ['c1'] });
+  assert.deepEqual(expectedBlob([{ sha: 'c2', after: 'b' }, { sha: 'c3', after: 'b' }], parallel), { blob: 'b' });
+});
+test('parallel records of different blobs conflict until a later record chooses one', () => {
+  const chosen = graph({ c2: ['c1'], c3: ['c1'], m: ['c2', 'c3'], c4: ['m'] });
+  const records = [{ sha: 'c2', after: 'b' }, { sha: 'c3', after: 'c' }];
+  assert.deepEqual(sorted(expectedBlob(records, chosen)), { conflict: ['c2', 'c3'] });
+  assert.deepEqual(expectedBlob([...records, { sha: 'c4', after: 'c' }], chosen), { blob: 'c' });
+});
+test('a three-parent merge needs a later record only when its parents recorded different blobs', () => {
+  const octopus = graph({ x: ['c1'], y: ['c1'], z: ['c1'], o: ['x', 'y', 'z'], c5: ['o'] });
+  const records = [{ sha: 'x', after: 'b' }, { sha: 'y', after: 'c' }, { sha: 'z', after: 'd' }];
+  assert.deepEqual(sorted(expectedBlob(records, octopus)), { conflict: ['x', 'y', 'z'] });
+  assert.deepEqual(expectedBlob([...records, { sha: 'c5', after: 'd' }], octopus), { blob: 'd' });
+  assert.deepEqual(expectedBlob([{ sha: 'c1', after: 'a' }, { sha: 'x', after: 'b' }], octopus), { blob: 'b' });
+});
+test('within one commit the last record of a path counts', () => {
+  assert.deepEqual(expectedBlob([{ sha: 'c1', after: 'a' }, { sha: 'c1', after: 'b' }], graph({})), { blob: 'b' });
+});
+
+const root = fileURLToPath(new URL('../../..', import.meta.url));
+const prefix = 'packages/dacs-client/';
+function scratch(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'TEST-delta-frontier-'));
+  execFileSync('git', ['clone', '--quiet', '--shared', root, dir]); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // Exercise this checkout's rule even before its commit is published.
+  copyFileSync(join(root, prefix + 'scripts/delta-map.mjs'), join(dir, prefix + 'scripts/delta-map.mjs'));
+  const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
+  const node = (...args) => execFileSync(process.execPath, args, { cwd: dir, stdio: 'pipe' });
+  const check = () => {
+    const result = spawnSync(process.execPath, [prefix + 'scripts/check-provenance.mjs', '--local-only'], { cwd: dir, encoding: 'utf8' });
+    return { status: result.status, failures: [...(result.stdout + result.stderr).matchAll(/^FAIL (.*)$/gm)].map(match => match[1]), text: result.stdout + result.stderr };
+  };
+  return { dir, git, node, check };
+}
+test('a recorded fix cannot be dropped by a merge that keeps the stale parent', t => {
+  const { dir, git, node, check } = scratch(t), moved = prefix + 'src/dacs/buyer-chain-readback.mjs';
+  const start = git('rev-parse', 'HEAD'), stale = readFileSync(join(dir, moved));
+  git('switch', '--quiet', '-c', 'TEST-stale', start);
+  writeFileSync(join(dir, 'TEST-note.txt'), 'outside the client\n'); git('add', '--', 'TEST-note.txt'); git('commit', '--quiet', '-m', 'TEST note');
+  git('switch', '--quiet', '-c', 'TEST-fix', start);
+  writeFileSync(join(dir, moved), Buffer.concat([stale, Buffer.from('\n// TEST fix B\n')])); git('add', '--', moved);
+  const subject = 'fix(client): D11 TEST fix B';
+  node(prefix + 'scripts/delta-map.mjs', '--record', 'D11', subject);
+  const files = [moved, ...['DELTA-COMMITS.json', 'DELTA-LEDGER.json', 'DELTA-MAP.md'].map(name => prefix + name)];
+  if (git('diff', '--name-only', 'HEAD', '--', prefix + 'scripts/delta-map.mjs')) files.push(prefix + 'scripts/delta-map.mjs');
+  const inventory = JSON.parse(readFileSync(join(dir, prefix + 'DELTA-COMMITS.json'), 'utf8'));
+  inventory.push({ sha: null, subject, files: files.sort() }); writeFileSync(join(dir, prefix + 'DELTA-COMMITS.json'), JSON.stringify(inventory, null, 2) + '\n');
+  node(prefix + 'scripts/delta-map.mjs'); git('add', '--', ...files); git('commit', '--quiet', '-m', subject);
+  git('switch', '--quiet', '-c', 'TEST-clean', 'TEST-fix');
+  git('merge', '--quiet', '--no-ff', '-m', 'merge: TEST clean merge', 'TEST-stale');
+  let result = check(); assert.equal(result.status, 0, result.text);
+  git('switch', '--quiet', '-c', 'TEST-rollback', 'TEST-fix');
+  git('merge', '--quiet', '--no-ff', '--no-commit', 'TEST-stale');
+  writeFileSync(join(dir, moved), stale); node(prefix + 'scripts/delta-map.mjs');
+  git('add', '--', moved, prefix + 'DELTA-MAP.md'); git('commit', '--quiet', '-m', 'merge: TEST keep the stale parent');
+  result = check(); assert.deepEqual(result.failures, [`${moved}: current blob differs from enumerated deltas`], result.text);
+});
+test('parallel records that disagree are refused until a later record chooses, then edits are refused', t => {
+  const { dir, git, node, check } = scratch(t), ledger = join(dir, prefix + 'DELTA-LEDGER.json');
+  const data = JSON.parse(readFileSync(ledger, 'utf8'));
+  const index = data.changes.findIndex(change => change.subject === 'fix(client): D11 record the chosen blobs of three parallel-record paths');
+  assert.ok(index >= 0, 'the identity record for the parallel-record paths must exist');
+  const [chosen] = data.changes.splice(index, 1);
+  writeFileSync(ledger, JSON.stringify(data)); node(prefix + 'scripts/delta-map.mjs');
+  let result = check();
+  assert.deepEqual(result.failures.map(failure => failure.split(':')[0]).sort(), chosen.files.map(file => file.path).sort(), result.text);
+  for (const failure of result.failures) assert.match(failure, /newest records disagree \([0-9a-f]{40}(, [0-9a-f]{40})+\); record the chosen blob after the merge$/);
+  git('checkout', '--', prefix + 'DELTA-LEDGER.json', prefix + 'DELTA-MAP.md');
+  result = check(); assert.equal(result.status, 0, result.text);
+  const path = chosen.files[0].path, bytes = readFileSync(join(dir, path));
+  writeFileSync(join(dir, path), Buffer.concat([bytes, Buffer.from('\n// TEST unrecorded\n')]));
+  result = check(); assert.ok(result.failures.includes(`${path}: current blob differs from enumerated deltas`), result.text);
+  git('add', '--', path); writeFileSync(join(dir, path), bytes);
+  result = check(); assert.ok(result.failures.includes(`${path}: current blob differs from enumerated deltas`), result.text);
+  assert.ok(result.failures.includes(`${path}: index differs from HEAD for moved source/test`), result.text);
+});
