@@ -2436,6 +2436,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
 
 ## Original moved files
 
