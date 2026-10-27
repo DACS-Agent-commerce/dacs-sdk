@@ -104,8 +104,8 @@
         },
         {
           "id": "d11-transaction-contract",
-          "what": "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls using savepoints and successful writes committing with the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart.",
-          "why": "Factories use the concrete package SQLite adapter and exported buyer-state DDL; isolated tests exercise that adapter. Host operation-store integration, schema migrations, durable configuration and live admission still require qualification."
+          "what": "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls joining the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart.",
+          "why": "The current production PurchaseStore seam throws; isolated tests use source-bound test-only helpers, so they do not establish the real adapter contract."
         },
         {
           "id": "dec16-testnet-admission",
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "9436dab6e18d0c8bee6a6edd30d63a4a2f4943a0"
+        "blob": "e149399bbb46bb24e1fdc9d282b3a72c95448c68"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1226,7 +1226,7 @@
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "cae688b7514f53d290ac11bfb8303cfab7a3a7fd"
+        "blob": "7bed5c780bff6703a1b22d76afd95da052096b30"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
