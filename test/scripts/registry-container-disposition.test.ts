@@ -1428,10 +1428,14 @@ describe("registry/container evidence", () => {
     });
     expect(candidateDisposition(passing).exitCode).toBe(4);
 
-    const violation = writeSummary({ "dependency-policy.json": JSON.stringify({
-      schema: "dacs-registry-dependency-policy/v1",
-      passed: false, violations: [{ location: "package.json", value: "file:../dacs" }],
-    }) });
+    // The policy findings carry the violation as the producer extracts it from that report.
+    const fileDependency = { location: "package.json", value: "file:../dacs" };
+    const violation = writeSummary({
+      "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: false,
+        violations: [fileDependency] }),
+      "policy-findings.json": JSON.stringify({ ...baselineOnlySummary().securityGate.findings,
+        gitDependencies: [{ ...fileDependency, field: null, version: null, integrity: null }] }),
+    });
     expect(violation.registryDependencyOnly).toBe(false);
     expect(candidateDisposition(violation).exitCode).toBe(3);
 
