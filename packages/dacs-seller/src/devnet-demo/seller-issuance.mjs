@@ -4,7 +4,7 @@ import { link, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
-import { decidedFromJournals, parsePolicyLedger, SELLER_ISSUANCE_JOURNALS, SELLER_LEDGER_HEADER_FORMAT, SELLER_LEDGER_LINE_FORMATS, sellerIssuanceJournalIds } from './operator-approval.mjs';
+import { decidedFromJournals, parsePolicyLedger, SELLER_ISSUANCE_JOURNALS, SELLER_LEDGER_HEADER_FORMAT, SELLER_LEDGER_LINE_FORMATS, sellerIssuanceJournalIds, serializedPolicy } from './operator-approval.mjs';
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
 
 // Seller records (sellerApproval.purchaseSource "seller"): what the bound
@@ -68,7 +68,9 @@ export async function openSellerIssuanceJournals({directory,openJournal,opened=[
   // fails here closes the journals it opened, then releases it.
   const lock=await acquireSellerStateLock(directory,{now});opened.push(()=>lock.release());
   const mark=opened.length;
-  try{return Object.assign(await bindSellerIssuanceJournals({directory,names,evidenceDirectory,bindingPath,ledgerPath,openJournals,now}),{stateLock:lock});}
+  // Binding reads the ledger and may rewrite it, so it holds the ledger's writer lock (which every ledger writer
+  // takes) from that read to the rewrite: a writer in another process mid-transaction refuses this start.
+  try{return Object.assign(await serializedPolicy(ledgerPath,()=>bindSellerIssuanceJournals({directory,names,evidenceDirectory,bindingPath,ledgerPath,openJournals,now})),{stateLock:lock});}
   catch(error){for(const close of opened.splice(mark).reverse()){try{close();}catch{}}lock.release();throw error;}
 }
 async function bindSellerIssuanceJournals({directory,names,evidenceDirectory,bindingPath,ledgerPath,openJournals,now}){
