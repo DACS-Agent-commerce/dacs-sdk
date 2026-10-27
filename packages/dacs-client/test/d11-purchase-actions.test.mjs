@@ -5,8 +5,21 @@ import assert from 'node:assert/strict';
 import { createPurchaseService } from '../src/purchases.mjs';
 import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
 import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
-import { OFFLINE_AGREEMENT_MODE } from '../src/dacs/protocol-purchases.mjs';
+import { OFFLINE_AGREEMENT_MODE, createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
+import { deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+
+// Every public service action is classified. Held actions refuse first; open
+// actions only read, record observations or reach protocol steps through the
+// held protocol recheck.
+const SERVICE_HELD = ['prepare', 'issueApprovalChallenge', 'approve', 'prepareHandoff', 'nativePaymentLane',
+  'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign'];
+const SERVICE_OPEN = ['status', 'reportWalletResult', 'verifyDeal', 'cancel', 'portalOperation', 'portalEvidence', 'planRunning', 'protocolRecheck'];
+const PROTOCOL_HELD = ['prepareTerms', 'identityRequest', 'planRequest', 'signRequest', 'submitAgreement',
+  'recheckCommitment', 'recheck', 'withNativePaymentLane', 'readNativePaymentLane'];
+const PROTOCOL_COMPLETION_HELD = ['checkDelivery', 'countersignRequest', 'countersign'];
+const TABLES = ['operations', 'operation_events', 'challenges', 'approvals', 'write_coordinates', 'wallet_nonce_consumptions'];
+const snapshot = db => Object.fromEntries(TABLES.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()]));
 
 function world(t, { protocolMode } = {}) {
   const db = openDatabase(':memory:');
@@ -92,3 +105,70 @@ for (const method of ['nativePaymentLane', 'agreementIdentity', 'agreementPlan',
     assert.deepEqual(w.calls, []);
   });
 }
+
+test('every public service action is classified as held or open', t => {
+  assert.deepEqual(Object.keys(world(t).service).sort(), [...SERVICE_HELD, ...SERVICE_OPEN].sort());
+});
+
+for (const method of SERVICE_HELD) {
+  test(`held service action ${method} leaves purchase, challenge and approval state untouched`, async t => {
+    const w = world(t, { protocolMode: OFFLINE_AGREEMENT_MODE }), before = snapshot(w.db);
+    await assert.rejects(async () => w.service[method]({ ...w.args, accountId: 'TEST-buyer', listingId: 'TEST-listing', version: 1,
+      seller: 'TEST-seller', idempotencyKey: 'TEST-held', walletAddress: w.wallet, address: w.wallet, challengeId: 'TEST-challenge',
+      signature: 'TEST-approval-answer', key: 'TEST-key', protocol: OFFLINE_AGREEMENT_MODE }), { code: 'profile_not_admitted' });
+    assert.deepEqual(snapshot(w.db), before);
+    assert.deepEqual(w.calls, []);
+  });
+}
+
+test('every held protocol action refuses with a capability and leaves state and transport untouched', async t => {
+  const w = world(t), effects = [], operation = w.ops.get('TEST-buyer', w.args.operationId), before = snapshot(w.db);
+  const protocol = createProtocolPurchases({ db: w.db, ops: w.ops, coordinates: w.coordinates, store: w.store,
+    buyerAccess: { assertWallet() {} }, fetchImpl: async (...args) => { effects.push(args); throw new Error('TEST-no-network'); } });
+  await assert.rejects(async () => protocol.prepareTerms({ verification: {}, domain: {}, sellerClaim: 'TEST-seller' }), { code: 'profile_not_admitted' });
+  for (const method of PROTOCOL_HELD.filter(name => name !== 'prepareTerms')) {
+    await assert.rejects(async () => protocol[method](operation, {}), { code: 'profile_not_admitted' }, method);
+  }
+  for (const method of PROTOCOL_COMPLETION_HELD) {
+    await assert.rejects(async () => protocol[method](operation, {}), { code: 'native_completion_held' }, method);
+  }
+  assert.deepEqual(snapshot(w.db), before);
+  assert.deepEqual(effects, []);
+});
+
+// verify_deal with a configured protocol: the settlement is recorded once, and
+// the protocol continuation is answered by the held recheck.
+function settledWorld(t) {
+  const w = world(t), chainIdentity = 'c'.repeat(64), hash = '1'.repeat(64), payee = '0x' + 'b'.repeat(64), effects = [];
+  const op = w.ops.get('TEST-buyer', w.args.operationId);
+  w.db.prepare('UPDATE operations SET status=?, terms=? WHERE id=?').run('broadcast_reported', JSON.stringify({ ...op.terms, protocol: {} }), op.id);
+  w.coordinates.save({ operationId: op.id, kind: 'native-dem-transfer', network: 'testnet', from: w.wallet, nonceFence: 6, expectedNonce: 7,
+    target: payee, amountOs: '1000000000', payload: { content: { nonce: 7 } } });
+  assert.equal(w.coordinates.reportHash(op.id, hash), true);
+  const chain = { network: 'testnet', pinnedIdentity: chainIdentity, rpcOrigin: 'https://rpc.invalid', evidenceMode: 'TEST-stub',
+    networkIdentity: async () => ({ identity: chainIdentity, mode: 'public-chain-read' }),
+    observeTransfer: async txHash => ({ status: 'included', payer: w.wallet, payee, amountOs: '1000000000', blockNumber: 10, txHash }),
+    getTransaction: async txHash => ({ hash: txHash, status: 'confirmed', blockNumber: 10, content: { from: w.wallet, nonce: 7 } }) };
+  const protocol = { ...createProtocolPurchases({ db: w.db, ops: w.ops, coordinates: w.coordinates, store: w.store,
+    fetchImpl: async (...args) => { effects.push(args); throw new Error('TEST-no-network'); } }), available: true };
+  const service = createPurchaseService({ db: w.db, ops: w.ops, coordinates: w.coordinates, store: w.store, chain, protocol,
+    purposes: { APPROVE_PURCHASE: 'TEST-host-approval-purpose' }, config: { demAmountEncoding: 'os-string' } });
+  return { ...w, effects, verify: () => service.verifyDeal({ accountId: 'TEST-buyer', operationId: op.id }),
+    state: () => ({ status: w.ops.get('TEST-buyer', op.id).status, verifiedAt: w.coordinates.get(op.id).verifiedAt,
+      consumed: w.db.prepare('SELECT count(*) AS n FROM wallet_nonce_consumptions').get().n }) };
+}
+
+test('verify_deal records the settlement once, then answers profile_not_admitted as its guidance says', async t => {
+  const w = settledWorld(t);
+  const refused = await w.verify().then(() => assert.fail('verify_deal must answer the action hold'), error => error);
+  assert.equal(refused.code, 'profile_not_admitted');
+  const settled = w.state();
+  assert.equal(settled.status, 'settled_verified');
+  assert.ok(settled.verifiedAt);
+  assert.equal(settled.consumed, 1);
+  await assert.rejects(w.verify(), { code: 'profile_not_admitted' });
+  assert.deepEqual(w.state(), settled);
+  assert.deepEqual(w.effects, []);
+  const guidance = deliveryDeadlineView({ state: { protocol: { agreement: { artifact: { terms: { deadline: 0 } } } } } }, { now: () => 1000, enabled: true });
+  assert.ok(guidance.message.includes(`answers ${refused.code}`));
+});

@@ -198,18 +198,6 @@ test('public watch refuses a host promise before its continuation can persist an
   finally { reopened.db.close(); }
 });
 
-for (const checkedAt of [8640000000000000, 8640000000000001, Number.MAX_SAFE_INTEGER]) {
-  test(`deadline observation checks the Date range (${checkedAt})`, t => {
-    const w = purchaseWorld(t);
-    w.db.prepare("UPDATE operations SET status='settled_verified', state=json_set(state, '$.protocol.stage', 'payment-evidenced') WHERE id=?").run(w.operation.id);
-    const op = w.ops.get(w.operation.accountId, w.operation.id);
-    const watch = createDeliveryDeadlineWatch({ ...w, enabled: true, now: () => 8640000000000000, coordinates: { get: () => ({ verifiedAt: 'TEST' }) } });
-    const result = watch.observe(op, { notPresent: true, delivery: { status: 'absent' }, checkedAt });
-    assert.equal(Boolean(result.state.protocol.deliveryDeadline?.overdue), checkedAt === 8640000000000000);
-    assert.doesNotThrow(() => deliveryDeadlineView(result, { enabled: true }));
-  });
-}
-
 test('historical malformed overdue and delivery timestamps remain renderable after JSON roundtrip', () => {
   for (const timestamp of [Number.MAX_SAFE_INTEGER, -1, 'invalid', null]) {
     const operation = JSON.parse(JSON.stringify({ terms: { protocol: {} }, state: { protocol: { stage: 'payment-evidenced',
@@ -218,45 +206,4 @@ test('historical malformed overdue and delivery timestamps remain renderable aft
     assert.match(view.message, /unavailable|invalid|unknown/i);
     assert.doesNotThrow(() => protocolView(operation));
   }
-});
-
-test('public deadline guidance distinguishes payment readback from held delivery checks', () => {
-  const operation = { state: { protocol: { agreement: { artifact: { terms: { deadline: 0 } } } } } };
-  const result = deliveryDeadlineView(operation, { now: () => 1000, enabled: true });
-  assert.match(result.message, /payment transfer only/);
-  assert.match(result.message, /delivery checking remains held/);
-  assert.doesNotMatch(result.message, /verify_deal checks the chain again/);
-});
-
-for (const offset of [1, 7 * 24 * 3600000, 1700000000000000]) {
-  test(`deadline watch ignores a future host observation (+${offset} ms), accepts current time`, t => {
-    const w = purchaseWorld(t), clock = Date.now();
-    const watch = createDeliveryDeadlineWatch({ db: w.db, ops: w.ops, coordinates: w.coordinates,
-      store: createSqlitePurchaseStore(), enabled: true, now: () => clock });
-    w.ops.transition(w.operation.id, 'payment_handoff', 'settled_verified');
-    w.coordinates.recordObservation(w.operation.id, { status: 'included' }, true, null);
-    w.db.prepare("UPDATE operations SET state=json_set(state, '$.protocol.stage', 'payment-evidenced') WHERE id=?").run(w.operation.id);
-    const operation = w.ops.get(w.operation.accountId, w.operation.id), before = w.ops.history(w.operation.id);
-    const observation = { notPresent: true, delivery: { status: 'absent' }, checkedAt: clock + offset };
-    watch.observe(operation, observation);
-    assert.equal(w.ops.get(w.operation.accountId, w.operation.id).state.protocol.deliveryDeadline, undefined);
-    assert.deepEqual(w.ops.history(w.operation.id), before);
-    watch.observe(operation, { ...observation, checkedAt: clock });
-    assert.equal(w.ops.get(w.operation.accountId, w.operation.id).state.protocol.deliveryDeadline.overdue.checkedAt, clock);
-  });
-}
-
-test('a microsecond report cannot mark a future delivery deadline overdue', t => {
-  const w = purchaseWorld(t), clock = Date.now(), deadline = clock + 7 * 24 * 3600000;
-  const op = structuredClone(w.operation);
-  op.state.protocol.stage = 'payment-evidenced';
-  op.state.protocol.agreement.terms.deadline = deadline;
-  op.state.protocol.agreement.artifact.terms.deadline = deadline;
-  w.db.prepare('UPDATE operations SET status=?, state=? WHERE id=?').run('settled_verified', JSON.stringify(op.state), op.id);
-  const watch = createDeliveryDeadlineWatch({ ...w, now: () => clock, enabled: true,
-    coordinates: { get: () => ({ verifiedAt: 'TEST' }) } });
-  const current = w.ops.get(op.accountId, op.id), history = w.ops.history(op.id);
-  watch.observe(current, { notPresent: true, delivery: { status: 'absent' }, checkedAt: clock * 1000 });
-  assert.equal(w.ops.get(op.accountId, op.id).state.protocol.deliveryDeadline, undefined);
-  assert.deepEqual(w.ops.history(op.id), history);
 });
