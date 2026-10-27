@@ -57,6 +57,79 @@ test('native passive observation rejects changed retained bytes without writing'
   await assert.rejects(() => w.source.chainReader().observePassiveTransfer(HASH), { code: 'readback_unverified' });
   assert.deepEqual(await w.journal.entries(), before); assert.deepEqual(w.writes, []);
 });
+for (const [spelling, hash] of [
+  ['prefix', `0x${HASH}`],
+  ['uppercase', HASH.toUpperCase()],
+  ['whitespace', ` ${HASH} `],
+  ['combined', ` 0x${HASH.toUpperCase()} `],
+]) {
+  test(`passive readback refuses a ${spelling} hash alias before source reads`, async t => {
+    const w = passiveNativeWorld(); t.after(() => w.source.close()); await w.seed();
+    w.transaction.content.nonce = 8;
+    const before = await w.journal.entries(), calls = w.calls.length;
+    await assert.rejects(() => w.source.chainReader().observePassiveTransfer(hash), { code: 'invalid_params' });
+    assert.equal(w.calls.length, calls);
+    assert.deepEqual(await w.journal.entries(), before); assert.deepEqual(w.writes, []);
+  });
+}
+test('passive included readback requires a retained native intent', async t => {
+  const w = passiveNativeWorld(); t.after(() => w.source.close());
+  await assert.rejects(() => w.source.chainReader().observePassiveTransfer(HASH), { code: 'readback_unverified' });
+  assert.deepEqual(await w.journal.entries(), []); assert.deepEqual(w.writes, []);
+});
+test('passive included readback refuses a retained non-native intent', async t => {
+  const w = passiveNativeWorld(); t.after(() => w.source.close()); await w.seed();
+  const key = `devnet/native-transfer/${HASH}`, row = await w.journal.get(key);
+  row.signedTransaction.content.type = 'storageProgram';
+  await w.journal.put(key, row); w.writes.length = 0;
+  const before = await w.journal.entries();
+  await assert.rejects(() => w.source.chainReader().observePassiveTransfer(HASH), { code: 'readback_unverified' });
+  assert.deepEqual(await w.journal.entries(), before); assert.deepEqual(w.writes, []);
+});
+for (const changed of [false, true]) {
+  test(`passive readback refuses a reopened lane-only prefix with ${changed ? 'changed' : 'matching'} node bytes`, async t => {
+    const dir = mkdtempSync(join(tmpdir(), 'TEST-passive-prefix-')), path = join(dir, 'journal.sqlite');
+    let journal = openDurableWalletJournal({ path, mode: 'create' }), w;
+    t.after(async () => { await w?.source.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); });
+    w = passiveNativeWorld({ journal }); await w.seed({ laneOnly: true });
+    const before = await journal.entries(), journalId = journal.journalId;
+    assert.equal(await journal.get(`devnet/native-transfer/${HASH}`), undefined);
+    assert.ok(before.some(([key]) => key.startsWith('devnet/native-wallet/')));
+    await w.source.close(); journal.close();
+    journal = openDurableWalletJournal({ path, mode: 'open', expectedJournalId: journalId });
+    w = passiveNativeWorld({ journal });
+    if (changed) {
+      w.transaction.content.amount = '2000000000';
+      w.transaction.content.data[1].args[1] = '2000000000';
+    }
+    for (let repeat = 0; repeat < 2; repeat++) {
+      await assert.rejects(() => w.source.chainReader().observePassiveTransfer(HASH), { code: 'readback_unverified' });
+      assert.deepEqual(await journal.entries(), before); assert.deepEqual(w.writes, []);
+    }
+  });
+}
+for (const state of ['unknown', 'pending']) {
+  test(`passive ${state} readback needs no retained intent`, async t => {
+    const w = passiveNativeWorld({ state }); t.after(() => w.source.close());
+    assert.notEqual((await w.source.chainReader().observePassiveTransfer(HASH)).status, 'included');
+    assert.deepEqual(await w.journal.entries(), []); assert.deepEqual(w.writes, []);
+  });
+}
+test('passive failed execution needs no retained intent', async t => {
+  const w = passiveNativeWorld({ status: 'failed' }); t.after(() => w.source.close());
+  assert.equal((await w.source.chainReader().observePassiveTransfer(HASH)).status, 'invalid');
+  assert.deepEqual(await w.journal.entries(), []); assert.deepEqual(w.writes, []);
+});
+for (const stage of ['broadcast-started', 'broadcast-accepted', 'broadcast-answered', 'observed', 'failed']) {
+  test(`passive readback authenticates fresh facts for a retained ${stage} intent`, async t => {
+    const w = passiveNativeWorld(); t.after(() => w.source.close()); await w.seed();
+    const key = `devnet/native-transfer/${HASH}`, row = await w.journal.get(key);
+    row.stage = stage; await w.journal.put(key, row); w.writes.length = 0;
+    const before = await w.journal.entries();
+    assert.equal((await w.source.chainReader().observePassiveTransfer(HASH)).sourceDisposition, 'included');
+    assert.deepEqual(await w.journal.entries(), before); assert.deepEqual(w.writes, []);
+  });
+}
 test('native source abort reaches its actual bounded identity fetch and stops later reads', async t => {
   const controller = new AbortController(); let abort = false, forwarded;
   const w = passiveNativeWorld({ onFetch: async (_message, signal) => {
