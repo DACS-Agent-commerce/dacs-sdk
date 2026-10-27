@@ -4,12 +4,12 @@
 
 /** Size limits of one projection; the JSON text of a projected value never exceeds outputChars. */
 export const DIAGNOSTIC_LIMITS = Object.freeze({ stringChars: 1024, collectionItems: 32, depth: 6, outputChars: 65536 });
-/** Replaces any value, list tail or record that does not fit the limits. */
+/** Replaces any value, list tail or record that does not fit the limits; a cut record carries it as key and value. */
 export const DIAGNOSTIC_OMITTED = '[omitted: over the diagnostic size limit]';
-// Room kept back for the markers written once the content budget is spent.
-const MARKER_RESERVE = 1024;
-// A list or record emits its two brackets and the separator that follows it.
-const CONTAINER_CHARS = 3;
+const MARKER = JSON.stringify(DIAGNOSTIC_OMITTED);
+// The most a list or record can still write when it closes: a separator, its marker and its bracket.
+const LIST_TAIL = `,${MARKER}]`;
+const RECORD_TAIL = `,${MARKER}:${MARKER}}`;
 const OPERATION_STATE_FIELDS = ['preparedVerification', 'protocol'];
 const PROTOCOL_STATE_FIELDS = ['stage', 'revision', 'notSaved', 'listing', 'agreement', 'commitment', 'claim', 'paymentEvidence',
   'delivery', 'bundle', 'nativeEvidence', 'attempts', 'deliveryDeadline', 'storageGap', 'agreementContext'];
@@ -20,64 +20,89 @@ const SIGNING_MATERIAL_KEYS = new Set(['payload', 'message', 'agreementMessage',
 
 const isSigningMaterial = key => SIGNATURE_KEY.test(key) || SIGNING_MATERIAL_KEYS.has(key);
 const isPlainRecord = value => value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const isScalar = value => value === null || ['boolean', 'string'].includes(typeof value) || Number.isFinite(value);
 const pick = (record, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(record, field)).map(field => [field, record[field]]));
-const exhausted = budget => budget.chars <= 0;
-function omit(budget) {
-  budget.chars -= DIAGNOSTIC_OMITTED.length + 3;
-  return DIAGNOSTIC_OMITTED;
+// Own data only: an accessor reads as undefined and is dropped, so no getter runs.
+const ownValue = (container, key) => Object.getOwnPropertyDescriptor(container, key)?.value;
+
+// The projection is written as JSON text. Every token passes through write(), which refuses any text that
+// would leave too little room for the tails of the containers still open; closing spends that reserved room.
+function write(writer, text, tail = '') {
+  if (writer.out.length + writer.reserve + text.length + tail.length > DIAGNOSTIC_LIMITS.outputChars) return false;
+  writer.out += text;
+  writer.reserve += tail.length;
+  return true;
 }
 
-function copyScalar(value, budget) {
-  if (value !== null && !['boolean', 'number', 'string'].includes(typeof value)) return undefined;
-  if (typeof value === 'number' && !Number.isFinite(value)) return undefined;
-  // Every scalar pays its full JSON text and one separator, and must fit.
-  const cost = typeof value === 'string' && value.length > DIAGNOSTIC_LIMITS.stringChars ? Infinity : JSON.stringify(value).length + 1;
-  if (cost > budget.chars) return omit(budget);
-  budget.chars -= cost;
-  return value;
+function close(writer, tail, text) {
+  writer.reserve -= tail.length;
+  writer.out += text;
 }
 
-function copyList(list, budget, depth) {
-  const copy = [];
-  for (const item of list.slice(0, DIAGNOSTIC_LIMITS.collectionItems)) {
-    if (exhausted(budget)) break;
-    const value = copyValue(item, budget, depth + 1);
-    if (value !== undefined) copy.push(value);
+// A value reports 'skipped' (nothing written), 'written', 'refused' (did not fit, nothing written)
+// or 'cut' (the output ran out inside it and it was closed with the marker).
+const writeToken = (writer, text) => write(writer, text) ? 'written' : 'refused';
+
+function writeList(writer, list, depth, prefix) {
+  if (!write(writer, `${prefix}[`, LIST_TAIL)) return 'refused';
+  let separator = '';
+  let status = list.length > DIAGNOSTIC_LIMITS.collectionItems ? 'over' : 'written';
+  for (let index = 0; index < Math.min(list.length, DIAGNOSTIC_LIMITS.collectionItems); index++) {
+    const item = writeValue(writer, ownValue(list, index), depth + 1, separator);
+    if (item === 'written' || item === 'cut') separator = ',';
+    if (item === 'refused' || item === 'cut') { status = 'cut'; break; }
   }
-  if (copy.length < list.length) copy.push(omit(budget));
-  return copy;
+  close(writer, LIST_TAIL, status === 'written' ? ']' : `${separator}${MARKER}]`);
+  return status === 'cut' ? 'cut' : 'written';
 }
 
-function copyRecord(record, budget, depth) {
+function writeRecord(writer, record, depth, prefix) {
   const keys = Object.keys(record);
-  if (keys.length > DIAGNOSTIC_LIMITS.collectionItems) return omit(budget);
-  const entries = [];
+  if (keys.length > DIAGNOSTIC_LIMITS.collectionItems) return writeToken(writer, prefix + MARKER);
+  if (!write(writer, `${prefix}{`, RECORD_TAIL)) return 'refused';
+  let separator = '';
+  let status = 'written';
   for (const key of keys) {
+    const value = ownValue(record, key);
+    // A marker field is never copied in place: it is carried to the close, so a projected diagnostic keeps
+    // its one marker and no other value can take the marker's name.
+    if (key === DIAGNOSTIC_OMITTED) { if (value === DIAGNOSTIC_OMITTED) status = 'over'; continue; }
     if (isSigningMaterial(key)) continue;
-    const cost = key.length > DIAGNOSTIC_LIMITS.stringChars ? Infinity : JSON.stringify(key).length + 1;
-    if (exhausted(budget) || cost > budget.chars) { entries.push(['omitted', omit(budget)]); break; }
-    budget.chars -= cost;
-    const value = copyValue(record[key], budget, depth + 1);
-    if (value !== undefined) entries.push([key, value]);
+    if (key.length > DIAGNOSTIC_LIMITS.stringChars) { status = 'over'; break; }
+    const field = writeValue(writer, value, depth + 1, `${separator}${JSON.stringify(key)}:`);
+    if (field === 'written' || field === 'cut') separator = ',';
+    if (field === 'refused' || field === 'cut') { status = 'cut'; break; }
   }
-  return Object.fromEntries(entries);
+  close(writer, RECORD_TAIL, status === 'written' ? '}' : `${separator}${MARKER}:${MARKER}}`);
+  return status === 'cut' ? 'cut' : 'written';
 }
 
-function copyValue(value, budget, depth) {
-  if (!Array.isArray(value) && !isPlainRecord(value)) return copyScalar(value, budget);
-  if (depth >= DIAGNOSTIC_LIMITS.depth || budget.chars < CONTAINER_CHARS) return omit(budget);
-  budget.chars -= CONTAINER_CHARS;
-  return Array.isArray(value) ? copyList(value, budget, depth) : copyRecord(value, budget, depth);
+function writeValue(writer, value, depth, prefix) {
+  if (Array.isArray(value) || isPlainRecord(value)) {
+    if (depth >= DIAGNOSTIC_LIMITS.depth) return writeToken(writer, prefix + MARKER);
+    return Array.isArray(value) ? writeList(writer, value, depth, prefix) : writeRecord(writer, value, depth, prefix);
+  }
+  if (!isScalar(value)) return 'skipped';
+  if (typeof value === 'string' && value.length > DIAGNOSTIC_LIMITS.stringChars) return writeToken(writer, prefix + MARKER);
+  return writeToken(writer, prefix + JSON.stringify(value));
 }
 
 /**
  * Copies plain JSON-like data within DIAGNOSTIC_LIMITS and without signing or replay material.
- * Host objects, functions, bigints and non-finite numbers are dropped; oversized values become DIAGNOSTIC_OMITTED.
+ * Host objects, functions, bigints, non-finite numbers and accessor properties are dropped without a marker.
+ * An oversized string, a record over the field limit or a value too deep becomes DIAGNOSTIC_OMITTED; a list
+ * cut short ends with it, and a record cut short carries it as a DIAGNOSTIC_OMITTED field.
  * Does not throw for plain data.
- * @returns {unknown} a fresh value whose JSON text is at most DIAGNOSTIC_LIMITS.outputChars long
+ * @returns {unknown} a fresh value whose JSON text is at most DIAGNOSTIC_LIMITS.outputChars long,
+ *   or undefined when the value itself is dropped
  */
 export function projectDiagnostic(value) {
-  return copyValue(value, { chars: DIAGNOSTIC_LIMITS.outputChars - MARKER_RESERVE }, 0);
+  const writer = { out: '', reserve: 0 };
+  const status = writeValue(writer, value, 0, '');
+  if (status === 'skipped') return undefined;
+  // Unreachable while every token passes write(); an accounting slip fails closed instead of overshooting.
+  if (status === 'refused' || writer.out.length > DIAGNOSTIC_LIMITS.outputChars) return DIAGNOSTIC_OMITTED;
+  return JSON.parse(writer.out);
 }
 
 /**

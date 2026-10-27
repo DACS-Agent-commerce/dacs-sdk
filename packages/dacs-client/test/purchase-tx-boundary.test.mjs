@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { spawnSync } from 'node:child_process';
 import { isSqliteHandleRetired } from '../src/util/sqlite-write-lease.mjs';
 import { purchaseDatabase, durableIds, LegacyDatabase } from './helpers/purchase-tx-fixtures.mjs';
+import { inTransaction } from './helpers/sqlite-engine-floor.mjs';
 
 // Captured before the first adapter installs the statement guard.
 const nativeExec = DatabaseSync.prototype.exec;
@@ -61,7 +62,7 @@ for (const warm of [false, true]) {
     const objects = leaseObjects(db);
     db.exec("BEGIN; INSERT INTO records VALUES ('TEST-host')");
     assert.throws(() => store.transaction(db, callbackRan), /within a transaction/);
-    assert.equal(db.isTransaction, true);
+    assert.equal(inTransaction(db), true);
     assert.deepEqual(leaseObjects(db), objects);
     assert.deepEqual(durableIds(db, null, { volatile: true }), ['TEST-host']);
     db.exec('COMMIT');
@@ -128,9 +129,9 @@ test('a retained native exec cannot persist schema writes after a caught rollbac
   try { assert.equal(reopened.prepare("SELECT count(*) n FROM sqlite_master WHERE name='escaped'").get().n, 0); }
   finally { reopened.close(); }
 });
-test('an SQL callback cannot run under a transaction or delete FTS rows', t => {
+test('an SQL callback cannot run under a transaction or delete rows', t => {
   const { db, path, store } = purchaseDatabase(t);
-  db.exec("CREATE VIRTUAL TABLE search USING fts5(body); INSERT INTO search VALUES ('TEST-retained')");
+  db.exec("CREATE TABLE search(body TEXT); INSERT INTO search VALUES ('TEST-retained')");
   let calls = 0;
   db.function('expire_and_write(', () => { calls++; nativeExec.call(db, 'ROLLBACK; DELETE FROM search'); return 1; });
   assert.throws(() => store.transaction(db, () => db.prepare('SELECT "expire_and_write("()').get()), /SQL callbacks/);
@@ -159,7 +160,7 @@ test('a COMMIT blocked by a reader rolls back and a retry commits', t => {
   const rows = reader.prepare('SELECT id FROM records').iterate();
   rows.next();
   assert.throws(() => store.transaction(db, () => db.exec("INSERT INTO records VALUES ('TEST-blocked')")), /locked|busy/i);
-  assert.equal(db.isTransaction, false);
+  assert.equal(inTransaction(db), false);
   rows.return();
   store.transaction(db, () => db.exec("INSERT INTO records VALUES ('TEST-retry')"));
   assert.deepEqual(durableIds(db, path), ['TEST-existing', 'TEST-retry']);
@@ -168,7 +169,7 @@ test('a deferred foreign-key failure at COMMIT rolls back and a retry commits', 
   const { db, path, store } = purchaseDatabase(t);
   db.exec('PRAGMA foreign_keys=ON; CREATE TABLE child (id TEXT REFERENCES records(id) DEFERRABLE INITIALLY DEFERRED)');
   assert.throws(() => store.transaction(db, () => db.exec("INSERT INTO child VALUES ('TEST-orphan')")), /FOREIGN KEY/);
-  assert.equal(db.isTransaction, false);
+  assert.equal(inTransaction(db), false);
   assert.deepEqual(durableIds(db, path, undefined, 'child'), []);
   store.transaction(db, () => db.exec("INSERT INTO child VALUES ('TEST-parent'); INSERT INTO records VALUES ('TEST-parent')"));
   assert.deepEqual(durableIds(db, path, undefined, 'child'), ['TEST-parent']);
