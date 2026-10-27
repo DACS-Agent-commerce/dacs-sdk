@@ -131,6 +131,14 @@ for (const [clock, times] of Object.entries(clocks)) {
     assert.deepEqual(await budget(f), { writes: 1, totalOs: 4n }, 'released');
   });
 }
+test('an earlier build\'s held confirmation of an attempt opened before a hold never takes its slot', async t => {
+  const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' }), [[, opened], , , [, linked]] = vetAttempt(clocks.forward);
+  await writeFile(f.evidencePath, encode([opened]));
+  assert.equal(await f.admission.reserve(f.reserve), null);
+  await appendFile(f.evidencePath, encode([{ ...linked, reservationId: id(5, 0) }]));
+  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
+  assert.equal(await f.admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), 'hourly-write-limit');
+});
 for (const released of ['TEST first', 'TEST second']) test(`two open holds of one job convert one slot per Vet write, and releasing ${released} keeps outstanding writes counted`, async t => {
   const f = await fixture(t);
   assert.equal(await f.admission.reserve({ ...f.reserve, writes: 2, hold: 'TEST first' }), null);
