@@ -16,6 +16,14 @@ const CHALLENGE_PAGE_SIZE=128;
 const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => canonicalize(a) === canonicalize(b);
+const droppedByJson = (v) => v === undefined || typeof v === 'function' || typeof v === 'symbol';
+// A challenge attempt as it is kept: its JSON form when that is an object with
+// a lowercase hex presentation hash, else null (a malformed attempt).
+function keptAttempt(attempt) {
+  let kept;
+  try { kept = clone(attempt); } catch { return null; }
+  return kept && typeof kept === 'object' && !Array.isArray(kept) && typeof kept.presentationHash === 'string' && /^[0-9a-f]{64}$/.test(kept.presentationHash) ? kept : null;
+}
 const fail = (code, cause) => { throw new SellerRecoveryError(code, { cause }); };
 // A job lock row's owner is `<pid>:<process>:<acquired ms>:<acquisition>`,
 // then `:<namespace>` where this host names this process's boot and start.
@@ -372,8 +380,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     async function readAnchorRecord(anchors, address) {
       const raw = await anchorRequest('read', options => anchors.read(address, options));
       let budget = ANCHOR_REPLY_BYTES;
-      const text = raw instanceof Uint8Array ? raw : JSON.stringify(raw, (key, value) => {
-        budget -= key.length + 1 + (typeof value === 'string' ? value.length : 0);
+      // Charges at most what JSON.stringify writes, so the exact byte check
+      // decides: an array element writes its comma but not its index, and an
+      // object member JSON drops writes nothing.
+      const text = raw instanceof Uint8Array ? raw : JSON.stringify(raw, function (key, value) {
+        budget -= (Array.isArray(this) ? 1 : droppedByJson(value) ? 0 : key.length + 1) + (typeof value === 'string' ? value.length : 0);
         if (budget < 0) throw new Error('anchor read exceeds decoded budget');
         return value;
       });
@@ -617,20 +628,24 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         });
       },
       // The challenge as it was before this attempt (null when never issued);
-      // the attempt is kept only when it is the first.
+      // the attempt is kept only when it is the first. A malformed first
+      // attempt consumes the nonce too, kept with no presentation hash so no
+      // admission matches it, and is then refused (seller_challenge_attempt_invalid).
       attemptChallenge(nonce, attempt) {
-        if (!attempt || typeof attempt !== 'object' || Array.isArray(attempt) || typeof attempt.presentationHash !== 'string' || !/^[0-9a-f]{64}$/.test(attempt.presentationHash)) fail('seller_challenge_attempt_invalid');
-        return transaction(() => {
+        const kept = keptAttempt(attempt);
+        const prior = transaction(() => {
           const prior = effect(`session-challenge:${nonce}`);
           if (prior?.kind !== 'session-challenge') return null;
-          if (prior.attempt === null) putEffect(`session-challenge:${nonce}`, { ...prior, attempt: clone(attempt) });
+          if (prior.attempt === null) putEffect(`session-challenge:${nonce}`, { ...prior, attempt: kept ?? { presentationHash: null } });
           return prior;
         });
+        if (!kept) fail('seller_challenge_attempt_invalid');
+        return prior;
       },
       admitChallenge(nonce, presentationHash, accepted) {
         transaction(() => {
           const prior = effect(`session-challenge:${nonce}`);
-          if (prior?.kind !== 'session-challenge' || prior.attempt?.presentationHash !== presentationHash) fail('seller_state_corrupt');
+          if (prior?.kind !== 'session-challenge' || typeof presentationHash !== 'string' || prior.attempt?.presentationHash !== presentationHash) fail('seller_state_corrupt');
           putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true, ...accepted===undefined?{}:{accepted:clone(accepted)} } });
         });
       },
