@@ -77,13 +77,25 @@ test('a thousand competing settlement claims keep a constant-size row and credit
   f.store.close();
 });
 
-test('malformed attempts refuse without retaining null; first valid attempt survives restart', async t => {
+test('a first valid attempt survives restart and only it is admitted', async t => {
   const f = await durableFixture(t); f.store.issueChallenge('TEST nonce', { jobId: JOB });
-  assert.throws(() => f.store.attemptChallenge('TEST nonce', null), e => e.code === 'seller_challenge_attempt_invalid');
   const first = { presentationHash: 'a'.repeat(64) };
   assert.equal(f.store.attemptChallenge('TEST nonce', first).attempt, null); f.store.close();
   const again = await f.reopen(); assert.deepEqual(again.attemptChallenge('TEST nonce', { presentationHash: 'b'.repeat(64) }).attempt, first);
   assert.throws(() => again.admitChallenge('TEST nonce', 'b'.repeat(64))); again.admitChallenge('TEST nonce', first.presentationHash); again.close();
+});
+// CORE SN-4: a malformed first attempt consumes its nonce before it is refused.
+for (const [label, attempt] of [
+  ['null', null], ['an array', [{ presentationHash: 'a'.repeat(64) }]], ['without a hash', {}], ['with an array hash', { presentationHash: [] }],
+  ['with a non-hex hash', { presentationHash: 'A'.repeat(64) }], ['with a field JSON cannot hold', { presentationHash: 'a'.repeat(64), TEST: 1n }],
+  ['whose JSON form is null', { presentationHash: 'a'.repeat(64), toJSON: () => null }],
+]) test(`a first attempt ${label} is refused, consumes its nonce across restart and is never admitted`, async t => {
+  const f = await durableFixture(t); f.store.issueChallenge('TEST nonce', { jobId: JOB });
+  assert.throws(() => f.store.attemptChallenge('TEST nonce', attempt), e => e.code === 'seller_challenge_attempt_invalid'); f.store.close();
+  const again = await f.reopen(), later = { presentationHash: 'b'.repeat(64) };
+  assert.notEqual(again.attemptChallenge('TEST nonce', later).attempt, null);
+  for (const hash of [later.presentationHash, null, undefined]) assert.throws(() => again.admitChallenge('TEST nonce', hash), e => e.code === 'seller_state_corrupt');
+  again.close();
 });
 
 test('signature bytes persist once and a failed signer remains retryable under the fence', async t => {
@@ -150,6 +162,8 @@ for (const [label, encode] of [['0x-hex', value => value], ['hex', value => valu
 
 // D-2: an artifact whose readback could not fit one anchor reply is refused before anything is kept.
 const sized = (bytes, unit = 'x') => ({ TEST: unit.repeat((bytes - canonicalize({ TEST: '' }).length) / Buffer.byteLength(unit)) });
+// An array of zeros whose canonical form is exactly `bytes` long: each element writes "0,".
+const zeros = bytes => ({ TEST: Array((bytes - canonicalize({ TEST: [] }).length + 1) / 2).fill(0) });
 for (const [label, value] of [['one byte over the limit', sized(SELLER_ANCHOR_ARTIFACT_BYTES + 1)], ['multibyte, one byte over the limit and fewer characters than it', sized(SELLER_ANCHOR_ARTIFACT_BYTES + 1, 'é')]]) {
   test(`an artifact ${label} is refused before authorization, intent or write`, async t => {
     const f = await durableFixture(t), anchors = localAnchor({ now: () => NOW }); let authorizations = 0;
@@ -161,12 +175,20 @@ for (const [label, value] of [['one byte over the limit', sized(SELLER_ANCHOR_AR
 for (const [label, value] of [
   ['exactly at the limit', sized(SELLER_ANCHOR_ARTIFACT_BYTES)], ['multibyte at the limit', sized(SELLER_ANCHOR_ARTIFACT_BYTES - 1, 'é')],
   ['the size of a 128 KiB inline Deliverable', { report: 'x'.repeat(128 * 1024), jobId: JOB }],
+  ['of 180,000 small numbers', { TEST: Array(180000).fill(0) }], ['of small numbers exactly at the limit', zeros(SELLER_ANCHOR_ARTIFACT_BYTES)],
 ]) test(`an artifact ${label} is written once and read back with its receipt`, async t => {
   const f = await durableFixture(t), anchors = localAnchor({ now: () => NOW }), address = `TEST-sized-${JOB}`;
   const receipt = await f.store.withJob(JOB, () => f.store.anchor({ jobId: JOB, logicalAddress: address, artifact: value, anchors, authorize: sellerAuthorization(address, value) }));
   assert.equal(receipt.state, 'finalized');
   assert.deepEqual((await f.store.readAnchor({ jobId: JOB, logicalAddress: address, anchors })).artifact, value);
   assert.equal(anchors.writes.length, 1); f.store.close();
+});
+test('a decoded readback is not charged for members JSON drops', async t => {
+  const f = await durableFixture(t), anchors = localAnchor({ now: () => NOW }), value = sized(SELLER_ANCHOR_ARTIFACT_BYTES), address = `TEST-sized-${JOB}`;
+  const dropped = Object.fromEntries(Array.from({ length: 4096 }, (_, i) => [`TEST-unset-${i}`, undefined]));
+  anchors.controls.read = row => ({ ...row, ...dropped });
+  const receipt = await f.store.withJob(JOB, () => f.store.anchor({ jobId: JOB, logicalAddress: address, artifact: value, anchors, authorize: sellerAuthorization(address, value) }));
+  assert.equal(receipt.state, 'finalized'); assert.equal(anchors.writes.length, 1); f.store.close();
 });
 for (const [label, value] of [['an array', ['TEST']], ['a string', 'TEST'], ['undefined', undefined], ['a value JSON cannot hold', { TEST: 1n }]]) test(`an artifact that is ${label} is refused before anything is kept`, async t => {
   const f = await durableFixture(t), anchors = localAnchor({ now: () => NOW });
