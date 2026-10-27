@@ -48,10 +48,19 @@ fi
 acceptance_root=$(mktemp -d "$temp_parent/dacs-registry-acceptance.XXXXXX")
 release_set="$acceptance_root/release-set"
 registry_config="$acceptance_root/verdaccio.yaml"
-consumer_root="$acceptance_root/consumer"
+# Consumer containers write only gen/, measure-out/ and exec-out/. The host
+# reads them only through acceptance-seal.mjs, which never follows a link, and
+# no container mounts the evidence stage.
+generated_root="$acceptance_root/gen"
+measure_out="$acceptance_root/measure-out"
+execute_out="$acceptance_root/exec-out"
 artifact_stage="$acceptance_root/artifacts"
-mkdir "$consumer_root" "$artifact_stage"
+mkdir "$generated_root" "$measure_out" "$execute_out" "$artifact_stage"
 registry_log="$artifact_stage/registry.log"
+measure_evidence=(dependency-policy.json dependency-policy.exit-code npm-audit.json npm-audit.exit-code
+  consumer-physical.cdx.json consumer-physical-sbom.err consumer-physical-sbom.exit-code consumer-lock.cdx.json
+  consumer-lock-sbom.err consumer-lock-sbom.exit-code engine-strict.log engine-strict.exit-code engine-versions.json)
+execute_evidence=(generated-tests.exit-code doctor.json doctor.log doctor.exit-code)
 
 run_id=local
 run_attempt=0
@@ -65,6 +74,11 @@ suffix=$(printf '%s-%s-%s' "$run_id" "$run_attempt" "$$" | tr -cd 'a-zA-Z0-9_.-'
 registry_container="dacs-registry-$suffix"
 registry_network="dacs-registry-$suffix"
 runtime_image="dacs-one-click-acceptance:$suffix"
+# Each consumer phase runs as "$consumer_container-<phase>"; the started ones are listed here.
+consumer_container="dacs-consumer-$suffix"
+consumer_phases=""
+measure_collected=0
+execute_collected=0
 registry_started=0
 network_started=0
 image_started=0
@@ -76,27 +90,26 @@ cleanup() {
   # A failed evidence write must not skip the Docker cleanup below or replace
   # the original exit status.
   set +e
-  if [ "${stage-}" = consumer ] && [ -f "$consumer_root/dependency-policy.exit-code" ] &&
-      [ "$(cat "$consumer_root/dependency-policy.exit-code")" != 0 ]; then
-    stage=dependency-policy
-  fi
+  # A consumer container a deadline or signal left running stops before its
+  # mounts are read or deleted.
+  for phase in $consumer_phases; do
+    docker rm --force "$consumer_container-$phase" >/dev/null 2>&1 || true
+  done
   # Preserve only collected, secret-free evidence, including on early failure.
   if [ -d "$artifact_stage" ]; then
-    # These are the same secret-free diagnostics exported on a complete run.
-    for name in generated-tests.exit-code doctor.log doctor.json doctor.exit-code npm-audit.json \
-      npm-audit.exit-code consumer-lock.cdx.json \
-      consumer-lock-sbom.err consumer-lock-sbom.exit-code consumer-physical.cdx.json \
-      consumer-physical-sbom.err consumer-physical-sbom.exit-code engine-strict.log \
-      engine-strict.exit-code engine-versions.json; do
-      if [ -f "$consumer_root/$name" ]; then
-        cp "$consumer_root/$name" "$artifact_stage/" || evidence_exported=0
-      fi
-    done
-    for name in package.json package-lock.json; do
-      if [ -f "$consumer_root/one-click-agent/$name" ]; then
-        cp "$consumer_root/one-click-agent/$name" "$artifact_stage/generated-$name" || evidence_exported=0
-      fi
-    done
+    # What a failed phase left is collected the same way as on a complete run.
+    if [ "$measure_collected" -eq 0 ]; then
+      node "$repo_root/scripts/acceptance-seal.mjs" collect --optional "$measure_out" "$artifact_stage" \
+        "${measure_evidence[@]}" || evidence_exported=0
+    fi
+    if [ "$execute_collected" -eq 0 ]; then
+      node "$repo_root/scripts/acceptance-seal.mjs" collect --optional "$execute_out" "$artifact_stage" \
+        "${execute_evidence[@]}" || evidence_exported=0
+    fi
+    if [ "${stage-}" = consumer ] && [ -f "$artifact_stage/dependency-policy.exit-code" ] &&
+        [ "$(cat "$artifact_stage/dependency-policy.exit-code")" != 0 ]; then
+      stage=dependency-policy
+    fi
     for name in release-provenance.json SHA256SUMS; do
       if [ -f "$release_set/$name" ]; then
         cp "$release_set/$name" "$artifact_stage/" || evidence_exported=0
@@ -161,35 +174,32 @@ stage=consumer
 generated_mode=live-demos
 generated_role=seller
 generated_rails=both
-run_bounded docker run --rm \
-  "${consumer_network_args[@]}" \
-  --volume "$consumer_root:/work" \
+# Every phase reaches the same registry with the same npm settings, bounded
+# transport and installer cache, which the dependency policy reads.
+consumer_env=(--env npm_config_registry="$consumer_registry" --env npm_config_audit=false --env npm_config_fund=false
+  --env npm_config_omit=optional --env npm_config_cache=/work/.npm-cache
+  --env DACS_BOUNDED_NPM_HTTP=1 --env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs
+  --env npm_config_fetch_timeout="$npm_config_fetch_timeout" --env npm_config_fetch_retries="$npm_config_fetch_retries"
+  --env npm_config_fetch_retry_mintimeout="$npm_config_fetch_retry_mintimeout"
+  --env npm_config_fetch_retry_maxtimeout="$npm_config_fetch_retry_maxtimeout"
+  --env DACS_HOST_UID="$host_uid" --env DACS_HOST_GID="$host_gid")
+# Install: no package code runs. It stays root, so the generator records its
+# default runtime user, and returns /work to the host user.
+consumer_phases="install"
+run_bounded docker run --rm --name "$consumer_container-install" --init \
+  "${consumer_network_args[@]}" "${consumer_env[@]}" \
+  --volume "$generated_root:/work" \
   --volume "$bounded_support:/acceptance-support:ro" \
-  --volume "$repo_root/scripts:/acceptance-sdk/scripts:ro" \
-  --volume "$repo_root/package.json:/acceptance-sdk/package.json:ro" \
-  --volume "$release_set:/release-set:ro" \
-  --volume "$artifact_stage:/acceptance-artifacts" \
   --workdir /work \
+  --env npm_config_ignore_scripts=true \
   --env DACS_PACKAGE_VERSION="$version" \
   --env DACS_GENERATED_MODE="$generated_mode" \
   --env DACS_GENERATED_ROLE="$generated_role" \
   --env DACS_GENERATED_RAILS="$generated_rails" \
-  --env DACS_HOST_UID="$host_uid" \
-  --env DACS_HOST_GID="$host_gid" \
-  --env npm_config_registry="$consumer_registry" \
-  --env npm_config_audit=false \
-  --env npm_config_fund=false \
-  --env npm_config_omit=optional \
-  --env DACS_BOUNDED_NPM_HTTP=1 \
-  --env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs \
-  --env npm_config_fetch_timeout="$npm_config_fetch_timeout" \
-  --env npm_config_fetch_retries="$npm_config_fetch_retries" \
-  --env npm_config_fetch_retry_mintimeout="$npm_config_fetch_retry_mintimeout" \
-  --env npm_config_fetch_retry_maxtimeout="$npm_config_fetch_retry_maxtimeout" \
   "$consumer_image" \
   sh -ceu '
     restore_host_ownership() {
-      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work /acceptance-artifacts || true
+      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work || true
     }
     trap restore_host_ownership EXIT
     npm install --global --ignore-scripts npm@11.19.0
@@ -202,47 +212,99 @@ run_bounded docker run --rm \
       --deploy docker --no-install
     cd one-click-agent
     npm install --ignore-scripts
+  ' 2>&1 | tee "$artifact_stage/generation.log"
+
+stage=evidence-collect
+project="$generated_root/one-click-agent"
+node scripts/acceptance-seal.mjs collect "$project" "$artifact_stage" \
+  package.json=generated-package.json package-lock.json=generated-package-lock.json
+
+stage=consumer
+# Measure: only the pinned npm and this checkout's checker run, as the host
+# user, on a read-only install. Package code has not run yet.
+consumer_phases="$consumer_phases measure"
+run_bounded docker run --rm --name "$consumer_container-measure" --init \
+  --user "$host_uid:$host_gid" \
+  "${consumer_network_args[@]}" "${consumer_env[@]}" \
+  --volume "$generated_root:/work:ro" \
+  --volume "$measure_out:/out" \
+  --volume "$bounded_support:/acceptance-support:ro" \
+  --volume "$repo_root/scripts:/acceptance-sdk/scripts:ro" \
+  --volume "$repo_root/package.json:/acceptance-sdk/package.json:ro" \
+  --volume "$release_set:/release-set:ro" \
+  --workdir /work/one-click-agent \
+  --env HOME=/tmp \
+  --env DACS_PACKAGE_VERSION="$version" \
+  "$consumer_image" \
+  sh -ceu '
+    # The installer cache is read-only here; npm requests of its own use a private one.
+    npm_config_cache=/tmp/npm-cache npm install --global --prefix /tmp/npm --ignore-scripts npm@11.19.0
+    export PATH="/tmp/npm/bin:$PATH"
     dependency_status=0
     node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \
-      /acceptance-artifacts/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION" || dependency_status=$?
-    printf "%s\n" "$dependency_status" > /work/dependency-policy.exit-code
+      /out/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION" || dependency_status=$?
+    printf "%s\n" "$dependency_status" > /out/dependency-policy.exit-code
     test "$dependency_status" -eq 0
-    npm rebuild better-sqlite3
-    tests_status=0
-    { npm run build && npm test; } || tests_status=$?
-    printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
-    test "$tests_status" -eq 0
-    doctor_status=0
-    DACS_DEPLOYMENT=local DACS_SELLER_PUBLIC_BASE_URL=https://seller.example/engage \
-      npm run --silent dacs:doctor -- --json > /work/doctor.json 2> /work/doctor.log || doctor_status=$?
-    printf "%s\n" "$doctor_status" > /work/doctor.exit-code
-    test "$doctor_status" -eq 5
+    export npm_config_cache=/tmp/npm-cache
     audit_status=0
-    npm audit --registry https://registry.npmjs.org --omit=dev --json > /work/npm-audit.json || audit_status=$?
-    printf "%s\n" "$audit_status" > /work/npm-audit.exit-code
+    npm audit --registry https://registry.npmjs.org --omit=dev --json > /out/npm-audit.json || audit_status=$?
+    printf "%s\n" "$audit_status" > /out/npm-audit.exit-code
     physical_status=0
-    npm sbom --sbom-format cyclonedx --omit=dev > /work/consumer-physical.cdx.json 2> /work/consumer-physical-sbom.err || physical_status=$?
-    printf "%s\n" "$physical_status" > /work/consumer-physical-sbom.exit-code
-    mkdir /work/lock-only
-    cp package.json package-lock.json /work/lock-only/
-    cd /work/lock-only
+    npm sbom --sbom-format cyclonedx --omit=dev > /out/consumer-physical.cdx.json 2> /out/consumer-physical-sbom.err || physical_status=$?
+    printf "%s\n" "$physical_status" > /out/consumer-physical-sbom.exit-code
+    mkdir /tmp/lock-only
+    cp package.json package-lock.json /tmp/lock-only/
+    cd /tmp/lock-only
     lock_status=0
-    npm sbom --package-lock-only --sbom-format cyclonedx --omit=dev > /work/consumer-lock.cdx.json 2> /work/consumer-lock-sbom.err || lock_status=$?
-    printf "%s\n" "$lock_status" > /work/consumer-lock-sbom.exit-code
+    npm sbom --package-lock-only --sbom-format cyclonedx --omit=dev > /out/consumer-lock.cdx.json 2> /out/consumer-lock-sbom.err || lock_status=$?
+    printf "%s\n" "$lock_status" > /out/consumer-lock-sbom.exit-code
     engine_status=0
-    npm ci --package-lock-only --ignore-scripts --omit=optional --engine-strict > /work/engine-strict.log 2>&1 || engine_status=$?
-    printf "%s\n" "$engine_status" > /work/engine-strict.exit-code
+    npm ci --package-lock-only --ignore-scripts --omit=optional --engine-strict > /out/engine-strict.log 2>&1 || engine_status=$?
+    printf "%s\n" "$engine_status" > /out/engine-strict.exit-code
     # --engine-strict stops at the first violation. The disposition lists them
     # all from the lock against these versions; npm ci without it fails its
     # lock sync check on the nested Git dependency instead.
-    node -p "JSON.stringify({ node: process.version, npm: process.argv[1] })" "$(npm --version)" > /work/engine-versions.json
-  ' 2>&1 | tee "$artifact_stage/generation.log"
+    node -p "JSON.stringify({ node: process.version, npm: process.argv[1] })" "$(npm --version)" > /out/engine-versions.json
+  ' 2>&1 | tee -a "$artifact_stage/generation.log"
+stage=evidence-collect
+node scripts/acceptance-seal.mjs collect "$measure_out" "$artifact_stage" "${measure_evidence[@]}"
+measure_collected=1
 
-project="$consumer_root/one-click-agent"
+stage=consumer
+# Execute: package code runs here, with no mount the host trusts afterwards.
+consumer_phases="$consumer_phases execute"
+run_bounded docker run --rm --name "$consumer_container-execute" --init \
+  "${consumer_network_args[@]}" "${consumer_env[@]}" \
+  --volume "$generated_root:/work" \
+  --volume "$execute_out:/out" \
+  --volume "$bounded_support:/acceptance-support:ro" \
+  --workdir /work/one-click-agent \
+  "$consumer_image" \
+  sh -ceu '
+    restore_host_ownership() {
+      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work /out || true
+    }
+    trap restore_host_ownership EXIT
+    npm install --global --ignore-scripts npm@11.19.0
+    npm rebuild better-sqlite3
+    tests_status=0
+    { npm run build && npm test; } || tests_status=$?
+    printf "%s\n" "$tests_status" > /out/generated-tests.exit-code
+    test "$tests_status" -eq 0
+    doctor_status=0
+    DACS_DEPLOYMENT=local DACS_SELLER_PUBLIC_BASE_URL=https://seller.example/engage \
+      npm run --silent dacs:doctor -- --json > /out/doctor.json 2> /out/doctor.log || doctor_status=$?
+    printf "%s\n" "$doctor_status" > /out/doctor.exit-code
+    test "$doctor_status" -eq 5
+  ' 2>&1 | tee -a "$artifact_stage/generation.log"
+stage=evidence-collect
+node scripts/acceptance-seal.mjs collect "$execute_out" "$artifact_stage" "${execute_evidence[@]}"
+execute_collected=1
+
 stage=audit-policy
 # Directness comes from the audited lock, not npm's name-level flag.
 node scripts/registry-container-disposition.mjs --audit-policy \
-  "$consumer_root/npm-audit.json" "$project/package-lock.json" "$artifact_stage/audit-policy.json"
+  "$artifact_stage/npm-audit.json" "$project/package-lock.json" "$artifact_stage/audit-policy.json"
 
 stage=compose
 # Inert Compose inputs: these are deliberately invalid credentials and drafts,
@@ -350,23 +412,6 @@ NODE
 
 cp "$release_set/release-provenance.json" "$artifact_stage/"
 cp "$release_set/SHA256SUMS" "$artifact_stage/"
-cp "$project/package.json" "$artifact_stage/generated-package.json"
-cp "$project/package-lock.json" "$artifact_stage/generated-package-lock.json"
-cp "$consumer_root/generated-tests.exit-code" "$artifact_stage/"
-cp "$consumer_root/doctor.log" "$artifact_stage/"
-cp "$consumer_root/doctor.json" "$artifact_stage/"
-cp "$consumer_root/doctor.exit-code" "$artifact_stage/"
-cp "$consumer_root/npm-audit.json" "$artifact_stage/"
-cp "$consumer_root/npm-audit.exit-code" "$artifact_stage/"
-cp "$consumer_root/consumer-lock.cdx.json" "$artifact_stage/"
-cp "$consumer_root/consumer-lock-sbom.err" "$artifact_stage/"
-cp "$consumer_root/consumer-lock-sbom.exit-code" "$artifact_stage/"
-cp "$consumer_root/consumer-physical.cdx.json" "$artifact_stage/"
-cp "$consumer_root/consumer-physical-sbom.err" "$artifact_stage/"
-cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
-cp "$consumer_root/engine-strict.log" "$artifact_stage/"
-cp "$consumer_root/engine-strict.exit-code" "$artifact_stage/"
-cp "$consumer_root/engine-versions.json" "$artifact_stage/"
 
 stage=summary
 # Exact identities of the security-gate findings, compared with the #191
