@@ -11,6 +11,7 @@ const FUNCTION_OPCODE = /^(Function|PureFunc|AggStep|AggFinal|AggValue|AggInvers
 const VIRTUAL_TABLE_OPCODE = /^V(Begin|Check|Column|Create|Destroy|Filter|InitIn|Next|Open|Rename|Update)$/;
 const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function opcodes are unsupported by the statement guard';
 const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
+const REFUSED_ITERATOR = 'an iterator whose own next is not a function is unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap(), registrations = new WeakMap();
 let installed = false, checking = false, nativeExec, nativePrepare, nativeGet, nativeAll, bundledExtensions, bundledExtensionNames;
 function synchronousResult(db, result) {
@@ -109,10 +110,13 @@ function execute(fn, db, sql) {
 // Node 22.13.0 and 23.4.0 give each iterator its own `next`, which shadows the
 // shared prototype method patched in install(). Wrap that own method, or the
 // step would run without the liveness check and without the writable fence.
+// An own `next` that is not a function cannot be wrapped, so it is refused.
 function guardIteratorSteps(iterator, db, sql) {
   iterators.set(iterator, { db, sql });
-  const ownAdvance = Object.getOwnPropertyDescriptor(iterator, 'next')?.value;
-  if (typeof ownAdvance !== 'function') return;
+  const own = Object.getOwnPropertyDescriptor(iterator, 'next');
+  if (!own) return;
+  const ownAdvance = own.value;
+  if (typeof ownAdvance !== 'function') throw new TypeError(REFUSED_ITERATOR);
   Object.defineProperty(iterator, 'next', {
     configurable: true,
     writable: true,
@@ -202,7 +206,8 @@ function install(db) {
  * the statement runs. Statements and iterators prepared before installation
  * are refused while a guard is active because their programs cannot be inspected.
  * Exception: Node 22.13.0 and 23.4.0 give each iterator its own native `next`,
- * which only iterators created after installation can have wrapped.
+ * which only iterators created after installation can have wrapped. A new
+ * iterator whose own `next` is not a function is refused with a TypeError.
  * An application function that shares the name and arity of a bundled FTS,
  * RTREE or GEOPOLY function looks identical to it, so calls to those bundled
  * functions are refused by name under a guard, even if registered before this

@@ -215,6 +215,8 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 
 Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
 
+Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review and crash tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`, `domain-store-crash.floor.test.mjs`).
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -924,6 +926,16 @@ Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`,
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | b2a3acd0b40dfab8d88586e7fe6326fbbb11a697 |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 3cd9965ac3a3fcf7191550d7bffae2b67b8841a2 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2 |
+| D11 | fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 97e9b4589296878d5eb84936431abe6b467c1456 |
+| | `packages/dacs-client/test/domain-store-crash.floor.test.mjs:1` | 2c1286fb54808812bcecee9593708eb6d06a968c |
+| | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` | f19ae9336ec4b5741e036e2f40737ae42c2311c9 |
+| | `packages/dacs-client/test/helpers/sqlite-floor-iterators-preload.mjs:1` | 1e9681f16aebf6b2fe7bb2c297bb17908a8fc4b2 |
+| | `packages/dacs-client/test/helpers/sqlite-floor-iterators.mjs:1` | 1633af546a5bd3b089850161102f4f21949a3df3 |
+| | `packages/dacs-client/test/readback-review-decisions.floor.test.mjs:1` | a386503425d34dab08feb52f89c8c92ec9f188fd |
+| | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` | f11b772c4912bbd399a17ebc0b7cf061de341ce6 |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | 5fa4b7cbc5b7c5b758afbb9f257ab6500da7a5c8 |
+| | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` | bb118dd861e66c1f7f15d9268ae8e721103efd9d |
 
 ## Complete commit and file inventory
 
@@ -2556,6 +2568,21 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 | fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
 | fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/domain-store-crash.floor.test.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/helpers/sqlite-floor-iterators-preload.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/helpers/sqlite-floor-iterators.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/readback-review-decisions.floor.test.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` |
 
 ## Original moved files
 

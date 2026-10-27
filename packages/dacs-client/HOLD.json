@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5df4b5087031d26d94c6b875b95ad9e4644560a4"
+        "blob": "637f0679269185cd6f68ccfc36e742c1af378d22"
       },
       "DELTA-LEDGER.json": {
-        "blob": "8f9e98727bed7389861ff019313bb61bda633f92"
+        "blob": "e207c34132d13a39d759cd53b3fa028b4524b2de"
       },
       "DELTA-MAP.md": {
-        "blob": "09a2cc493e9dc8a98232ce3433b30a31495901cf"
+        "blob": "f31e7fbff9c4624672d81ca0f56d22a110864637"
       },
       "DELTA-NOTES.md": {
-        "blob": "d7ad623a4f76ee359718ccd90c823d54a503aed8"
+        "blob": "a035356ea0561b4bf4cde429907c705946cee479"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "89780aec51889c273ef1d2e44b733a595028c451"
+        "blob": "2a900995671ac7c7ad425752417e5741a7098683"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1274,7 +1274,7 @@
         "blob": "9f166e44137d98f78178f830d44077153c1cef16"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "70e4369be0d0a9546ea5a0a96367cfb750fdf47b"
+        "blob": "97e9b4589296878d5eb84936431abe6b467c1456"
       },
       "src/util/sqlite-write-lease.mjs": {
         "blob": "e45c8004ff9c71bb2c212912d5f44e50be256843"
@@ -1329,6 +1329,9 @@
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
+      },
+      "test/domain-store-crash.floor.test.mjs": {
+        "blob": "2c1286fb54808812bcecee9593708eb6d06a968c"
       },
       "test/domain-store-crash.test.mjs": {
         "blob": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
@@ -1568,7 +1571,7 @@
         "blob": "08bae608954a74b5e42262c5ac39746363ed42b3"
       },
       "test/helpers/purchase-tx-fixtures.mjs": {
-        "blob": "397e628008b66c32f16ba753771ac74013bb942f"
+        "blob": "f19ae9336ec4b5741e036e2f40737ae42c2311c9"
       },
       "test/helpers/purchased-report-dom.mjs": {
         "blob": "4d3ed905bcb93e2c82e33a669c1008de7aa99c73"
@@ -1639,6 +1642,12 @@
       "test/helpers/source-demo-seller.mjs": {
         "blob": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b"
       },
+      "test/helpers/sqlite-floor-iterators-preload.mjs": {
+        "blob": "1e9681f16aebf6b2fe7bb2c297bb17908a8fc4b2"
+      },
+      "test/helpers/sqlite-floor-iterators.mjs": {
+        "blob": "1633af546a5bd3b089850161102f4f21949a3df3"
+      },
       "test/helpers/start-intent.mjs": {
         "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
       },
@@ -1705,14 +1714,23 @@
       "test/purchase-tx-results.test.mjs": {
         "blob": "0e0424d74f577266d0b13386b7a18cf3aeefc4ec"
       },
+      "test/readback-review-decisions.floor.test.mjs": {
+        "blob": "a386503425d34dab08feb52f89c8c92ec9f188fd"
+      },
       "test/readback-review-decisions.test.mjs": {
         "blob": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
       },
       "test/rpc-byte-budget.test.mjs": {
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
+      "test/sqlite-floor-iterators.test.mjs": {
+        "blob": "f11b772c4912bbd399a17ebc0b7cf061de341ce6"
+      },
       "test/sqlite-iterator-own-methods.test.mjs": {
-        "blob": "b2a3acd0b40dfab8d88586e7fe6326fbbb11a697"
+        "blob": "5fa4b7cbc5b7c5b758afbb9f257ab6500da7a5c8"
+      },
+      "test/sqlite-iterator-own-next-refusal.test.mjs": {
+        "blob": "bb118dd861e66c1f7f15d9268ae8e721103efd9d"
       },
       "test/sqlite-purchase-journal.test.mjs": {
         "blob": "9e845427d6f0b94900c04e02c4eda869e5e6f7f8"
