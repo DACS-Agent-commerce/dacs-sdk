@@ -201,3 +201,39 @@ test('the fresh check before signing a pre-payment write is the pre-payment chec
  assert.equal(await stillAuthorizedToSign(r,policy(()=>({...purchase(),paymentObserved:false,prePaymentOpen:true})),'cancellation-unknown'),null);
  assert.equal(await stillAuthorizedToSign(r,policy(()=>({...purchase(),paymentObserved:true,prePaymentOpen:null})),'cancellation-unknown'),'purchase-closed');
 });
+
+// The stored artifact must be valid for its kind (DACS structure) before the policy approves or holds it.
+const NO_SIGNATURE={signature:undefined};
+for(const [label,kind,phase,artifact] of [
+ ['a pay-dem SettlementEvidence with an invalid version and outcome','SettlementEvidence','pay-dem',{evidenceVersion:'invalid',outcome:'invalid'}],
+ ['a pay-dem SettlementEvidence with no signature','SettlementEvidence','pay-dem',NO_SIGNATURE],
+ ['a delivery SettlementEvidence with an invalid version','SettlementEvidence','deliver-storage-program',{evidenceVersion:'invalid'}],
+ ['a delivery SettlementEvidence with no signature','SettlementEvidence','deliver-storage-program',NO_SIGNATURE],
+ ['a Deliverable with an invalid report version','Deliverable','deliver-storage-program',{reportVersion:'invalid'}],
+ ['a Deliverable with empty content text','Deliverable','deliver-storage-program',{content:{mediaType:'text/plain; charset=utf-8',text:''}}],
+])test(`request validation refuses ${label} as artifact-structure`,async()=>{
+ const r=requestFor({artifactKind:kind,phase,artifact});
+ assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),'artifact-structure');
+ assert.equal(await policyRefusal(requestFor({artifactKind:kind,phase}),policy(),SELLER_POLICY_DEFAULTS),null);
+});
+for(const [label,kind,artifact] of [
+ ['a Vet record with an invalid version','CompositeVerificationRecord',{recordVersion:'invalid'}],
+ ['a Vet record with no bundle hash','CompositeVerificationRecord',{bundleHash:undefined}],
+ ['a Vet record with no signature','CompositeVerificationRecord',NO_SIGNATURE],
+ ['a finality record with an invalid version','FinalityCommitmentRecord',{finalityCommitmentVersion:'invalid'}],
+ ['a finality record with no parties','FinalityCommitmentRecord',{parties:undefined}],
+ ['a finality record with no signature','FinalityCommitmentRecord',NO_SIGNATURE],
+])test(`request validation refuses ${label} as artifact-structure instead of holding it`,async()=>{
+ const r=requestFor({artifactKind:kind,artifact});
+ for(const held of [null,'cancellation-unknown'])assert.equal(await policyRefusal(r,policy(openPrePayment),SELLER_POLICY_DEFAULTS,{held}),'artifact-structure');
+ assert.equal(await policyRefusal(requestFor({artifactKind:kind}),policy(openPrePayment),SELLER_POLICY_DEFAULTS),'cancellation-unknown');
+});
+test('request validation refuses an invalid Vet record as artifact-structure before any seller record of its job exists',async()=>{
+ const noRecord=policy(async()=>null);
+ assert.equal(await policyRefusal(requestFor({artifactKind:'CompositeVerificationRecord',artifact:{recordVersion:'invalid'}}),noRecord,SELLER_POLICY_DEFAULTS),'artifact-structure');
+ assert.equal(await policyRefusal(requestFor({artifactKind:'CompositeVerificationRecord'}),noRecord,SELLER_POLICY_DEFAULTS),'seller-record-missing');
+});
+test('exact manual approval still authorizes the exact bytes the operator saw, whatever their structure',async()=>{
+ const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{evidenceVersion:'invalid'}});
+ assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS,{manualApproved:true}),null);
+});

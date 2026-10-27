@@ -162,6 +162,13 @@ test('an exact request is sign-authorized again once its earlier sign authority 
  assert.equal(await f.p.prepare(structuredClone(r)),true);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized&&row.outcome===null).length,1);
 });
 
+test('a policy approval of an artifact that is not valid for its kind is rejected as artifact-structure with no sign authority',async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{evidenceVersion:'invalid',outcome:'invalid'}});
+ assert.equal(await f.p.prepare(r),false);
+ assert.equal((await lastLine(f)).decision,'rejected');assert.equal((await lastLine(f)).policyReason,'artifact-structure');
+ assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+});
+
 // Stop ends a pending manual callback even with no external signal, and records no decision.
 test('stop ends an unanswered manual callback with no external signal',async t=>{
  const f=await fixture(t);let asked=0;

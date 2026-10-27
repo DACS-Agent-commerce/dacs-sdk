@@ -14,14 +14,23 @@ const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX','01ARZ3NDE
 const demOs=(dem)=>BigInt(dem.split('.')[0])*1_000_000_000n+BigInt((dem.split('.')[1]??'').padEnd(9,'0'));
 const demString=(os)=>{const whole=os/1_000_000_000n,fraction=(os%1_000_000_000n).toString().padStart(9,'0').replace(/0+$/,'');return fraction?`${whole}.${fraction}`:`${whole}`;};
 
+// Artifacts that pass the SDK structure validators for their kind. The
+// signature is well-formed only: the policy checks structure, not signatures.
+const fixtureSignature=()=>({algorithm:'ed25519',signer:seller,value:Buffer.alloc(64,7).toString('base64url')});
+const validVetRecord=(job,party)=>({recordVersion:'1',jobId:job,evaluatedParty:party,bundleHash:'c'.repeat(64),requirementHash:'d'.repeat(64),freshness:[],supplementary:[],dealSpecific:[],overallDecision:'pass',generatedAt:1,signature:fixtureSignature()});
+const validFinalityCommitment=(job)=>({finalityCommitmentVersion:'1',jobId:job,agreementHash,listingRef:pin,parties:[buyer,seller],pattern:'fixed-price',createdAt:1,signature:fixtureSignature()});
+const validSettlementEvidence=(job,phase)=>phase==='pay-dem'
+  ?{evidenceVersion:'1',jobId:job,phase,outcome:'success',observedAt:1,paymentTxRefs:[{kind:'demos',txHash:'f'.repeat(64)}],paymentAmount:{amount:'1',currency:'DEM'},settlementFinality:{model:'bft-final',finalityObservedAt:1},signature:fixtureSignature()}
+  :{evidenceVersion:'1',jobId:job,phase,outcome:'success',observedAt:1,dacsSdkAuditSourceHash:'c'.repeat(64),deliverableContentHash:'d'.repeat(64),deliverableAnchor:{kind:'storage-program',locator:`dacs4:deliverable:${job}`},signature:fixtureSignature()};
+
 // One exact seller CREATE request as the embedded wallet shows it (same shape
 // as test/seller-policy-delivery-evidence.test.mjs).
 function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='deliver-storage-program',artifact:override={},logicalAddress:addressOverride,rpcFeeDem='1'}={}){
   const settlementKind=artifactKind==='SettlementEvidence'&&phase==='pay-dem';
   const artifact={...(artifactKind==='Deliverable'?{reportVersion:'1',kind:'dacs-chatgpt-plugin/devnet-purchased-report',jobId:job,agreementHash,listing:pin,title:'Policy report',settlementId:'demos:TEST',producer:seller,content:{mediaType:'text/plain; charset=utf-8',text:'Purchased bytes'}}
-    :artifactKind==='CompositeVerificationRecord'?{recordVersion:'1',jobId:job,evaluatedParty:party,verifier:seller}
-    :artifactKind==='FinalityCommitmentRecord'?{finalityCommitmentVersion:'1',jobId:job,pattern:'fixed-price',agreementHash,listingRef:pin}
-    :{evidenceVersion:'1',jobId:job,phase,outcome:'success',...(settlementKind?{paymentAmount:{amount:'1',currency:'DEM'}}:{})}),...override};
+    :artifactKind==='CompositeVerificationRecord'?validVetRecord(job,party)
+    :artifactKind==='FinalityCommitmentRecord'?validFinalityCommitment(job)
+    :validSettlementEvidence(job,phase)),...override};
   for(const [key,value] of Object.entries(override))if(value===undefined)delete artifact[key];
   const logicalAddress=addressOverride??(artifactKind==='Deliverable'?`dacs4:deliverable:${job}`:artifactKind==='CompositeVerificationRecord'?compositeVerificationAddress(job,party)
     :artifactKind==='FinalityCommitmentRecord'?finalityCommitmentAddress(job):settlementKind?paymentEvidenceAddress(job,'demos-native:DEM',2):`dacs4:evidence:${job}`);

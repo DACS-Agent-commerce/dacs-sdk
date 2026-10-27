@@ -2,7 +2,8 @@ import { stopRequested, stopSignal } from './stop-request.mjs';
 import { createInterface } from 'node:readline/promises';
 import { randomUUID } from 'node:crypto';
 import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
-import { admitRawJson, compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
+import { admitRawJson, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCompositeVerificationRecord, isFinalityCommitmentRecord, paymentEvidenceAddress, validateSettlementEvidenceStructure } from '@kynesyslabs/dacs';
+import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { truncateSync } from 'node:fs';
@@ -793,8 +794,24 @@ function listingRefusal(c,artifact,pin){
     ||['listingPin','listing','listingRef'].some(key=>Object.hasOwn(artifact,key)&&!same(artifact[key],pin));
 }
 
+// The SDK (or, for the Deliverable, seller) structure validator of each kind the
+// policy writes. Structure only: no signature, anchor or purchase context is
+// verified here; the producers verify what they sign.
+const ARTIFACT_STRUCTURE_VALIDATORS={
+  CompositeVerificationRecord:isCompositeVerificationRecord,
+  FinalityCommitmentRecord:isFinalityCommitmentRecord,
+  SettlementEvidence:async(artifact)=>(await validateSettlementEvidenceStructure(artifact)).decision==='valid',
+  Deliverable:isDevnetPurchasedReport,
+};
+
+// True when the artifact is valid for its (policy-written) kind.
+async function artifactStructureValid(artifactKind,artifact){
+  return (await ARTIFACT_STRUCTURE_VALIDATORS[artifactKind](artifact))===true;
+}
+
 /** Validate an exact seller request; return null or its retained refusal reason.
- * Exact JSON that is malformed or not CF-5 raw JSON is 'create-bytes'. Propagates purchase resolver errors. */
+ * Exact JSON that is malformed or not CF-5 raw JSON is 'create-bytes'; an artifact that is
+ * not valid for its kind is 'artifact-structure'. Propagates purchase resolver errors. */
 export async function policyRefusal(request,policy,limits,{confirmedTotal,countedTotal,manualApproved=false,held=null}={}){
   const c=request?.content,d=c?.debit;
   if(!exact(request,['method','address','purpose','content'])||request.method!=='sendTransaction'||typeof request.purpose!=='string'
@@ -835,6 +852,7 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
     if(!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
     if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
     if(listingRefusal(c,artifact,policy.listingPin()))return 'listing';
+    if(!await artifactStructureValid(c.artifactKind,artifact))return 'artifact-structure';
     return 'seller-record-missing';
   }
   // A vet record held with no record may reach confirmation once the proposal
@@ -861,6 +879,7 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
       ||!exact(binding.purchaseAmount,['amount','currency'])||binding.purchaseAmount.currency!=='DEM'||demOs(binding.purchaseAmount.amount)!==BigInt(purchase.amountOs)
       ||!same(metadata.deliveryBinding,binding))return 'delivery-binding';
   }
+  if(!await artifactStructureValid(c.artifactKind,artifact))return 'artifact-structure';
   if(sellerRecords&&BEFORE_PAYMENT.has(c.artifactKind))return 'cancellation-unknown';
   return null;
 }
