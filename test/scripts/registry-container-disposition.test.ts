@@ -655,6 +655,23 @@ describe("the project's own package scope", { timeout: 60_000 }, () => {
     expect(existsSync(fixture.report)).toBe(false);
   });
 
+  it.each([
+    ["the candidates' scope", "@kynesyslabs", { "./dacs": "./shadow.cjs" }, "@kynesyslabs/dacs", "@kynesyslabs/dacs"],
+    ["a subpath of dacs-node", "@kynesyslabs/dacs-node/transport", "./shadow.cjs", "@kynesyslabs/dacs-node/transport", "@kynesyslabs/dacs-node"],
+    ["a subpath of dacs", "@kynesyslabs/dacs/extra", "./shadow.cjs", "@kynesyslabs/dacs/extra", "@kynesyslabs/dacs"],
+  ])("refuses a project named for %s, which Node resolves to the project itself", (_form, name, exports, request, candidate) => {
+    const fixture = dependencyPolicyHarness();
+    Object.assign(fixture.manifest, { name, exports });
+    const result = fixture.run(project => {
+      shadow(project);
+      expect(spawnSync(process.execPath, ["-p", `require(${JSON.stringify(request)})`], { cwd: project, encoding: "utf8" }).stdout)
+        .toBe("unreleased-copy\n");
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("the project is named for candidate package " + candidate);
+    expect(existsSync(fixture.report)).toBe(false);
+  });
+
   it.each([["plain", '"name"'], ["escaped", '"\\u006eame"']])("refuses a project package.json that repeats a top-level key (%s spelling)", (_form, key) => {
     const fixture = dependencyPolicyHarness();
     Object.assign(fixture.manifest, { name: "ordinary-root", exports: "./shadow.cjs" });
@@ -2530,6 +2547,34 @@ describe("dependency policy over npm ci installations", () => {
       .toBe("unreleased-copy\n");
     expect(policy.status).not.toBe(0);
     expect(policy.stderr).toContain(`cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/${scope}`);
+  }, 60_000);
+
+  // Node matches a package scope by prefix, so a scope named for a candidate's
+  // own scope or for a subpath of the candidate captures a require() of it.
+  it.each([
+    ["the candidates' scope", "@kynesyslabs", { "./dacs": "./copy.cjs" }, "@kynesyslabs/dacs"],
+    ["a subpath of dacs-node", "@kynesyslabs/dacs-node/transport", "./copy.cjs", "@kynesyslabs/dacs-node/transport"],
+    ["a subpath of dacs", "@kynesyslabs/dacs/extra", "./copy.cjs", "@kynesyslabs/dacs/extra"],
+  ])("refuses a nested package scope named for %s", async (_form, scopeName, exports, request) => {
+    const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION, { main: "dist/index.cjs" }),
+      "dist/package.json": packageJson(scopeName, CANDIDATE_VERSION, { exports }),
+      "dist/index.cjs": `module.exports = require(${JSON.stringify(request)});`,
+      "dist/copy.cjs": "module.exports = 'unreleased-copy';" });
+    const { project, policy } = await registryInstallation(temporaryDirectory(), { plugin },
+      { "node_modules/plugin": ["plugin", {}] }, { dependencies: { plugin: CANDIDATE_VERSION } });
+    expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
+      .toBe("unreleased-copy\n");
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("cannot authenticate a candidate copy carried in the archive of node_modules/plugin: node_modules/plugin/dist");
+  }, 60_000);
+
+  it("accepts a nested package scope named for a sibling of a candidate", async () => {
+    const plugin = packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION, { main: "dist/index.cjs" }),
+      "dist/package.json": packageJson("@kynesyslabs/dacs-other", CANDIDATE_VERSION, { exports: "./copy.cjs" }),
+      "dist/index.cjs": "module.exports = 1;", "dist/copy.cjs": "module.exports = 1;" });
+    const { policy } = await registryInstallation(temporaryDirectory(), { plugin },
+      { "node_modules/plugin": ["plugin", {}] }, { dependencies: { plugin: CANDIDATE_VERSION } });
+    expect(policy.status, policy.stderr).toBe(0);
   }, 60_000);
 
   // Supported Node versions differ on which name they use; the policy refuses both.
