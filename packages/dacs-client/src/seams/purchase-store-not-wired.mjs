@@ -158,5 +158,3 @@ export function purchaseStore(store) {
     },
   });
 }
-export const isUniqueViolation = (..._args) => { throw new NotWiredError('purchase-store-not-wired'); };
-export const transaction = (..._args) => { throw new NotWiredError('purchase-store-not-wired'); };
