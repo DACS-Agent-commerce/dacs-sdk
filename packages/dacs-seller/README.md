@@ -46,8 +46,12 @@ const host = await startSellerHost({
                          // (src/dacs/session-admission.mjs)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
+  reconcileDeliverableCreate: deliveryJournal.reconcile, // optional: the Deliverable journal's answer for a
+                         // submitted Deliverable that reads back as absent (below); nativeDemDelivery must be
+                         // made with the same journal's `submit`
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
+// deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
 // host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
@@ -200,6 +204,35 @@ per-client limiter so one client cannot exhaust the shared request budget.
   that recorded the attempt: a journal lost, or restored from an older copy,
   after a Deliverable landed reads as never asked, and the order is submitted
   again (an operator-induced limit).
+- Without the next option, a Deliverable CREATE the capability signed but did
+  not broadcast (or that the node dropped) reads back as a plain absence, and the
+  order stays held: only the capability's own journal could send it again.
+  `createDeliverableWalletJournal({ path, signCreate, broadcast,
+  readAccountNonce, readTransactionState })` is that journal, built as
+  `createPaymentEvidenceWalletJournal` is (the same primitives, checks and
+  nonce rule, in its own file with its own `journalId`; a file made for the
+  other kind is refused). Its `submit` is the capability's `submit`: it signs
+  once, keeps the exact signed CREATE before it broadcasts it, and answers
+  `{ status: "accepted", reconciliationId }`. `signCreate` is asked for the
+  Deliverable's CREATE (`artifactKind: "Deliverable"`, the report as
+  `artifact`, and its `deliveryBinding`, which the CREATE's metadata must carry
+  exactly). Pass its `reconcile` as `reconcileDeliverableCreate` (the host and
+  `createSellerAgent` take the pair only from one journal, and refuse a
+  wrapper, another journal or a scripted answer). The agent records the
+  journal's id with the submission. When the Deliverable then reads back as a
+  miss (absent, or the SR-2 adapter's name-index or native-address miss; not a
+  failed or timed-out read) it asks `reconcile`:
+  - `{ status: "rebroadcast" | "pending" | "applied", txHash }`: the one kept
+    CREATE was sent again unchanged (not when it is applied), or is pending;
+    the delivery is held until it reads back, and nothing is signed again;
+  - `{ status: "unsigned" }`: no signed CREATE can still land (never signed, or
+    superseded under the nonce rule above): the Deliverable is submitted once more
+    through the journal, which signs one new CREATE;
+  - a throw, another answer, or a journal that is not the one recorded with the
+    submission (a lost or replaced file, or none recorded: `wallet_journal_changed`)
+    keeps the delivery held with its cause.
+  A submission the SDK recorded as accepted and whose CREATE can no longer land
+  (superseded) is not signed again: it stays held with that cause.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
   `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
   required `reconcilePaymentEvidence`. The agent, whether the host composes

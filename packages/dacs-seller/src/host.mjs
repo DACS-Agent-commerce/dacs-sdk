@@ -12,7 +12,11 @@
 // delivery context, whose Vet references the Agreement carries, and native DEM
 // delivery) and the steward-signed rail authority each session pins, so it
 // never commits an Agreement it cannot settle or holds a paid order with no
-// way on. Each new session is opened only for a presentation that carries a
+// way on. The optional `reconcileDeliverableCreate` is the Deliverable
+// journal's question (createDeliverableWalletJournal, whose `submit` the
+// delivery capability must be): with it a signed Deliverable CREATE whose answer
+// was lost is sent again, unchanged, instead of holding the paid order for good.
+// Each new session is opened only for a presentation that carries a
 // challenge this host issued for its job and buyer (`issueSessionChallenge`,
 // which the operator hands to the buyer; the first attempt consumes it), on a
 // Listing the agent's own revocation check (core checkListingRevocation over
@@ -23,6 +27,7 @@
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
+import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
@@ -32,7 +37,7 @@ import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'reconcileDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
@@ -54,7 +59,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence, reconcilePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
+    nativePaymentEvidence, reconcilePaymentEvidence, reconcileDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
     host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
@@ -67,6 +72,8 @@ export async function startSellerHost(options) {
   if (!isPaymentEvidenceWalletJournalPair(nativePaymentEvidence?.anchorEvidence, reconcilePaymentEvidence)) {
     throw new TypeError('the seller host takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
   }
+  // PC-7(b): the Deliverable question, when there is one, comes only from the journal whose submit the capability is.
+  deliverableJournalFor(nativeDemDelivery, reconcileDeliverableCreate);
   // One live process owns the state for its lifetime (this one too, for a
   // second start); taken before anything is opened, released after all of it.
   const lock = await acquireSellerStateLock(dataDirectory);
@@ -78,7 +85,7 @@ export async function startSellerHost(options) {
   };
   try {
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
+      agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, reconcileDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
     opened.push(() => agent.close());
     const transport = join(dataDirectory, 'transport');
     mkdirSync(transport, { recursive: true, mode: 0o700 });
