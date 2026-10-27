@@ -3,28 +3,48 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256Hex } from '@kynesyslabs/dacs';
-import { createSellerContextAdmission, releaseSellerContextHolds, releaseHeldSellerAttempt, composeSellerApproval, parsePolicyLedger, withContextHolds, heldPolicyBudget, SELLER_LEDGER_HEADER_FORMAT, SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
+import { createSellerContextAdmission, releaseSellerContextHolds, parsePolicyLedger, withContextHolds, heldPolicyBudget, SELLER_LEDGER_HEADER_FORMAT, SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
 import { JOB } from './helpers/protocol-fixture.mjs';
-const effect = 'a'.repeat(64), otherJob = JOB.slice(0,-1) + 'B', CONTEXT = 'dacs-node2-seller-context-admission/v1';
+const effect = 'a'.repeat(64), otherJob = JOB.slice(0,-1) + 'B';
+const EVIDENCE = 'dacs-node2-operator-approval-evidence/v1', SIGN = 'dacs-node2-seller-policy-sign-authorization/v1', ATTEMPT = 'dacs-node2-seller-policy-attempt/v1';
 async function fixture(t, limits = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'TEST-context-budget-')); t.after(() => rm(dir, { recursive: true, force: true }));
   const evidencePath = join(dir, 'approval.jsonl'), config = { evidencePath, sellerApproval: { mode: 'policy', maxWriteTotalOs: '4', maxWritesPerHour: 100, maxTotalOsPerHour: '400', ...limits }, now: () => 300 };
   return { dir, evidencePath, config, admission: createSellerContextAdmission(config), reserve: { jobId: JOB, effect, writes: 1, hold: 'TEST hold' } };
 }
 const text = async f => readFile(f.evidencePath, 'utf8');
+const budget = async (f, at = 300) => heldPolicyBudget(withContextHolds(parsePolicyLedger(await text(f)).rows), at);
+const id = (series, index) => `00000000-0000-4000-800${series}-${String(index + 1).padStart(12,'0')}`;
+const requestOf = artifactKind => JSON.stringify({ content: { jobId: JOB, artifactKind, debit: { totalOs: '4' } } });
 function attempt(index, released = false) {
-  const attemptId = `00000000-0000-4000-8000-${String(index + 1).padStart(12,'0')}`, reservationId = `00000000-0000-4000-8001-${String(index + 1).padStart(12,'0')}`;
-  const requestBytes = JSON.stringify({ content: { jobId: JOB, artifactKind: 'Deliverable', debit: { totalOs: '4' } } }), approvalHash = sha256Hex(requestBytes);
-  const rows = [{ format: 'dacs-node2-operator-approval-evidence/v1', decision: 'rejected', approvalMode: 'policy', policyReason: 'seller-record-missing', attemptId, requestBytes, approvalHash, recordedAt: 100 },
-    { format: 'dacs-node2-operator-approval-evidence/v1', decision: 'approved', attemptId, requestBytes, approvalHash, recordedAt: 101 },
-    { format: 'dacs-node2-seller-policy-sign-authorization/v1', attemptId, reservationId, requestBytes, approvalHash, totalOs: '4', recordedAt: 102 }];
-  if (released) rows.push({ format: 'dacs-node2-seller-policy-attempt/v1', attemptId, reservationId, approvalHash, outcome: 'released', reason: 'wallet-released', recordedAt: 200 });
+  const attemptId = id(0, index), reservationId = id(1, index);
+  const requestBytes = requestOf('Deliverable'), approvalHash = sha256Hex(requestBytes);
+  const rows = [{ format: EVIDENCE, decision: 'rejected', approvalMode: 'policy', policyReason: 'seller-record-missing', attemptId, requestBytes, approvalHash, recordedAt: 100 },
+    { format: EVIDENCE, decision: 'approved', attemptId, requestBytes, approvalHash, recordedAt: 101 },
+    { format: SIGN, attemptId, reservationId, requestBytes, approvalHash, totalOs: '4', recordedAt: 102 }];
+  if (released) rows.push({ format: ATTEMPT, attemptId, reservationId, approvalHash, outcome: 'released', reason: 'wallet-released', recordedAt: 200 });
   return rows;
+}
+// The lines of one held Vet attempt in the order the approval path writes them.
+function vetAttempt([opened, manual, signed, confirmed, spent]) {
+  const attemptId = id(2, 0), reservationId = id(3, 0), requestBytes = requestOf('CompositeVerificationRecord'), approvalHash = sha256Hex(requestBytes);
+  return [
+    ['opened', { format: EVIDENCE, decision: 'rejected', approvalMode: 'policy', policyReason: 'seller-record-missing', attemptId, requestBytes, approvalHash, recordedAt: opened }],
+    ['manual', { format: EVIDENCE, decision: 'approved', attemptId, requestBytes, approvalHash, recordedAt: manual }],
+    ['signed', { format: SIGN, attemptId, reservationId, requestBytes, approvalHash, totalOs: '4', recordedAt: signed }],
+    ['confirmed', { format: EVIDENCE, decision: 'approved', approvalMode: 'policy', policyHold: 'seller-record-missing', confirmation: true, attemptId, reservationId, requestBytes, approvalHash, totalOs: '4', recordedAt: confirmed }],
+    ['spent', { format: ATTEMPT, attemptId, reservationId, approvalHash, outcome: 'spent', recordedAt: spent }],
+  ];
+}
+// A policy-approved Vet write with no held attempt.
+function vetWrite(index, recordedAt) {
+  const requestBytes = requestOf('CompositeVerificationRecord');
+  return { format: SIGN, reservationId: id(4, index), requestBytes, approvalHash: sha256Hex(requestBytes), totalOs: '4', recordedAt };
 }
 const encode = rows => rows.map(row => JSON.stringify(row)).join('\n') + '\n';
 for (const [count, released] of [[3,false],[6,true]]) test(`context job budget counts ${count} manual attempts once (released=${released})`, async t => {
@@ -35,11 +55,18 @@ test('identical hold retries across reload are idempotent and exact scope reuse 
   const f = await fixture(t); assert.equal(await f.admission.reserve(f.reserve), null); const before = await text(f);
   assert.equal(await createSellerContextAdmission(f.config).reserve(f.reserve), null); assert.equal(await text(f), before);
   for (const change of [{ jobId: otherJob }, { effect: 'b'.repeat(64) }, { writes: 2 }]) assert.equal(await f.admission.reserve({ ...f.reserve, ...change }), 'hold-conflict');
+  const otherFee = createSellerContextAdmission({ ...f.config, sellerApproval: { ...f.config.sellerApproval, maxWriteTotalOs: '5' } });
+  assert.equal(await otherFee.reserve(f.reserve), 'hold-conflict');
   assert.equal(await text(f), before);
 });
 test('released hold identity cannot be reopened or corrupt the ledger', async t => {
   const f = await fixture(t); await f.admission.reserve(f.reserve); await f.admission.release({ jobId: JOB, hold: f.reserve.hold }); const before = await text(f);
   assert.equal(await f.admission.reserve(f.reserve), 'hold-released'); assert.equal(await text(f), before); assert.equal(parsePolicyLedger(before).rows[0].released, true);
+});
+test('a release naming another job ends nothing', async t => {
+  const f = await fixture(t); await f.admission.reserve(f.reserve); const before = await text(f);
+  await f.admission.release({ jobId: otherJob, hold: f.reserve.hold });
+  assert.equal(await text(f), before); assert.equal(parsePolicyLedger(before).rows[0].released, false);
 });
 test('reserving after a header without its final newline preserves both lines', async t => {
   const f = await fixture(t), header = { format: SELLER_LEDGER_HEADER_FORMAT, journals: Object.fromEntries(SELLER_ISSUANCE_JOURNALS.map(name => [name, 'a'.repeat(32)])), recordedAt: 100 };
@@ -75,77 +102,66 @@ test('backward release clock cannot append an invalid completion', async t => {
   const f = await fixture(t); await f.admission.reserve(f.reserve); const before = await text(f);
   await assert.rejects(releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 299 })); assert.equal(await text(f), before);
 });
-test('explicit held-attempt release closes one reservation durably and refuses a second completion', async t => {
-  const f = await fixture(t); await writeFile(f.evidencePath, encode(attempt(0))); const attemptId = attempt(0)[0].attemptId;
-  assert.equal((await releaseHeldSellerAttempt({ evidencePath: f.evidencePath, attemptId, now: () => 300 })).attemptId, attemptId);
-  const before = await text(f); assert.equal(parsePolicyLedger(before).attempts.get(attemptId).outcome, 'released');
-  await assert.rejects(releaseHeldSellerAttempt({ evidencePath: f.evidencePath, attemptId, now: () => 301 })); assert.equal(await text(f), before);
-});
-test('composition consumes preparation once and maps settlement to its exact retained copy', async () => {
-  const calls = [], policy = Object.assign(async (...args) => { calls.push(args); return true; }, { prepare: async () => true, settle: (...args) => calls.push(args) });
-  const approval = composeSellerApproval({ mode: 'policy', policy, manual: async () => false });
-  const request = { content: { artifactKind: 'Deliverable', wallet: 'TEST wallet', nonce: 1, timestamp: 7, exactCreate: '{}' } };
-  assert.equal(await approval(request), true); const validity = { response: { data: { transaction: { content: { from: 'TEST wallet', nonce: 1, timestamp: 7, data: ['storageProgram', {}] } } } } };
-  assert.equal(await approval.confirm(validity), true); assert.equal(await approval.confirm(validity), false); approval.settle(request, 'spent'); assert.notEqual(calls[0][0], request); assert.equal(calls[1][0], calls[0][0]);
-});
-test('manual decline releases a held prepayment attempt without sign authorization', async () => {
-  const calls = [], policy = Object.assign(async () => false, { prepare: async () => false, heldForManual: () => true, heldAttempt: () => 'TEST attempt', settle: (...args) => calls.push(args), authorizeSign: () => { throw new Error('must not sign'); } });
-  const approval = composeSellerApproval({ mode: 'policy', policy, manual: async () => false });
-  assert.equal(await approval({ content: { artifactKind: 'FinalityCommitmentRecord' } }), false); assert.equal(calls[0][1], 'released'); assert.equal(calls[0][2], 'manual-declined');
-});
 
-for (const at of [299, 300]) test(`new context hold refuses timestamp ${at} preceding or equal to an unfinished Vet attempt`, async t => {
-  const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
-  const row = attempt(0)[0], request = JSON.parse(row.requestBytes);
-  request.content.artifactKind = 'CompositeVerificationRecord';
-  row.requestBytes = JSON.stringify(request); row.approvalHash = sha256Hex(row.requestBytes); row.recordedAt = 300;
-  await writeFile(f.evidencePath, encode([row])); const before = await text(f);
-  assert.equal(await createSellerContextAdmission({ ...f.config, now: () => at }).reserve(f.reserve), 'hold-time-order');
-  assert.equal(await text(f), before);
-});
-for (const outcome of ['signed', 'spent']) for (const at of [299, 300]) test(`context hold at ${at} refuses an earlier ${outcome} Vet reservation with a later or equal clock`, async t => {
-  const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
-  const rows = attempt(0).map((row, index) => {
-    const request = JSON.parse(row.requestBytes); request.content.artifactKind = 'CompositeVerificationRecord';
-    const requestBytes = JSON.stringify(request);
-    return { ...row, requestBytes, approvalHash: sha256Hex(requestBytes), recordedAt: 298 + index };
+// The hold is taken at 300. Each clock gives the attempt's five lines their times.
+const clocks = { earlier: [290, 291, 292, 293, 294], forward: [290, 305, 310, 311, 312], equal: [300, 300, 300, 300, 300], later: [310, 311, 312, 313, 314], backward: [330, 320, 310, 290, 310] };
+for (const [clock, times] of Object.entries(clocks)) {
+  test(`a Vet attempt opened before a hold never takes its slot as it is approved, signed and spent (${clock} clock)`, async t => {
+    const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' }), [opened, ...steps] = vetAttempt(times), second = { ...f.reserve, jobId: otherJob, hold: 'TEST second' };
+    await writeFile(f.evidencePath, encode([opened[1]]));
+    assert.equal(await f.admission.reserve(f.reserve), null);
+    assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n }, 'hold');
+    for (const [step, row] of steps) {
+      await appendFile(f.evidencePath, encode([row]));
+      assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n }, step);
+      assert.equal(await f.admission.reserve(second), 'hourly-write-limit', step);
+    }
+    await f.admission.release({ jobId: JOB, hold: f.reserve.hold });
+    assert.deepEqual(await budget(f), { writes: 1, totalOs: 4n }, 'released');
+    assert.equal(await f.admission.reserve(second), null);
   });
-  if (outcome === 'spent') rows.push({ format: 'dacs-node2-seller-policy-attempt/v1', attemptId: rows[0].attemptId, reservationId: rows[2].reservationId, approvalHash: rows[0].approvalHash, outcome: 'spent', recordedAt: 301 });
-  await writeFile(f.evidencePath, encode(rows)); const before = await text(f);
-  assert.equal(await createSellerContextAdmission({ ...f.config, now: () => at }).reserve(f.reserve), 'hold-time-order');
-  assert.equal(await text(f), before);
-  const later = createSellerContextAdmission({ ...f.config, now: () => 302 });
-  assert.equal(await later.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), null);
-  assert.deepEqual(heldPolicyBudget(withContextHolds(parsePolicyLedger(await text(f)).rows), 302), { writes: 2, totalOs: 8n });
-  assert.equal(await later.reserve({ ...f.reserve, hold: 'TEST third' }), 'hourly-write-limit');
+  test(`a Vet attempt opened after a hold takes exactly one slot as it is approved, signed and spent (${clock} clock)`, async t => {
+    const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
+    assert.equal(await f.admission.reserve({ ...f.reserve, writes: 2 }), null);
+    for (const [step, row] of vetAttempt(times)) {
+      await appendFile(f.evidencePath, encode([row]));
+      assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n }, step);
+    }
+    await f.admission.release({ jobId: JOB, hold: f.reserve.hold });
+    assert.deepEqual(await budget(f), { writes: 1, totalOs: 4n }, 'released');
+  });
+}
+for (const released of ['TEST first', 'TEST second']) test(`two open holds of one job convert one slot per Vet write, and releasing ${released} keeps outstanding writes counted`, async t => {
+  const f = await fixture(t);
+  assert.equal(await f.admission.reserve({ ...f.reserve, writes: 2, hold: 'TEST first' }), null);
+  assert.equal(await f.admission.reserve({ ...f.reserve, writes: 2, hold: 'TEST second' }), null);
+  await appendFile(f.evidencePath, encode([vetWrite(0, 299)]));
+  assert.deepEqual(await budget(f), { writes: 4, totalOs: 16n });
+  await f.admission.release({ jobId: JOB, hold: released });
+  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
 });
-test('strictly later context holds count separately from preceding unfinished Vet attempts', async t => {
-  const f = await fixture(t, { maxWritesPerHour: 2, maxTotalOsPerHour: '8' });
-  const row = attempt(0)[0], request = JSON.parse(row.requestBytes);
-  request.content.artifactKind = 'CompositeVerificationRecord';
-  row.requestBytes = JSON.stringify(request); row.approvalHash = sha256Hex(row.requestBytes); row.recordedAt = 300;
-  await writeFile(f.evidencePath, encode([row]));
-  const admission = createSellerContextAdmission({ ...f.config, now: () => 301 });
-  assert.equal(await admission.reserve(f.reserve), null);
-  assert.deepEqual(heldPolicyBudget(withContextHolds(parsePolicyLedger(await text(f)).rows), 301), { writes: 2, totalOs: 8n });
-  assert.equal(await admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST third' }), 'hourly-write-limit');
+test('two open holds of one job still exhaust its six-write cap', async t => {
+  const f = await fixture(t);
+  assert.equal(await f.admission.reserve({ ...f.reserve, writes: 3, hold: 'TEST first' }), null);
+  assert.equal(await f.admission.reserve({ ...f.reserve, writes: 3, hold: 'TEST second' }), null);
+  await appendFile(f.evidencePath, encode([vetWrite(0, 299)]));
+  assert.equal(await f.admission.reserve({ ...f.reserve, hold: 'TEST third' }), 'job-write-limit');
 });
 
-for (const operation of ['distinct hold', 'identical hold', 'context release', 'attempt release']) test(`a second process cannot perform ${operation} while a ledger transaction is reading`, { timeout: 15_000 }, async t => {
+for (const operation of ['distinct hold', 'identical hold', 'context release']) test(`a second process cannot perform ${operation} while a ledger transaction is reading`, { timeout: 15_000 }, async t => {
   const f = await fixture(t, { maxWritesPerHour: 1, maxTotalOsPerHour: '4' });
   const child = fork(new URL('./helpers/context-budget-worker.mjs', import.meta.url), [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; } });
   const reading = once(child, 'message'); child.send({ config: f.config, reserve: f.reserve });
   assert.deepEqual((await reading)[0], { type: 'reading' });
   const work = () => operation === 'context release' ? f.admission.release({ jobId: JOB, hold: f.reserve.hold })
-    : operation === 'attempt release' ? releaseHeldSellerAttempt({ evidencePath: f.evidencePath, attemptId: attempt(0)[0].attemptId, now: () => 300 })
     : f.admission.reserve({ ...f.reserve, ...(operation === 'distinct hold' ? { jobId: otherJob, hold: 'TEST second' } : {}) });
   await assert.rejects(work(), error => error.code === 'seller_state_locked');
   await assert.rejects(readFile(f.evidencePath), error => error.code === 'ENOENT');
   const result = once(child, 'message'), exited = once(child, 'exit'); child.send({ type: 'continue' });
   assert.deepEqual((await result)[0], { type: 'result', value: null }); assert.equal((await exited)[0], 0);
   const retained = await text(f);
-  assert.deepEqual(heldPolicyBudget(withContextHolds(parsePolicyLedger(retained).rows), 300), { writes: 1, totalOs: 4n });
+  assert.deepEqual(await budget(f), { writes: 1, totalOs: 4n });
   assert.equal(await f.admission.reserve(f.reserve), null); assert.equal(await text(f), retained);
   assert.equal(await f.admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), 'hourly-write-limit');
   await f.admission.release({ jobId: JOB, hold: f.reserve.hold });
