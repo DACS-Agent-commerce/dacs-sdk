@@ -24,8 +24,17 @@ for (const [label, text] of [['control byte', 'TEST\u0000'], ['lone surrogate', 
   assert.throws(() => createDevnetPurchasedReportProducer({ producer: seller.claim, produce: () => text })({ agreement: f.agreement, listing: f.listing, settlementId: 'TEST' }));
 });
 
-test('report text admits the exact multibyte boundary and rejects malformed Agreement digests', async () => {
-  const f = await reportFixture('🙂'.repeat(4096)); assert.equal(isDevnetPurchasedReport(f.report), true);
+// A report is stored whole in one storage CREATE: the largest one admitted is exactly the builder's limit.
+test('a report is admitted up to one storage CREATE of complete canonical bytes and rejects malformed Agreement digests', async () => {
+  const f = await reportFixture('x'), capacity = 16_384 - (Buffer.byteLength(canonicalize(f.report)) - 1);
+  const largest = await reportFixture('🙂'.repeat(Math.floor(capacity / 4)) + 'x'.repeat(capacity % 4));
+  assert.equal(Buffer.byteLength(canonicalize(largest.report)), 16_384); assert.equal(isDevnetPurchasedReport(largest.report), true);
+  const owner = `0x${'a'.repeat(64)}`, logicalAddress = `dacs4:deliverable:${JOB}`, programName = logicalToStorageProgramName(logicalAddress);
+  assert.doesNotThrow(() => buildStorageProgramCreatePayload({ from: owner, storageAddress: deriveStorageAddress(owner, programName, 1), programName, logicalAddress, signedListing: largest.report, nonce: 1, timestamp: NOW }));
+  for (const text of [`${largest.report.content.text}x`, '🙂'.repeat(4096)]) {
+    assert.equal(isDevnetPurchasedReport({ ...f.report, content: { ...f.report.content, text } }), false, `${Buffer.byteLength(text)} text bytes`);
+    assert.throws(() => createDevnetPurchasedReportProducer({ producer: seller.claim, produce: () => text })({ agreement: f.agreement, listing: f.listing, settlementId: 'TEST-settlement' }), /one storage CREATE/);
+  }
   assert.equal(isDevnetPurchasedReport({ ...f.report, agreementHash: 'invalid' }), false);
 });
 
