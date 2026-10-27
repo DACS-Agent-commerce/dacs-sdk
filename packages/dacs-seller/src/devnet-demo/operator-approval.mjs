@@ -114,12 +114,12 @@ export function parsePolicyLedger(text){
       const attempt=Object.hasOwn(row,'attemptId')?attempts.get(row.attemptId):null;
       if(attempt===undefined||(attempt&&(attempt.outcome!==null||attempt.reservation||attempt.approvalHash!==row.approvalHash)))malformed();
       const entry={decision:'approved',policy:true,held:Boolean(attempt),signAuthorized:true,confirmed:null,jobId:request?.content?.jobId??null,artifactKind:request?.content?.artifactKind??null,totalOs:row.totalOs,recordedAt:row.recordedAt,
-        reservationId:row.reservationId,approvalHash:row.approvalHash,outcome:null,attemptId:attempt?row.attemptId:null,request};
+        reservationId:row.reservationId,approvalHash:row.approvalHash,outcome:null,attemptId:attempt?row.attemptId:null,request,originLine:attempt?attempt.originLine:lineNumber};
       rows.push(entry);byReservationId.set(row.reservationId,entry);
       if(attempt)attempt.reservation=entry;
       continue;
     }
-    if(row?.format===CONTEXT_FORMAT){contextLedgerLine(row,rows,malformed);continue;}
+    if(row?.format===CONTEXT_FORMAT){contextLedgerLine(row,rows,malformed,lineNumber);continue;}
     if(row?.format===ATTEMPT_FORMAT){
       if(!exact(row,['format','approvalHash','outcome','recordedAt',...['reservationId','attemptId','reason'].filter(key=>Object.hasOwn(row,key))])||!HASH.test(row.approvalHash??'')
         ||!['spent','released'].includes(row.outcome)||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0
@@ -154,7 +154,7 @@ export function parsePolicyLedger(text){
       if(policyRow&&!Object.hasOwn(row,'policyHold')){
         // The hold opens the attempt.
         if(attempt||row.decision!=='rejected'||!HOLD_REASONS.has(row.policyReason))malformed();
-        attempt={approvalHash:row.approvalHash,jobId:null,manual:false,reservation:null,outcome:null,reason:null};attempts.set(row.attemptId,attempt);opened=true;
+        attempt={approvalHash:row.approvalHash,jobId:null,manual:false,reservation:null,outcome:null,reason:null,originLine:lineNumber};attempts.set(row.attemptId,attempt);opened=true;
       }else if(!attempt||attempt.outcome!==null||attempt.approvalHash!==row.approvalHash||(attempt.reservation&&!(linked&&attempt.reservation===authorized)))malformed();
     }
     const request=JSON.parse(row.requestBytes),declared=request?.content?.debit?.totalOs;
@@ -171,7 +171,7 @@ export function parsePolicyLedger(text){
     // one row, counted until its completion line, whatever the decision.
     if(linked){authorized.confirmed=row.decision;if(row.decision==='approved')authorized.totalOs=totalOs;continue;}
     const entry={decision:row.decision,policy:policyRow,held:Object.hasOwn(row,'policyHold'),jobId:request?.content?.jobId??null,artifactKind:request?.content?.artifactKind??null,totalOs,recordedAt:row.recordedAt,
-      reservationId:row.decision==='approved'?row.reservationId:null,approvalHash:row.approvalHash,outcome:null,attemptId:attempt?row.attemptId:null,request};
+      reservationId:row.decision==='approved'?row.reservationId:null,approvalHash:row.approvalHash,outcome:null,attemptId:attempt?row.attemptId:null,request,originLine:attempt?attempt.originLine:lineNumber};
     rows.push(entry);
     if(typeof entry.reservationId==='string')byReservationId.set(entry.reservationId,entry);
     if(attempt){
@@ -185,17 +185,19 @@ export function parsePolicyLedger(text){
   // ledger restored from an older copy can lack its manual approval and sign
   // line. From its reservation (sign-authorized line, or an earlier build's
   // confirmation) on, that row holds it instead.
+  // originLine: the ledger line a row's write started on. Every row of a held
+  // attempt keeps its opening line; any other row has its own.
   for(const[attemptId,attempt]of attempts)if(attempt.outcome===null&&!attempt.reservation)
-    rows.push({decision:'approved',policy:true,held:true,openAttempt:true,jobId:attempt.jobId,artifactKind:attempt.request?.content?.artifactKind??null,totalOs:attempt.totalOs,recordedAt:attempt.recordedAt,reservationId:null,approvalHash:attempt.approvalHash,outcome:null,attemptId,request:attempt.request});
+    rows.push({decision:'approved',policy:true,held:true,openAttempt:true,jobId:attempt.jobId,artifactKind:attempt.request?.content?.artifactKind??null,totalOs:attempt.totalOs,recordedAt:attempt.recordedAt,reservationId:null,approvalHash:attempt.approvalHash,outcome:null,attemptId,request:attempt.request,originLine:attempt.originLine});
   return{rows,attempts,header};
 }
 
 // Context route reservations (createSellerContextAdmission) in the ledger: a
 // hold line opens one, a release line ends it (a repeated release changes
 // nothing), a refusal line is the decision log only. A hold enters the rows
-// as {contextHold, jobId, writes, totalOs, recordedAt, released};
-// contextHoldRows turns it into outstanding writes.
-function contextLedgerLine(row,rows,malformed){
+// as {contextHold, jobId, effect, writes, totalOs, recordedAt, released,
+// originLine}; contextHoldRows turns it into outstanding writes.
+function contextLedgerLine(row,rows,malformed,lineNumber){
   if(row.event==='refused'){
     if(!exact(row,['format','event','jobId','buyer','reason','recordedAt'])||typeof row.reason!=='string'||!Number.isSafeInteger(row.recordedAt))malformed();
     return;
@@ -204,7 +206,7 @@ function contextLedgerLine(row,rows,malformed){
     if(!exact(row,['format','event','holdId','jobId','effect','writes','totalOs','recordedAt'])||typeof row.holdId!=='string'||!row.holdId||rows.some(entry=>entry.contextHold===row.holdId)
       ||!isCanonicalJobId(row.jobId)||!HASH.test(row.effect??'')||!Number.isSafeInteger(row.writes)||row.writes<1||row.writes>SELLER_POLICY_MAX_WRITES||(typeof row.totalOs!=='string'||!POSITIVE_OS.test(row.totalOs))
       ||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
-    rows.push({contextHold:row.holdId,jobId:row.jobId,effect:row.effect,writes:row.writes,totalOs:row.totalOs,recordedAt:row.recordedAt,released:false});
+    rows.push({contextHold:row.holdId,jobId:row.jobId,effect:row.effect,writes:row.writes,totalOs:row.totalOs,recordedAt:row.recordedAt,released:false,originLine:lineNumber});
     return;
   }
   const hold=rows.find(entry=>entry.contextHold===row.holdId);
@@ -214,33 +216,33 @@ function contextLedgerLine(row,rows,malformed){
 
 // Each open context hold counts its unconverted writes as outstanding policy
 // reservations at the write fee cap it was taken with. A policy-approved Vet
-// write of that job made since the hold (or prepared now) converts one;
-// `converting` is the write being decided, which takes one of its job's held
-// writes instead of adding a new one.
+// write of that job converts one only if its write started on a later ledger
+// line than the hold (originLine): every ledger line is appended under the
+// policy lock, so line order is the order admission saw, and approving,
+// signing or completing an attempt never moves it. Clocks play no part. A row
+// without an originLine converts nothing. `converting` is the write being
+// decided, which has no line yet: it takes one of its job's held writes
+// instead of adding a new one.
 function contextHoldRows(ledger,converting=null){
   const vet=(row,jobId)=>row.decision==='approved'&&row.policy&&row.outcome!=='released'&&row.jobId===jobId&&row.artifactKind==='CompositeVerificationRecord';
   let taken=converting?.artifactKind!=='CompositeVerificationRecord';
   const rows=[],converted=new Set();
   for(const hold of ledger.filter(row=>row.contextHold&&!row.released)){
     let remaining=hold.writes;
-    // One write consumes one slot across all holds, including holds retained
-    // across a shutdown and a replacement reservation for the same job.
-    // Projected attempts lost their original append position during parsing,
-    // so equal timestamps cannot establish that they followed this hold.
+    // One write consumes one slot across all holds, in ledger order, including
+    // holds retained across a shutdown and a replacement hold for the same job.
     for(const row of ledger){
-      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&(row.recordedAt===undefined||row.recordedAt>hold.recordedAt||(row.recordedAt===hold.recordedAt&&!row.openAttempt&&ledger.indexOf(row)>ledger.indexOf(hold)))){
-        remaining--;converted.add(row);
-      }
+      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&row.originLine>hold.originLine){remaining--;converted.add(row);}
     }
     if(!taken&&converting.jobId===hold.jobId&&remaining>0){remaining-=1;taken=true;}
     for(let index=0;index<remaining;index++)rows.push({decision:'approved',policy:true,outcome:null,jobId:hold.jobId,totalOs:hold.totalOs,contextSlot:hold.contextHold});
   }
   return rows;
 }
-// The rows the policy limits count: `ledger` (parsed, with any preparations)
-// plus each open context hold's unconverted writes. budgetRefusal, context
-// admission and the operator health report all count these, so they cannot
-// drift. Exported read-only for the health report.
+// The rows the policy limits count: `ledger` (parsed) plus each open context
+// hold's unconverted writes. budgetRefusal, context admission and the operator
+// health report all count these, so they cannot drift. Exported read-only for
+// the health report.
 export function withContextHolds(ledger,converting=null){
   return [...ledger,...contextHoldRows(ledger,converting)];
 }
@@ -253,27 +255,14 @@ export function heldPolicyBudget(ledger,at){
   const held=ledger.filter(row=>row.policy&&row.decision==='approved'&&row.outcome!=='released'&&(row.outcome===null||row.completedAt>at-SELLER_POLICY_WINDOW_MS));
   return {writes:held.length,totalOs:held.reduce((sum,row)=>sum+BigInt(row.totalOs),0n)};
 }
-// Preparations hold budget in this process's memory before their approved
-// row exists. Another process (such as the health CLI) always sees none.
-// A held preparation's hold line is already on the ledger, which counts its
-// attempt: pass the parsed attempts so that it is not counted twice.
-export function provisionalPolicyHolds(evidencePath,attempts=new Map()){
-  return [...(provisionalHolds.get(resolve(evidencePath))??[])].filter(hold=>!attempts.has(hold.attemptId)).map(hold=>({...hold}));
-}
 
-async function budgetRefusal({evidencePath,jobId,artifactKind=null,totalOs,at,limits,manualApproved=false,provisional=null,ledgerHeld=false,writes=1,snapshot=null}){
-  // A manual confirmation completes a write the operator already approved exactly.
-  if(manualApproved)return null;
-  // Seller records: a matching sign-authorized reservation already holds both
-  // limits on the ledger, so its confirmation does not read the ledger again.
-  if(provisional&&ledgerHeld)return null;
-  const{rows:ledger,attempts}=snapshot??await readPolicyLedger(evidencePath);
-  // A matching preparation already holds both limits. The fee rule forbids
-  // confirmation from increasing its declared ceiling; convert it once.
-  if(provisional)return null;
-  ledger.push(...provisionalPolicyHolds(evidencePath,attempts));
+// Whether `writes` more writes of jobId, `totalOs` in total, fit the limits on
+// a parsed ledger snapshot: null when they do, else the limit they exceed
+// ('job-write-limit', 'hourly-write-limit' or 'hourly-dem-limit').
+function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot}){
+  const{rows:ledger,attempts}=snapshot;
   // A released attempt counts towards neither limit.
-  const live=withContextHolds(ledger,{jobId,artifactKind}).filter(row=>row.decision==='approved'&&row.outcome!=='released'&&attempts.get(row.attemptId)?.outcome!=='released');
+  const live=withContextHolds(ledger).filter(row=>row.decision==='approved'&&row.outcome!=='released'&&attempts.get(row.attemptId)?.outcome!=='released');
   // An attempt (its hold, manual line and reservation) is one write for the
   // job. Older lines: a held reservation and the manual line for the same
   // bytes are one write.
@@ -654,51 +643,26 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   return approve;
 }
 
-
-// Seller records: the operator's explicit release of one held attempt, named
-// by its attemptId, with the operator stopped (operator.mjs takes the state
-// lock), after a chain readback shows that its write can never be included
-// (docs, "Resolving a held reservation by hand"). Refused, with nothing
-// written, for an unknown attemptId, an attempt that already has its
-// completion line, or a ledger that cannot be read. Otherwise it appends one
-// synced completion line, released ('operator-released'): for the attempt,
-// or for its reservation once it reached sign authority. Returns what it
-// released.
-export function releaseHeldSellerAttempt({evidencePath,attemptId,now=Date.now}){
-  if(typeof attemptId!=='string'||!ATTEMPT_ID.test(attemptId))return Promise.reject(new TypeError('a held seller attempt is named by its exact attemptId'));
-  return serializedPolicy(evidencePath,async()=>{
-    let text='';
-    try{text=await readFile(evidencePath,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
-    const{rows,attempts}=parsePolicyLedger(text),attempt=attempts.get(attemptId);
-    if(!attempt)throw new Error(`seller policy attempt ${attemptId} is not on the approval ledger; nothing was released`);
-    if(attempt.outcome!==null)throw new Error(`seller policy attempt ${attemptId} already ended ${attempt.outcome}; nothing was released`);
-    const reservation=attempt.reservation,recordedAt=now();
-    if(!Number.isSafeInteger(recordedAt)||recordedAt<(reservation?.recordedAt??0))throw new Error('seller policy release time is unavailable; nothing was released');
-    appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...(reservation?{reservationId:reservation.reservationId}:{}),approvalHash:attempt.approvalHash,attemptId,outcome:'released',reason:'operator-released',recordedAt});
-    const hold=rows.find(row=>row.attemptId===attemptId);
-    return{attemptId,reservationId:reservation?.reservationId??null,approvalHash:attempt.approvalHash,jobId:hold?.jobId??null,artifactKind:hold?.request?.content?.artifactKind??null,
-      state:reservation?'sign-authorized':attempt.manual?'approved-sign-unknown':'approval-unknown',reason:'operator-released',recordedAt};
-  });
-}
-
-// Admission for the seller context route (
-// seller-context-route.mjs), on the same evidence file as the approvals.
+// Admission of a context step's Vet writes to the policy budgets, on the same
+// evidence file as the approvals. No production code calls it yet.
 // reserve: in policy mode, under the policy lock, all of the step's writes at
 // the write fee cap must fit the job and hourly limits together with every
-// outstanding reservation; then one durable hold line reserves them, tied to
-// the context effect. The per-write policy converts it write by write
-// (contextHoldRows), so the second Vet write is never refused for a budget the
-// first one used. Manual mode reserves nothing: each write is approved by hand.
-// release: ends what is unused of a hold once the step has ended, definite or
-// uncertain (all of the job's open holds when holdId is absent). A step a
-// shutdown cut runs again only under a new hold for the writes still to make
-// (seller-context-route.mjs resume); every write it made keeps its own policy row.
-// Refusals add no decision-log line. A hold line's
-// Exact retries bind holdId to job, effect, write count and fee cap.
-// Conflicting/released reuse refuses without appending; unreadable ledgers
-// throw seller_context_ledger_unreadable with the underlying cause.
-// Concurrent ledger transactions throw seller_state_locked. A new hold must
-// strictly follow unfinished Vet attempts for its job (hold-time-order).
+// outstanding reservation; then one synced hold line reserves them, tied to
+// the context effect. Each Vet write that starts on a later ledger line
+// converts one held write (contextHoldRows), so the step's second write is
+// never refused for a budget its first one used, and a write that started
+// before the hold never uses the hold's capacity. Manual mode reserves
+// nothing: each write is approved by hand. Resolves null once reserved, or
+// the refusal: 'request-shape', 'hold-conflict' (the holdId is bound to
+// another job, effect, write count or fee cap), 'hold-released', or a limit
+// (budgetRefusal). Refusals append nothing; an exact retry syncs the retained
+// line and resolves null. Rejects with seller_context_ledger_unreadable, with
+// its cause, for a ledger it cannot read, and a RangeError for an invalid clock.
+// release: ends what is unused of the step's hold (all of the job's open holds
+// when hold is absent) once the step has ended, definite or uncertain
+// (releaseSellerContextHolds). A step a shutdown cut runs again only under a
+// new hold for the writes still to make. Both reject with seller_state_locked
+// while another process holds the ledger.
 export function createSellerContextAdmission({evidencePath,sellerApproval,now=()=>Date.now()}){
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
   const append=(line)=>appendContextLine(evidencePath,line);
@@ -716,10 +680,7 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
       }
       const at=now();
       if(!Number.isSafeInteger(at)||at<0)throw new RangeError('context hold time must be a nonnegative safe integer');
-      // Earlier Vet reservations must not convert this newer hold when the
-      // clock moves backward, including sign-authorized and spent writes.
-      if(snapshot.rows.some(row=>row.policy&&row.decision==='approved'&&row.outcome!=='released'&&row.jobId===jobId&&row.artifactKind==='CompositeVerificationRecord'&&row.recordedAt>=at))return 'hold-time-order';
-      const refusal=await budgetRefusal({evidencePath,jobId,totalOs:BigInt(settings.maxWriteTotalOs)*BigInt(writes),at,limits:settings,writes,snapshot});
+      const refusal=budgetRefusal({jobId,totalOs:BigInt(settings.maxWriteTotalOs)*BigInt(writes),at,limits:settings,writes,snapshot});
       if(refusal)return refusal;
       await append({event:'hold',holdId:hold,jobId,effect,writes,totalOs:settings.maxWriteTotalOs,recordedAt:at});
       return null;
@@ -730,11 +691,11 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
 
 const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
 
-// Ends a job's open context holds (only holdId when given) with one release
-// line each, under the policy lock, and returns the released hold ids. The
-// route calls it when a step ends; scripts/release-seller-context-hold.mjs is
-// the operator's path for a hold a crash left open. A ledger it cannot read is
-// refused before anything is written.
+// Ends a job's open context holds (only holdId when given) with one synced
+// release line each, under the policy lock, and resolves the released hold
+// ids. A ledger it cannot read, or a clock before a hold it would end, is
+// refused before anything is written. With nothing open it syncs the job's
+// retained lines and resolves [].
 export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Date.now()}){
   return serializedPolicy(evidencePath,async()=>{
     const at=now(),released=[];
@@ -884,8 +845,6 @@ function serializedPolicy(evidencePath,work){
 }
 
 const policyTails=new Map();
-
-const provisionalHolds=new Map();
 
 const KINDS=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord','SettlementEvidence','Deliverable']);
 
