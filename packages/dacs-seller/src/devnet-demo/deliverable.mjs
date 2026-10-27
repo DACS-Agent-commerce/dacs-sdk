@@ -25,7 +25,7 @@ export function createDevnetPurchasedReportProducer({producer,produce}) {
     const report=JSON.parse(canonicalize({reportVersion:'1',kind:DEVNET_PURCHASED_REPORT_KIND,jobId:agreement.jobId,
       agreementHash:contentHash(agreement),listing:{...agreement.listingRef},title:listing.offering.title,settlementId,producer,
       content:{mediaType:'text/plain; charset=utf-8',text}}));
-    if(!reportFitsOneCreate(report)) throw new TypeError(`the purchased report must fit one storage CREATE (${MAX_STORAGE_ARTIFACT_BYTES} canonical bytes)`);
+    if(!isDevnetPurchasedReport(report,{jobId:agreement.jobId,producer})) throw new TypeError(`the purchased report must pass the report predicate and fit one storage CREATE (${MAX_STORAGE_ARTIFACT_BYTES} canonical bytes)`);
     return report;
   };
 }
