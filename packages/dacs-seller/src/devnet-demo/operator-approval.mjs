@@ -291,8 +291,9 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}
  * with confirm(validity) and settle(request, outcome). Listing writes and manual mode always ask manual. In policy
  * mode the policy decides (policy.decide): an approved write is already sign-authorized; a held write is asked of
  * manual only when its (phase, reason) is in the closed manual table, and the answer goes to the policy's sign gate
- * (policy.authorizeHeld); every other refusal is final. Policy errors reject. confirm checks the one policy-approved
- * write in flight at the policy's confirmation gate, and is false for any other approval. */
+ * (policy.authorizeHeld); every other refusal is final. Policy errors reject; a manual answer or sign gate that
+ * throws first releases the held attempt (policy.releaseHeld). confirm checks the one policy-approved write in flight
+ * at the policy's confirmation gate, and is false for any other approval. */
 export function composeSellerApproval({mode,policy,manual}){
   let prepared=null;
   const approve=async(request)=>{
@@ -306,11 +307,13 @@ export function composeSellerApproval({mode,policy,manual}){
     const decision=await policy.decide(request);
     let answer=decision.outcome==='approved'?'signed':'refused';
     if(decision.outcome==='held'&&manualReason(kind,decision.reason)){
-      let accepted;
-      // A shutdown that ends the manual answer decides nothing: the attempt is released and the error kept.
-      try{accepted=(await manual(JSON.parse(requestBytes),undefined,{attemptId:decision.attemptId}))===true;}
-      catch(error){await policy.releaseHeld(request,'operator-released').catch(()=>{});throw error;}
-      answer=await policy.authorizeHeld(request,accepted);
+      // A shutdown or error that ends the manual answer or its sign gate decides nothing: the attempt is released
+      // and the error kept.
+      try{answer=await policy.authorizeHeld(request,(await manual(JSON.parse(requestBytes),undefined,{attemptId:decision.attemptId}))===true);}
+      catch(error){
+        await policy.releaseHeld(request,[OPERATOR_CLOSING,'seller_approval_stopped'].includes(error?.code)?'operator-released':'sign-authorization-failed').catch(()=>{});
+        throw error;
+      }
     }
     // The sign line could not be retained: nothing was signed and the attempt is released, so the write is
     // decided again after a pause (before payment a refusal would be final for its artifact).
@@ -339,12 +342,15 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
 
 /** Create exact manual approval, or bounded seller policy approval with durable attempts and sign reservations.
  * Manual mode: approve(request, undefined, {attemptId}) asks authorize (or the TTY) and records the answer.
- * Policy mode: decide(request) resolves {outcome:'approved'|'held'|'refused', reason, attemptId}, prepare(request)
- * its approval as a boolean; authorizeHeld(request, accepted) ends a held attempt at the sign gate ('signed',
- * 'refused', or 'unsigned' when its sign line could not be retained); releaseHeld ends it unanswered;
- * approve(request, validity) is the confirmation gate; settle(request, outcome) completes a reservation; reconcile()
- * labels unresolved ones; stop() ends waits and pending manual answers. Purchase resolver and policy input errors
- * reject with nothing decided or written; an unreadable ledger is waited for until stop(). */
+ * Policy mode: decide(request) resolves {outcome:'approved'|'held'|'refused', reason, attemptId}, and rejects with
+ * code seller_approval_pending while the same request's held attempt waits for its manual answer; prepare(request)
+ * resolves its approval as a boolean and opens no attempt (a hold is logged as a refusal); authorizeHeld(request,
+ * accepted) ends a held attempt at the sign gate ('signed', 'refused', or 'unsigned' when its sign line could not be
+ * retained); releaseHeld ends it unanswered, also after stop(); approve(request, validity) is the confirmation gate;
+ * settle(request, outcome) completes a reservation; reconcile() labels unresolved ones; stop() ends waits and
+ * pending manual answers. A manual answer for a held attempt is recorded only while that attempt is open and unsigned
+ * in its ledger, for the same bytes; otherwise it is false and writes nothing. Purchase resolver and policy input
+ * errors reject with nothing decided or written; an unreadable ledger is waited for until stop(). */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
@@ -358,12 +364,12 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   const STOPPED=Symbol('stopped');
   let stopped=false,idle=null;const pauses=new Set(),flights=new Set(),halt=new AbortController();
   const live=()=>{if(stopped)throw stoppedError(APPROVAL_STOPPED);};
-  const track=(work)=>{
-    if(stopped)return Promise.reject(stoppedError(APPROVAL_STOPPED));
-    const flight=work(),forget=()=>{flights.delete(flight);};
+  const fly=(flight)=>{
+    const forget=()=>{flights.delete(flight);};
     flights.add(flight);flight.then(forget,forget);
     return flight;
   };
+  const track=(work)=>stopped?Promise.reject(stoppedError(APPROVAL_STOPPED)):fly(work());
   const locked=(work)=>track(()=>serializedPolicy(evidencePath,async()=>{live();return work();}));
   const pause=()=>new Promise((done,fail)=>{
     if(stopped)return fail(stoppedError(LEDGER_STOPPED));
@@ -413,29 +419,37 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const ids={reservationId:randomUUID(),approvalHash:sha(record.bytes),...(record.attemptId?{attemptId:record.attemptId}:{})};
     try{appendApprovalLedgerLine(evidencePath,{format:SIGN_FORMAT,...ids,requestBytes:record.bytes,totalOs:JSON.parse(record.bytes).content.debit.totalOs,recordedAt:clock()});}
     catch(error){
+      records.delete(request);open.delete(record.attemptId);
       try{
         const{rows,attempts}=await readPolicyLedger(evidencePath),line=rows.some(row=>row.reservationId===ids.reservationId&&row.outcome===null);
         if(line||attempts.get(record.attemptId)?.outcome===null)appendAttempt({...(line?ids:{attemptId:ids.attemptId,approvalHash:ids.approvalHash}),outcome:'released',reason:'sign-authorization-failed',recordedAt:clock()});
-        records.delete(request);open.delete(record.attemptId);
       }catch{/* the attempt stays open and counted; a retry or restart sees it */}
       throw error;
     }
     record.reservation=ids;open.add(ids.reservationId);records.set(request,record);
   };
   const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
-  const endAttempt=(request,record,reason)=>{
-    appendAttempt({attemptId:record.attemptId,approvalHash:sha(record.bytes),outcome:'released',reason,recordedAt:clock()});
+  // Whether a held attempt is still open with no sign line, for these exact bytes: the only state a line for it
+  // (its release or manual answer) may be appended to.
+  const heldOpen=(snapshot,attemptId,approvalHash)=>{const attempt=snapshot.attempts.get(attemptId);return attempt?.outcome===null&&!attempt.reservation&&attempt.approvalHash===approvalHash;};
+  // Ends a held attempt unanswered: the record is forgotten, and the release appended only if the ledger
+  // (snapshot, or a fresh read) still has the attempt open and unsigned.
+  const endAttempt=async(request,record,reason,snapshot=null)=>{
     open.delete(record.attemptId);records.delete(request);
+    if(heldOpen(snapshot??await readPolicyLedger(evidencePath),record.attemptId,sha(record.bytes)))
+      appendAttempt({attemptId:record.attemptId,approvalHash:sha(record.bytes),outcome:'released',reason,recordedAt:clock()});
   };
+  const pendingError=()=>Object.assign(new Error('this seller write is already held for its manual answer; nothing more is decided for it until that answer ends'),{code:'seller_approval_pending'});
   // decide: the policy's answer for one exact write. A refusal and a hold are logged; only a hold in the manual
-  // table opens an attempt, which counts its declared debit until it ends.
-  const decide=(request)=>locked(async()=>{
-    const bytes=JSON.stringify(request),copy=JSON.parse(bytes),previous=records.get(request),snapshot=await readableLedger(copy);
-    if(previous?.attemptId&&!previous.reservation&&snapshot.attempts.get(previous.attemptId)?.outcome===null)endAttempt(request,previous,'replaced');
+  // table opens an attempt (unless attempt is false), which counts its declared debit until it ends.
+  const decide=(request,{attempt=true}={})=>locked(async()=>{
+    const previous=records.get(request);
+    if(previous?.attemptId&&!previous.reservation)throw pendingError();
+    const bytes=JSON.stringify(request),copy=JSON.parse(bytes),snapshot=await readableLedger(copy);
     const record={bytes,attemptId:null,reason:null,reservation:null};
     const reason=await signRefusal(copy,snapshot)??await reread(request,record);
     if(reason===null){await appendSign(request,record);return{outcome:'approved'};}
-    const attemptId=manualReason(copy?.content?.artifactKind,reason)?randomUUID():null;
+    const attemptId=attempt&&manualReason(copy?.content?.artifactKind,reason)?randomUUID():null;
     appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
       decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),recordedAt:clock()});
     if(attemptId){records.set(request,{...record,attemptId,reason});open.add(attemptId);}
@@ -446,12 +460,12 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   const authorizeHeld=(request,accepted)=>locked(async()=>{
     const record=records.get(request);
     if(!record?.attemptId||record.reservation)return 'refused';
-    if(accepted!==true){endAttempt(request,record,'manual-declined');return 'refused';}
+    if(accepted!==true){await endAttempt(request,record,'manual-declined');return 'refused';}
     const snapshot=await readableLedger(request),attempt=snapshot.attempts.get(record.attemptId);
     if(attempt?.outcome!==null||attempt.reservation){records.delete(request);open.delete(record.attemptId);return 'refused';}
     snapshot.rows=snapshot.rows.filter(row=>row.attemptId!==record.attemptId);
     const copy=JSON.parse(record.bytes),reason=await signRefusal(copy,snapshot,paymentPhase(copy.content.artifactKind))??await reread(request,record);
-    if(reason){endAttempt(request,record,'confirmation-refused');return 'refused';}
+    if(reason){await endAttempt(request,record,'confirmation-refused',snapshot);return 'refused';}
     try{await appendSign(request,record);}catch(error){if(stopped)throw error;return 'unsigned';}
     return 'signed';
   });
@@ -515,18 +529,24 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     if(closeSignal.aborted)throw closingError();
     accepted&&=JSON.stringify(request)===requestBytes;
-    if(accepted)freezeRequest(request);
-    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:copy.method,address:copy.address??null,totalOs:declared.toString(),decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),recordedAt:now()});
-    return accepted;
+    const record=()=>{
+      if(accepted)freezeRequest(request);
+      appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:copy.method,address:copy.address??null,totalOs:declared.toString(),decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),recordedAt:now()});
+      return accepted;
+    };
+    // A held attempt's answer is recorded only while this ledger still has that attempt open and unsigned for
+    // these bytes; an attempt that has ended (or another ledger's) gets no line and no approval.
+    return attemptId?serializedPolicy(evidencePath,async()=>heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&record()):record();
   };
   const approve=(request,validity,options={})=>{
     if(!policyMode)return track(()=>decideManually(request,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?options.attemptId:null));
     return validity===undefined?approve.prepare(request):confirm(request,validity);
   };
   approve.decide=decide;
-  approve.prepare=async(request)=>(await decide(request)).outcome==='approved';
+  approve.prepare=async(request)=>(await decide(request,{attempt:false})).outcome==='approved';
   approve.authorizeHeld=authorizeHeld;
-  approve.releaseHeld=(request,reason)=>locked(async()=>{const record=records.get(request);if(record?.attemptId&&!record.reservation)endAttempt(request,record,reason);});
+  // Not refused after stop(): a shutdown that ends a manual answer still releases its attempt.
+  approve.releaseHeld=(request,reason)=>fly(serializedPolicy(evidencePath,async()=>{const record=records.get(request);if(record?.attemptId&&!record.reservation)await endAttempt(request,record,reason);}));
   approve.pause=pause;
   approve.stop=()=>{
     stopped=true;halt.abort();for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
@@ -538,7 +558,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     return locked(async()=>{
       const record=records.get(request);
       if(record?.reservation)completeReservation(request,record,await openSignLine(record),outcome,reason);
-      else if(record?.attemptId&&outcome==='released')endAttempt(request,record,RELEASE_REASONS.has(reason)?reason:'wallet-released');
+      else if(record?.attemptId&&outcome==='released')await endAttempt(request,record,RELEASE_REASONS.has(reason)?reason:'wallet-released');
     });
   };
   // Restart only labels unresolved attempts; it never resends or releases them.
