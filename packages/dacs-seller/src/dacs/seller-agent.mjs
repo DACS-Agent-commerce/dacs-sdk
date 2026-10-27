@@ -1,26 +1,6 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
-// Seller agent for one verified fixed-price DEM Listing, acting as phase
-// orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
-// method takes and returns plain JSON; seller-http.mjs is a narrow adapter.
-//
-// The seller identity is supplied by the operator as a signing callback over
-// raw bytes (never the plugin buyer's key; the agent never sees a buyer key).
-// Protocol steps use the pinned SDK seller surface:
-//  - respondToFixedPriceAgreementProposalDurable re-derives the Agreement from
-//    seller-local authenticated context before signing its contribution;
-//  - commitFixedPriceAgreement signs and anchors the FinalityCommitmentRecord
-//    after Agreement readback by default, or on exact signatures when enabled;
-//  - verifySellerPaymentIntake verifies the pay-dem claim (payer, payee,
-//    amount, inclusion after the finalized commitment, deadline, SB-1 identity,
-//    SB-2 one-transaction-one-session receipt store) and derives the exact
-//    unsigned payment SettlementEvidence.
-// The explicit DEM delivery profile additionally consumes that same permit in
-// runDurableFulfilmentToDeliveryReady using a seller-retained V2 SessionRecord,
-// genuine partyVetCore provenance and independent delivery receipt readback.
-// Evidence publication/final bundle closure stay behind an explicit later SDK
-// finaliser call. Not deployed anywhere; tests run it on owned loopback only.
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
 import {
   canonicalize,
@@ -139,36 +119,9 @@ export function buildReport({ agreement, listing, settlementId }) {
   };
 }
 
-// The substrate is chosen once, never by fallback. `agreementAnchor` and
-// `nativeArtifactAnchor` (programmatic operator capabilities) together select
-// the native profile: commit reads the buyer's Agreement as its native Demos
-// SR-2 storage CREATE and publishes the FinalityCommitmentRecord natively. Any
-// other native capability needs both, and that profile takes no `anchors`: a
-// remaining fixture read or write refuses (fixture_substrate_disabled). The
-// simulated fixture substrate is used only when it is passed as `anchors` with
-// no native capability and `simulatedFixture: true`: that profile signs over
-// the not-performed Vet references and the unsigned in-code rail, so it is
-// never chosen by default.
-// The native profile signs an Agreement only with the operator's authenticated
-// Vet context (`demDeliveryContext`), never the synthetic not-performed Vet
-// references, and only over a rail its steward-signed `railAuthority` makes
-// selectable, pinned into the session first (rail-authority.mjs). It commits
-// or takes payment only with the whole chain to delivery
-// (`nativePaymentEvidence`, `demDeliveryContext`, `nativeDemDelivery`) and the
-// pinned rail: a commitment it could not settle would make the buyer pay for
-// nothing. No profile signs a completed DACS-5 bundle (the ST-11 finalizer is
-// not wired; bundle_finalization_unavailable).
-// The native profile opens a new session only for a presentation of a
-// challenge this seller issued for its job and buyer (issueSessionChallenge;
-// the first attempt consumes it, durably), on a Listing its own revocation
-// check (core checkListingRevocation over the operator's readings) finds not
-// revoked, and under the operator's `sessionAdmission` (session-admission.mjs):
-// the exact profile of both parties and the Vet records the references name,
-// checked strictly against the requirement invocations the delivery runner
-// checks, for a retained context too.
-// `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
-// seller-context-route.mjs createSellerContextRecords exactRequest) is true only
-// when the seller durably admitted exactly that context request for the job.
+// Internal seller proposal, commitment, payment and delivery profile. The
+// native profile commits or takes payment only with the whole chain to
+// delivery (nativePaymentEvidence, demDeliveryContext, nativeDemDelivery).
 const MAX_CHALLENGES_PER_JOB=16;
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
@@ -1457,15 +1410,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       substrate: nativeDeliverySubstrate, evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
   }
 
-  // Everything before the durable work checkpoint is free of external effects:
-  // the commitment is only read back, and the SDK permit claim, settlement
-  // binding and evidence signature are local and replay-idempotent for this
-  // exact job/payment. A failure here is a no-effect transport answer; after
-  // verified intake it remains indeterminate so the buyer retries the paid order.
-  // Thrown,
-  // it would leave the authenticated transport fenced as uncertain with no
-  // retained work for its read-only reconciliation to reduce, so the paid
-  // order could never be delivered. A durable checkpoint keeps throwing.
   async function startNativePaymentEvidence({ session, jobId, hash, payerPayingKey }) {
     let step = 'commitment-readback', paymentVerified = false;
     try {
