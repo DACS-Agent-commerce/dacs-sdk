@@ -573,8 +573,10 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           const credited = () => !contested && claims.length === 1 && claims[0].jobId === jobId && Number.isSafeInteger(claims[0].phaseIndex);
           if (claim === null) return credited();
           if (!claim || typeof claim !== 'object' || Array.isArray(claim) || !Number.isSafeInteger(claim.phaseIndex) || claim.phaseIndex < 0) fail('seller_state_binding_invalid');
-          const body = clone(claim), repeat = claims.find(c => c.jobId === jobId && c.phaseIndex === body.phaseIndex);
-          if (repeat) return same(repeat.claim, body) ? credited() : fail('seller_effect_conflict');
+          // A repeat of a kept job and phase keeps its first claim: an SB-2
+          // retry may move the observation time, and the receipt store decides.
+          const body = clone(claim);
+          if (claims.some(c => c.jobId === jobId && c.phaseIndex === body.phaseIndex)) return credited();
           // A contested id keeps its first two claims as witnesses and grows no
           // further: no claimant is credited, however many more arrive.
           if (contested) return false;

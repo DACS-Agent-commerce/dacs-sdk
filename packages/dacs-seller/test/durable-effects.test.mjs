@@ -47,10 +47,11 @@ test('an exact repeated settlement claim is idempotent and keeps its credit acro
   assert.equal(await again.withJob(JOB, () => again.bindSettlement('TEST-payment', JOB, claim)), true);
   assert.equal(again.settlementJob('TEST-payment'), JOB); again.close();
 });
-test('the same settlement tuple with a different claim body is refused and changes nothing', async t => {
-  const f = await durableFixture(t);
-  assert.equal(await f.store.withJob(JOB, () => f.store.bindSettlement('TEST-payment', JOB, { phaseIndex: 0, evidenceHash: 'a'.repeat(64) })), true);
-  await assert.rejects(f.store.withJob(JOB, () => f.store.bindSettlement('TEST-payment', JOB, { phaseIndex: 0, evidenceHash: 'b'.repeat(64) })), e => e.code === 'seller_effect_conflict');
+test('a retry of a kept settlement tuple with a moved observation keeps the first claim and its credit', async t => {
+  const f = await durableFixture(t), first = { phaseIndex: 0, observedAt: NOW, evidenceHash: 'a'.repeat(64) };
+  assert.equal(await f.store.withJob(JOB, () => f.store.bindSettlement('TEST-payment', JOB, first)), true);
+  assert.equal(await f.store.withJob(JOB, () => f.store.bindSettlement('TEST-payment', JOB, { ...first, observedAt: NOW + 1, evidenceHash: 'b'.repeat(64) })), true);
+  assert.deepEqual(retainedBody(f, 'SELECT value FROM seller_settlements WHERE id=?', 'TEST-payment').claims.map(c => c.claim), [first]);
   assert.equal(f.store.settlementJob('TEST-payment'), JOB); f.store.close();
 });
 for (const [label, id, jobId, claim] of [
