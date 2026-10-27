@@ -197,6 +197,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const contexts=new Map(),invocations=[],vets=new Map(),running=new Set(),drops=new Set(),selections=new Map();
   const contextAllowed=(lifecycle,time)=>lifecycle.selected===undefined||(lifecycle.selected!==null&&lifecycle.selected===time);
   const assertContext=(lifecycle,time)=>{if(!contextAllowed(lifecycle,time))fail('context_released','the context request was released');};
+  // The durable side of that fence: a request time a release selected in the job's row (seller.selected) releases
+  // every other time, in every provider on the store and after a restart.
+  const releasedInRow=(kept,time)=>kept?.selected!==undefined&&kept.selected!==time;
   const withContext=work=>async(input,options={})=>{
     const jobId=input?.scope?.jobId??input?.jobId;requireJobId(jobId);
     const lifecycle=selections.get(jobId)??{selected:undefined,users:0};
@@ -519,8 +522,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(!current?.binding||!same(current.binding,job.binding))fail('binding-changed','the job\'s party Vet binding changed; no context was kept');
       const kept=current.seller;
       if(kept&&(!same(kept.input,base)||!same(kept.vetRequirements,vetRequirements)))fail('conflict','the job\'s retained Agreement context differs');
+      if(releasedInRow(kept,generatedAt))fail('context_released','the context request was released');
       if(kept?.generatedAts.includes(generatedAt))return undefined;
-      current.seller={input:clone(base),vetRequirements:clone(vetRequirements),generatedAts:[...(kept?.generatedAts ?? []),generatedAt].slice(-CONTEXT_TIMES)};
+      current.seller={...kept,input:clone(base),vetRequirements:clone(vetRequirements),generatedAts:[...(kept?.generatedAts ?? []),generatedAt].slice(-CONTEXT_TIMES)};
       return current;
     });
   }
@@ -564,7 +568,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const retained=await state.read(scope.jobId);
     const sellerIdentity=retained?.presentation?.bundle;
     const {generatedAt:_time,...terms}=scope;
-    if(!sellerIdentity?.presentation || !same(retained.binding?.scope,terms) || !same(retained.binding?.buyerIdentityBundle,buyerIdentityBundle))return null;
+    if(!sellerIdentity?.presentation || !same(retained.binding?.scope,terms) || !same(retained.binding?.buyerIdentityBundle,buyerIdentityBundle) || releasedInRow(retained.seller,scope.generatedAt))return null;
     const records=[];
     for(const bundle of [buyerIdentityBundle,sellerIdentity]){
       const logicalAddress=compositeVerificationAddress(scope.jobId,bundle.presentedBy),read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
@@ -634,11 +638,14 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const matches=(input)=>same(input.verifiedListing.pin,pin)&&same(input.buyer.identityBundle,buyerIdentityBundle)&&input.generatedAt===generatedAt;
     const answer=(found)=>({disposition:'present',value:{input:clone(found.input),vetRequirements:clone(found.vetRequirements)}});
     const forJob=[...contexts.values()].filter((entry)=>entry.input.jobId===jobId),found=forJob.find((entry)=>matches(entry.input));
+    // The job's row decides for this process's contexts too: a row another provider's sweep deleted, or a time its
+    // release did not select, is released here as well.
+    const row=await state.read(jobId),kept=row?.seller ?? null;
+    if((!row&&forJob.length)||releasedInRow(kept,generatedAt))return{disposition:'rejected',reason:'the context request was released'};
     if(found)return await contextAuthentic(found.input)&&contextAllowed(lifecycle,generatedAt)?answer(found):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
-    const kept=(await state.read(jobId))?.seller ?? null;
     const durable=kept?.generatedAts.includes(generatedAt)?{input:{...kept.input,generatedAt},vetRequirements:kept.vetRequirements}:null;
     if(durable&&matches(durable.input)){
-      const recovered=await recoverBuyer({scope:{...((await state.read(jobId)).binding.scope),generatedAt},buyerIdentityBundle});
+      const recovered=await recoverBuyer({scope:{...row.binding.scope,generatedAt},buyerIdentityBundle});
       return recovered?.disposition==='present'&&await contextAuthentic(durable.input)&&contextAllowed(lifecycle,generatedAt)?answer(durable):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
     }
     const recovered=retainedScope?await recoverSeller({jobId,pin,buyerIdentityBundle,generatedAt}):null;
@@ -665,9 +672,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     return true;
   }
   // Once a job's plan is saved (generatedAt names its request), only that
-  // request's context stays, in memory and in the job's row. Once its
-  // purchase ended (no generatedAt), its in-memory entries go and its row is
-  // deleted.
+  // request's context stays, in memory and in the job's row, which records the
+  // selection for every provider and restart. Once its purchase ended (no
+  // generatedAt), its in-memory entries go and its row is deleted.
   function evict(jobId,generatedAt) {
     const lifecycle=selections.get(jobId)??{users:0};lifecycle.selected=generatedAt;selections.set(jobId,lifecycle);
     const job=vets.get(jobId);
@@ -678,7 +685,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     requireJobId(jobId);
     evict(jobId,generatedAt);
     if(generatedAt===null){drop(jobId).catch(logged('deletion',jobId));return;}
-    state.update(jobId,(current)=>current?.seller?.generatedAts.includes(generatedAt)&&current.seller.generatedAts.length>1?{...current,seller:{...current.seller,generatedAts:[generatedAt]}}:undefined).catch(logged('context pruning',jobId));
+    state.update(jobId,(current)=>current?.seller&&current.seller.selected!==generatedAt?{...current,seller:{...current.seller,generatedAts:current.seller.generatedAts.filter((time)=>time===generatedAt),selected:generatedAt}}:undefined).catch(logged('context pruning',jobId));
   }
   // Deletes the rows of jobs whose purchase ended (ended(jobId) answers true)
   // without a status change this process saw: lazy expiry, or an end before
