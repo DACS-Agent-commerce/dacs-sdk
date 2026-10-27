@@ -195,7 +195,7 @@ for (const timing of ['during enumeration', 'after acquisition']) {
     if (!created) create();
     lease.arm();
     db.exec('BEGIN IMMEDIATE');
-    assert.throws(() => lease.start(), { code: 'client_not_wired' });
+    assert.throws(() => lease.start(), { name: 'OperationError', code: 'purchase_store_schema_changed' });
     assert.equal(lease.present(), false);
     db.exec('ROLLBACK');
     lease.disarm();
@@ -258,7 +258,7 @@ test('an installation recovery failure preserves its cause and retires the handl
 test('attached databases are refused before installing any temporary guards', t => {
   const db = database(t);
   db.exec("ATTACH ':memory:' AS other; CREATE TABLE other.records (id TEXT)");
-  assert.throws(() => sqliteWriteLease(db), { code: 'client_not_wired' });
+  assert.throws(() => sqliteWriteLease(db), { name: 'OperationError', code: 'purchase_store_unsupported_attachment' });
   assert.deepEqual(db.prepare('SELECT name FROM temp.sqlite_master').all(), []);
   db.exec("INSERT INTO other.records VALUES ('TEST-host')");
 });
@@ -268,7 +268,7 @@ test('an attachment added after acquisition cannot start a lease', t => {
   db.exec("ATTACH ':memory:' AS other; CREATE TABLE other.records (id TEXT)");
   lease.arm();
   db.exec('BEGIN IMMEDIATE');
-  assert.throws(() => lease.start(), { code: 'client_not_wired' });
+  assert.throws(() => lease.start(), { name: 'OperationError', code: 'purchase_store_unsupported_attachment' });
   db.exec('ROLLBACK');
   lease.disarm();
 });
