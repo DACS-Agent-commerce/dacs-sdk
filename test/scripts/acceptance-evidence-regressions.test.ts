@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const modulePath = "../../scripts/registry-container-disposition.mjs";
 const { classifyPolicyChecks, extractPolicyFindings, POLICY_SOURCES, registryAuditDriftDisposition, registryAuditPolicy,
-  registryContainerDisposition, RELEASE_VERSION } = await import(modulePath);
+  registryContainerDisposition, RELEASE_VERSION, unlistedPolicyFindings } = await import(modulePath);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
 const roots: string[] = [];
@@ -207,6 +207,50 @@ describe("complete acceptance evidence regressions", () => {
   it.each(["engine", "lockSbom", "physicalSbom"])("rejects contradictory %s evidence", key => {
     const contradictory = { exitCode: 1, code: "fixture-error", scanComplete: true, violations: [], problems: [] };
     expect(registryContainerDisposition(withFindings({ [key]: contradictory })).exitCode).toBe(3);
+  });
+
+  it.each([["lockSbom", "lockSbom"], ["physicalSbom", "physicalSbom"]])(
+    "blocks %s exit 1 that lists no problem", (key, gate) => {
+      const sbom = { exitCode: 1, code: "ESBOMPROBLEMS", problems: [] };
+      expect(classifyPolicyChecks(withFindings({ [key]: sbom }), baseline)[gate]).toBe("blocked");
+    });
+
+  describe("SBOM stderr extraction", () => {
+    const sbomSources = [["lockSbom", "consumer-lock-sbom", "lockSbomProblems"],
+      ["physicalSbom", "consumer-physical-sbom", "physicalSbomProblems"]] as const;
+    const failed = (name: string, lines: string[]) => ({ ...passingSources(), [`${name}.exit-code`]: "1\n",
+      [`${name}.err`]: ["npm error code ESBOMPROBLEMS", ...lines.map(line => `npm error ${line}`), ""].join("\n") });
+    const logTail = ["", "A complete log of this run can be found in: /root/.npm/_logs/run-debug-0.log"];
+
+    it.each(sbomSources)("keeps the baseline %s problems behind the usual npm framing lines", (gate, name, knownKey) => {
+      const lines = [...baseline.policyFindings[knownKey], ...logTail];
+      const findings = extracted(failed(name, lines));
+      expect(findings[gate].problems).toEqual(baseline.policyFindings[knownKey]);
+      expect(classifyPolicyChecks(withFindings(findings), baseline)[gate]).toBe("baseline");
+    });
+
+    it.each(sbomSources)("blocks %s when a line outside the problem grammar accompanies baseline problems", (gate, name, knownKey) => {
+      const findings = extracted(failed(name, [...baseline.policyFindings[knownKey], "conflict: new-package@1", ...logTail]));
+      expect(findings[gate].problems).toContain("conflict: new-package@1");
+      expect(classifyPolicyChecks(withFindings(findings), baseline)[gate]).toBe("blocked");
+      expect(unlistedPolicyFindings(withFindings(findings), baseline, [gate])[gate]).toEqual(["conflict: new-package@1"]);
+    });
+
+    it.each(sbomSources)("blocks %s when only unrecognised lines follow the error code", (gate, name) => {
+      const findings = extracted(failed(name, ["some unrecognised problem line"]));
+      expect(classifyPolicyChecks(withFindings(findings), baseline)[gate]).toBe("blocked");
+    });
+
+    it.each(sbomSources)("blocks %s when the log names the error code but lists nothing", (gate, name) => {
+      const findings = extracted(failed(name, logTail));
+      expect(findings[gate]).toMatchObject({ exitCode: 1, code: "ESBOMPROBLEMS", problems: [] });
+      expect(classifyPolicyChecks(withFindings(findings), baseline)[gate]).toBe("blocked");
+    });
+
+    it.each(sbomSources)("blocks %s when a second error code follows the first", (gate, name, knownKey) => {
+      const findings = extracted(failed(name, [...baseline.policyFindings[knownKey], "code ENOTFOUND"]));
+      expect(classifyPolicyChecks(withFindings(findings), baseline)[gate]).toBe("blocked");
+    });
   });
 
   it("rejects an incomplete engine scan behind a successful exit code", () => {
