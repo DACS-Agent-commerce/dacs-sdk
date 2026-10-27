@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { NotWiredError, OperationError } from '../client-errors.mjs';
+import { OperationError } from '../client-errors.mjs';
 
 const guards = new WeakMap();
 const fenced = new WeakSet();
@@ -16,7 +16,9 @@ export const isSqliteHandleRetired = db => fenced.has(db);
 const identifier = name => `"${name.replaceAll('"', '""')}"`;
 function schemaVersions(db) {
   const schemas = db.prepare('PRAGMA database_list').all();
-  if (schemas.some(({ name }) => !['main', 'temp'].includes(name))) throw new NotWiredError('purchase-store-not-wired');
+  if (schemas.some(({ name }) => !['main', 'temp'].includes(name))) {
+    throw new OperationError('purchase_store_unsupported_attachment', 'purchase transactions support only main and TEMP schemas');
+  }
   return JSON.stringify(schemas.map(({ name, file }) =>
     [name, file, db.prepare(`PRAGMA ${identifier(name)}.schema_version`).get().schema_version]));
 }
@@ -32,7 +34,11 @@ export function sqliteWriteLease(db) {
   db.exec('BEGIN IMMEDIATE');
   try {
     let state = guards.get(db);
-    if (!state || !state.exists()) state = createLease(db);
+    if (!state || !state.exists()) {
+      // Guards naming a dropped marker would refuse every later write.
+      state?.dropTriggers();
+      state = createLease(db);
+    }
     const versions = state.refresh();
     db.exec('COMMIT');
     state.versions = versions;
@@ -53,12 +59,15 @@ function createLease(db) {
   const state = {
     versions: undefined,
     exists() { return Boolean(db.prepare("SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name=?").get(name)); },
+    dropTriggers() {
+      // Reuse a closed range of names, including after an interrupted refresh.
+      for (let i = 0; i < triggerCount; i++) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(`${name}_${i}`)}`);
+    },
     refresh() {
       // BEGIN IMMEDIATE locks main before enumeration. Publish
       // this fingerprint only after the trigger installation has committed.
       if (schemaVersions(db) !== state.versions) {
-        // Reuse a closed range of names, including after an interrupted refresh.
-        for (let i = 0; i < triggerCount; i++) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(`${name}_${i}`)}`);
+        state.dropTriggers();
         let serial = 0;
         for (const { schema, name: table, type } of db.prepare('PRAGMA table_list').all()) {
           if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
@@ -79,7 +88,7 @@ function createLease(db) {
       start() {
         // The caller now holds BEGIN IMMEDIATE's locks. A generation installed
         // in a different schema cannot authorize this transaction's body.
-        if (schemaVersions(db) !== state.versions) throw new NotWiredError('purchase-store-not-wired');
+        if (schemaVersions(db) !== state.versions) throw new OperationError('purchase_store_schema_changed', 'purchase database schema changed before the transaction started');
         db.exec(`UPDATE ${marker} SET present = 1`);
       },
       blockCommit() {
