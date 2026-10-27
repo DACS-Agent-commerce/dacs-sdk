@@ -1301,12 +1301,42 @@ test('host maxJobs above the default transport cap admits job 10001 with the ord
 for(const value of [undefined,null,0,{}])test(`missing or malformed journal identity ${JSON.stringify(value)} cannot release another journal's pending CREATE`,async t=>{
  const w=await world(t,{projectionReader:false}),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p),name=core.logicalToStorageProgramName(address);w.node.faults.transactionDown=hash=>hash===w.signedCreate(address)?.hash;w.node.faults.indexEmpty=program=>program===name;w.faults.broadcast.push('lost');assert.equal((await p.claim(tx)).status,'held');await w.editRetainedSession(p.jobId,session=>{if(value===undefined)delete session.nativeEvidenceWork.walletJournal;else session.nativeEvidenceWork.walletJournal=value;});await w.host().close();w.replaceWallet('TEST-replacement.sqlite');await w.restart();w.node.faults.transactionDown=()=>false;for(let i=0;i<2;i++)assert.notEqual((await p.claim(tx)).status,'payment-evidenced');assert.equal(w.createsAt(address),1);assert.equal(w.effects.signCreate.filter(x=>x===address).length,1);
 });
-for(const damage of ['proof','order','deliveryReady','ambiguous'])test(`authenticated checkpoint ${damage} cannot return unauthenticated evidence or run unassembled delivery`,{skip:!deliveryStaged&&['deliveryReady','ambiguous'].includes(damage)},async t=>{
- const w=await world(t),p=await w.purchase(),tx=p.pay();assert.equal((await p.claim(tx)).status,'payment-evidenced');await w.editRetainedSession(p.jobId,session=>{
-  const work=session.nativeEvidenceWork;if(damage==='proof')work.nativeReceipt.evidence.value='TEST-broken-proof';else if(damage==='order'){const projection=JSON.parse(work.publicSignedProjectionJson);projection.content=Object.fromEntries(Object.entries(projection.content).reverse());work.publicSignedProjectionJson=JSON.stringify(projection);}else if(damage==='deliveryReady')session.deliveryReady={status:'delivery-ready'};else session.deliveryHold={result:{code:'delivery-submission-ambiguous'}};
+for(const damage of ['proof','order','deliveryReady'])test(`authenticated checkpoint ${damage} cannot return unauthenticated evidence or deliver again`,async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay();assert.equal((await p.claim(tx)).status,'payment-evidenced');const delivered=w.effects.deliverySubmit.length;await w.editRetainedSession(p.jobId,session=>{
+  const work=session.nativeEvidenceWork;if(damage==='proof')work.nativeReceipt.evidence.value='TEST-broken-proof';else if(damage==='order'){const projection=JSON.parse(work.publicSignedProjectionJson);projection.content=Object.fromEntries(Object.entries(projection.content).reverse());work.publicSignedProjectionJson=JSON.stringify(projection);}else session.deliveryReady={status:'delivery-ready'};
  });const answer=await p.claim(tx);
  if(['proof','order'].includes(damage))assert.notEqual(answer.status,'payment-evidenced');else{assert.equal(answer.status,'payment-evidenced',shown(answer));assert.equal(answer.delivery.status,'held');}
- assert.equal(w.effects.deliverySubmit.length,0);assert.equal(w.createsAt(paymentAddress(p)),1);
+ assert.equal(w.effects.deliverySubmit.length,delivered,'the Deliverable is sent once');assert.equal(w.createsAt(paymentAddress(p)),1);
+});
+
+// A retained delivery is only a record of it: every repeat authenticates the saved
+// payment evidence again, whether it reaches the agent directly, as a new claim,
+// or as a replay of a request the transport already answered.
+test('a retained delivery is held while its payment evidence cannot be read back, for a direct retry, a new claim and a replayed request', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  const signed = await w.signedClaim(p, tx);
+  const post = async () => (await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
+    headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody })).json();
+  const first = await post();
+  assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
+  const evidenceCreate = w.signedCreate(paymentAddress(p)).hash;
+  w.node.faults.transactionDown = (hash) => hash === evidenceCreate;
+  assert.equal((await post()).status, 'held', 'a replay of the answered request');
+  assert.equal((await p.claim(tx)).status, 'held', 'a new claim');
+  const agent = await w.agentFor();
+  try {
+    const retry = await agent.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+    assert.equal(retry.status, 'held', 'a direct retry');
+  } finally { agent.close(); }
+  w.node.faults.transactionDown = () => false;
+  const restarted = await w.agentFor({ stopHost: false });
+  try {
+    const again = await restarted.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+    assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
+  } finally { restarted.close(); }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is sent once');
+  assert.equal(w.createsAt(deliverable), 1);
 });
 
 

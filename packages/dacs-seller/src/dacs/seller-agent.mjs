@@ -1482,12 +1482,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       work = started.work;
       await anchorNativePaymentEvidence(session, work);
     }
-    // Recovery is delivery-only. The payment evidence receipt/projection below
-    // was already authenticated and retained before the ambiguous delivery;
-    // re-reading the exact Deliverable is the only new external observation.
-    if (work.nativeReceipt && retainedNativeEvidenceProjection(work) && nativeDelivery && session.deliveryReady) {
-      return readPersistedNativeDelivery(session, work);
-    }
+    // A retained delivery is not a shortcut: the payment evidence it rests on is
+    // authenticated again below, and advanceAuthenticatedNativeDelivery then
+    // reads the Deliverable back.
     let read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
     // A complete miss only permits asking the owning journal; it grants no send.
     const noReadback=()=>read.disposition==='absent'||(read.disposition==='indeterminate'&&['name-index-miss','native-address-miss'].includes(read.nativeObservation));
