@@ -897,6 +897,9 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | D11 | fix(client): D11 record the merged 06b purchase store snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | cae688b7514f53d290ac11bfb8303cfab7a3a7fd |
 | D11 | fix(client): D11 keep 06b delta records in the order of the branch below | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 drop every signature field and non-record protocol from diagnostics | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | b67b106463a1819cdc0cb6204153b1b821014c9f |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | afe8bf312d0b48bf2842ef2aeb7baa8936dd1818 |
 
 ## Complete commit and file inventory
 
@@ -2484,6 +2487,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/package.json:1` |
 | fix(client): D11 ship the purchase admission module in the packed client | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| fix(client): D11 drop every signature field and non-record protocol from diagnostics | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
 
 ## Original moved files
 
