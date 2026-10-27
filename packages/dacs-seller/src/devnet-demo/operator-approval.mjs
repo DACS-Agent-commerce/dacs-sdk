@@ -2,7 +2,7 @@ import { stopRequested, stopSignal } from './stop-request.mjs';
 import { createInterface } from 'node:readline/promises';
 import { randomUUID } from 'node:crypto';
 import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
-import { compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
+import { admitRawJson, compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { truncateSync } from 'node:fs';
@@ -744,8 +744,30 @@ function expectedLogicalAddress(c,artifact,policy){
   return artifact.phase==='deliver-storage-program'?`dacs4:evidence:${c.jobId}`:null;
 }
 
+// CORE CF-5: a request's exact JSON (its CREATE and stored artifact) admitted
+// as raw UTF-8: no duplicate member, unsafe number, lone surrogate or nesting
+// over 128, as the SDK admits received bytes. Throws for anything else.
+function admittedJson(text){
+  if(typeof text!=='string'||!text.isWellFormed())throw new TypeError('exact request JSON is not well-formed text');
+  return admitRawJson(Buffer.from(text,'utf8'));
+}
+
+// The purchase as bound to this exact request: its shape, seller, listing and
+// network (none yet when unbound: a held Vet record before the signed
+// Agreement), and the buyer, listing and Agreement the artifact names.
+// Returns null, or 'purchase', 'evaluated-party', 'listing' or 'agreement'.
+function purchaseBindingRefusal(c,artifact,purchase,policy,unbound){
+  if(!exact(purchase,['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','prePaymentOpen'])||purchase.jobId!==c.jobId||purchase.seller!==policy.seller
+    ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||(purchase.prePaymentOpen!==null&&typeof purchase.prePaymentOpen!=='boolean')||!POSITIVE_OS.test(purchase.amountOs??'')
+    ||!same(purchase.listingPin,policy.listingPin())||!(unbound||sameNetwork(purchase.sourceBinding,policy.sourceBinding)))return 'purchase';
+  if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
+  if([artifact.listingPin,artifact.listing,artifact.listingRef].some(value=>value&&!same(value,purchase.listingPin)))return 'listing';
+  if(artifact.agreementHash&&artifact.agreementHash!==purchase.agreementHash)return 'agreement';
+  return null;
+}
+
 /** Validate an exact seller request; return null or its retained refusal reason.
- * Rejects malformed JSON and propagates purchase resolver errors. */
+ * Exact JSON that is malformed or not CF-5 raw JSON is 'create-bytes'. Propagates purchase resolver errors. */
 export async function policyRefusal(request,policy,limits,{confirmedTotal,countedTotal,manualApproved=false,held=null}={}){
   const c=request?.content,d=c?.debit;
   if(!exact(request,['method','address','purpose','content'])||request.method!=='sendTransaction'||typeof request.purpose!=='string'
@@ -768,8 +790,10 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
   const allowance=manualApproved||(confirmedTotal!==undefined&&declared<cap)?declared:cap;
   if(total>allowance)return 'write-fee-cap';
   if(manualApproved)return null;
-  const op=JSON.parse(c.exactCreate),artifact=JSON.parse(c.exactStorageBytes),metadata=op?.metadata;
-  if(!exact(op,['operation','storageAddress','programName','salt','data','encoding','acl','storageLocation','metadata'])
+  let op,artifact;
+  try{op=admittedJson(c.exactCreate);artifact=admittedJson(c.exactStorageBytes);}catch{return 'create-bytes';}
+  const metadata=op?.metadata;
+  if(artifact===null||!exact(op,['operation','storageAddress','programName','salt','data','encoding','acl','storageLocation','metadata'])
     ||op.operation!=='CREATE_STORAGE_PROGRAM'||op.salt!==''||op.encoding!=='json'||op.storageLocation!=='onchain'||!exact(op.acl,['mode'])||op.acl.mode!=='public'
     ||op.storageAddress!==c.storageAddress||op.programName!==c.programName||c.programName!==c.logicalAddress.replace(/:/g,'%3A')
     ||!same(op.data,artifact)||artifact.jobId!==c.jobId||contentHash(artifact)!==c.contentHash||sha(canonicalize(artifact))!==c.envelopeHash
@@ -777,10 +801,10 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
     ||metadata?.logicalAddress!==c.logicalAddress||metadata.artifactKind!==c.artifactKind||metadata.contentHash!==c.contentHash||metadata.envelopeHash!==c.envelopeHash
     ||!same(metadata.networkBinding,policy.sourceBinding))return 'create-bytes';
   const sellerRecords=true,purchase=await policy.resolvePurchase(c.jobId);
-  // No seller record of the job yet (vet records): every check that needs no
-  // purchase still refuses, as with the app, before the write is held.
-  if(sellerRecords&&purchase===null&&BEFORE_PAYMENT.has(c.artifactKind)){
-    if(c.artifactKind==='CompositeVerificationRecord'&&!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
+  // No seller record of the job yet (Vet records only): every check that needs
+  // no purchase still refuses, as with the app, before the write is held.
+  if(sellerRecords&&purchase===null&&c.artifactKind==='CompositeVerificationRecord'){
+    if(!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
     if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
     const pin=policy.listingPin();
     if([artifact.listingPin,artifact.listing,artifact.listingRef].some(value=>value&&!same(value,pin)))return 'listing';
@@ -791,21 +815,15 @@ export async function policyRefusal(request,policy,limits,{confirmedTotal,counte
   // Agreement CREATE. That record has no binding to compare yet; everything
   // else it holds is still checked, as is the request's own binding above.
   const unbound=sellerRecords&&held!==null&&c.artifactKind==='CompositeVerificationRecord'&&purchase?.sourceBinding===null;
-  if(!exact(purchase,['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','prePaymentOpen'])||purchase.jobId!==c.jobId||purchase.seller!==policy.seller
-    ||!CLAIM.test(purchase.buyer??'')||typeof purchase.paymentObserved!=='boolean'||(purchase.prePaymentOpen!==null&&typeof purchase.prePaymentOpen!=='boolean')||!POSITIVE_OS.test(purchase.amountOs??'')
-    ||!same(purchase.listingPin,policy.listingPin())||!(unbound||(sellerRecords?sameNetwork(purchase.sourceBinding,policy.sourceBinding):same(purchase.sourceBinding,policy.sourceBinding))))return 'purchase';
+  const bindingRefusal=purchaseBindingRefusal(c,artifact,purchase,policy,unbound);
+  if(bindingRefusal)return bindingRefusal;
   if(AFTER_PAYMENT.has(c.artifactKind)&&!purchase.paymentObserved)return 'payment-not-observed';
   if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.paymentObserved)return 'payment-already-observed';
   // A cancelled, expired or otherwise ended purchase gets no more seller writes before payment.
   if(BEFORE_PAYMENT.has(c.artifactKind)&&purchase.prePaymentOpen===false)return 'purchase-closed';
   if(c.artifactKind==='SettlementEvidence'&&artifact.phase==='pay-dem'&&(!exact(artifact.paymentAmount,['amount','currency'])||artifact.paymentAmount.currency!=='DEM'
     ||demOs(artifact.paymentAmount.amount)!==BigInt(purchase.amountOs)))return 'payment-amount';
-  if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
   if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
-  if(artifact.listingPin&&!same(artifact.listingPin,purchase.listingPin))return 'listing';
-  if(artifact.listing&&!same(artifact.listing,purchase.listingPin))return 'listing';
-  if(artifact.listingRef&&!same(artifact.listingRef,purchase.listingPin))return 'listing';
-  if(artifact.agreementHash&&artifact.agreementHash!==purchase.agreementHash)return 'agreement';
   if(c.artifactKind==='Deliverable'){
     const binding=c.deliveryBinding;
     if(!exact(binding,['version','profile','jobId','phase','phaseIndex','listing','agreementHash','fulfilmentId','purchaseAmount','payloadHash'])
@@ -831,7 +849,7 @@ export function confirmedWriteOs(validity,request){
     :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*1_000_000_000n:null;
   if(validity?.result!==200||data?.valid!==true||data.gas_operation!=null||data.custom_charges!=null
     ||c?.type!=='storageProgram'||(c.amount!==0&&c.amount!=='0')||c.from!==r.wallet||c.nonce!==r.nonce||c.timestamp!==r.timestamp
-    ||JSON.stringify(c.data?.[1])!==r.exactCreate||!Array.isArray(c.gcr_edits))return null;
+    ||!Array.isArray(c.data)||c.data.length!==2||c.data[0]!=='storageProgram'||JSON.stringify(c.data[1])!==r.exactCreate||!Array.isArray(c.gcr_edits))return null;
   const fee=c.transaction_fee;
   if(!fee||['network_fee','rpc_fee','additional_fee'].some(key=>wireOs(fee[key])===null))return null;
   const removals=c.gcr_edits.filter(edit=>edit?.type==='balance');
@@ -882,13 +900,16 @@ const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/
 // binding, so today a seller record always carries the seller's own endpoint.
 const sameNetwork=(a,b)=>typeof a?.network==='string'&&typeof a.chainIdentity==='string'&&a.network===b.network&&a.chainIdentity===b.chainIdentity;
 
-/** Await fresh purchase authority; return null for an open request or a refusal reason.
- * Resolver errors propagate; callers must append synchronously after this resolves. */
+/** Await fresh purchase authority; return null for an open request whose purchase is still the one its exact
+ * artifact names (purchaseBindingRefusal), or a refusal reason. Only a held Vet record goes on with no seller record.
+ * Throws for exact JSON policyRefusal refuses; resolver errors propagate; callers must append synchronously after this resolves. */
 export async function stillOpenBeforePayment(request,policy,held){
-  if(!BEFORE_PAYMENT.has(request.content.artifactKind))return null;
-  const purchase=await policy.resolvePurchase(request.content.jobId);
-  if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&purchase===null)return null;
-  return purchase?.jobId===request.content.jobId&&(purchase.prePaymentOpen===true||(held&&purchase.prePaymentOpen===null))&&purchase.paymentObserved===false?null:'purchase-closed';
+  const c=request.content,vet=c.artifactKind==='CompositeVerificationRecord';
+  if(!BEFORE_PAYMENT.has(c.artifactKind))return null;
+  const purchase=await policy.resolvePurchase(c.jobId);
+  if(sellerPurchaseSource(policy.purchaseSource)==='seller'&&held&&vet&&purchase===null)return null;
+  const refusal=purchaseBindingRefusal(c,admittedJson(c.exactStorageBytes),purchase,policy,Boolean(held)&&vet&&purchase?.sourceBinding===null);
+  return refusal??((purchase.prePaymentOpen===true||(held&&purchase.prePaymentOpen===null))&&purchase.paymentObserved===false?null:'purchase-closed');
 }
 
 let ttyPrompts=0;
