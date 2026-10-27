@@ -551,6 +551,7 @@ const NETWORK_FAILURE_SIGNATURES = [
   // A retryable HTTP status as curl --fail and Git, and as Docker's registry client, report it.
   /The requested URL returned error: (?:408|429|5\d\d)\b/,
   /(?:received unexpected HTTP status|unexpected status from [A-Z]+ request to \S+): (?:408|429|5\d\d)\b/,
+  /Client network socket disconnected before secure TLS connection was established/,
   /invalid json response body at /,
   /Invalid response body while trying to fetch /,
   // The whole entry the acceptance script records when Verdaccio never answers.
@@ -561,25 +562,20 @@ const networkSignature = new RegExp(NETWORK_FAILURE_SIGNATURES.map(signature => 
 // A report-shaped `npm audit --json` document: a result for the audit policy.
 const isAuditReport = value => typeof value === "object" && value !== null &&
   ("auditReportVersion" in value || "vulnerabilities" in value || "metadata" in value);
-// npm's fetch errors: a request or body timeout, a refused or reset connection,
-// and a body that is not JSON or was cut off (a proxy's HTML page, a drop).
-const transientAuditMessage = /^(?:network timeout at: |request to \S+ failed, reason: |Response timeout while trying to fetch |invalid json response body at |Invalid response body while trying to fetch )/;
 
 // When the audit endpoint fails, `npm audit --json` writes npm's audit error
 // object (lib/utils/audit-error.js) instead of a report: a string `message`,
-// with the HTTP answer's `statusCode` or, for a fetch error, no status. Every
-// such object is an endpoint error. One with no status, a 5xx/408/429 status
-// or a transient fetch message is network; any other answer means the audit
-// could not be run (functional). Neither is a policy result. Returns null for
-// anything else, a report included.
-export function auditEndpointError(text) {
+// with the HTTP answer's `statusCode` or, for a fetch error, no status. Such an
+// object is an endpoint error, never a policy result. Returns it as the one
+// evidence entry a summary keeps, JSON of its status (null when that is not an
+// integer) and bounded message, which the summary's readers classify; or null
+// for anything else, a report included.
+function auditEndpointEvidence(text) {
   let value;
   try { value = JSON.parse(text ?? ""); } catch { return null; }
   if (typeof value !== "object" || value === null || typeof value.message !== "string" || isAuditReport(value)) return null;
-  const status = Number.isInteger(value.statusCode) ? value.statusCode : null;
-  const transient = status === null || (status >= 500 && status <= 599) || status === 408 || status === 429 ||
-    transientAuditMessage.test(value.message);
-  return { transient, statusCode: status, message: value.message.replace(/\s+/g, " ").slice(0, 300) };
+  const statusCode = value.statusCode === undefined || Number.isInteger(value.statusCode) ? value.statusCode : null;
+  return JSON.stringify({ statusCode, message: value.message.replace(/\s+/g, " ").slice(0, 300) });
 }
 
 // The evidence each network-dependent stage leaves behind. Consumer output
@@ -608,14 +604,13 @@ export function classifyAcceptanceFailure({ stage, read }) {
   catch (error) { return { failureClass: "functional", evidence: ["evidence classification failed: " + String(error.message).slice(0, 300)] }; }
 }
 
+// Network evidence is only what the summary's readers accept as retryable
+// (retryableFailureEvidence), so a recorded class is the class they read back.
 function classifyBoundedFailure({ stage, read }) {
   if (stage === "audit-policy") {
     const text = read("npm-audit.json");
-    const endpoint = auditEndpointError(text);
-    if (endpoint) {
-      return { failureClass: endpoint.transient ? "network" : "functional",
-        evidence: [`npm-audit.json: audit endpoint error: ${endpoint.message}`] };
-    }
+    const endpoint = auditEndpointEvidence(text);
+    if (endpoint) return { failureClass: retryableFailureEvidence(endpoint) ? "network" : "functional", evidence: [endpoint] };
     // A report the policy rejected is a policy result, whatever text its
     // advisories carry: the network signature is only for other evidence.
     let report = null;
@@ -626,7 +621,8 @@ function classifyBoundedFailure({ stage, read }) {
   for (const [name, relevant] of packageCodeRan[stage]?.(read) ? [] : stageEvidence[stage] ?? []) {
     for (const line of evidenceLines(read(name))) {
       if (packageCodeStep.test(line)) break;
-      if (evidence.length < 5 && relevant(line) && networkSignature.test(line)) evidence.push(`${name}: ${line.trim()}`);
+      const entry = `${name}: ${line.trim()}`;
+      if (evidence.length < 5 && relevant(line) && retryableFailureEvidence(entry)) evidence.push(entry);
     }
   }
   if (evidence.length > 0) return { failureClass: "network", evidence: evidence.slice(0, 5) };
@@ -1105,8 +1101,9 @@ export function extractPolicyFindings(readInput) {
     engine: { exitCode: source.exitCode("engine-strict.exit-code"), code: npmErrorCode(strictLog),
       // npm stops at the first incompatible package, so a log naming several is
       // not one a listed violation can account for (the joined name matches none).
-      reportedPackage: Array.from((strictLog ?? "").matchAll(/Not compatible with your version of node\/npm: (\S+)/g),
-        match => match[1]).join(" ") || null,
+      // npm names that package on both its `engine` and `notsup` lines.
+      reportedPackage: [...new Set(Array.from((strictLog ?? "").matchAll(/Not compatible with your version of node\/npm: (\S+)/g),
+        match => match[1]))].join(" ") || null,
       scan, scanComplete, violations },
     lockSbom: sbom("consumer-lock-sbom"),
     physicalSbom: sbom("consumer-physical-sbom"),
@@ -1365,7 +1362,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
     const result = drift ? registryAuditDriftDisposition(summary)
       : registryContainerDisposition(summary, undefined, { unlistedAdvisories });
-    if (record) {
+    // A refused summary is left as it is: recording the refusal would make its
+    // failure class match its disposition and admit it on the next reading.
+    if (record && admitAcceptanceRun(summary, RELEASE_VERSION).state !== "refused") {
       const { exitCode, failureClass, message, checks } = result;
       atomicWriteJson(summaryPath, { ...summary, failureClass,
         disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } });
