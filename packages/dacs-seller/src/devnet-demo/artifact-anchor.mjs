@@ -279,9 +279,10 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
         // without signing, or the process died while it was asked, with no
         // signed CREATE retained for the address): ask again below, from a
         // fresh nonce, as for a new intent. Only the operator's refusal of a
-        // Listing is also asked again, when the caller says so.
-        const neverSigned=retained.stage==='denied'&&retained.error==='user_rejected'&&retained.hash===undefined;
-        if(!(await signedNothing(logicalAddress,retained))&&!(reaskDenied===true&&artifactKind==='Listing'&&neverSigned)) return observe(input,retained);
+        // Listing is also asked again, when the caller says so, on the same
+        // proof: its row is unsigned and neither journal retains a signed CREATE.
+        const deniedListing=reaskDenied===true&&artifactKind==='Listing'&&retained.stage==='denied'&&retained.error==='user_rejected';
+        if(!(await signedNothing(logicalAddress,deniedListing?{...retained,stage:'unsigned'}:retained))) return observe(input,retained);
       }
       authorizeJob(artifactKind,jobId);
       await assertQualifiedDeployment(sourceCapability);
