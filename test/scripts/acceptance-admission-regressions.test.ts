@@ -76,6 +76,30 @@ describe("explicit acceptance outcomes", () => {
   });
 });
 
+describe("complete acceptance admission", () => {
+  it.each([
+    { failedStage: "consumer" },
+    { failureEvidence: [] },
+    { failedStage: "consumer", failureClass: "network", failureEvidence: ["npm error code ETIMEDOUT"] },
+    { failureClass: "functional" },
+    { failureClass: null },
+    { failureClass: "policy", disposition: { exitCode: 0, failureClass: null } },
+  ])("refuses a complete run that also records a failure %j in both APIs and the CLI", fields => {
+    const value = { ...summary(), ...fields };
+    expect(registryContainerDisposition(value)).toMatchObject({ exitCode: 1, failureClass: "functional",
+      message: expect.stringContaining("complete acceptance summary records a failure") });
+    expect(registryAuditDriftDisposition(value).exitCode).toBe(3);
+    const path = writeSummary(value);
+    expect(cli(path).status).toBe(1);
+    expect(cli("--audit-drift", path).status).toBe(3);
+  });
+
+  it("admits a complete run whose failure class is the one its disposition recorded", () => {
+    expect(registryContainerDisposition({ ...summary(), failureClass: null,
+      disposition: { exitCode: 0, failureClass: null } }).exitCode).toBe(0);
+  });
+});
+
 describe("interrupted acceptance admission", () => {
   it.each([{}, { failedStage: "" }, { failedStage: "consumer" }, { failedStage: "consumer", failureEvidence: [] }])(
     "does not trust a network claim without a stage and evidence %j", fields => {

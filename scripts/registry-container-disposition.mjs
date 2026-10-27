@@ -588,6 +588,13 @@ function admitAcceptanceRun(summary, packageVersion) {
   }
   if (summary.complete === false) return { state: "interrupted", failureClass: interruptedFailureClass(summary) };
   if (summary.complete !== true) return { state: "refused", message: "acceptance is not complete" };
+  // A complete run has no failure of its own. A top-level failure class is
+  // only the copy --record writes of the disposition, which is recomputed.
+  if (Object.hasOwn(summary, "failedStage") || Object.hasOwn(summary, "failureEvidence") ||
+      (Object.hasOwn(summary, "failureClass") && summary.failureClass !== summary.disposition?.failureClass)) {
+    return { state: "refused", message: "complete acceptance summary records a failure: failedStage, failureEvidence " +
+      "or a failureClass its disposition does not record" };
+  }
   if (summary.docker?.policy?.schema !== RUNTIME_IMAGE_POLICY_SCHEMA ||
       summary.securityGate?.findings?.schema !== POLICY_FINDINGS_SCHEMA) {
     return { state: "refused", message: "registry/container acceptance summary embeds evidence with an unexpected schema" };
