@@ -25,9 +25,13 @@ function artifactFor(artifactKind,job,party,phase){
     settlementId:'demos:TEST',producer:seller,content:{mediaType:'text/plain; charset=utf-8',text:'Purchased bytes'}};
   if(phase==='pay-dem')return{evidenceVersion:'1',jobId:job,phase,outcome:'success',paymentTxRefs:[{kind:'demos',txHash:'5'.repeat(64),blockNumber:9}],
     paymentAmount:{amount:'1',currency:'DEM'},settlementFinality:{model:'bft-final',finalityObservedAt:T0},observedAt:T0,signature:signature()};
-  return{evidenceVersion:'1',jobId:job,phase,outcome:'success',dacsSdkAuditSourceHash:'6'.repeat(64),deliverableContentHash:'7'.repeat(64),
+  return{evidenceVersion:'1',jobId:job,phase,outcome:'success',dacsSdkAuditSourceHash:'6'.repeat(64),deliverableContentHash:deliveredHashFor(job),
     deliverableAnchor:{kind:'storage-program',locator:`dacs4:deliverable:${job}`},observedAt:T0,signature:signature()};
 }
+// The payload hash of the job's fixture Deliverable, which its delivery evidence commits to.
+const deliveredHashFor=(job)=>contentHash(artifactFor('Deliverable',job));
+// The payment transaction the fixture's pay-dem evidence names, as a verified observer reading reports it.
+const PAYMENT_TX_REF=Object.freeze({kind:'demos',txHash:'5'.repeat(64),blockNumber:9});
 
 // One exact seller CREATE request as the packaged wallet shows it. artifact
 // overrides top-level artifact members (undefined deletes one); editArtifact,
@@ -79,12 +83,12 @@ function confirmationFor(r,{legacy=false,executed=false}={}){
           removal(c.debit.sdkGasDem),{type:'nonce',operation:'add',isRollback:false,account:r.address,txhash:'',amount:integer(1)}]}}}}};
 }
 
-export {address,seller,buyer,pin,agreementHash,sourceBinding,artifactAuthority,T0,JOBS,requestFor,confirmationFor};
+export {address,seller,buyer,pin,agreementHash,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor};
 
-export function realPurchaseResolver(){
- const agreement={parties:[{role:'buyer',primaryClaim:buyer},{role:'seller',primaryClaim:seller}],listingRef:pin,terms:{price:{amount:'1',currency:'DEM'}}};
+export function realPurchaseResolver({buyerClaim=buyer}={}){
+ const agreement={parties:[{role:'buyer',primaryClaim:buyerClaim},{role:'seller',primaryClaim:seller}],listingRef:pin,terms:{price:{amount:'1',currency:'DEM'}}};
  // Keep the fixture's Agreement hash consistent with the actual seller projection.
- return sellerRecordsPurchaseResolver({sessionOf:()=>({jobId:JOBS[0],agreement,agreementHash:contentHash(agreement),buyerBundle:{presentedBy:buyer},agreementSignedProjection:{content:{network:sourceBinding.network,chainIdentity:sourceBinding.chainIdentity,data:['storageProgram',{metadata:{networkBinding:sourceBinding}}]}}}),buyerAccess:()=>({allowsWallet:()=>true}),now:()=>T0,
+ return sellerRecordsPurchaseResolver({sessionOf:()=>({jobId:JOBS[0],agreement,agreementHash:contentHash(agreement),buyerBundle:{presentedBy:buyerClaim},agreementSignedProjection:{content:{network:sourceBinding.network,chainIdentity:sourceBinding.chainIdentity,data:['storageProgram',{metadata:{networkBinding:sourceBinding}}]}}}),buyerAccess:()=>({allowsWallet:()=>true}),now:()=>T0,
   observePayment:q=>({disposition:'absent',jobId:q.jobId,agreementHash:q.agreementHash,observedAt:q.observedAt})});
 }
 
