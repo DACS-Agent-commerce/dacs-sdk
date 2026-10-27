@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const sealModule = "../../scripts/acceptance-seal.mjs";
 const { collectEvidence, sealProject } = await import(sealModule);
+const buildModule = "../../scripts/bounded-build.mjs";
+const { prepareBoundedBuild } = await import(buildModule);
 const ioModule = "../../scripts/acceptance-evidence-io.mjs";
 const { EVIDENCE_MAX_BYTES } = await import(ioModule);
 
@@ -145,3 +147,45 @@ describe("sealed generated project", () => {
   });
 });
 
+
+describe("bounded image build preparation", () => {
+  function sealedContext() {
+    const root = scratch(); const { project, context, names } = generatedProject(root);
+    sealProject(project, context, names);
+    return { root, context };
+  }
+  it.each([".dockerignore", "Dockerfile"])("refuses a linked %s and leaves its target unchanged", name => {
+    const { root, context } = sealedContext();
+    const target = hostSecret(root); writeFileSync(target, name === "Dockerfile" ? "FROM host AS build\n" : "host-only value\n");
+    const before = readFileSync(target, "utf8");
+    rmSync(join(context, name)); symlinkSync(target, join(context, name));
+    expect(() => prepareBoundedBuild(context)).toThrow(/ELOOP/);
+    expect(readFileSync(target, "utf8")).toBe(before);
+  });
+  it.each(["Dockerfile.acceptance", "acceptance-npm-http.cjs"])("refuses a planted %s link instead of writing through it", name => {
+    const { root, context } = sealedContext();
+    const target = hostSecret(root); symlinkSync(target, join(context, name));
+    expect(() => prepareBoundedBuild(context)).toThrow(/EEXIST/);
+    expect(readFileSync(target, "utf8")).toBe("host-only value\n");
+  });
+  it("replaces the ignore file with a new one rather than writing through the old entry", () => {
+    const { root, context } = sealedContext();
+    const other = join(root, "other-name"); linkSync(join(context, ".dockerignore"), other);
+    prepareBoundedBuild(context);
+    expect(readFileSync(join(context, ".dockerignore"), "utf8")).toBe("**\n!acceptance-npm-http.cjs\n");
+    expect(readFileSync(other, "utf8")).toBe("**\n");
+    expect(readdirSync(context).filter(name => name.includes(".tmp-"))).toEqual([]);
+  });
+  // The copy a check container would make (cp -R per top-level entry) keeps a
+  // planted link; preparing that copy appended to the host file it named.
+  it("refuses a context copied with its planted ignore-file link", () => {
+    const root = scratch(); const { project } = generatedProject(root);
+    const target = hostSecret(root); rmSync(join(project, ".dockerignore")); symlinkSync(target, join(project, ".dockerignore"));
+    const copy = join(root, "copied"); mkdirSync(copy);
+    for (const name of readdirSync(project).filter(name => name !== "node_modules")) {
+      expect(spawnSync("cp", ["-R", join(project, name), copy]).status).toBe(0);
+    }
+    expect(() => prepareBoundedBuild(copy)).toThrow(/ELOOP/);
+    expect(readFileSync(target, "utf8")).toBe("host-only value\n");
+  });
+});
