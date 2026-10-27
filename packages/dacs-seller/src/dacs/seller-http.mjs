@@ -49,6 +49,11 @@ const PAYMENT_PATH = '/dacs/v1/payments';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
+// A delivery-ready answer rests on the retained payment evidence and a readback
+// of the Deliverable; repeating it repeats both (see the cached branch below).
+const reportsDeliveryReady = (text) => {
+  try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && answer.delivery?.status === 'delivery-ready'; } catch { return false; }
+};
 
 const ROUTES = {
   '/dacs/v1/agreements/proposals': (agent, body) => agent.receiveProposal(body),
@@ -158,6 +163,13 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         // for new work, recording the start in the reserve transaction.
         reservation = contextStep ? await context.reserve(request, body, authentication.store) : authentication.store.reserve(request, body);
         if (reservation.disposition === 'cached') agent.assertSettlementCredit?.(request.jobId);
+        if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && reportsDeliveryReady(reservation.text)) {
+          // A cached delivery-ready answer is only a record of it: the agent
+          // authenticates the payment evidence and reads the Deliverable again,
+          // and what it answers now is sent, never the saved success.
+          const answer = await route(agent, body), text = JSON.stringify(answer);
+          return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
+        }
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         if (reservation.disposition === 'uncertain') {
           // Resume only retained work through the authenticated reducers
