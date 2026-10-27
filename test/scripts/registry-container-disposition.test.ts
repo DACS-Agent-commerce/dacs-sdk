@@ -309,7 +309,8 @@ describe("registry/container workflow wiring", () => {
       ".github/workflows/registry-container-audit-drift.yml", "scripts/registry-container-disposition.mjs", "scripts/sync-vectors.mjs",
       "scripts/registry-container-audit-baseline.json", "scripts/verify-registry-container-consumer.sh",
       "scripts/acceptance-evidence-io.mjs", "scripts/bounded-build.mjs", "scripts/bounded-command.mjs",
-      "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh", "scripts/bounded-http.sh", "scripts/http-json-limits.mjs"]));
+      "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh", "scripts/bounded-http.sh", "scripts/http-json-limits.mjs",
+      "scripts/acceptance-seal.mjs", "scripts/registry-container-registry.sh"]));
   });
 
   it("has the scheduled drift workflow call acceptance with drift enforced", () => {
