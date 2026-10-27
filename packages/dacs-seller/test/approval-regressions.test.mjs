@@ -13,7 +13,7 @@ async function fixture(t,resolvePurchase=()=>null){
  const dir=await mkdtemp(join(tmpdir(),'TEST-approval-regression-'));t.after(()=>rm(dir,{recursive:true,force:true}));
  const evidencePath=join(dir,'ledger');
  const settings={maxTotalOs:'10000000000',evidencePath,now:()=>T0};
- const p=createExactOperatorApproval({...settings,sellerApproval:{mode:'policy'},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2}});
+ const p=createExactOperatorApproval({...settings,sellerApproval:{mode:'policy'},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3}});
  return {p,evidencePath,settings,read:async()=>parsePolicyLedger(await readFile(evidencePath,'utf8'))};
 }
 
@@ -128,4 +128,46 @@ test('D-1 direct held authorization cannot change retained bytes during its fina
  assert.equal(await f.p.prepare(r),false);assert.equal(f.p.heldForManual(r),true);
  assert.equal(await f.p.authorizeSign(r),false);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
  await f.p.settle(r,'released');assert.equal(heldPolicyBudget((await f.read()).rows,T0).writes,0);
+});
+
+const lastLine=async(f)=>JSON.parse((await readFile(f.evidencePath,'utf8')).trim().split('\n').at(-1));
+
+// Sign authority for a write after payment rereads the paid purchase immediately before its append.
+for(const [label,request] of [['payment evidence',()=>requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'})],['a Deliverable',()=>requestFor()]]){
+ test(`a paid purchase that is no longer paid before sign authority gives ${label} no sign authority`,async t=>{
+  let reads=0;const f=await fixture(t,async()=>({...purchase(),paymentObserved:++reads===1}));
+  assert.equal(await f.p.prepare(request()),false);assert.equal(reads,2);
+  assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);assert.equal((await lastLine(f)).policyReason,'payment-not-observed');
+ });
+ test(`a still-paid purchase gives ${label} sign authority after its final reread`,async t=>{
+  let reads=0;const f=await fixture(t,async()=>{reads++;return purchase();});
+  assert.equal(await f.p.prepare(request()),true);assert.equal(reads,2);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized).length,1);
+ });
+}
+
+// One open sign authority per exact request, in this process and after a restart.
+for(const [label,again] of [
+ ['the same request',(f,r)=>f.p.prepare(r)],
+ ['an exact copy',(f,r)=>f.p.prepare(structuredClone(r))],
+ ['an exact copy after a restart',(f,r)=>createExactOperatorApproval({...f.settings,sellerApproval:{mode:'policy'},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase:purchase,paymentPhaseIndex:()=>2}}).prepare(structuredClone(r))],
+])test(`repeating an exact preparation as ${label} adds no second open sign authority`,async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
+ assert.equal(await f.p.prepare(r),true);assert.equal(await again(f,r),false);
+ assert.equal((await f.read()).rows.filter(row=>row.signAuthorized).length,1);assert.equal((await lastLine(f)).policyReason,'sign-authorization-open');
+ assert.equal(await f.p(r,confirmationFor(r)),true);
+});
+test('an exact request is sign-authorized again once its earlier sign authority ended',async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
+ assert.equal(await f.p.prepare(r),true);await f.p.settle(r,'released');
+ assert.equal(await f.p.prepare(structuredClone(r)),true);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized&&row.outcome===null).length,1);
+});
+
+// Stop ends a pending manual callback even with no external signal, and records no decision.
+test('stop ends an unanswered manual callback with no external signal',async t=>{
+ const f=await fixture(t);let asked=0;
+ const a=createExactOperatorApproval({...f.settings,authorize:()=>{asked++;return new Promise(()=>{});}});
+ const outcome=assert.rejects(a(requestFor()),{code:'operator_closing'});
+ assert.equal(asked,1);await a.stop();await outcome;
+ await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
+ await assert.rejects(a(requestFor()),{code:'seller_approval_stopped'});
 });
