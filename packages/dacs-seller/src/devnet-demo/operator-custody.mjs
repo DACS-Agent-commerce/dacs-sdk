@@ -1,12 +1,14 @@
 import { createPrivateKey, randomBytes, sign } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { lstat, mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { publishFileExclusive, syncDirectory } from './durable-file.mjs';
 import { createSdkWalletSession, createDevnetAgreementWalletTransport } from '../../public/portal/embedded-wallet/sdk-provider.mjs';
 import { claimForAddress } from '../wallet/demos-signature.mjs';
 import { OPERATOR_CLOSING } from './operator-approval.mjs';
 
 const FORMAT='dacs-node2-test-wallet/v1';
+const SECRET_FORMAT='dacs-node2-operator-secret/v1';
 const FILES=Object.freeze({buyer:'buyer-wallet.json',seller:'seller-wallet.json'});
 const checkRole=(role)=>{if(!Object.hasOwn(FILES,role))throw new TypeError('wallet role must be buyer or seller');return role;};
 
@@ -63,27 +65,63 @@ export function createOperatorApprovalAttempt(approve){
   };
 }
 
-export async function bootstrapTestWalletCustody({directory,publicOrigin}){
-  directory=await privateDirectory(directory);const {Demos}=await runtime(publicOrigin);const created=[];
-  for(const role of ['buyer','seller']){
-    const path=join(directory,FILES[role]);
-    const handle=await open(path,'wx',0o600);
-    try{
-      let mnemonic=new Demos().newMnemonic(256);const wallet=new Demos();await wallet.connectWallet(mnemonic,{algorithm:'ed25519'});
-      const address=String(wallet.getAddress()).toLowerCase();wallet.disconnect();
-      await handle.writeFile(`${JSON.stringify({format:FORMAT,role,address,mnemonic,createdAt:new Date().toISOString()})}\n`,{encoding:'utf8'});mnemonic=null;
-      created.push(Object.freeze({role,address,claim:claimForAddress(address),path}));
-    }finally{await handle.close();}
+// Returns the record of a role file, or null when there is none. Throws when
+// the file is not private or is not a whole record of this role.
+async function readWalletRecord(path,role){
+  let text;
+  try{await exactPrivateFile(path);text=await readFile(path,'utf8');}
+  catch(error){if(error?.code==='ENOENT')return null;throw error;}
+  let record;
+  try{record=JSON.parse(text);}catch(cause){throw new Error(`the ${role} custody record is malformed`,{cause});}
+  if(record?.format!==FORMAT||record.role!==role||typeof record.address!=='string'||typeof record.mnemonic!=='string')throw new Error(`the ${role} custody record is malformed`);
+  return record;
+}
+// A zero-byte role file holds no secret: only the earlier bootstrap, which wrote in place, left one.
+async function removeEmptyFile(path){
+  const info=await lstat(path).catch((error)=>{if(error?.code==='ENOENT')return null;throw error;});
+  if(info?.isFile()&&info.size===0)await unlink(path);
+}
+async function generateWallet(Demos,role){
+  const mnemonic=new Demos().newMnemonic(256);const wallet=new Demos();await wallet.connectWallet(mnemonic,{algorithm:'ed25519'});
+  const address=String(wallet.getAddress()).toLowerCase();wallet.disconnect();
+  return{address,text:`${JSON.stringify({format:FORMAT,role,address,mnemonic,createdAt:new Date().toISOString()})}\n`};
+}
+// Keeps the role's whole file, or publishes a new one whole. When another
+// writer published first, that file wins and is read back.
+async function ensureWallet({directory,role,Demos}){
+  const path=join(directory,FILES[role]);
+  await removeEmptyFile(path);
+  let address=(await readWalletRecord(path,role))?.address;
+  if(address===undefined){
+    const generated=await generateWallet(Demos,role);
+    address=await publishFileExclusive(path,generated.text)?generated.address:(await readWalletRecord(path,role))?.address;
+    if(address===undefined)throw new Error(`the ${role} custody record disappeared during bootstrap`);
   }
-  return Object.freeze({directory,wallets:created,note:'Recovery phrases remain only in the named mode-0600 files and were not returned.'});
+  return Object.freeze({role,address,claim:claimForAddress(address),path});
+}
+
+/**
+ * Makes the buyer and seller test wallet files in a private custody directory.
+ * Each file is published whole (synced temporary file, then a link) and the
+ * directory is synced before this returns. A role file that is already there is
+ * kept as it is, so a run that stopped between the two files, or a repeat, ends
+ * with the same pair and never replaces a mnemonic. Returns the directory and
+ * both wallets (role, address, claim, path); recovery phrases are not returned.
+ * Throws when a role file exists but is not a private, whole record of its role.
+ */
+export async function bootstrapTestWalletCustody({directory,publicOrigin}){
+  directory=await privateDirectory(directory);const {Demos}=await runtime(publicOrigin);const wallets=[];
+  for(const role of ['buyer','seller'])wallets.push(await ensureWallet({directory,role,Demos}));
+  await syncDirectory(directory);
+  return Object.freeze({directory,wallets,note:'Recovery phrases remain only in the named mode-0600 files and were not returned.'});
 }
 
 // inProcessRelay(address), optional, returns {run(work)}: every request of
 // this wallet runs inside it (the operator seller's in-process source relay).
 export async function openTestWalletCustody({directory,role,publicOrigin,transactionTransport,anchorJournal,approve,inProcessRelay=null}){
   role=checkRole(role);directory=await privateDirectory(directory);const path=join(directory,FILES[role]);await exactPrivateFile(path);
-  const record=JSON.parse(await readFile(path,'utf8'));
-  if(record?.format!==FORMAT||record.role!==role||typeof record.mnemonic!=='string')throw new Error(`the ${role} custody record is malformed`);
+  const record=await readWalletRecord(path,role);
+  if(record===null)throw new Error(`the ${role} custody record is missing`);
   const {Demos,Identities,validateMnemonic}=await runtime(publicOrigin);
   let mnemonic=record.mnemonic;const probe=new Demos();await probe.connectWallet(mnemonic,{algorithm:'ed25519'});const address=String(probe.getAddress()).toLowerCase();
   const privateBytes=Buffer.from(probe.keypair.privateKey);probe.disconnect();
@@ -126,10 +164,24 @@ export async function openTestWalletCustody({directory,role,publicOrigin,transac
   return Object.freeze({role,path,signer,wallet,walletFactory,close(){session?.lock();}});
 }
 
+// Returns the stored cookie key, or null when there is no secret file yet.
+async function readOperatorSecret(path){
+  try{await exactPrivateFile(path);const value=JSON.parse(await readFile(path,'utf8'));if(value?.format!==SECRET_FORMAT||typeof value.cookieKey!=='string'||value.cookieKey.length<43)throw new Error('operator secret record is malformed');return value.cookieKey;}
+  catch(error){if(error.code!=='ENOENT')throw error;return null;}
+}
+
+/**
+ * Returns the operator's cookie key from `app-secret.json` in the custody directory,
+ * creating the file first when it is missing. A new file is published whole and synced
+ * with its directory before the key is returned; when another writer publishes first,
+ * that writer's key is returned. Throws when the stored record is not private or is malformed.
+ */
 export async function ensureOperatorSecret({directory}){
   directory=await privateDirectory(directory);const path=join(directory,'app-secret.json');
-  try{await exactPrivateFile(path);const value=JSON.parse(await readFile(path,'utf8'));if(value?.format!=='dacs-node2-operator-secret/v1'||typeof value.cookieKey!=='string'||value.cookieKey.length<43)throw new Error('operator secret record is malformed');return value.cookieKey;}
-  catch(error){if(error.code!=='ENOENT')throw error;}
-  const value={format:'dacs-node2-operator-secret/v1',cookieKey:randomBytes(32).toString('base64url')};
-  await writeFile(path,`${JSON.stringify(value)}\n`,{encoding:'utf8',mode:0o600,flag:'wx'});return value.cookieKey;
+  const stored=await readOperatorSecret(path);if(stored!==null)return stored;
+  const value={format:SECRET_FORMAT,cookieKey:randomBytes(32).toString('base64url')};
+  if(await publishFileExclusive(path,`${JSON.stringify(value)}\n`))return value.cookieKey;
+  const winner=await readOperatorSecret(path);
+  if(winner===null)throw new Error('operator secret disappeared during initialization');
+  return winner;
 }
