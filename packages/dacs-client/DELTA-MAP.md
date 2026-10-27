@@ -2486,6 +2486,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| fix(client): D11 accept only the blob a merge keeps from a reviewed parent | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 accept only the blob a merge keeps from a reviewed parent | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 accept only the blob a merge keeps from a reviewed parent | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 accept only the blob a merge keeps from a reviewed parent | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 accept only the blob a merge keeps from a reviewed parent | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 accept only the blob a merge keeps from a reviewed parent | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
 
 ## Original moved files
 
