@@ -69,6 +69,26 @@ for(const [state,found] of [
  assert.equal([...ledger.attempts.values()][0].outcome,'released');
 });
 
+// A purchase resolver that fails is not a refusal: before payment a refusal is final for the artifact, so
+// nothing is decided or written and a retry decides.
+const timeout=()=>Object.assign(new Error('purchase source timed out'),{code:'ETIMEDOUT'});
+const policyChecksFailed=async(f)=>(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse).filter(line=>line.policyReason==='policy-check-failed');
+test('a purchase resolver failure before payment leaves a Vet undecided, and a retry reaches manual approval',async t=>{
+ let reads=0;const f=await fixture(t,async()=>{if(++reads===1)throw timeout();return null;});let prompts=0;
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}}),r=requestFor({artifactKind:'CompositeVerificationRecord'});
+ await assert.rejects(a(r),{code:'ETIMEDOUT'});assert.equal(prompts,0);
+ await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
+ assert.equal(await a(r),true);assert.equal(prompts,1);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized).length,1);
+});
+for(const [read,failOn] of [['policy read',1],['final reread',2]])test(`a purchase resolver failure at confirmation (${read}) leaves a held Vet unconfirmed and not rejected`,async t=>{
+ let reads=0,failAt=null;const f=await fixture(t,async()=>{if(++reads===failAt)throw timeout();return null;});
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>true}),r=requestFor({artifactKind:'CompositeVerificationRecord'});
+ assert.equal(await a(r),true);failAt=reads+failOn;
+ await assert.rejects(a.confirm(confirmationFor(r)),{code:'ETIMEDOUT'});
+ assert.deepEqual(await policyChecksFailed(f),[]);assert.equal((await f.read()).rows.find(row=>row.signAuthorized).outcome,null);
+ await a.settle(r,'released');assert.equal(heldPolicyBudget((await f.read()).rows,T0).writes,0);
+});
+
 test('C-4 synchronous abort during a manual callback records no decision',async t=>{
  const f=await fixture(t),controller=new AbortController();
  const a=createExactOperatorApproval({...f.settings,signal:controller.signal,authorize:()=>{controller.abort();return true;}});
@@ -160,6 +180,13 @@ test('an exact request is sign-authorized again once its earlier sign authority 
  const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
  assert.equal(await f.p.prepare(r),true);await f.p.settle(r,'released');
  assert.equal(await f.p.prepare(structuredClone(r)),true);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized&&row.outcome===null).length,1);
+});
+
+test('a policy approval of an artifact that is not valid for its kind is rejected as artifact-structure with no sign authority',async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{evidenceVersion:'invalid',outcome:'invalid'}});
+ assert.equal(await f.p.prepare(r),false);
+ assert.equal((await lastLine(f)).decision,'rejected');assert.equal((await lastLine(f)).policyReason,'artifact-structure');
+ assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
 });
 
 // Stop ends a pending manual callback even with no external signal, and records no decision.
