@@ -283,6 +283,17 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const logicalAddress=recordRef.anchor.locator,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
     return read.status==='present'&&contentHash(read.artifact)===recordRef.contentHash&&await validReceipt(read,logicalAddress,read.artifact,wallet.claim);
   }
+  // Another provider instance may consume the one-use challenge first. After a
+  // failed evaluate the buyer is asked again; only a retained record is taken,
+  // and it is verified like any other. Otherwise the evaluate failure stands.
+  async function evaluateOrReadRetained(request) {
+    try{return await callCounterparty('evaluate',request);}
+    catch(error){
+      const retained=await callCounterparty('readRecord',request).catch(()=>null);
+      if(retained?.status==='present')return retained.record;
+      throw error;
+    }
+  }
   async function produceSeller(job) {
     const identityBundle=await sellerSession(job),authority=job.binding.buyerIdentityBundle.presentedBy;
     const logicalAddress=compositeVerificationAddress(job.jobId,wallet.claim);
@@ -297,7 +308,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(retained?.status==='present')record=retained.record;
       else if(retained?.status==='unattempted' && sameCanonicalClaimIdentity(retained.issuer,authority)
         && retained.jobId===job.jobId && retained.bundleHash===identityBundleHash(identityBundle)
-        && retained.requirementHash===sha256Hex(canonicalize(SELLER_REQUIREMENT)))record=await callCounterparty('evaluate',request);
+        && retained.requirementHash===sha256Hex(canonicalize(SELLER_REQUIREMENT)))record=await evaluateOrReadRetained(request);
       else fail('seller_vet_reconciliation_required','the buyer nonce ledger has no authoritative outcome');
       const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
       if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid') fail('seller_vet_invalid',`buyer-issued seller Vet failed strict verification: ${strict.status}:${strict.code}`);
