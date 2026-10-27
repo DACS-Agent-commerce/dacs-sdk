@@ -1028,13 +1028,15 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         // Returns the fresh observation/disposition; rejects aborted reads or
         // retained-byte/binding mismatches. options.signal cancels source RPCs.
         // One deadline also bounds binding locks/fences and canonical-body reads.
+        // Included facts require a canonical hash and a retained native intent.
         async function observePassiveTransfer(hash,options={}) {
+          if(typeof hash!=='string' || !HASH.test(hash))fail('invalid_params','a canonical native transaction hash is required');
           return observeWithDeadline(async ({signal})=>{
             const readOptions={...options,signal};
             const result=await reader.observeTransfer(hash,readOptions);
             if(result.status!=='included')return result;
             const issued=await journal.get(intent(hash));
-            if(issued?.signedTransaction?.content?.type!=='native')return result;
+            if(issued?.signedTransaction?.content?.type!=='native')fail('readback_unverified','the included native transfer has no retained original signed transaction');
             await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>makeBinder(false,signal).recover(issued.networkBinding)));
             const tx=await reader.getTransaction(hash,readOptions);
             signal.throwIfAborted();
