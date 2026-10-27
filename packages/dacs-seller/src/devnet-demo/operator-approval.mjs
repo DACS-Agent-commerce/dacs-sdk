@@ -2,6 +2,7 @@ import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } fro
 import { compositeVerificationAddress, contentHash, finalityCommitmentAddress, paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
+import { truncateSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
@@ -286,7 +287,8 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot}){
 // the refusal: 'request-shape', 'hold-conflict' (the holdId is bound to
 // another job, effect, write count or fee cap), 'hold-released', or a limit
 // (budgetRefusal). Refusals append nothing; an exact retry syncs the retained
-// line and resolves null. Rejects with seller_context_ledger_unreadable, with
+// line and resolves null. Reserve and release first cut a context line a crash
+// tore (cutTornContextLine). Rejects with seller_context_ledger_unreadable, with
 // its cause, for a ledger it cannot read, and a RangeError for an invalid clock.
 // release: ends what is unused of the step's hold (all of the job's open holds
 // when hold is absent) once the step has ended, definite or uncertain
@@ -299,6 +301,7 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
   return Object.freeze({
     reserve:({jobId,effect,writes,hold})=>!policyMode?Promise.resolve(null):serializedPolicy(evidencePath,async()=>{
       if(!isCanonicalJobId(jobId)||typeof effect!=='string'||!HASH.test(effect)||!Number.isSafeInteger(writes)||writes<1||writes>SELLER_POLICY_MAX_WRITES||typeof hold!=='string'||!hold)return 'request-shape';
+      await cutTornContextLine(evidencePath);
       let snapshot;
       try{snapshot=await readPolicyLedger(evidencePath);}
       catch(cause){throw Object.assign(new Error('seller context approval ledger cannot be read',{cause}),{code:'seller_context_ledger_unreadable'});}
@@ -320,6 +323,21 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
 }
 
 const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
+// A crash in appendContextLine can leave its line torn: the ledger's last
+// line, unterminated, not complete JSON, and starting as a context line does.
+// That append never returned, so it reserved or released nothing; under the
+// policy lock it is cut (by bytes) and synced, and the retry appends it whole.
+// Any other unterminated or malformed line is left for the parser to refuse.
+const TORN_CONTEXT_PREFIX=Buffer.from(`{"format":${JSON.stringify(CONTEXT_FORMAT)},`);
+async function cutTornContextLine(evidencePath){
+  let bytes;
+  try{bytes=await readFile(evidencePath);}catch(error){if(error.code==='ENOENT')return;throw error;}
+  const start=bytes.lastIndexOf(0x0a)+1,tail=bytes.subarray(start);
+  if(!tail.subarray(0,TORN_CONTEXT_PREFIX.length).equals(TORN_CONTEXT_PREFIX))return;
+  try{JSON.parse(tail.toString('utf8'));return;}catch{/* torn: cut below */}
+  truncateSync(evidencePath,start);
+  syncContextLedger(evidencePath);
+}
 
 // Ends a job's open context holds (only holdId when given) with one synced
 // release line each, under the policy lock, and resolves the released hold
@@ -329,6 +347,7 @@ const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePa
 export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Date.now()}){
   return serializedPolicy(evidencePath,async()=>{
     const at=now(),released=[];
+    await cutTornContextLine(evidencePath);
     const rows=(await readPolicyLedger(evidencePath)).rows;
     const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId));
     if(!Number.isSafeInteger(at)||at<0||openHolds.some(row=>at<row.recordedAt))throw new RangeError('context release cannot predate its hold');
