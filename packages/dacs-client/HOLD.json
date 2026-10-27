@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "be74bc0e08f75d7dcdf0d4bfe219aff175fd0d3d"
+        "blob": "75f1abded4c97d940ecd05930972aae6f240439a"
       },
       "DELTA-LEDGER.json": {
-        "blob": "8a2aafcc8d88dcd265e7b52cd73898543e79f092"
+        "blob": "caf490aa6772d0f591cfbeaafdbb2d4dbf1795f9"
       },
       "DELTA-MAP.md": {
-        "blob": "7c24630802fedec4a55ac2401bd82cf6e8de6247"
+        "blob": "221d6dc5aa2866035c0a1cf75e6bc82d21a3fc0f"
       },
       "DELTA-NOTES.md": {
         "blob": "807c7f000f85b2d92b92008c939092c5403d53e3"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "507c573ff6ade7261f2dc7d3555f6428b4804191"
+        "blob": "0e6261aaedd4a07d1a84c0f4c743cdc101939aeb"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "342668d4ca5c183403f5e408d503a7813ca3e520"
+        "blob": "335549e2f0213c6b3d0cd7c39b5fc4f47ed2c108"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1052,7 +1052,7 @@
         "blob": "eed33b7b83034ba0e364c4b8d09de0b5261b133e"
       },
       "scripts/delta-map.mjs": {
-        "blob": "76dbc4caed2ca2cd46135d7a619f45b612f617f6"
+        "blob": "8cfcad8793a8932a24eb4bc502208a9e466fac48"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "dde19d40fc125bb428749a4f5dfae19dfb0352d7"
@@ -1064,7 +1064,7 @@
         "blob": "3e3cba554970c729cc67b1d8b9f2c46e53f917ca"
       },
       "scripts/merge-snapshots.test.mjs": {
-        "blob": "a73bd364d7376344f9aed3991446d3f4072c85b9"
+        "blob": "05b11b0085e92d7ff00d5edbb8a43d9f3b560cea"
       },
       "scripts/path-mapping.mjs": {
         "blob": "8d24899be23bde6d6d0f2be6ab5ab12ce9eb5d14"
@@ -1667,7 +1667,7 @@
         "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
       },
       "test/package-contents.test.mjs": {
-        "blob": "f05e545f62faf232439c60bb69b08f6ac5684026"
+        "blob": "e89f5fc167efeb889e0397f22ceb4db6891fe7c3"
       },
       "test/passive-observation.test.mjs": {
         "blob": "f69db84f915c305d762633b3f0f080a2dc2bfbda"
