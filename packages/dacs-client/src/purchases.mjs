@@ -163,6 +163,11 @@ export function approvalBinding(operation) {
   };
 }
 
+// D11: `store` is the host's PurchaseStore (purchaseStore admits only the
+// package's concrete SQLite adapter); `purposes` holds the host's
+// APPROVE_PURCHASE wallet-challenge purpose. Both are checked before any
+// statement is prepared. Every action that prepares, approves, hands off or
+// signs refuses first while purchase actions are held.
 export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }) {
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
@@ -485,7 +490,6 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return prepareHandoffCore({ operationId, token });
   }
   async function prepareHandoffCore({ operationId, token }) {
-    assertPurchaseActionsAdmitted();
     let operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     const t = operation.terms;
@@ -1175,7 +1179,6 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function admitProtocolStart(operationId, token) {
-    assertPurchaseActionsAdmitted();
     const operation = protocolOperation(operationId, token);
     protocol.assertBuyerAccess?.(operation.terms.buyer.wallet);
     if (operation.status === 'agreement_pending' && !operation.state.protocol.planned) {
