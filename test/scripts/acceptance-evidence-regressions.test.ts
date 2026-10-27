@@ -277,6 +277,16 @@ describe("policy gate states", () => {
       expect(findings.engine.violations).toHaveLength(2);
       expect(state).toBe("blocked");
     });
+
+    // npm 11 names the package on its `engine` and its `notsup` line for one error.
+    it("reads one EBADENGINE error naming its package on both engine and notsup lines as that package", () => {
+      const log = "npm error code EBADENGINE\nnpm error engine Unsupported engine\n" +
+        "npm error engine Not compatible with your version of node/npm: a@1.0.0\n" +
+        "npm error notsup Not compatible with your version of node/npm: a@1.0.0\n";
+      const { findings, state } = classifyLog(log);
+      expect(findings.engine).toMatchObject({ code: "EBADENGINE", reportedPackage: "a@1.0.0" });
+      expect(state).toBe("baseline");
+    });
   });
 
   it("rejects an incomplete engine scan behind a successful exit code", () => {
