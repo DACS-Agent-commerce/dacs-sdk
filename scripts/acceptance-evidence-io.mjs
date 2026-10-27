@@ -13,19 +13,26 @@ export function boundedEvidenceText(text) {
   return text;
 }
 
-/** Reads at most the evidence budget before decoding; returns undefined only for a missing file. */
-export function readEvidence(path) {
+/** Reads a regular file of at most the evidence budget; `noFollow` refuses a link at its last
+ * component (ELOOP). Returns its bytes and permission bits, or undefined only for a missing file. */
+export function readBoundedFile(path, { noFollow = false } = {}) {
   let descriptor;
-  try { descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
+  try { descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0)); }
   catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
   try {
-    if (!fstatSync(descriptor).isFile()) throw new Error("evidence must be a regular file");
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("evidence must be a regular file");
     const bytes = Buffer.alloc(EVIDENCE_MAX_BYTES + 1);
     let length = 0, count;
     while (length < bytes.length && (count = readSync(descriptor, bytes, length, bytes.length - length, null)) > 0) length += count;
     if (length > EVIDENCE_MAX_BYTES) throw new Error("evidence byte limit exceeded");
-    return bytes.subarray(0, length).toString("utf8");
+    return { bytes: bytes.subarray(0, length), mode: stat.mode & 0o777 };
   } finally { closeSync(descriptor); }
+}
+
+/** Reads at most the evidence budget before decoding; returns undefined only for a missing file. */
+export function readEvidence(path) {
+  return readBoundedFile(path)?.bytes.toString("utf8");
 }
 
 /** Iterates bounded diagnostic lines; throws before admitting an oversized line or list. */
@@ -42,11 +49,17 @@ export function* evidenceLines(text = "") {
   }
 }
 
-/** Replaces a JSON result by sibling rename, removing temporary files even on failure. */
-export function atomicWriteJson(path, value) {
+/** Replaces `path` by sibling rename, so an existing entry (a link included) is never written
+ * through; removes the temporary file even on failure. */
+export function atomicWriteFile(path, contents) {
   const temporary = `${path}.tmp-${randomUUID()}`;
   try {
-    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+    writeFileSync(temporary, contents, { flag: "wx" });
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
+}
+
+/** Replaces a JSON result by sibling rename, removing temporary files even on failure. */
+export function atomicWriteJson(path, value) {
+  atomicWriteFile(path, JSON.stringify(value, null, 2) + "\n");
 }
