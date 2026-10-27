@@ -1671,14 +1671,148 @@ test('settlement disclosure checks durable payment identities even when this age
 for(const value of [undefined,null,0,{}])test(`missing or malformed journal identity ${JSON.stringify(value)} cannot release another journal's pending CREATE`,async t=>{
  const w=await world(t,{projectionReader:false}),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p),name=core.logicalToStorageProgramName(address);w.node.faults.transactionDown=hash=>hash===w.signedCreate(address)?.hash;w.node.faults.indexEmpty=program=>program===name;w.faults.broadcast.push('lost');assert.equal((await p.claim(tx)).status,'held');await w.editRetainedSession(p.jobId,session=>{if(value===undefined)delete session.nativeEvidenceWork.walletJournal;else session.nativeEvidenceWork.walletJournal=value;});await w.host().close();w.replaceWallet('TEST-replacement.sqlite');await w.restart();w.node.faults.transactionDown=()=>false;for(let i=0;i<2;i++)assert.notEqual((await p.claim(tx)).status,'payment-evidenced');assert.equal(w.createsAt(address),1);assert.equal(w.effects.signCreate.filter(x=>x===address).length,1);
 });
-for(const damage of ['proof','order','deliveryReady','ambiguous'])test(`authenticated checkpoint ${damage} cannot return unauthenticated evidence or run unassembled delivery`,{skip:!deliveryStaged&&['deliveryReady','ambiguous'].includes(damage)},async t=>{
- const w=await world(t),p=await w.purchase(),tx=p.pay();assert.equal((await p.claim(tx)).status,'payment-evidenced');await w.editRetainedSession(p.jobId,session=>{
-  const work=session.nativeEvidenceWork;if(damage==='proof')work.nativeReceipt.evidence.value='TEST-broken-proof';else if(damage==='order'){const projection=JSON.parse(work.publicSignedProjectionJson);projection.content=Object.fromEntries(Object.entries(projection.content).reverse());work.publicSignedProjectionJson=JSON.stringify(projection);}else if(damage==='deliveryReady')session.deliveryReady={status:'delivery-ready'};else session.deliveryHold={result:{code:'delivery-submission-ambiguous'}};
+for(const damage of ['proof','order','deliveryReady'])test(`authenticated checkpoint ${damage} cannot return unauthenticated evidence or deliver again`,async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay();assert.equal((await p.claim(tx)).status,'payment-evidenced');const delivered=w.effects.deliverySubmit.length;await w.editRetainedSession(p.jobId,session=>{
+  const work=session.nativeEvidenceWork;if(damage==='proof')work.nativeReceipt.evidence.value='TEST-broken-proof';else if(damage==='order'){const projection=JSON.parse(work.publicSignedProjectionJson);projection.content=Object.fromEntries(Object.entries(projection.content).reverse());work.publicSignedProjectionJson=JSON.stringify(projection);}else session.deliveryReady={status:'delivery-ready'};
  });const answer=await p.claim(tx);
  if(['proof','order'].includes(damage))assert.notEqual(answer.status,'payment-evidenced');else{assert.equal(answer.status,'payment-evidenced',shown(answer));assert.equal(answer.delivery.status,'held');}
- assert.equal(w.effects.deliverySubmit.length,0);assert.equal(w.createsAt(paymentAddress(p)),1);
+ assert.equal(w.effects.deliverySubmit.length,delivered,'the Deliverable is sent once');assert.equal(w.createsAt(paymentAddress(p)),1);
 });
 
+// A retained delivery is only a record of it: every repeat authenticates the saved
+// payment evidence again, whether it reaches the agent directly, as a new claim,
+// or as a replay of a request the transport already answered.
+test('a retained delivery is held while its payment evidence cannot be read back, for a direct retry, a new claim and a replayed request', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  const signed = await w.signedClaim(p, tx);
+  const post = async () => (await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
+    headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody })).json();
+  const first = await post();
+  assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
+  const evidenceCreate = w.signedCreate(paymentAddress(p)).hash;
+  w.node.faults.transactionDown = (hash) => hash === evidenceCreate;
+  assert.equal((await post()).status, 'held', 'a replay of the answered request');
+  assert.equal((await p.claim(tx)).status, 'held', 'a new claim');
+  const agent = await w.agentFor();
+  try {
+    const retry = await agent.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+    assert.equal(retry.status, 'held', 'a direct retry');
+  } finally { agent.close(); }
+  w.node.faults.transactionDown = () => false;
+  const restarted = await w.agentFor({ stopHost: false });
+  try {
+    const again = await restarted.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+    assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
+  } finally { restarted.close(); }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is sent once');
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+// The Deliverable is what the seller first sent. A producer that answers
+// differently later (here after a restart, or after the answer to the first
+// CREATE was lost with the job's records) never changes what is read back.
+test('a delivery is read back from the bytes that were sent, not from what the producer answers after a restart', async (t) => {
+  let body = 'TEST report body old';
+  const w = await world(t, { deliverableProducer: (input) => report({ body: [body] })(input) });
+  const p = await w.purchase(), tx = p.pay();
+  const first = await p.claim(tx);
+  assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
+  body = 'TEST report body new';
+  const agent = await w.agentFor();
+  try {
+    const again = await agent.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+    assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
+    assert.equal(again.delivery.contentHash, first.delivery.contentHash, 'the original bytes are verified');
+  } finally { agent.close(); }
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('a Deliverable that landed while the job\'s records were lost is recovered from the bytes that were sent, whatever the producer answers after the restart', async (t) => {
+  let body = 'TEST report body old';
+  const w = await world(t, { deliverableProducer: (input) => report({ body: [body] })(input) });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('land-lose-lock');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the job lost its lock during the submission');
+  body = 'TEST report body new';
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
+  assert.equal(w.createsAt(deliverable), 1);
+  assert.equal(core.sha256Hex(core.canonicalize(w.writtenAt(deliverable))), answer.delivery.contentHash, 'the original bytes are verified');
+});
+
+
+// Delivery evidence publication (deliveryEvidenceEnabled): the SettlementEvidence
+// of a delivered order is one native CREATE, read back before the answer says
+// `delivered`, and only ever read back once it was asked.
+const evidenceAddress = (p) => `dacs4:evidence:${p.jobId}`;
+const publishedEvidence = (w) => w.effects.published.filter((kind) => kind === 'SettlementEvidence').length;
+const resumed = async (w, p, options) => {
+  const agent = await w.agentFor(options);
+  try { return await agent.resume({ jobId: p.jobId }); } finally { agent.close(); }
+};
+
+test('without delivery evidence enabled a delivered order is delivery-ready and its evidence is left to the SDK finaliser', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), answer = await p.claim(p.pay());
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(answer.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
+  assert.equal(publishedEvidence(w), 0);
+  assert.equal(w.createsAt(evidenceAddress(p)), 0);
+});
+
+test('with delivery evidence enabled the SettlementEvidence is published once and read back: the answer is delivered, and repeats and a restart send nothing', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivered', shown(answer));
+  assert.equal(answer.delivery.evidencePublication, 'native-read-back');
+  assert.equal(answer.delivery.evidenceRef.anchor.locator, address);
+  assert.equal(w.createsAt(address), 1);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivered');
+  const again = await resumed(w, p);
+  assert.equal(again.delivery?.status, 'delivered', shown(again));
+  assert.equal(publishedEvidence(w), 1);
+  assert.equal(w.createsAt(address), 1);
+  assert.deepEqual(w.effects.deliverySubmit, [`dacs4:deliverable:${p.jobId}`], 'the Deliverable is sent once');
+});
+
+test('a delivery evidence CREATE whose answer was lost is only read back: held while the readback is unknown, then delivered with one CREATE, across a restart', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence:land-throw');
+  const lost = await p.claim(tx);
+  assert.equal(lost.delivery?.status, 'delivery-ready', shown(lost));
+  assert.equal(lost.delivery.evidencePublication, 'held-readback-only');
+  assert.equal(w.createsAt(address), 1, 'the CREATE landed before the answer was lost');
+  const evidenceCreate = w.signedCreate(address).hash;
+  w.node.faults.transactionDown = (hash) => hash === evidenceCreate;
+  const unknown = await p.claim(tx);
+  assert.equal(unknown.delivery?.evidencePublication, 'held-readback-only', shown(unknown));
+  assert.equal(publishedEvidence(w), 1, 'an unknown readback sends nothing');
+  w.node.faults.transactionDown = () => false;
+  await w.restart();
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(publishedEvidence(w), 1, 'the CREATE was asked once');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('a delivery evidence publication that never reached the wallet is published again, once', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence');
+  const held = await p.claim(tx);
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  assert.equal(w.createsAt(address), 0, 'nothing was created');
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(publishedEvidence(w), 1);
+  assert.equal(w.createsAt(address), 1);
+});
 
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
   const first=await world(t),second=await world(t);

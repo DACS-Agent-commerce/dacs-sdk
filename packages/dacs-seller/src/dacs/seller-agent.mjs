@@ -19,36 +19,12 @@ import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs
 // The explicit DEM delivery profile additionally consumes that same permit in
 // runDurableFulfilmentToDeliveryReady using a seller-retained V2 SessionRecord,
 // genuine partyVetCore provenance and independent delivery receipt readback.
-// Evidence publication/final bundle closure stay behind an explicit later SDK
-// finaliser call. Not deployed anywhere; tests run it on owned loopback only.
+// The delivery SettlementEvidence is published only when the operator enables
+// deliveryEvidenceEnabled (finishDeliveryEvidence); otherwise its publication,
+// and the final bundle closure, stay behind an explicit later SDK finaliser
+// call. Not deployed anywhere; tests run it on owned loopback only.
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
-import {
-  canonicalize,
-  commitFixedPriceAgreement,
-  contentHash,
-  isListing,
-  createFsFencedSessionStore,
-  createInMemoryFencedSessionStore,
-  createInMemorySellerReceiptStore,
-  fixedPriceAgreementLogicalAddress,
-  finalizeFixedPriceAgreementContributions,
-  finalityCommitmentAddress,
-  identityBundleHash,
-  isCanonicalJobId,
-  isVerifiedListingAdmission,
-  sameCanonicalClaimIdentity,
-  canonicalDemosAgentPublicKey,
-  isIdentityBundle,
-  paymentEvidenceAddress,
-  respondToFixedPriceAgreementProposalDurable,
-  runDurableFulfilmentToDeliveryReady,
-  sellerFulfilmentVetRequirementsViolation,
-  sha256Hex,
-  signComponentArtifact,
-  verifySellerPaymentIntake,
-  verifySettlementEvidence,
-  ARTIFACT_SEPARATORS,
-} from '@kynesyslabs/dacs';
+import { canonicalize, commitFixedPriceAgreement, contentHash, isListing, createFsFencedSessionStore, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, paymentEvidenceAddress, respondToFixedPriceAgreementProposalDurable, runDurableFulfilmentToDeliveryReady, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, verifySellerPaymentIntake, verifySettlementEvidence, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
@@ -62,28 +38,7 @@ import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } fr
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
 import { nativeDemDeliveryConfig, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
-import {
-  agreementInput,
-  agreementTerms,
-  assembleBundleCopies,
-  bundleAddress,
-  bundleSession,
-  bundleSigningPlan,
-  commitmentReader,
-  commitmentSession,
-  commitmentVerifier,
-  contributionVerifier,
-  deliverableAddress,
-  deliveryEvidenceAddress,
-  DEM_RAIL_DEFINITION,
-  ed25519Deps,
-  listingPin,
-  protocolSupport,
-  RAIL_REGISTRY_VERSION,
-  verifyAnchoredCopy,
-  verifyDelivery,
-  verifyPaymentEvidence,
-} from './purchase-protocol.mjs';
+import { agreementInput, agreementTerms, bundleAddress, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_DEFINITION, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyAnchoredCopy, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
@@ -99,8 +54,6 @@ const fixtureDisabled = async () => { throw new SellerAgentError('fixture_substr
 const NATIVE_PROFILE_FIXTURE = Object.freeze({ read: fixtureDisabled, write: fixtureDisabled });
 
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
-export { proposalTimeProblem } from './seller-proposal-time.mjs';
-const FINALISED_SKEW_MS = 5 * 60 * 1000;
 // Payment-evidence anchor outcomes after which no attempt can land: it never
 // reached the wallet (the agent's own record), or the wallet's journal
 // answered that nothing it signed for the address can be included. No wallet
@@ -372,7 +325,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     catch(error) { if(error.code!=='settlement_collision')throw error;copy.settlementCredit='indeterminate';copy.stage='settlement-indeterminate'; }
     return copy;
   };
+  // The Deliverable is the exact canonical report the seller submitted: once
+  // it is retained (session.deliverySentReport, kept before the CREATE is
+  // asked) every readback and verification uses those bytes, never what the
+  // producer answers now.
   const deliveryReport=(session,settlementId)=>{
+    if(session.deliverySentReport?.settlementId===settlementId)return JSON.parse(session.deliverySentReport.canonical);
     const report=deliverableProducer ? deliverableProducer({agreement:structuredClone(session.agreement),listing:structuredClone(listing),settlementId}) : buildReport({agreement:session.agreement,listing,settlementId});
     if (report && typeof report.then === 'function') {
       Promise.resolve(report).catch(() => {});
@@ -1073,6 +1031,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return { status: 'present' };
   }
 
+  // Runs the SDK delivery runner over this job's retained fulfilment. A lost
+  // response after the native Deliverable CREATE leaves the SDK's delivery WAL
+  // at an intent; the runner re-enters it through reconcileDeliverySubmission
+  // below, which only reads the Deliverable back. Absence or an unavailable
+  // read never causes another CREATE: only an absence the reader proved (or a
+  // submission this seller never made) lets the runner submit again.
   async function runSdkDeliveryReady(session, work, paymentRead) {
     if (!deliveryContext || !session.demDeliveryContext || !fulfilmentStore) {
       return { status: 'not-ready', reason: 'authenticated DEM delivery context is unavailable' };
@@ -1146,6 +1110,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           heldFor(session.jobId)?.();
           // Kept before the capability is asked: from here on only a readback
           // (or the reader's proven absence) tells whether this CREATE exists.
+          session.deliverySentReport={settlementId:work.intake.settlementId,canonical:canonicalize(report)};
           session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
           persist(session);
@@ -1690,16 +1655,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       work = started.work;
       await anchorNativePaymentEvidence(session, work);
     }
-    // Recovery is delivery-only. The payment evidence receipt/projection below
-    // was already authenticated and retained before the ambiguous delivery;
-    // re-reading the exact Deliverable is the only new external observation.
-    if (work.nativeReceipt && retainedNativeEvidenceProjection(work) && nativeDelivery && session.deliveryReady) {
-      return readPersistedNativeDelivery(session, work);
-    }
-    if (work.nativeReceipt && retainedNativeEvidenceProjection(work) && session.deliveryHold?.result?.code === 'delivery-submission-ambiguous') {
-      const recovered = await recoverNativeSdkDelivery(session, work);
-      if (recovered) return recovered;
-    }
+    // A retained delivery is not a shortcut: the payment evidence it rests on is
+    // authenticated again below, and advanceAuthenticatedNativeDelivery then
+    // reads the Deliverable back.
     let read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
     // A complete miss only permits asking the owning journal; it grants no send.
     const noReadback=()=>read.disposition==='absent'||(read.disposition==='indeterminate'&&['name-index-miss','native-address-miss'].includes(read.nativeObservation));
@@ -2046,4 +2004,4 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 }
 
-export { canonicalSignature };
+export { canonicalSignature, proposalTimeProblem };
