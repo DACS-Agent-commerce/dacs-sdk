@@ -1902,7 +1902,8 @@ describe("#191 policy-finding baseline", () => {
   });
 
   it("does not invent a runtime inventory for the recorded run", () => {
-    expect(b7b180fEvidence().securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(b7b180fEvidence().securityGate.findings.productionImageInventory)
+      .toEqual({ incomplete: ["runtime-image-inventory.json"] });
   });
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
 
@@ -1958,14 +1959,31 @@ describe("#191 policy-finding baseline", () => {
       "npm error missing: other@1.0.0, required by x@1.0.0\n" }],
     ["a lock SBOM problem against a changed range", "lockSbom", { "consumer-lock-sbom.err":
       sbomErr("consumer-lock-sbom.err").replace(">=0.62.0 <1.0.0", ">=0.63.0 <1.0.0") }],
-    ["typescript in the image but not at the lock's top level", "productionImage", {
-      "generated-package-lock.json": withLock(p => { delete p["node_modules/typescript"]; }) }],
-    ["rubic-sdk in the image", "productionImage", { "runtime-image-policy.json": JSON.stringify({
-      ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }) }],
   ])("still exits 3 for %s", (_label, check, overrides) => {
     const summary = b7b180fSimulation(overrides as Record<string, string | undefined>);
     expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("blocked");
     expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  // The image as built from the recorded lock, plus any extra packages,
+  // whatever lock the simulated run then records.
+  const recordedImage = (...extra: Array<Record<string, string>>) => {
+    const value = JSON.parse(closureInventory(JSON.stringify(lock()))); value.packages.push(...extra); return JSON.stringify(value);
+  };
+  it.each([
+    ["typescript in the image but not at the lock's top level", "typescript", {
+      "generated-package-lock.json": withLock(p => { delete p["node_modules/typescript"]; }),
+      "runtime-image-inventory.json": recordedImage() }],
+    ["rubic-sdk in the image", "rubic-sdk", {
+      "runtime-image-policy.json": JSON.stringify({
+        ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }),
+      "runtime-image-inventory.json": recordedImage({ name: "rubic-sdk", location: "node_modules/rubic-sdk", version: "5.0.0" }) }],
+  ])("still exits 3 for %s and names it", (_label, name, overrides) => {
+    const summary = b7b180fSimulation(overrides);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+    expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+    const unlisted = unlistedPolicyFindings(summary, baseline, ["productionImage"]).productionImage as Array<{ name?: string }>;
+    expect(unlisted.map(item => item.name)).toContain(name);
   });
 
   // Baselined Git, engine and image findings pin their archive, so a patch
@@ -2016,11 +2034,15 @@ describe("#191 policy-finding baseline", () => {
     expect(historicalDisposition(summary)).toMatchObject({ exitCode: 4, failureClass: "policy" });
   });
 
-  it("passes a check with no findings and blocks a passing flag that carries findings", () => {
+  // The findings decide the gate; the summary's passing flag only repeats them.
+  it("decides the dependency check from its findings whatever its passing flag says", () => {
     const summary = b7b180fSimulation();
     summary.securityGate.registryDependencyPolicyPassed = true;
+    expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("baseline");
+    summary.securityGate.findings.gitDependencies = [{ ...avsc, value: "https://github.com/Irys-xyz/avsc#main" }];
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("blocked");
     summary.securityGate.findings.gitDependencies = [];
+    summary.securityGate.registryDependencyPolicyPassed = false;
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("passed");
   });
 });
@@ -2039,7 +2061,7 @@ describe("runtime-image package inventory", () => {
 
   it("as recorded, without an inventory, blocks the b7b180f run (exit 3)", () => {
     const summary = b7b180fSimulation({ "runtime-image-inventory.json": undefined });
-    expect(summary.securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(summary.securityGate.findings.productionImageInventory).toEqual({ incomplete: ["runtime-image-inventory.json"] });
     expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
     expect(historicalDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy", checks: { productionImage: "blocked" } });
   });
@@ -2117,8 +2139,13 @@ describe("runtime-image package inventory", () => {
     const value = JSON.parse(lockText); value.packages[location].dev = true; return JSON.stringify(value);
   }
 
+  it("records an unreadable inventory as incomplete evidence and blocks", () => {
+    const summary = b7b180fSimulation({ "runtime-image-inventory.json": "{" });
+    expect(summary.securityGate.findings.productionImageInventory).toEqual({ incomplete: ["runtime-image-inventory.json"] });
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
   it.each([
-    ["unreadable JSON", "{"],
     ["another schema", JSON.stringify({ schema: "dacs-runtime-image-inventory/v0", packages: [] })],
     ["no package list", JSON.stringify({ schema: "dacs-runtime-image-inventory/v1" })],
     ["an entry without a version", add("node_modules/x", "x", undefined)],
