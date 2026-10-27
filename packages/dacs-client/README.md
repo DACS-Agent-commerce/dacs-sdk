@@ -32,8 +32,9 @@ import {
 // On a new node:sqlite DatabaseSync connection, initialize the buyer tables.
 // Existing databases need a host-owned migration preserving these constraints.
 db.exec(PURCHASE_STATE_SCHEMA);
-const coordinates = createCoordinateStore({ db });
+// Construct the store first: it tracks only statements prepared after it exists.
 const store = createSqlitePurchaseStore();
+const coordinates = createCoordinateStore({ db });
 const purposes = { APPROVE_PURCHASE: 'purchase-approval' };
 const protocol = createProtocolPurchases({
   db, ops, coordinates, dacsProtocol, store,
@@ -91,7 +92,7 @@ The chain-reader factory is outside the public surface until a clean immutable n
 
 ## Validation
 
-After `npm ci` and `npm run build` at the SDK root, run `npm test --workspace @kynesyslabs/dacs-client`. Each executable test runs once, one file at a time. The paired packed-consumer acceptance test uses the current npm cache and downloads exact locked tarballs from the registry on a cache miss; an offline run requires a populated cache. Source-repository acceptance cases explicitly skip when their source inputs are unavailable. CI imports both packed entry points at the declared minimum runtime. The surrounding SDK's Node 20 matrix also probes the root import outside the client's supported engines; it establishes no Node 20 client support.
+After `npm ci` and `npm run build` at the SDK root, run `npm test --workspace @kynesyslabs/dacs-client`. Each executable test runs once, one file at a time. The paired packed-consumer acceptance test uses a fresh private npm cache, stages the already installed runtime dependencies as local tarballs and installs them with `npm ci --offline`; it needs no registry access or populated cache. Source-repository acceptance cases explicitly skip when their source inputs are unavailable. CI runs the client suite, including the packed-consumer test that imports both entry points, only in the current Node 22 matrix entry. No job runs the declared minimum Node 22.13.0, and the Node 20 matrix entry establishes no Node 20 client support.
 
 The reciprocal integrity record pins the complete package tree, exact bytes and Git modes. Package changes require a reviewed re-pin and an enumerated source delta. The raw JSON default remains 1 MiB; bounded opt-in RPC and Directory limits and exact signed-content comparisons are unchanged.
 

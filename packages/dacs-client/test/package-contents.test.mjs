@@ -193,3 +193,23 @@ test('documented local packing builds core before skipping pack lifecycle script
   const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
 });
+
+test('documented factory example constructs the purchase store before any other factory', () => {
+  const readme = readFileSync(join(packageDir, 'README.md'), 'utf8');
+  const example = /```js\n([\s\S]*?)```/.exec(readme)?.[1];
+  assert.ok(example, 'factory example block is present');
+  const calls = [...example.matchAll(/\b(create\w+)\(/g)].map(match => match[1]);
+  assert.equal(calls[0], 'createSqlitePurchaseStore', 'statements prepared earlier are not tracked by the store');
+});
+
+test('validation text matches the offline packed consumer and the CI job that runs the client suite', () => {
+  const readme = readFileSync(join(packageDir, 'README.md'), 'utf8');
+  const validation = /\n## Validation\n\n([^\n]*)/.exec(readme)?.[1];
+  assert.ok(validation, 'validation paragraph is present');
+  assert.match(validation, /fresh private npm cache/);
+  assert.match(validation, /npm ci --offline/);
+  assert.doesNotMatch(validation, /offline run requires a populated cache|downloads exact locked tarballs|declared minimum runtime/);
+  const ci = readFileSync(join(sdkDir, '.github/workflows/ci.yml'), 'utf8');
+  assert.match(ci, /if: matrix\.node-version == '22'\n\s+run: npm test --workspace @kynesyslabs\/dacs-client/);
+  assert.match(validation, /only in the current Node 22 matrix entry/);
+});
