@@ -41,6 +41,50 @@ test('C-2 real seller projection holds unknown cancellation authority for exact 
  assert.equal(await stillOpenBeforePayment(r,policy(resolve),'cancellation-unknown'),null);
 });
 
+// CORE CF-5: the exact JSON a request stores or signs is admitted as raw JSON, not leniently parsed.
+const intoMetadata=(r,member)=>{r.content.exactCreate=r.content.exactCreate.replace('"metadata":{',`"metadata":{${member},`);};
+for(const [label,mutate] of [
+ ['a duplicate member in the stored artifact',r=>{r.content.exactStorageBytes=r.content.exactStorageBytes.replace('{',`{"jobId":"${JOBS[1]}",`);r.content.storageBytes=Buffer.byteLength(r.content.exactStorageBytes);}],
+ ['a duplicate member in the CREATE',r=>{r.content.exactCreate=r.content.exactCreate.replace('{','{"salt":"TEST",');}],
+ ['a duplicate member in the CREATE metadata',r=>intoMetadata(r,'"logicalAddress":"dacs4:TEST-other"')],
+ ['a lone surrogate escape in the CREATE metadata',r=>intoMetadata(r,'"TEST":"\\ud800"')],
+ ['an unsafe number in the CREATE metadata',r=>intoMetadata(r,'"TEST":9007199254740993')],
+ ['nesting deeper than 128 in the CREATE metadata',r=>intoMetadata(r,`"TEST":${'['.repeat(130)}${']'.repeat(130)}`)],
+ ['an unpaired surrogate in the CREATE text',r=>intoMetadata(r,`"TEST":"${String.fromCharCode(0xd800)}"`)],
+ ['a CREATE that is not JSON',r=>{r.content.exactCreate='{';}],
+ ['a stored artifact that is not an object',r=>{r.content.exactStorageBytes='null';r.content.storageBytes=4;}],
+])test(`request validation refuses ${label} as create-bytes`,async()=>{
+ const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});mutate(r);
+ assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),'create-bytes');
+});
+
+// Only a Vet record is held before the seller has any record of its job.
+for(const held of ['seller-record-missing','cancellation-unknown'])test(`a finality record with no seller record of its job is refused, also when held as ${held}`,async()=>{
+ const p=policy(async()=>null),r=requestFor({artifactKind:'FinalityCommitmentRecord'});
+ assert.equal(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS),'purchase');
+ assert.equal(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS,{held}),'purchase');
+ assert.equal(await stillOpenBeforePayment(r,p,held),'purchase');
+});
+
+// The fresh pre-payment check binds the purchase to what the exact request names.
+const openPurchase=()=>({...purchase(),paymentObserved:false,prePaymentOpen:true});
+for(const [label,kind,change,reason] of [
+ ['another Agreement','FinalityCommitmentRecord',{agreementHash:'f'.repeat(64)},'agreement'],
+ ['another buyer than the evaluated party','CompositeVerificationRecord',{buyer:`did:demos:agent:${'3'.repeat(64)}`},'evaluated-party'],
+ ['another listing','FinalityCommitmentRecord',{listingPin:{...pin,version:2}},'purchase'],
+ ['another network','FinalityCommitmentRecord',{sourceBinding:{...sourceBinding,chainIdentity:'f'.repeat(64)}},'purchase'],
+ ['another seller','FinalityCommitmentRecord',{seller:`did:demos:agent:${'4'.repeat(64)}`},'purchase'],
+])test(`the fresh pre-payment check refuses a held ${kind} whose purchase now names ${label}`,async()=>{
+ const r=requestFor({artifactKind:kind});
+ assert.equal(await stillOpenBeforePayment(r,policy(openPurchase),'cancellation-unknown'),null);
+ assert.equal(await stillOpenBeforePayment(r,policy(()=>({...openPurchase(),...change})),'cancellation-unknown'),reason);
+});
+
+for(const [label,mutate] of [['another data discriminator',data=>{data[0]='different';}],['an extra data element',data=>{data.push('TEST');}],['no data array',(data,content)=>{content.data={0:data[0],1:data[1]};}]])test(`a confirmation with ${label} counts nothing`,()=>{
+ const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'}),v=confirmationFor(r),content=v.response.data.transaction.content;
+ mutate(content.data,content);assert.equal(confirmedWriteOs(v,r),null);
+});
+
 for(const [state,change] of [['closed',{paymentObserved:false,prePaymentOpen:false}],['paid',{paymentObserved:true,prePaymentOpen:null}],['indeterminate',{paymentObserved:null,prePaymentOpen:null}]])test(`fresh pre-payment check refuses ${state} purchase even with manual approval`,async()=>{
  const p=policy(()=>({...purchase(),...change})),r=requestFor({artifactKind:'FinalityCommitmentRecord'});
  assert.notEqual(await policyRefusal(r,p,SELLER_POLICY_DEFAULTS),null);
