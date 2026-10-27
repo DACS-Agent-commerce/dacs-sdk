@@ -1029,6 +1029,9 @@ function policySourceReader(read) {
   return { text, json, exitCode, incomplete };
 }
 
+// A generated lock names its packages, with the root project's entry; one
+// without them describes no installation for any gate it feeds.
+const generatedLock = lock => isPlainObject(lock?.packages) && isPlainObject(lock.packages[""]);
 const closedDependencyPolicy = report => report?.schema === DEPENDENCY_POLICY_SCHEMA && Array.isArray(report.violations) &&
   report.passed === (report.violations.length === 0);
 // The problems an `npm sbom` error log reports: every `npm error` line except
@@ -1058,8 +1061,8 @@ export function extractPolicyFindings(readInput) {
     const text = source.text(name);
     return text === undefined ? undefined : [...evidenceLines(text)].join("\n");
   };
-  const lock = source.json("generated-package-lock.json", isPlainObject);
-  const packages = isPlainObject(lock?.packages) ? lock.packages : {};
+  const lock = source.json("generated-package-lock.json", generatedLock);
+  const packages = lock?.packages ?? {};
   const identity = location => ({ version: packages[location]?.version ?? null, integrity: packages[location]?.integrity ?? null });
   const dependencyPolicy = source.json("dependency-policy.json", closedDependencyPolicy);
   const strictLog = logText("engine-strict.log");
