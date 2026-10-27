@@ -618,9 +618,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     session.proposal = structuredClone(proposal);
     session.transportIdentity = structuredClone(transportIdentity);
     session.agreementHash = transportIdentity.agreementHash;
-    const agreementRef = { anchor: { kind: 'storage-program', locator: fixedPriceAgreementLogicalAddress(jobId) }, contentHash: session.agreementHash };
-    recordPhase(session, 0, session.proposalAdmission.observedAt, { ok: true,
-      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } });
     persist(session);
     return { disposition: 'complete', contribution: progress.result.sellerContribution };
   }
@@ -654,6 +651,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   const nativeAgreementView = (native) => ({ source: native.source, evidenceMode: native.evidenceMode, nativeAddress: native.nativeAddress, txRef: native.txRef });
+
+  // DACS-3 §8.4.1: negotiation succeeds only with both signatures anchored
+  // (SR-2). The seller's own contribution is not that, so `commit` records this
+  // phase, after the buyer's Agreement readback has authenticated.
+  function retainNegotiatePhase(session, jobId) {
+    const agreementRef = { anchor: { kind: 'storage-program', locator: fixedPriceAgreementLogicalAddress(jobId) }, contentHash: session.agreementHash };
+    return recordPhase(session, 0, session.proposalAdmission.observedAt, { ok: true,
+      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } });
+  }
 
   function retainCommitmentPhase(session, finalized) {
     const commitmentRef = { anchor:{kind:'storage-program',locator:finalized.logicalAddress}, contentHash:contentHash(finalized.record), signer: claim };
@@ -803,12 +809,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         throw new SellerAgentError('commitment_changed','fresh native commitment readback differs from the retained finalized commitment',503);
       }
       if(await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:retained.logicalAddress,artifact:retained.record,artifactKind:'FinalityCommitmentRecord',receipt:retained.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true})!=='valid')throw new SellerAgentError('commitment_changed','retained commitment proof no longer authenticates',503);
+      retainNegotiatePhase(session,jobId);
       retainCommitmentPhase(session,retained);
       session.agreement=agreement;session.agreementRef=agreementRef;
       if(native)session.agreementAnchor=nativeAgreementView(native);
       session.stage='committed';persist(session);
       return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
     }
+    // Recorded before the commitment is retained, so a saved commitment never
+    // lacks the phase before it.
+    retainNegotiatePhase(session, jobId);
     session.agreement = agreement;
     session.agreementRef = agreementRef;
     if (native) session.agreementAnchor = nativeAgreementView(native);

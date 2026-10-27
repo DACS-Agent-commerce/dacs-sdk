@@ -11,10 +11,9 @@ import {readbackFixture}from'./helpers/sr2-readback-fixture.mjs';
 import {seller,buyer,JOB,NOW}from'./helpers/protocol-fixture.mjs';
 import {localAnchor,signAnchorWrite}from'./helpers/local-anchor-fixture.mjs';
 import {contributionVerifier,agreementInput}from'../src/dacs/purchase-protocol.mjs';
-import {buildStorageProgramCreatePayload,deriveStorageAddress}from'../src/dacs/wallet-transactions.mjs';
+import {agreementCreateProjection as projection}from'./helpers/agreement-create-projection.mjs';
 import {createSellerAgent}from'../src/dacs/seller-agent.mjs';
 import {fixtureListing,fixtureIdentityBundle}from'./fixtures/listings.mjs';
-function projection(agreement){const logicalAddress=core.fixedPriceAgreementLogicalAddress(agreement.jobId),programName=core.logicalToStorageProgramName(logicalAddress),storageAddress=deriveStorageAddress(buyer.address,programName,1,'');const tx=buildStorageProgramCreatePayload({from:buyer.address,storageAddress,programName,logicalAddress,signedListing:agreement,nonce:1,timestamp:NOW});tx.content.from_ed25519_address=buyer.address;Object.assign(tx.content.data[1].metadata,{artifactKind:'Agreement',contentHash:core.contentHash(agreement),envelopeHash:core.sha256Hex(core.canonicalize(agreement))});tx.hash=core.sha256Hex(JSON.stringify(tx.content));tx.signature={type:'ed25519',data:'0x'+buyer.signBytes(Buffer.from(tx.hash)).toString('hex')};return tx;}
 nativeCommit('successful native commitment replays exact state after restart and rejects contradictory block time',async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');const kept=agent.durableSessionOf(JOB).commitment;agent.close();const fresh=await f.open();assert.equal((await fresh.commit({jobId:JOB})).status,'committed');assert.deepEqual(fresh.durableSessionOf(JOB).commitment,kept);assert.equal(f.local.writes.length,1);
  f.local.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,blockRef:{...row.receipt.blockRef,timestamp:row.receipt.blockRef.timestamp+1000}}}:row;
