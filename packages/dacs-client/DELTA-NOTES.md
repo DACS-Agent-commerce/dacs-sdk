@@ -42,7 +42,7 @@ Public API addition for boundary review: `src/index.ts:312` re-exports the exist
 - `src/dacs/artifact-reference.mjs:1`: pure logical/transaction references extracted from the former fixture dependency; canonicalSignature is in signatures.mjs.
 - `src/dacs/seller-session-limits.mjs:1`: relocate the copied pure bounds module out of the portal directory. The original path is deleted by D1; no implementation change.
 - `src/purchase-limits.mjs:1`: extract the existing immutable limits so importing purchases does not execute the plugin's switch-file startup configuration.
-- `src/seams/purchase-store-not-wired.mjs:1`: transaction/isUniqueViolation stubs for D11. No store implementation or registration mechanism.
+- `src/seams/purchase-store-not-wired.mjs:1`: the private synchronous SQLite purchase transaction adapter (`createSqlitePurchaseStore`) and its qualifier (`purchaseStore`) for D11. The exported transaction/isUniqueViolation remain NotWiredError stubs; no registration mechanism.
 - `src/seams/wallet-actions-not-wired.mjs:1`: wallet challenge and portal payload/check stubs for D11.
 - `src/seams/buyer-access-not-wired.mjs:1`: the in-process operator capability is unavailable pending D11.
 - `src/seams/seller-integration-not-wired.mjs:1`: legacy fixture anchor operations in the shared seller closure throw; no plugin fixture module is pulled in. D11/seller split must dispose of that closure.
