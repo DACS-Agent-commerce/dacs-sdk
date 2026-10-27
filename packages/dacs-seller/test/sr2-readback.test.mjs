@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attestationBundleHash, canonicalize, contentHash, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
+import { attestationBundleHash, canonicalize, contentHash, decodeDemosAnchorReceiptProof, identityBundleHash, isAnchorReceipt, sha256Hex } from '@kynesyslabs/dacs';
+import { DEMOS_SR2_FIXTURE_RECEIPT } from '../src/dacs/demos-sr2-adapter.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
 import { buyer, seller } from './helpers/protocol-fixture.mjs';
 const read = f => f.adapter.read(f.logicalAddress, { expectedWriter: f.expectedWriter });
+const TWIN = `stor-${'b'.repeat(40)}`;
+// Once listed, the writer also owns a conflicting program at the same logical address.
+const twinFixture = () => readbackFixture({ respond: (url, init, state) => {
+  if (new URL(url).pathname === `/storage-program/${TWIN}`) return new Response(JSON.stringify({ ...state.native, storageAddress: TWIN }), { headers: { 'content-type': 'application/json', 'x-dacs-simulation': 'fixture' } });
+} });
+const listTwin = f => f.state.rows.push({ programName: f.native.programName, storageAddress: TWIN });
 
 function signArtifact(f, artifact, artifactKind, hash) {
   const op = f.signed.content.data[1];
@@ -62,10 +69,28 @@ test('receipt recheck survives index disappearance through its known native addr
   const f = readbackFixture(), result = await read(f); f.state.rows = [];
   assert.equal((await f.adapter.recheck(result.receipt, { expectedWriter: f.expectedWriter })).status, 'present');
 });
+for (const [label, supplied] of [
+  ['signed projection', f => ({ signedProjection: f.signed })], ['native address', f => ({ nativeAddress: f.native.storageAddress })],
+]) test(`a supplied ${label} still refuses multiple owned programs`, async () => {
+  const f = twinFixture(); listTwin(f);
+  await assert.rejects(f.adapter.read(f.logicalAddress, { expectedWriter: f.expectedWriter, ...supplied(f) }), /multiple programs/);
+});
+test('recheck refuses a receipt once the writer owns a conflicting program', async () => {
+  const f = twinFixture(), { receipt } = await read(f); listTwin(f);
+  await assert.rejects(f.adapter.recheck(receipt, { expectedWriter: f.expectedWriter }), /multiple programs/);
+});
+test('a simulated fixture receipt names itself and never claims Demos finality', async () => {
+  const { receipt } = await read(readbackFixture());
+  assert.equal(isAnchorReceipt(receipt), true);
+  assert.deepEqual({ substrate: receipt.substrate, finalityProfile: receipt.finalityProfile, state: receipt.state, evidenceKind: receipt.evidence.kind }, DEMOS_SR2_FIXTURE_RECEIPT);
+  assert.throws(() => decodeDemosAnchorReceiptProof(receipt), /Demos write evidence/);
+});
 for (const [label, mutate] of [
   ['content hash', r => { r.contentHash = 'b'.repeat(64); }], ['nonce', r => { r.nonce = '2'; }],
   ['writer', r => { r.writer = buyer.claim; }], ['native address', r => { r.nativeAddress = `stor-${'b'.repeat(40)}`; }],
   ['transaction', r => { r.transactionRef.value = 'b'.repeat(64); }],
+  ['substrate to demos', r => { r.substrate = 'demos'; }], ['profile to Demos finality', r => { r.finalityProfile = 'demos-bft-confirmed-native-read'; }],
+  ['state to finalized', r => { r.state = 'finalized'; }], ['proof kind to Demos', r => { r.evidence.kind = 'demos-bft-write-proof-v1'; }],
 ]) test(`recheck refuses changed receipt ${label}`, async () => {
   const f = readbackFixture(), { receipt } = await read(f); mutate(receipt);
   await assert.rejects(f.adapter.recheck(receipt, { expectedWriter: f.expectedWriter }));
@@ -89,10 +114,7 @@ test('distinct candidate discovery is capped before sequential native fanout', a
   await assert.rejects(read(f), /candidate/); assert.equal(f.calls.filter(c => c.path.startsWith('/storage-program/')).length, 0);
 });
 test('multiple owned native programs remain ambiguous', async () => {
-  const f = readbackFixture({ respond: (url, init, state) => {
-    if (new URL(url).pathname === `/storage-program/stor-${'b'.repeat(40)}`) return new Response(JSON.stringify({ ...state.native, storageAddress: `stor-${'b'.repeat(40)}` }), { headers: { 'content-type': 'application/json', 'x-dacs-simulation': 'fixture' } });
-  } });
-  f.state.rows.push({ programName: f.native.programName, storageAddress: `stor-${'b'.repeat(40)}` });
+  const f = twinFixture(); listTwin(f);
   await assert.rejects(read(f), /multiple programs/);
 });
 test('a full page followed by the same program never establishes bounded completeness', async () => {
