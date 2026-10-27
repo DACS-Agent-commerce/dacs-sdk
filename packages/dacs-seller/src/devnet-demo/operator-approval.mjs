@@ -280,10 +280,11 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}
 
 // budgetRefusal for the one write being decided, read under the policy lock (throws when unreadable), with
 // unheld in-memory preparations. A manual confirmation, or a matching preparation or sign-authorized
-// reservation, already has its budget.
-async function writeBudgetRefusal({evidencePath,jobId,artifactKind,totalOs,at,limits,manualApproved,provisional,ledgerHeld}){
+// reservation, already has its budget. A preparation (signing: its approvalHash) whose exact request still has open sign authority (also from before a restart) is refused.
+async function writeBudgetRefusal({evidencePath,jobId,artifactKind,totalOs,at,limits,manualApproved,provisional,ledgerHeld,signing}){
   if(manualApproved||(provisional&&ledgerHeld))return null;
   const snapshot=await readPolicyLedger(evidencePath);
+  if(signing&&snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.approvalHash===signing))return 'sign-authorization-open';
   if(provisional)return null;
   snapshot.rows.push(...[...(provisionalHolds.get(resolve(evidencePath))??[])].filter(hold=>!snapshot.attempts.has(hold.attemptId)));
   return budgetRefusal({jobId,totalOs,at,limits,writes:1,snapshot,converting:{jobId,artifactKind}});
@@ -411,7 +412,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     preparations.delete(request);
   };
   const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
-  let stopped=false,idle=null;const pauses=new Set(),flights=new Set();
+  let stopped=false,idle=null;const pauses=new Set(),flights=new Set(),halt=new AbortController();
   const live=()=>{if(stopped)throw stoppedError(APPROVAL_STOPPED);};
   const track=(work)=>{
     if(stopped)return Promise.reject(stoppedError(APPROVAL_STOPPED));
@@ -493,7 +494,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
         if(held&&HOLD_REASONS.has(policyReason))policyReason=null;
         const hold=!held&&HOLD_REASONS.has(policyReason)?policyReason:null;
         if(!policyReason||hold){try{policyReason=(await writeBudgetRefusal({evidencePath,jobId:request.content.jobId,artifactKind:request.content.artifactKind,totalOs:total,at,limits:settings,manualApproved,
-          provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null}))??hold;}
+          provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null,signing:preparing&&approvalHash}))??hold;}
           catch(error){if(waitsForLedger){await ledgerUnreadable(error,request,waited++);at=now();continue;}policyReason='evidence-unreadable';}}
         live();
         if(waited)ledgerReadable(request);
@@ -502,7 +503,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       if(!policyReason&&signRecords&&validity!==undefined&&!manualApproved&&authorized?.approvalHash!==approvalHash)policyReason='sign-authorization-missing';
       accepted=policyReason===null;
     }else{
-      closeSignal=askSignal();
+      closeSignal=AbortSignal.any([askSignal()??halt.signal,halt.signal]);
       if(closeSignal?.aborted)throw closingError();
       if(authorize){
         const answer=await unlessStopped(authorize(Object.freeze({approvalHash,request:structuredClone(request),...(notice?{notice}:{})})),closeSignal);
@@ -524,7 +525,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     live();
     // Sign authority must be durable before preparation can approve.
     if(preparing&&accepted&&signRecords){
-      try{live();policyReason=await stillOpenBeforePayment(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
+      try{live();policyReason=await stillAuthorizedToSign(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
       catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
     }
     if(preparing&&accepted){live();return true;}
@@ -542,7 +543,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   };
   const approve=async(request,validity,options={})=>{
     try{
-      if(!policyMode){live();return await decide(request,undefined,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?{attemptId:options.attemptId}:{});}
+      if(!policyMode)return await track(()=>decide(request,undefined,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?{attemptId:options.attemptId}:{}));
       const snapshot=structuredClone(request);
       return await track(()=>serializedPolicy(evidencePath,async()=>{
         live();
@@ -576,7 +577,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   approve.prepare=(request)=>approve(request,undefined,{preparing:true});
   approve.pause=pause;
   approve.stop=()=>{
-    stopped=true;for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
+    stopped=true;halt.abort();for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
     return idle??=(async()=>{while(flights.size)await Promise.allSettled([...flights]);})();
   };
   approve.heldForManual=(request)=>heldRequests.has(request);
