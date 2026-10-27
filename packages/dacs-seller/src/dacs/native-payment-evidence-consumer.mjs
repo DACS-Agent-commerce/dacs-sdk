@@ -3,7 +3,7 @@
 // Consumed, opt-in SOURCE/loopback capability. SDK intake's bft-final field
 // describes the fixture node's included view, NOT independent consensus.
 import { contentHash, createPayDemSellerObserver, paymentEvidenceAddress, verifySettlementEvidence } from '@kynesyslabs/dacs';
-import { createDemosSr2Adapter, createInMemoryDemosSr2Journal } from './demos-sr2-adapter.mjs';
+import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_REPLY_BYTES } from './demos-sr2-adapter.mjs';
 import { agreementTerms, ed25519Deps } from './purchase-protocol.mjs';
 import { isDevnetSettlementTransport } from './devnet-source.mjs';
 
@@ -15,6 +15,14 @@ export function nativePaymentEvidenceConfig(value) {
   return value;
 }
 export const usesNativePaymentEvidence = (op) => op?.terms?.protocol?.nativePaymentEvidence === NATIVE_PAYMENT_EVIDENCE;
+
+// A signed CREATE projection is checked before the adapter clones it: a plain
+// object whose JSON fits one node reply. A projection that cannot serialize is
+// refused the same way.
+function boundedProjection(projection) {
+  if (projection === null || typeof projection !== 'object' || Object.getPrototypeOf(projection) !== Object.prototype) return false;
+  try { return Buffer.byteLength(JSON.stringify(projection)) <= DEMOS_SR2_REPLY_BYTES; } catch { return false; }
+}
 
 // No missing/malformed/unknown answer is interpreted as true absence. This
 // classifier does not establish validity; present records still need all the
@@ -85,6 +93,7 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
         const retainedProjection = readSignedProjection && !answerProjectionOnly ? await readSignedProjection({ jobId: agreement.jobId, logicalAddress: address, writer }) : undefined;
         const projection = retainedProjection ?? signedProjection;
         if (answerProjectionOnly && !projection) return { disposition: 'indeterminate', nativeReadStatus: 'public-projection-missing', reason: 'original-public-signed-create-projection-unavailable' };
+        if (projection && !boundedProjection(projection)) return { disposition: 'indeterminate', nativeReadStatus: 'public-projection-malformed', reason: 'signed-create-projection-not-a-bounded-plain-object' };
         const record = await adapter.read(address, { expectedWriter: writer, expectedArtifactKind: 'SettlementEvidence', ...(projection ? { signedProjection: projection } : {}) });
         const incomplete = nativeEvidenceReadOutcome(record);
         if (incomplete) return answerProjectionOnly && incomplete.disposition === 'absent' ? { ...incomplete, disposition: 'indeterminate' } : incomplete;
