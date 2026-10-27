@@ -34,6 +34,7 @@
     "src/purchase-state-schema.mjs", "src/purchases.mjs",
     "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
     "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",
+    "src/util/sqlite-purchase-admission.mjs",
     "src/util/sqlite-statement-boundary.mjs", "src/util/sqlite-write-lease.mjs",
     "src/util/http.mjs", "src/util/ids.mjs",
     "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
