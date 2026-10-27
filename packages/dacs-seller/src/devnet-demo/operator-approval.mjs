@@ -1,11 +1,10 @@
-import { stopRequested, stopSignal } from './stop-request.mjs';
-import { createInterface } from 'node:readline/promises';
-import { randomUUID } from 'node:crypto';
 import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { truncateSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline/promises';
+import { stopRequested, stopSignal } from './stop-request.mjs';
 import { admitRawJson, canonicalDemosAgentPublicKey, canonicalize, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCanonicalJobId, isCompositeVerificationRecord, isFinalityCommitmentRecord, isSettlementEvidence, paymentEvidenceAddress, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
 import { isPaymentTxRef } from './seller-purchase-source.mjs';
@@ -40,6 +39,14 @@ export function sellerPurchaseSource(value){
 // for exact manual approval: the seller has no record of the job before the
 // proposal reaches it, and is never told of a buyer-side cancellation.
 const HOLD_REASONS=new Set(['seller-record-missing','cancellation-unknown']);
+// The closed manual table: the only policy reasons exact manual approval may
+// waive, by when the write happens. Before payment, the seller-records holds;
+// after payment, a write the buyer paid for that only a limit refuses. Every
+// other reason is final, and an error is never a reason.
+const MANUAL_REASONS=Object.freeze({before:HOLD_REASONS,after:new Set(['write-fee-cap','job-write-limit','hourly-write-limit','hourly-dem-limit'])});
+const HELD_REASONS=new Set([...MANUAL_REASONS.before,...MANUAL_REASONS.after]);
+const paymentPhase=(kind)=>BEFORE_PAYMENT.has(kind)?'before':'after';
+const manualReason=(kind,reason)=>MANUAL_REASONS[paymentPhase(kind)].has(reason);
 // Validates the optional operator config field. Manual stays exactly
 // {mode:'manual'}; policy may set its limits, each defaulting as above.
 // purchaseSource is validated on its own and is not part of the settings.
@@ -150,14 +157,14 @@ export function parsePolicyLedger(text){
       &&authorized.approvalHash===row.approvalHash&&authorized.attemptId===(row.attemptId??null);
     if(Object.hasOwn(row,'reservationId')&&(!policyRow||typeof row.reservationId!=='string'||!row.reservationId||(byReservationId.has(row.reservationId)&&!linked)))malformed();
     // A held write the operator approved, completed at confirmation as a policy reservation.
-    if(Object.hasOwn(row,'policyHold')&&(!policyRow||!HOLD_REASONS.has(row.policyHold)||!row.confirmation))malformed();
+    if(Object.hasOwn(row,'policyHold')&&(!policyRow||!HELD_REASONS.has(row.policyHold)||!row.confirmation))malformed();
     let attempt=null,opened=false;
     if(Object.hasOwn(row,'attemptId')){
       if(typeof row.attemptId!=='string'||!ATTEMPT_ID.test(row.attemptId)||Object.hasOwn(row,'manualApproved'))malformed();
       attempt=attempts.get(row.attemptId);
       if(policyRow&&!Object.hasOwn(row,'policyHold')){
         // The hold opens the attempt.
-        if(attempt||row.decision!=='rejected'||!HOLD_REASONS.has(row.policyReason))malformed();
+        if(attempt||row.decision!=='rejected'||!HELD_REASONS.has(row.policyReason))malformed();
         attempt={approvalHash:row.approvalHash,jobId:null,manual:false,reservation:null,outcome:null,reason:null,originLine:lineNumber};attempts.set(row.attemptId,attempt);opened=true;
       }else if(!attempt||attempt.outcome!==null||attempt.approvalHash!==row.approvalHash||(attempt.reservation&&!(linked&&attempt.reservation===authorized)))malformed();
     }
@@ -280,106 +287,47 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}
   return null;
 }
 
-// budgetRefusal for the one write being decided, read under the policy lock (throws when unreadable), with
-// unheld in-memory preparations. A manual confirmation, or a matching preparation or sign-authorized
-// reservation, already has its budget. A preparation (signing: its approvalHash) whose exact request still has open sign authority (also from before a restart) is refused.
-async function writeBudgetRefusal({evidencePath,jobId,artifactKind,totalOs,at,limits,manualApproved,provisional,ledgerHeld,signing}){
-  if(manualApproved||(provisional&&ledgerHeld))return null;
-  const snapshot=await readPolicyLedger(evidencePath);
-  if(signing&&snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.approvalHash===signing))return 'sign-authorization-open';
-  if(provisional)return null;
-  snapshot.rows.push(...[...(provisionalHolds.get(resolve(evidencePath))??[])].filter(hold=>!snapshot.attempts.has(hold.attemptId)));
-  return budgetRefusal({jobId,totalOs,at,limits,writes:1,snapshot,converting:{jobId,artifactKind}});
-}
-
-// Combines the two approval paths for the seller wallet. Listing writes are
-// always manual. A policy refusal is final for that artifact (the wallet
-// journals it as denied), so refusing a write after payment would strand a
-// purchase the buyer has already paid for: payment evidence, delivery evidence
-// and the Deliverable go to exact manual approval instead before signing.
-// A pre-payment write the policy held (seller records) goes there too. Its
-// budget reservation is kept across the manual gate: confirmation completes
-// it as the policy's own reservation, and a decline releases it. The manual
-// line carries the hold's attemptId, so the two are one attempt.
-// A refused fee at confirmation never goes to a manual override.
+/** Combine exact manual approval with the seller policy for one seller wallet; returns the wallet's approve(request),
+ * with confirm(validity) and settle(request, outcome). Listing writes and manual mode always ask manual. In policy
+ * mode the policy decides (policy.decide): an approved write is already sign-authorized; a held write is asked of
+ * manual only when its (phase, reason) is in the closed manual table, and the answer goes to the policy's sign gate
+ * (policy.authorizeHeld); every other refusal is final. Policy errors reject. confirm checks the one policy-approved
+ * write in flight at the policy's confirmation gate, and is false for any other approval. */
 export function composeSellerApproval({mode,policy,manual}){
   let prepared=null;
-  // The policy holds the same copy through preparation and confirmation;
-  // settle maps the wallet's request back to that copy.
-  const confirmedCopies=new WeakMap(),atManualGate=new WeakSet();
   const approve=async(request)=>{
     const previous=prepared;prepared=null;
-    if(previous?.policy||previous?.held)await policy.settle?.(previous.request,'released','replaced');
-    const kind=request?.content?.artifactKind;
-    const requestBytes=JSON.stringify(request);
+    if(previous)await policy.settle(previous,'released','replaced');
+    const kind=request?.content?.artifactKind,requestBytes=JSON.stringify(request);
     if(mode!=='policy'||kind==='Listing'){
-      const accepted=await manual(JSON.parse(requestBytes));
-      if(accepted!==true||JSON.stringify(request)!==requestBytes)return false;
+      if((await manual(JSON.parse(requestBytes)))!==true||JSON.stringify(request)!==requestBytes)return false;
       freezeRequest(request);return true;
     }
-    const deferred=typeof policy.prepare==='function';
-    const copy=deferred?JSON.parse(requestBytes):request;
-    const retain=async()=>{
-      if(JSON.stringify(request)!==requestBytes||JSON.stringify(copy)!==requestBytes){
-        await policy.settle?.(copy,'released','confirmation-mismatch');return false;
-      }
-      freezeRequest(request);freezeRequest(copy);return true;
-    };
-    if((await (deferred?policy.prepare(copy):policy(request)))===true){
-      if(!(await retain()))return false;
-      if(deferred){prepared={request:copy,policy:true,origin:request};confirmedCopies.set(request,copy);}
-      return true;
+    const decision=await policy.decide(request);
+    let answer=decision.outcome==='approved'?'signed':'refused';
+    if(decision.outcome==='held'&&manualReason(kind,decision.reason)){
+      let accepted;
+      // A shutdown that ends the manual answer decides nothing: the attempt is released and the error kept.
+      try{accepted=(await manual(JSON.parse(requestBytes),undefined,{attemptId:decision.attemptId}))===true;}
+      catch(error){await policy.releaseHeld(request,'operator-released').catch(()=>{});throw error;}
+      answer=await policy.authorizeHeld(request,accepted);
     }
-    const held=policy.heldForManual?.(copy)===true;
-    if(!AFTER_PAYMENT.has(kind)&&!held)return false;
-    let accepted=false;
-    const attemptId=held?policy.heldAttempt?.(copy)??null:null;
-    if(held)atManualGate.add(request);
-    try{accepted=(await (attemptId?manual(copy,undefined,{attemptId}):manual(copy)))===true;}
-    finally{atManualGate.delete(request);if(held&&deferred&&!accepted)await policy.settle?.(copy,'released','manual-declined');}
-    if(!accepted||!(await retain()))return false;
-    // Seller records: the approved held write is sign-authorized on the ledger
-    // before this answer lets the wallet sign it. If that line cannot be
-    // retained, nothing was signed and the attempt ends released. The write is
-    // not refused (before payment a refusal is final for its artifact): after
-    // a pause it is decided again from the start, as a new hold for a new
-    // exact manual approval.
-    if(deferred&&held&&typeof policy.authorizeSign==='function'&&(await policy.authorizeSign(copy))!==true){
-      try{await policy.settle?.(copy,'released','sign-authorization-failed');}
-      catch(error){process.stderr.write(`seller-policy-sign-authorization: the attempt ${attemptId} could not be ended released (${String(error?.code??error?.message).slice(0,120)}); it stays held and counted\n`);}
-      if(policy.heldForManual?.(copy)!==true)return false;
-      process.stderr.write(`seller-policy-sign-authorization failed: the ${kind} write for job ${copy?.content?.jobId} was not signed and is not refused; it is decided again, as a new hold for exact manual approval\n`);
-      await policy.pause?.();
-      return approve(request);
+    // The sign line could not be retained: nothing was signed and the attempt is released, so the write is
+    // decided again after a pause (before payment a refusal would be final for its artifact).
+    if(answer==='unsigned'){
+      process.stderr.write(`seller-policy-sign-authorization failed: the ${kind} write for job ${request.content.jobId} was not signed; it is decided again\n`);
+      await policy.pause();return approve(request);
     }
-    if(deferred&&held){prepared={request:copy,held:true,origin:request};confirmedCopies.set(request,copy);}
-    else if(deferred)prepared={request:structuredClone(request),policy:false};
-    return true;
+    if(answer==='signed')prepared=request;
+    return answer==='signed';
   };
-  // True while this exact request is at manual approval because the policy held it.
-  approve.heldForManual=(request)=>atManualGate.has(request);
-  // The operator serializes this seller wallet. Consume one prepared decision
-  // at confirmation; a failed/repeated confirmation cannot reuse it.
-  approve.confirm=async(validity)=>{
-    const current=prepared;prepared=null;
-    if(!current)return false;
-    const c=validity?.response?.data?.transaction?.content,r=current.request.content;
-    if(c?.from!==r.wallet||c.nonce!==r.nonce||c.timestamp!==r.timestamp||JSON.stringify(c.data?.[1])!==r.exactCreate){
-      if(current.policy||current.held)await policy.settle?.(current.request,'released','confirmation-mismatch');
-      return false;
-    }
-    return policy(current.request,validity,current.held?{held:true}:{manualApproved:!current.policy});
-  };
-  approve.settle=(request,outcome)=>{
-    if(outcome==='released'&&prepared?.origin===request)prepared=null;
-    return policy.settle?.(confirmedCopies.get(request)??request,outcome);
-  };
+  approve.confirm=async(validity)=>{const current=prepared;prepared=null;return current?policy(current,validity):false;};
+  approve.settle=(request,outcome)=>{if(outcome==='released'&&prepared===request)prepared=null;return policy.settle(request,outcome);};
   return approve;
 }
 
-// Seller records: how long a write before payment waits between reads of an
-// approval ledger that cannot be read (createExactOperatorApproval).
-export const SELLER_LEDGER_RETRY_MS=5_000;
+// How long a policy decision waits between reads of an approval ledger that cannot be read.
+const SELLER_LEDGER_RETRY_MS=5_000;
 const LEDGER_STOPPED='seller policy stopped while its approval ledger could not be read; nothing was decided, written or signed';
 const APPROVAL_STOPPED='seller approval stopped (operator close): this write is not approved, and nothing more is written for it';
 const stoppedError=(message)=>Object.assign(new Error(message),{code:'seller_approval_stopped'});
@@ -389,30 +337,25 @@ const stoppedError=(message)=>Object.assign(new Error(message),{code:'seller_app
 export const OPERATOR_CLOSING='operator_closing';
 const closingError=()=>Object.assign(new Error('the operator is closing: this seller approval was not decided, nothing was signed, and the next start asks again'),{code:OPERATOR_CLOSING});
 
-/** Create exact manual or bounded policy approval with durable sign reservations.
- * Returns an approval function with prepare, confirmation, settlement, stop and reconciliation methods.
- * Abort and ledger failures reject, as does a failing purchase resolver before payment (nothing decided or written); a false answer permits no signature. */
+/** Create exact manual approval, or bounded seller policy approval with durable attempts and sign reservations.
+ * Manual mode: approve(request, undefined, {attemptId}) asks authorize (or the TTY) and records the answer.
+ * Policy mode: decide(request) resolves {outcome:'approved'|'held'|'refused', reason, attemptId}, prepare(request)
+ * its approval as a boolean; authorizeHeld(request, accepted) ends a held attempt at the sign gate ('signed',
+ * 'refused', or 'unsigned' when its sign line could not be retained); releaseHeld ends it unanswered;
+ * approve(request, validity) is the confirmation gate; settle(request, outcome) completes a reservation; reconcile()
+ * labels unresolved ones; stop() ends waits and pending manual answers. Purchase resolver and policy input errors
+ * reject with nothing decided or written; an unreadable ledger is waited for until stop(). */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
   const askSignal=()=>{const current=typeof signal==='function'?signal():signal;if(current!==null&&!(current instanceof AbortSignal))throw new TypeError('seller approval signal must be an AbortSignal');return current;};
-  const STOPPED=Symbol('stopped');
-  const unlessStopped=(answer,stopSignal)=>!stopSignal?answer:new Promise((resolve,reject)=>{
-    const stop=()=>resolve(STOPPED);if(stopSignal.aborted)stop();else stopSignal.addEventListener('abort',stop,{once:true});
-    Promise.resolve(answer).then(resolve,reject).finally(()=>stopSignal.removeEventListener('abort',stop));
-  });
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
   if(policyMode&&(!policy||typeof policy.resolvePurchase!=='function'||typeof policy.listingPin!=='function'||!policy.sourceBinding||!/^0x[0-9a-f]{64}$/.test(policy.address??'')||policy.seller!==`did:demos:agent:${policy.address.slice(2)}`))throw new TypeError('seller policy requires exact operator-owned purchase and source context');
-  const signRecords=policyMode&&sellerPurchaseSource(policy.purchaseSource)==='seller';
-  // Track each exact request through preparation, signing, confirmation and completion.
-  const reservations=new WeakMap(),heldRequests=new WeakMap(),heldAttempts=new WeakMap(),signAuthorized=new WeakMap();
-  const preparations=new WeakMap(),path=resolve(evidencePath),liveAttempts=new Set(),liveReservations=new Set();
-  const dropPreparation=(request)=>{
-    const hold=preparations.get(request);if(!hold)return;
-    const holds=provisionalHolds.get(path);holds.delete(hold);if(!holds.size)provisionalHolds.delete(path);
-    preparations.delete(request);
-  };
-  const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
+  if(policyMode)sellerPurchaseSource(policy.purchaseSource);
+  // One record per request object: its exact bytes, its held attempt (attemptId and hold reason) and its open
+  // sign reservation. open: the attempt and reservation ids this process still owns (reconcile skips them).
+  const records=new WeakMap(),open=new Set();
+  const STOPPED=Symbol('stopped');
   let stopped=false,idle=null;const pauses=new Set(),flights=new Set(),halt=new AbortController();
   const live=()=>{if(stopped)throw stoppedError(APPROVAL_STOPPED);};
   const track=(work)=>{
@@ -421,233 +364,194 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     flights.add(flight);flight.then(forget,forget);
     return flight;
   };
+  const locked=(work)=>track(()=>serializedPolicy(evidencePath,async()=>{live();return work();}));
   const pause=()=>new Promise((done,fail)=>{
     if(stopped)return fail(stoppedError(LEDGER_STOPPED));
     const entry={fail,timer:setTimeout(()=>{pauses.delete(entry);done();},ledgerRetryMs)};pauses.add(entry);
   });
-  const LOG_EVERY=Math.max(1,Math.ceil(60_000/ledgerRetryMs));
-  const ledgerUnreadable=async(error,request,waited)=>{
-    if(stopped)throw stoppedError(LEDGER_STOPPED);
-    if(waited%LOG_EVERY===0)process.stderr.write(`seller-policy-ledger unreadable: ${path}${Number.isSafeInteger(error?.ledgerLine)?` line ${error.ledgerLine}`:''} (${String(error?.code??error?.message).slice(0,120)}); the ${request?.content?.artifactKind} write for job ${request?.content?.jobId} waits, unsigned and not refused, and is decided again once the ledger reads; with the operator stopped, correct the ledger (docs/SELLER-POLICY-AND-DELIVERY-EVIDENCE.md, "Resolving a held reservation by hand")\n`);
-    await pause();
-  };
-  const ledgerReadable=(request)=>process.stderr.write(`seller-policy-ledger readable again: deciding the ${request?.content?.artifactKind} write for job ${request?.content?.jobId}\n`);
-  // An unreadable pre-payment ledger holds the write until a fresh decision is possible.
-  const whenReadable=async(read,request)=>{
+  // An unreadable ledger holds the write, unsigned and not refused, until a fresh decision is possible.
+  const readableLedger=async(request)=>{
     for(let waited=0;;waited++){
       live();
-      let value;
-      try{value=await read();}catch(error){await ledgerUnreadable(error,request,waited);continue;}
-      live();
-      if(waited)ledgerReadable(request);
-      return value;
+      try{const snapshot=await readPolicyLedger(evidencePath);live();return snapshot;}
+      catch(error){
+        if(stopped)throw stoppedError(LEDGER_STOPPED);
+        if(waited%Math.max(1,Math.ceil(60_000/ledgerRetryMs))===0)process.stderr.write(`seller-policy-ledger unreadable: ${resolve(evidencePath)}${Number.isSafeInteger(error?.ledgerLine)?` line ${error.ledgerLine}`:''} (${String(error?.code??error?.message).slice(0,120)}); the ${request?.content?.artifactKind} write for job ${request?.content?.jobId} waits, unsigned and not refused, and is decided again once the ledger reads\n`);
+        await pause();
+      }
     }
   };
-  // Retain and sync the exact sign authority before allowing the wallet to sign.
-  const authorizeSigning=async(request,{reservationId=randomUUID(),attemptId=null,at=now()}={})=>{
-    const requestBytes=JSON.stringify(request),totalOs=request?.content?.debit?.totalOs;
-    if(!OS.test(totalOs??'')||!Number.isSafeInteger(at)||at<0)throw new Error('seller policy sign authorization is malformed');
-    const reservation={reservationId,approvalHash:sha(requestBytes),totalOs,...(attemptId?{attemptId}:{})};
-    try{
-      appendApprovalLedgerLine(evidencePath,{format:SIGN_FORMAT,reservationId,approvalHash:reservation.approvalHash,requestBytes,totalOs,recordedAt:at,...(attemptId?{attemptId}:{})});
-    }catch(error){
+  const declaredOs=(request)=>{const total=request?.content?.debit?.totalOs;return typeof total==='string'&&OS.test(total)?BigInt(total):null;};
+  // Every check before a sign line, on one ledger snapshot read under the policy lock: the operator maximum, the
+  // policy (its fee cap at the declared total), no open sign authority for this wallet nonce, then the fee cap and
+  // the limits. waiver: the manually approved class of a held attempt ('before': the holds, 'after': the cap and
+  // limits). Resolves null when the write may be signed, else a reason; a manual-table reason only when nothing
+  // else refuses.
+  const signRefusal=async(copy,snapshot,waiver=null)=>{
+    const c=copy?.content,total=declaredOs(copy);
+    if(total!==null&&total>BigInt(maxTotalOs))return 'operator-fee-budget';
+    const reason=await policyRefusal(copy,policy,total===null?settings:{...settings,maxWriteTotalOs:total.toString()},{held:waiver==='before'});
+    live();
+    if(reason&&!HOLD_REASONS.has(reason))return reason;
+    if(snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.request?.content?.wallet===c.wallet&&row.request.content.nonce===c.nonce))return 'sign-authorization-open';
+    if(waiver==='after')return null;
+    return (total>BigInt(settings.maxWriteTotalOs)?'write-fee-cap':budgetRefusal({jobId:c.jobId,totalOs:total,at:clock(),limits:settings,writes:1,snapshot,converting:c}))??reason;
+  };
+  // Policy ledger lines need a nonnegative integer time; a clock without one decides nothing.
+  const clock=()=>{const at=now();if(!Number.isSafeInteger(at)||at<0)throw new RangeError('seller policy time must be a nonnegative safe integer');return at;};
+  // The end of the sign gate: purchase authority reread after the last ledger await, and the request still the
+  // exact bytes checked. Resolves null when the write may be signed, else the refusal.
+  const reread=async(request,record)=>{
+    const reason=await stillAuthorizedToSign(JSON.parse(record.bytes),policy,HOLD_REASONS.has(record.reason));
+    live();
+    return reason??(JSON.stringify(request)===record.bytes?null:'request-changed');
+  };
+  // The only writer of sign lines: the exact bytes frozen, then one synchronous, synced sign line. When the line
+  // cannot be retained it rejects, after releasing whichever of its reservation or attempt is open.
+  const appendSign=async(request,record)=>{
+    freezeRequest(request);
+    const ids={reservationId:randomUUID(),approvalHash:sha(record.bytes),...(record.attemptId?{attemptId:record.attemptId}:{})};
+    try{appendApprovalLedgerLine(evidencePath,{format:SIGN_FORMAT,...ids,requestBytes:record.bytes,totalOs:JSON.parse(record.bytes).content.debit.totalOs,recordedAt:clock()});}
+    catch(error){
       try{
-        const row=(await readPolicyLedger(evidencePath)).rows.find(entry=>entry.signAuthorized&&entry.reservationId===reservationId),recordedAt=now();
-        if(!stopped&&row?.outcome===null&&Number.isSafeInteger(recordedAt)&&recordedAt>=row.recordedAt)
-          appendAttempt({reservationId,approvalHash:reservation.approvalHash,...(attemptId?{attemptId}:{}),outcome:'released',reason:'sign-authorization-failed',recordedAt});
-      }catch{}
+        const{rows,attempts}=await readPolicyLedger(evidencePath),line=rows.some(row=>row.reservationId===ids.reservationId&&row.outcome===null);
+        if(line||attempts.get(record.attemptId)?.outcome===null)appendAttempt({...(line?ids:{attemptId:ids.attemptId,approvalHash:ids.approvalHash}),outcome:'released',reason:'sign-authorization-failed',recordedAt:clock()});
+        records.delete(request);open.delete(record.attemptId);
+      }catch{/* the attempt stays open and counted; a retry or restart sees it */}
       throw error;
     }
-    signAuthorized.set(request,reservation);liveReservations.add(reservationId);
-    return reservation;
+    record.reservation=ids;open.add(ids.reservationId);records.set(request,record);
   };
-  const releaseAttempt=async(attemptId,reason)=>{
-    const attempt=(await readPolicyLedger(evidencePath)).attempts.get(attemptId);
+  const appendAttempt=(row)=>appendApprovalLedgerLine(evidencePath,{format:ATTEMPT_FORMAT,...row});
+  const endAttempt=(request,record,reason)=>{
+    appendAttempt({attemptId:record.attemptId,approvalHash:sha(record.bytes),outcome:'released',reason,recordedAt:clock()});
+    open.delete(record.attemptId);records.delete(request);
+  };
+  // decide: the policy's answer for one exact write. A refusal and a hold are logged; only a hold in the manual
+  // table opens an attempt, which counts its declared debit until it ends.
+  const decide=(request)=>locked(async()=>{
+    const bytes=JSON.stringify(request),copy=JSON.parse(bytes),previous=records.get(request),snapshot=await readableLedger(copy);
+    if(previous?.attemptId&&!previous.reservation&&snapshot.attempts.get(previous.attemptId)?.outcome===null)endAttempt(request,previous,'replaced');
+    const record={bytes,attemptId:null,reason:null,reservation:null};
+    const reason=await signRefusal(copy,snapshot)??await reread(request,record);
+    if(reason===null){await appendSign(request,record);return{outcome:'approved'};}
+    const attemptId=manualReason(copy?.content?.artifactKind,reason)?randomUUID():null;
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
+      decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),recordedAt:clock()});
+    if(attemptId){records.set(request,{...record,attemptId,reason});open.add(attemptId);}
+    return{outcome:attemptId?'held':'refused',reason,attemptId};
+  });
+  // The sign gate for a held attempt's manual answer: only its recorded class is waived; every other check runs
+  // again (the attempt's own hold no longer counts against its limits).
+  const authorizeHeld=(request,accepted)=>locked(async()=>{
+    const record=records.get(request);
+    if(!record?.attemptId||record.reservation)return 'refused';
+    if(accepted!==true){endAttempt(request,record,'manual-declined');return 'refused';}
+    const snapshot=await readableLedger(request),attempt=snapshot.attempts.get(record.attemptId);
+    if(attempt?.outcome!==null||attempt.reservation){records.delete(request);open.delete(record.attemptId);return 'refused';}
+    snapshot.rows=snapshot.rows.filter(row=>row.attemptId!==record.attemptId);
+    const copy=JSON.parse(record.bytes),reason=await signRefusal(copy,snapshot,paymentPhase(copy.content.artifactKind))??await reread(request,record);
+    if(reason){endAttempt(request,record,'confirmation-refused');return 'refused';}
+    try{await appendSign(request,record);}catch(error){if(stopped)throw error;return 'unsigned';}
+    return 'signed';
+  });
+  // The confirmation gate: the node's executed CREATE of exactly this request within the operator maximum, its own
+  // open sign line, and purchase authority reread before the confirmation line. A refusal releases the reservation.
+  const confirm=(request,validity)=>locked(async()=>{
+    const record=records.get(request),ids=record?.reservation;
+    if(!ids)return false;
+    const copy=JSON.parse(record.bytes),declared=declaredOs(copy),confirmed=confirmedWriteOs(validity,copy),counted=confirmed!==null&&confirmed>declared?confirmed:declared;
+    const row=await openSignLine(record);
+    if(row.confirmed!==null)return false;
+    const reason=confirmed===null?'confirmation-mismatch':counted>BigInt(maxTotalOs)?'operator-fee-budget':await stillAuthorizedToSign(copy,policy,HOLD_REASONS.has(record.reason));
     live();
-    if(!attempt||(attempt.reservation&&attempt.outcome===null))throw new Error('seller policy attempt is unavailable');
-    if(attempt.outcome===null)appendAttempt({attemptId,approvalHash:attempt.approvalHash,outcome:'released',reason,recordedAt:now()});
-    liveAttempts.delete(attemptId);
+    if(reason){completeReservation(request,record,row,'released',reason==='confirmation-mismatch'?reason:'confirmation-refused');return false;}
+    // Retained: the executed transaction confirmedWriteOs checked member by member, not the rest of the node's answer.
+    const tx=validity.response.data.transaction;
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:ids.approvalHash,requestBytes:record.bytes,method:copy.method,address:copy.address,totalOs:counted.toString(),decision:'approved',approvalMode:'policy',policyReason:null,
+      reservationId:ids.reservationId,...(record.attemptId?{attemptId:record.attemptId,policyHold:record.reason}:{}),confirmation:{hash:tx.hash??null,content:tx.content},declaredTotalOs:declared.toString(),
+      confirmedRemovalsOs:confirmed.toString(),countedTotalOs:counted.toString(),recordedAt:clock()});
+    return true;
+  });
+  // The record's sign line, still open, from a fresh ledger read (an unreadable ledger rejects).
+  const openSignLine=async(record)=>{
+    const row=(await readPolicyLedger(evidencePath)).rows.find(entry=>entry.signAuthorized&&entry.reservationId===record.reservation.reservationId);
+    live();
+    if(row?.outcome!==null)throw new Error('seller policy reservation is unavailable');
+    return row;
   };
-  const decide=async(input,validity,{preparing=false,manualApproved=false,held=null,provisional=null,attemptId=null,signed=null,origin=input}={})=>{
-    const confirmedTotal=validity===undefined?undefined:confirmedWriteOs(validity,input);
-    const declaredTotal=input?.content?.debit?.totalOs;
-    const declared=typeof declaredTotal==='string'&&OS.test(declaredTotal)?BigInt(declaredTotal):null;
-    const countedTotal=confirmedTotal===undefined?declared:confirmedTotal===null||declared===null?null:confirmedTotal>declared?confirmedTotal:declared;
-    const total=countedTotal?.toString();
-    const withinBudget=input?.method==='sendTransaction'&&OS.test(total??'')&&BigInt(total)<=BigInt(maxTotalOs);
-    if(!policyMode&&!withinBudget)return false;
-    const requestBytes=JSON.stringify(input),request=JSON.parse(requestBytes),approvalHash=sha(requestBytes);
-    const retain=()=>{
-      if(JSON.stringify(origin)!==requestBytes||JSON.stringify(input)!==requestBytes){policyReason='request-changed';return false;}
-      freezeRequest(origin);freezeRequest(input);return true;
-    };
-    let at=policyMode?now():null;
-    const authorized=signRecords&&validity!==undefined&&!manualApproved?signed:null;
-    let reservationId=authorized?authorized.reservationId:policyMode?randomUUID():null;
-    const notice=policyMode?null:sellerNotice(request);
-    let accepted=false,policyReason=null,closeSignal=null,resolverError=null;
-    const purchases=policyMode?Object.create(policy,{resolvePurchase:{value:async(jobId)=>{try{return await policy.resolvePurchase(jobId);}catch(error){if(BEFORE_PAYMENT.has(request?.content?.artifactKind))resolverError=error;throw error;}}}}):null; // before payment a failed resolver is no refusal: its error is rethrown, nothing decided
-    if(policyMode){
-      const waitsForLedger=signRecords&&validity===undefined&&BEFORE_PAYMENT.has(request?.content?.artifactKind);
-      for(let waited=0;;){
-        live();
-        try{policyReason=confirmedTotal===null?'debit':!withinBudget?'operator-fee-budget':await policyRefusal(request,purchases,settings,{confirmedTotal,countedTotal,manualApproved,held});}catch{if(resolverError)throw resolverError;policyReason='policy-check-failed';}
-        live();
-        if(held&&HOLD_REASONS.has(policyReason))policyReason=null;
-        const hold=!held&&HOLD_REASONS.has(policyReason)?policyReason:null;
-        if(!policyReason||hold){try{policyReason=(await writeBudgetRefusal({evidencePath,jobId:request.content.jobId,artifactKind:request.content.artifactKind,totalOs:total,at,limits:settings,manualApproved,
-          provisional:provisional?.approvalHash===approvalHash&&BigInt(total)<=BigInt(provisional.totalOs)?provisional:null,ledgerHeld:authorized!==null,signing:preparing&&approvalHash}))??hold;}
-          catch(error){if(waitsForLedger){await ledgerUnreadable(error,request,waited++);at=now();continue;}policyReason='evidence-unreadable';}}
-        live();
-        if(waited)ledgerReadable(request);
-        break;
-      }
-      if(!policyReason&&signRecords&&validity!==undefined&&!manualApproved&&authorized?.approvalHash!==approvalHash)policyReason='sign-authorization-missing';
-      accepted=policyReason===null;
+  const completeReservation=(request,record,row,outcome,reason)=>{
+    const at=clock();
+    if(at<row.recordedAt)throw new RangeError('seller policy completion cannot predate its sign authorization');
+    appendAttempt({...record.reservation,outcome,...(outcome==='released'?{reason:RELEASE_REASONS.has(reason)?reason:'wallet-released'}:{}),recordedAt:at});
+    open.delete(record.reservation.reservationId);open.delete(record.attemptId);records.delete(request);
+  };
+  // Exact manual approval of one request: the operator's answer, recorded with the exact bytes it approved.
+  const decideManually=async(request,attemptId)=>{
+    const declared=declaredOs(request);
+    if(request?.method!=='sendTransaction'||declared===null||declared>BigInt(maxTotalOs))return false;
+    const requestBytes=JSON.stringify(request),copy=JSON.parse(requestBytes),approvalHash=sha(requestBytes),notice=sellerNotice(copy);
+    const closeSignal=AbortSignal.any([askSignal()??halt.signal,halt.signal]);
+    if(closeSignal.aborted)throw closingError();
+    let accepted;
+    if(authorize){
+      const answer=await new Promise((done,fail)=>{
+        const stop=()=>done(STOPPED);closeSignal.addEventListener('abort',stop,{once:true});
+        Promise.resolve(authorize(Object.freeze({approvalHash,request:copy,...(notice?{notice}:{})}))).then(done,fail).finally(()=>closeSignal.removeEventListener('abort',stop));
+      });
+      if(answer===STOPPED||closeSignal.aborted)throw closingError();
+      accepted=answer===true;
     }else{
-      closeSignal=AbortSignal.any([askSignal()??halt.signal,halt.signal]);
-      if(closeSignal?.aborted)throw closingError();
-      if(authorize){
-        const answer=await unlessStopped(authorize(Object.freeze({approvalHash,request:structuredClone(request),...(notice?{notice}:{})})),closeSignal);
-        if(answer===STOPPED||closeSignal?.aborted)throw closingError();
-        accepted=answer===true;
-      }else{
-        if(!process.stdin.isTTY||!process.stderr.isTTY)throw new Error('exact seller approval requires an interactive TTY');
-        const listing=request?.content?.artifactKind==='Listing';
-        if(listing&&stopRequested())return false;
-        if(notice)process.stderr.write(`${notice}\n`);
-        process.stderr.write(`${JSON.stringify({approvalHash,request})}\n`);
-        const signals=[...(listing?[stopSignal]:[]),...(closeSignal?[closeSignal]:[])];
-        const ui=createInterface({input:process.stdin,output:process.stderr});if(!listing)ttyPrompts++;
-        try{accepted=(await ui.question(`Type APPROVE ${approvalHash} to authorize this exact seller transaction: `,signals.length?{signal:signals.length===1?signals[0]:AbortSignal.any(signals)}:{}))===`APPROVE ${approvalHash}`;}
-        catch(error){if(listing&&stopRequested())return false;if(!closeSignal?.aborted)throw error;throw closingError();}
-        finally{if(!listing)ttyPrompts--;ui.close();}
-      }
+      if(!process.stdin.isTTY||!process.stderr.isTTY)throw new Error('exact seller approval requires an interactive TTY');
+      const listing=copy.content?.artifactKind==='Listing';
+      if(listing&&stopRequested())return false;
+      if(notice)process.stderr.write(`${notice}\n`);
+      process.stderr.write(`${JSON.stringify({approvalHash,request:copy})}\n`);
+      const ui=createInterface({input:process.stdin,output:process.stderr});
+      try{accepted=(await ui.question(`Type APPROVE ${approvalHash} to authorize this exact seller transaction: `,{signal:listing?AbortSignal.any([stopSignal,closeSignal]):closeSignal}))===`APPROVE ${approvalHash}`;}
+      catch(error){if(listing&&stopRequested())return false;if(!closeSignal.aborted)throw error;throw closingError();}
+      finally{ui.close();}
     }
     live();
-    // Sign authority must be durable before preparation can approve.
-    if(preparing&&accepted&&signRecords){
-      try{live();policyReason=await stillAuthorizedToSign(request,policy,held);live();accepted=policyReason===null&&retain();if(accepted)await authorizeSigning(input,{reservationId,at});}
-      catch(error){if(stopped)throw error;policyReason='sign-authorization-unavailable';accepted=false;reservationId=randomUUID();}
-    }
-    if(preparing&&accepted){live();return true;}
-    live();
-    if(closeSignal?.aborted)throw closingError();
-    // Resolve current purchase authority after the last ledger await.
-    if(policyMode&&accepted){try{policyReason=await stillOpenBeforePayment(request,purchases,held);}catch{if(resolverError)throw resolverError;policyReason='policy-check-failed';}live();accepted=policyReason===null;}
-    if(accepted)accepted=retain();
-    if(policyMode&&HOLD_REASONS.has(policyReason))heldRequests.set(input,policyReason);
-    if(policyMode&&HOLD_REASONS.has(policyReason)){attemptId=randomUUID();heldAttempts.set(input,attemptId);liveAttempts.add(attemptId);}
-    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:request?.method??null,address:request?.address??null,totalOs:total??null,decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),
-      ...(policyMode&&!manualApproved?{approvalMode:'policy',policyReason,reservationId,...(held?{policyHold:held}:{})}:{}),...(validity===undefined?{}:{confirmation:validity,declaredTotalOs:declaredTotal??null,confirmedRemovalsOs:confirmedTotal?.toString()??null,countedTotalOs:total??null,...(manualApproved?{manualApproved:true}:{})}),recordedAt:policyMode?at:now()});
-    if(policyMode&&accepted&&!manualApproved){reservations.set(input,{reservationId,approvalHash,...(attemptId?{attemptId}:{})});liveReservations.add(reservationId);}
+    if(closeSignal.aborted)throw closingError();
+    accepted&&=JSON.stringify(request)===requestBytes;
+    if(accepted)freezeRequest(request);
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:copy.method,address:copy.address??null,totalOs:declared.toString(),decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),recordedAt:now()});
     return accepted;
   };
-  const approve=async(request,validity,options={})=>{
-    try{
-      if(!policyMode)return await track(()=>decide(request,undefined,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?{attemptId:options.attemptId}:{}));
-      const snapshot=structuredClone(request);
-      return await track(()=>serializedPolicy(evidencePath,async()=>{
-        live();
-        if(options.preparing)dropPreparation(request);
-        const held=options.held===true?heldRequests.get(request)??null:null;
-        const attemptId=held?heldAttempts.get(request)??null:null;
-        const signed=options.preparing?null:signAuthorized.get(request)??null;
-        const accepted=await decide(snapshot,validity,{...options,origin:request,held,attemptId,signed,provisional:signed??preparations.get(request)});
-        live();
-        const heldNow=heldRequests.has(snapshot);
-        if(signAuthorized.has(snapshot))signAuthorized.set(request,signAuthorized.get(snapshot));
-        if(options.preparing&&(heldNow||(accepted&&!signAuthorized.has(snapshot)))){
-          const hold={decision:'approved',policy:true,outcome:null,jobId:snapshot.content.jobId,artifactKind:snapshot.content.artifactKind,totalOs:snapshot.content.debit.totalOs,approvalHash:sha(JSON.stringify(snapshot)),...(heldNow?{held:true,attemptId:heldAttempts.get(snapshot)}:{})};
-          if(!provisionalHolds.has(path))provisionalHolds.set(path,new Set());
-          provisionalHolds.get(path).add(hold);preparations.set(request,hold);
-        }else if(!options.preparing)dropPreparation(request);
-        if(accepted&&reservations.has(snapshot))reservations.set(request,reservations.get(snapshot));
-        if(signed&&accepted)signAuthorized.delete(request);
-        if(heldNow)heldRequests.set(request,heldRequests.get(snapshot));else heldRequests.delete(request);
-        if(heldNow)heldAttempts.set(request,heldAttempts.get(snapshot));
-        else if(attemptId&&accepted){heldAttempts.delete(request);liveAttempts.delete(attemptId);}
-        else if(signed&&!accepted){try{await completeReservation(request,signed,'released','confirmation-refused');}catch{}}
-        else if(attemptId){try{await releaseAttempt(attemptId,'confirmation-refused');heldAttempts.delete(request);}catch{}}
-        return accepted;
-      }));
-    }catch(error){
-      if(process.env.DACS_TEST_TRACE==='1')process.stderr.write(`devnet-operator-approval-error:${error.code??'failed'}:${String(error.message).slice(0,200)}\n`);
-      throw error;
-    }
+  const approve=(request,validity,options={})=>{
+    if(!policyMode)return track(()=>decideManually(request,typeof options?.attemptId==='string'&&ATTEMPT_ID.test(options.attemptId)?options.attemptId:null));
+    return validity===undefined?approve.prepare(request):confirm(request,validity);
   };
-  approve.prepare=(request)=>approve(request,undefined,{preparing:true});
+  approve.decide=decide;
+  approve.prepare=async(request)=>(await decide(request)).outcome==='approved';
+  approve.authorizeHeld=authorizeHeld;
+  approve.releaseHeld=(request,reason)=>locked(async()=>{const record=records.get(request);if(record?.attemptId&&!record.reservation)endAttempt(request,record,reason);});
   approve.pause=pause;
   approve.stop=()=>{
     stopped=true;halt.abort();for(const entry of pauses){clearTimeout(entry.timer);entry.fail(stoppedError(LEDGER_STOPPED));}pauses.clear();
     return idle??=(async()=>{while(flights.size)await Promise.allSettled([...flights]);})();
   };
-  approve.heldForManual=(request)=>heldRequests.has(request);
-  approve.heldAttempt=(request)=>heldAttempts.get(request)??null;
-  approve.authorizeSign=(request)=>{
-    if(!signRecords)return Promise.resolve(true);
-    return track(()=>serializedPolicy(evidencePath,async()=>{
-      live();
-      const attemptId=heldAttempts.get(request);
-      if(!heldRequests.has(request)||!attemptId||signAuthorized.has(request))return false;
-      try{
-        const attempt=(await whenReadable(()=>readPolicyLedger(evidencePath),request)).attempts.get(attemptId);
-        if(!attempt||attempt.outcome!==null||attempt.reservation||attempt.approvalHash!==sha(JSON.stringify(request)))return false;
-        freezeRequest(request);
-        // Reread after the manual answer and ledger wait, immediately before the synchronous append.
-        const refusal=await stillOpenBeforePayment(request,policy,heldRequests.get(request));live();
-        if(refusal){
-          await releaseAttempt(attemptId,'confirmation-refused');
-          heldAttempts.delete(request);heldRequests.delete(request);dropPreparation(request);return false;
-        }
-        await authorizeSigning(request,{attemptId});
-      }catch(error){
-        if(stopped)throw error;
-        return false;
-      }
-      live();
-      dropPreparation(request);
-      return true;
-    }));
-  };
-  const completeReservation=async(request,reservation,outcome,reason)=>{
-    const{rows}=await readPolicyLedger(evidencePath),row=rows.find(entry=>entry.reservationId===reservation.reservationId);
-    live();
-    if(!row||row.outcome!==null)throw new Error('seller policy reservation is unavailable');
-    const recordedAt=now();
-    if(!Number.isSafeInteger(recordedAt)||recordedAt<row.recordedAt)throw new Error('seller policy completion time is unavailable');
-    const confirmed=reservations.get(request)===reservation;
-    appendAttempt({reservationId:reservation.reservationId,approvalHash:reservation.approvalHash,...(reservation.attemptId?{attemptId:reservation.attemptId}:{}),outcome,
-      ...(!confirmed&&outcome==='released'?{reason:RELEASE_REASONS.has(reason)?reason:'wallet-released'}:{}),recordedAt});
-    reservations.delete(request);signAuthorized.delete(request);liveReservations.delete(reservation.reservationId);
-    if(reservation.attemptId){heldAttempts.delete(request);heldRequests.delete(request);liveAttempts.delete(reservation.attemptId);}
-  };
   approve.settle=async(request,outcome,reason='wallet-released')=>{
     if(!['spent','released','unknown'].includes(outcome))throw new TypeError('seller attempt outcome must be spent, released or unknown');
     if(outcome==='unknown')return;
-    return track(()=>serializedPolicy(evidencePath,async()=>{
-      live();
-      if(outcome==='released')dropPreparation(request);
-      const reservation=reservations.get(request)??signAuthorized.get(request);
-      if(!reservation){
-        const attemptId=heldAttempts.get(request);
-        if(attemptId&&outcome==='released'){await releaseAttempt(attemptId,RELEASE_REASONS.has(reason)?reason:'wallet-released');heldAttempts.delete(request);}
-        return;
-      }
-      await completeReservation(request,reservation,outcome,reason);
-    }));
+    return locked(async()=>{
+      const record=records.get(request);
+      if(record?.reservation)completeReservation(request,record,await openSignLine(record),outcome,reason);
+      else if(record?.attemptId&&outcome==='released')endAttempt(request,record,RELEASE_REASONS.has(reason)?reason:'wallet-released');
+    });
   };
   // Restart only labels unresolved attempts; it never resends or releases them.
-  approve.reconcile=()=>track(()=>serializedPolicy(evidencePath,async()=>{
+  approve.reconcile=()=>locked(async()=>{
     if(!policyMode)return{released:[],held:[]};
     const{rows,attempts}=await readPolicyLedger(evidencePath),held=[];
     const describe=(row,extra)=>({jobId:row?.jobId??null,artifactKind:row?.request?.content?.artifactKind??null,...extra});
     for(const[attemptId,attempt]of attempts){
-      if(attempt.outcome!==null||attempt.reservation||liveAttempts.has(attemptId))continue;
+      if(attempt.outcome!==null||attempt.reservation||open.has(attemptId))continue;
       held.push(describe(rows.find(row=>row.attemptId===attemptId),{attemptId,reservationId:null,approvalHash:attempt.approvalHash,state:attempt.manual?'approved-sign-unknown':'approval-unknown'}));
     }
     for(const row of rows){
-      if(row.openAttempt||!row.policy||row.decision!=='approved'||row.outcome!==null||liveReservations.has(row.reservationId))continue;
+      if(row.openAttempt||!row.policy||row.decision!=='approved'||row.outcome!==null||open.has(row.reservationId))continue;
       const ids={attemptId:row.attemptId,reservationId:row.reservationId??null,approvalHash:row.approvalHash};
       if(!decidedFromJournals(row)){held.push(describe(row,{...ids,state:'no-completion-record'}));continue;}
       let issuance='unknown';
@@ -655,8 +559,16 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       held.push(describe(row,{...ids,state:issuance==='issued'?'issued-outcome-unknown':'issuance-unknown'}));
     }
     return{released:[],held};
-  }));
+  });
   return approve;
+}
+
+// Freeze the wallet-facing request so its retained bytes survive later asynchronous work.
+function freezeRequest(value){
+  if(value&&typeof value==='object'){
+    for(const child of Object.values(value))freezeRequest(child);
+    Object.freeze(value);
+  }
 }
 
 // Admission of a context step's Vet writes to the policy budgets, on the same
@@ -988,8 +900,6 @@ function serializedPolicy(evidencePath,work){
 }
 
 const policyTails=new Map();
-// Each ledger path's in-memory preparations (createExactOperatorApproval).
-const provisionalHolds=new Map();
 
 const KINDS=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord','SettlementEvidence','Deliverable']);
 
@@ -1047,16 +957,4 @@ export async function stillOpenBeforePayment(request,policy,held=false){
 export async function stillAuthorizedToSign(request,policy,held=false){
   const{c,artifact,row}=admittedWrite(request);
   return purchaseRefusal(row,c,artifact,policy,held===true);
-}
-
-let ttyPrompts=0;
-/** Return whether an interactive non-Listing approval prompt is pending. */
-export const ttyApprovalPending=()=>ttyPrompts>0;
-
-// Freeze the wallet-facing request so its retained bytes survive later asynchronous work.
-function freezeRequest(value){
-  if(value&&typeof value==='object'){
-    for(const child of Object.values(value))freezeRequest(child);
-    Object.freeze(value);
-  }
 }

@@ -5,15 +5,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {paymentEvidenceAddress} from '@kynesyslabs/dacs';
-import { address,seller,buyer,pin,sourceBinding,T0,JOBS,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
+import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
 const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,withContextHolds,heldPolicyBudget,sellerPurchaseSource,releaseSellerContextHolds }=await import('../src/devnet-demo/operator-approval.mjs');
 const { sellerRecordsPurchaseResolver,sellerHeldEvidenceJobs }=await import('../src/devnet-demo/seller-purchase-source.mjs');
 const { acquireSellerStateLock,SELLER_STATE_LOCK_REFUSALS }=await import('../src/devnet-demo/seller-state-lock.mjs');
 async function directory(t){const root=await mkdtemp(join(tmpdir(),'d5-unit-'));t.after(()=>rm(root,{recursive:true,force:true}));return root;}
-const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,prePaymentOpen:false});
+const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:false});
+const unpaid=(prePaymentOpen)=>({...purchase(),paymentObserved:false,paymentTxRef:null,prePaymentOpen});
+const policyInputs=(resolvePurchase,paymentPhaseIndex)=>({address,seller,sourceBinding,artifactAuthority,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex,deliveryPhaseIndex:()=>3,deliveredPayloadHash:deliveredHashFor});
 async function policy(t,{resolvePurchase=()=>null,limits={},paymentPhaseIndex=()=>2}={}){
  const evidencePath=join(await directory(t),'approvals.jsonl');
- const p=createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath,now:()=>T0,sellerApproval:{mode:'policy',...limits},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex}});
+ const p=createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath,now:()=>T0,sellerApproval:{mode:'policy',...limits},policy:policyInputs(resolvePurchase,paymentPhaseIndex)});
  return {p,evidencePath};
 }
 
@@ -34,7 +36,7 @@ test('A2 authenticated context capacity does not approve a pre-payment Vet; exac
  assert.equal(heldPolicyBudget(withContextHolds(parsePolicyLedger(await readFile(evidencePath,'utf8')).rows),T0).writes,2);
 });
 test('A3 pre-payment commitment stays held even with a seller proposal; a decline creates no sign authority',async t=>{
- const open={...purchase(),paymentObserved:false,prePaymentOpen:true};const {p,evidencePath}=await policy(t,{resolvePurchase:()=>open});let prompts=0;
+ const open=unpaid(null);const {p,evidencePath}=await policy(t,{resolvePurchase:()=>open});let prompts=0;
  const approval=composeSellerApproval({mode:'policy',policy:p,manual:async()=>{prompts++;return false;}});
  assert.equal(await approval(requestFor({artifactKind:'FinalityCommitmentRecord'})),false);assert.equal(prompts,1);
  const ledger=parsePolicyLedger(await readFile(evidencePath,'utf8'));assert.equal(ledger.rows.some(r=>r.signAuthorized),false);assert.equal(heldPolicyBudget(ledger.rows,T0).writes,0);
@@ -47,7 +49,7 @@ test('A4 a paid job may authorize a bounded automatic write; an unknown result s
 });
 test('A5 malformed bytes, a closed job, wrong chain, or excessive fee cannot be rescued by manual pre-payment approval',async t=>{
  for(const kind of ['bytes','closed','chain','endpoint','fee']){
-  let found={...purchase(),paymentObserved:false,prePaymentOpen:kind!=='closed'};
+  let found=unpaid(kind!=='closed');
   const {p}=await policy(t,{resolvePurchase:()=>found});let prompts=0;const a=composeSellerApproval({mode:'policy',policy:p,manual:()=>{prompts++;return true;}});
   const r=requestFor({artifactKind:'FinalityCommitmentRecord'});
   if(kind==='bytes')r.content.exactCreate='{}';if(kind==='chain')r.content.networkBinding={...sourceBinding,chainIdentity:'f'.repeat(64)};if(kind==='endpoint')r.content.networkBinding={...sourceBinding,endpoint:'https://another.test.invalid/'};if(kind==='fee')r.content.debit.totalOs='9000000000';
@@ -62,8 +64,8 @@ test('A7 paid-job policy refusal remains held for exact seller approval, which c
  const r=requestFor({artifactKind:'Deliverable'});
  assert.equal(await a(r),true);assert.equal(prompts,1);
  assert.equal(await a.confirm(confirmationFor(r)),true);await a.settle(r,'spent');
- const confirmed=JSON.parse((await readFile(evidencePath,'utf8')).trimEnd().split('\n').at(-1));
- assert.deepEqual([confirmed.decision,confirmed.manualApproved],['approved',true]);
+ const confirmed=(await readFile(evidencePath,'utf8')).trimEnd().split('\n').map(JSON.parse).filter(line=>line.confirmation).at(-1);
+ assert.deepEqual([confirmed.decision,confirmed.approvalMode,confirmed.policyHold],['approved','policy','write-fee-cap']);
 });
 test('L1 policy count and amount limits refuse context capacity before any ledger line',async t=>{
  for(const limits of [{maxWritesPerHour:1},{maxTotalOsPerHour:'4000000000'}]){
@@ -119,7 +121,7 @@ test('L6 one Vet converts only one slot across multiple retained holds of the sa
 test('A8 a fresh policy instance keeps an unknown issued reservation held beyond the hour and refuses another automatic write',async t=>{
  const {p,evidencePath}=await policy(t,{resolvePurchase:purchase,limits:{maxWritesPerHour:1}}),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
  assert.equal(await p.prepare(r),true);assert.equal(await p(r,confirmationFor(r)),true);await p.settle(r,'unknown');
- const restarted=createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath,now:()=>T0+7200000,sellerApproval:{mode:'policy',maxWritesPerHour:1},policy:{address,seller,sourceBinding,listingPin:()=>pin,resolvePurchase:purchase,paymentPhaseIndex:()=>2,issuance:async()=> 'issued'}});
+ const restarted=createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath,now:()=>T0+7200000,sellerApproval:{mode:'policy',maxWritesPerHour:1},policy:{...policyInputs(purchase,()=>2),issuance:async()=> 'issued'}});
  const before=await readFile(evidencePath,'utf8'),answer=await restarted.reconcile();assert.equal(answer.held.length,1);assert.equal(answer.held[0].state,'issued-outcome-unknown');assert.deepEqual(answer.released,[]);assert.equal(await readFile(evidencePath,'utf8'),before);
  assert.equal(await restarted.prepare(r),false);assert.equal(parsePolicyLedger(await readFile(evidencePath,'utf8')).rows.filter(row=>row.signAuthorized).length,1);
 });
@@ -139,11 +141,13 @@ test('A9 payment evidence uses the trusted Listing phase index, and absent or ma
 for(const [reason,options,open] of [
  ['evaluated-party',{artifactKind:'CompositeVerificationRecord',party:'did:demos:agent:'+'c'.repeat(64)},true],
  ['logical-address',{logicalAddress:'dacs4:deliverable:'+JOBS[1]}],
- ...['listing','listingPin','listingRef'].map(field=>['listing',{artifactKind:'SettlementEvidence',artifact:{[field]:{...pin,version:2}}}]),
+ ['listing',{artifact:{listing:{...pin,version:2}}}],
+ ['listing',{artifactKind:'FinalityCommitmentRecord',artifact:{listingRef:{...pin,version:2}}},true],
+ ['artifact',{artifactKind:'SettlementEvidence',artifact:{listingPin:{...pin,version:2}}}],
  ['agreement',{artifact:{agreementHash:'f'.repeat(64)}}],
  ['payment-amount',{artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{paymentAmount:{amount:'2',currency:'DEM'}}}],
 ])test(`policy refuses exact CREATE content with mismatched ${reason} before sign authority`,async t=>{
- const {p,evidencePath}=await policy(t,{resolvePurchase:()=>({...purchase(),...(open?{paymentObserved:false,prePaymentOpen:true}:{})})});
+ const {p,evidencePath}=await policy(t,{resolvePurchase:()=>open?unpaid(true):purchase()});
  assert.equal(await p.prepare(requestFor(options)),false);
  const rows=parsePolicyLedger(await readFile(evidencePath,'utf8')).rows;
  assert.equal(JSON.parse((await readFile(evidencePath,'utf8')).trim().split('\n').at(-1)).policyReason,reason);assert.equal(rows.some(row=>row.signAuthorized),false);
@@ -151,9 +155,7 @@ for(const [reason,options,open] of [
 
 for(const change of [{jobId:JOBS[1]},{phase:'pay-dem'},{phaseIndex:-1},{listing:{...pin,version:2}},{agreementHash:'f'.repeat(64)},
  {fulfilmentId:''},{purchaseAmount:{amount:'2',currency:'DEM'}},{payloadHash:'f'.repeat(64)}])test(`policy refuses mismatched delivery binding ${Object.keys(change)[0]} before sign authority`,async t=>{
- const {p,evidencePath}=await policy(t,{resolvePurchase:purchase}),request=requestFor();
- Object.assign(request.content.deliveryBinding,change);
- const op=JSON.parse(request.content.exactCreate);op.metadata.deliveryBinding=request.content.deliveryBinding;request.content.exactCreate=JSON.stringify(op);
+ const {p,evidencePath}=await policy(t,{resolvePurchase:purchase}),request=requestFor({editDeliveryBinding:binding=>Object.assign(binding,change)});
  assert.equal(await p.prepare(request),false);
  const rows=parsePolicyLedger(await readFile(evidencePath,'utf8')).rows;
  assert.equal(JSON.parse((await readFile(evidencePath,'utf8')).trim().split('\n').at(-1)).policyReason,'delivery-binding');assert.equal(rows.some(row=>row.signAuthorized),false);
