@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as core from '@kynesyslabs/dacs';
 import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
+import {seller} from './helpers/protocol-fixture.mjs';
+import {fixtureListing} from './fixtures/listings.mjs';
 import {assertQualifiedDeployment} from '../src/devnet-demo/deployment-qualification.mjs';
 import {classifyStorageWriteSubmission,storageWriteAbsent,storageWriteConfirmationMatches,storageWriteAccountNonce,rpcEnvelope} from '../src/devnet-demo/storage-write-recovery.mjs';
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX'];
@@ -266,6 +268,29 @@ test('only a row that carries no hash or signed transaction can be an unsigned p
   await w.journal.put(key,changed);
   assert.notEqual((await w.open().read(input)).provenUnsigned,true,JSON.stringify(Object.keys(changed))+changed.stage);
  }
+});
+
+// A Listing the operator refused is asked again only on the same proof as any
+// unsigned intent: no signed CREATE for its address retained in either journal.
+const deniedListing=async()=>{
+ const w=await anchorFixture({writer:{claim:seller.claim,sign:seller.signBytes},artifactKinds:['Listing']}),listing=fixtureListing(seller,{now:1800000000000});
+ const input={logicalAddress:core.listingAddress(seller.claim,listing.listingId,listing.listingVersion),artifact:listing,artifactKind:'Listing',reaskDenied:true};
+ w.controls.request=async()=>({success:false,error:{code:'user_rejected'}});
+ assert.equal((await w.open().publish(input)).status,'rejected');
+ return {w,input};
+};
+test('a refused Listing is asked again when no signed CREATE is retained for it',async()=>{
+ const {w,input}=await deniedListing();
+ await w.open().publish(input);
+ assert.equal(w.captured.length,2);
+});
+for(const journal of ['source','wallet'])test(`a refused Listing is not asked again once the ${journal} journal retains a signed CREATE for it`,async()=>{
+ const {w,input}=await deniedListing(),signed={stage:'signed',hash:'a'.repeat(64),signedTransaction:w.captured[0].transaction};
+ if(journal==='source')await w.sourceJournal.put('source/signed',signed);else await w.journal.put('demo/wallet/signed',signed);
+ // The node has caught up with that CREATE, so only the proof can stop a second ask.
+ w.controls.nonce=1;w.source.binding=async()=>({disposition:'pending'});w.source.recoverStorageWrite=async()=>{};
+ for(let i=0;i<2;i++)await w.open().publish(input).catch(error=>assert.notEqual(error.code,undefined,String(error)));
+ assert.equal(w.captured.length,1,'a signed CREATE is never asked of the wallet again');
 });
 
 for (const restart of [false, true]) for (const otherJob of [false, true]) test(`interrupted unsigned intent releases its nonce for ${otherJob ? 'another' : 'the same'} job, restart=${restart}`, async () => {
