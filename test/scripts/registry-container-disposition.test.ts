@@ -345,7 +345,8 @@ describe("registry/container workflow wiring", () => {
       ".github/workflows/registry-container-audit-drift.yml", "scripts/registry-container-disposition.mjs", "scripts/sync-vectors.mjs",
       "scripts/registry-container-audit-baseline.json", "scripts/verify-registry-container-consumer.sh",
       "scripts/acceptance-evidence-io.mjs", "scripts/bounded-build.mjs", "scripts/bounded-command.mjs",
-      "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh", "scripts/bounded-http.sh", "scripts/http-json-limits.mjs"]));
+      "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh", "scripts/bounded-http.sh", "scripts/http-json-limits.mjs",
+      "scripts/acceptance-seal.mjs", "scripts/registry-container-registry.sh"]));
   });
 
   it("has the scheduled drift workflow call acceptance with drift enforced", () => {
@@ -554,6 +555,7 @@ describe("registry/container workflow wiring", () => {
       "scripts/bounded-http.sh", "scripts/http-json-limits.mjs", "package.json",
       "scripts/acceptance-evidence-io.mjs", "scripts/bounded-build.mjs", "scripts/bounded-command.mjs",
       "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh",
+      "scripts/acceptance-seal.mjs", "scripts/registry-container-registry.sh",
       "scripts/publish-release-set.mjs", "scripts/verify-release-set.mjs", "scripts/check-npm-advisories.mjs",
       "package-lock.json", ".github/workflows/", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${path} @randomblocker`);
