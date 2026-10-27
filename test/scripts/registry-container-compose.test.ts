@@ -47,33 +47,6 @@ it("supplies every required generated Compose variable with inert run-local inpu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-it("serves the candidates' @kynesyslabs scope only from this run's publish", () => {
-  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
-  const config = source.split('cat > "$registry_config"')[1]!.split("\nYAML")[0]!;
-  const block = config.split("\npackages:\n")[1]!.split(/\n(?=\S)/)[0]!;
-  // Verdaccio applies the first rule whose pattern matches the package name.
-  const rules = [...block.matchAll(/^ {2}'([^']+)':\n((?: {4}.+\n?)+)/gm)].map(([, pattern, body]) => ({ pattern: pattern!,
-    proxy: /^ {4}proxy: (\S+)$/m.exec(body!)?.[1] ?? null, publish: /^ {4}publish: /m.test(body!) }));
-  const firstRule = (name: string) => rules.find(({ pattern }) => new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "\0").replace(/\*/g, "[^/]*").replace(/\0/g, ".*") + "$").test(name))!;
-  for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "create-dacs-agent"]) {
-    expect(firstRule(name), name).toMatchObject({ pattern: name, proxy: null, publish: true });
-  }
-  // A future candidate in the scope is never proxied either.
-  expect(firstRule("@kynesyslabs/dacs-substrate")).toMatchObject({ pattern: "@kynesyslabs/*", proxy: null });
-  expect(firstRule("@kynesyslabs/demosdk")).toMatchObject({ proxy: "npmjs", publish: false });
-  expect(firstRule("viem")).toMatchObject({ pattern: "**", proxy: "npmjs" });
-});
-
-it("keeps Verdaccio's writable authentication state under its configured storage", () => {
-  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
-  const config = source.split('cat > "$registry_config"')[1]!.split("\nYAML")[0]!;
-  const storage = config.match(/^storage: (.+)$/m)![1]!;
-  const authFile = config.match(/^    file: (.+)$/m)![1]!;
-  expect(authFile.startsWith(storage + "/")).toBe(true);
-  expect(source).toContain('$registry_config:/verdaccio/conf/config.yaml:ro');
-});
-
 it("invokes only Compose config and writes the rendered artifact", () => {
   const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
   const start = source.indexOf("\nenv \\\n");

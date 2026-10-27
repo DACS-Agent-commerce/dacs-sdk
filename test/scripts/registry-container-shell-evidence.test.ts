@@ -31,7 +31,6 @@ function encodeDoctor(report: Record<string, unknown>) {
 function compose(overrides: Record<string, string> = {}, rails = "both", version = "0.1.0-test") {
   const stage = scratch();
   const consumer = scratch();
-  const project = join(consumer, "one-click-agent"); mkdirSync(project);
   const release = scratch();
   const files = {
     "docker-image.json": JSON.stringify([{ Id: "fixture", Size: 1, Config: { User: "10001:10001" } }]),
@@ -47,21 +46,22 @@ function compose(overrides: Record<string, string> = {}, rails = "both", version
     "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n",
     "doctor.json": readFileSync(join(root, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"), ...overrides,
   };
-  const consumerFiles = ["generated-tests.exit-code", "doctor.log", "doctor.exit-code", "doctor.json", "npm-audit.json",
-    "npm-audit.exit-code", "consumer-lock.cdx.json", "consumer-lock-sbom.err", "consumer-lock-sbom.exit-code",
-    "consumer-physical.cdx.json", "consumer-physical-sbom.err", "consumer-physical-sbom.exit-code", "engine-strict.log",
-    "engine-strict.exit-code", "engine-versions.json"];
+  // The consumer phases' output, named by the script's own lists and collected the way it collects them.
+  const lists = source().match(/^measure_evidence=\([\s\S]*?^execute_evidence=\(.*\)$/m)?.[0] ?? "";
+  const collect = `${lists}\nnode scripts/acceptance-seal.mjs collect "$consumer" "$artifact_stage" "\${measure_evidence[@]}" "\${execute_evidence[@]}"\n`;
+  const consumerFiles = spawnSync("bash", ["--norc", "--noprofile", "-euc", `${lists}\nprintf '%s\\n' "\${measure_evidence[@]}" "\${execute_evidence[@]}"`],
+    { encoding: "utf8" }).stdout.trim().split("\n");
+  expect(consumerFiles).toContain("doctor.json");
   for (const name of consumerFiles) writeFileSync(join(consumer, name), "fixture");
   for (const [name, value] of Object.entries(files)) {
     const destination = name === "release-provenance.json" ? release : consumerFiles.includes(name) ? consumer : stage;
     writeFileSync(join(destination, name), value);
   }
   writeFileSync(join(release, "SHA256SUMS"), "fixture");
-  for (const name of ["package.json", "package-lock.json"]) writeFileSync(join(project, name), "{}");
   const copyBlock = source().split('cp "$release_set/release-provenance.json"')[1]?.split("stage=summary")[0];
   expect(copyBlock).toBeDefined();
-  const transfer = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", 'cp "$release_set/release-provenance.json"' + copyBlock],
-    { encoding: "utf8", env: { PATH: process.env.PATH, release_set: release, project, consumer_root: consumer, artifact_stage: stage } });
+  const transfer = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", collect + 'cp "$release_set/release-provenance.json"' + copyBlock],
+    { cwd: root, encoding: "utf8", env: { PATH: process.env.PATH, release_set: release, consumer, artifact_stage: stage } });
   expect(transfer.status, transfer.stderr).toBe(0);
   const script = heredoc('node - "$artifact_stage" "$version" "$runtime_image"');
   expect(script).not.toBe("");
@@ -230,7 +230,7 @@ it("admits the actual generated doctor with the consumer command environment", (
   symlinkSync(join(root, "node_modules"), join(project, "node_modules"));
   const doctor = source().split("    doctor_status=0\n")[1]?.split('    printf "%s')[0]; expect(doctor).toBeTruthy();
   const command = doctor?.replace("npm run --silent dacs:doctor -- --json", `'${process.execPath}' --import '${join(root, "packages/dacs-node/dist/demosLoader.js")}' dist/src/cli.js doctor --json`)
-    .replaceAll("/work/doctor.json", join(project, "doctor.json")).replaceAll("/work/doctor.log", join(project, "doctor.log"));
+    .replaceAll("/out/doctor.json", join(project, "doctor.json")).replaceAll("/out/doctor.log", join(project, "doctor.log"));
   const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", `doctor_status=0\n${command}\ntest "$doctor_status" -eq 5`], { cwd: project, encoding: "utf8", env: { PATH: process.env.PATH } });
   expect(result.status, result.stderr + (existsSync(join(project, "doctor.log")) ? readFileSync(join(project, "doctor.log"), "utf8") : "")).toBe(0);
   const report = JSON.parse(readFileSync(join(project, "doctor.json"), "utf8"));

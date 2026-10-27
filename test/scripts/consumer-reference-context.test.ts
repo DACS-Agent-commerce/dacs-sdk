@@ -1,64 +1,63 @@
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 
-it.each([0, 23])("checks the consumer reference in its install context before package execution, status=%s", status => {
+it.each([0, 23])("checks the consumer reference on the read-only install before any other measurement, status=%s", status => {
   const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
-  const block = source.split("stage=consumer\n")[1]?.split('\nproject="$consumer_root/one-click-agent"')[0];
-  expect(block).toContain('--volume "$repo_root/scripts:/acceptance-sdk/scripts:ro"');
-  expect(block).toContain('--volume "$release_set:/release-set:ro"');
-  expect(block).toContain('--volume "$artifact_stage:/acceptance-artifacts"');
-  expect(block).toContain("--env npm_config_omit=optional");
-  expect(block).toContain("--deploy docker --no-install");
-  const body = block?.split("sh -ceu '\n")[1]?.split("' 2>&1 | tee")[0];
+  const block = source.split('--name "$consumer_container-measure"')[1]?.split("' 2>&1 | tee")[0];
+  for (const mount of ['"$generated_root:/work:ro"', '"$measure_out:/out"', '"$repo_root/scripts:/acceptance-sdk/scripts:ro"', '"$release_set:/release-set:ro"']) {
+    expect(block).toContain("--volume " + mount);
+  }
+  expect(block).not.toMatch(/\$artifact_stage|\$execute_out|\$sealed_root/);
+  expect(source).toContain("--env npm_config_omit=optional");
+  expect(source).toContain("--deploy docker --no-install");
+  const body = block?.split("sh -ceu '\n")[1];
   expect(body).toContain('node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry"');
-  if (!body) throw new Error("missing consumer shell body");
-  const end = body.indexOf('    printf "%s\\n" "$tests_status"');
-  expect(end).toBeGreaterThan(0);
+  if (!body) throw new Error("missing measure shell body");
   const directory = mkdtempSync(join(tmpdir(), "dacs-consumer-reference-"));
   try {
-    const working = join(directory, "consumer with spaces");
-    mkdirSync(working);
+    const working = join(directory, "consumer with spaces", "one-click-agent"), out = join(directory, "out");
+    mkdirSync(working, { recursive: true }); mkdirSync(out);
+    for (const name of ["package.json", "package-lock.json"]) writeFileSync(join(working, name), "{}\n");
     const trace = join(directory, "trace");
-    const snippet = body.slice(0, end).replaceAll("/work/dependency-policy.exit-code", join(directory, "dependency-policy.exit-code"));
+    const snippet = body.replaceAll("/out/", out + "/").replaceAll("/tmp/lock-only", join(directory, "lock-only"));
     const stubs = `
-      chown() { :; }
-      npm() {
-        printf 'npm:%s\n' "$*" >> "$TRACE";
-        if [ "$1" = create ]; then mkdir one-click-agent; fi
+      npm() { printf 'npm:%s\n' "$*" >> "$TRACE"; if [ "$1" = --version ]; then echo 11.19.0; fi; }
+      node() {
+        if [ "$1" = -p ]; then echo '{}'; return 0; fi
+        if [ "$#" -ne 7 ]; then return 97; fi; printf 'node:%s:%s\n' "$PWD" "$*" >> "$TRACE"; return "$POLICY_STATUS";
       }
-      node() { if [ "$#" -ne 7 ]; then return 97; fi; printf 'node:%s:%s\n' "$PWD" "$*" >> "$TRACE"; return "$POLICY_STATUS"; }
     `;
     const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", stubs + snippet], {
       cwd: working, encoding: "utf8", env: { PATH: process.env.PATH, TRACE: trace, POLICY_STATUS: String(status),
-        DACS_HOST_UID: "1000", DACS_HOST_GID: "1000", DACS_PACKAGE_VERSION: "0.1.0-test", DACS_GENERATED_MODE: "live-demos",
-        DACS_GENERATED_ROLE: "seller", DACS_GENERATED_RAILS: "both", npm_config_registry: "http://127.0.0.1:4873", npm_config_omit: "optional" },
+        DACS_PACKAGE_VERSION: "0.1.0-test", npm_config_registry: "http://127.0.0.1:4873", npm_config_omit: "optional" },
     });
     const commands = readFileSync(trace, "utf8");
-    expect(commands).toContain(`node:${working}/one-click-agent:`);
-    expect(commands).toContain("--dependency-policy " + working + "/one-click-agent http://127.0.0.1:4873");
-    expect(readFileSync(join(directory, "dependency-policy.exit-code"), "utf8")).toBe(status + "\n");
-    const transition = source.split("  set +e\n")[1]?.split("  # Preserve only")[0];
-    expect(transition).toBeDefined();
+    expect(commands).toContain(`node:${working}:`);
+    expect(commands).toContain(`--dependency-policy ${working} http://127.0.0.1:4873 ${out}/dependency-policy.json`);
+    expect(readFileSync(join(out, "dependency-policy.exit-code"), "utf8")).toBe(status + "\n");
+    // Cleanup reads the collected exit code to report a policy stop.
+    const transitionEnd = "      stage=dependency-policy\n    fi\n";
+    const transition = source.slice(source.indexOf('    if [ "${stage-}" = consumer ]'), source.indexOf(transitionEnd) + transitionEnd.length);
+    expect(transition).toContain('"$artifact_stage/dependency-policy.exit-code"');
     const classify = spawnSync("bash", ["--norc", "--noprofile", "-euc", transition + '\nprintf "%s" "$stage"'], {
-      encoding: "utf8", env: { PATH: process.env.PATH, stage: "consumer", consumer_root: directory },
+      encoding: "utf8", env: { PATH: process.env.PATH, stage: "consumer", artifact_stage: out },
     });
     expect(classify.status, classify.stderr).toBe(0);
     expect(classify.stdout).toBe(status === 0 ? "consumer" : "dependency-policy");
+    const order = ["npm:install --global --prefix /tmp/npm --ignore-scripts npm@11.19.0", "--dependency-policy", "npm:audit ",
+      "npm:sbom --sbom-format", "npm:sbom --package-lock-only", "npm:ci --package-lock-only"].map(step => commands.indexOf(step));
     if (status === 0) {
       expect(result.status, result.stderr).toBe(0);
-      expect(commands.indexOf("npm:install --ignore-scripts")).toBeLessThan(commands.indexOf("--dependency-policy"));
-      expect(commands.indexOf("--dependency-policy")).toBeLessThan(commands.indexOf("npm:rebuild better-sqlite3"));
-      expect(commands.indexOf("npm:rebuild better-sqlite3")).toBeLessThan(commands.indexOf("npm:run build"));
-      expect(commands).toContain("npm:test");
+      expect(order.every((index, position) => index >= 0 && (position === 0 || index > order[position - 1]!)), commands).toBe(true);
+      expect(readFileSync(join(out, "engine-versions.json"), "utf8")).toBe("{}\n");
     } else {
       expect(result.status).not.toBe(0);
-      expect(commands).not.toContain("npm:rebuild better-sqlite3");
-      expect(commands).not.toContain("npm:run build");
-      expect(commands).not.toContain("npm:test");
+      expect(commands).not.toContain("npm:audit");
+      expect(commands).not.toContain("npm:sbom");
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
