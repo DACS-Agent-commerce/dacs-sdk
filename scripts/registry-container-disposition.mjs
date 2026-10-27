@@ -522,7 +522,13 @@ function releaseCopyErrors(location, record, { name, integrity, version }, regis
   return errors;
 }
 
-const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
+// The text's every `npm error code`, or null for none. Repeated or differing
+// codes come back joined by a space, which no single code equals, so a log that
+// names a second failure never reads as the first one alone.
+const npmErrorCode = text => {
+  const codes = Array.from((text ?? "").matchAll(/^npm error code (\S+)$/gm), match => match[1]);
+  return codes.length === 0 ? null : codes.join(" ");
+};
 
 // Every module root and package scope in the closed inventory that names a
 // candidate, by its location, lock entry or package.json, must be an
@@ -908,7 +914,10 @@ export function extractPolicyFindings(read) {
     gitDependencies: dependencyPolicy?.violations.map(violation => ({ location: violation.location,
       field: violation.field ?? null, value: violation.value, ...identity(violation.location) })),
     engine: { exitCode: source.exitCode("engine-strict.exit-code"), code: npmErrorCode(strictLog),
-      reportedPackage: /Not compatible with your version of node\/npm: (\S+)/.exec(strictLog ?? "")?.[1] ?? null,
+      // npm stops at the first incompatible package, so a log naming several is
+      // not one a listed violation can account for (the joined name matches none).
+      reportedPackage: Array.from((strictLog ?? "").matchAll(/Not compatible with your version of node\/npm: (\S+)/g),
+        match => match[1]).join(" ") || null,
       scan, scanComplete, violations },
     lockSbom: sbom("consumer-lock-sbom"),
     physicalSbom: sbom("consumer-physical-sbom"),

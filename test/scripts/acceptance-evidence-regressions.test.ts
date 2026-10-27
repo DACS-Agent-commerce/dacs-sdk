@@ -238,6 +238,47 @@ describe("policy gate states", () => {
     });
   });
 
+  describe("engine log extraction", () => {
+    const reportA = "npm error Not compatible with your version of node/npm: a@1.0.0\n";
+    const engineLog = (log: string) => ({ ...passingSources(),
+      "generated-package-lock.json": JSON.stringify({ packages: { "": {},
+        "node_modules/a": { version: "1.0.0", integrity: "sha512-fixture", engines: { node: ">=22" } },
+        "node_modules/b": { version: "2.0.0", integrity: "sha512-fixture", engines: { node: ">=22" } } } }),
+      "engine-strict.log": log, "engine-strict.exit-code": "1\n" });
+    // Classifies against a baseline that lists every violation the lock scan finds.
+    const classifyLog = (log: string) => {
+      const findings = extracted(engineLog(log));
+      const known = { policyFindings: { engineViolations: findings.engine.violations } };
+      return { findings, state: classifyPolicyChecks(withFindings(findings), known).engineStrict };
+    };
+
+    it("accepts one EBADENGINE report naming a listed violation", () => {
+      expect(classifyLog(`npm error code EBADENGINE\n${reportA}`).state).toBe("baseline");
+    });
+
+    it.each([
+      ["a network error after it", `npm error code EBADENGINE\n${reportA}npm error code ENOTFOUND\n`],
+      ["a network error before it", `npm error code ENOTFOUND\nnpm error code EBADENGINE\n${reportA}`],
+      ["the same code twice", `npm error code EBADENGINE\n${reportA}npm error code EBADENGINE\n`],
+    ])("blocks an EBADENGINE report with %s and keeps every code", (_label, log) => {
+      const { findings, state } = classifyLog(log);
+      expect(state).toBe("blocked");
+      expect(findings.engine.code).not.toBe("EBADENGINE");
+      expect(findings.engine.code).toContain("EBADENGINE");
+    });
+
+    it("keeps the network code of a log that never reports the engine", () => {
+      expect(classifyLog("npm error code ENOTFOUND\n").findings.engine).toMatchObject({ code: "ENOTFOUND" });
+    });
+
+    it("blocks a log that reports two incompatible packages, as npm stops at the first", () => {
+      const log = `npm error code EBADENGINE\n${reportA}npm error Not compatible with your version of node/npm: b@2.0.0\n`;
+      const { findings, state } = classifyLog(log);
+      expect(findings.engine.violations).toHaveLength(2);
+      expect(state).toBe("blocked");
+    });
+  });
+
   it("rejects an incomplete engine scan behind a successful exit code", () => {
     const engine = { exitCode: 0, code: null, scanComplete: false, violations: [] };
     expect(classifyPolicyChecks(withFindings({ engine }), baseline).engineStrict).toBe("blocked");
