@@ -946,6 +946,10 @@ Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`,
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | b2a3acd0b40dfab8d88586e7fe6326fbbb11a697 |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 3cd9965ac3a3fcf7191550d7bffae2b67b8841a2 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2 |
+| D11 | fix(client): D11 record the chosen blobs of three parallel-record paths | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 
 ## Complete commit and file inventory
 
@@ -2625,6 +2629,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 | fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
 | fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the chosen blobs of three parallel-record paths | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 resolve recorded blobs by the commit graph, not ledger order | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
 
 ## Original moved files
 
