@@ -390,6 +390,15 @@ function candidateAliasErrors(manifest, lock, inventory, candidates) {
   return [...errors];
 }
 
+// Node resolves a package's own name to its own folder before any
+// node_modules, so the project's package.json is a scope like an installed
+// one: it may not name a candidate, nor repeat a key a runtime may read instead.
+function projectScopeErrors(manifestText, manifest, candidates) {
+  if (repeatsTopLevelKey(manifestText)) return ["cannot read the project package.json: it repeats a top-level key"];
+  return candidates.filter(({ name }) => manifest.name === name)
+    .map(({ name }) => "the project is named for candidate package " + name);
+}
+
 // Certify a location from its independently verified closure archive, never
 // from lock claims alone. Bundles and opaque entries have no such files.
 function releaseCopyErrors(location, record, { name, integrity, version }, registry) {
@@ -545,10 +554,11 @@ function authenticateCandidateInventory(closure, inventory, candidates, registry
 // What keeps the installation from holding only release copies of
 // `candidates`, given its closure: candidates that run install code, candidate
 // identities anywhere in it that are not the release at its own name, and
-// candidates declared under another name.
-function candidateIntegrityErrors({ manifest, lock, registry, candidates, closure, installed }) {
+// candidates declared under another name or by the project's own name.
+function candidateIntegrityErrors({ manifestText, manifest, lock, registry, candidates, closure, installed }) {
   const inventory = candidateInventory(closure, installed, registry);
   return [
+    ...projectScopeErrors(manifestText, manifest, candidates),
     ...candidates.flatMap(({ name, files }) => {
       const scripts = declaredInstallScripts(files);
       return scripts.length ? [`candidate package runs code when installed (${scripts.join(", ")}): ${name}`] : [];
@@ -565,7 +575,8 @@ function candidateIntegrityErrors({ manifest, lock, registry, candidates, closur
 // release in `releaseSet`; otherwise it throws listing each difference.
 function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet, version }) {
   const project = realpathSync(projectPath);
-  const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
+  const manifestText = readFileSync(join(project, "package.json"), "utf8");
+  const manifest = JSON.parse(manifestText);
   const lock = JSON.parse(readFileSync(join(project, "package-lock.json"), "utf8"));
   const missing = DUAL_RAIL_DEPENDENCIES.filter(name => typeof manifest.dependencies?.[name] !== "string");
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
@@ -579,7 +590,7 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
     ? installedCandidateModules(project, closure) : new Map();
   const errors = [...closure.errors, ...differences.slice(0, MAX_LISTED_DIFFERENCES),
     ...(differences.length > MAX_LISTED_DIFFERENCES ? [`and ${differences.length - MAX_LISTED_DIFFERENCES} more differences`] : []),
-    ...candidateIntegrityErrors({ manifest, lock, registry, candidates, closure, installed })];
+    ...candidateIntegrityErrors({ manifestText, manifest, lock, registry, candidates, closure, installed })];
   if (errors.length) throw new Error(errors.join("\n"));
   const violations = registryDependencyViolations({ manifest, lock, registry });
   writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,

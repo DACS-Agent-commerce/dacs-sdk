@@ -1011,6 +1011,42 @@ describe("complete installed package scopes", { timeout: 60_000 }, () => {
   });
 });
 
+describe("the project's own package scope", { timeout: 60_000 }, () => {
+  const shadow = (project: string) => writeFileSync(join(project, "shadow.cjs"), "module.exports = 'unreleased-copy';\n");
+
+  it.each(CANDIDATES)("refuses a project named for candidate %s, which Node resolves to the project itself", name => {
+    const fixture = dependencyPolicyHarness();
+    Object.assign(fixture.manifest, { name, exports: "./shadow.cjs" });
+    const result = fixture.run(project => {
+      shadow(project);
+      expect(spawnSync(process.execPath, ["-p", `require(${JSON.stringify(name)})`], { cwd: project, encoding: "utf8" }).stdout)
+        .toBe("unreleased-copy\n");
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("the project is named for candidate package " + name);
+    expect(existsSync(fixture.report)).toBe(false);
+  });
+
+  it.each([["plain", '"name"'], ["escaped", '"\\u006eame"']])("refuses a project package.json that repeats a top-level key (%s spelling)", (_form, key) => {
+    const fixture = dependencyPolicyHarness();
+    Object.assign(fixture.manifest, { name: "ordinary-root", exports: "./shadow.cjs" });
+    const result = fixture.run(project => {
+      shadow(project);
+      writeFileSync(join(project, "package.json"), `{"name":"@kynesyslabs/dacs",${key}:"ordinary-root",` +
+        JSON.stringify({ ...fixture.manifest, name: undefined }).slice(1));
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot read the project package.json: it repeats a top-level key");
+    expect(existsSync(fixture.report)).toBe(false);
+  });
+
+  it("accepts a project with an ordinary name that exports its own files", () => {
+    const fixture = dependencyPolicyHarness();
+    Object.assign(fixture.manifest, { name: "ordinary-root", exports: "./shadow.cjs" });
+    expect(fixture.run(shadow)).toMatchObject({ status: 0, report: { passed: true } });
+  });
+});
+
 describe("registry/container evidence", () => {
   it("accepts a consumer installed exactly from its locked archives", () => {
     expect(dependencyPolicyHarness().run()).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
