@@ -117,13 +117,17 @@ test('a purchase already closed starts no seller challenge',async()=>{
  f.base.close();
 });
 test('a purchase closed while the challenge is issued retains no presentation',async()=>{
- const f=productionFixture(),p=await f.provider(),input=f.input();
+ const f=productionFixture(),input=f.input();
+ // Observe every row write that would retain a presentation for this job.
+ const update=f.store.update;let retained=false;
+ f.config.store={...f.store,update:async(key,change)=>update(key,(old,rows)=>{const next=change(old,rows);if(next?.presentation)retained=true;return next;})};
  const issue=f.counterparty.issueChallenge;let closed=false;
  // The verifier issues its one-use challenge, and the purchase closes before
  // the seller can retain it.
  f.counterparty.issueChallenge=async request=>{const challenge=await issue(request);closed=true;return challenge;};
+ const p=await f.provider();
  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>closed?'closed':true),e=>e.code==='not-pending');
- assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);
+ assert.equal(retained,false);assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);
  assert.equal(await p.state.read(input.scope.jobId),null);
  f.base.close();
 });
