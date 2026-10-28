@@ -354,7 +354,7 @@ test('a Vet reference is signed only through the passing record of this job, par
   // the seller's. A party's own signature is refused at the reference, before
   // any record is read; a reference naming the counterparty is refused at the
   // record it names when the party signed that record itself.
-  const notCounterparty = /^DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: (buyer|seller) Vet ref is not signed by its counterparty verifier$/;
+  const notCounterparty = /^DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: (buyer|seller) Vet ref is not at its canonical address with its counterparty verifier$/;
   const counterpartyRefs = {
     'a seller record the seller signed as its own verifier': ['seller', await w.admission.vetRecord(w.jobId, sellerClaim, sellerBundle, { requirement: w.listing.buyerRequirement, verifier: w.sellerKey }), notCounterparty],
     'a buyer record the buyer signed as its own verifier': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, verifier: w.buyerKey }), notCounterparty],
@@ -546,15 +546,14 @@ test('a retained Vet context is verified against its records again before the se
   assert.equal((await agent.receiveProposal(await w.proposalFor(w.vetted))).disposition,'complete');
   assert.equal(typeof agent.durableSessionOf(w.jobId).demDeliveryContext,'object');
   const request = await w.proposalFor(w.vetted);
-  for (const [label, reason] of [['down', /^VET_RECORD_UNVERIFIED: the buyer Vet record is unavailable$/], ['other', /^VET_RECORD_UNVERIFIED: buyer: the Vet record does not hash to its reference$/]]) {
+  for (const [label, reason] of [['down', /buyer Vet record cannot be resolved/], ['other', /Vet record does not hash to its reference/]]) {
     mode = label;
-    for (const phase of ['running', 'restarted']) {
-      if (phase === 'restarted') { agent.close(); agent = await w.agent(options()); }
-      const answer = await agent.receiveProposal(request);
-      assert.equal(answer.disposition,label==='down'?'indeterminate':'rejected', `${label}, ${phase}`);
-      assert.equal(answer.contribution, undefined, `${label}, ${phase}: no seller contribution is issued`);
-      assert.match(answer.reason, reason, `${label}, ${phase}`);
-    }
+    const held = error => error.code === 'seller_state_unverified' && error.status === 503 && reason.test(error.message);
+    await assert.rejects(agent.receiveProposal(request), held, `${label}, running`);
+    agent.close();
+    await assert.rejects(w.agent(options()), held, `${label}, restarted`);
+    mode = 'ok';
+    agent = await w.agent(options());
   }
   mode = 'ok';
   assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'the retained context whose records verify is signed');
@@ -1063,6 +1062,68 @@ test('an admitted unsigned proposal resumes after challenge expiry, including ac
  const expired = presentWith(other.buyerKey, other.now, late.issueSessionChallenge({ jobId: other.jobId, buyer: other.buyerKey.claim }).sessionNonce);
  clock += SESSION_CHALLENGE_LIFETIME_MS;
  assert.deepEqual(await refused(async () => late.receiveProposal({ ...await other.proposalFor(other.vetted), buyerIdentityBundle: expired })), { code: 'session_not_admitted', status: 409 });
+});
+
+// A retained signing intent is not a completed signature: an unsigned retry
+// signs for the first time, so it is a new signing attempt and must pass the
+// seller's clock window on the current clock, not on the first attempt's
+// observation time.
+test('an unsigned retry outside the seller clock window is refused before any Agreement signature', async (t) => {
+  const w = await world(t);
+  let clock = w.now, agreementSignings = 0, failOnce = true;
+  const sign = bytes => {
+    const text = Buffer.from(bytes).toString();
+    if (text.startsWith('dacs-payee-bound-agreement:v1:')) {
+      agreementSignings += 1;
+      if (failOnce) { failOnce = false; throw new Error('TEST signer failed'); }
+    }
+    return w.sellerKey.sign(bytes);
+  };
+  const options = complete(w, { durableDirectory: w.dir(), now: () => clock, signer: { claim: w.sellerKey.claim, sign } });
+  const request = await w.proposalFor(w.vetted);
+  let agent = await w.agent(options);
+  const first = await agent.receiveProposal(request);
+  assert.equal(first.disposition, 'indeterminate', 'the failed signer leaves the signing outcome unknown');
+  assert.equal(agreementSignings, 1, 'the first attempt reached the signer');
+  agent.close();
+  clock += 600001;
+  agent = await w.agent(options);
+  t.after(() => agent.close());
+  const retry = await agent.receiveProposal(request);
+  assert.equal(retry.disposition, 'rejected');
+  assert.match(retry.reason, /clock window/);
+  assert.equal(agreementSignings, 1, 'the proposal outside the seller clock window is never signed');
+  assert.equal(retry.contribution, undefined);
+});
+
+// The same rule for the admitted context route: its absolute Agreement
+// deadline is rechecked at the signing attempt, including after a restart.
+test('an unsigned retry after the admitted Agreement deadline is refused before any Agreement signature', async (t) => {
+  const w = await world(t);
+  let clock = w.now, agreementSignings = 0, failOnce = true;
+  const sign = bytes => {
+    const text = Buffer.from(bytes).toString();
+    if (text.startsWith('dacs-payee-bound-agreement:v1:')) {
+      agreementSignings += 1;
+      if (failOnce) { failOnce = false; throw new Error('TEST signer failed'); }
+    }
+    return w.sellerKey.sign(bytes);
+  };
+  const options = complete(w, { durableDirectory: w.dir(), now: () => clock, contextRequest: () => true, signer: { claim: w.sellerKey.claim, sign } });
+  const request = await w.proposalFor(w.vetted);
+  let agent = await w.agent(options);
+  const first = await agent.receiveProposal(request);
+  assert.equal(first.disposition, 'indeterminate');
+  assert.equal(agreementSignings, 1);
+  agent.close();
+  clock += w.listing.terms.deadlineSecAfterCommit * 1000 + 1;
+  agent = await w.agent(options);
+  t.after(() => agent.close());
+  const retry = await agent.receiveProposal(request);
+  assert.equal(retry.disposition, 'rejected');
+  assert.match(retry.reason, /Agreement deadline/);
+  assert.equal(agreementSignings, 1, 'the Agreement after its absolute deadline is never signed');
+  assert.equal(retry.contribution, undefined);
 });
 
 // CORE §B.8 SN-1/SN-2: a matching saved nonce is insufficient when the

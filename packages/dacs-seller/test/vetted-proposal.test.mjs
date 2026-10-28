@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {proposalAdmissionFixture,proposalForInput} from './helpers/proposal-admission-fixture.mjs';
 import {JOB,NOW} from './helpers/protocol-fixture.mjs';
-import {canonicalize} from '@kynesyslabs/dacs';
+import {canonicalize,identityBundleHash} from '@kynesyslabs/dacs';
 import {createDemDeliveryContext} from '../src/dacs/dem-delivery-context-consumer.mjs';
 
 const MINIMUM_REPORT_SIZE=Buffer.byteLength(canonicalize({jobId:'0'.repeat(26),agreementHash:'0'.repeat(64),settlementId:`demos:${'0'.repeat(64)}`}));
@@ -51,7 +51,7 @@ test('a stalled DEM delivery context resolver aborts and releases the job fence'
 test('retired admission history remains bounded even when no live job is held',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true,maxJobs:1}),agent=await f.open();agent.close();
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const {sha256Hex}=await import('@kynesyslabs/dacs');const {buyer,NOW}=await import('./helpers/protocol-fixture.mjs');
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});try{for(let i=0;i<16;i++){const nonce=sha256Hex('TEST retired history '+i),hash=sha256Hex('TEST accepted presentation '+i);state.issueChallenge(nonce,{jobId:JOB,buyer:buyer.claim,issuedAt:NOW,expiresAt:NOW+600000});state.attemptChallenge(nonce,{presentationHash:hash});state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}}finally{state.close();}
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});try{for(let i=0;i<16;i++){const nonce=sha256Hex('TEST retired history '+i),hash=sha256Hex('TEST accepted presentation '+i);state.issueChallenge(nonce,{jobId:JOB.slice(0,-2)+i.toString(16).toUpperCase().padStart(2,'0'),buyer:buyer.claim,issuedAt:NOW,expiresAt:NOW+600000});state.attemptChallenge(nonce,{presentationHash:hash});state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}}finally{state.close();}
  const fresh=await f.open();assert.throws(()=>fresh.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
 });
 
@@ -81,6 +81,42 @@ test('a non-canonical proposal job is a definite job-invalid refusal, not an unc
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
  request.transportIdentity.jobId='bad:job';
  await assert.rejects(agent.receiveProposal(request),{code:'job_invalid',status:422});
+});
+
+test('a failed contribution save cannot leave publication ahead of durable session state',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true;const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(cut&&text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(session?.sellerContribution&&session.proposal===null){cut=false;throw new Error('TEST contribution save interrupted');}}return original(bytes);};
+ const agent=await f.open(),request=await f.proposal(agent);
+ const first=await agent.receiveProposal(request);assert.equal(first.disposition,'indeterminate');assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
+ const retry=await agent.receiveProposal(request);assert.equal(retry.disposition,'complete');
+ assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,retry.contribution);agent.close();
+ assert.deepEqual((await f.open()).agreementState(request.transportIdentity).contribution,retry.contribution);
+});
+
+test('a clock crossing the proposal window during the responder checkpoints is refused at the signing gate',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});
+ f.config.now=()=>new Error().stack.includes('signUnderPin')?NOW+600001:NOW;
+ const agent=await f.open(),request=await f.proposal(agent);
+ const answer=await agent.receiveProposal(request);
+ assert.notEqual(answer.disposition,'complete');assert.match(answer.reason,/clock window/);
+ assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
+ assert.ok(!f.signed.some(text=>text.startsWith('dacs-payee-bound-agreement:v1:')),'the stale proposal is never signed');
+});
+
+test('a pre-upgrade session without a retained generatedAt keeps its context-time signing decision',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),first=await f.open(),request=await f.proposal(first);first.close();
+ // A session retained before generatedAt was recorded: its admission was
+ // decided at the context time, so the signing gate must not re-interpret the
+ // missing field as an out-of-window proposal.
+ const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const {contentHash}=await import('@kynesyslabs/dacs'),{SELLER_PROFILE}=await import('../src/dacs/session-admission.mjs');
+ const bundle=request.buyerIdentityBundle,nonce=bundle.sessionNonce,presentationHash=contentHash(bundle),buyerBundleHash=identityBundleHash(bundle);
+ const admission=await f.admission.sessionAdmission.admit({jobId:JOB,buyer:bundle.presentedBy,buyerBundleHash,sessionNonce:nonce,seller:f.config.signer.claim,listingPin:listingPin(f.listing),profile:structuredClone(SELLER_PROFILE)});
+ state.attemptChallenge(nonce,{presentationHash});state.admitChallenge(nonce,presentationHash,{buyerBundle:structuredClone(bundle),buyerBundleHash,admission,admittedAt:NOW});
+ try{await state.withJob(JOB,async()=>state.saveSession({jobId:JOB,buyerBundle:structuredClone(request.buyerIdentityBundle),buyerBundleHash:identityBundleHash(request.buyerIdentityBundle),proposal:null,stage:'proposed',proposalAdmission:{proposalHash:request.proposal.proposalHash,observedAt:NOW,admitted:true}}));}finally{state.close();}
+ const agent=await f.open(),answer=await agent.receiveProposal(request);
+ assert.equal(answer.disposition,'complete');assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,answer.contribution);
 });
 
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{

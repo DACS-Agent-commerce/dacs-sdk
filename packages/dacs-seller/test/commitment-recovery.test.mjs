@@ -58,6 +58,32 @@ for(const early of[false,true])test(`early commitment ${early?'enabled':'disable
  if(!early){await assert.rejects(agent.commitOnSignature(request),e=>e.code==='signature_commitment_disabled');assert.equal(f.local.writes.length,0);return;}
  f.controls.agreement=null;assert.equal((await agent.commitOnSignature(request)).status,'commitment-held');assert.equal((await agent.commitOnSignature(request)).status,'commitment-held');assert.equal(f.local.writes.length,1);
 });
+// An early attempt that persisted its intent but published no CREATE (wallet
+// refusal, transient read, restart) must still sign on the retry once the
+// seller holds an authenticated proof that nothing was signed.
+test('an early commitment whose first publish signed nothing signs once on the authenticated retry',async t=>{
+ const f=await commitmentFixture(t,{early:true}),{agent,agreement}=await f.prepare(),request={jobId:JOB,agreement,signedProjection:projection(agreement)};
+ const absent=f.native.readRetained,publish=f.native.publish;let publishes=0;
+ f.native.readRetained=async input=>{const out=await absent(input);return out.status==='absent'?provenUnsignedAbsence('TEST no seller-signed intent'):out;};
+ f.native.publish=async input=>{publishes+=1;if(publishes===1)throw new Error('TEST wallet refused');return publish(input);};
+ let failure;try{await agent.commitOnSignature(request);}catch(error){failure=error;}
+ assert.equal(failure?.code,'commitment_failed');assert.equal(f.local.writes.length,0);agent.close();
+ const fresh=await f.open(),retried=await fresh.commitOnSignature(request);
+ assert.equal(retried.status,'commitment-held');assert.equal(publishes,2,'the proven-unsigned retry publishes exactly once');assert.equal(f.local.writes.length,1);
+});
+// DACS-3 §8.5.2: the pre-anchor notAfter check uses the current clock. A retry
+// that signed no CREATE is a new publication and cannot inherit a provisional
+// time from an attempt made while the Listing was still live.
+test('a retry that signed no commitment CREATE cannot publish after the Listing expired',async t=>{
+ const f=await commitmentFixture(t),{agent}=await f.prepare(),absent=f.native.readRetained,publish=f.native.publish;
+ f.native.readRetained=async input=>{const out=await absent(input);return out.status==='absent'?provenUnsignedAbsence('TEST no seller-signed intent'):out;};
+ f.native.publish=async()=>{throw new Error('TEST wallet refused');};
+ await assert.rejects(agent.commit({jobId:JOB}),e=>e.code==='commitment_failed');assert.equal(f.local.writes.length,0);agent.close();
+ f.native.publish=publish;f.advance(f.listing.validity.notAfter-NOW+1);
+ const fresh=await f.open();
+ await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='commitment_failed'&&/provisional time checks/.test(e.message));
+ assert.equal(f.local.writes.length,0,'a commitment CREATE is never requested after the Listing expired');
+});
 async function fixtureProfile(t,inspect=false){
  const create=inspect?(await (await import('./helpers/private-module.mjs')).privateModule(new URL('../src/dacs/seller-agent.mjs',import.meta.url),[],source=>source.replace('  return api;','  return {...api,TESTsessions:sessions};'))).createSellerAgent:createSellerAgent;
  const listing=fixtureListing(seller,{now:NOW}),bundle=fixtureIdentityBundle(buyer,NOW),input=agreementInput({jobId:JOB,listing,buyerBundle:bundle,generatedAt:NOW}),plan=core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(input)),contribution=await core.createFixedPriceAgreementSignatureContribution(plan,'buyer',{party:buyer.claim,algorithm:'ed25519',sign:buyer.signBytes});const material={proposalVersion:'1',plan,buyerContribution:contribution},proposal={...material,proposalHash:core.sha256Hex(core.canonicalize(material))},transportIdentity={jobId:JOB,planHash:plan.planHash,agreementHash:plan.agreementHash,buyer:buyer.claim,seller:seller.claim,proposalHash:proposal.proposalHash};

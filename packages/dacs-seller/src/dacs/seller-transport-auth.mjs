@@ -321,6 +321,19 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   function deleteEffect(effect) {
     for (const table of ['peer_effects', 'peer_slots', 'peer_transactions', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
   }
+  function contextPresentationProblem(request,body) {
+        const nonce = body.buyerIdentityBundle?.sessionNonce;
+        if (typeof nonce !== 'string' || !HASH.test(nonce)) return 'context_challenge_mismatch';
+        const row = get('SELECT * FROM peer_context_challenges WHERE nonce = ?', nonce);
+        if (!row) return 'context_challenge_mismatch';
+        if (row.attempted) return 'context_challenge_consumed';
+        run('UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', row.nonce);
+        try {
+          if (row.job !== request.jobId || row.buyer !== request.buyer || row.scope !== sellerContextScopeHash(sellerContextChallengeScope(body.scope))) return 'context_challenge_mismatch';
+        } catch { return 'context_challenge_mismatch'; }
+        if (row.expires_at <= now()) return 'context_challenge_expired';
+        return null;
+  }
   return {
     issueContextChallenge(request, scope, { maxPerBuyer = 5, maxGlobal = 12, admit } = {}) {
       requireJobId(request?.jobId);
@@ -360,19 +373,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     attemptContextPresentation(request, body) {
       requireJobId(request?.jobId);
       requireJobId(body?.scope?.jobId);
-      const problem = transaction(() => {
-        const nonce = body.buyerIdentityBundle?.sessionNonce;
-        if (typeof nonce !== 'string' || !HASH.test(nonce)) return 'context_challenge_mismatch';
-        const row = get('SELECT * FROM peer_context_challenges WHERE nonce = ?', nonce);
-        if (!row) return 'context_challenge_mismatch';
-        if (row.attempted) return 'context_challenge_consumed';
-        run('UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', row.nonce);
-        try {
-          if (row.job !== request.jobId || row.buyer !== request.buyer || row.scope !== sellerContextScopeHash(sellerContextChallengeScope(body.scope))) return 'context_challenge_mismatch';
-        } catch { return 'context_challenge_mismatch'; }
-        if (row.expires_at <= now()) return 'context_challenge_expired';
-        return null;
-      });
+      const problem=transaction(()=>contextPresentationProblem(request,body));
       if (problem) fail(problem, 409);
     },
     bind({ seller, listingPin }) {
@@ -391,14 +392,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // runs only then, inside this transaction: starts(since, buyer?) counts
     // admission records newer than `since`. It returns the admission time or
     // throws a refusal, which rolls back every row of this request.
-    reserve(p, body, { journaledOnly = false, admit = null, dryRun = false } = {}) {
+    reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, contextDecision = false, verdict = null } = {}) {
       requireJobId(p?.jobId);
       if (p.path === CONTEXT) {
         requireJobId(body?.scope?.jobId);
         if (body.scope.jobId !== p.jobId) fail('peer_job_mismatch', 409);
       }
       // The admission table is created inside this transaction; it exists only after a commit.
-      return transaction(() => {
+      const result=transaction(() => {
         const creates = p.path === CONTEXT && !admissions();
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
@@ -452,7 +453,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (contextStep && !retained) {
           if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
-          if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
+          if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) { if(contextDecision)contextPresentationProblem(p,body);return {contextRefusal:'peer_context_capacity',status:503}; }
         }
         // Only expired completed/no-effect nonces are reclaimable. Unknown or
         // pending effects remain fenced, even after request expiry.
@@ -467,11 +468,22 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const neededJobs = !job && !contextStep && !retained ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
         const retiredJobs = reclaimableJobs(neededJobs, undefined, time);
         if (retiredJobs.length < neededJobs) fail('peer_job_capacity', 503);
-        let admittedAt = null;
-        if (contextStep && !existing) {
-          const starts = (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0;
-          admittedAt = typeof admit === 'function' ? admit({ starts }) : null;
-          if (!uint(admittedAt)) fail('peer_context_unadmitted', 503);
+        let admittedAt=null;
+        if(contextStep&&!existing) {
+          let problem=contextDecision?contextPresentationProblem(p,body):null;
+          problem??=verdict;
+          if(!problem) {
+            const starts=(since,buyer)=>admissions()?get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer===undefined?'':' AND buyer = ?'}`,since,...(buyer===undefined?[]:[buyer])).n:0;
+            try { admittedAt=typeof admit==='function'?admit({starts}):null; }
+            catch(error) { if(!contextDecision)throw error;problem=error.code; }
+            if(!problem&&!uint(admittedAt))fail('peer_context_unadmitted',503);
+          }
+          if(problem) {
+            const text=JSON.stringify({error:problem});
+            run('INSERT INTO peer_nonces VALUES (?, ?, ?, ?, ?)',nonce,requestHash,NO_EFFECT_KEY,409,text);
+            run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)',nonce,p.buyer,time,p.expiresAt);
+            return {contextRefusal:problem};
+          }
         }
         if (p.path === PAYMENT && !retained) {
           const tx = body.txHash.replace(/^0x/, '').toLowerCase();
@@ -510,6 +522,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (!READ_ROUTES.has(p.path) && !occupied) run('INSERT INTO peer_slots VALUES (?, ?)', slot, effectKey);
         return { disposition: 'perform', effectKey, owner, readOnly: READ_ROUTES.has(p.path) };
       }, dryRun);
+      if(result.contextRefusal)fail(result.contextRefusal,result.status??409);
+      return result;
     },
     // Read-only reserve: 'start' for new work, 'known' for journaled answers;
     // conflicts throw reserve's refusal. No mutations run; the transaction rolls back.
@@ -653,7 +667,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       authenticatedRequests.set(request, canonicalize(request));
       return request;
     },
-    validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody }) {
+    validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody, onRejectedBody }) {
       const authenticated = authenticatedRequests.get(request);
       if (authenticated === undefined) fail('peer_request_unauthenticated');
       let current;
@@ -695,8 +709,9 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
           if (request.expiresAt > delegation.payload.expiresAt) fail('peer_delegation_expired', 408);
         } else readbackOnly.add(request);
       }
+      try { validateBody(request,admittedBody); }
+      catch(error) { onRejectedBody?.(admittedBody); throw error; }
       onAuthenticatedBody?.(admittedBody);
-      validateBody(request, admittedBody);
       return admittedBody;
     },
     async responseHeader(request, status, text) {
