@@ -20,7 +20,7 @@
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
 // profile and the Vet records the Agreement references. It does not mount the
 // context route itself.
-import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
@@ -38,12 +38,15 @@ const LOOPBACK = new Set(['127.0.0.1', '::1']);
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000 });
 const MAX_HEADER_SIZE = 16384;
 
-// A native artifact readback is an operator capability. One that never
-// settles must not keep close(), and with it the state lock, open: every
-// accepted read gets the host's shutdown signal and the request deadline, and
-// answers with an uncertain result when either fires. The capability's own
-// work cannot be cancelled here and has no durable effect, so its late
-// settlement is ignored; `drain` waits for the accepted reads themselves.
+// A native artifact readback is an operator capability. Every accepted read
+// gets the host's shutdown signal and the request deadline, and answers with an
+// uncertain result when either fires, so a request waiting on one lets close()
+// proceed. The capability's own work is not abandoned: it is tracked separately
+// from that early answer, because a readback can still update the journal (the
+// stock anchor's readRetained can recover a source transaction through
+// observeSource). `drain` therefore waits for that work to settle before the
+// journal, agent and state lock are released. A capability that honours the
+// signal stops early; one that does not keeps ownership until it finishes.
 function boundedArtifactReads(anchor, { signal, timeoutMs }) {
   const pending = new Set();
   const read = (uncertain, name, method) => (input, options) => {
@@ -57,7 +60,6 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
         done = true;
         clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
-        pending.delete(entry);
         settle(value);
       };
       const cause = (reason) => (typeof uncertain === 'function' ? uncertain(reason) : uncertain);
@@ -65,24 +67,64 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
       timer = setTimeout(() => finish(resolve, cause(`the ${name} readback exceeded its ${timeoutMs} ms deadline`)), timeoutMs);
       if (signal.aborted) { onAbort(); return; }
       signal.addEventListener('abort', onAbort, { once: true });
-      Promise.resolve().then(() => method.call(anchor, input, options)).then((value) => finish(resolve, value), (error) => finish(reject, error));
+      // Forward the caller's limits and the shutdown signal; a capability that
+      // supports cancellation stops, and every other one still runs to the end.
+      const workSignal = options?.signal ? AbortSignal.any([options.signal, signal]) : signal;
+      entry.work = Promise.resolve().then(() => {
+        if (done) return undefined;
+        return method.call(anchor, input, { ...(options ?? {}), signal: workSignal });
+      });
+      entry.work.then(
+        (value) => { pending.delete(entry); finish(resolve, value); },
+        (error) => { pending.delete(entry); finish(reject, error); },
+      );
     });
     entry.promise = promise;
+    // Aborted (or past its deadline) before the capability was ever called:
+    // there is no underlying work to retain ownership for.
+    if (!entry.work) pending.delete(entry);
     return promise;
   };
-  // Keep the capability's own shape (including prototype methods and
-  // non-enumerable members) and replace only the readback operations it
-  // actually has: a missing one still reaches the agent's own capability
+  // Keep the capability's own shape and its receiver: property access (metadata
+  // getters included) is forwarded to the operator's capability, while methods
+  // are bound to it. Only the readback operations the capability actually has
+  // are replaced; a missing one still reaches the agent's own capability
   // validation instead of becoming a wrapper function.
-  const view = Object.create(anchor);
-  if (typeof anchor.readRetained === 'function') Object.defineProperty(view, 'readRetained', { value: read((reason) => ({ status: 'indeterminate', reason }), 'native artifact', anchor.readRetained), enumerable: true });
-  if (typeof anchor.verifyReceipt === 'function') Object.defineProperty(view, 'verifyReceipt', { value: read('indeterminate', 'native artifact receipt', anchor.verifyReceipt), enumerable: true });
+  const overrides = new Map();
+  if (typeof anchor.readRetained === 'function') overrides.set('readRetained', read((reason) => ({ status: 'indeterminate', reason }), 'native artifact', anchor.readRetained));
+  if (typeof anchor.verifyReceipt === 'function') overrides.set('verifyReceipt', read('indeterminate', 'native artifact receipt', anchor.verifyReceipt));
   // The agent calls publish on this view; keep the operator's capability as
   // the receiver, as it was before the view existed.
-  if (typeof anchor.publish === 'function') Object.defineProperty(view, 'publish', { value: (...args) => anchor.publish(...args), enumerable: true });
+  if (typeof anchor.publish === 'function') overrides.set('publish', (...args) => anchor.publish(...args));
+  const bound = new Map();
+  const receiverMethod = (key, value) => {
+    if (typeof value !== 'function' || Object.hasOwn(value, 'prototype')) return value;
+    const cached = bound.get(key);
+    if (cached?.value === value) return cached.bound;
+    const method = value.bind(anchor);
+    bound.set(key, { value, bound: method });
+    return method;
+  };
+  const view = new Proxy(Object.create(null), {
+    get: (_target, key) => overrides.has(key) ? overrides.get(key) : receiverMethod(key, Reflect.get(anchor, key, anchor)),
+    has: (_target, key) => overrides.has(key) || key in anchor,
+    getOwnPropertyDescriptor: (_target, key) => {
+      if (overrides.has(key)) return { value: overrides.get(key), writable: false, enumerable: true, configurable: true };
+      const descriptor = Object.getOwnPropertyDescriptor(anchor, key);
+      return descriptor && { ...descriptor, configurable: true };
+    },
+    ownKeys: () => [...new Set([...Reflect.ownKeys(anchor), ...overrides.keys()])],
+    getPrototypeOf: () => anchor,
+    // The view is read-only; none of its writes may reach the operator's
+    // capability.
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+    preventExtensions: () => false,
+  });
   return {
-    anchor: Object.freeze(view),
-    drain: () => Promise.allSettled([...pending].map((entry) => entry.promise)),
+    anchor: view,
+    drain: () => Promise.allSettled([...pending].map((entry) => entry.work)),
   };
 }
 
@@ -92,6 +134,16 @@ function privateDirectory(path) {
   if (!stat?.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.() || realpathSync(path) !== path) {
     throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
   }
+}
+
+// Make the entries a directory names durable. SQLite's FULL synchronous mode
+// syncs the database file itself, not the directory entry that names it, so a
+// host that creates seller/ or transport/ and answers an order before the
+// parents are synced can come back, after power loss, to a directory it
+// believes was never created and start again with empty state.
+function syncDirectory(path) {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
 // Resolves once the host listens: { url, listingPin, seller, timeouts,
@@ -139,6 +191,11 @@ export async function startSellerHost(options) {
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), maxJobs, now });
     opened.push(() => store.close());
+    // Both child directories and the new transport database entry are durable
+    // before listen permits an answer: seller/ was created by the durable state
+    // and transport/ here, and neither parent entry has been synced yet.
+    syncDirectory(transport);
+    syncDirectory(dataDirectory);
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
     const handler = createSellerHttpHandler(agent, { authentication });
     const active = new Set();
