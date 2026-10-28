@@ -1,11 +1,11 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
-import { contentHash, isListing, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, compositeVerificationAddress, isCompositeVerificationRecord, isCanonicalBase64Url, signedBytes, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
+import { contentHash, isListing, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
-import { sessionAdmissionConfig, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from './session-admission.mjs';
+import { sessionAdmissionConfig, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem, vetRecordProblem } from './session-admission.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
@@ -24,6 +24,12 @@ export class SellerAgentError extends Error {
 // A claimed pay-dem transaction hash as core payment intake reads it
 // (lower case, without `0x`): the transport admits either form.
 const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
+
+// PROFILE.json sellerRequirement: the fixed requirement the buyer vets this
+// seller against (the devnet-demo profile's SELLER_REQUIREMENT is the same
+// empty requirement); the buyer's own bundle is vetted against the Listing's
+// exact buyerRequirement.
+const SELLER_REQUIREMENT = Object.freeze({ requirementVersion: '1', required: Object.freeze([]), preferredPresentation: 'any' });
 
 // Staged internal construction and authenticated retained reads. Proposal,
 // commitment, payment and delivery methods are introduced separately.
@@ -168,17 +174,18 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   async function retainedVetEvidenceProblem(session) {
     if (!admission) return 'the seller has no session admission to authenticate retained Vet records';
     const parties = [
-      ['buyer', session.buyerBundle.presentedBy, session.vetCheckpoint.buyer, identityBundleHash(session.buyerBundle), claim],
-      ['seller', claim, session.vetCheckpoint.seller, identityBundleHash(session.sellerBundle ?? listing.seller.identity), session.buyerBundle.presentedBy],
+      ['buyer', session.buyerBundle.presentedBy, session.vetCheckpoint.buyer, identityBundleHash(session.buyerBundle), claim, listing.buyerRequirement],
+      ['seller', claim, session.vetCheckpoint.seller, identityBundleHash(session.sellerBundle ?? listing.seller.identity), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
     ];
-    for (const [role, party, ref, bundleHash, verifier] of parties) {
+    for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
       let record, receipt, verdict;
       try { record = await admission.resolveVetRecord({ jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record cannot be resolved`; }
-      if (!isCompositeVerificationRecord(record) || contentHash(record) !== ref.contentHash) return `the ${role} Vet reference names no authentic record`;
-      if (record.jobId !== session.jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash || record.overallDecision !== 'pass' || !sameCanonicalClaimIdentity(record.signature?.signer, verifier)) return `the ${role} Vet record does not evaluate this job, bundle and party`;
-      // DACS-2 §7.7.2: the counterparty's signature over the exact record hash,
-      // not merely its signer field, is what makes the record theirs.
-      if (!isCanonicalBase64Url(record.signature?.value) || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return `the ${role} Vet record is not signed by its counterparty verifier`;
+      // DACS-2 §7.7.1/§7.7.2: the strict verifier replays the record's decision
+      // against the exact requirement this profile invoked, binding its signed
+      // requirementHash and result references; shape and signer alone would
+      // accept a record the counterparty signed for another requirement.
+      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now });
+      if (recordProblem) return `the ${role} ${recordProblem}`;
       try { receipt = await admission.readVetAnchorReceipt({ jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record has no SR-2 receipt`; }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
       const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId: session.jobId, party });
