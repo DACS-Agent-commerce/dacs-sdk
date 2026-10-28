@@ -40,6 +40,17 @@ test('the runtime requirement matches the repository engines and the sqlite modu
   assert.match(readme, /better-sqlite3/);
 });
 
+test('the README does not claim the host checks the data directory ancestors', () => {
+  // host.mjs:40-46 and seller-durable-state.mjs:214 check the data directory
+  // only. party-vet-store.mjs:145 and payment-evidence-wallet-journal.mjs:184
+  // walk the ancestors of their own paths; neither is composed by the host.
+  assert.doesNotMatch(readme, /check every ancestor of the data directory/);
+  assert.doesNotMatch(readme, /does not start where `\/` belongs to another user/);
+  assert.match(readme, /party\s+Vet store requires each ancestor to be owned by root or by this user/);
+  assert.match(readme, /wallet journal refuses a non-sticky ancestor that others can write/);
+  assert.match(readme, /host\s+checks only the data directory itself/);
+});
+
 test('the inline payload bound matches the storage CREATE cap the host enforces', () => {
   // seller-agent.mjs:197 refuses a native Listing whose expectedSizeBytes
   // exceeds MAX_STORAGE_ARTIFACT_BYTES (wallet-transactions.mjs:15), and
