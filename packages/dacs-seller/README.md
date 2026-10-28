@@ -7,8 +7,8 @@ loopback. The agent runs negotiation (DACS-3), the finalized commitment,
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This
 is the devnet-demo seller kit, ported from the plugin seller kit (see
-[SOURCES.md](SOURCES.md)). It is a **fixture-only kit** as packaged: the
-native DEM delivery capability and the DEM delivery context accept only a
+[SOURCES.md](SOURCES.md)). Its packaged native readers are **fixture-only**:
+the native DEM delivery capability and the DEM delivery context accept only a
 `TEST-` authority (`src/dacs/native-dem-delivery-consumer.mjs`,
 `src/dacs/dem-delivery-context-consumer.mjs`), and
 `createNativePaymentEvidenceConsumer` accepts only a literal `127.0.0.1` RPC
