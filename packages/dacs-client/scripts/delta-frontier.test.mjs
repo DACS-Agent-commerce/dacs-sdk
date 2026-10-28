@@ -133,7 +133,7 @@ test('each missing carry choice leaves exactly its path unresolved', t => {
   const ledgerPath = join(dir, prefix + 'DELTA-LEDGER.json');
   const original = JSON.parse(readFileSync(ledgerPath, 'utf8'));
   const history = commits();
-  const choices = original.changes.filter(change => /^fix\(client\): D11 finalize (06a|07|09) carry choices$/.test(change.subject));
+  const choices = original.changes.filter(change => /^fix\(client\): D11 finalize (06a|07|08|09) carry choices$/.test(change.subject));
   assert.ok(choices.length, 'the completed carry must have a descendant choice');
   const byCommit = new Map(choices.map(change => [history.find(commit => commit.subject === change.subject).sha, change]));
   const newest = git('merge-base', '--independent', ...byCommit.keys()).split('\n');
