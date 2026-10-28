@@ -275,6 +275,13 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
           : issued.attempt !== null && !(issued.attempt.presentationHash === presentationHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
             : issued.attempt === null && !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
       if (challengeProblem) throw new SellerAgentError('session_not_admitted', challengeProblem, 409);
+      // A job's accepted presentation is reserved durably when it is admitted
+      // (session-job:<jobId>, written in the admission's own transaction). After
+      // a restart, or against a concurrent opener, the same job may only replay
+      // that exact presentation: another buyer or bundle is refused before the
+      // admission capability is asked, and the durable write refuses a race.
+      const bound = !existing && durable ? durable.jobBinding(jobId) : null;
+      if (bound && (!sameCanonicalClaimIdentity(bound.buyer, buyerIdentityBundle.presentedBy) || bound.presentationHash !== presentationHash)) throw new SellerAgentError('job_taken', 'this job is bound to another buyer or bundle', 409);
       // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
       // checkListingRevocation) over the operator's readings; only `absent` opens.
       const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
@@ -288,7 +295,8 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       catch (cause) { throw new SellerAgentError('session_admission_unavailable', 'the seller session admission is unavailable', 503,{cause}); }
       const problem = sessionAdmissionProblem(answer, query);
       if (problem) throw new SellerAgentError(accepted?'session_admission_unavailable':'session_not_admitted', problem, accepted?503:409);
-      if(!accepted)challenges.admitChallenge(nonce, presentationHash,{buyerBundle:structuredClone(buyerIdentityBundle),buyerBundleHash:bundleHash,admission:structuredClone(answer),admittedAt:now()});
+      if(!accepted)try{challenges.admitChallenge(nonce, presentationHash,{buyerBundle:structuredClone(buyerIdentityBundle),buyerBundleHash:bundleHash,admission:structuredClone(answer),admittedAt:now()});}
+        catch(error){if(error.code==='seller_job_bound')throw new SellerAgentError('job_taken','this job is bound to another buyer or bundle',409);throw error;}
     }
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     else if (railPin && !inFlight) existing.railPin = railPin;
