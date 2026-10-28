@@ -15,7 +15,7 @@ const sign = (unsigned, separator, wallet) => core.signComponentArtifact(unsigne
 
 // A counterparty-signed record of `buyer` (verified by `seller`) whose requirement names one verified claim,
 // with that claim's VerifyResult, recipe and authority content kept as an operator would hold them.
-async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canonical-json' } = {}) {
+async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true } } = {}) {
   const recipe = await sign({ recipeVersion: 1, scheme: 'domain', defaultMethod: { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate: 'https://authority.example/{identifier}' } },
     defaultMaxAgeSec: 3600, parserRules: { format: 'json', successJsonPath: '$.active' }, retryClass: 'permanent', availability: 'live',
     governance: { proposedBy: recipeSteward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' } }, 'dacs-recipe:v1:', recipeSteward);
@@ -25,14 +25,14 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
     : { encoding: 'canonical-json', value: authorityValue, hash: core.sha256Hex(core.canonicalize(authorityValue)) };
   const result = await sign({ resultVersion: '1', scheme: 'domain', identifier: 'alice.example', recipeVersion: 1, method: 'consensus-backed-proxy', decision: 'pass',
     reason: 'authority confirmed the claim', attestation: { anchor: { kind: 'https', locator: AUTHORITY_LOCATOR }, contentHash: authorityContent.hash, signer: resultSigner.claim },
-    data: { active: true }, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultSigner);
+    data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultSigner);
   const resultRef = { anchor: { kind: 'storage-program', locator: RESULT_LOCATOR }, contentHash: core.contentHash(result), recipeVersion: 1 };
   const bundleHash = core.sha256Hex('TEST evaluated bundle');
-  const record = await sign({ recordVersion: '1', jobId: JOB, evaluatedParty: buyer.claim, bundleHash, requirementHash: core.sha256Hex(core.canonicalize(requirement)),
+  const record = await sign({ recordVersion: '1', jobId: JOB, evaluatedParty: buyer.claim, bundleHash, requirementHash: core.sha256Hex(core.canonicalize(bundleRequirement)),
     freshness: list === 'freshness' ? [resultRef] : [], supplementary: [], dealSpecific: list === 'dealSpecific' ? [resultRef] : [], overallDecision: 'pass', generatedAt: NOW }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, seller);
   const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(JOB, buyer.claim) }, contentHash: core.contentHash(record), signer: seller.claim };
-  const expected = [{ ref: resultRef, sourceJobId: JOB, scheme: 'domain', identifier: 'alice.example', method: 'consensus-backed-proxy', requirement: requirement.required[0] }];
-  const invocation = { vetRecordRef: ref, evaluatedParty: buyer.claim, requirement, verifier: seller.claim, freshness: list === 'freshness' ? expected : [], dealSpecific: list === 'dealSpecific' ? expected : [] };
+  const expected = [{ ref: resultRef, sourceJobId: JOB, scheme: 'domain', identifier: 'alice.example', method: 'consensus-backed-proxy', requirement: bundleRequirement.required[0] }];
+  const invocation = { vetRecordRef: ref, evaluatedParty: buyer.claim, requirement: bundleRequirement, verifier: seller.claim, freshness: list === 'freshness' ? expected : [], dealSpecific: list === 'dealSpecific' ? expected : [] };
   const contents = new Map([[RESULT_LOCATOR, { encoding: 'canonical-json', value: result }],
     [AUTHORITY_LOCATOR, authorityContent.encoding === 'bytes' ? { encoding: 'bytes', value: authorityContent.value } : { encoding: 'canonical-json', value: authorityValue }]]);
   const calls = [];
@@ -160,6 +160,57 @@ test('a replay is bounded by its total deadline across reads', async (t) => {
   const slow = (reader) => async (...args) => { t.mock.timers.tick(9000); return reader(...args); };
   const slowEvidence = Object.fromEntries(Object.entries(fixture.evidence).map(([name, reader]) => [name, slow(reader)]));
   await assert.rejects(fixture.replay({ evidence: slowEvidence }), { name: 'TimeoutError', message: /Vet evidence deadline expired/ });
+});
+
+test('the total deadline aborts the read in flight instead of waiting for its per-read limit', async (t) => {
+  const fixture = await verifiedClaimFixture();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  const slow = (reader) => async (...args) => { t.mock.timers.tick(5900); return reader(...args); };
+  const evidence = {
+    ...Object.fromEntries(Object.entries(fixture.evidence).map(([name, reader]) => [name, slow(reader)])),
+    resolveContent: async (input, options) => {
+      if (input.anchor.locator === AUTHORITY_LOCATOR) { signal = options.signal; return new Promise(() => {}); }
+      t.mock.timers.tick(5900);
+      return fixture.evidence.resolveContent(input);
+    },
+  };
+  const pending = fixture.replay({ evidence });
+  const settled = assert.rejects(pending, { name: 'TimeoutError', message: /Vet evidence deadline expired/ });
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(7000);
+  await settled;
+  assert.ok(signal);
+  assert.equal(signal.aborted, true);
+});
+
+test('an evidence reader that rejects with undefined is still an unavailable read', async () => {
+  const fixture = await verifiedClaimFixture();
+  let rejected = false, reason = 'sentinel';
+  try { await fixture.replay({ evidence: { resolveContent: async () => { throw undefined; } } }); }
+  catch (error) { rejected = true; reason = error; }
+  assert.equal(rejected, true);
+  assert.equal(reason, undefined);
+});
+
+test('a VerifyResult returned as canonical bytes passes', async () => {
+  const fixture = await verifiedClaimFixture();
+  const bytes = Buffer.from(core.canonicalize(fixture.result)).toString('base64url');
+  assert.equal(await fixture.replay({ evidence: { resolveContent: async (input) => (input.anchor.locator === RESULT_LOCATOR ? { encoding: 'bytes', value: bytes } : fixture.contents.get(input.anchor.locator)) } }), null);
+});
+
+test('a parameterized required claim passes only when its exact parameters match the result', async () => {
+  const claim = { ...requirement.required[0], parameters: { jurisdiction: 'GB' } };
+  const bundleRequirement = { requirementVersion: '1', required: [claim] };
+  const fixture = await verifiedClaimFixture({ bundleRequirement, data: { active: true, jurisdiction: 'GB' } });
+  assert.equal(await fixture.replay(), null);
+  const mismatched = await verifiedClaimFixture({ bundleRequirement: { requirementVersion: '1', required: [{ ...claim, parameters: { jurisdiction: 'DE' } }] }, data: { active: true, jurisdiction: 'GB' } });
+  assert.match(await mismatched.replay(), /requirement-parameters/);
+});
+
+test('a verified claim whose requirement leaves the recipe version unpinned is refused', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: { requirementVersion: '1', required: [{ scheme: 'domain', verificationRequired: true }] } });
+  assert.match(await fixture.replay(), /does not pin a recipe version/);
 });
 
 test('vetEvidence must expose every reader', () => {
