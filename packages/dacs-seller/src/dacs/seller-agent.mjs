@@ -5,7 +5,7 @@ import { admitRawJson, canonicalize, contentHash, isListing, finalityCommitmentA
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
-import { sessionAdmissionConfig, sellerSessionPresentationProblem, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem, vetRecordProblem } from './session-admission.mjs';
+import { sessionAdmissionConfig, sellerSessionPresentationProblem, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem, vetRecordProblem, listingRevocationProblem } from './session-admission.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
@@ -142,7 +142,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     simulatedFixture,
   });
   if (validation.disposition !== 'verified') throw new Error(`own Listing does not verify: ${validation.reason}`);
-  durable?.retainContext({ admittedAt, validation });
+  if (!retainedAdmission) { const { revocation: _revocation, ...retained } = validation; durable?.retainContext({ admittedAt, validation: retained }); }
   const sessions = new Map(); // jobId -> session
   // CORE SN-1..SN-4: the challenges this seller issued, by nonce, each bound to
   // one job and buyer (kept with the durable seller state, else in memory).
@@ -267,11 +267,12 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   // 256 bits from the CSPRNG (SN-1/SN-2), never caller-supplied bytes.
   // It admits one presentation (SN-4) until
   // SESSION_CHALLENGE_LIFETIME_MS after issue.
-  function issueSessionChallenge(request) {
+  async function issueSessionChallenge(request) {
     requireOpen();
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new SellerAgentError('challenge_invalid', 'the challenge request must be an object', 422);
     const { jobId, buyer, sessionNonce } = request;
     if (!nativeProfile) throw new SellerAgentError('session_admission_required', 'the simulated fixture profile takes no session admission', 503);
+    if (!admission) throw new SellerAgentError('session_admission_required', 'the seller has no session admission to read this Listing\'s revocation', 503);
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     if (!canonicalDemosAgentPublicKey(buyer) || sameCanonicalClaimIdentity(buyer,claim)) throw new SellerAgentError('buyer_invalid', 'the challenge names no buyer claim other than the seller');
     if (sessionNonce !== undefined) throw new SellerAgentError('challenge_invalid', 'the seller generates its own session nonce (CORE SN-1/SN-2)');
@@ -279,6 +280,8 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (!Number.isSafeInteger(issuedAt) || issuedAt < 0) throw new SellerAgentError('seller_clock_invalid', 'the seller clock is not an integer time', 503);
     if(!Number.isSafeInteger(issuedAt+SESSION_CHALLENGE_LIFETIME_MS))throw new SellerAgentError('seller_clock_invalid','the challenge expiry exceeds the safe clock range',503);
     const issued = { jobId, buyer, sessionNonce: nonce, issuedAt, expiresAt: issuedAt + SESSION_CHALLENGE_LIFETIME_MS };
+    const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
+    if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
     try { challenges.issueChallenge(nonce, issued,{maxOutstanding:maxJobs,maxPerJob:MAX_CHALLENGES_PER_JOB}); }
     catch (error) { if(error.code==='seller_challenge_capacity')throw new SellerAgentError(error.code,error.message,503); if (error.code === 'seller_challenge_taken') throw new SellerAgentError('challenge_taken', 'this session nonce was issued before', 409); throw error; }
     return issued;
