@@ -1388,7 +1388,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   async function advanceAuthenticatedNativeDelivery(session, work, read) {
     if (!deliveryContext) return nativeEvidenceResponse(work, 'held-missing-consumed-v2-fulfilment-and-Vet-audit');
-    if (nativeDelivery && session.deliveryReady) return readPersistedNativeDelivery(session, work);
+    if (nativeDelivery && session.deliveryReady) return readPersistedNativeDelivery(session, work, read);
     const delivery = await runSdkDeliveryReady(session, work, read);
     if (delivery.status !== 'delivery-ready') {
       session.deliveryHold = { reason: delivery.reason, ...(delivery.result ? { result: structuredClone(delivery.result) } : {}) };
@@ -1401,7 +1401,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
     const result = delivery.ready.result, deliveredHash = sha256Hex(canonicalize(result.artifact.anchoredValue));
     session.deliveryReady = { fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress, contentHash: deliveredHash,
-      anchorReceipt: structuredClone(result.anchorReceipt), evidenceHash: result.evidenceHash, ...(deliveryEvidenceEnabled?{evidence:structuredClone(result.evidence)}:{}), paymentPermitId: work.intake.permitId,
+      anchorReceipt: structuredClone(result.anchorReceipt), evidenceHash: result.evidenceHash, evidence: structuredClone(result.evidence), paymentPermitId: work.intake.permitId,
       finalisation: structuredClone(delivery.ready.finalisation), auditSource: structuredClone(delivery.auditSource),
       ...(nativeDelivery ? { deliveryBinding: nativeDeliveryBinding(session, work, result.fulfilmentId), substrate: 'source-native-one-node-delivery' } : { substrate: 'loopback-sr2-fixture' }) };
     session.stage = 'delivery-ready';
@@ -1412,7 +1412,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       substrate: nativeDelivery ? nativeDeliverySubstrate : 'mixed-test-native-payment-plus-loopback-sr2-delivery', evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
   }
 
-  async function readPersistedNativeDelivery(session, work) {
+  async function readPersistedNativeDelivery(session, work, paymentRead) {
     const ready = session.deliveryReady, report = deliveryReport(session, work.intake.settlementId);
     const binding = nativeDeliveryBinding(session, work, ready.fulfilmentId);
     const reread = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: ready.logicalAddress, report,
@@ -1421,9 +1421,32 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       canonicalize(ready.deliveryBinding) === canonicalize(binding) && sameNativeDeliveryReceipt(reread.receipt, ready.anchorReceipt) &&
       await verifyNativeDemDeliveryReceipt(nativeDelivery, {jobId:session.jobId,logicalAddress:ready.logicalAddress,report,receipt:reread.receipt,receiptContentHash:ready.contentHash,deliveryBinding:binding,signedProjection:reread.signedProjection}) === 'valid';
     if (!valid) return nativeEvidenceResponse(work, { status: 'held', reason: reread.reason ?? 'persisted SDK delivery-ready result did not authenticate on fresh native read' });
+    // A delivery-ready session retained before this seller kept its own copy
+    // (below) has only the evidence hash. The exact signed evidence is still in
+    // the SDK's durable evidence-publication checkpoint: recover it there and
+    // accept it only against that retained hash. Nothing is rebuilt, signed or
+    // submitted to the Deliverable again.
+    if (deliveryEvidenceEnabled && !ready.evidence) {
+      const recovered = await recoverRetainedDeliveryEvidence(session, work, paymentRead);
+      if (recovered.reason) return nativeEvidenceResponse(work, { status: 'held', reason: recovered.reason });
+    }
     return finishDeliveryEvidence(session, work, { status: 'delivery-ready', fulfilmentId: ready.fulfilmentId, logicalAddress: ready.logicalAddress,
       contentHash: ready.contentHash, anchorReceipt: reread.receipt, evidenceHash: ready.evidenceHash, deliveryBinding: binding,
       substrate: nativeDeliverySubstrate, evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
+  }
+
+  async function recoverRetainedDeliveryEvidence(session, work, paymentRead) {
+    try {
+      const delivery = await runSdkDeliveryReady(session, work, paymentRead);
+      const evidence = delivery.status === 'delivery-ready' ? delivery.ready?.result?.evidence : undefined;
+      if (!evidence) return { reason: 'retained delivery evidence is unavailable from the SDK checkpoint' };
+      if (contentHash(evidence) !== session.deliveryReady.evidenceHash) return { reason: 'SDK checkpoint delivery evidence differs from the retained hash' };
+      session.deliveryReady.evidence = structuredClone(evidence);
+      persist(session);
+      return { evidence };
+    } catch (error) {
+      return { reason: `retained delivery evidence recovery failed: ${String(error?.message ?? error).slice(0, 200)}` };
+    }
   }
 
   async function finishDeliveryEvidence(session, work, pointer) {
