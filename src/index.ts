@@ -576,6 +576,7 @@ export {
   type BundleVerification,
   type SignatureCheck,
   verifyBundleCore,
+  AttestationRefRejection,
   type VerifyBundleDeps,
   type SignatureVerdict,
   type RefCheck,
