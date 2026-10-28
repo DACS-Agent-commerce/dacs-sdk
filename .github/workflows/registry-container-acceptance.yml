@@ -49,9 +49,7 @@ jobs:
           node-version: "20.19.1"
 
       - name: Pin acceptance npm client
-        run: |
-          source scripts/bounded-transport.sh
-          run_bounded npm install --global --ignore-scripts --no-audit npm@11.19.0
+        run: timeout 900 npm install --global --ignore-scripts --no-audit npm@11.19.0
 
       - name: Install exact source lock
         run: |
