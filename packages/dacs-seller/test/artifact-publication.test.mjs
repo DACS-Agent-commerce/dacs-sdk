@@ -197,3 +197,11 @@ for (const answer of [null,{}, {success:true}, {success:true,data:{hash:'TEST-in
   assert.equal((await f.publish(f.open(),JOB)).status,'indeterminate');
   assert.equal(f.captured.length,1);
 });
+
+for(const field of ['projection','signature'])test(`strict JSON admission includes the ${field} envelope before receipt reads`,async()=>{
+ const f=await anchorFixture(),artifact=await f.artifact(JOB);let reads=0;f.controls.reader.verifyReceipt=async()=>{reads++;return 'valid';};
+ const content={data:['storageProgram',{metadata:{artifactKind:'FinalityCommitmentRecord',artifactBinding:{jobId:JOB}}}]},hash=sha256Hex(JSON.stringify(content));
+ const projection={hash,content,signature:{type:'ed25519',data:`0x${seller.signBytes(Buffer.from(hash)).toString('hex')}`}};
+ (field==='projection'?projection:projection.signature).TESTomitted=undefined;
+ assert.equal(await f.open().verifyReceipt({logicalAddress:finalityCommitmentAddress(JOB),artifact,artifactKind:'FinalityCommitmentRecord',receipt:{transactionRef:{value:hash}},signedProjection:projection,fresh:true}),'invalid');assert.equal(reads,0);
+});
