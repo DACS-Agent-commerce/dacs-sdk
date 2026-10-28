@@ -223,7 +223,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
-  const effects = { deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [], componentSigns: [] };
+  const effects = { deliverySubmit: [], published: [], publishCalls: [], signCreate: [], signed: [], broadcast: [], componentSigns: [] };
   const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
@@ -282,6 +282,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
     publish: async ({ logicalAddress, artifact, artifactKind, authorize }) => {
+      effects.publishCalls.push({ artifactKind, logicalAddress });
       // A plain wallet creates a new program on every call. Exercise that
       // operator contract too, so the seller must prevent a duplicate call.
       if (!idempotentArtifacts) {
@@ -1447,6 +1448,8 @@ test('a delivery evidence CREATE whose answer was lost is only read back: held w
   assert.equal(publishedEvidence(w), 1, 'the CREATE was asked once');
   assert.equal(w.createsAt(address), 1);
   assert.equal(w.effects.deliverySubmit.length, 1);
+  assert.equal(w.effects.publishCalls.filter((call) => call.logicalAddress === address && call.artifactKind === 'SettlementEvidence').length, 1,
+    'a lost answer never asked the artifact capability for the evidence twice');
 });
 
 test('a delivery evidence publication that never reached the wallet is published again, once', async (t) => {
