@@ -199,7 +199,7 @@ test('restart fails closed when a Vet reader stalls past its deadline',async t=>
  t.mock.timers.enable({apis:['setTimeout']});
  const attempt=f.open({sessionAdmission:stall});let state='pending';
  attempt.then(()=>{state='resolved';},()=>{state='rejected';});
- const pending=assert.rejects(attempt,error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message));
+ const pending=assert.rejects(attempt,error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message)&&error.cause?.message==='the Vet reader deadline expired');
  await reached;await Promise.resolve();
  assert.equal(state,'pending','a stalled reader must not settle the restore');
  assert.equal(seen.maxBytes,64*1024);assert.equal(seen.timeoutMs,10_000);assert.ok(seen.signal instanceof AbortSignal,'every Vet reader receives an abort signal');
@@ -271,5 +271,15 @@ test('restart refuses a retained seller bundle that is not the Listing identity 
   }finally{state.close();}
   await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),
    error=>error.code==='seller_state_unverified'&&/seller (?:.*not a presentation of the Listing identity|.*presentation does not verify)/.test(error.message),label);
+ }
+});
+// A receipt reader failure is not a missing receipt: timeout, refusal and a
+// genuinely absent receipt stay distinguishable, and the cause is kept.
+test('a retained receipt read failure keeps its cause and only a missing result reports no receipt',async t=>{
+ for(const [code,pattern] of [['ENOENT',/has no SR-2 receipt/],['ETIMEDOUT',/cannot be read \(ETIMEDOUT\)/],['EACCES',/cannot be read \(EACCES\)/]]){
+  const {f,admission}=await vettedSession(t);
+  const readVetAnchorReceipt=async()=>{throw Object.assign(new Error(`receipt reader ${code}`),{code});};
+  await assert.rejects(f.open({sessionAdmission:{...admission.sessionAdmission,readVetAnchorReceipt}}),
+   error=>error.code==='seller_state_unverified'&&pattern.test(error.message)&&error.cause?.code===code);
  }
 });

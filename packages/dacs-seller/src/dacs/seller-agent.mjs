@@ -15,8 +15,8 @@ import { agreementTerms, listingPin, protocolSupport } from './purchase-protocol
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
-  constructor(code, message, status = 422) {
-    super(message);
+  constructor(code, message, status = 422, cause) {
+    super(message, cause === undefined ? undefined : { cause });
     this.code = code;
     this.status = status;
   }
@@ -57,6 +57,7 @@ async function boundedVetRead(read, query) {
     return boundedVetValue(value);
   } finally { clearTimeout(timer); controller.abort(); }
 }
+const vetUnverified = (reason, cause) => new SellerAgentError('seller_state_unverified', reason, 503, cause);
 
 // Staged internal construction and authenticated retained reads. Proposal,
 // commitment, payment and delivery methods are introduced separately.
@@ -213,18 +214,18 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     ];
     for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
       let record, receipt, verdict;
-      try { record = await boundedVetRead((query, options) => admission.resolveVetRecord(query, options), { jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record cannot be resolved`; }
+      try { record = await boundedVetRead((query, options) => admission.resolveVetRecord(query, options), { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(`the ${role} Vet record cannot be resolved (${error?.code ?? 'error'})`, error); }
       // DACS-2 §7.7.1/§7.7.2: the strict verifier replays the record's decision
       // against the exact requirement this profile invoked, binding its signed
       // requirementHash and result references; shape and signer alone would
       // accept a record the counterparty signed for another requirement.
       const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now });
       if (recordProblem) return `the ${role} ${recordProblem}`;
-      try { receipt = await boundedVetRead((query, options) => admission.readVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record has no SR-2 receipt`; }
+      try { receipt = await boundedVetRead((query, options) => admission.readVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(error?.code === 'ENOENT' ? `the ${role} Vet record has no SR-2 receipt` : `the ${role} Vet record SR-2 receipt cannot be read (${error?.code ?? 'error'})`, error); }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
       const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId: session.jobId, party });
       if (receiptProblem) return `the ${role} ${receiptProblem}`;
-      try { verdict = await boundedVetRead((query, options) => admission.verifyVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref, record, receipt }); } catch { return `the ${role} Vet receipt cannot be verified`; }
+      try { verdict = await boundedVetRead((query, options) => admission.verifyVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref, record, receipt }); } catch (error) { throw vetUnverified(`the ${role} Vet receipt cannot be verified (${error?.code ?? 'error'})`, error); }
       if (verdict !== 'valid') return `the ${role} Vet receipt does not verify`;
     }
     return null;
