@@ -7,6 +7,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as core from '@kynesyslabs/dacs';
+import {fixtureListing} from './fixtures/listings.mjs';
+import {seller} from './helpers/protocol-fixture.mjs';
 import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
 import {createDevnetPurchasedReportProducer} from '../src/devnet-demo/deliverable.mjs';
 import {createDevnetDemoDeliveryCapability} from '../src/devnet-demo/native-delivery.mjs';
@@ -15,8 +17,8 @@ import {isProvenUnsignedAbsence,readNativeDemDelivery,submitNativeDemDelivery} f
 const JOB='01ARZ3NDEKTSV4RRFFQ69G5FAW';
 async function composed(){
  const w=await anchorFixture({artifactKinds:['Deliverable']}),anchor=w.open();
- const listingRef={listingId:'wallet-refusal',version:1,contentHash:'a'.repeat(64)},agreement={jobId:JOB,listingRef};
- const report=createDevnetPurchasedReportProducer({producer:w.seller,produce:()=>'Bound purchased content'})({agreement,listing:{offering:{title:'Report'}},settlementId:'settlement-1'});
+ const listing=fixtureListing(seller),listingRef={listingId:listing.listingId,version:listing.listingVersion,contentHash:core.contentHash(listing)},agreement={jobId:JOB,listingRef};
+ const report=createDevnetPurchasedReportProducer({producer:w.seller,produce:()=>'Bound purchased content'})({agreement,listing,settlementId:'settlement-1'});
  const logicalAddress=`dacs4:deliverable:${JOB}`,receiptContentHash=core.contentHash(report);
  const deliveryBinding={version:'1',profile:'dacs-native-delivery-publication/v1',jobId:JOB,phase:'deliver-storage-program',phaseIndex:0,listing:listingRef,
   agreementHash:report.agreementHash,fulfilmentId:'fulfilment-1',purchaseAmount:{currency:'DEM',amount:'2.5'},payloadHash:receiptContentHash};
