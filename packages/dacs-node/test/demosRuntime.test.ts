@@ -202,6 +202,33 @@ describe("role-owned Demos runtime", () => {
       .rejects.toMatchObject({ reasonCode: "demos-write-disabled" });
   });
 
+  it("passes identityFetch to the adapter for CCI reads behind a proxy", async () => {
+    const directory = root();
+    const identityFetch = vi.fn<typeof fetch>();
+    let received: unknown;
+    await createDacsDemosActorRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: await secret(directory),
+      writePolicy: "read-only",
+      identityFetch,
+      createAdapter: async (input) => {
+        received = input.identityFetch;
+        return adapter();
+      },
+    });
+    expect(received).toBe(identityFetch);
+    await expect(createDacsDemosActorRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: await secret(directory),
+      writePolicy: "read-only",
+      identityFetch: "fetch" as unknown as typeof fetch,
+    })).rejects.toThrow("Demos actor runtime options are invalid");
+  });
+
   it("creates and binds the native buyer rail before destroying wallet material", async () => {
     const directory = root();
     const loaded = await secret(directory);

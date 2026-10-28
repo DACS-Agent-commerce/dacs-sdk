@@ -470,6 +470,13 @@ export interface AgentConfig {
   /** Durable wallet/write authority required by Demos write methods. */
   demosWriteJournal?: DemosWriteJournal;
   /**
+   * Fetch transport for Demos CCI identity reads, passed to the adapter as
+   * `DemosAdapterConfig.identityFetch`. Without it, reads use the SDK's private
+   * direct Undici transport where demosdk's Axios also connects directly, and otherwise fail
+   * before sending; behind a proxy, inject a fetch that uses it.
+   */
+  identityFetch?: typeof fetch;
+  /**
    * Local identity authority. Session-capable agents must provide the exact
    * DACS-1 bundle whose presentation is authenticated by `verifyPresentation`
    * (or an explicitly configured listing-validation fallback); the SDK
@@ -962,6 +969,11 @@ async function connectAgentAdapter(config: AgentConfig): Promise<ConnectedAgentI
     throw new DacsError("AgentConfig.wallet must be a non-empty string when supplied");
   }
   const writeJournal = capturedCreateConfigValue(config, "demosWriteJournal");
+  const identityFetch = capturedCreateConfigValue(config, "identityFetch");
+  if (identityFetch !== undefined &&
+      (typeof identityFetch !== "function" || nodeTypes.isProxy(identityFetch))) {
+    throw new DacsError("AgentConfig.identityFetch must be a stable function when supplied");
+  }
   const retainedDemosCci = captureAgentDemosCciConfig(
     capturedCreateConfigValue(config, "demosCci"),
   );
@@ -984,6 +996,7 @@ async function connectAgentAdapter(config: AgentConfig): Promise<ConnectedAgentI
     ...(writeJournal === undefined ? {} : {
       writeJournal: writeJournal as DemosWriteJournal,
     }),
+    ...(identityFetch === undefined ? {} : { identityFetch: identityFetch as typeof fetch }),
   });
   await adapter.connect();
   return { adapter, runtimeConfig };
