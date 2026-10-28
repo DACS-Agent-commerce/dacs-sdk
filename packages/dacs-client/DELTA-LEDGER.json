@@ -3544,6 +3544,7 @@
           "after": "4a71f3ca8b5f158ed9dff530dc4a3c8a4c127e87"
         }
       ]
-    }
+    },
+    {"delta":"D11","subject":"fix(client): D11 reject additional passive transaction envelopes","files":[{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"9018d0a80024f1fd86ef81953388c933424df23e","after":"f58c3534e3595d036d989b10d30c9a5bdfccc3fb"},{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"5a4caa3a87c7a5e41f890a318b6b17486e53d1df","after":"7625214c9a495c96091e4a2df02d05ed17983f85"}]}
   ]
 }
