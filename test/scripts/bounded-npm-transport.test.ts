@@ -454,3 +454,15 @@ it("sources transport budgets without executing the command CLI and preserves fa
     { encoding: "utf8", env: { PATH: process.env.PATH } });
   expect(result.status, result.stderr).toBe(17); expect(result.stdout).toBe("1 2\n");
 });
+it("scopes npm admission to the bounded wrappers instead of the whole shell", () => {
+  // A non-npm Node process the rehearsal runs later must not inherit npm's
+  // budgets, decoders and deadlines through a global NODE_OPTIONS.
+  const script = "source scripts/bounded-transport.sh; " +
+    "printf 'shell:%s:%s\\n' \"${NODE_OPTIONS-}\" \"${DACS_BOUNDED_NPM_HTTP-}\"; " +
+    "run_bounded node -e 'console.log(\"child:\" + process.env.DACS_BOUNDED_NPM_HTTP + \":\" + (process.env.NODE_OPTIONS || \"\"))'";
+  const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", script], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  expect(result.status, result.stderr).toBe(0);
+  const lines = result.stdout.trim().split("\n");
+  expect(lines[0]).toBe("shell::");
+  expect(lines[1]).toMatch(/^child:1:.*--require=.*bounded-npm-http\.cjs/);
+});
