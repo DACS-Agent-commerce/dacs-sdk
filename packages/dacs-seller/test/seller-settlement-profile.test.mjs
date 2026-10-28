@@ -336,7 +336,7 @@ test('a native agent without the seller\'s session admission opens no session', 
   t.after(() => agent.close());
   assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.vetted))), { code: 'session_admission_required', status: 503 });
   assert.equal(agent.stageOf(w.jobId), null);
-  assert.deepEqual(w.admission.calls, []);
+  assert.equal(w.admission.calls.some(([method])=>method==='admit'),false,'request preparation may read revocation; the agent never admits');
   assert.deepEqual(w.reached, []);
 });
 
@@ -603,10 +603,10 @@ test('a missing or different admission or profile is refused before any session 
   // CORE SN-4: a challenge is consumed on its first attempt, so each refused
   // attempt presents its own issued challenge.
   let presented = 0;
-  const fresh = () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
+  const fresh = async () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, (await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
   for (const [label, change] of Object.entries(refusals)) {
     w.admission.answerWith(change);
-    const attempt = fresh();
+    const attempt = await fresh();
     assert.deepEqual(await refused(() => agent.receiveProposal(attempt)), {code:label==='nothing'?'session_admission_unavailable':'session_not_admitted',status:label==='nothing'?503:409},label);
     assert.equal(agent.stageOf(w.jobId), null, `${label}: no session is kept`);
     w.admission.answerWith(null);
@@ -615,7 +615,7 @@ test('a missing or different admission or profile is refused before any session 
     assert.equal(admits(), asked, `${label}: the admission is not asked again`);
   }
   w.admission.answerWith(() => { throw new Error('TEST admission store is down'); });
-  assert.deepEqual(await refused(() => agent.receiveProposal(fresh())), { code: 'session_admission_unavailable', status: 503 });
+  assert.deepEqual(await refused(async () => agent.receiveProposal(await fresh())), { code: 'session_admission_unavailable', status: 503 });
   w.admission.answerWith(null);
   assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'the admitted session is signed');
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
@@ -633,21 +633,21 @@ test('a presentation nonce the seller did not issue, issued for another job or b
   const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
   const NOT_ADMITTED = { code: 'session_not_admitted', status: 409 };
   let presented = 0;
-  const bundle = (jobId = w.jobId, buyer = w.buyerKey.claim) => presentWith(w.buyerKey, w.now - 1 - presented++, agent.issueSessionChallenge({ jobId, buyer }).sessionNonce);
+  const bundle = async (jobId = w.jobId, buyer = w.buyerKey.claim) => presentWith(w.buyerKey, w.now - 1 - presented++, (await agent.issueSessionChallenge({ jobId, buyer })).sessionNonce);
   const attempt = (presentation) => refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: presentation }));
   assert.deepEqual(await attempt(identityFor(w.buyerKey, w.now - 1 - presented++)), NOT_ADMITTED, 'a nonce the seller never issued');
-  const otherJob = bundle(core.generateCanonicalJobId());
+  const otherJob = await bundle(core.generateCanonicalJobId());
   assert.deepEqual(await attempt(otherJob), NOT_ADMITTED, 'a challenge issued for another job');
-  const otherBuyer = bundle(w.jobId, key().claim);
+  const otherBuyer = await bundle(w.jobId, key().claim);
   assert.deepEqual(await attempt(otherBuyer), NOT_ADMITTED, 'a challenge issued to another buyer');
-  const late = bundle();
+  const late = await bundle();
   clock += SESSION_CHALLENGE_LIFETIME_MS;
   assert.deepEqual(await attempt(late), NOT_ADMITTED, 'an expired challenge');
   clock = w.now;
   assert.equal(admits(), 0, 'the admission is never asked for these');
   // Consumed on the first attempt, a refused one too: the same presentation
   // and a re-signed one carrying the same nonce are refused after it.
-  const first = bundle();
+  const first = await bundle();
   w.admission.answerWith(() => ({ disposition: 'refused', reason: 'TEST not admitted' }));
   assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the first attempt is refused by the admission');
   w.admission.answerWith(null);
@@ -734,7 +734,7 @@ test('the seller decides revocation itself: a verified marker refuses a new sess
   t.after(() => agent.close());
   const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
   let presented = 0;
-  const fresh = () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
+  const fresh = async () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, (await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
   const refusal = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status, message: error.message }; } };
   const revoked = await revocationOf(w), forged = await revocationOf(w, { signerKey: w.buyerKey, locator: 'TEST-forged-marker' });
   const active = { kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: w.now };
@@ -755,8 +755,10 @@ test('the seller decides revocation itself: a verified marker refuses a new sess
     'a reader that throws': [() => { throw new Error('TEST revocation reader down'); }, unknown('TEST revocation reader down')],
   };
   for (const [label, [surfaces, [code, status, message]]] of Object.entries(readings)) {
+    w.admission.readRevocationWith(null);
+    const attempted = await fresh();
     w.admission.readRevocationWith(surfaces);
-    const asked = admits(), answer = await refusal(() => agent.receiveProposal(fresh()));
+    const asked = admits(), answer = await refusal(() => agent.receiveProposal(attempted));
     assert.deepEqual([answer?.code, answer?.status], [code, status], `${label}: ${answer?.message}`);
     assert.match(answer.message, message, `${label}: the refusal keeps its cause`);
     assert.equal(admits(), asked, `${label}: admit is not asked`);
@@ -776,19 +778,21 @@ test('the seller decides revocation itself: a verified marker refuses a new sess
 
 test('over HTTP an admission refusal is definite and keeps no session: the same request runs again and is refused for its consumed challenge, and a presentation under its own challenge is signed', async (t) => {
   const w = await world(t), h = await httpSeller(t, w);
-  const fresh = (presentedAt) => { const bundle = presentWith(w.buyerKey, presentedAt, h.agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce); return { ...h.proposal, buyerIdentityBundle: bundle }; };
-  const revoked = fresh(w.now - 1), revocation = await revocationOf(w);
+  const fresh = async (presentedAt) => { const bundle = presentWith(w.buyerKey, presentedAt, (await h.agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce); return { ...h.proposal, buyerIdentityBundle: bundle }; };
+  const revoked = await fresh(w.now - 1), revocation = await revocationOf(w);
   w.admission.readRevocationWith(() => [revocation.surface]);
   await answered(() => h.client.propose(revoked));
   assert.deepEqual([h.last.status, h.last.answer.error], [409, 'session_not_admitted']);
+  w.admission.readRevocationWith(null);
+  const unavailable = await fresh(w.now - 3);
   w.admission.readRevocationWith(() => [{ kind: 'catalog', status: 'active', readStatus: 'unavailable', readFailureReason: 'TEST catalog down' }]);
-  await answered(() => h.client.propose(fresh(w.now - 3)));
+  await answered(() => h.client.propose(unavailable));
   assert.deepEqual([h.last.status, h.last.answer.error], [503, 'session_admission_unavailable'], 'an indeterminate revocation check is definite and keeps no session');
   w.admission.readRevocationWith(null);
   await answered(() => h.client.propose(revoked));
   assert.deepEqual([h.last.status, h.last.answer.error, h.last.answer.message], [409, 'session_not_admitted', 'the presentation challenge was consumed by an earlier presentation attempt']);
   w.admission.answerWith(() => { throw new Error('TEST admission store is down'); });
-  await answered(() => h.client.propose(fresh(w.now - 2)));
+  await answered(async () => h.client.propose(await fresh(w.now - 2)));
   assert.deepEqual([h.last.status, h.last.answer.error], [503, 'session_admission_unavailable']);
   w.admission.answerWith(null);
   assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
@@ -807,7 +811,7 @@ test('a buyer presentation signature is accepted only in canonical unpadded Base
     const request = await w.proposalFor(w.vetted);
     assert.equal((await refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: bundle })))?.code, 'buyer_bundle_unauthenticated', variant);
   }
-  assert.deepEqual(w.admission.calls, [], 'refused before any admission');
+  assert.equal(w.admission.calls.some(([method])=>method==='admit'),false,'refused before any admission');
 });
 
 // Cold review regressions: real signer, authenticated state and durable HTTP journal.
@@ -963,7 +967,7 @@ test('malformed attempts consume recognized challenges before shape validation, 
   assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
   assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 0);
   // A fresh challenge still permits a valid presentation.
-  const nonce = agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce;
+  const nonce = (await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce;
   const bundle = presentWith(w.buyerKey, w.now, nonce);
   // The changed bundle needs matching Vet context; this test uses the existing
   // valid request instead to check that the fresh attempt reaches admission.
@@ -1059,7 +1063,7 @@ test('an admitted unsigned proposal resumes after challenge expiry, including ac
  assert.deepEqual((await agent.receiveProposal(request)).contribution, done.contribution);
  const other = await world(t), late = await seller.createSellerAgent(complete(other, { durableDirectory: other.dir(), now: () => clock }));
  t.after(() => late.close());
- const expired = presentWith(other.buyerKey, other.now, late.issueSessionChallenge({ jobId: other.jobId, buyer: other.buyerKey.claim }).sessionNonce);
+ const expired = presentWith(other.buyerKey, other.now, (await late.issueSessionChallenge({ jobId: other.jobId, buyer: other.buyerKey.claim })).sessionNonce);
  clock += SESSION_CHALLENGE_LIFETIME_MS;
  assert.deepEqual(await refused(async () => late.receiveProposal({ ...await other.proposalFor(other.vetted), buyerIdentityBundle: expired })), { code: 'session_not_admitted', status: 409 });
 });
@@ -1132,7 +1136,7 @@ test('the agent refuses a presenter-chosen pre-signed nonce at issuance and admi
   const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
   const chosen = presentWith(w.buyerKey, w.now, '01'.repeat(16));
-  assert.throws(() => agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
+  await assert.rejects(agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
   const request = await w.proposalFor(w.vetted);
   assert.deepEqual(await refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: chosen })), { code: 'session_not_admitted', status: 409 });
   assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 0);
