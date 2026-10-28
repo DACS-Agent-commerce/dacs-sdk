@@ -12,6 +12,7 @@ import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './helpers/session-admission-fixture.mjs';
 import {buildUnsignedIdentityBundle,attachIdentityPresentation} from '../src/dacs/listing.mjs';
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
+import {admitSessionChallenge} from '../src/dacs/session-challenge-limits.mjs';
 function fixture(t){
  const dir=mkdtempSync(join(tmpdir(),'TEST-agent-construction-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const listing=fixtureListing(seller,{now:NOW}),signer={claim:seller.claim,sign:seller.signBytes},unreachable=()=>assert.fail('unexpected external operation');let time=NOW;
@@ -127,8 +128,8 @@ test('restart refuses a Vet record the counterparty did not sign or a receipt be
   [{signer:{claim:buyer.claim,sign:seller.signBytes}},/not signed by its counterparty verifier/],
   [{receipt:{state:'expired'}},/not accepted or later/],
   [{receipt:null},/has no SR-2 receipt/],
-  [{bundleHash:'c'.repeat(64)},/does not evaluate this job, bundle and party/],
-  [{recordJobId:otherJob},/does not evaluate this job, bundle and party/],
+  [{bundleHash:'c'.repeat(64)},/evaluates another job, party or bundle/],
+  [{recordJobId:otherJob},/evaluates another job, party or bundle/],
   [{},/Vet receipt does not verify/,admission=>admission.verifyReceiptWith(()=>'invalid')],
  ]) {
   const f=fixture(t),admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
@@ -159,4 +160,52 @@ test('restart restores a session bound to its admitted challenge and to verified
  }finally{state.close();}
  const fresh=await f.open({sessionAdmission:admission.sessionAdmission});
  try{assert.equal(fresh.stageOf(JOB),'vetted');assert.equal(fresh.durableSessionOf(JOB).vetCheckpoint.buyer.contentHash,buyerRef.contentHash);}finally{fresh.close();}
+});
+// A fully admitted session whose two Vet records are counterparty-signed, with
+// an optional wrong requirementHash substituted into either record.
+async function vettedSession(t,requirementHash={}){
+ const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
+ const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
+ const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const bundle=presentWith(buyer,issued.sessionNonce);
+ const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement,...requirementHash.buyer?{requirementHash:requirementHash.buyer}:{}});
+ const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...requirementHash.seller?{requirementHash:requirementHash.seller}:{}});
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ try{
+  state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));
+  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
+ }finally{state.close();}
+ return {f,admission};
+}
+test('restart refuses a retained Vet record the counterparty signed for another requirement',async t=>{
+ for(const role of ['buyer','seller']){
+  const {f,admission}=await vettedSession(t,{[role]:'c'.repeat(64)});
+  await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&/requirement-hash-mismatch/.test(error.message));
+ }
+});
+test('restart fails closed when a Vet reader stalls past its deadline',async t=>{
+ const {f,admission}=await vettedSession(t);
+ let entered,seen;
+ const reached=new Promise(resolve=>{entered=resolve;});
+ const {resolveVetRecord:_resolve,...rest}=admission.sessionAdmission;
+ const stall={...rest,resolveVetRecord:(query,options)=>{seen=options;entered();return new Promise(()=>{});}};
+ t.mock.timers.enable({apis:['setTimeout']});
+ const attempt=f.open({sessionAdmission:stall});let state='pending';
+ attempt.then(()=>{state='resolved';},()=>{state='rejected';});
+ const pending=assert.rejects(attempt,error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message));
+ await reached;await Promise.resolve();
+ assert.equal(state,'pending','a stalled reader must not settle the restore');
+ assert.equal(seen.maxBytes,64*1024);assert.equal(seen.timeoutMs,10_000);assert.ok(seen.signal instanceof AbortSignal,'every Vet reader receives an abort signal');
+ t.mock.timers.tick(10_000);
+ await pending;
+});
+test('restart fails closed when a Vet reader returns an oversized reply',async t=>{
+ const {f,admission}=await vettedSession(t);
+ await assert.rejects(f.open({sessionAdmission:{...admission.sessionAdmission,resolveVetRecord:async()=>({padded:'x'.repeat(64*1024)})}}),
+  error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message));
+});
+test('a malformed retained challenge issuance is corruption, not a released slot',()=>{
+ const value={jobId:JOB,issuedAt:NOW};
+ for(const row of [{kind:'session-challenge',attempt:null,expiresAt:'invalid'},{kind:'session-challenge',attempt:null,expiresAt:-1},{kind:'session-challenge',attempt:'consumed',expiresAt:NOW+1000}])
+  assert.throws(()=>admitSessionChallenge(new Map([['nonce',row]]),value,{maxOutstanding:1,maxPerJob:1}),error=>error.code==='seller_state_corrupt');
 });
