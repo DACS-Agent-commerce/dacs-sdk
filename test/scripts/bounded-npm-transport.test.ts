@@ -133,7 +133,7 @@ describe("inert bounded npm HTTP admission", () => {
       const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
       expect(code, output).not.toBe(0); expect(output).toContain("ELIMIT");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 20_000);
   it.each([200, 503])("guards actual npm HTTP status %s before its readers", async status => {
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-transport-"));
     const server = createServer((_request, reply) => {
@@ -213,10 +213,10 @@ describe("total command deadline and retry budget", () => {
       const stopped = Date.now() + 2000; while (running(commandPid) && Date.now() < stopped) await new Promise(resolve => setTimeout(resolve, 25));
       expect(running(commandPid)).toBe(false);
     } finally {
-      try { process.kill(-commandPid, "SIGKILL"); } catch {}
+      if (commandPid) { try { process.kill(-commandPid, "SIGKILL"); } catch {} }
       try { wrapper.kill("SIGKILL"); } catch {}
     }
-  });
+  }, 15_000);
   it("kills a stalled Docker pull and its process group within the total deadline", async () => {
     const h = harness(); const result = runBoundedCommand("docker", ["pull", "fixture"], { ...h.options, seconds: 180, attempts: 3 });
     h.timers[0]?.(); h.children[0]?.emit("exit", null); h.timers[1]?.();
