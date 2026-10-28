@@ -256,9 +256,19 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     }
     return null;
   }
+  // This part's proposal admission retains a session at `proposed` before any
+  // Vet checkpoint exists. Such a session claims no Vet evidence, so only the
+  // challenge binding applies; as soon as it claims Vet (stage `vetted` or any
+  // checkpoint), both exact checkpoints and their evidence are required.
+  function claimsVet(session) {
+    return session.stage === 'vetted' || session.vetCheckpoint !== undefined;
+  }
+  function retainedSessionProblem(session) {
+    return retainedChallengeProblem(session) ?? (claimsVet(session) ? retainedVetCheckpointProblem(session) : null);
+  }
   function sessionView (session) {
     if(!session)return null;
-    const problem = retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session);
+    const problem = retainedSessionProblem(session);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
     const copy=structuredClone(session);
     try { assertSettlementCredit(session.jobId); }
@@ -269,7 +279,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (!session) return;
     authenticateBuyerBundle(session.buyerBundle);
     if (identityBundleHash(session.buyerBundle) !== session.buyerBundleHash) throw new SellerAgentError('seller_state_corrupt', 'retained buyer binding is invalid', 503);
-    const problem = retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session) ?? await retainedVetEvidenceProblem(session);
+    const problem = retainedSessionProblem(session) ?? (claimsVet(session) ? await retainedVetEvidenceProblem(session) : null);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
     sessions.set(session.jobId, session);
   }
@@ -424,7 +434,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       // An unverified retained session retains nothing: the transport may
       // release the claim's effect rather than keep work it cannot attribute.
-      if (session && (retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session))) return false;
+      if (session && retainedSessionProblem(session)) return false;
       const work = session?.nativeEvidenceWork ?? session?.paymentWork;
       return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
     },

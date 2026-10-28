@@ -65,3 +65,11 @@ test('legacy admitted flags without the exact retained presentation hold without
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)}),hash=sha256Hex(canonicalize(input.buyerIdentityBundle));state.attemptChallenge(input.buyerIdentityBundle.sessionNonce,{presentationHash:hash});state.admitChallenge(input.buyerIdentityBundle.sessionNonce,hash);state.close();
  const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),e=>e.code==='session_admission_unavailable');assert.equal(f.admission.calls.some(([method])=>method==='admit'),false);
 });
+
+test('an admitted proposal that claims no Vet stays readable at its proposed stage',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);
+ assert.equal(agent.stageOf(JOB),'proposed','a session before Vet claims no Vet checkpoint or evidence');
+ assert.equal(agent.transportAgreementOf(JOB),null);
+ assert.deepEqual(agent.durableSessionOf(JOB),null);
+});
+
