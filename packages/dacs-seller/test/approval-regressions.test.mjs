@@ -397,3 +397,11 @@ for(const [label,end] of [['decided again',(f,r)=>f.p.decide(r)],['released',(f,
   const{f,r}=await unsyncedSignLine(t);await end(f,r);
   assert.equal((await openSignRows(f)).length,1);assert.equal((await f.policyFor().reconcile()).held.length,1);
  });
+
+test('exact manual approval still authorizes the exact bytes the operator saw, whatever their structure',async t=>{
+ const f=await fixture(t),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{evidenceVersion:'invalid'}});
+ const manual=createExactOperatorApproval({...f.settings,authorize:()=>true});
+ assert.equal(await manual(r),true);
+ const rows=(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
+ assert.equal(rows.at(-1).requestBytes,JSON.stringify(r));
+});
