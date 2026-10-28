@@ -30,10 +30,13 @@ disabled. Live hosts must install the package's optional SQLite dependency;
 the live doctor will fail closed when that adapter is unavailable.
 
 `@kynesyslabs/dacs-node/demos-loader` is the live host's bounded Node import
-hook for `@kynesyslabs/demosdk@4.0.16`. It resolves only that release's one
-published extensionless `demoswork/operations/` directory import. Generated
-compiled services use this hook instead of shipping a general TypeScript/esbuild
-transformer in production; all unrelated resolution failures remain unchanged.
+hook for `@kynesyslabs/demosdk`. It resolves only 4.0.16's extensionless
+`demoswork/operations/` directory import, the one on the `websdk` import path
+(4.0.16 has others, off that path). Generated projects pin
+demosdk 4.0.18, which imports that directory's `index.js` explicitly, so the
+hook passes every resolution through unchanged; it stays in the generated
+scripts so they never need a general TypeScript/esbuild transformer in
+production. All unrelated resolution failures remain unchanged.
 
 The SQLite database is permanently bound to one mode/profile, actor role,
 authority, SDK version, and Standard revision. The SDK and Standard revisions

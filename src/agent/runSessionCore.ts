@@ -2763,6 +2763,9 @@ export async function runSessionCore(
   const requestedListingRef = listingRef;
   const requestedResumeJobId = resumeJobId;
   protocolString(terms.price.rail, "session price rail", { allowColon: true });
+  if (terms.price.rail === "pay-d402") {
+    throw new DacsError("pay-d402 is unregistered and unavailable for DACS sessions, including recovery");
+  }
   protocolString(terms.price.asset, "session price asset", { allowColon: true });
   protocolString(terms.deliveryPhase, "session delivery phase");
   protocolString(terms.deliveryFormat, "session delivery format", {
@@ -3050,6 +3053,9 @@ export async function runSessionCore(
           return matchingKinds[0]!;
         })()
       : terms.price.rail;
+  if (paymentEvidencePhase === "pay-d402") {
+    throw new DacsError("pay-d402 is unregistered and unavailable for DACS settlement evidence");
+  }
   if (!listingView.supportedDelivery.includes(terms.deliveryPhase)) {
     throw new Error(`delivery ${terms.deliveryPhase} not offered by the listing`);
   }

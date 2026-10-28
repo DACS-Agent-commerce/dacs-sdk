@@ -1,20 +1,15 @@
-import { describe, expect, test } from "vitest";
-
+import { describe, expect, test, vi } from "vitest";
 import {
-  termsMatchD402,
-  payD402SettleCore,
-  payD402Settle,
-  createPayD402Rail,
-  PAY_D402_AVAILABILITY,
-  type D402ClientLike,
-  type D402PaymentRequirement,
-  type D402SettlementResult,
-  type PayD402Rail,
+  termsMatchD402, payD402SettleCore, createPayD402Rail, PAY_D402_AVAILABILITY,
+  payD402Settle, payD402ResumeSettlement, type PayD402Rail, type PayD402SettleParams, type D402ClientLike,
 } from "../../src/rails/payD402.js";
+
+const sdk = vi.hoisted(() => ({ demos: vi.fn(), client: vi.fn() }));
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({ Demos: sdk.demos }));
+vi.mock("@kynesyslabs/demosdk/d402/client", () => ({ D402Client: sdk.client }));
 
 const RECIPIENT = "demos1recipientaddress0000000000000000000000";
 const PAYER = "demos1payeraddress00000000000000000000000000";
-const URL = "https://seller.example/premium";
 
 describe("termsMatchD402 (§4.1 abort guard, native DEM)", () => {
   const expected = { recipient: RECIPIENT, amount: "1500000000" };
@@ -39,177 +34,55 @@ describe("termsMatchD402 (§4.1 abort guard, native DEM)", () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/amount mismatch/);
   });
+
 });
 
-/** A fake D402 client that records what it was asked to pay. */
-function fakeClient(
-  over: Partial<{ result: D402SettlementResult; onCreate: (r: D402PaymentRequirement) => void }> = {},
-): D402ClientLike & { paid?: D402PaymentRequirement } {
-  const self: D402ClientLike & { paid?: D402PaymentRequirement } = {
-    async createPayment(requirement) {
-      self.paid = requirement;
-      over.onCreate?.(requirement);
-      return { tx: "unsigned", requirement };
-    },
-    async settle() {
-      return over.result ?? { success: true, hash: "0xdemhash", blockNumber: 42 };
-    },
-  };
-  return self;
-}
-
-/** A fetch stub that returns a 402 carrying the given requirement body. */
-function fetch402(body: unknown, status = 402): typeof fetch {
-  return (async () =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    })) as unknown as typeof fetch;
-}
-
-const params = (over: Record<string, unknown> = {}) => ({
-  paywallUrl: URL,
-  recipient: RECIPIENT,
-  amount: "1500000000",
-  network: "demos:testnet",
-  ...over,
-});
-
-describe("payD402SettleCore", () => {
-  test("happy path: pays the advertised requirement and returns the settlement hash", async () => {
-    const client = fakeClient();
-    const res = await payD402SettleCore(params(), {
-      client,
-      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(true);
-    expect(res.txHash).toBe("0xdemhash");
-    expect(res.payer).toBe(PAYER);
-    expect(res.payee).toBe(RECIPIENT);
-    expect(res.chainId).toBe("demos:testnet");
-    expect(client.paid).toMatchObject({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" });
-  });
-
-  test("§4.1 abort: a 402 advertising a different recipient is rejected BEFORE paying", async () => {
-    let created = 0;
-    const client = fakeClient({ onCreate: () => (created += 1) });
-    await expect(
-      payD402SettleCore(params(), {
-        client,
-        fetchImpl: fetch402({ recipient: "demos1attacker", amount: "1500000000", resourceId: "res-1" }),
-        payerAddress: PAYER,
-      }),
-    ).rejects.toThrow(/does not match negotiated agreement/);
-    expect(created).toBe(0); // never signed
-  });
-
-  test("§4.1 abort: a 402 advertising a different amount is rejected before paying", async () => {
-    const client = fakeClient();
-    await expect(
-      payD402SettleCore(params(), {
-        client,
-        fetchImpl: fetch402({ recipient: RECIPIENT, amount: "999", resourceId: "res-1" }),
-        payerAddress: PAYER,
-      }),
-    ).rejects.toThrow(/amount mismatch/);
-  });
-
-  test("a non-402 response is a counterparty fault", async () => {
-    const client = fakeClient();
-    await expect(
-      payD402SettleCore(params(), {
-        client,
-        fetchImpl: fetch402({}, 200),
-        payerAddress: PAYER,
-      }),
-    ).rejects.toThrow(/expected HTTP 402/);
-  });
-
-  test("a malformed 402 body (no resourceId) is rejected", async () => {
-    const client = fakeClient();
-    await expect(
-      payD402SettleCore(params(), {
-        client,
-        fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000" }),
-        payerAddress: PAYER,
-      }),
-    ).rejects.toThrow(/resourceId/);
-  });
-
-  test("settlement success with no hash is reported ok:false (not an unverifiable success)", async () => {
-    const client = fakeClient({ result: { success: true, hash: "" } });
-    const res = await payD402SettleCore(params(), {
-      client,
-      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
-    expect(res.txHash).toBe("");
-  });
-
-  test("a failed settlement is reported ok:false with its hash preserved", async () => {
-    const client = fakeClient({ result: { success: false, hash: "0xtried", message: "insufficient balance" } });
-    const res = await payD402SettleCore(params(), {
-      client,
-      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
-    expect(res.txHash).toBe("0xtried");
-  });
-
-  test("a bare-DEM number amount (pre-fork) is rejected — OS base-unit string required", async () => {
-    const client = fakeClient();
-    await expect(
-      payD402SettleCore(params(), {
-        client,
-        // 402 advertises `amount: 2` (pre-fork DEM) instead of OS base units.
-        fetchImpl: fetch402({ recipient: RECIPIENT, amount: 2, resourceId: "res-1" }),
-        payerAddress: PAYER,
-      }),
-    ).rejects.toThrow(/bare number|OS base units/);
-  });
-});
-
-describe("createPayD402Rail — experimental quarantine (RAV-R1)", () => {
-  test("is marked non-live", () => {
-    expect(PAY_D402_AVAILABILITY).toBe("operator_gated"); // §9.4.4 spec vocabulary (#5)
-  });
-
-  test("refuses to build without acknowledgeExperimental (never wired as live by accident)", async () => {
-    await expect(
-      createPayD402Rail({ rpc: "https://node.demos.sh", secret: "x" } as never),
-    ).rejects.toThrow(/EXPERIMENTAL|acknowledgeExperimental/);
-  });
-});
-
-describe("payD402Settle bridge destination binding", () => {
-  test("rejects a request/config destination mismatch before rail submission", async () => {
-    let calls = 0;
+describe("D402 funded-use quarantine", () => {
+  test("legacy structural rails and two-argument callers compile and still refuse before rail access", async () => {
+    // Keep the pre-existing public structural API: no wait method or options
+    // are required to receive the same disabled-rail refusal.
     const rail: PayD402Rail = {
       address: PAYER,
-      settle: async () => {
-        calls += 1;
-        throw new Error("must not submit");
-      },
+      settle: vi.fn(async () => { throw new Error("must not settle"); }),
     };
-    const settle = payD402Settle(rail, {
-      url: URL,
-      recipient: RECIPIENT,
-      network: "demos:testnet",
-    });
-    expect(() =>
-      settle({
-        rail: "pay-d402",
-        phase: "pay-d402",
-        amount: "1",
-        asset: "DEM",
-        payee: "did:demos:seller",
-        expectedPayee: "demos1wrong",
-        jobId: "destination-mismatch",
-      }),
-    ).toThrow(/destination mismatch/);
-    expect(calls).toBe(0);
+    const paywall = { url: "https://seller.example/premium", recipient: RECIPIENT };
+    const settle = payD402Settle(rail, paywall);
+    const resume = payD402ResumeSettlement(rail, paywall);
+    await expect(settle({} as Parameters<typeof settle>[0])).rejects.toThrow(/unavailable.*approved total debit/);
+    await expect(resume({} as Parameters<typeof resume>[0])).rejects.toThrow(/unavailable.*approved total debit/);
+    expect(rail.settle).not.toHaveBeenCalled();
   });
+
+  test("availability is disabled and acknowledgement cannot construct a wallet or client", async () => {
+    expect(PAY_D402_AVAILABILITY).toBe("disabled");
+    for (const acknowledgeExperimental of [false, true]) {
+      await expect(createPayD402Rail({
+        rpc: "https://rpc.example", secret: "unused", acknowledgeExperimental,
+        network: "demos:mainnet",
+      })).rejects.toThrow(/unavailable.*approved total debit/);
+    }
+    expect(sdk.demos).not.toHaveBeenCalled();
+    expect(sdk.client).not.toHaveBeenCalled();
+  });
+
+  test.each(["demos:mainnet", "demos:other"])(
+    "direct calls cannot authorize uncapped fees or claim settlement on %s", async (network) => {
+      const client: D402ClientLike = {
+        createPayment: vi.fn(async () => ({})),
+        settle: vi.fn(async () => ({ success: true, hash: "same-hash", blockNumber: 42 })),
+      };
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+        recipient: RECIPIENT, amount: "1500000000", resourceId: "same-resource",
+      }), { status: 402 }));
+      const params: PayD402SettleParams = {
+        paywallUrl: "https://seller.example/premium", recipient: RECIPIENT,
+        amount: "1500000000", network,
+      };
+      await expect(payD402SettleCore(params, { client, fetchImpl, payerAddress: PAYER }))
+        .rejects.toThrow(/unavailable.*approved total debit/);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(client.createPayment).not.toHaveBeenCalled();
+      expect(client.settle).not.toHaveBeenCalled();
+    },
+  );
 });
