@@ -194,9 +194,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const minimumReportSize = Buffer.byteLength(canonicalize({ jobId: '0'.repeat(26), agreementHash: '0'.repeat(64), settlementId: `demos:${'0'.repeat(64)}` }));
   // An extra JSON member costs at least five bytes (,"":0); the four
   // lengths immediately above the binding-only object cannot be produced.
-  const inlineSizeProblem = nativeProfile && (!Number.isSafeInteger(inlineSize) || inlineSize < minimumReportSize ||
+  const inlineSizeProblem = nativeProfile && (!Number.isSafeInteger(inlineSize) || inlineSize < minimumReportSize || inlineSize > MAX_STORAGE_ARTIFACT_BYTES ||
     (inlineSize > minimumReportSize && inlineSize < minimumReportSize + 5))
-    ? `unsupported Listing: inline storage delivery requires expectedSizeBytes equal to ${minimumReportSize} or between ${minimumReportSize + 5} and 131072` : null;
+    ? `unsupported Listing: inline storage delivery requires expectedSizeBytes equal to ${minimumReportSize} or between ${minimumReportSize + 5} and ${MAX_STORAGE_ARTIFACT_BYTES}` : null;
   const rail = railAuthorityConfig(railAuthority);
   if (rail && !nativeProfile) throw new TypeError('the simulated fixture profile takes no railAuthority; it uses only the simulated fixture rail');
   if (nativeProfile && !rail) throw new TypeError(`the native seller profile needs railAuthority: it selects ${DEM_RAIL.railId} only from its steward-signed definition`);
@@ -1053,6 +1053,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (verifyFixtureRecord(record, { logicalAddress, expectedWriter: claim }) !== 'valid') throw new SellerAgentError('delivery_readback_invalid', 'delivery receipt is not the seller write', 503);
       return record;
     };
+    let verifiedSchemaPayload;
     const deps = {
       auditSourceProfile: 'v2',
       receiptStore,
@@ -1070,6 +1071,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         // disagreement become the core's permanent preparation-failed handoff.
         if (size > MAX_STORAGE_ARTIFACT_BYTES || (expected !== undefined && size !== expected)) {
           return { status: 'indeterminate', reason: `inline delivery size ${size} differs from supported expectedSizeBytes ${expected ?? 'undeclared'} (maximum ${MAX_STORAGE_ARTIFACT_BYTES})` };
+        }
+        if (schemaUrl !== undefined) {
+          const verdict = await deps.verifyDeliverySchema({ schemaUrl, cleartextPayload: report });
+          if (verdict?.disposition !== 'valid') return { status: 'indeterminate', reason: verdict?.reason || 'report schema validation is not valid' };
         }
         return { status: 'prepared', delivery: { artifact: { kind: phase, cleartextPayload: report, anchoredValue: report, access: { model: 'public' } } } };
       },
@@ -1144,7 +1149,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if (schemaUrl !== listing.offering.deliverable.schemaUrl || !reportMatches(cleartextPayload, session, work.intake.settlementId)) {
           return { disposition: 'invalid', reason: 'report schema/bindings differ' };
         }
+        if (verifiedSchemaPayload === canonicalize(cleartextPayload)) return { disposition: 'valid' };
         const verdict = verifySchema ? await verifySchema({ schemaUrl, cleartextPayload: structuredClone(cleartextPayload) }) : { disposition: 'invalid' };
+        if (verdict?.disposition === 'valid' && canonicalize(Object.keys(verdict).sort()) !== canonicalize(['disposition'])) return { disposition: 'indeterminate', reason: 'schema verifier returned a malformed disposition' };
+        if (verdict?.disposition === 'valid') verifiedSchemaPayload = canonicalize(cleartextPayload);
         // Preserve unavailable/malformed verifier answers for the core's
         // retryable classification; only an explicit invalid verdict fails.
         return verdict;
