@@ -228,10 +228,26 @@ it("admits the actual generated doctor with the consumer command environment", (
     }
   }
   symlinkSync(join(root, "node_modules"), join(project, "node_modules"));
-  const doctor = source().split("    doctor_status=0\n")[1]?.split('    printf "%s')[0]; expect(doctor).toBeTruthy();
-  const command = doctor?.replace("npm run --silent dacs:doctor -- --json", `'${process.execPath}' --import '${join(root, "packages/dacs-node/dist/demosLoader.js")}' dist/src/cli.js doctor --json`)
-    .replaceAll("/out/doctor.json", join(project, "doctor.json")).replaceAll("/out/doctor.log", join(project, "doctor.log"));
-  const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", `doctor_status=0\n${command}\ntest "$doctor_status" -eq 5`], { cwd: project, encoding: "utf8", env: { PATH: process.env.PATH } });
+  const checks = source().split("stage=image-checks\n")[1]?.split("stage=evidence-collect\n")[0]; expect(checks).toBeTruthy();
+  const args = checks?.split('consumer_phases=')[0];
+  const command = checks?.split("doctor_status=0\n")[1]?.split("printf '%s")[0]; expect(command).toBeTruthy();
+  // Execute the producer with the exact command arguments/environment, replacing
+  // only Docker's namespace setup with the current process for this unit test.
+  const wrapper = `run_bounded() { "$@"; }
+docker() {
+  while [ "$1" != fixture-image ]; do
+    if [ "$1" = --env ]; then export "$2"; shift; fi
+    shift
+  done
+  shift
+  node "$@"
+}
+${args}
+doctor_status=0
+${command}
+test "$doctor_status" -eq 5`;
+  const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", wrapper], { cwd: project, encoding: "utf8",
+    env: { PATH: process.env.PATH, consumer_container: "fixture", runtime_image: "fixture-image", execute_out: project } });
   expect(result.status, result.stderr + (existsSync(join(project, "doctor.log")) ? readFileSync(join(project, "doctor.log"), "utf8") : "")).toBe(0);
   const report = JSON.parse(readFileSync(join(project, "doctor.json"), "utf8"));
   expect(compose({ "doctor.json": JSON.stringify(report) }, "both", report.sdkVersion).summary, JSON.stringify(report.checks.filter((check: { required: boolean; status: string }) => check.required && check.status !== "pass"))).toMatchObject({ functionalPassed: true, doctor: { disposition: "blocked-without-credentials" } });
