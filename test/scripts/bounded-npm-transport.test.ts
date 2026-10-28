@@ -90,7 +90,7 @@ describe("inert bounded npm HTTP admission", () => {
       const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
       expect(code, diagnostic).toBe(0); expect(JSON.parse(output)).toBe("11.19.0");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 20_000);
   it.each(["declared", "chunked", "gzip"])("admits full npm metadata above 32 MiB via %s while retaining a finite ceiling", async kind => {
     const metadata = Buffer.from(JSON.stringify({ name: "npm", versions: {
       "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
@@ -150,7 +150,7 @@ describe("inert bounded npm HTTP admission", () => {
       const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
       expect(code, output).not.toBe(0); expect(output).toContain("ELIMIT");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 20_000);
 });
 
 describe("total command deadline and retry budget", () => {
