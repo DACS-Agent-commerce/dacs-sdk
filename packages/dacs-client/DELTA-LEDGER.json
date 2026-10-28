@@ -1352,18 +1352,223 @@
         }
       ]
     },
-    {"delta":"D11","subject":"fix(client): D11 fence SQLite callbacks and preserve exec semantics","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"f377b3dd6895e2ad1f02bedddc9eb18177f9eb57","after":"f68603bd3f057c2bf42c8670dd6cb6d52cf05db4"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"8173b4c5b350f1a39a3b6bad62e8343f3e688258","after":"e547911cd3385e9eed8337be4b655bc424c82aaf"}]},
-    {"delta":"D11","subject":"fix(client): D11 keep rollback guard vectors portable to the Node floor","files":[{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"e547911cd3385e9eed8337be4b655bc424c82aaf","after":"ef1915ddcdc37b96297aed4492ed04fd6009b724"}]},
-    {"delta":"D11","subject":"fix(client): D11 let SQLite identify empty exec remainders","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"f68603bd3f057c2bf42c8670dd6cb6d52cf05db4","after":"4342294acfd3f71ee5c3f348f08ac542b0596392"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"ef1915ddcdc37b96297aed4492ed04fd6009b724","after":"cf66e34a3816d78a633002b462ff99253850a429"}]},
-    {"delta":"D11","subject":"fix(client): D11 reject SQL callbacks with quoted function names","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"4342294acfd3f71ee5c3f348f08ac542b0596392","after":"ea1a50eb65b26e6e66b96e30f6dbde26976b8586"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"cf66e34a3816d78a633002b462ff99253850a429","after":"a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6"}]},
-    {"delta":"D11","subject":"delta(client): D11 split 03 add the concrete SQLite transaction adapter","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"944247d4ce8b2622389c79b71de1a21d6b83e239","after":"d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":null,"after":"c202d2b701edc2a536b34d860bdb7317cfed6d77"},{"path":"packages/dacs-client/test/helpers/store-crash-worker.mjs","before":null,"after":"f19662c277f9bcc86145487d72230cdfbdde2d50"},{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":null,"after":"8560f9547739573a5f2c8c32c27a085fbd59370d"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":null,"after":"18c6e3c74c2817a1c38f58676eb2053d76398ebb"}]},
-    {"delta":"D11","subject":"fix(client): D11 guard every SQLite callback statement after rollback","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba","after":"dea888ee7f7906fc011ccb8e69319cf00f036c85"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"c202d2b701edc2a536b34d860bdb7317cfed6d77","after":"00357c230e040c7a2658f717f72e172eedcc8b44"},{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"8560f9547739573a5f2c8c32c27a085fbd59370d","after":"7fb6c88ed1400bffc509fc23453150bf78519cbe"}]},
-    {"delta":"D11","subject":"fix(client): D11 cover retained native exec rollback on reopen","files":[{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"7fb6c88ed1400bffc509fc23453150bf78519cbe","after":"aca495eb87c54f557b02a7a2ce5d5b2882f1ce83"}]},
-    {"delta":"D11","subject":"fix(client): D11 classify native constraints and rebuild renamed table guards","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"dea888ee7f7906fc011ccb8e69319cf00f036c85","after":"f80619dee3a06bfc04b11247821e8f1d5dd82bad"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"18c6e3c74c2817a1c38f58676eb2053d76398ebb","after":"0cae28f8588f2e4d35350d4f009ddfa58e84abc4"}]},
-    {"delta":"D11","subject":"fix(client): D11 track cached host statements before transactions","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"f80619dee3a06bfc04b11247821e8f1d5dd82bad","after":"14f4c3c17024e108f9196e0f1d68223b542d2f69"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"0cae28f8588f2e4d35350d4f009ddfa58e84abc4","after":"a9892f8cd0a72d7ce09af15c568880d6bb364a8e"}]},
-    {"delta":"D11","subject":"fix(client): D11 preserve callback fencing and private savepoints","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"14f4c3c17024e108f9196e0f1d68223b542d2f69","after":"ea871900d025e7310e2a35b95a626da101ca9edd"},{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"4342294acfd3f71ee5c3f348f08ac542b0596392","after":"ea1a50eb65b26e6e66b96e30f6dbde26976b8586"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"cf66e34a3816d78a633002b462ff99253850a429","after":"a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6"},{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"aca495eb87c54f557b02a7a2ce5d5b2882f1ce83","after":"aa9dbf4fc1e98f055efc5d7690e042dad16f9186"}]},
-    {"delta":"D11","subject":"fix(client): D11 guard result inspection and preserve unfinished host writes","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"ea871900d025e7310e2a35b95a626da101ca9edd","after":"6e92f93f88eacacd26f5dd031c64a0c29388eb3f"},{"path":"packages/dacs-client/test/store-atomicity.test.mjs","before":"aa9dbf4fc1e98f055efc5d7690e042dad16f9186","after":"4814964834698bcd72cc3faaf6f2438b8ce35cee"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"a9892f8cd0a72d7ce09af15c568880d6bb364a8e","after":"74c4ba0638f76b77d45dd45c1260e7e718a8e7af"}]},
-    {"delta":"D11","subject":"fix(client): D11 refuse unowned statements while application functions exist","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"ea1a50eb65b26e6e66b96e30f6dbde26976b8586","after":"470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6","after":"2d4843812322f511ac816fee299dfde349c90df7"}]},
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 fence SQLite callbacks and preserve exec semantics",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "f377b3dd6895e2ad1f02bedddc9eb18177f9eb57",
+          "after": "f68603bd3f057c2bf42c8670dd6cb6d52cf05db4"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "8173b4c5b350f1a39a3b6bad62e8343f3e688258",
+          "after": "e547911cd3385e9eed8337be4b655bc424c82aaf"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep rollback guard vectors portable to the Node floor",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "e547911cd3385e9eed8337be4b655bc424c82aaf",
+          "after": "ef1915ddcdc37b96297aed4492ed04fd6009b724"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 let SQLite identify empty exec remainders",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "f68603bd3f057c2bf42c8670dd6cb6d52cf05db4",
+          "after": "4342294acfd3f71ee5c3f348f08ac542b0596392"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "ef1915ddcdc37b96297aed4492ed04fd6009b724",
+          "after": "cf66e34a3816d78a633002b462ff99253850a429"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 reject SQL callbacks with quoted function names",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "4342294acfd3f71ee5c3f348f08ac542b0596392",
+          "after": "ea1a50eb65b26e6e66b96e30f6dbde26976b8586"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "cf66e34a3816d78a633002b462ff99253850a429",
+          "after": "a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 03 add the concrete SQLite transaction adapter",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "944247d4ce8b2622389c79b71de1a21d6b83e239",
+          "after": "d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": null,
+          "after": "c202d2b701edc2a536b34d860bdb7317cfed6d77"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/store-crash-worker.mjs",
+          "before": null,
+          "after": "f19662c277f9bcc86145487d72230cdfbdde2d50"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": null,
+          "after": "8560f9547739573a5f2c8c32c27a085fbd59370d"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": null,
+          "after": "18c6e3c74c2817a1c38f58676eb2053d76398ebb"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 guard every SQLite callback statement after rollback",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba",
+          "after": "dea888ee7f7906fc011ccb8e69319cf00f036c85"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "c202d2b701edc2a536b34d860bdb7317cfed6d77",
+          "after": "00357c230e040c7a2658f717f72e172eedcc8b44"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "8560f9547739573a5f2c8c32c27a085fbd59370d",
+          "after": "7fb6c88ed1400bffc509fc23453150bf78519cbe"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 cover retained native exec rollback on reopen",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "7fb6c88ed1400bffc509fc23453150bf78519cbe",
+          "after": "aca495eb87c54f557b02a7a2ce5d5b2882f1ce83"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 classify native constraints and rebuild renamed table guards",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "dea888ee7f7906fc011ccb8e69319cf00f036c85",
+          "after": "f80619dee3a06bfc04b11247821e8f1d5dd82bad"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": "18c6e3c74c2817a1c38f58676eb2053d76398ebb",
+          "after": "0cae28f8588f2e4d35350d4f009ddfa58e84abc4"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 track cached host statements before transactions",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "f80619dee3a06bfc04b11247821e8f1d5dd82bad",
+          "after": "14f4c3c17024e108f9196e0f1d68223b542d2f69"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": "0cae28f8588f2e4d35350d4f009ddfa58e84abc4",
+          "after": "a9892f8cd0a72d7ce09af15c568880d6bb364a8e"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 preserve callback fencing and private savepoints",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "14f4c3c17024e108f9196e0f1d68223b542d2f69",
+          "after": "ea871900d025e7310e2a35b95a626da101ca9edd"
+        },
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "4342294acfd3f71ee5c3f348f08ac542b0596392",
+          "after": "ea1a50eb65b26e6e66b96e30f6dbde26976b8586"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "cf66e34a3816d78a633002b462ff99253850a429",
+          "after": "a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "aca495eb87c54f557b02a7a2ce5d5b2882f1ce83",
+          "after": "aa9dbf4fc1e98f055efc5d7690e042dad16f9186"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 guard result inspection and preserve unfinished host writes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "ea871900d025e7310e2a35b95a626da101ca9edd",
+          "after": "6e92f93f88eacacd26f5dd031c64a0c29388eb3f"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "aa9dbf4fc1e98f055efc5d7690e042dad16f9186",
+          "after": "4814964834698bcd72cc3faaf6f2438b8ce35cee"
+        },
+        {
+          "path": "packages/dacs-client/test/store-host-boundary.test.mjs",
+          "before": "a9892f8cd0a72d7ce09af15c568880d6bb364a8e",
+          "after": "74c4ba0638f76b77d45dd45c1260e7e718a8e7af"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 refuse unowned statements while application functions exist",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "ea1a50eb65b26e6e66b96e30f6dbde26976b8586",
+          "after": "470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3"
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6",
+          "after": "2d4843812322f511ac816fee299dfde349c90df7"
+        }
+      ]
+    },
     {
       "delta": "D11",
       "subject": "fix(client): D11 split the held purchase-state schema prerequisite",
@@ -1380,15 +1585,245 @@
         }
       ]
     },
-    {"delta":"D11","subject":"fix(client): D11 share buyer schema with the database fixture","files":[{"path":"packages/dacs-client/test/helpers/purchase-integrity-database.mjs","before":"4fd59007caab514e62aaf8b58505c1ab72af7d21","after":"a454605da7223935b8e8417722828049bf904eaf"},{"path":"packages/dacs-client/test/purchase-state-schema.test.mjs","before":"ce3bb31eb69d5828748e1d04e797bd10de4ef5f3","after":"940e94f63ffc2a65f42ea03bf262fb42fc200525"}]},
-    {"delta":"D11","subject":"delta(client): D11 split 04 inject buyer seams behind the action hold","files":[{"path":"packages/dacs-client/src/dacs/delivery-deadline-watch.mjs","before":"36d4ac4177132e7de0708a4f4e90c418d3858a9d","after":"9bff8dcef805bb2b8d291452aa5245b43fb28eed"},{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"479bd5b726f9e0752ca1618212e174330b800af0","after":"d523e721e629c2f2e3164fed45065d24f87aee3f"},{"path":"packages/dacs-client/src/purchase-state-schema.mjs","before":null,"after":"557ea59e906125decb9c56d5b2322a1d30af3321"},{"path":"packages/dacs-client/src/purchases.mjs","before":"30b6914f51a037b698d9a71d5e6cecc0629e4a8b","after":"d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9"},{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba","after":"9b3c78ed8b64b9113170ca6796196f49957881c2"},{"path":"packages/dacs-client/src/seams/wallet-actions-not-wired.mjs","before":"24d09b80ffce1129e878685ef01a21b798de3d20","after":"2fd8da35f4657e607784dcd339900dfe03d7fb9f"},{"path":"packages/dacs-client/test/d11-purchase-actions.test.mjs","before":null,"after":"717c0a6ab525d95c330ec2dafcda3074e7b47b24"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"3c96ca8c5a47dcb88862af46324df331961d153e","after":"a2cd8b437ac464174f10834f7870b960966d0393"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"c202d2b701edc2a536b34d860bdb7317cfed6d77","after":"c8a2fd31115b3af715df4b9cb589c188280dbe4a"},{"path":"packages/dacs-client/test/helpers/purchase-integrity-database.mjs","before":"4fd59007caab514e62aaf8b58505c1ab72af7d21","after":"f1e6076cb72330b0bfed0ede94455e39d360272d"},{"path":"packages/dacs-client/test/helpers/purchase-integrity-operations.mjs","before":"6e9b5e8a34479e881392588612cc264be7e1e87b","after":"8b91a598be9918d7177fdb04c4c35cdf9d41df0b"},{"path":"packages/dacs-client/test/helpers/readback-review-loader.mjs","before":null,"after":"0fd55490fb08991a2c021ccc4e48679f0a2b00b6"},{"path":"packages/dacs-client/test/purchase-executed-only.test.mjs","before":"a90c09c6855bf640d1c1ae01251d66b783c36ee1","after":"498f20be5b423d6328ffb0031d71d4e3d8233c43"},{"path":"packages/dacs-client/test/purchase-integrity.test.mjs","before":"80fe7f93a5306cbe4392ac1529b1f9789b050504","after":"174d67c16132706497904b28250c6135e97d1497"},{"path":"packages/dacs-client/test/purchase-review-races.test.mjs","before":"48b8e059fc05a3495be61151feda3793d08de7f7","after":"0f6b4617a40d7d1a888b9f065abc794d9b00b5b4"},{"path":"packages/dacs-client/test/readback-review-decisions.test.mjs","before":"a3260b7e24020f9a6a3b6e8ba637d59d17ebae06","after":"85def5a0ba534a8f2a5b0c7657d42fbf28598d52"},{"path":"packages/dacs-client/test/sweep-contracts.test.mjs","before":"b8e24392ce178fa7414fb3f244f0606b7c82c9b6","after":"3955731dbff3f936b239e42a7a4aa8f13c69091f"}]},
-    {"delta":"D11","subject":"fix(client): D11 omit unimplemented diagnostic factory options","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9","after":"4aaed8cf6ea80a8871e2a08e32d7d1ff76932695"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"a2cd8b437ac464174f10834f7870b960966d0393","after":"4abceff4d2f43e41f00707479962c194ca06070f"}]},
-    {"delta":"D11","subject":"fix(client): D11 reconcile held buyer seam merge provenance","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"9fa8ce3f7c831bd65179dc99a9e70877349c1f6d","after":"9fa8ce3f7c831bd65179dc99a9e70877349c1f6d"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"d697a51b58d0e71ab9992bcd0f17272c85c28f5f","after":"d697a51b58d0e71ab9992bcd0f17272c85c28f5f"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"8b38b0a63507a18a55f0fe55f153e03866343a30","after":"8b38b0a63507a18a55f0fe55f153e03866343a30"}]},
-    {"delta":"D11","subject":"fix(client): D11 resolve duplicate schema import after stack merge","files":[{"path":"packages/dacs-client/test/helpers/purchase-integrity-database.mjs","before":"5863b0e71bcd0580199dbc733cdbe629e7aa8831","after":"f1e6076cb72330b0bfed0ede94455e39d360272d"}]},
-    {"delta":"D11","subject":"fix(client): D11 reconcile adapter initialization merge","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"eb7c37692bdd5da4ac476e6791a35172f404212e","after":"eb7c37692bdd5da4ac476e6791a35172f404212e"}]},
-    {"delta":"D11","subject":"fix(client): D11 qualify merged transaction source","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"78994cc83d1c0bbe3065bec8852ea8b37f8d1988","after":"78994cc83d1c0bbe3065bec8852ea8b37f8d1988"}]},
-    {"delta":"D11","subject":"fix(client): D11 select historical changes in provenance deletion probes","files":[{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"052a7eaf5e1cf405c211dcd21b9ef1e3faad108a","after":"052a7eaf5e1cf405c211dcd21b9ef1e3faad108a"}]},
-    {"delta":"D11","subject":"delta(client): D11 split 05 validate retained host transfer observations","files":[{"path":"packages/dacs-client/src/dacs/chain.mjs","before":"ba97147f77c17de62b3a769c61f830a793f1a449","after":"597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"},{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"d523e721e629c2f2e3164fed45065d24f87aee3f","after":"fe7f09a4177ea24fb5161ba2983755df49b09901"},{"path":"packages/dacs-client/src/purchases.mjs","before":"d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9","after":"427f897f08c2e6eba7f14290c899b56cdbab7cb5"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"c8a2fd31115b3af715df4b9cb589c188280dbe4a","after":"19be8559b54d902e57fd1056dab758c48d052dbe"},{"path":"packages/dacs-client/test/domain-store-crash.test.mjs","before":null,"after":"59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"},{"path":"packages/dacs-client/test/helpers/domain-store-crash-worker.mjs","before":null,"after":"c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9"},{"path":"packages/dacs-client/test/helpers/domain-store-crash-world.mjs","before":null,"after":"a91f8018335cd08180669ba04b8312608b046d8a"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":null,"after":"05af633db6d7e5bd8d18a40f23e9afef0dae01ef"},{"path":"packages/dacs-client/test/purchase-executed-only.test.mjs","before":"498f20be5b423d6328ffb0031d71d4e3d8233c43","after":"36cf0c10d71208afda5d52f6aef02adc0121da62"}]},
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share buyer schema with the database fixture",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "4fd59007caab514e62aaf8b58505c1ab72af7d21",
+          "after": "a454605da7223935b8e8417722828049bf904eaf"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-state-schema.test.mjs",
+          "before": "ce3bb31eb69d5828748e1d04e797bd10de4ef5f3",
+          "after": "940e94f63ffc2a65f42ea03bf262fb42fc200525"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 04 inject buyer seams behind the action hold",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "36d4ac4177132e7de0708a4f4e90c418d3858a9d",
+          "after": "9bff8dcef805bb2b8d291452aa5245b43fb28eed"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "479bd5b726f9e0752ca1618212e174330b800af0",
+          "after": "d523e721e629c2f2e3164fed45065d24f87aee3f"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": null,
+          "after": "557ea59e906125decb9c56d5b2322a1d30af3321"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "30b6914f51a037b698d9a71d5e6cecc0629e4a8b",
+          "after": "d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba",
+          "after": "9b3c78ed8b64b9113170ca6796196f49957881c2"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs",
+          "before": "24d09b80ffce1129e878685ef01a21b798de3d20",
+          "after": "2fd8da35f4657e607784dcd339900dfe03d7fb9f"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": null,
+          "after": "717c0a6ab525d95c330ec2dafcda3074e7b47b24"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "3c96ca8c5a47dcb88862af46324df331961d153e",
+          "after": "a2cd8b437ac464174f10834f7870b960966d0393"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "c202d2b701edc2a536b34d860bdb7317cfed6d77",
+          "after": "c8a2fd31115b3af715df4b9cb589c188280dbe4a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "4fd59007caab514e62aaf8b58505c1ab72af7d21",
+          "after": "f1e6076cb72330b0bfed0ede94455e39d360272d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": "6e9b5e8a34479e881392588612cc264be7e1e87b",
+          "after": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+          "before": null,
+          "after": "0fd55490fb08991a2c021ccc4e48679f0a2b00b6"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "a90c09c6855bf640d1c1ae01251d66b783c36ee1",
+          "after": "498f20be5b423d6328ffb0031d71d4e3d8233c43"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-integrity.test.mjs",
+          "before": "80fe7f93a5306cbe4392ac1529b1f9789b050504",
+          "after": "174d67c16132706497904b28250c6135e97d1497"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-review-races.test.mjs",
+          "before": "48b8e059fc05a3495be61151feda3793d08de7f7",
+          "after": "0f6b4617a40d7d1a888b9f065abc794d9b00b5b4"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "a3260b7e24020f9a6a3b6e8ba637d59d17ebae06",
+          "after": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6",
+          "after": "3955731dbff3f936b239e42a7a4aa8f13c69091f"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 omit unimplemented diagnostic factory options",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9",
+          "after": "4aaed8cf6ea80a8871e2a08e32d7d1ff76932695"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "a2cd8b437ac464174f10834f7870b960966d0393",
+          "after": "4abceff4d2f43e41f00707479962c194ca06070f"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 reconcile held buyer seam merge provenance",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "9fa8ce3f7c831bd65179dc99a9e70877349c1f6d",
+          "after": "9fa8ce3f7c831bd65179dc99a9e70877349c1f6d"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "d697a51b58d0e71ab9992bcd0f17272c85c28f5f",
+          "after": "d697a51b58d0e71ab9992bcd0f17272c85c28f5f"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "8b38b0a63507a18a55f0fe55f153e03866343a30",
+          "after": "8b38b0a63507a18a55f0fe55f153e03866343a30"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 resolve duplicate schema import after stack merge",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "5863b0e71bcd0580199dbc733cdbe629e7aa8831",
+          "after": "f1e6076cb72330b0bfed0ede94455e39d360272d"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 reconcile adapter initialization merge",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "eb7c37692bdd5da4ac476e6791a35172f404212e",
+          "after": "eb7c37692bdd5da4ac476e6791a35172f404212e"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 qualify merged transaction source",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988",
+          "after": "78994cc83d1c0bbe3065bec8852ea8b37f8d1988"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 select historical changes in provenance deletion probes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "052a7eaf5e1cf405c211dcd21b9ef1e3faad108a",
+          "after": "052a7eaf5e1cf405c211dcd21b9ef1e3faad108a"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 05 validate retained host transfer observations",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "ba97147f77c17de62b3a769c61f830a793f1a449",
+          "after": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "d523e721e629c2f2e3164fed45065d24f87aee3f",
+          "after": "fe7f09a4177ea24fb5161ba2983755df49b09901"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "d674c596a8972fe6dd1c80517ae9a8c13bcbb4e9",
+          "after": "427f897f08c2e6eba7f14290c899b56cdbab7cb5"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "c8a2fd31115b3af715df4b9cb589c188280dbe4a",
+          "after": "19be8559b54d902e57fd1056dab758c48d052dbe"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": null,
+          "after": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+          "before": null,
+          "after": "c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+          "before": null,
+          "after": "a91f8018335cd08180669ba04b8312608b046d8a"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": null,
+          "after": "05af633db6d7e5bd8d18a40f23e9afef0dae01ef"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "498f20be5b423d6328ffb0031d71d4e3d8233c43",
+          "after": "36cf0c10d71208afda5d52f6aef02adc0121da62"
+        }
+      ]
+    },
     {
       "delta": "D11",
       "subject": "fix(client): D11 retain validated observation snapshots and cover native refusal",
@@ -1426,9 +1861,59 @@
         }
       ]
     },
-    {"delta":"D11","subject":"fix(client): D11 bound host observation serialization before allocation","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"da5b40ae3a41302de3391ecc32fd71e84271bcc5","after":"496cab2a82edadd5043e76243d0c6e070e6ec9c2"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"0af1586bc61b3a59509d361eebe3644f36d40150","after":"dbf2160e35246b96feb7612e10bc38c0bde93d9b"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"e1ee6a0855e0955fba14cda7d1ae14aa02248fa6","after":"e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"}]},
-    {"delta":"D11","subject":"fix(client): D11 preserve observation byte-limit refusal reasons","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"496cab2a82edadd5043e76243d0c6e070e6ec9c2","after":"f4db211d40294b6cbdb7937dbc7765374443cf18"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"dbf2160e35246b96feb7612e10bc38c0bde93d9b","after":"73808dae810ad137fd226f9e0f9fe7a33763a3c5"}]},
-    {"delta":"D11","subject":"fix(client): D11 retain explicit observation disposition","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"f4db211d40294b6cbdb7937dbc7765374443cf18","after":"9050fd47c365e95cf63295837070a311a48111da"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"73808dae810ad137fd226f9e0f9fe7a33763a3c5","after":"3d124286ec49346c6a72fb0d8e15086ef06d3632"}]},
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 bound host observation serialization before allocation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "da5b40ae3a41302de3391ecc32fd71e84271bcc5",
+          "after": "496cab2a82edadd5043e76243d0c6e070e6ec9c2"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "0af1586bc61b3a59509d361eebe3644f36d40150",
+          "after": "dbf2160e35246b96feb7612e10bc38c0bde93d9b"
+        },
+        {
+          "path": "packages/dacs-client/test/diagnostic-store-regressions.test.mjs",
+          "before": "e1ee6a0855e0955fba14cda7d1ae14aa02248fa6",
+          "after": "e1ee6a0855e0955fba14cda7d1ae14aa02248fa6"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 preserve observation byte-limit refusal reasons",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "496cab2a82edadd5043e76243d0c6e070e6ec9c2",
+          "after": "f4db211d40294b6cbdb7937dbc7765374443cf18"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "dbf2160e35246b96feb7612e10bc38c0bde93d9b",
+          "after": "73808dae810ad137fd226f9e0f9fe7a33763a3c5"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 retain explicit observation disposition",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f4db211d40294b6cbdb7937dbc7765374443cf18",
+          "after": "9050fd47c365e95cf63295837070a311a48111da"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "73808dae810ad137fd226f9e0f9fe7a33763a3c5",
+          "after": "3d124286ec49346c6a72fb0d8e15086ef06d3632"
+        }
+      ]
+    },
     {
       "delta": "D11",
       "subject": "fix(client): D11 add passive native observation and reader cancellation",
@@ -1578,14 +2063,18 @@
     {"delta":"D11","subject":"fix(client): D11 require retained native intents for passive readback","files":[{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"7c52736459700578f31e4223dc7c1fae4528b275","after":"9292671d5d09efee2a37d422bdd0788912191377"},{"path":"packages/dacs-client/test/helpers/passive-native-world.mjs","before":"630f67cd493c31464a65b27db6c3eb3f5fe0a8c1","after":"52bd9a8ae7722567256902d1e56adc08d17f53e5"},{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"47763286db946e57755aec2a43523eb3215a1276","after":"f69db84f915c305d762633b3f0f080a2dc2bfbda"}]},
     {"delta":"D11","subject":"fix(client): D11 rebuild held buyer seams on explicit action lists","files":[{"path":"packages/dacs-client/src/dacs/delivery-deadline-watch.mjs","before":"9bff8dcef805bb2b8d291452aa5245b43fb28eed","after":"78f5bdad942ded0146bb3b8f82cf24f7ce17ff43"},{"path":"packages/dacs-client/src/purchases.mjs","before":"4aaed8cf6ea80a8871e2a08e32d7d1ff76932695","after":"b221d5b333b692cc7955d1f26d5742a56d2fe741"},{"path":"packages/dacs-client/src/seams/purchase-store-not-wired.mjs","before":"7bed5c780bff6703a1b22d76afd95da052096b30","after":"cae688b7514f53d290ac11bfb8303cfab7a3a7fd"},{"path":"packages/dacs-client/src/seams/wallet-actions-not-wired.mjs","before":"2fd8da35f4657e607784dcd339900dfe03d7fb9f","after":"aaf304c17d42f5decc0e1299f03ec38f0cd36f8d"},{"path":"packages/dacs-client/test/d11-deadline-watch.test.mjs","before":null,"after":"d2502b88a4b1bf5763ba381a771ede78882325da"},{"path":"packages/dacs-client/test/d11-purchase-actions.test.mjs","before":"717c0a6ab525d95c330ec2dafcda3074e7b47b24","after":"4c560fe287e70b36a42569e63614a44f00ab14fe"},{"path":"packages/dacs-client/test/d11-seam-parameters.test.mjs","before":"8b38b0a63507a18a55f0fe55f153e03866343a30","after":"4e3f8fe3e81c3706b802f289d12c48f05d3763cb"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"cf1439cf82a8ed2125c019ef2717951f14fbc632","after":"e7bf7a95fd5f8ce536b3834a27859b79dd607f22"},{"path":"packages/dacs-client/test/helpers/purchase-integrity-database.mjs","before":"f1e6076cb72330b0bfed0ede94455e39d360272d","after":"c27c8df3b9da919daca704a40375be52dae7e89c"}]},
     {"delta":"D11","subject":"fix(client): D11 record the merged host observation sources","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"eaa8845952730e79a7d452ae1656ce4c91dba372","after":"eaa8845952730e79a7d452ae1656ce4c91dba372"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"b60967a64dc205dcd99f194591392c0806ee5aab","after":"b60967a64dc205dcd99f194591392c0806ee5aab"}]},
+    {"delta":"D11","subject":"fix(client): D11 rebuild passive native observation as one closed read","files":[{"path":"packages/dacs-client/src/dacs/chain.mjs","before":"eec990d9a159949d76de6835c5a2553a507b1250","after":"d038c47516fd96b5ccfb57ea2fdfe11d12bd6c19"},{"path":"packages/dacs-client/src/util/http.mjs","before":"1a0af8b42041b4f02f3de51cd6b854b959d91f7e","after":"e07573bbe5b87af05f35f0d74d371116aedc0241"},{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"9292671d5d09efee2a37d422bdd0788912191377","after":"9018d0a80024f1fd86ef81953388c933424df23e"},{"path":"packages/dacs-client/test/helpers/passive-native-world.mjs","before":"52bd9a8ae7722567256902d1e56adc08d17f53e5","after":"b3613746bd86f461bab85ce8a9db8e6df5675315"},{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"f69db84f915c305d762633b3f0f080a2dc2bfbda","after":"5a4caa3a87c7a5e41f890a318b6b17486e53d1df"}]},
     {"delta":"D11","subject":"fix(client): D11 record the merged purchase diagnostics sources","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"b598e8771c0f83a5c6452e1fc26d4c2b395360a5","after":"b598e8771c0f83a5c6452e1fc26d4c2b395360a5"}]},
     {"delta":"D11","subject":"fix(client): D11 record the merged 06c purchase diagnostics snapshot","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"cf32272f91a3f18a9b204e073d9e77fb9258c42a","after":"cf32272f91a3f18a9b204e073d9e77fb9258c42a"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"0bc483eefebd7e8bb05b127a32438855a5271b84","after":"0bc483eefebd7e8bb05b127a32438855a5271b84"}]},
+    {"delta":"D11","subject":"fix(client): D11 carry diagnostic abort and deadline through the rebuilt passive observation","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"cf32272f91a3f18a9b204e073d9e77fb9258c42a","after":"2bd25ec1e0bbd11c0c55a2fee0ae25c256d34484"},{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"9018d0a80024f1fd86ef81953388c933424df23e","after":"4a71f3ca8b5f158ed9dff530dc4a3c8a4c127e87"}]},
     {"delta":"D11","subject":"fix(client): D11 document the store-first factory order and offline validation","files":[{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"f05e545f62faf232439c60bb69b08f6ac5684026","after":"e89f5fc167efeb889e0397f22ceb4db6891fe7c3"}]},
     {"delta":"D11","subject":"fix(client): D11 settle bounded fetches when fetchImpl ignores abort","files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"b7e0ec6e243d6e81499a97dcbbb609566a0a4134","after":"3b37b663b20165b7a8a14a8a25ee62bf662cc5e6"},{"path":"packages/dacs-client/src/util/http.mjs","before":"1a0af8b42041b4f02f3de51cd6b854b959d91f7e","after":"6ffe3f7530051667d25cc65e0007486d8970c360"},{"path":"packages/dacs-client/test/fetch-abort-settle.test.mjs","before":null,"after":"fe69899c2f8553c5615335ef2bac09a47113fd17"}]},
     {"delta":"D11","subject":"fix(client): D11 make purchase transaction test fixtures portable to the engine floors","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"0bc483eefebd7e8bb05b127a32438855a5271b84","after":"ace13289bd75b0708a7819bd3203995e46a6c5fb"},{"path":"packages/dacs-client/test/engine-floor-portability.test.mjs","before":null,"after":"8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"},{"path":"packages/dacs-client/test/helpers/sqlite-engine-floor.mjs","before":null,"after":"eac4f2e9c7337c76fb7478050fc95c617f5fb999"},{"path":"packages/dacs-client/test/purchase-tx-admission.test.mjs","before":"bd3935f98efac1f1eb1fefae04760e7f1e5a80a8","after":"f3a58dda92a3c36b8fd238941cab931999e55fdd"},{"path":"packages/dacs-client/test/purchase-tx-boundary.test.mjs","before":"4ca7e68bae461c30923327c7f149d59a7cd94858","after":"53fbeca69a87846aa9d32845aab011cbf451dd84"},{"path":"packages/dacs-client/test/purchase-tx-results.test.mjs","before":"0e0424d74f577266d0b13386b7a18cf3aeefc4ec","after":"89418b814a42dad7fb1183ddc9e69fb17a1d4df0"},{"path":"packages/dacs-client/test/sqlite-purchase-journal.test.mjs","before":"9e845427d6f0b94900c04e02c4eda869e5e6f7f8","after":"0cf1690daa71819106208636318cbc955dd9ed8b"},{"path":"packages/dacs-client/test/sqlite-statement-boundary.test.mjs","before":"b4e9db02994949d2259e9bd69c6f54ca0d8a452a","after":"169a5edac4f556d5ddec2e0278223be9a27f7f9c"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"fd61c135ce343fec49823d4e9dea0225e5afafd6","after":"8cb570e3a627217ee42631ff4ea5e105edfef014"}]},
     {"delta":"D11","subject":"fix(client): D11 make the SQLite commit barrier work on the Node 22.13.0 and 23.4.0 engine floors","files":[{"path":"packages/dacs-client/src/util/sqlite-statement-boundary.mjs","before":"5e0077f1c0e94938358e112ba518f124323894fa","after":"70e4369be0d0a9546ea5a0a96367cfb750fdf47b"},{"path":"packages/dacs-client/src/util/sqlite-write-lease.mjs","before":"4b7a5075ac856c34ba1f324b2a28a7445ca568c9","after":"e45c8004ff9c71bb2c212912d5f44e50be256843"},{"path":"packages/dacs-client/test/helpers/collect-garbage.mjs","before":null,"after":"1d8aad9d5a61666d767c767388215560e5c48fcd"},{"path":"packages/dacs-client/test/purchase-tx-nesting.test.mjs","before":"d7ec0f5de54aa7fceb8aef4dd832ceb5e2f658b4","after":"124ddbf578822f8bfe3298e01e83626f40de071d"},{"path":"packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs","before":null,"after":"b2a3acd0b40dfab8d88586e7fe6326fbbb11a697"},{"path":"packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs","before":"7acf0c866638baa16417d40e0f345238fe4985f1","after":"3cd9965ac3a3fcf7191550d7bffae2b67b8841a2"},{"path":"packages/dacs-client/test/sqlite-write-lease.test.mjs","before":"b95d4b96993227a100480b832e5d8a956ffc111c","after":"aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2"}]},
     {"delta":"D11","subject":"fix(client): D11 record the chosen blobs of three parallel-record paths","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"631654f861dddd1f1b3cbce70da004c96933d5f4","after":"631654f861dddd1f1b3cbce70da004c96933d5f4"},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"900af80069850c3942204a858d8989e8e11a3adc","after":"900af80069850c3942204a858d8989e8e11a3adc"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"fd61c135ce343fec49823d4e9dea0225e5afafd6","after":"fd61c135ce343fec49823d4e9dea0225e5afafd6"}]},
     {"delta":"D11","subject":"fix(client): D11 record the chosen purchase diagnostics blobs after the merge","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"cf32272f91a3f18a9b204e073d9e77fb9258c42a","after":"cf32272f91a3f18a9b204e073d9e77fb9258c42a"},{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"0bc483eefebd7e8bb05b127a32438855a5271b84","after":"0bc483eefebd7e8bb05b127a32438855a5271b84"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the chosen purchases blob after the 06c carry merge","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"2bd25ec1e0bbd11c0c55a2fee0ae25c256d34484","after":"2bd25ec1e0bbd11c0c55a2fee0ae25c256d34484"}]},
+    {"delta":"D11","subject":"fix(client): D11 settle aborted fetches with the caller's reason in the carried abort tests","files":[{"path":"packages/dacs-client/src/util/http.mjs","before":"08b56d27d6e9bb66b71c855ec87ace2e0538dbe7","after":"08b56d27d6e9bb66b71c855ec87ace2e0538dbe7"},{"path":"packages/dacs-client/test/fetch-abort-settle.test.mjs","before":"fe69899c2f8553c5615335ef2bac09a47113fd17","after":"3293ce72e25868798e7b7f29aecc1c155a4d11e3"}]},
     {"delta":"D11","subject":"fix(client): D11 record the chosen portable fixture blobs after the merge","files":[{"path":"packages/dacs-client/test/diagnostic-store-regressions.test.mjs","before":"ace13289bd75b0708a7819bd3203995e46a6c5fb","after":"ace13289bd75b0708a7819bd3203995e46a6c5fb"},{"path":"packages/dacs-client/test/store-host-boundary.test.mjs","before":"8cb570e3a627217ee42631ff4ea5e105edfef014","after":"8cb570e3a627217ee42631ff4ea5e105edfef014"}]}
   ]
 }
