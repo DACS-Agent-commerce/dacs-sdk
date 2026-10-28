@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadCustody } from './helpers/operator-custody-fixture.mjs';
@@ -117,6 +117,15 @@ test('an oversized role file is refused before it is parsed', async (t) => {
   await writeFile(join(directory, BUYER), content, { mode: 0o600 });
   await assert.rejects(bootstrap(), /buyer custody record is larger than 65536 bytes/);
   assert.equal(await read(directory, BUYER), content);
+});
+
+test('an empty role file with unsafe permissions is refused, not replaced', async (t) => {
+  const { bootstrap, directory } = await fixture(t);
+  await writeFile(join(directory, BUYER), '', { mode: 0o600 });
+  await chmod(join(directory, BUYER), 0o644);
+  await assert.rejects(bootstrap(), /must be private real mode-0600 files/);
+  assert.equal(await read(directory, BUYER), '');
+  assert.deepEqual((await files(directory)).filter((name) => name !== '.wallet-repair'), [BUYER]);
 });
 
 test('bootstrap syncs each file before publishing it and the directory after', async (t) => {
