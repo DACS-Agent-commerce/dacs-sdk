@@ -82,7 +82,9 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   const decoders = { gzip: gunzipSync, "x-gzip": gunzipSync, deflate: inflateEither, "x-deflate": inflateEither, br: brotliDecompressSync };
   const decode = Object.hasOwn(decoders, encoding) ? decoders[encoding] : undefined;
   if (encoding && encoding !== "identity" && !decode) throw new Error("unsupported npm HTTP content encoding");
-  if (decode) bytes = decodeBounded(bytes, decode, maximum);
+  // An empty reply can still carry a compression header (redirects and global
+  // compression middleware); npm accepts it, so do not decode nothing.
+  if (decode && bytes.length > 0) bytes = decodeBounded(bytes, decode, maximum);
   if (bytes.length > maximum) throw limitError();
   // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
   // Validate expansion without changing the exact archive bytes npm hashes.

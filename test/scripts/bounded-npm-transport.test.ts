@@ -48,6 +48,10 @@ describe("inert bounded npm HTTP admission", () => {
     await expect(readBoundedResponse(response([deflateSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
     await expect(readBoundedResponse(response([deflateRawSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
   });
+  it.each(["gzip", "x-gzip", "deflate", "x-deflate", "br"])("forwards an empty %s body without a decompression failure", async encoding => {
+    // A redirect or empty reply may keep a compression header; npm accepts it.
+    expect(await readBoundedResponse(response([], { "content-encoding": encoding }), 1024)).toHaveLength(0);
+  });
   it.each([
     ["a HEAD request", 200, "HEAD"],
     ["a 204 response", 204, "GET"],
