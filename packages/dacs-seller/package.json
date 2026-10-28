@@ -67,6 +67,7 @@
     "src/mcp/seller-content.mjs",
     "src/operations.mjs",
     "src/public/portal/seller-session-limits.mjs",
+    "src/util/bounded-resolution.mjs",
     "src/util/http.mjs",
     "src/util/immutable-readbacks.mjs",
     "src/util/text.mjs",
