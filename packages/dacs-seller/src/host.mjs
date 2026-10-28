@@ -169,7 +169,16 @@ export async function startSellerHost(options) {
       timeouts: { ...TIMEOUTS },
       // CORE SN-1..SN-4: { jobId, buyer, sessionNonce, issuedAt, expiresAt },
       // kept durably before it is returned; the buyer's bundle presents it.
-      issueSessionChallenge: (input) => agent.issueSessionChallenge(structuredClone(input)),
+      // Once shutdown has begun the host refuses to issue, even while the
+      // agent itself is still open for the requests that are draining.
+      issueSessionChallenge: (input) => {
+        if (stopping) {
+          const error = new Error('the seller host is closing; no session challenge is issued');
+          error.code = 'seller_host_closing';
+          throw error;
+        }
+        return agent.issueSessionChallenge(structuredClone(input));
+      },
       close,
     });
   } catch (error) {

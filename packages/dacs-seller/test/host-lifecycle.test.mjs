@@ -86,3 +86,15 @@ test('close aborts and drains an accepted native artifact readback before releas
  }finally{block=false;releaseRead.resolve();}
  await pending;
 });
+
+test('host issues no session challenge once close has begun',async t=>{
+ const entered=defer(),release=defer();
+ const f=await fixture(t,{wrap:agent=>({...agent,receiveProposal:async request=>{entered.resolve();await release.promise;return agent.receiveProposal(request);}})}),host=await f.start();
+ const request=await f.proposal(host),pending=f.client(host,request).propose(request).catch(error=>error);
+ await entered.promise;
+ const closing=host.close();
+ try{
+  assert.throws(()=>host.issueSessionChallenge({jobId:request.transportIdentity.jobId,buyer:buyer.claim}),error=>error.code==='seller_host_closing');
+ }finally{release.resolve();}
+ await pending;await closing;
+});
