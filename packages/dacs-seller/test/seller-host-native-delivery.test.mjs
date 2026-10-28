@@ -1694,7 +1694,7 @@ test('concurrent Agreement state reads cannot hide settlement collisions from ca
 });
 
 test('a landed Deliverable with a lost adapter checkpoint recovers on immediately successful readback with one CREATE', async (t) => {
-  for (const checkpoint of ['current-intent', 'legacy-intent', 'legacy-resolution-pending']) {
+  for (const checkpoint of ['current-intent', 'legacy-intent', 'legacy-resolution-pending', 'legacy-submission-ambiguous']) {
     const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = `dacs4:deliverable:${p.jobId}`;
     w.faults.deliverySubmit.push('land-lose-lock');
@@ -1702,10 +1702,11 @@ test('a landed Deliverable with a lost adapter checkpoint recovers on immediatel
     if (checkpoint === 'current-intent') await w.restart();
     else await w.editRetainedSession(p.jobId, (session) => {
       delete session.deliveryAdapter;
-      if (checkpoint === 'legacy-resolution-pending') {
+      if (checkpoint !== 'legacy-intent') {
         const { disposition, fulfilment, reason, permitId, ...authorization } = session.nativeEvidenceWork.intake;
-        session.deliveryHold = { reason: 'indeterminate:delivery-resolution-pending:canonical delivery is absent', result: {
-          decision: 'indeterminate', code: 'delivery-resolution-pending', fulfilmentId: session.deliverySubmitted[0], safeToRetryDelivery: false,
+        session.deliveryHold = { reason: `indeterminate:${checkpoint === 'legacy-resolution-pending' ? 'delivery-resolution-pending' : 'delivery-submission-ambiguous'}:canonical delivery is absent`, result: {
+          decision: 'indeterminate', code: checkpoint === 'legacy-resolution-pending' ? 'delivery-resolution-pending' : 'delivery-submission-ambiguous',
+          fulfilmentId: session.deliverySubmitted[0], safeToRetryDelivery: false,
           recovery: { action: 'reconcile-delivery', reconciliationId: w.signedCreate(address).hash }, consumedPaymentAuthorization: authorization,
         } };
       }
@@ -1721,16 +1722,23 @@ test('a landed Deliverable with a lost adapter checkpoint recovers on immediatel
 });
 
 // Recovery must answer a definite hold when the capability's answer cannot be
-// authenticated: a missing answer, a `present` answer with no transaction
-// reference, and an older adapter checkpoint with no delivery binding. None of
-// these may become a thrown seller_unavailable or another submission.
-test('native delivery recovery holds on a missing, malformed or binding-less readback', async (t) => {
+// authenticated, and when the retained authority or adapter binding differs
+// from the payment intake: a missing answer, a throwing read, a `present`
+// answer with no transaction reference, an answer that is not present, a
+// changed payment authorization, a changed adapter binding and an older
+// adapter checkpoint with no delivery binding. None of these may become a
+// thrown seller_unavailable or another submission.
+test('native delivery recovery holds on an unauthenticated or mismatched recovery state', async (t) => {
   const cases = [
-    ['a missing readback', () => null],
-    ['a present readback without a transaction reference', () => ({ status: 'present' })],
-    ['an older adapter checkpoint without a delivery binding', null],
+    ['a missing readback', { read: () => null }],
+    ['a throwing readback', { read: () => { throw new Error('TEST native read unavailable'); } }],
+    ['a present readback without a transaction reference', { read: () => ({ status: 'present' }) }],
+    ['a readback that is not present', { read: () => ({ status: 'absent', reason: 'TEST lagging index' }) }],
+    ['a changed payment authorization', { edit: (session) => { session.deliveryHold.result.consumedPaymentAuthorization = { jobId: 'TEST-another-job' }; } }],
+    ['a changed adapter binding', { edit: (session) => { session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0], deliveryBinding: { version: '9' } }; } }],
+    ['an older adapter checkpoint without a delivery binding', { edit: (session) => { session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0] }; } }],
   ];
-  for (const [label, read] of cases) {
+  for (const [label, { read, edit }] of cases) {
     const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = `dacs4:deliverable:${p.jobId}`;
     w.faults.deliverySubmit.push('land-lose-lock');
@@ -1742,7 +1750,7 @@ test('native delivery recovery holds on a missing, malformed or binding-less rea
         decision: 'indeterminate', code: 'delivery-resolution-pending', fulfilmentId: session.deliverySubmitted[0], safeToRetryDelivery: false,
         recovery: { action: 'reconcile-delivery', reconciliationId: w.signedCreate(address).hash }, consumedPaymentAuthorization: authorization,
       } };
-      if (!read) session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0] };
+      if (edit) edit(session);
     });
     if (read) w.faults.deliveryRead = read;
     const held = await p.claim(tx);
