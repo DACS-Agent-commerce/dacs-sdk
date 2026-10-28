@@ -95,5 +95,5 @@ test('ending an active producer reports durable invalidation before deferred del
  w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered();await gate;}return sign(bytes);};
  const pending=p.resolveBuyer(a),held=pending.catch(error=>error);await ready;
  assert.deepEqual(await p.release({jobId:JOBS[0]}),{invalidated:true,deleted:false});resume();assert.ok((await held) instanceof Error);
- await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);assert.equal(w.store.usage().jobs,0);w.base.close();
+ await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);assert.equal(w.store.usage().jobs,1,'the ended marker fences a job with no native intent');w.base.close();
 });
