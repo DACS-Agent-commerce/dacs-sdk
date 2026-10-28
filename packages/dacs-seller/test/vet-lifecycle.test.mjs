@@ -95,5 +95,19 @@ test('ending an active producer reports durable invalidation before deferred del
  w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered();await gate;}return sign(bytes);};
  const pending=p.resolveBuyer(a),held=pending.catch(error=>error);await ready;
  assert.deepEqual(await p.release({jobId:JOBS[0]}),{invalidated:true,deleted:false});resume();assert.ok((await held) instanceof Error);
- await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);assert.equal(w.store.usage().jobs,1,'the ended marker fences a job with no native intent');w.base.close();
+ await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);assert.equal(w.store.usage().jobs,0,'the ended marker fences replay outside active quota');w.base.close();
+});
+
+for(const restart of [false,true])test(`no-intent endings retain replay fences outside active-job quota, reopen=${restart}`,async()=>{
+ const w=fixture({maxJobs:1});
+ for(let index=0;index<8;index++){
+  const jobId=JOBS[0].slice(0,-1)+String(index);
+  const provider=w.provider();
+  assert.deepEqual(await provider.release({jobId}),{invalidated:true,deleted:false});
+  assert.equal(w.store.usage().remainingJobs,1);
+  const fresh=restart?w.provider():provider;
+  await assert.rejects(fresh.resolveBuyer(w.input(jobId)),{code:'context_released'});
+ }
+ assert.equal((await w.provider().resolveBuyer(w.input(JOBS[1]))).disposition,'present');
+ assert.equal(w.store.usage().remainingJobs,0);w.base.close();
 });
