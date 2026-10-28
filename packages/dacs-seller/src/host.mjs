@@ -35,7 +35,8 @@ const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAcce
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
-const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
+const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000 });
+const MAX_HEADER_SIZE = 16384;
 
 // A native artifact readback is an operator capability. One that never
 // settles must not keep close(), and with it the state lock, open: every
@@ -92,6 +93,10 @@ function privateDirectory(path) {
 
 // Resolves once the host listens: { url, listingPin, seller, timeouts,
 // issueSessionChallenge({ jobId, buyer }), close() }.
+// Rejects with a TypeError before opening anything when an option is missing,
+// unknown, malformed or not private, and with the startup error otherwise
+// (carrying `cleanupError` when cleanup fails; an AggregateError with the
+// startup error as `cause` when that error cannot carry the property).
 export async function startSellerHost(options) {
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
   const unknown = Object.keys(options).filter((key) => !REQUIRED.includes(key) && !OPTIONAL.includes(key));
@@ -117,9 +122,9 @@ export async function startSellerHost(options) {
   const lock = await acquireSellerStateLock(dataDirectory);
   const opened = [() => lock.release()];
   const release = async () => {
-    const errors=[];
-    for(const close of opened.splice(0).reverse())try{await close();}catch(error){errors.push(error);}
-    if(errors.length)throw new AggregateError(errors,'seller host cleanup failed',{cause:errors[0]});
+    const errors = [];
+    for (const close of opened.splice(0).reverse()) { try { await close(); } catch (error) { errors.push(error); } }
+    if (errors.length) throw new AggregateError(errors, 'seller host cleanup failed', { cause: errors[0] });
   };
   const shutdown = new AbortController();
   try {
@@ -135,7 +140,7 @@ export async function startSellerHost(options) {
     const handler = createSellerHttpHandler(agent, { authentication });
     const active = new Set();
     let stopping = false;
-    const server = createServer({ maxHeaderSize: TIMEOUTS.maxHeaderSize }, (req, res) => {
+    const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, (req, res) => {
       if (stopping) { res.writeHead(503); res.end(); return; }
       const work = Promise.resolve().then(() => handler(req, res));
       active.add(work);
