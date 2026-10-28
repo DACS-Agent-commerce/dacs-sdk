@@ -1,5 +1,4 @@
-import {readFileSync} from 'node:fs';
-const nativeStage=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function submitNativePaymentEvidence(');
+const nativeStage=false; // This part deliberately stages native settlement.
 // Native proposal admission and authenticated Vet contexts use real fixed-key
 // Listings, exact session challenges and durable contribution recovery.
 // Commitment, payment and delivery behavior is introduced separately.
