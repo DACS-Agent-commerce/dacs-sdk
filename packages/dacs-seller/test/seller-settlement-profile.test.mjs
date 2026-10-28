@@ -336,7 +336,7 @@ test('a Vet reference is signed only through the passing record of this job, par
   // the seller's. A party's own signature is refused at the reference, before
   // any record is read; a reference naming the counterparty is refused at the
   // record it names when the party signed that record itself.
-  const notCounterparty = /^DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: (buyer|seller) Vet ref is not signed by its counterparty verifier$/;
+  const notCounterparty = /^DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: (buyer|seller) Vet ref is not at its canonical address with its counterparty verifier$/;
   const counterpartyRefs = {
     'a seller record the seller signed as its own verifier': ['seller', await w.admission.vetRecord(w.jobId, sellerClaim, sellerBundle, { requirement: w.listing.buyerRequirement, verifier: w.sellerKey }), notCounterparty],
     'a buyer record the buyer signed as its own verifier': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, verifier: w.buyerKey }), notCounterparty],
