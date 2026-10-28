@@ -256,12 +256,12 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     }
     return null;
   }
-  // This part's proposal admission retains a session at `proposed` before any
-  // Vet checkpoint exists. Such a session claims no Vet evidence, so only the
-  // challenge binding applies; as soon as it claims Vet (stage `vetted` or any
-  // checkpoint), both exact checkpoints and their evidence are required.
+  // Only the exact pre-Vet proposal stage this part retains claims no Vet: it
+  // precedes the checkpoint, so the challenge binding alone applies. Every
+  // other stage - `vetted`, any later stage, or one this code does not know -
+  // requires both exact checkpoints and their evidence (fail closed).
   function claimsVet(session) {
-    return session.stage === 'vetted' || session.vetCheckpoint !== undefined;
+    return session.stage !== 'proposed' || session.vetCheckpoint !== undefined;
   }
   function retainedSessionProblem(session) {
     return retainedChallengeProblem(session) ?? (claimsVet(session) ? retainedVetCheckpointProblem(session) : null);

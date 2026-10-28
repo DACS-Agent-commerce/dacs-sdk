@@ -73,3 +73,19 @@ test('an admitted proposal that claims no Vet stays readable at its proposed sta
  assert.deepEqual(agent.durableSessionOf(JOB),null);
 });
 
+test('a retained session past proposal without a Vet checkpoint refuses the restart',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'agreed'}));
+ state.close();
+ await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/Vet checkpoint/.test(error.message));
+});
+
+test('a retained proposal stage session restores with only its challenge binding',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));
+ state.close();
+ const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
+});
+
