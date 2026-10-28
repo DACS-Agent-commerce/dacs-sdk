@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chmodSync} from 'node:fs';
+import {createServer} from 'node:http';
 import {mkdtemp,rm,chmod,access} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -105,4 +106,13 @@ test('host close does not wait for the keep-alive timeout',async t=>{
  const started=performance.now();
  await host.close();
  assert.ok(performance.now()-started<2000,'close does not wait for the idle keep-alive timeout');
+});
+
+test('a listen failure releases the state lock and everything opened before it',async t=>{
+ const f=await fixture(t),blocker=createServer();
+ await new Promise(resolve=>blocker.listen({host:'127.0.0.1',port:0,exclusive:true},resolve));
+ const port=blocker.address().port;
+ try{await assert.rejects(f.start({port}),error=>error.code==='EADDRINUSE');}
+ finally{await new Promise(resolve=>blocker.close(resolve));}
+ const host=await f.start();await host.close();
 });
