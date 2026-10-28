@@ -89,6 +89,11 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
         if (event !== "response") return emit.call(this, event, response, ...rest);
         const maximum = responseBudget(pending.path, response.statusCode);
         const archive = isArchiveResponse(pending.path, response.statusCode);
+        // npm's request-error path relays a failure to this original response
+        // (req.res) after the response event. Admission hands npm a separate
+        // stream, so absorb that relay; otherwise it throws inside the relay
+        // handler and replaces the one ELIMIT request rejection.
+        response.on("error", () => {});
         readBoundedResponse(response, maximum, !archive,
           archive ? NPM_TARBALL_MAX_UNPACKED_BYTES : maximum).then(bytes => {
           cancel(timer);

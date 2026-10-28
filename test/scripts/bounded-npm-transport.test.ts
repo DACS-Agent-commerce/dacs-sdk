@@ -117,6 +117,23 @@ describe("inert bounded npm HTTP admission", () => {
     transport.request().on("error", error => errors.push(error)); deadline?.();
     expect(errors.map(error => error.message)).toEqual(["ETIMEDOUT npm HTTP deadline"]);
   });
+  it("delivers an oversized declared length to npm as one ELIMIT rejection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-npm-declared-"));
+    const server = createServer((_request, reply) => {
+      reply.writeHead(200, { "content-type": "application/json", "content-length": String(NPM_METADATA_MAX_BYTES + 1) });
+      reply.end("{");
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address(); if (!address || typeof address === "string") throw new Error("missing test address");
+      const child = spawn("npm", ["view", "fixture", "version", "--fetch-retries=0", "--fetch-timeout=5000", "--registry", `http://127.0.0.1:${address.port}`, "--cache", root], {
+        env: { ...process.env, DACS_BOUNDED_NPM_HTTP: "1", NODE_OPTIONS: `--require=${resolve("scripts/bounded-npm-http.cjs")}` }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = ""; child.stdout.on("data", bytes => { output += bytes; }); child.stderr.on("data", bytes => { output += bytes; });
+      const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
+      expect(code, output).not.toBe(0); expect(output).toContain("ELIMIT");
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
+  });
   it.each([200, 503])("guards actual npm HTTP status %s before its readers", async status => {
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-transport-"));
     const server = createServer((_request, reply) => {
