@@ -160,3 +160,12 @@ test('restart restores a session bound to its admitted challenge and to verified
  const fresh=await f.open({sessionAdmission:admission.sessionAdmission});
  try{assert.equal(fresh.stageOf(JOB),'vetted');assert.equal(fresh.durableSessionOf(JOB).vetCheckpoint.buyer.contentHash,buyerRef.contentHash);}finally{fresh.close();}
 });
+
+test('explicit fixture sessions reopen without native-only admission checkpoints',async t=>{
+ const f=fixture(t),{fixtureIdentityBundle}=await import('./fixtures/listings.mjs'),{localAnchor}=await import('./helpers/local-anchor-fixture.mjs');
+ const options={signer:f.signer,listing:f.listing,anchors:localAnchor({now:()=>NOW}),simulatedFixture:true,durableDirectory:f.dir,now:()=>NOW};
+ const initial=await createSellerAgent(options);initial.close();
+ await saveSession(f,sessionFor(JOB,fixtureIdentityBundle(buyer,NOW)));
+ const reopened=await createSellerAgent(options);t.after(()=>reopened.close());
+ assert.equal(reopened.stageOf(JOB),'vetted');
+});
