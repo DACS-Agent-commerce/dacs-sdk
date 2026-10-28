@@ -12,6 +12,20 @@ export const PUBLISH_ENVIRONMENT = "npm-prerelease-gated";
 export const PUBLISH_TAG_PATTERN = "v*";
 const MAX_COLLECTION_ENTRIES = 100;
 
+// The identity a required-reviewers entry can actually match, or null when the
+// entry is malformed and cannot approve anything.
+function reviewerIdentity(entry) {
+  const reviewer = entry?.reviewer;
+  if (!reviewer || typeof reviewer !== "object") return null;
+  if (entry.type === "User" && typeof reviewer.login === "string" && reviewer.login !== "") {
+    return { type: "User", login: reviewer.login };
+  }
+  if (entry.type === "Team" && typeof reviewer.slug === "string" && reviewer.slug !== "") {
+    return { type: "Team", slug: reviewer.slug };
+  }
+  return null;
+}
+
 // Every reason the environment cannot gate publication; empty when it can.
 export function publishEnvironmentProblems(environment, policies) {
   if (environment?.name !== PUBLISH_ENVIRONMENT) {
@@ -21,7 +35,8 @@ export function publishEnvironmentProblems(environment, policies) {
   if (environment.can_admins_bypass !== false) problems.push("it does not prohibit admin bypass");
   const rules = Array.isArray(environment.protection_rules) && environment.protection_rules.length <= MAX_COLLECTION_ENTRIES ? environment.protection_rules : [];
   const reviewers = rules.filter(rule => rule?.type === "required_reviewers" &&
-    Array.isArray(rule.reviewers) && rule.reviewers.length > 0 && rule.reviewers.length <= MAX_COLLECTION_ENTRIES);
+    Array.isArray(rule.reviewers) && rule.reviewers.length > 0 && rule.reviewers.length <= MAX_COLLECTION_ENTRIES &&
+    rule.reviewers.every(entry => reviewerIdentity(entry) !== null));
   if (reviewers.length === 0) problems.push("it has no required reviewers");
   else if (!reviewers.some(rule => rule.prevent_self_review === true)) problems.push("it does not prevent self-review");
   const branchPolicy = environment.deployment_branch_policy;
@@ -32,6 +47,8 @@ export function publishEnvironmentProblems(environment, policies) {
     problems.push("its deployment tag patterns could not be read in full");
   } else if (list.some(policy => policy?.type !== "tag" || policy.name !== PUBLISH_TAG_PATTERN)) {
     problems.push(`a deployment pattern other than the ${PUBLISH_TAG_PATTERN} tag pattern can deploy to it`);
+  } else if (list.length !== 1) {
+    problems.push("it has more than one deployment tag pattern");
   }
   return problems;
 }
