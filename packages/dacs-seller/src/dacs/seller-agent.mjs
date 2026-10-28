@@ -242,13 +242,13 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     listingPin: pin,
     issueSessionChallenge,
     transportAgreementOf: (jobId) => {
-      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
       return structuredClone(session?.agreement ?? session?.proposal?.plan?.draft ?? null);
     },
     stageOf: (jobId) => sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId))?.stage ?? null,
     deliveryStateOf: (jobId) => {
       assertSettlementCredit(jobId);
-      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
       return structuredClone(session?.deliveryReady ?? session?.deliveryHold ?? null);
     },
     // Read-only copies of this seller's own authenticated durable sessions, for
@@ -261,6 +261,9 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     retainsPaymentClaim: (jobId, { txHash, payerPayingKey } = {}) => {
       if (!isCanonicalJobId(jobId)) return false;
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      // An unverified retained session retains nothing: the transport may
+      // release the claim's effect rather than keep work it cannot attribute.
+      if (session && (retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session))) return false;
       const work = session?.nativeEvidenceWork ?? session?.paymentWork;
       return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
     },

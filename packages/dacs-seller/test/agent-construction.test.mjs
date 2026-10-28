@@ -114,6 +114,13 @@ test('restart refuses a retained vetted session with no exact, job-bound, verifi
   await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&pattern.test(error.message));
  }
 });
+test('read paths refuse a retained session another writer left unverified',async t=>{
+ const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
+ const bundle=presentWith(buyer,'ab'.repeat(32));
+ await saveSession(f,sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}));
+ for(const read of [()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB)])assert.throws(read,error=>error.code==='seller_state_unverified');
+ assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
+});
 test('restart restores a session bound to its admitted challenge and to verified Vet records and receipts',async t=>{
  const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
  const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
