@@ -224,7 +224,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], published: [], publishCalls: [], signCreate: [], signed: [], broadcast: [], componentSigns: [] };
-  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null };
+  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
@@ -303,15 +303,21 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       }
       return readBack(logicalAddress, artifactKind);
     },
-    readRetained: async ({ logicalAddress, artifactKind }) => {
+    readRetained: async ({ logicalAddress, artifactKind, proofOfNoIntent = false }) => {
       if (faults.readRetainedThrowKind === artifactKind) { faults.readRetainedThrowKind = null; throw null; }
+      if (artifactKind === 'SettlementEvidence' && faults.evidenceReadAbsence) {
+        const absence = faults.evidenceReadAbsence; faults.evidenceReadAbsence = null;
+        return absence === 'unbranded' ? { ...provenUnsignedAbsence('TEST serialized proof is not authoritative') } : { status: 'absent', reason: 'TEST lagging name index' };
+      }
       const fault = faults.artifactRead.shift();
       if (fault === 'unknown') return { status: 'indeterminate', reason: 'TEST uncertain retained CREATE' };
       if (fault === 'absent') return { status: 'absent', reason: 'TEST lagging name index' };
       if (fault === 'unbranded') return { ...provenUnsignedAbsence('TEST serialized proof is not authoritative') };
       let read = await readBack(logicalAddress, artifactKind);
       if(artifactKind==='SettlementEvidence'&&read.status==='present'&&faults.evidenceRead)read=faults.evidenceRead(clone(read));
-      return read.status === 'absent' && !signedCreates.has(logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
+      // Like the shipped capability: only a requested no-intent proof is
+      // branded, and only when neither journal retains a signed CREATE.
+      return read.status === 'absent' && proofOfNoIntent && !signedCreates.has(logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
     },
     verifyReceipt: async (input) => {
       if (faults.verifyReceipt) {
@@ -1463,6 +1469,28 @@ test('a delivery evidence publication that never reached the wallet is published
   const done = await p.claim(tx);
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(publishedEvidence(w), 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
+for (const absence of ['absent', 'unbranded']) test(`an evidence readback that cannot prove nothing was signed (${absence}) is held, never published twice`, async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true, idempotentArtifacts: false });
+  const p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence:land-throw');
+  const lost = await p.claim(tx);
+  assert.equal(lost.delivery?.evidencePublication, 'held-readback-only', shown(lost));
+  assert.equal(w.createsAt(address), 1, 'the first CREATE landed before its answer was lost');
+  // A lagging readback may say 'absent' (or carry a proof that does not survive
+  // serialization) while a signed CREATE exists. That is not proof that nothing
+  // was signed: asking a non-idempotent capability again would sign a second
+  // CREATE at the same logical address.
+  w.faults.evidenceReadAbsence = absence;
+  const held = await p.claim(tx);
+  assert.equal(held.delivery?.status, 'delivery-ready', shown(held));
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  assert.equal(w.createsAt(address), 1, 'an unproven absence never asks the capability again');
+  assert.equal(w.effects.publishCalls.filter((call) => call.logicalAddress === address).length, 1, 'one publish, not two');
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(w.createsAt(address), 1);
 });
 
