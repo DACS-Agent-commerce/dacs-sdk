@@ -51,7 +51,8 @@ export function prepareBoundedBuild(project) {
   // complete new one.
   copyFileSync(new URL("./bounded-npm-http.cjs", import.meta.url), join(project, supportName), constants.COPYFILE_EXCL);
   // A new file renamed into place: an existing entry is replaced, never written through.
-  atomicWriteFile(join(project, ".dockerignore"), ignored + `\n!${supportName}\n`);
+  // Repeating preparation must not stack identical ignore exceptions.
+  if (!ignored.split(/\r?\n/).includes(`!${supportName}`)) atomicWriteFile(join(project, ".dockerignore"), ignored + `\n!${supportName}\n`);
   const path = join(project, "Dockerfile.acceptance");
   writeFileSync(path, dockerfile, { flag: "wx" });
   return path;
