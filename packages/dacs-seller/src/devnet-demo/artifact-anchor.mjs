@@ -276,7 +276,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     return result;
   }
   // authorize (optional): the caller's own check, called under this address's
-  // lock with no await before the intent is stored. Anything but true refuses:
+  // lock and awaited immediately before storing the intent. Anything but true refuses:
   // no intent is stored and nothing is sent. Without it, publish is unchanged.
   // reaskDenied (optional, a Listing only): a retained intent the packaged
   // wallet refused at its approval (denied: user_rejected, before it signed
@@ -338,7 +338,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       if(deliveryBinding) metadata.deliveryBinding=clone(deliveryBinding);
       const intent={stage:'intent',inputHash:exactHash(input),input:clone(input),transaction:clone(transaction)};
       if(authorize){
-        const allowed=authorize();
+        const allowed=await authorize();
         if(allowed!==true) fail('not-authorized',`the caller withdrew this write (${typeof allowed==='string'?allowed.slice(0,160):'no answer'}); no intent was stored and nothing was sent`);
       }
       await journal.put(keyFor(logicalAddress),intent);
