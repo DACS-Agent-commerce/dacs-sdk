@@ -236,6 +236,12 @@ test('an unpinned session registry lookup with a malformed pin is refused', asyn
   assert.match(problem, /session registry pin is malformed/);
 });
 
+test('an unpinned claim with no live session recipe version is refused', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => null } });
+  assert.match(problem, /no live recipe version/);
+});
+
 test('one replay resolves every unpinned claim against one session registry snapshot', async () => {
   const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
   const invocation = { ...fixture.invocation, dealSpecific: [fixture.invocation.dealSpecific[0], fixture.invocation.dealSpecific[0]] };

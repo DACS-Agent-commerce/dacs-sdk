@@ -270,6 +270,7 @@ function unpinnedVerifiedResults(...lists) {
 // replay must resolve every such claim against one snapshot pin.
 async function latestSessionRecipeProblem(read, entry, pins) {
   const selection = await read('resolveLatestRecipe', { scheme: entry.scheme, method: entry.method, required: true });
+  if (selection === null) return 'the Vet session registry has no live recipe version for the unpinned claim';
   if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion'])) return 'the Vet session registry selection is malformed';
   const pin = selection.sessionRecipeRegistrySnapshotHash;
   if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) return 'the Vet session registry pin is malformed';
