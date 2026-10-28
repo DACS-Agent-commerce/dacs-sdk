@@ -216,7 +216,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     const bundle = session.buyerBundle, nonce = bundle?.sessionNonce;
     const challenge = durable.challenge(nonce);
     if (!challenge) return 'the retained session names no challenge this seller issued';
-    if (challenge.jobId !== session.jobId || challenge.buyer !== bundle.presentedBy || challenge.sessionNonce !== nonce) return 'the retained session challenge was issued for another job or buyer';
+    if (challenge.jobId !== session.jobId || !sameCanonicalClaimIdentity(challenge.buyer, bundle.presentedBy) || challenge.sessionNonce !== nonce) return 'the retained session challenge was issued for another job or buyer';
     if (challenge.attempt?.admitted !== true) return 'the retained session challenge was not consumed and admitted for this attempt';
     if (challenge.attempt.presentationHash !== contentHash(bundle)) return 'the retained session challenge was admitted for another presentation';
     return null;

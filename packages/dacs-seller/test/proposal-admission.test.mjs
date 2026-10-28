@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {identityBundleHash,canonicalize,sha256Hex} from '@kynesyslabs/dacs';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
-import {testWallet,NOW,JOB,buyer} from './helpers/protocol-fixture.mjs';
+import {testWallet,NOW,JOB,buyer,seller} from './helpers/protocol-fixture.mjs';
 import {fixtureIdentityBundle} from './fixtures/listings.mjs';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {SESSION_CHALLENGE_LIFETIME_MS} from '../src/dacs/session-admission.mjs';
@@ -86,6 +86,22 @@ test('a retained proposal stage session restores with only its challenge binding
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));
  state.close();
+ const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
+});
+
+// CORE CF-3: advisory ClaimReference parameters do not change the buyer's
+// identity, so a challenge issued to the parameter-free claim admits a
+// presentation that carries one and the saved session must still restart.
+test('a challenge for the parameter-free buyer restores a presentation carrying an advisory parameter',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open();
+ const parameterized={...buyer,claim:`${buyer.claim}?jurisdiction=GB`};
+ const challenge=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});
+ const bundle=fixtureIdentityBundle(parameterized,NOW);bundle.sessionNonce=challenge.sessionNonce;
+ bundle.presentation.signatures[0].signature=parameterized.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');
+ const input={proposal:{},transportIdentity:{jobId:JOB,buyer:buyer.claim,seller:seller.claim},buyerIdentityBundle:bundle};
+ await assert.rejects(agent.stagedProposal(input),staged);agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:identityBundleHash(bundle),stage:'proposed'}));state.close();
  const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
 });
 
