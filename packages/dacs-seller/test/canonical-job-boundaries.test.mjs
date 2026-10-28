@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {contentHash} from '@kynesyslabs/dacs';
 import {createDevnetPurchasedReportProducer,isDevnetPurchasedReport} from '../src/devnet-demo/deliverable.mjs';
 const {createDevnetDemoDeliveryCapability,readDevnetDeliveryEvidence,readDevnetPurchasedReport}=await import('../src/devnet-demo/native-delivery.mjs');
 import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
@@ -9,7 +10,7 @@ const invalid=[undefined,null,7,{},'job-0',JOB.toLowerCase(),JOB.replace('0','O'
 const seller='did:demos:agent:'+'2'.repeat(64);
 
 test('native report production and validation require a canonical job before producing or hashing content',()=>{
- const listing={offering:{title:'Bound report'}},listingRef={listingId:'bound',version:1,contentHash:'a'.repeat(64)};
+ const listing={listingId:'bound',listingVersion:1,offering:{title:'Bound report'}},listingRef={listingId:'bound',version:1,contentHash:contentHash(listing)};
  const producer=createDevnetPurchasedReportProducer({producer:seller,produce:()=> 'Bound purchased content'});
  const report=producer({agreement:{jobId:JOB,listingRef},listing,settlementId:'fixture'});
  assert.equal(isDevnetPurchasedReport(report),true);
