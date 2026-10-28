@@ -83,6 +83,16 @@ test('a non-canonical proposal job is a definite job-invalid refusal, not an unc
  await assert.rejects(agent.receiveProposal(request),{code:'job_invalid',status:422});
 });
 
+test('a clock crossing the proposal window during the responder checkpoints is refused at the signing gate',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});
+ f.config.now=()=>new Error().stack.includes('signUnderPin')?NOW+600001:NOW;
+ const agent=await f.open(),request=await f.proposal(agent);
+ const answer=await agent.receiveProposal(request);
+ assert.notEqual(answer.disposition,'complete');assert.match(answer.reason,/clock window/);
+ assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
+ assert.ok(!f.signed.some(text=>text.startsWith('dacs-payee-bound-agreement:v1:')),'the stale proposal is never signed');
+});
+
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true,signatures=0;const original=f.config.signer.sign;
  f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(cut&&payload.body.session.proposal?.proposalHash){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};

@@ -335,6 +335,17 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     const signUnderPin = (bytes) => {
       if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
       if (!inFlight) assertListingCurrent();
+      // The first completed signature is made now, not when the context was
+      // resolved: the responder's own checkpoints can outlast the plain clock
+      // window or the admitted route's absolute deadline. Recheck the retained
+      // decision on the current clock here; signOnce's completed record alone
+      // replays a signature already made.
+      const retainedAdmission = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
+      if (retainedAdmission && durable?.signature(`signature:${sha256Hex(bytes)}`).disposition !== 'present') {
+        const lateProblem = proposalTimeProblem({ generatedAt: retainedAdmission.generatedAt, observedAt: now(),
+          deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit, admitted: retainedAdmission.admitted });
+        if (lateProblem) throw new SellerAgentError('proposal_expired', lateProblem, 409);
+      }
       // The key is only a pointer. An intent or a thrown signer never makes
       // this pin in flight; signOnce's completed record is the authority.
       session.agreementSignatureKey = `signature:${sha256Hex(bytes)}`;
@@ -379,7 +390,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
           const observedAt = signed && priorAdmission ? priorAdmission.observedAt : now();
           const timeProblem = timeProblemAt(observedAt);
           if (timeProblem) return { disposition: 'rejected', reason: timeProblem };
-          if (!priorAdmission) session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt, admitted };
+          if (!priorAdmission) session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt, admitted, generatedAt };
           if (deliveryContext) {
             const retained = session.demDeliveryContext;
             const resolved = retained ?? await resolveDemDeliverySellerContext(deliveryContext, { jobId, listing, buyerBundle: session.buyerBundle, generatedAt });
