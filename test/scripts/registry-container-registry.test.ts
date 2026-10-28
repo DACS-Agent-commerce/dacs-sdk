@@ -48,6 +48,27 @@ printf '%s\\n' "$consumer_registry" "\${consumer_network_args[*]}" "\${build_net
     expect(result.stdout.split("\n")[1]).toBe("--network fixture-network");
   });
 
+  it("grants host networking to the dedicated builder and its build requests", () => {
+    const log = join(scratch(), "commands");
+    const result = runStages(`
+pull_bounded() { :; }
+docker() {
+  printf '%s\\n' "$*" >> "$log"
+  if [ "$1" = inspect ]; then echo 49152; fi
+}
+start_registry
+printf '%s\\n' "\${build_network_args[*]}"`, {
+      log, registry_log: join(scratch(), "registry.log"), registry_config: "/fixture/config.yaml",
+      registry_network: "fixture-network", registry_container: "fixture-registry",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const commands = readFileSync(log, "utf8");
+    // Docker permits RUN --network=host only when the builder daemon and the
+    // build request each grant the network.host entitlement.
+    expect(commands).toContain("--buildkitd-flags --allow-insecure-entitlement network.host");
+    expect(result.stdout.trim()).toContain("--allow network.host");
+  });
+
   it("requires Buildx before creating resources", () => {
     const result = runStages(`
 pull_bounded() { echo unexpected-pull; }
@@ -55,6 +76,19 @@ docker() { [ "$1 $2" != "buildx version" ] || return 42; echo unexpected-resourc
 start_registry`, { registry_network: "fixture", registry_container: "fixture", registry_log: "/dev/null", registry_config: "/fixture/config" });
     expect(result.status).toBe(42);
     expect(result.stdout).not.toMatch(/unexpected/);
+  });
+});
+
+describe("registry host port", () => {
+  it.each(["0", "65536"])("rejects unusable host port %s before exporting a registry URL", port => {
+    const result = runStages(`
+pull_bounded() { :; }
+docker() { if [ "$1" = inspect ]; then printf '%s\\n' "$host_port_fixture"; fi; }
+start_registry
+echo started`, { host_port_fixture: port, registry_network: "fixture", registry_container: "fixture",
+      registry_log: "/dev/null", registry_config: "/fixture/config" });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("started");
   });
 });
 
@@ -147,6 +181,14 @@ printf '%s' "$auth_token"`, {
       passwords.push(body.password);
     }
     expect(passwords[0]).not.toBe(passwords[1]);
+  });
+
+  it("rejects a token outside the bearer-token character set", () => {
+    const result = runStages(`http_json_curl=()
+curl() { printf '%s' '{"token":"bad\\nvalue123"}'; }
+authenticate_registry
+printf '%s' "$auth_token"`, { host_registry: "http://127.0.0.1:1", registry_log: "/dev/null" });
+    expect(result.status, result.stdout).not.toBe(0);
   });
 
   it.each([["readiness", "wait_for_registry"], ["authentication", "authenticate_registry"]])(
