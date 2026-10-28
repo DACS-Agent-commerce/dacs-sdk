@@ -78,6 +78,13 @@ test('an attempted, admitted challenge stays retained but does not consume live 
  const reopened=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
  try{assert.deepEqual(reopened.challenge(issued.sessionNonce).attempt,{presentationHash:'a'.repeat(64),admitted:true});}finally{reopened.close();}
 });
+test('an attempted challenge, admitted or refused, holds no live issuance slot',()=>{
+ const value={jobId:JOB,issuedAt:NOW};
+ for(const admitted of [false,true]){
+  const row={kind:'session-challenge',jobId:JOB,issuedAt:NOW-1,expiresAt:NOW+1000,attempt:{presentationHash:'a'.repeat(64),admitted}};
+  assert.doesNotThrow(()=>admitSessionChallenge(new Map([['nonce',row]]),value,{maxOutstanding:1,maxPerJob:1}));
+ }
+});
 test('malformed challenge requests are coded refusals',async t=>{
  const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
  for(const request of [null,undefined,42,'challenge',[]])assert.throws(()=>agent.issueSessionChallenge(request),error=>error instanceof SellerAgentError&&error.code==='challenge_invalid'&&error.status===422);
