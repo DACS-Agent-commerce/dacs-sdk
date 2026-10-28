@@ -382,18 +382,26 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(!row?.binding||!same(row.binding,job.binding)||row.lifecycle?.state==='ended')fail('context_released','the context job ended; no new effect is authorized');
     guard(job,'effect');return true;
   }
+  // Only proven process death releases a durable run. Legacy tokens and
+  // uncertain liveness remain fenced; elapsed time alone grants no authority.
+  const liveRuns=row=>(row.activeRuns??[]).filter(token=>{
+    const owner=typeof token==='string'&&/^([1-9]\d*):[0-9a-f-]{36}$/.exec(token);
+    if(!owner)return true;
+    const pid=Number(owner[1]);if(!Number.isSafeInteger(pid))return true;
+    try{process.kill(pid,0);return true;}catch(error){return error?.code!=='ESRCH';}
+  });
   async function withRun(job,work) {
-    const token=randomUUID();
+    const token=`${process.pid}:${randomUUID()}`;
     await state.update(job.jobId,row=>{
       if(!row?.binding||!same(row.binding,job.binding)||row.lifecycle?.state==='ended')fail('context_released','the context job ended');
-      row.activeRuns??=[];
+      row.activeRuns=liveRuns(row);
       if(row.activeRuns.length>=CONTEXT_TIMES)fail('context_capacity','too many active context runs');
       row.activeRuns.push(token);return row;
     });
     try{return await work();}
     finally{await state.update(job.jobId,row=>{
       if(!row?.activeRuns?.includes(token))return undefined;
-      row.activeRuns=row.activeRuns.filter(value=>value!==token);return row;
+      row.activeRuns=liveRuns(row).filter(value=>value!==token);return row;
     });}
   }
   // The SDK reports a writer failure only as "submission outcome is
@@ -510,7 +518,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(current?.quarantine){outcome='legacy';return undefined;}
         if(current?.binding&&same(current.binding,job.binding)){outcome='bound';job.writeStarted||=current.writeStarted===true;return undefined;}
         if(current?.binding){
-          if(current.writeStarted||current.activeRuns?.length){outcome='conflict';return undefined;}
+          if(current.writeStarted||liveRuns(current).length){outcome='conflict';return undefined;}
           outcome='bound';
           return{binding:clone(job.binding),writeStarted:false,ops:freshOps(),seller:null};
         }
@@ -524,7 +532,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     fail('indeterminate','the job\'s party Vet state kept changing; nothing was signed or sent');
   }
   // A failed run with no write deletes its row: nothing was signed or written.
-  const unbind=(job)=>state.update(job.jobId,(current)=>current?.binding&&same(current.binding,job.binding)&&!current.writeStarted&&current.lifecycle?.state!=='ended'&&!current.activeRuns?.length?null:undefined);
+  const unbind=(job)=>state.update(job.jobId,current=>{
+    if(!current?.binding||!same(current.binding,job.binding)||current.writeStarted||current.lifecycle?.state==='ended')return undefined;
+    const activeRuns=liveRuns(current);
+    return activeRuns.length?(activeRuns.length<current.activeRuns.length?{...current,activeRuns}:undefined):null;
+  });
   const forget=(job)=>{if(vets.get(job.jobId)===job)vets.delete(job.jobId);};
   // One Vet run per job in this provider, bound to everything that makes it valid for a
   // request: the scope except generatedAt, and the exact buyer identity bundle
@@ -732,7 +744,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     await state.update(jobId,row=>{
       if(!row){removed=true;return undefined;}
       if(row.lifecycle?.state!=='ended'||row.lifecycle.incarnation!==ended?.lifecycle?.incarnation||row.lifecycle.epoch!==ended?.lifecycle?.epoch)return undefined;
-      if(running.has(jobId)||row.activeRuns?.length||Object.values(row.ops??{}).some(ops=>Object.values(ops.steps??{}).some(step=>step.state==='pending')))return undefined;
+      const previousRuns=row.activeRuns?.length??0;
+      row.activeRuns=liveRuns(row);
+      if(running.has(jobId)||row.activeRuns.length||Object.values(row.ops??{}).some(ops=>Object.values(ops.steps??{}).some(step=>step.state==='pending')))return row.activeRuns.length<previousRuns?row:undefined;
       // Without a native intent this row is the only authoritative replay fence.
       if(!intent){drops.delete(jobId);return{lifecycle:row.lifecycle};}
       removed=true;return null;
