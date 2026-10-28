@@ -89,6 +89,37 @@ describe("inert bounded npm HTTP admission", () => {
     expect(await admitted).toEqual(archive);
   });
 
+  it("admits a redirected archive that expands above the metadata budget at a suffixless URL", async () => {
+    // A registry may redirect a tarball to a signed download URL without a
+    // .tgz suffix. The gzip/tar payload, not the final path, is what npm's
+    // archive reader consumes.
+    const tar = Buffer.alloc(512 + 65 * 1024 * 1024);
+    tar.write("ustar", 257, "latin1");
+    const archive = gzipSync(tar);
+    const pending = Object.assign(new EventEmitter(), { path: "/download/signed-token", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const admitted = new Promise<Buffer>((resolve, reject) => {
+      pending.once("error", reject);
+      pending.once("response", async (stream: Readable) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        resolve(Buffer.concat(chunks));
+      });
+    });
+    transport.request().emit("response", response([archive]));
+    expect(await admitted).toEqual(archive);
+  });
+  it("refuses an over-budget gzip body lacking the tar payload at a suffixless URL", async () => {
+    // A redirect target does not get a larger expansion budget for arbitrary
+    // gzip data; only a tar archive npm's reader can consume qualifies.
+    const pending = Object.assign(new EventEmitter(), { path: "/download/signed-token", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
+    transport.request().emit("response", response([gzipSync(Buffer.alloc(65 * 1024 * 1024))]));
+    expect(await rejected).toMatchObject({ code: "ELIMIT" });
+  });
   it("keeps separate finite wire and unpacked archive bounds", async () => {
     const archive = gzipSync(Buffer.alloc(2048));
     expect(await readBoundedResponse(response([archive]), 1024, false, 4096)).toEqual(archive);

@@ -14,6 +14,11 @@ const NPM_HTTP_TIMEOUT_MS = 15_000;
 // Full npm self-install metadata exceeds 1.24 million aggregate entries.
 const NPM_JSON_MAX_ENTRIES = 2_000_000, NPM_JSON_MAX_DEPTH = 128;
 const limitError = () => Object.assign(new Error("ELIMIT npm HTTP response byte limit exceeded"), { code: "ELIMIT" });
+// npm tarballs are tar streams; the first header block identifies the payload
+// npm's archive reader will consume.
+const TAR_MAGIC_OFFSET = 257;
+const isTarArchive = bytes => bytes.length >= TAR_MAGIC_OFFSET + 5 &&
+  bytes.toString("latin1", TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + 5) === "ustar";
 
 const isArchiveResponse = (path, statusCode = 200) => statusCode < 300 && /\/-\/[^/?]+\.(?:tgz|tar\.gz)(?:\?[^#]*)?$/.test(path);
 // HEAD, 204 and 304 responses carry no body, so there is nothing to decode or
@@ -69,7 +74,22 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   if (bytes.length > maximum) throw limitError();
   // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
   // Validate expansion without changing the exact archive bytes npm hashes.
-  if (bytes[0] === 0x1f && bytes[1] === 0x8b) decodeBounded(bytes, gunzipSync, archiveMaximum);
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    if (!json) {
+      decodeBounded(bytes, gunzipSync, archiveMaximum);
+    } else {
+      try {
+        decodeBounded(bytes, gunzipSync, maximum);
+      } catch (error) {
+        // A registry may redirect an archive to a suffixless download URL, so
+        // the path alone cannot deny the archive budget. Admit an over-budget
+        // gzip body only when its payload is a tar stream npm's reader can
+        // consume; JSON responses stay limited to their own path budget.
+        if (error.code !== "ELIMIT" || maximum >= archiveMaximum) throw error;
+        if (!isTarArchive(decodeBounded(bytes, gunzipSync, archiveMaximum))) throw limitError();
+      }
+    }
+  }
   // npm also auto-detects zstd, which has no bounded decoder on supported Node.
   if (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
     throw new Error("unsupported npm archive compression: zstd");
@@ -105,8 +125,10 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
         // stream, so absorb that relay; otherwise it throws inside the relay
         // handler and replaces the one ELIMIT request rejection.
         response.on("error", () => {});
-        readBoundedResponse(response, maximum, !archive,
-          archive ? NPM_TARBALL_MAX_UNPACKED_BYTES : maximum).then(bytes => {
+        // The archive budget must survive a redirect to a suffixless download
+        // URL; readBoundedResponse promotes only a genuine tar payload past the
+        // path budget, so JSON admission still bounds metadata and error replies.
+        readBoundedResponse(response, maximum, !archive, NPM_TARBALL_MAX_UNPACKED_BYTES).then(bytes => {
           cancel(timer);
           if (failed) return;
           const admitted = new PassThrough();
