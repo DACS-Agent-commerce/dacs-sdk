@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# First-attempt PR runs share a group; newly queued runs cancel its other members.
+# GitHub does not guarantee commit-age ordering. Reruns and other events use run_id
+# groups so they do not replace PR checks or cancel one another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
