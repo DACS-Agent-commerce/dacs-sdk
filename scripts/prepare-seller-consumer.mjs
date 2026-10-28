@@ -1,8 +1,8 @@
 // Setup only: pack current sources and install a graph derived from the root lock.
-import {createHash}from'node:crypto';
+import {createHash,randomBytes}from'node:crypto';
 import {execFileSync}from'node:child_process';
-import {copyFileSync,mkdirSync,readFileSync,readdirSync,writeFileSync}from'node:fs';
-import {dirname,join,resolve}from'node:path';
+import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,renameSync,rmSync,writeFileSync}from'node:fs';
+import {basename,dirname,join,resolve}from'node:path';
 import {fileURLToPath}from'node:url';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const json=path=>JSON.parse(readFileSync(path,'utf8'));
@@ -33,8 +33,17 @@ function consumerLock(lock,manifest,core,seller,corePack,sellerPack){
  }
  return{name:manifest.name,version:manifest.version,lockfileVersion:3,requires:true,packages:Object.fromEntries(Object.entries(selected).sort(([a],[b])=>a.localeCompare(b)))};
 }
-function prepare(directory){
- const app=resolve(directory??defaultSellerConsumer);mkdirSync(dirname(app),{recursive:true});mkdirSync(app);
+// A finished setup for these exact sources and this exact lock.
+function preparedAt(directory,fingerprint){
+ try{const marker=json(join(directory,'prepared.json'));
+  return marker.sourceFingerprint===fingerprint&&marker.lockDigest===digest(readFileSync(join(directory,'package-lock.json')))&&existsSync(join(directory,'run.mjs'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs-seller/package.json'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs/package.json'));}catch{return false;}
+}
+// A directory this script completed or was interrupted while preparing.
+function ourSetup(directory){
+ if(existsSync(join(directory,'prepared.json')))return true;
+ try{return json(join(directory,'package.json')).name==='dacs-seller-locked-smoke';}catch{return false;}
+}
+function install(app,fingerprint){
  const cache=join(app,'.npm-cache'),env={...process.env,NPM_CONFIG_CACHE:cache,npm_config_cache:cache};
  const npm=(args,cwd)=>execFileSync('npm',args,{cwd,env,encoding:'utf8',timeout:240000,maxBuffer:16*1024*1024});
  const core=json(join(root,'package.json')),seller=json(join(root,'packages/dacs-seller/package.json')),lock=json(join(root,'package-lock.json'));
@@ -47,7 +56,30 @@ function prepare(directory){
  npm(['ci','--no-audit','--no-fund','--omit=optional','--foreground-scripts'],app);
  if(digest(readFileSync(join(app,'package-lock.json')))!==digest(text))throw new Error('consumer install changed the pinned graph');
  copyFileSync(join(root,'packages/dacs-seller/test/helpers/installed-seller-host.mjs'),join(app,'run.mjs'));
- writeFileSync(join(app,'prepared.json'),JSON.stringify({sourceFingerprint:sellerSourceFingerprint(),lockDigest:digest(text),corePack,sellerPack},null,2)+'\n');
+ writeFileSync(join(app,'prepared.json'),JSON.stringify({sourceFingerprint:fingerprint,lockDigest:digest(text),corePack,sellerPack},null,2)+'\n');
+}
+function prepare(directory){
+ const app=resolve(directory??defaultSellerConsumer);mkdirSync(dirname(app),{recursive:true});
+ const fingerprint=sellerSourceFingerprint(),reused='Prepared locked seller consumer: '+app+' (reused existing setup)\n';
+ // Reuse a finished setup; never rebuild one that already matches these sources.
+ if(preparedAt(app,fingerprint)){process.stdout.write(reused);return;}
+ // Build beside the target, so a crash never leaves a directory that looks prepared.
+ const staging=join(dirname(app),'.'+basename(app)+'.staging-'+process.pid+'-'+randomBytes(6).toString('hex'));
+ mkdirSync(staging);
+ try{
+  install(staging,fingerprint);
+  try{renameSync(staging,app);}
+  catch(error){
+   // Another run may have finished the same setup while this one was building.
+   if(preparedAt(app,fingerprint)){rmSync(staging,{recursive:true,force:true});process.stdout.write(reused);return;}
+   if(!ourSetup(app))throw new Error('refusing to replace '+app+': it exists and is not a seller consumer setup',{cause:error});
+   // An interrupted or outdated setup of ours: swap in the complete one.
+   const stale=staging+'.replaced';
+   try{renameSync(app,stale);}catch(replaceError){if(preparedAt(app,fingerprint)){rmSync(staging,{recursive:true,force:true});process.stdout.write(reused);return;}throw replaceError;}
+   try{renameSync(staging,app);}catch(inner){renameSync(stale,app);throw inner;}
+   rmSync(stale,{recursive:true,force:true});
+  }
+ }catch(error){rmSync(staging,{recursive:true,force:true});throw error;}
  process.stdout.write('Prepared locked seller consumer: '+app+'\n');
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))prepare(process.argv[2]);
