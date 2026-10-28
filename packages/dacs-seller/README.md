@@ -103,9 +103,11 @@ payloads only. The native host requires an explicit `expectedSizeBytes` in the
 signed Listing before any Agreement is signed. Pass it to `buildListingDraft`;
 it is the exact UTF-8 byte length of the canonical JSON payload, not an estimate
 or an upper bound. It must fit the report's job/Agreement/settlement bindings
-and must not exceed 131072 bytes. Listings without a size remain valid general
-DACS Listings but need a different delivery profile. DACS-4 §9.6.1 requires an
-extended pointer above 128 KiB; this profile has no pointer publisher. An actual
+and must not exceed 16384 bytes (`MAX_STORAGE_ARTIFACT_BYTES`, the capacity of
+the one storage CREATE that carries it). Listings without a size remain valid
+general DACS Listings but need a different delivery profile. DACS-4 §9.6.1
+requires an extended pointer above 128 KiB; this profile has no pointer
+publisher and refuses a larger Listing before any Agreement is signed. An actual
 producer output that exceeds the limit or differs from the declared exact size
 holds preparation for retry without consuming the payment permit. After fixing
 the producer, retry the same payment claim; do not collect another payment.

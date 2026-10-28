@@ -40,6 +40,16 @@ test('the runtime requirement matches the repository engines and the sqlite modu
   assert.match(readme, /better-sqlite3/);
 });
 
+test('the inline payload bound matches the storage CREATE cap the host enforces', () => {
+  // seller-agent.mjs:197 refuses a native Listing whose expectedSizeBytes
+  // exceeds MAX_STORAGE_ARTIFACT_BYTES (wallet-transactions.mjs:15), and
+  // prepareDelivery applies the same bound to the produced report.
+  const source = readFileSync(new URL('src/dacs/wallet-transactions.mjs', packageUrl), 'utf8');
+  const max = Number(source.match(/export const MAX_STORAGE_ARTIFACT_BYTES = ([\d_]+)/)[1].replaceAll('_', ''));
+  assert.ok(readme.includes(`must not exceed ${max} bytes`), `the README states the ${max}-byte storage CREATE bound`);
+  assert.doesNotMatch(readme, /must not exceed 131072 bytes/);
+});
+
 test('the host option example documents every option the host accepts', () => {
   // host.mjs:33-35 is the authority for the accepted option names.
   const hostSource = readFileSync(new URL('src/host.mjs', packageUrl), 'utf8');
