@@ -11,6 +11,7 @@ import { OPERATOR_CLOSING } from './operator-approval.mjs';
 const FORMAT='dacs-node2-test-wallet/v1';
 const SECRET_FORMAT='dacs-node2-operator-secret/v1';
 const FILES=Object.freeze({buyer:'buyer-wallet.json',seller:'seller-wallet.json'});
+const MAX_CUSTODY_RECORD_BYTES=64*1024;
 const checkRole=(role)=>{if(!Object.hasOwn(FILES,role))throw new TypeError('wallet role must be buyer or seller');return role;};
 
 async function deepestExisting(path){
@@ -29,7 +30,7 @@ async function privateDirectory(path){
   for(let current=path;current!==oldest;){const parent=dirname(current);if(parent===current)break;await syncDirectory(parent);current=parent;}
   return path;
 }
-async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');}
+async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');return info;}
 
 async function runtime(publicOrigin){
   globalThis.window??=globalThis;
@@ -82,7 +83,11 @@ export function createOperatorApprovalAttempt(approve){
 // the file is not private or does not retain a valid phrase for this role's address.
 async function readWalletRecord(path,role,{Demos,validateMnemonic}){
   let text;
-  try{await exactPrivateFile(path);text=await readFile(path,'utf8');}
+  try{
+    const info=await exactPrivateFile(path);
+    if(info.size>MAX_CUSTODY_RECORD_BYTES)throw new Error(`the ${role} custody record is larger than ${MAX_CUSTODY_RECORD_BYTES} bytes`);
+    text=await readFile(path,'utf8');
+  }
   catch(error){if(error?.code==='ENOENT')return null;throw error;}
   let record;
   try{record=JSON.parse(text);}catch(cause){throw new Error(`the ${role} custody record is malformed`,{cause});}
