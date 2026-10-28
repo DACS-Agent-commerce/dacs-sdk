@@ -20,7 +20,7 @@ export async function readDevnetPurchasedReport(capability,input){
 }
 
 export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvidenceEnabled=false}) {
-  if(anchor?.authority!==authority || typeof anchor.publish!=='function' || typeof anchor.read!=='function' || typeof anchor.verifyReceipt!=='function') throw new TypeError('the exact seller native artifact anchor is required');
+  if(anchor?.authority!==authority || typeof anchor.publish!=='function' || typeof anchor.read!=='function' || typeof anchor.readRetained!=='function' || typeof anchor.verifyReceipt!=='function') throw new TypeError('the exact seller native artifact anchor is required');
   const expected=(input)=>isDevnetPurchasedReport(input.report,{jobId:input.jobId ?? input.report?.jobId,agreementHash:input.deliveryBinding?.agreementHash,producer:anchor.writer})
     && input.logicalAddress===`dacs4:deliverable:${input.report.jobId}` && input.receiptContentHash===contentHash(input.report);
   const read=async(input)=>{
