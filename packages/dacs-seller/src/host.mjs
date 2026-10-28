@@ -203,29 +203,39 @@ export async function startSellerHost(options) {
     // stops after a partial request line would hold server.close() forever,
     // because close() clears Node's connections-checking interval and
     // closeIdleConnections() skips a socket with a partial request. Track the
-    // accepted sockets and their in-flight requests so shutdown can destroy
-    // only the connections that never dispatched one.
+    // accepted sockets and the responses they still owe so shutdown can
+    // destroy only connections with nothing left to answer, and close a
+    // connection whose last response has been handed off.
     const sockets = new Set();
-    const inFlight = new Map();
+    const owed = new Map();
     let stopping = false;
     const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, (req, res) => {
       if (stopping) { res.writeHead(503, { connection: 'close' }); res.end(); return; }
       const socket = req.socket;
-      inFlight.set(socket, (inFlight.get(socket) ?? 0) + 1);
+      owed.set(socket, (owed.get(socket) ?? 0) + 1);
+      let counted = true;
+      const answered = () => {
+        if (!counted) return;
+        counted = false;
+        const remaining = (owed.get(socket) ?? 1) - 1;
+        if (remaining > 0) { owed.set(socket, remaining); return; }
+        owed.delete(socket);
+        // The response was handed to the operating system; during shutdown
+        // no further request is served on this connection.
+        if (stopping) socket.destroy();
+      };
+      res.once('finish', answered);
+      res.once('close', answered);
       const work = Promise.resolve().then(() => handler(req, res));
       active.add(work);
-      work.catch(() => res.destroy()).finally(() => {
-        active.delete(work);
-        const remaining = (inFlight.get(socket) ?? 1) - 1;
-        if (remaining > 0) inFlight.set(socket, remaining); else inFlight.delete(socket);
-      });
+      work.catch(() => res.destroy()).finally(() => active.delete(work));
     });
     server.on('connection', (socket) => {
       sockets.add(socket);
       socket.once('close', () => sockets.delete(socket));
     });
     const destroyUndispatched = () => {
-      for (const socket of sockets) if (!(inFlight.get(socket) > 0)) socket.destroy();
+      for (const socket of sockets) if (!(owed.get(socket) > 0)) socket.destroy();
     };
     Object.assign(server, { headersTimeout: TIMEOUTS.headersTimeout, requestTimeout: TIMEOUTS.requestTimeout, keepAliveTimeout: TIMEOUTS.keepAliveTimeout });
     await new Promise((resolve, reject) => {
@@ -253,7 +263,7 @@ export async function startSellerHost(options) {
       await artifact.drain();
       // A connection that became idle while its last response was written is
       // swept here; the first sweep could only see it still busy. Any
-      // connection that never dispatched a request is destroyed, so it cannot
+      // connection with nothing left to answer is destroyed, so it cannot
       // hold server.close() open.
       server.closeIdleConnections();
       destroyUndispatched();

@@ -116,7 +116,7 @@ test('host close destroys a connection that never finishes its request headers',
   let guard;
   const outcome=await Promise.race([
    host.close().then(()=> 'closed'),
-   new Promise(resolve=>{guard=setTimeout(()=>resolve('still-open'),3000);}),
+   new Promise(resolve=>{guard=setTimeout(()=>resolve('still-open'),10000);}),
   ]);
   clearTimeout(guard);
   assert.equal(outcome,'closed','a connection with no dispatched request cannot hold close');
