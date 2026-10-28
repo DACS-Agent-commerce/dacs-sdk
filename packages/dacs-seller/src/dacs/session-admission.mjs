@@ -329,7 +329,14 @@ function vetEvidenceContent(reply, resultContent = false) {
     if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) {
       const value = Uint8Array.from(Buffer.from(reply.value, 'base64url'));
       if (!resultContent) return { encoding: 'bytes', value };
-      const decoded = admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+      let decoded;
+      try { decoded = admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes }); }
+      catch (error) {
+        // Only a byte bound says the evidence source could not answer; every
+        // other admission failure is a deterministic malformed document.
+        if (error instanceof RangeError || error?.code === 'BYTE-LIMIT-EXCEEDED') throw error;
+        throw malformedEvidence(`the Vet evidence content reply is malformed: ${String(error?.message ?? error).slice(0, 120)}`);
+      }
       if (object(decoded)) return { encoding: 'canonical-json', value: decoded };
     }
   }

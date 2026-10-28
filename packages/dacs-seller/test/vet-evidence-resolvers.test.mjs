@@ -202,6 +202,19 @@ test('a VerifyResult returned as canonical bytes passes', async () => {
   assert.equal(await fixture.replay({ evidence: { resolveContent: async (input) => (input.anchor.locator === RESULT_LOCATOR ? { encoding: 'bytes', value: bytes } : fixture.contents.get(input.anchor.locator)) } }), null);
 });
 
+test('a VerifyResult byte document that is not JSON is refused as a record problem', async () => {
+  const fixture = await verifiedClaimFixture();
+  const value = Buffer.from('not-json').toString('base64url');
+  const problem = await fixture.replay({ evidence: { resolveContent: async (input) => (input.anchor.locator === RESULT_LOCATOR ? { encoding: 'bytes', value } : fixture.contents.get(input.anchor.locator)) } });
+  assert.match(problem, /content reply is malformed/);
+});
+
+test('an empty VerifyResult byte document is refused as a record problem', async () => {
+  const fixture = await verifiedClaimFixture();
+  const problem = await fixture.replay({ evidence: { resolveContent: async (input) => (input.anchor.locator === RESULT_LOCATOR ? { encoding: 'bytes', value: '' } : fixture.contents.get(input.anchor.locator)) } });
+  assert.match(problem, /content reply is malformed/);
+});
+
 test('a parameterized required claim passes only when its exact parameters match the result', async () => {
   const claim = { ...requirement.required[0], parameters: { jurisdiction: 'GB' } };
   const bundleRequirement = { requirementVersion: '1', required: [claim] };
