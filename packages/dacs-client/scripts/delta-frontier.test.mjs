@@ -1,11 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expectedBlob } from './delta-map.mjs';
+import { promisify } from 'node:util';
+import { commits, expectedBlob, git, ledger } from './delta-map.mjs';
+
+test('every recorded path has an agreed newest blob matching HEAD after the final carry merge', () => {
+  const history = commits(), records = new Map();
+  for (const change of ledger().changes) {
+    const matches = history.filter(commit => commit.subject === change.subject);
+    assert.equal(matches.length, 1, change.subject);
+    for (const file of change.files) {
+      records.set(file.path, [...(records.get(file.path) ?? []), { sha: matches[0].sha, after: file.after }]);
+    }
+  }
+  const head = new Map(git('ls-tree', '-r', 'HEAD').split('\n').map(row => {
+    const [meta, path] = row.split('\t'); return [path, meta.split(' ')[2]];
+  }));
+  const failures = [];
+  for (const [path, entries] of records) {
+    const expected = expectedBlob(entries, shas => git('merge-base', '--independent', ...shas).split('\n'));
+    if (expected.conflict || expected.blob !== (head.get(path) ?? null)) failures.push({ path, expected, head: head.get(path) ?? null });
+  }
+  assert.deepEqual(failures, []);
+});
 
 // A small commit graph: each commit names its parents. Returns the
 // `git merge-base --independent` view of it.
@@ -78,7 +99,7 @@ function scratch(t) {
   const node = (...args) => execFileSync(process.execPath, args, { cwd: dir, stdio: 'pipe' });
   const check = () => {
     const result = spawnSync(process.execPath, [prefix + 'scripts/check-provenance.mjs', '--local-only'], { cwd: dir, encoding: 'utf8' });
-    return { status: result.status, failures: [...(result.stdout + result.stderr).matchAll(/^FAIL (.*)$/gm)].map(match => match[1]), text: result.stdout + result.stderr };
+    return { status: result.status, stdout: result.stdout, failures: [...(result.stdout + result.stderr).matchAll(/^FAIL (.*)$/gm)].map(match => match[1]), text: result.stdout + result.stderr };
   };
   return { dir, git, node, check };
 }
@@ -123,4 +144,40 @@ test('parallel records that disagree are refused until a later record chooses, t
   git('add', '--', path); writeFileSync(join(dir, path), bytes);
   result = check(); assert.ok(result.failures.includes(`${path}: current blob differs from enumerated deltas`), result.text);
   assert.ok(result.failures.includes(`${path}: index differs from HEAD for moved source/test`), result.text);
+});
+
+test('the final wallet identity closes only its conflict and retains working and index checks', t => {
+  const { dir, git, node, check } = scratch(t), path = prefix + 'src/wallet/devnet-native-transport.mjs';
+  let result = check(); assert.equal(result.status, 0, result.text);
+  const ledgerPath = join(dir, prefix + 'DELTA-LEDGER.json'), data = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+  const index = data.changes.findIndex(change => change.subject === 'fix(client): D11 record the final merged wallet blob');
+  assert.ok(index >= 0, 'the final carry merge must have a wallet identity record');
+  const [chosen] = data.changes.splice(index, 1), head = git('rev-parse', `HEAD:${path}`);
+  assert.deepEqual(chosen.files, [{ path, before: head, after: head }]);
+  writeFileSync(ledgerPath, JSON.stringify(data)); node(prefix + 'scripts/delta-map.mjs');
+  result = check();
+  assert.equal(result.status, 1, result.text);
+  assert.equal(result.failures.length, 1, result.text);
+  assert.ok(result.failures[0].startsWith(`${path}: newest records disagree (`), result.text);
+  git('checkout', '--', prefix + 'DELTA-LEDGER.json', prefix + 'DELTA-MAP.md');
+  result = check(); assert.equal(result.status, 0, result.text);
+  const bytes = readFileSync(join(dir, path));
+  writeFileSync(join(dir, path), Buffer.concat([bytes, Buffer.from('\n// TEST unrecorded wallet edit\n')]));
+  result = check(); assert.deepEqual(result.failures, [`${path}: current blob differs from enumerated deltas`], result.text);
+  unlinkSync(join(dir, path));
+  result = check(); assert.deepEqual(result.failures, [`${path}: current blob differs from enumerated deltas`], result.text);
+  writeFileSync(join(dir, path), Buffer.concat([bytes, Buffer.from('\n// TEST staged wallet edit\n')]));
+  git('add', '--', path); writeFileSync(join(dir, path), bytes);
+  result = check();
+  assert.deepEqual(result.failures, [`${path}: index differs from HEAD for moved source/test`, `${path}: current blob differs from enumerated deltas`], result.text);
+});
+
+test('fresh and concurrent readers agree on the completed carry graph', async t => {
+  const { dir, check } = scratch(t), first = check();
+  assert.equal(first.status, 0, first.text);
+  const run = () => promisify(execFile)(process.execPath, [prefix + 'scripts/check-provenance.mjs', '--local-only'], { cwd: dir });
+  const results = await Promise.all([run(), run()]);
+  for (const result of results) assert.equal(result.stdout, first.stdout);
+  const restarted = check(); assert.equal(restarted.status, 0, restarted.text);
+  assert.equal(restarted.stdout, first.stdout);
 });
