@@ -215,6 +215,21 @@ test('an empty VerifyResult byte document is refused as a record problem', async
   assert.match(problem, /content reply is malformed/);
 });
 
+test('a byte-encoded VerifyResult cannot exceed the decoded collection limits', async () => {
+  for (const data of [{ items: Array(257).fill(0) }, { groups: Array.from({ length: 17 }, () => Array(250).fill(0)) }]) {
+    const fixture = await verifiedClaimFixture({ data });
+    const bytes = Buffer.from(core.canonicalize(fixture.result)).toString('base64url');
+    await assert.rejects(fixture.replay({ evidence: { resolveContent: async (input) => (input.anchor.locator === RESULT_LOCATOR ? { encoding: 'bytes', value: bytes } : fixture.contents.get(input.anchor.locator)) } }), RangeError);
+  }
+});
+
+test('a canonical-json VerifyResult cannot exceed the decoded collection limits', async () => {
+  for (const data of [{ items: Array(257).fill(0) }, { groups: Array.from({ length: 17 }, () => Array(250).fill(0)) }]) {
+    const fixture = await verifiedClaimFixture({ data });
+    await assert.rejects(fixture.replay(), RangeError);
+  }
+});
+
 test('a parameterized required claim passes only when its exact parameters match the result', async () => {
   const claim = { ...requirement.required[0], parameters: { jurisdiction: 'GB' } };
   const bundleRequirement = { requirementVersion: '1', required: [claim] };

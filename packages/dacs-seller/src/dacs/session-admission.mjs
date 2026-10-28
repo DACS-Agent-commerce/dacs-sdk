@@ -153,6 +153,14 @@ function boundedRevocationValue(value) {
 }
 
 const ADMISSION_MAX_LIST_ITEMS=256;
+// The value and list bounds every returned representation shares: the outer
+// reply of every read, and a VerifyResult decoded from byte content, whose
+// encoding hides its lists and value count from the outer reply's own shape.
+function boundedAdmissionValue(value, options) {
+  const pending=[value];let values=0;
+  while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
+  return value;
+}
 // Admission capabilities cap wire bytes before decoding and honor this signal.
 // Returned representations also receive independent byte/value/list bounds. An
 // optional `parentSignal` (the caller's shared deadline) aborts an active read
@@ -167,9 +175,7 @@ export async function readAdmissionCapability(admission,method,input,parentSigna
     const work=Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
       if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
       if(value===undefined)throw new TypeError('admission capability returned no value');
-      const result=boundedRevocationValue(value),pending=[result];let values=0;
-      while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
-      return result;
+      return boundedAdmissionValue(boundedRevocationValue(value),options);
     });
     return await Promise.race(aborted?[work,deadline,aborted]:[work,deadline]);
   }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}
@@ -320,8 +326,9 @@ function vetEvidenceReads(evidence, scope) {
 
 // The content shape the core verifier takes from an operator reply: null
 // (absent), canonical JSON, or base64url bytes. A VerifyResult returned as
-// bytes is decoded to the canonical JSON object the core re-hashes; an
-// authority proof stays bytes so its byte hash is preserved.
+// bytes is decoded to the canonical JSON object the core re-hashes, under the
+// same value and list bounds a canonical-json reply receives; an authority
+// proof stays bytes so its byte hash is preserved.
 function vetEvidenceContent(reply, resultContent = false) {
   if (reply === null) return null;
   if (exactKeys(reply, ['encoding', 'value'])) {
@@ -330,7 +337,7 @@ function vetEvidenceContent(reply, resultContent = false) {
       const value = Uint8Array.from(Buffer.from(reply.value, 'base64url'));
       if (!resultContent) return { encoding: 'bytes', value };
       let decoded;
-      try { decoded = admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes }); }
+      try { decoded = boundedAdmissionValue(admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes }), REVOCATION_READ_LIMITS); }
       catch (error) {
         // Only a byte bound says the evidence source could not answer; every
         // other admission failure is a deterministic malformed document.
