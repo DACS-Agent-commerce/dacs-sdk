@@ -109,6 +109,17 @@ test('wrapped native artifact readbacks keep their capability receiver',async t=
  await host.close();
 });
 
+test('wrapped native artifact publish keeps its capability receiver',async t=>{
+ const f=await fixture(t),native=f.native;
+ const artifactAnchor={...native,published:0,async publish(input){this.published++;return native.publish(input);}};
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
+ assert.equal(artifactAnchor.published,1,'publish ran with its capability as receiver');
+ await host.close();
+});
+
 test('host issues no session challenge once close has begun',async t=>{
  const entered=defer(),release=defer();
  const f=await fixture(t,{wrap:agent=>({...agent,receiveProposal:async request=>{entered.resolve();await release.promise;return agent.receiveProposal(request);}})}),host=await f.start();

@@ -77,6 +77,9 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
   const view = Object.create(anchor);
   if (typeof anchor.readRetained === 'function') Object.defineProperty(view, 'readRetained', { value: read((reason) => ({ status: 'indeterminate', reason }), 'native artifact', anchor.readRetained), enumerable: true });
   if (typeof anchor.verifyReceipt === 'function') Object.defineProperty(view, 'verifyReceipt', { value: read('indeterminate', 'native artifact receipt', anchor.verifyReceipt), enumerable: true });
+  // The agent calls publish on this view; keep the operator's capability as
+  // the receiver, as it was before the view existed.
+  if (typeof anchor.publish === 'function') Object.defineProperty(view, 'publish', { value: (...args) => anchor.publish(...args), enumerable: true });
   return {
     anchor: Object.freeze(view),
     drain: () => Promise.allSettled([...pending].map((entry) => entry.promise)),
