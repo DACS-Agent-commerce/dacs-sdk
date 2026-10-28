@@ -95,6 +95,20 @@ test('close aborts and drains an accepted native artifact readback before releas
  await pending;
 });
 
+test('wrapped native artifact readbacks keep their capability receiver',async t=>{
+ const f=await fixture(t),native=f.native;
+ const artifactAnchor={...native,reads:0,verifies:0,
+  async readRetained(input){this.reads++;return native.readRetained(input);},
+  async verifyReceipt(input){this.verifies++;return native.verifyReceipt(input);}};
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
+ assert.ok(artifactAnchor.reads>=1,'readRetained ran with its capability as receiver');
+ assert.ok(artifactAnchor.verifies>=1,'verifyReceipt ran with its capability as receiver');
+ await host.close();
+});
+
 test('host issues no session challenge once close has begun',async t=>{
  const entered=defer(),release=defer();
  const f=await fixture(t,{wrap:agent=>({...agent,receiveProposal:async request=>{entered.resolve();await release.promise;return agent.receiveProposal(request);}})}),host=await f.start();

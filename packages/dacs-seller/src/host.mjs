@@ -65,7 +65,7 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
       timer = setTimeout(() => finish(resolve, cause(`the ${name} readback exceeded its ${timeoutMs} ms deadline`)), timeoutMs);
       if (signal.aborted) { onAbort(); return; }
       signal.addEventListener('abort', onAbort, { once: true });
-      Promise.resolve().then(() => method(input, options)).then((value) => finish(resolve, value), (error) => finish(reject, error));
+      Promise.resolve().then(() => method.call(anchor, input, options)).then((value) => finish(resolve, value), (error) => finish(reject, error));
     });
     entry.promise = promise;
     return promise;
