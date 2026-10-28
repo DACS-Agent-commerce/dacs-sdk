@@ -563,6 +563,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const nativeAgreementView = (native) => ({ source: native.source, evidenceMode: native.evidenceMode, nativeAddress: native.nativeAddress, txRef: native.txRef });
 
   function retainCommitmentPhase(session, finalized) {
+    // Ordinary commit has now authenticated the anchored Agreement and both signatures.
+    const agreementRef={anchor:{kind:'storage-program',locator:fixedPriceAgreementLogicalAddress(session.jobId)},contentHash:finalized.agreementHash};
+    recordPhase(session,0,session.proposalAdmission.observedAt,{ok:true,contextDelta:{'negotiate-fixed-price':{agreementHash:finalized.agreementHash,agreementRef}}});
     const commitmentRef = { anchor:{kind:'storage-program',locator:finalized.logicalAddress}, contentHash:contentHash(finalized.record), signer: claim };
     const commitmentTxRef = finalized.anchorTxRef;
     const commitmentDelta = { 'commit-payee-bound-agreement': {
@@ -713,14 +716,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       retainCommitmentPhase(session,retained);
       session.agreement=agreement;session.agreementRef=agreementRef;
       if(native)session.agreementAnchor=nativeAgreementView(native);
-      session.stage='committed';persist(session);
+      if(session.stage==='proposed')session.stage='committed';persist(session);
       return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
     }
     session.agreement = agreement;
     session.agreementRef = agreementRef;
     if (native) session.agreementAnchor = nativeAgreementView(native);
     session.commitment = finalized;
-    session.stage = 'committed';
+    if(session.stage==='proposed')session.stage='committed';
     // The native receipt is the authoritative commitment time. Local wall
     // time may be later within the same millisecond/second and cannot replace
     // that finalized fact in the SDK SessionRecord.
