@@ -16,6 +16,10 @@ import { DEM_RAIL } from './listing.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { cutText } from '../util/text.mjs';
+import { resolveWithDeadline } from '../util/bounded-resolution.mjs';
+
+/** Limits passed to context providers, which must cap wire bytes before decoding. */
+export const DEM_DELIVERY_CONTEXT_LIMITS = Object.freeze({ timeoutMs: 10_000, maxBytes: 64 * 1024, maxValues: 4096, maxDepth: 32, maxListEntries: 256, maxVetRequirements: 64 });
 
 export const DEM_DELIVERY_CONTEXT_SOURCE = 'dacs-chatgpt-plugin/dem-delivery-context/v1';
 
@@ -100,7 +104,8 @@ export async function resolveDemDeliverySellerContext(capability, { jobId, listi
   const configured = capabilityFor(capability);
   if (!configured) return held('indeterminate', 'DEM delivery context capability is absent');
   try {
-    const answer = await configured.resolveSeller(structuredClone({ jobId, listingPin: listingPin(listing), buyerIdentityBundle: buyerBundle, generatedAt }));
+    const request = structuredClone({ jobId, listingPin: listingPin(listing), buyerIdentityBundle: buyerBundle, generatedAt });
+    const answer = await resolveWithDeadline(options => configured.resolveSeller(request, options), DEM_DELIVERY_CONTEXT_LIMITS);
     if (!object(answer) || answer.disposition !== 'present' || !object(answer.value) || !object(answer.value.input) || !Array.isArray(answer.value.vetRequirements)) {
       return held(answer?.disposition ?? 'indeterminate', answer?.reason ?? 'DEM delivery seller context is malformed');
     }
