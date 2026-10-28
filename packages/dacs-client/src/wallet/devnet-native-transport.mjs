@@ -952,6 +952,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     }); });
     if(result.status!=='included') return result;
     if(!retained || body===undefined) fail('readback_unverified','the included native transfer has no retained original signed transaction');
+    // node() removed the RPC envelope; the core must interpret this same body.
+    if(Object.hasOwn(body,'response')) fail('readback_unverified','the included native transfer has an additional response envelope');
     if(!executedMatches(body.content,issued.signedTransaction.content,hash)) fail('readback_unverified','the included native transfer differs from the retained original signed transaction');
     return {...result,sourceDisposition:'included'};
   }
