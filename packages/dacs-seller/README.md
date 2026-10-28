@@ -142,10 +142,13 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It fails closed on configuration: unknown options, a missing capability, a
   non-loopback host, a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
-  The private stores also check every ancestor of the data directory: each must
-  be owned by root or by this user and not be group- or world-writable, so the
-  host does not start where `/` belongs to another user (for example some
-  rootless containers or sandboxes).
+  Two private stores also check the ancestors of their own paths: the party
+  Vet store requires each ancestor to be owned by root or by this user and not
+  be group- or world-writable (a sticky root scratch directory is allowed),
+  and the wallet journal refuses a non-sticky ancestor that others can write. The host
+  checks only the data directory itself — a private, real, 0700 directory
+  owned by this user — not its ancestors, so place it where no other user can
+  replace it.
   Job capacity counts saved sessions and active reservations. An unsaved
   reservation is reclaimed only when its holder is proven exited; live or
   unproven holders continue to reserve capacity.
