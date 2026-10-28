@@ -14,6 +14,11 @@ const NPM_HTTP_TIMEOUT_MS = 15_000;
 // Full npm self-install metadata exceeds 1.24 million aggregate entries.
 const NPM_JSON_MAX_ENTRIES = 2_000_000, NPM_JSON_MAX_DEPTH = 128;
 const limitError = () => Object.assign(new Error("ELIMIT npm HTTP response byte limit exceeded"), { code: "ELIMIT" });
+// npm tarballs are tar streams; the first header block identifies the payload
+// npm's archive reader will consume.
+const TAR_MAGIC_OFFSET = 257;
+const isTarArchive = bytes => bytes.length >= TAR_MAGIC_OFFSET + 5 &&
+  bytes.toString("latin1", TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + 5) === "ustar";
 
 const isArchiveResponse = (path, statusCode = 200) => statusCode < 300 && /\/-\/[^/?]+\.(?:tgz|tar\.gz)(?:\?[^#]*)?$/.test(path);
 // HEAD, 204 and 304 responses carry no body, so there is nothing to decode or
@@ -69,7 +74,22 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   if (bytes.length > maximum) throw limitError();
   // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
   // Validate expansion without changing the exact archive bytes npm hashes.
-  if (bytes[0] === 0x1f && bytes[1] === 0x8b) decodeBounded(bytes, gunzipSync, archiveMaximum);
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    if (!json) {
+      decodeBounded(bytes, gunzipSync, archiveMaximum);
+    } else {
+      try {
+        decodeBounded(bytes, gunzipSync, maximum);
+      } catch (error) {
+        // A registry may redirect an archive to a suffixless download URL, so
+        // the path alone cannot deny the archive budget. Admit an over-budget
+        // gzip body only when its payload is a tar stream npm's reader can
+        // consume; JSON responses stay limited to their own path budget.
+        if (error.code !== "ELIMIT" || maximum >= archiveMaximum) throw error;
+        if (!isTarArchive(decodeBounded(bytes, gunzipSync, archiveMaximum))) throw limitError();
+      }
+    }
+  }
   // npm also auto-detects zstd, which has no bounded decoder on supported Node.
   if (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
     throw new Error("unsupported npm archive compression: zstd");
@@ -81,6 +101,9 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
 
 /** Installs an opt-in guard for npm's Node HTTP(S) transport, including redirects and error bodies. */
 function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeout, cancel = clearTimeout } = {}) {
+  // Archive intent follows a redirect to a suffixless download URL. Bounded so
+  // an untrusted registry cannot grow the set without limit.
+  const archiveRedirects = new Set();
   for (const transport of transports) {
     const request = transport.request;
     transport.request = function (...args) {
@@ -91,22 +114,38 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
       pending.once("error", () => { failed = true; cancel(timer); });
       pending.emit = function (event, response, ...rest) {
         if (event !== "response") return emit.call(this, event, response, ...rest);
+        const statusCode = response.statusCode ?? 200;
+        // npm follows redirects with a fresh request; remember where an archive
+        // route sent it so the target keeps the archive budget. Archive intent
+        // also carries through a chain of redirects.
+        const archiveRequest = isArchiveResponse(pending.path) || archiveRedirects.has(pending.path);
+        if (archiveRequest && statusCode >= 300 && statusCode < 400) {
+          const location = response.headers.location;
+          if (location) try {
+            const target = new URL(location, "http://redirect.invalid" + pending.path);
+            archiveRedirects.add(target.pathname + target.search);
+            if (archiveRedirects.size > 256) archiveRedirects.delete(archiveRedirects.values().next().value);
+          } catch {}
+        }
         // Forward bodyless responses unchanged: decoding an empty body (for
         // example a 304 with Content-Encoding: gzip) fails, and rewriting
         // entity headers would corrupt cache revalidation.
-        if (isBodylessResponse(pending.method, response.statusCode)) {
+        if (isBodylessResponse(pending.method, statusCode)) {
           cancel(timer);
           return emit.call(this, event, response, ...rest);
         }
-        const maximum = responseBudget(pending.path, response.statusCode);
-        const archive = isArchiveResponse(pending.path, response.statusCode);
+        const maximum = responseBudget(pending.path, statusCode);
+        // Error and redirect replies at a redirect target stay JSON-admitted.
+        const archive = statusCode < 300 && archiveRequest;
         // npm's request-error path relays a failure to this original response
         // (req.res) after the response event. Admission hands npm a separate
         // stream, so absorb that relay; otherwise it throws inside the relay
         // handler and replaces the one ELIMIT request rejection.
         response.on("error", () => {});
-        readBoundedResponse(response, maximum, !archive,
-          archive ? NPM_TARBALL_MAX_UNPACKED_BYTES : maximum).then(bytes => {
+        // The archive budget must survive a redirect to a suffixless download
+        // URL; readBoundedResponse promotes only a genuine tar payload past the
+        // path budget, so JSON admission still bounds metadata and error replies.
+        readBoundedResponse(response, maximum, !archive, NPM_TARBALL_MAX_UNPACKED_BYTES).then(bytes => {
           cancel(timer);
           if (failed) return;
           const admitted = new PassThrough();
