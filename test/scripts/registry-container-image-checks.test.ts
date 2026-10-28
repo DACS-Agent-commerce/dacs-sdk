@@ -36,7 +36,10 @@ describe("immutable image functional evidence", () => {
     for (const run of runs) {
       expect(run).toContain("--read-only --network none");
       expect(run).toContain("--cap-drop ALL --security-opt no-new-privileges");
-      expect(run).toContain("accepted-image:fixture --import @kynesyslabs/dacs-node/demos-loader");
+      expect(run).toContain("--entrypoint sh");
+      expect(run).toContain("accepted-image:fixture -ceu");
+      expect(run).toContain('umask 077; mkdir -p -m 0700 /app/data/buyer /app/data/seller; exec node "$@"');
+      expect(run).toContain("image-check --import @kynesyslabs/dacs-node/demos-loader");
       expect(run).not.toMatch(/--volume|--mount|npm |rebuild|\/work|\/out/);
     }
     expect(runs[0]).toContain("--name fixture-tests"); expect(runs[1]).toContain("--name fixture-doctor");
