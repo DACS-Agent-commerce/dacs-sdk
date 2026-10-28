@@ -531,7 +531,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   // ---- DACS-3: finalized commitment (orchestrator) ----
   // `readbackOnly` is internal (never an HTTP body field): a retained
   // commitment is authenticated again, but an absent one is never published.
-  async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement } = {}) {
+  // `adopt` is internal to transport reconciliation: a publisher readback may
+  // adopt a commitment that was anchored before its session save, still with
+  // no signing or submission.
+  async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement, adopt = false } = {}) {
     assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
@@ -546,7 +549,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     // early commitment has been seen present; after that it only reads back.
     readbackOnly ||= early ? !attempt || Boolean(session.signatureCommitmentAttempt) : Boolean(session.signatureCommitmentHeld);
     const readbackRequired = () => { throw new SellerAgentError('commitment_readback_required', 'only the retained commitment may be read back here', 503); };
-    if(readbackOnly&&!session.commitment&&!session.signatureCommitmentAttempt)readbackRequired();
+    if(readbackOnly&&!session.commitment&&!session.signatureCommitmentAttempt&&!adopt)readbackRequired();
     // Once a native commitment has been finalized, every later entry through
     // the public commit path is reconciliation. An absent fresh observation is
     // not authority to publish another CREATE for the same logical address.
@@ -692,6 +695,47 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       canonicalize(left.blockRef)===canonicalize(right.blockRef);
   }
 
+  // ---- DACS-3: authenticated commitment transport reconciliation ----
+  // Reduces an already reserved, authenticated /commitments[/signature]
+  // command from this seller's retained state plus a fresh native readback. It
+  // never signs or publishes to complete an uncertain effect: a finalized (or
+  // early held) commitment answers what the same request would answer now.
+  // Only a native read that proves nothing was ever signed may hand the request
+  // back to its ordinary start once, under the same job lock.
+  const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
+  const provenUnsignedCommitment = async (jobId) => {
+    if (!nativeArtifactAnchor) return false;
+    try {
+      const read = await nativeArtifactAnchor.readRetained({ logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true });
+      return read?.status === 'absent' && isProvenUnsignedAbsence(read);
+    } catch { return false; }
+  };
+  async function reconcileCommitmentTransport({ request, body, readOnly = false } = {}) {
+    if (!COMMITMENT_PATHS.has(request?.path)) return undefined;
+    const held = (reason) => ({ disposition: 'indeterminate', reason: String(reason).slice(0, 240) });
+    const bound = () => {
+      try {
+        return request.method === 'POST' && isCanonicalJobId(request.jobId) && Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
+          body.jobId === request.jobId && request.seller === claim && typeof request.buyer === 'string' && canonicalize(request.listingPin) === canonicalize(pin);
+      } catch { return false; }
+    };
+    if (!bound()) return held('commitment transport context differs');
+    const session = sessions.get(request.jobId);
+    if (!session || request.buyer !== session.buyerBundle.presentedBy || request.agreementHash !== session.agreementHash) return held('no retained session for this authenticated commitment request');
+    const early = request.path === '/dacs/v1/commitments/signature';
+    if (early && !commitOnSignature) return held('early commitment is disabled');
+    const input = { jobId: request.jobId, signedProjection: body.signedProjection };
+    const options = { readbackOnly: true, adopt: !early, ...(early ? { signatureAgreement: body.agreement } : {}) };
+    let answer;
+    try { answer = await commit(input, options); }
+    catch (error) {
+      if (readOnly || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return held(error?.message ?? error);
+      try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
+      catch (retryError) { return held(retryError?.message ?? retryError); }
+    }
+    return answer?.status === 'committed' || answer?.status === 'commitment-held' ? { disposition: 'present', value: answer } : held('commitment readback did not establish a retained outcome');
+  }
+
   const api = {
     assertSettlementCredit,
     claim,
@@ -702,6 +746,18 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     commit: recoveryCall(commit),
     // Reauthenticates cached transport answers without authorizing a new CREATE.
     readCommitment: recoveryCall(({jobId,signedProjection,signatureAgreement}) => commit({jobId,signedProjection}, {readbackOnly:true,signatureAgreement})),
+    // Read-only reduction of an uncertain commitment HTTP reservation. Other
+    // routes keep their own (or no) reconciliation.
+    reconcileTransport: durable ? async (input) => {
+      const jobId = input?.request?.jobId;
+      if (!COMMITMENT_PATHS.has(input?.request?.path) || !isCanonicalJobId(jobId)) return undefined;
+      try {
+        return await durable.withJob(jobId, async (session) => { sessions.delete(jobId); restore(session); return reconcileCommitmentTransport(input); });
+      } catch (error) {
+        if (error?.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
+        throw error;
+      }
+    } : reconcileCommitmentTransport,
     commitOnSignature: recoveryCall((input) => {
       if (!input || canonicalize(Object.keys(input).sort()) !== canonicalize(['agreement', 'jobId', 'signedProjection']) || !input.agreement || typeof input.agreement !== 'object') throw new SellerAgentError('signature_agreement_invalid', 'expected exactly jobId, Agreement and signedProjection');
       return commit({ jobId: input.jobId, signedProjection: input.signedProjection }, { signatureAgreement: input.agreement });
