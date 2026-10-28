@@ -144,7 +144,7 @@ const capabilities = () => ({
     resolveSeller: async ({ jobId }) => { vetContextCalls.push(jobId); const input = fabricatedJobs.has(jobId) ? fabricatedInput(jobId) : await vettedInput(jobId); return { disposition: 'present', value: { input, vetRequirements: invocationsFor(input) } }; } }),
   nativeDemDelivery: createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', submit: refuse('nativeDemDelivery.submit'), reconcile: refuse('nativeDemDelivery.reconcile'),
     read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt') }),
-  buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
+  buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: id => ownBundles.has(id) ? buyerKey.address : null }),
   agreementAnchor: { source: 'installed-package/agreement-readback', readAgreement: refuse('agreementAnchor.readAgreement') },
   artifactAnchor: { writer: sellerKey.claim, source: 'installed-package/artifacts', publish: refuse('artifactAnchor.publish'), readRetained: refuse('artifactAnchor.readRetained'), verifyReceipt: refuse('artifactAnchor.verifyReceipt') },
   deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: refuse('verifyDeliverySchema') },
