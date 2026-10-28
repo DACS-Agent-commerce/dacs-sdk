@@ -3,10 +3,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
+import * as settlementFailure from "../../src/agent/settlementFailure.js";
 import {
   hasDefinitiveDemosFailure,
+  payDemRequestAmountOs,
   type DemosFailedRecordProof,
 } from "../../src/agent/settlementFailure.js";
+import { isRecordVerifiedSource } from "../../src/rails/payDem.js";
 import {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
@@ -190,16 +193,16 @@ describe("hasDefinitiveDemosFailure", () => {
     expect(hasDefinitiveDemosFailure(failedResult())).toBe(false);
   });
 
-  // Type-level only. runSession.test.ts pins the runtime rejection of a rail
-  // result carrying failureProof or errorClass at the session boundary.
-  it("is not a SettleResult field", () => {
+  // Type-level only. runSession.test.ts pins the runtime refusal of a rail
+  // result whose failureProof or errorClass is one-sided or malformed.
+  it("is a SettleResult field", () => {
     const result: SettleResult = {
       ok: false,
+      errorClass: "permanent",
       txHash: PROOF.txHash,
       chainId: NETWORK,
       payer: PROOF.payer,
       payee: PROOF.payee,
-      // @ts-expect-error runSessionCore's settle-result allow-list has no failureProof
       failureProof: PROOF,
     };
     expect(result.ok).toBe(false);
@@ -455,18 +458,79 @@ describe("hasDefinitiveDemosFailure", () => {
 
 describe("hasDefinitiveDemosFailure contract limits", () => {
   // It checks shape and bindings, not authenticity: a self-consistent proof that
-  // no node served still passes. Until a rail builds proofs from authenticated
-  // node records, no production module may consume the check.
+  // no node served still passes. A proof may become a definitive outcome only
+  // from createPayDemRail, which reads and binds the node record itself;
+  // idempotency.test.ts, payDem.test.ts and payDemPackedForgery.test.ts pin
+  // that an invented proof from any other source stays held.
   it("accepts an invented, self-consistent proof, so it is not an authentication", () => {
     const invented = { ...PROOF, txHash: "ab".repeat(32), nonce: 1, blockNumber: 2 };
     expect(check({ txHash: invented.txHash, blockNumber: 2, failureProof: invented })).toBe(true);
   });
 
-  it("is imported by no module in src", () => {
-    const root = new URL("../../src/", import.meta.url);
-    const importers = (readdirSync(root, { recursive: true }) as string[])
-      .filter((file) => file.endsWith(".ts") && !file.endsWith("settlementFailure.ts"))
-      .filter((file) => /settlementFailure/.test(readFileSync(new URL(file, root), "utf8")));
-    expect(importers).toEqual([]);
+  const root = new URL("../../src/", import.meta.url);
+  const sources = (readdirSync(root, { recursive: true }) as string[])
+    .filter((file) => file.endsWith(".ts") && !file.endsWith("settlementFailure.ts"))
+    .map((file) => ({ file: file.replaceAll("\\", "/"), text: readFileSync(new URL(file, root), "utf8") }));
+
+  // Each importer has a reason: the session boundary checks the proof's shape
+  // and request amount, the store persists one only from an SDK record-reading
+  // submission, and the pay-dem rail builds proofs from node records.
+  it("is imported only by the session boundary, the settlement store and the pay-dem rail", () => {
+    expect(sources.filter(({ text }) => /settlementFailure/.test(text)).map(({ file }) => file).sort())
+      .toEqual(["agent/runSessionCore.ts", "rails/idempotency.ts", "rails/payDem.ts"]);
+  });
+
+  // The record-reading sets are private to the rails module: no shipped file
+  // exports a way to add to them, and only the store consults the predicate.
+  it("keeps record-reading sources private to the pay-dem rail", () => {
+    expect(sources.filter(({ text }) => /sdkRecordReading\w*\.add\(/.test(text)).map(({ file }) => file))
+      .toEqual(["rails/payDem.ts"]);
+    expect(sources.filter(({ text }) => /sdkRecordVerifiedResults\.set\(/.test(text)).map(({ file }) => file))
+      .toEqual(["rails/payDem.ts"]);
+    expect(sources.filter(({ text }) => /export\s+(?:const|let|var|function)\s+\w*(?:[Vv]ouch|sdkRecordReading|sdkRecordVerified)/.test(text)))
+      .toEqual([]);
+    expect(sources.filter(({ text }) => /isRecordVerifiedSource\(/.test(text)).map(({ file }) => file).sort())
+      .toEqual(["rails/idempotency.ts", "rails/payDem.ts"]);
+  });
+});
+
+describe("payDemRequestAmountOs", () => {
+  const request = { phase: "pay-dem", asset: "DEM", amount: "9.5" };
+
+  it("converts a pay-dem DEM amount to exact OS", () => {
+    expect(payDemRequestAmountOs(request)).toBe(AMOUNT);
+  });
+
+  // An otherwise matching positive amount must not admit a proof for another
+  // phase or another asset: each field is pinned on its own.
+  it.each([
+    ["another phase", { ...request, phase: "pay-usdc" }],
+    ["another asset", { ...request, asset: "USDC" }],
+    ["another phase and asset", { ...request, phase: "pay-usdc", asset: "USDC" }],
+    ["a differently cased phase", { ...request, phase: "Pay-Dem" }],
+    ["a differently cased asset", { ...request, asset: "dem" }],
+  ])("returns null for %s", (_case, other) => {
+    expect(payDemRequestAmountOs(other)).toBeNull();
+  });
+
+  it.each(["0", "0.0", "not-a-number", ""])("returns null for the amount %j", (amount) => {
+    expect(payDemRequestAmountOs({ ...request, amount })).toBeNull();
+  });
+});
+
+describe("record-verified failure sources", () => {
+  it("exports no brand or vouch helper from the failure-proof module", () => {
+    expect(Object.keys(settlementFailure).sort())
+      .toEqual(["hasDefinitiveDemosFailure", "payDemRequestAmountOs"]);
+  });
+
+  it("recognizes no function a caller made", () => {
+    const settle = async () => undefined;
+    expect(isRecordVerifiedSource(settle)).toBe(false);
+    expect(isRecordVerifiedSource(settle.bind(null))).toBe(false);
+  });
+
+  it.each([undefined, null, 0, "settle", Symbol("settle"), {}])("refuses %s", (value) => {
+    expect(isRecordVerifiedSource(value)).toBe(false);
   });
 });

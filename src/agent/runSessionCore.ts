@@ -1,4 +1,9 @@
 import { types as nodeTypes } from "node:util";
+import {
+  hasDefinitiveDemosFailure,
+  payDemRequestAmountOs,
+  type DemosFailedRecordProof,
+} from "./settlementFailure.js";
 
 import {
   canonicalize,
@@ -154,6 +159,9 @@ export interface SettlementRecoveryAttempt {
 
 export interface SettleResult {
   ok: boolean;
+  /** Permanent only with a bound terminal-failure proof; never permits rebroadcast. */
+  errorClass?: "permanent";
+  failureProof?: DemosFailedRecordProof;
   txHash: string;
   chainId: string;
   payer: string;
@@ -933,6 +941,8 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
   const result = snapshot as Record<string, unknown>;
   const allowed = new Set([
     "ok",
+    "errorClass",
+    "failureProof",
     "txHash",
     "chainId",
     "payer",
@@ -968,6 +978,20 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
         result.txRefKind.trim() !== result.txRefKind))
   ) {
     throw new CounterpartyError(`${label} returned a malformed result`);
+  }
+  // A native DEM rail reports a terminal failed record as a permanent class
+  // with its bound proof. Accept only that exact pair; the session still
+  // treats it as a transaction-bearing non-success, so the hash is bound and
+  // the intent stays held.
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      !hasDefinitiveDemosFailure(
+        result as unknown as SettleResult,
+        // The request's amount is bound in validateSettlementResultBinding;
+        // here only the proof's own shape and network are checked.
+        (result.failureProof as { amountOs?: unknown } | null)?.amountOs as string,
+        result.chainId as string,
+      )) {
+    throw new CounterpartyError(`${label} returned a malformed terminal-failure proof`);
   }
   const parsedFinality = parseSettlementFinalityParameters(result.finality);
   if (result.finality !== undefined) {
@@ -2091,6 +2115,19 @@ function validateSettlementResultBinding(
     throw new CounterpartyError(
       `${label} returned payee ${result.payee}, expected the request-bound destination ${request.expectedPayee}`,
     );
+  }
+  // A failed-record proof is native DEM only and must carry this request's
+  // exact OS amount, on fresh settlement and on recovery. The request carries
+  // no network, so the proof is bound to the result's own chainId here;
+  // payDemSettle and the settlement store bind it to the configured network.
+  if (result.errorClass !== undefined || result.failureProof !== undefined) {
+    const amountOs = payDemRequestAmountOs(request);
+    if (amountOs === null ||
+        !hasDefinitiveDemosFailure(result, amountOs, result.chainId)) {
+      throw new CounterpartyError(
+        `${label} returned a terminal-failure proof that does not bind the requested pay-dem amount`,
+      );
+    }
   }
 }
 

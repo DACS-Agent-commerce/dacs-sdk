@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
@@ -8,6 +8,11 @@ import {
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+} from "../../src/rails/idempotency.js";
+import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { isSettlementEvidence } from "../../src/artifacts/validators.js";
 import type {
@@ -1009,6 +1014,168 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     await expect(
       runSessionCore(resolved.listingRef, terms, resolved.deps, "job-1"),
     ).resolves.toMatchObject({ outcome: "completed" });
+  });
+
+  describe("a pay-dem permanent failed-record result (#338)", () => {
+    const FAILED_HASH = "85".repeat(32);
+    const PAYER_HEX = "ab".repeat(32);
+    const payeeHex = sellerDid.slice("did:demos:agent:".length);
+    const failedRecord = (
+      payee: string,
+      proof: Record<string, unknown> = {},
+    ): SettleResult => ({
+      ok: false,
+      txHash: FAILED_HASH,
+      chainId: "demos",
+      payer: PAYER_HEX,
+      payee,
+      errorClass: "permanent",
+      blockNumber: 480877,
+      txRefKind: "demos",
+      failureProof: {
+        kind: "demos-failed-record",
+        txHash: FAILED_HASH,
+        nonce: 9,
+        blockNumber: 480877,
+        payer: PAYER_HEX,
+        payee: payeeHex,
+        amountOs: "9500000000",
+        ...proof,
+      } as SettleResult["failureProof"],
+    });
+    const outcomes = async (store: ReturnType<typeof createInMemorySessionStore>) => {
+      const loaded = await store.load("job-1");
+      return loaded.status === "ok"
+        ? loaded.record.checkpoints.filter((checkpoint) => checkpoint.stage === "outcome")
+        : [];
+    };
+    // 9.5 DEM is 9500000000 OS, the proof amount above.
+    const demTerms = {
+      ...terms,
+      price: { amount: "9.5", asset: "DEM", decimals: 9, rail: "pay-dem" },
+    };
+    const demKv = async () => new Map<string, Record<string, unknown>>([[
+      "stor:listing",
+      (await buildSignedArtifact(
+        { ...listing, supportedPaymentRails: ["pay-dem"] },
+        ARTIFACT_SEPARATORS.Listing,
+        sign,
+      )) as Record<string, unknown>,
+    ]]);
+
+    test("binds the hash and records the outcome on fresh settlement and recovery", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const first = await makeDeps(store, {
+        kv,
+        settle: async (req) => failedRecord(req.expectedPayee),
+      });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/remains indeterminate/);
+      expect(await outcomes(store)).toMatchObject([
+        { data: { outcomeSource: "rail-result", ok: false, txHash: FAILED_HASH } },
+      ]);
+      await expect(store.bindHash({ hash: FAILED_HASH, jobId: "other", kind: "transaction" }))
+        .resolves.toEqual({ ok: false, boundTo: "job-1" });
+
+      const resumed = await makeDeps(store, {
+        kv,
+        resumeSettlement: async (req) => failedRecord(req.expectedPayee),
+      });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/remains indeterminate/);
+      expect(await outcomes(store)).toHaveLength(1);
+    });
+
+    test.each<[string, (payee: string) => SettleResult]>([
+      ["another amount", (payee) => failedRecord(payee, { amountOs: "" })],
+      ["another transaction", (payee) => failedRecord(payee, { txHash: "34".repeat(32) })],
+      ["another payee", (payee) => failedRecord(payee, { payee: "ef".repeat(32) })],
+      ["a permanent class without a proof", (payee) => {
+        const { failureProof: _proof, ...result } = failedRecord(payee);
+        return result;
+      }],
+      ["a proof without a permanent class", (payee) => {
+        const { errorClass: _class, ...result } = failedRecord(payee);
+        return result;
+      }],
+    ])("refuses a failed-record proof with %s as malformed", async (_case, result) => {
+      const store = createInMemorySessionStore();
+      const first = await makeDeps(store, {
+        kv: await demKv(),
+        settle: async (req) => result(req.expectedPayee),
+      });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/malformed terminal-failure proof/);
+      expect(await outcomes(store)).toHaveLength(0);
+    });
+
+    test("refuses a valid proof for another DEM amount on fresh settlement", async () => {
+      const store = createInMemorySessionStore();
+      const first = await makeDeps(store, {
+        kv: await demKv(),
+        settle: async (req) => failedRecord(req.expectedPayee, { amountOs: "20000000000" }),
+      });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/does not bind the requested pay-dem amount/);
+      expect(await outcomes(store)).toHaveLength(0);
+    });
+
+    test("refuses a valid proof for another DEM amount on recovery", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const first = await makeDeps(store, {
+        kv,
+        settle: async (req) => failedRecord(req.expectedPayee),
+      });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/remains indeterminate/);
+      const resumed = await makeDeps(store, {
+        kv,
+        resumeSettlement: async (req) =>
+          failedRecord(req.expectedPayee, { amountOs: "20000000000" }),
+      });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/does not bind the requested pay-dem amount/);
+      expect(await outcomes(store)).toHaveLength(1);
+    });
+
+    // The proof binds shape, not origin: a custom rail that could invent one
+    // no node served is refused before the session can call it, so it can
+    // neither pay nor leave a durable verdict (#338).
+    test("refuses a custom pay-dem rail that could invent a proof before calling it", async () => {
+      const log = createInMemorySettlementLog();
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const rail: PayDemRail = {
+        address: PAYER_HEX,
+        settle: vi.fn(async () => failedRecord(payeeHex) as Awaited<ReturnType<PayDemRail["settle"]>>),
+      };
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+      });
+      await expect(settle({
+        rail: "pay-dem",
+        phase: "pay-dem",
+        amount: "9.5",
+        asset: "DEM",
+        payee: sellerDid,
+        expectedPayee: payeeHex,
+        jobId: "job-1",
+        phaseIndex: 0,
+      })).rejects.toThrow(/createPayDemRail returned.*refusing/);
+      expect(rail.settle).not.toHaveBeenCalled();
+      expect(putOutcome).not.toHaveBeenCalled();
+    });
+
+    test("refuses a failed-record proof on a session that is not a DEM payment", async () => {
+      const store = createInMemorySessionStore();
+      const first = await makeDeps(store, {
+        settle: async (req) => failedRecord(req.expectedPayee),
+      });
+      await expect(runSessionCore(first.listingRef, terms, first.deps))
+        .rejects.toThrow(/does not bind the requested pay-dem amount/);
+      expect(await outcomes(store)).toHaveLength(0);
+    });
   });
 
   test("persists a safely resubmitted transaction when reconciliation returns a new tx", async () => {

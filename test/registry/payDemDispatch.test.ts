@@ -283,6 +283,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         inclusionPollIntervalMs: 700,
         statusRequestTimeoutMs: 4_000,
         nonceVisibilityTimeoutMs: 62_000,
+        transactionRecordTimeoutMs: 31_000,
       },
     });
 
@@ -298,6 +299,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       inclusionPollIntervalMs: 700,
       statusRequestTimeoutMs: 4_000,
       nonceVisibilityTimeoutMs: 62_000,
+      transactionRecordTimeoutMs: 31_000,
     });
     expect(mocks.payDemSettle).toHaveBeenCalledWith(
       rail,

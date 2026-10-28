@@ -13,6 +13,26 @@ vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
   createPayDemRail: sdkPayDem.createRail,
 }));
 
+// The SDK's own rail connects its wallet to this node; nothing here transfers.
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class MockDemos {
+    readonly tx = { confirm: async () => undefined };
+    readonly broadcast = async () => undefined;
+    readonly connect = async () => undefined;
+    readonly connectWallet = async () => undefined;
+    readonly getNetworkInfo = async () => undefined;
+    readonly nodeCall = async () => undefined;
+    readonly getTxByHash = async () => undefined;
+    readonly transfer = async () => undefined;
+    readonly waitForNonce = async () => undefined;
+
+    getAddress(): string {
+      return `0x${Buffer.from(PUBLIC_KEY).toString("hex")}`;
+    }
+  },
+}));
+
+import { isPayDemRecordVerifyingRail } from "@kynesyslabs/dacs";
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsDemosActorRuntimeV1,
@@ -21,8 +41,10 @@ import {
   type DacsDemosAdapterV1,
   type DacsDemosActorRuntimeV1,
 } from "../src/index.js";
-import { isDacsSdkPreparedPayDemRailV1 } from
-  "../src/payDemRailCapabilities.js";
+import {
+  isDacsRecordVerifyingPayDemRailV1,
+  isDacsSdkPreparedPayDemRailV1,
+} from "../src/payDemRailCapabilities.js";
 
 const PUBLIC_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PEER_KEY = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
@@ -225,6 +247,7 @@ describe("role-owned Demos runtime", () => {
     expect(opened.payDem?.rail.address).toBe(wallet);
     expect(opened.payDem?.rail.settle).not.toBe(settle);
     expect(isDacsSdkPreparedPayDemRailV1(opened.payDem!.rail)).toBe(false);
+    expect(isDacsRecordVerifyingPayDemRailV1(opened.payDem!.rail)).toBe(false);
     expect(createPayDemRail).toHaveBeenCalledWith({
       rpc: "http://127.0.0.1:5350",
       secret: "test-only-secret",
@@ -254,6 +277,35 @@ describe("role-owned Demos runtime", () => {
     expect(isDacsSdkPreparedPayDemRailV1(
       Object.freeze({ address: wallet, settle, deferWalletReservationUntilPrepared: true }),
     )).toBe(false);
+  });
+
+  it("marks the wrapper record-verifying only around a record-verifying rail", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    const { createPayDemRail: createSdkPayDemRail } =
+      await vi.importActual<typeof import("@kynesyslabs/dacs")>("@kynesyslabs/dacs");
+    const inner = await createSdkPayDemRail({
+      rpc: "http://127.0.0.1:5350",
+      secret: "test-only-secret",
+    });
+    expect(isPayDemRecordVerifyingRail(inner)).toBe(true);
+
+    const opened = await createDacsDemosActorRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      createAdapter: async () => adapter({ getAddress: vi.fn(() => wallet) }),
+      createPayDemRail: async () => inner,
+    });
+
+    // The SDK knows only its own rails, not the runtime's wrapper around one.
+    expect(opened.payDem?.rail).not.toBe(inner);
+    expect(isPayDemRecordVerifyingRail(opened.payDem!.rail)).toBe(false);
+    expect(isDacsRecordVerifyingPayDemRailV1(opened.payDem!.rail)).toBe(true);
+    // A custom host's rail still reserves the wallet before it runs.
+    expect(isDacsSdkPreparedPayDemRailV1(opened.payDem!.rail)).toBe(false);
   });
 
   it("reconciles the complete wallet journal before invoking native settlement", async () => {

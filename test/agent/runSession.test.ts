@@ -502,7 +502,7 @@ describe("runSession orchestration (T4)", () => {
   test.each([
     ["failureProof", { failureProof: { kind: "demos-failed-record" } }],
     ["errorClass", { errorClass: "permanent" }],
-  ])("rejects a rail result carrying %s before evidence publication", async (_name, extra) => {
+  ])("rejects a rail result carrying only a malformed %s before evidence publication", async (_name, extra) => {
     const anchored: string[] = [];
     const deps = makeDeps({
       settle: async () => ({
@@ -519,7 +519,7 @@ describe("runSession orchestration (T4)", () => {
       },
     });
     await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
-      /settlement rail returned a malformed result/,
+      /settlement rail returned a malformed terminal-failure proof/,
     );
     expect(anchored.some((name) => name.includes("evidence"))).toBe(false);
   });

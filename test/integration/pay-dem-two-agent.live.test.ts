@@ -152,7 +152,23 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
       },
     );
 
-    // `ok:false` means only that inclusion was not observed. A hash-first
+    // A bound failed record (#338): included, but the transfer did not
+    // execute. Keep the hash and block so the operator can re-read the record;
+    // it never authorizes a rerun.
+    if (!settlement.ok && settlement.errorClass === "permanent" &&
+        settlement.failureProof !== undefined && settlement.blockNumber !== undefined) {
+      await recordPayDemFundedRunOutcome(marker, {
+        status: "not-completed",
+        reason: "execution-failed",
+        txHash: settlement.txHash,
+        blockNumber: settlement.blockNumber,
+      });
+      throw new Error(
+        `pay-dem-live:settlement-failed-do-not-rerun:${marker.markerId}`,
+      );
+    }
+    // Any other `ok:false` means execution was not established: inclusion was
+    // not observed, or the record was not read and bound in time. A hash-first
     // observation timeout can still hide an included transfer, so preserve the
     // signed hash for read-only reconciliation and never claim payment did not land.
     if (!settlement.ok || !settlement.txHash || settlement.blockNumber === undefined) {
