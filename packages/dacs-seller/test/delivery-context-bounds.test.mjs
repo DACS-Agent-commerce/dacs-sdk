@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { createDemDeliveryContext, resolveDemDeliverySellerContext, DEM_DELIVERY_CONTEXT_LIMITS as LIMITS } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { protocolFixture, buyer, seller, JOB, NOW } from './helpers/protocol-fixture.mjs';
+import { boundedResolutionValue } from '../src/util/bounded-resolution.mjs';
 
 async function fixture() {
   const f = await protocolFixture();
@@ -116,4 +117,38 @@ for (const disposition of ['absent', 'rejected', 'indeterminate', 'unknown']) te
   const { request } = await fixture();
   const result = await resolve({ disposition, reason: 'TEST-held-cause' }, request);
   assert.deepEqual(result, { disposition: disposition === 'unknown' ? 'indeterminate' : disposition, reason: 'TEST-held-cause' });
+});
+
+test('exact structural limits admit and one more refuses', () => {
+  const defaults = { ...LIMITS, maxBytes: 1024 * 1024 };
+  const cases = [
+    ['value', { ...defaults, maxValues: 4 }, [null, null, null], [null, null, null, null]],
+    ['depth', { ...defaults, maxDepth: 3 }, { a: { b: null } }, { a: { b: { c: null } } }],
+    ['list', defaults, Array(256).fill(null), Array(257).fill(null)],
+  ];
+  for (const [kind, limits, exact, over] of cases) {
+    assert.doesNotThrow(() => boundedResolutionValue(exact, limits));
+    assert.throws(() => boundedResolutionValue(over, limits), new RegExp(`${kind} limit`));
+  }
+});
+
+test('exact requirements limit and UTF-8/escaped byte budgets admit', async () => {
+  const { answer, request } = await fixture();
+  answer.value.vetRequirements = Array(LIMITS.maxVetRequirements).fill(null);
+  assert.equal((await resolve(answer, request)).disposition, 'present');
+  for (const text of ['🙂', '\u0000', 'é']) {
+    answer.value.vetRequirements = [text];
+    const remaining = LIMITS.maxBytes - Buffer.byteLength(JSON.stringify(answer));
+    answer.value.vetRequirements[0] += 'x'.repeat(remaining);
+    for (const value of [answer, Buffer.from(JSON.stringify(answer))]) assert.equal((await resolve(value, request)).disposition, 'present');
+    answer.value.vetRequirements[0] += 'x';
+    for (const value of [answer, Buffer.from(JSON.stringify(answer))]) assert.match((await resolve(value, request)).reason, /byte limit/);
+  }
+});
+
+test('raw malformed UTF-8 and duplicate keys remain held', async () => {
+  const { request } = await fixture();
+  for (const bytes of [Buffer.from([0xff]), Buffer.from('{"disposition":"absent","disposition":"present"}')]) {
+    assert.equal((await resolve(bytes, request)).disposition, 'indeterminate');
+  }
 });
