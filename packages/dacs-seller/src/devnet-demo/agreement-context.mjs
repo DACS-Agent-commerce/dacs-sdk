@@ -292,7 +292,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const request=Object.freeze({jobId:job.jobId,signer:wallet.claim,reservation:kept.signing.reservation,signedBytes:kept.signing.signedBytes});
     let signature;
     if(mine){
-      guard(job,'seller presentation');
+      guard(job,'seller presentation');await authorizeEffect(job);
       const raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);
       signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
     }else signature=await readPresentationSignature(request);
@@ -326,6 +326,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(!kept){
       if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
       const buyer=job.binding.buyerIdentityBundle.presentedBy;
+      await authorizeEffect(job);
       const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim});
       if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
         || typeof challenge.sessionNonce!=='string' || !/^(?:[a-f0-9]{2}){16,128}$/.test(challenge.sessionNonce) || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
@@ -376,7 +377,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // start evaluation. Absence/unknown never authorizes another consumption.
       const retained=await callCounterparty('readRecord',request);
       if(retained?.status==='present')record=retained.record;
-      else if(unattempted(retained,request))record=await evaluateOrReadRetained(request);
+      else if(unattempted(retained,request)){await authorizeEffect(job);record=await evaluateOrReadRetained(request);}
       else fail('seller_vet_reconciliation_required','the buyer nonce ledger has no authoritative outcome');
       const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
       if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid') fail('seller_vet_invalid',`buyer-issued seller Vet failed strict verification: ${strict.status}:${strict.code}`);
@@ -392,7 +393,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
-      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>job.open()});
+      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job)});
     }
     if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
     const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(record),signer:authority};
@@ -402,8 +403,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // Marks the job durably before its first signature or anchor intent; from
   // then on its binding is kept, because a write may exist.
   async function markWrite(job) {
-    if(job.writeStarted)return;
     await state.update(job.jobId,(current)=>{
+      if(current?.lifecycle?.state==='ended')fail('context_released','the context job ended; no new effect is authorized');
       if(!current?.binding||!same(current.binding,job.binding))fail('binding-changed','the job\'s party Vet binding changed; nothing was signed or written');
       if(current.writeStarted)return undefined;
       current.writeStarted=true;
@@ -416,6 +417,26 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   function guard(job,what) {
     const open=job.open();
     if(open!==true)fail('not-pending',`the purchase is no longer pending (${typeof open==='string'?open:'its check gave no answer'}); no ${what} was made`);
+  }
+  // The durable lifecycle is shared by every provider, unlike job.open().
+  async function authorizeEffect(job) {
+    const row=await state.read(job.jobId);
+    if(!row?.binding||!same(row.binding,job.binding)||row.lifecycle?.state==='ended')fail('context_released','the context job ended; no new effect is authorized');
+    guard(job,'effect');return true;
+  }
+  async function withRun(job,work) {
+    const token=randomUUID();
+    await state.update(job.jobId,row=>{
+      if(!row?.binding||!same(row.binding,job.binding)||row.lifecycle?.state==='ended')fail('context_released','the context job ended');
+      row.activeRuns??=[];
+      if(row.activeRuns.length>=CONTEXT_TIMES)fail('context_capacity','too many active context runs');
+      row.activeRuns.push(token);return row;
+    });
+    try{return await work();}
+    finally{await state.update(job.jobId,row=>{
+      if(!row?.activeRuns?.includes(token))return undefined;
+      row.activeRuns=row.activeRuns.filter(value=>value!==token);return row;
+    });}
   }
   // The SDK reports a writer failure only as "submission outcome is
   // indeterminate". The writer's cause is kept here as an allowlisted code
@@ -450,7 +471,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const durable=durableOperationStore(state,job,role,{now,clock,wait});
     const sign=async(bytes)=>{
       let stored;
-      try{guard(job,'signature');await markWrite(job);stored=await durable.writeAhead(bytes);guard(job,'signature');}
+      try{guard(job,'signature');await markWrite(job);stored=await durable.writeAhead(bytes);await authorizeEffect(job);}
       catch(error){writerFailed(error);throw error;}
       // The purchase was read again just above, with no await before the
       // signer: one cancelled while the mark or the bytes were stored signs
@@ -473,7 +494,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
             // The anchor asks again under its key lock, right before it
             // stores the intent: a purchase cancelled meanwhile stores none
             // and sends nothing.
-            out=await anchorCall(()=>anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>job.open()}));
+            out=await anchorCall(()=>anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job)}));
           }else{
             // Readback only: a read never creates an intent.
             out=await anchorCall(()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'}));
@@ -527,10 +548,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const legacy=before?.binding||before?.quarantine?null:(await Promise.all(addresses.map((logicalAddress)=>anchor.hasIntent(logicalAddress)))).some(Boolean);
       let outcome='retry';
       await state.update(job.jobId,(current)=>{
+        if(current?.lifecycle?.state==='ended')fail('context_released','the context job ended');
         if(current?.quarantine){outcome='legacy';return undefined;}
         if(current?.binding&&same(current.binding,job.binding)){outcome='bound';job.writeStarted||=current.writeStarted===true;return undefined;}
         if(current?.binding){
-          if(current.writeStarted){outcome='conflict';return undefined;}
+          if(current.writeStarted||current.activeRuns?.length){outcome='conflict';return undefined;}
           outcome='bound';
           return{binding:clone(job.binding),writeStarted:false,ops:freshOps(),seller:null};
         }
@@ -544,7 +566,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     fail('indeterminate','the job\'s party Vet state kept changing; nothing was signed or sent');
   }
   // A failed run with no write deletes its row: nothing was signed or written.
-  const unbind=(job)=>state.update(job.jobId,(current)=>current?.binding&&same(current.binding,job.binding)&&!current.writeStarted?null:undefined);
+  const unbind=(job)=>state.update(job.jobId,(current)=>current?.binding&&same(current.binding,job.binding)&&!current.writeStarted&&current.lifecycle?.state!=='ended'&&!current.activeRuns?.length?null:undefined);
   const forget=(job)=>{if(vets.get(job.jobId)===job)vets.delete(job.jobId);};
   // One Vet run per job in this provider, bound to everything that makes it valid for a
   // request: the scope except generatedAt, and the exact buyer identity bundle
@@ -568,14 +590,14 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     let job=vets.get(scope.jobId);
     if(job&&!same(job.binding,binding))return Promise.resolve({refused:'conflict'});
     if(!job){job={jobId:scope.jobId,binding:clone(binding),buyerVet:null,running:null,finished:false,writeStarted:false,evicted:false,open};vets.set(scope.jobId,job);}
-    if(job.finished&&job.running)return job.running.then(()=>recheckFinished(job));
+    if(job.finished&&job.running)return job.running.then(()=>withRun(job,()=>recheckFinished(job)));
     if(!job.running){
       job.open=open;
       const addresses=[compositeVerificationAddress(scope.jobId,buyerIdentityBundle.presentedBy),compositeVerificationAddress(scope.jobId,listing.seller.identity.presentedBy)];
       const run=(async()=>{
         const bound=await bind(job,addresses);
         if(bound!=='bound')return{refused:bound};
-        try{
+        return withRun(job,async()=>{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
           await sellerSession(job);
           if(job.buyerVet&&!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
@@ -584,12 +606,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
           const sellerVet=await produceSeller(job);
           if(sellerVet.refused)return sellerVet;
           return{job,buyerVet:job.buyerVet,sellerVet};
-        }catch(error){
+        }).catch(async error=>{
           // Nothing was signed or written under this binding: drop it before
           // any waiter sees the failure.
           if(!job.writeStarted)await unbind(job).catch(()=>{});
           throw error;
-        }
+        });
       })();
       job.running=run;running.add(scope.jobId);
       // Registered before any waiter, so a waiter that retries finds this
@@ -689,7 +711,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function readCandidate(scope,buyerIdentityBundle){
     validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(scope.jobId);
-    if(!row?.lifecycle||!same(row.binding,bindingFor(scope,buyerIdentityBundle)))return null;
+    if(!row?.binding||!row.lifecycle||!same(row.binding,bindingFor(scope,buyerIdentityBundle)))return null;
     const ticket=ticketFor(row,scope.generatedAt);if(!eligible(row,ticket))return null;
     const candidate=await project(row,scope.generatedAt);if(!candidate||candidate.refused)return candidate;
     try{return await finish(scope.jobId,ticket,candidate);}catch{return null;}
@@ -700,7 +722,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function resolveSeller({jobId,listingPin:pin,buyerIdentityBundle,generatedAt}){
     validate({jobId,generatedAt});assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(jobId);
-    if(!row?.lifecycle)return{disposition:'indeterminate',reason:'buyer context is not retained'};
+    if(!row?.binding||!row.lifecycle)return{disposition:'indeterminate',reason:'buyer context is not retained'};
     const ticket=ticketFor(row,generatedAt);
     if(!eligible(row,ticket))return{disposition:'rejected',reason:'the context request was released'};
     if(!same(row.binding.buyerIdentityBundle,buyerIdentityBundle)||!same(row.binding.scope.listingPin,pin))return{disposition:'rejected',reason:'seller context differs from buyer context'};
@@ -716,7 +738,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   }
   async function resumableBuyer({scope,buyerIdentityBundle}){
     validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
-    const row=await state.read(scope.jobId);if(!row?.lifecycle||!same(row.binding,bindingFor(scope,buyerIdentityBundle)))return null;
+    const row=await state.read(scope.jobId);if(!row?.binding||!row.lifecycle||!same(row.binding,bindingFor(scope,buyerIdentityBundle)))return null;
     const ticket=ticketFor(row,scope.generatedAt);if(!eligible(row,ticket))return null;
     let writes=0,cut=false;
     for(const party of [buyerIdentityBundle.presentedBy,wallet.claim]){
@@ -744,14 +766,17 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     requireJobId(jobId);evict(jobId,null);drops.add(jobId);
     let removed=false;
     const ended=await state.update(jobId,row=>{
-      if(!row)return undefined;
+      if(!row)return{lifecycle:{incarnation:randomUUID(),epoch:1,state:'ended',times:[]}};
       if(row.lifecycle?.state!=='ended'){row.lifecycle={...(row.lifecycle??{incarnation:randomUUID(),epoch:0,times:[]}),epoch:(row.lifecycle?.epoch??0)+1,state:'ended',times:[]};return row;}
       return undefined;
     });
+    const intent=(await Promise.all([ended?.binding?.buyerIdentityBundle?.presentedBy,wallet.claim].filter(Boolean).map(party=>anchor.hasIntent(compositeVerificationAddress(jobId,party))))).some(Boolean);
     await state.update(jobId,row=>{
       if(!row){removed=true;return undefined;}
       if(row.lifecycle?.state!=='ended'||row.lifecycle.incarnation!==ended?.lifecycle?.incarnation||row.lifecycle.epoch!==ended?.lifecycle?.epoch)return undefined;
-      if(running.has(jobId)||Object.values(row.ops??{}).some(ops=>Object.values(ops.steps??{}).some(step=>step.state==='pending')))return undefined;
+      if(running.has(jobId)||row.activeRuns?.length||Object.values(row.ops??{}).some(ops=>Object.values(ops.steps??{}).some(step=>step.state==='pending')))return undefined;
+      // Without a native intent this row is the only authoritative replay fence.
+      if(!intent){drops.delete(jobId);return{lifecycle:row.lifecycle};}
       removed=true;return null;
     });
     if(removed){for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&row.jobId===jobId)await store.update(key,current=>current?.jobId===jobId?null:undefined);drops.delete(jobId);}
