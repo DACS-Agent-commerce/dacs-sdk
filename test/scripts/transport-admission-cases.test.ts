@@ -39,6 +39,10 @@ describe("metadata and archive admission boundaries", () => {
     let value: unknown = {}; for (let i = 0; i < 130; i++) value = { child: value };
     await expect(admitted("/fixture/-/fixture.tgz", Buffer.from(JSON.stringify(value)), {}, status)).rejects.toThrow("ELIMIT");
   });
+  it.each([200, 302, 503])("keeps metadata expansion bounded independently of equal wire budgets, status %s", async status => {
+    const bytes = gzipSync(Buffer.alloc(65 * 1024 * 1024));
+    await expect(admitted(status === 200 ? "/npm" : "/npm/-/npm.tgz", bytes, {}, status)).rejects.toThrow("ELIMIT");
+  });
   it.each([undefined, "gzip", "deflate", "br"])("refuses unsupported zstd archive compression after HTTP decoding %s", async encoding => {
     // An empty zstd frame; npm's tar reader recognizes these four magic bytes.
     const zstd = Buffer.from("28b52ffd2000010000", "hex");
