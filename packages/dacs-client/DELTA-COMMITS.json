@@ -615,5 +615,28 @@
       "packages/dacs-client/test/price-bound.test.mjs",
       "packages/dacs-client/test/storage-read-nonobservation.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 01 allow D11 delta records",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/delta-map.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 cover provenance acceptance and repair records",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/delta-map.mjs",
+      "packages/dacs-client/scripts/delta-provenance.test.mjs"
+    ]
   }
 ]
