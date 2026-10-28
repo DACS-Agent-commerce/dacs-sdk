@@ -90,12 +90,16 @@ test('within one commit the last record of a path counts', () => {
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
 const prefix = 'packages/dacs-client/';
-function scratch(t) {
+// Both choice records exist here, before later records can supersede them.
+const HISTORICAL_CHOICES = '46b627ce0022edea1bff2bebc418a63b7b33a8e1';
+function scratch(t, fixtureRef, sourceRoot = root) {
   const dir = mkdtempSync(join(tmpdir(), 'TEST-delta-frontier-'));
-  execFileSync('git', ['clone', '--quiet', '--shared', root, dir]); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  // Exercise this checkout's rule even before its commit is published.
-  copyFileSync(join(root, prefix + 'scripts/delta-map.mjs'), join(dir, prefix + 'scripts/delta-map.mjs'));
+  execFileSync('git', ['clone', '--quiet', '--shared', sourceRoot, dir]); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
+  if (fixtureRef) git('switch', '--quiet', '--detach', fixtureRef);
+  // Exercise historical conflict resolution with this checkout's current rule,
+  // copying it after checkout so the fixture cannot restore an older checker.
+  copyFileSync(join(root, prefix + 'scripts/delta-map.mjs'), join(dir, prefix + 'scripts/delta-map.mjs'));
   const node = (...args) => execFileSync(process.execPath, args, { cwd: dir, stdio: 'pipe' });
   const check = () => {
     const result = spawnSync(process.execPath, [prefix + 'scripts/check-provenance.mjs', '--local-only'], { cwd: dir, encoding: 'utf8' });
@@ -127,7 +131,7 @@ test('a recorded fix cannot be dropped by a merge that keeps the stale parent', 
   result = check(); assert.deepEqual(result.failures, [`${moved}: current blob differs from enumerated deltas`], result.text);
 });
 test('parallel records that disagree are refused until a later record chooses, then edits are refused', t => {
-  const { dir, git, node, check } = scratch(t), ledger = join(dir, prefix + 'DELTA-LEDGER.json');
+  const { dir, git, node, check } = scratch(t, HISTORICAL_CHOICES), ledger = join(dir, prefix + 'DELTA-LEDGER.json');
   const data = JSON.parse(readFileSync(ledger, 'utf8'));
   const index = data.changes.findIndex(change => change.subject === 'fix(client): D11 record the chosen blobs of three parallel-record paths');
   assert.ok(index >= 0, 'the identity record for the parallel-record paths must exist');
@@ -147,7 +151,7 @@ test('parallel records that disagree are refused until a later record chooses, t
 });
 
 test('the final wallet identity closes only its conflict and retains working and index checks', t => {
-  const { dir, git, node, check } = scratch(t), path = prefix + 'src/wallet/devnet-native-transport.mjs';
+  const { dir, git, node, check } = scratch(t, HISTORICAL_CHOICES), path = prefix + 'src/wallet/devnet-native-transport.mjs';
   let result = check(); assert.equal(result.status, 0, result.text);
   const ledgerPath = join(dir, prefix + 'DELTA-LEDGER.json'), data = JSON.parse(readFileSync(ledgerPath, 'utf8'));
   const index = data.changes.findIndex(change => change.subject === 'fix(client): D11 record the final merged wallet blob');
@@ -183,4 +187,60 @@ test('fresh and concurrent readers agree on the completed carry graph', async t 
   for (const result of results) assert.equal(result.stdout, first.stdout);
   const restarted = check(); assert.equal(restarted.status, 0, restarted.text);
   assert.equal(restarted.stdout, first.stdout);
+});
+
+for (const [label, ref] of [
+  ['no later selector', HISTORICAL_CHOICES],
+  ['one later selector', 'fa32114109033b04e25449668969ec1a17a9966a'],
+  ['multiple later selectors', 'HEAD'],
+  ['a later recorded wallet revision', 'HEAD'],
+]) test(`historical choices stay fixed with ${label} in the caller`, t => {
+  const caller = scratch(t, ref);
+  if (label === 'a later recorded wallet revision') {
+    const path = prefix + 'src/wallet/devnet-native-transport.mjs';
+    const subject = 'fix(client): D11 TEST later wallet revision';
+    writeFileSync(join(caller.dir, path), Buffer.concat([readFileSync(join(caller.dir, path)), Buffer.from('\n// TEST later wallet revision\n')]));
+    caller.git('add', '--', path);
+    caller.node(prefix + 'scripts/delta-map.mjs', '--record', 'D11', subject);
+    const files = [path, ...['DELTA-COMMITS.json', 'DELTA-LEDGER.json', 'DELTA-MAP.md'].map(name => prefix + name)];
+    if (caller.git('diff', '--name-only', 'HEAD', '--', prefix + 'scripts/delta-map.mjs')) files.push(prefix + 'scripts/delta-map.mjs');
+    const inventoryPath = join(caller.dir, prefix + 'DELTA-COMMITS.json'), inventory = JSON.parse(readFileSync(inventoryPath, 'utf8'));
+    inventory.push({ sha: null, subject, files: files.sort() });
+    writeFileSync(inventoryPath, JSON.stringify(inventory, null, 2) + '\n');
+    caller.node(prefix + 'scripts/delta-map.mjs');
+    caller.git('add', '--', ...files); caller.git('commit', '--quiet', '-m', subject);
+    const result = caller.check(); assert.equal(result.status, 0, result.text);
+  }
+  const fixture = scratch(t, HISTORICAL_CHOICES, caller.dir);
+  assert.equal(fixture.git('rev-parse', 'HEAD'), HISTORICAL_CHOICES);
+  const ledgerPath = join(fixture.dir, prefix + 'DELTA-LEDGER.json'), data = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+  const index = data.changes.findIndex(change => change.subject === 'fix(client): D11 record the final merged wallet blob');
+  assert.ok(index >= 0);
+  const [chosen] = data.changes.splice(index, 1);
+  writeFileSync(ledgerPath, JSON.stringify(data)); fixture.node(prefix + 'scripts/delta-map.mjs');
+  const result = fixture.check();
+  assert.equal(result.status, 1, result.text);
+  assert.equal(result.failures.length, 1, result.text);
+  assert.ok(result.failures[0].startsWith(`${chosen.files[0].path}: newest records disagree (`), result.text);
+});
+
+test('fresh, concurrent and restarted readers retain the historical missing-choice conflict', async t => {
+  const { dir, node, check } = scratch(t, HISTORICAL_CHOICES);
+  const ledgerPath = join(dir, prefix + 'DELTA-LEDGER.json'), data = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+  const index = data.changes.findIndex(change => change.subject === 'fix(client): D11 record the final merged wallet blob');
+  assert.ok(index >= 0);
+  const [chosen] = data.changes.splice(index, 1);
+  writeFileSync(ledgerPath, JSON.stringify(data)); node(prefix + 'scripts/delta-map.mjs');
+  const first = check();
+  assert.equal(first.status, 1, first.text);
+  assert.equal(first.failures.length, 1, first.text);
+  assert.ok(first.failures[0].startsWith(`${chosen.files[0].path}: newest records disagree (`), first.text);
+  const run = () => promisify(execFile)(process.execPath, [prefix + 'scripts/check-provenance.mjs', '--local-only'], { cwd: dir })
+    .then(() => assert.fail('missing historical choice must be refused'), error => {
+      assert.equal(error.code, 1);
+      assert.deepEqual([...error.stderr.matchAll(/^FAIL (.*)$/gm)].map(match => match[1]), first.failures);
+    });
+  await Promise.all([run(), run()]);
+  const restarted = check(); assert.equal(restarted.status, 1, restarted.text);
+  assert.deepEqual(restarted.failures, first.failures);
 });
