@@ -35,9 +35,22 @@ function responseBudget(path, statusCode = 200) {
     ? NPM_TARBALL_MAX_BYTES : NPM_METADATA_MAX_BYTES;
 }
 
+const isJsonShaped = bytes => {
+  const first = bytes.find(byte => ![0x20, 0x09, 0x0a, 0x0d].includes(byte));
+  return first === 0x7b || first === 0x5b;
+};
+
 function validateJsonLists(bytes) {
   let value;
-  try { value = JSON.parse(bytes.toString("utf8")); } catch { return; } // npm preserves malformed-body diagnostics.
+  try { value = JSON.parse(bytes.toString("utf8")); }
+  catch {
+    // npm's streaming reader accepts a sequence of concatenated values. A
+    // JSON-shaped body that is not one value must fail closed: an appended
+    // root could otherwise carry lists and depth past these limits. Non-JSON
+    // replies still pass through so npm keeps its malformed-body diagnostics.
+    if (isJsonShaped(bytes)) throw limitError();
+    return;
+  }
   const pending = [[value, 0]];
   let entries = 0;
   while (pending.length) {
@@ -108,8 +121,7 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   if (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
     throw new Error("unsupported npm archive compression: zstd");
   }
-  const first = bytes.find(byte => ![0x20, 0x09, 0x0a, 0x0d].includes(byte));
-  if (json || first === 0x7b || first === 0x5b) validateJsonLists(bytes);
+  if (json || isJsonShaped(bytes)) validateJsonLists(bytes);
   return bytes;
 }
 
