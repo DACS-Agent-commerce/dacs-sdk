@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { canonicalize, contentHash, sha256Hex, logicalToStorageProgramName, createFixedPriceAgreementSigningPlan, createFixedPriceAgreementSignatureContribution, signComponentArtifact, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { createDevnetPurchasedReportProducer, isDevnetPurchasedReport } from '../src/devnet-demo/deliverable.mjs';
 import { createDevnetDemoDeliveryCapability, readDevnetPurchasedReport } from '../src/devnet-demo/native-delivery.mjs';
@@ -45,6 +46,29 @@ test('report producer refuses a supplied Listing that differs from the Agreement
   }
   assert.equal(produced, 0);
   assert.equal(produce({ agreement: f.agreement, listing: f.listing, settlementId: 'TEST-settlement' }).title, f.listing.offering.title);
+});
+
+// Refusing a Promise-returning producer synchronously must also own that
+// Promise's rejection: an unhandled rejection would terminate the seller even
+// though its caller caught the intended TypeError.
+test('refusing an asynchronous producer handles its rejection instead of crashing the process', () => {
+  const moduleUrl = new URL('../src/devnet-demo/deliverable.mjs', import.meta.url).href;
+  const fixtureUrl = new URL('./helpers/protocol-fixture.mjs', import.meta.url).href;
+  const script = `
+    import { createDevnetPurchasedReportProducer } from ${JSON.stringify(moduleUrl)};
+    import { protocolFixture, seller } from ${JSON.stringify(fixtureUrl)};
+    const f = await protocolFixture();
+    const produce = createDevnetPurchasedReportProducer({ producer: seller.claim, produce: async () => { throw new Error('TEST producer failed'); } });
+    let refused = false;
+    try { produce({ agreement: f.agreement, listing: f.listing, settlementId: 'TEST-settlement' }); }
+    catch (error) { refused = /synchronously/.test(error.message); }
+    if (!refused) process.exit(3);
+    await new Promise(resolve => setImmediate(resolve));
+    console.log('caller recovered');
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /caller recovered/);
 });
 
 // The SDK Listing validator caps titles at 200 characters. The producer must refuse
