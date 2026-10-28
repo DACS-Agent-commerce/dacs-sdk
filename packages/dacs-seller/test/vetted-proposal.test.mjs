@@ -83,6 +83,16 @@ test('a non-canonical proposal job is a definite job-invalid refusal, not an unc
  await assert.rejects(agent.receiveProposal(request),{code:'job_invalid',status:422});
 });
 
+test('a failed contribution save cannot leave publication ahead of durable session state',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true;const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(cut&&text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(session?.sellerContribution&&session.proposal===null){cut=false;throw new Error('TEST contribution save interrupted');}}return original(bytes);};
+ const agent=await f.open(),request=await f.proposal(agent);
+ const first=await agent.receiveProposal(request);assert.equal(first.disposition,'indeterminate');assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
+ const retry=await agent.receiveProposal(request);assert.equal(retry.disposition,'complete');
+ assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,retry.contribution);agent.close();
+ assert.deepEqual((await f.open()).agreementState(request.transportIdentity).contribution,retry.contribution);
+});
+
 test('a clock crossing the proposal window during the responder checkpoints is refused at the signing gate',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});
  f.config.now=()=>new Error().stack.includes('signUnderPin')?NOW+600001:NOW;

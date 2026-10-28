@@ -463,11 +463,14 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
         reconcileSellerSignature: (input) => (signatures.has(input.planHash) ? { disposition: 'present', value: signatures.get(input.planHash) } : { disposition: 'absent', reason: 'not signed yet' }),
         transport: {
           publishSellerContribution: (contribution, identity) => {
-            contributions.set(identity.proposalHash, structuredClone(contribution));
-            signatures.set(contribution.planHash, contribution.signature.value);
+            // The durable session is the authority, not these caches. Retain
+            // and save it first: a failed save must not leave a later
+            // reconciliation believing an unpublished contribution is present.
             session.sellerContribution = structuredClone(contribution);
             session.sellerContributionProposalHash = identity.proposalHash;
             persist(session);
+            contributions.set(identity.proposalHash, structuredClone(contribution));
+            signatures.set(contribution.planHash, contribution.signature.value);
             return { disposition: 'submitted' };
           },
           reconcileSellerContributionPublication: (identity) =>
@@ -481,10 +484,17 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       if(contextFailure){answer.causeCode=contextFailure?.name==='TimeoutError'||contextFailure?.code==='ETIMEDOUT'?'timeout':contextFailure instanceof RangeError?'reply-limit':'reader';Object.defineProperty(answer,'cause',{value:contextFailure});}
       return answer;
     }
+    // The verified responder result is authoritative for the contribution: a
+    // terminal recovery completes the negotiation after an earlier publication
+    // save failed, and this final snapshot must still carry that contribution.
+    session.sellerContribution = structuredClone(progress.result.sellerContribution);
+    session.sellerContributionProposalHash = transportIdentity.proposalHash;
     session.proposal = structuredClone(proposal);
     session.transportIdentity = structuredClone(transportIdentity);
     session.agreementHash = transportIdentity.agreementHash;
     persist(session);
+    contributions.set(transportIdentity.proposalHash, structuredClone(session.sellerContribution));
+    signatures.set(session.sellerContribution.planHash, session.sellerContribution.signature.value);
     return { disposition: 'complete', contribution: progress.result.sellerContribution };
   }
 
