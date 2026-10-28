@@ -36,7 +36,7 @@ import { OperationError, requestHashOf } from './client-errors.mjs';
 import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
-import { OutboundError, observeWithDeadline } from './util/http.mjs';
+import { OutboundError } from './util/http.mjs';
 import { nodeProjectedNonce, OS_INTEGER } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { projectDiagnostic, projectDiagnosticOperation, DIAGNOSTIC_LIMITS } from './diagnostic-projection.mjs';
@@ -50,6 +50,30 @@ export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
 const MAX_TRANSFER_OBSERVATION_BYTES = 64 * 1024;
+// Diagnostic reads run host-supplied readers that may never settle, so the
+// deadline is raced: it aborts the reader's signal and rejects without waiting
+// for the reader. (The transport's own passive read honours its signal and
+// settles; util/http.mjs observeWithDeadline waits for it and races nothing.)
+async function raceWithDeadline(read, { timeoutMs, signal } = {}) {
+  const controller = new AbortController();
+  const cancellation = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+  let timer, abort;
+  try {
+    return await Promise.race([
+      new Promise((_, reject) => {
+        abort = () => reject(cancellation.reason);
+        cancellation.addEventListener('abort', abort, { once: true });
+        timer = setTimeout(() => controller.abort(new OutboundError('timeout', 'host chain read timed out')), timeoutMs);
+        if (cancellation.aborted) abort();
+      }),
+      Promise.resolve().then(() => { cancellation.throwIfAborted(); return read({ signal: cancellation }); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    cancellation.removeEventListener('abort', abort);
+    controller.abort();
+  }
+}
 // Domain separator of the purchase commitment (approval-bound, not on chain).
 export const COMMITMENT_DOMAIN = 'dacs-chatgpt-plugin/fixed-price-dem-purchase-commitment/v1';
 // Recorded with every payment observation so no reader mistakes it for more.
@@ -989,7 +1013,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     let observation = null;
     if (hash) {
       try {
-        observation = await observeWithDeadline(async options => {
+        observation = await raceWithDeadline(async options => {
           await assertBoundDomain(operation, options);
           options.signal.throwIfAborted();
           const observe = chain.observePassiveTransfer ?? (usesNativeAgreementPayment(operation) ? null : chain.observeTransfer);
