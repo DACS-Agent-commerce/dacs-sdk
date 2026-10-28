@@ -122,12 +122,17 @@ test('read paths refuse a retained session another writer left unverified',async
  assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
 });
 test('restart refuses a Vet record the counterparty did not sign or a receipt below accepted',async t=>{
- const signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
- for(const [options,pattern] of [
+ const signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes},otherJob='01J8N4YV7YVYQ4DB7M8T4C7W0B';
+ for(const [options,pattern,prepare] of [
   [{signer:{claim:buyer.claim,sign:seller.signBytes}},/not signed by its counterparty verifier/],
   [{receipt:{state:'expired'}},/not accepted or later/],
+  [{receipt:null},/has no SR-2 receipt/],
+  [{bundleHash:'c'.repeat(64)},/does not evaluate this job, bundle and party/],
+  [{recordJobId:otherJob},/does not evaluate this job, bundle and party/],
+  [{},/Vet receipt does not verify/,admission=>admission.verifyReceiptWith(()=>'invalid')],
  ]) {
   const f=fixture(t),admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
+  prepare?.(admission);
   const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
   const bundle=presentWith(buyer,issued.sessionNonce);
   const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});

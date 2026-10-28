@@ -191,9 +191,11 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   function retainedVetCheckpointProblem(session) {
     const checkpoint = session.vetCheckpoint;
     if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint) || Object.keys(checkpoint).sort().join(',') !== 'buyer,seller') return 'the retained session has no exact buyer and seller Vet checkpoint';
-    const buyer = retainedVetRefProblem(checkpoint.buyer, session.jobId, session.buyerBundle.presentedBy, claim);
-    if (buyer) return `buyer ${buyer}`;
-    const seller = retainedVetRefProblem(checkpoint.seller, session.jobId, claim, session.buyerBundle.presentedBy);
+    const buyer = session.buyerBundle?.presentedBy;
+    if (typeof buyer !== 'string' || buyer.length === 0 || buyer.normalize('NFC') !== buyer) return 'the retained session names no canonical buyer';
+    const buyerProblem = retainedVetRefProblem(checkpoint.buyer, session.jobId, buyer, claim);
+    if (buyerProblem) return `buyer ${buyerProblem}`;
+    const seller = retainedVetRefProblem(checkpoint.seller, session.jobId, claim, buyer);
     if (seller) return `seller ${seller}`;
     return null;
   }
