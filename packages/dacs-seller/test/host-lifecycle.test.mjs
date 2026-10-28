@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
+import {connect} from 'node:net';
+import {once} from 'node:events';
 import {syncBuiltinESMExports} from 'node:module';
 import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -18,12 +20,12 @@ const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{p
 async function fixture(t,{wrap=agent=>agent}={}){
  const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;
- const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),'));
+ const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout'));
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
- const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW})});
- return{...f,start,options,dataDirectory,client};
+ const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW}),timeoutMs:60000});
+ return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout};
 }
 async function anchorAgreement(f,request,answer){
  const agreement=await core.finalizeFixedPriceAgreementContributions(request.proposal.plan,[request.proposal.buyerContribution,answer.contribution],contributionVerifier);
@@ -153,12 +155,32 @@ test('host issues no session challenge once close has begun',async t=>{
  await pending;await closing;
 });
 
-test('host close does not wait for the keep-alive timeout',async t=>{
- const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
- assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
- const started=performance.now();
- await host.close();
- assert.ok(performance.now()-started<2000,'close does not wait for the idle keep-alive timeout');
+test('host close closes an idle keep-alive connection instead of waiting for its expiry',async t=>{
+ const f=await fixture(t);
+ // With expiry disabled, close() can only finish if it actively closes the
+ // idle connection; the guard below is a hang guard, not a latency assertion.
+ f.setKeepAliveTimeout(0);
+ const host=await f.start();
+ const socket=connect({host:'127.0.0.1',port:Number(new URL(host.url).port)});
+ try{
+  await once(socket,'connect');
+  // A refusal before any effect is answered without `connection: close`, so
+  // the server keeps this connection alive after the response.
+  const body='{"transportIdentity":{}}';
+  socket.write(`POST /dacs/v1/agreements/state HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: keep-alive\r\n\r\n${body}`);
+  const [answer]=await once(socket,'data');
+  assert.match(String(answer),/^HTTP\/1\.1 4\d\d /);
+  assert.doesNotMatch(String(answer),/connection: close/i);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(socket.destroyed,false,'the connection is a live idle keep-alive connection');
+  let guard;
+  const outcome=await Promise.race([
+   host.close().then(()=> 'closed'),
+   new Promise(resolve=>{guard=setTimeout(()=>resolve('still-open'),10000);}),
+  ]);
+  clearTimeout(guard);
+  assert.equal(outcome,'closed','close closes the idle connection rather than waiting for keep-alive expiry');
+ }finally{socket.destroy();}
 });
 
 test('a listen failure releases the state lock and everything opened before it',async t=>{
