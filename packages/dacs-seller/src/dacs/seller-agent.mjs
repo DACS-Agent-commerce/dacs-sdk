@@ -1975,7 +1975,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         return {disposition:'indeterminate',reason:unknown?'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged':'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged'};
       }
       return durable.withJob(input.request?.jobId, async (session) => {
-      sessions.delete(input.request.jobId); restore(session);
+      sessions.delete(input.request.jobId); await restore(session);
       const proof = await reconcileTransport(input);
       input.settle?.(proof);
       return proof;
