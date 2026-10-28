@@ -13,8 +13,9 @@ const operationQueues=new Map(),signingContext=new AsyncLocalStorage();
 const clone=(value)=>JSON.parse(canonicalize(value));
 const same=(a,b)=>canonicalize(a)===canonicalize(b);
 const fail=(code,message,cause)=>{throw Object.assign(new Error(message,{cause}),{code});};
-// A written receipt in one of these states is not final yet: the step waits and is retried, never kept as failed.
+// Pending receipts and native uncertainty keep anchor work retryable; signed bytes stay retained.
 const PENDING_RECEIPT_STATES=new Set(['accepted','included']);
+const RETRYABLE_ANCHOR_CODES=new Set(['indeterminate','journal-busy','journal-capacity']);
 function requireJobId(jobId) {
   if (!isCanonicalJobId(jobId)) fail('job_invalid','jobId must be a canonical uppercase ULID');
 }
@@ -114,10 +115,10 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
       }else await state.update(job.jobId,current=>{fenced(own(current));});}catch(error){try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet preparation cleanup failed',{cause}),{code:'indeterminate'});}throw error;}
       const scope=Object.freeze({state,jobId:job.jobId,role,key,owner,clock,view});
       const finish=outcome=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);ops.steps[key]={...identity,...outcome};return current;});
-      wait.pending=false;
+      wait.pending=false;wait.terminal=false;
       try{value=clone(await signingContext.run(scope,execute));}
       catch(error){
-        if(wait.pending){
+        if(step==='composite-anchor'&&wait.pending&&!wait.terminal){
           try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet pending cleanup failed',{cause}),{code:'indeterminate'});}
           throw error;
         }
@@ -376,7 +377,22 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     // The record time of the step being written ahead, while it runs.
     const clock={step:null};
     // Set by a callback that finds the written record's receipt not final yet.
-    const wait={pending:false};
+    const wait={pending:false,terminal:false};
+    // Preserve native uncertainty before SDK normalization. Definitive evidence
+    // from any later fallback wins over an earlier unresolved observation.
+    const anchorCall=async(work)=>{
+      try{
+        const out=await work();
+        if(out==='indeterminate'||out?.status==='indeterminate'){
+          wait.pending=true;throw Object.assign(new Error('Vet anchor evidence is not known yet'),{code:'indeterminate'});
+        }
+        if(out==='invalid'||out?.status==='rejected')wait.terminal=true;
+        return out;
+      }catch(error){
+        if(RETRYABLE_ANCHOR_CODES.has(error?.code))wait.pending=true;else wait.terminal=true;
+        throw error;
+      }
+    };
     const durable=durableOperationStore(state,job,role,{now,clock,wait});
     const sign=async(bytes)=>{
       let stored;
@@ -403,19 +419,31 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
             // The anchor asks again under its key lock, right before it
             // stores the intent: a purchase cancelled meanwhile stores none
             // and sends nothing.
-            out=await anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>job.open()});
+            out=await anchorCall(()=>anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>job.open()}));
           }else{
             // Readback only: a read never creates an intent.
-            out=await anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'});
+            out=await anchorCall(()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'}));
             if(out.status==='absent')fail('not-pending','the purchase is no longer pending; no new Vet write was started');
           }
         }catch(error){writerFailed(error);throw error;}
-        if(out.status!=='present'){writerFailed(null,out);throw new Error(out.reason ?? 'Vet publication held');}
+        if(out.status!=='present'){wait.terminal=true;writerFailed(null,out);throw new Error(out.reason ?? 'Vet publication held');}
         return{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:contentHash(artifact),signer:wallet.claim},receipt:out.receipt};
       },
-      verifyFinalizedAnchor:async({logicalAddress,artifact,receipt})=>(await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt}))==='valid',
-      readAnchoredJson:async(ref)=>{const out=await anchor.readRetained({logicalAddress:address,artifactKind:'CompositeVerificationRecord'});return out.status==='present'&&out.receipt.nativeAddress===ref.anchor.locator&&contentHash(out.artifact)===ref.contentHash?out.artifact:null;},
-      resolveFinalizedArtifact:async({logicalAddress,contentHash:hash})=>{const out=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});if(out.status!=='present'||contentHash(out.artifact)!==hash)return null;if(PENDING_RECEIPT_STATES.has(out.receipt?.state)){wait.pending=true;throw new Error(`the ${role} Vet record is written and its receipt is ${out.receipt.state}, not final yet`);}writerCause=null;return{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:hash,signer:wallet.claim},receipt:out.receipt};},
+      verifyFinalizedAnchor:async({logicalAddress,artifact,receipt})=>(await anchorCall(()=>anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt})))==='valid',
+      readAnchoredJson:async(ref)=>{
+        const out=await anchorCall(()=>anchor.readRetained({logicalAddress:address,artifactKind:'CompositeVerificationRecord'}));
+        if(out.status!=='present')return null;
+        if(out.receipt.nativeAddress!==ref.anchor.locator||contentHash(out.artifact)!==ref.contentHash){wait.terminal=true;return null;}
+        return out.artifact;
+      },
+      resolveFinalizedArtifact:async({logicalAddress,contentHash:hash})=>{
+        const out=await anchorCall(()=>anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'}));
+        if(out.status!=='present')return null;
+        if(contentHash(out.artifact)!==hash){wait.terminal=true;return null;}
+        if(PENDING_RECEIPT_STATES.has(out.receipt?.state)){wait.pending=true;throw new Error(`the ${role} Vet receipt is not final yet`);}
+        if(out.receipt?.state!=='finalized'||out.receipt?.observationDisposition!=='established')wait.terminal=true;
+        writerCause=null;return{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:hash,signer:wallet.claim},receipt:out.receipt};
+      },
       operationStore:durable.operationStore,
       verifyIdentityPresentation:({bundle,signedBytes})=>{const proof=bundle.presentation?.kind==='per-claim'&&bundle.presentation.signatures.find((entry)=>entry.ref===bundle.presentedBy);return Boolean(proof&&verifyComponent({signedBytes,signature:{algorithm:'ed25519',signer:bundle.presentedBy,value:proof.signature}}));},
       componentVerifier:verifier,sessionEffectAuthority:{store:session,leaseToken:{owner:lease.owner,generation:lease.generation}},
