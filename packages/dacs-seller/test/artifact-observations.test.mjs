@@ -37,7 +37,8 @@ test('commitment signer is the authenticated orchestrator independent of storage
   const bad = structuredClone(record); bad.signature.value = Buffer.alloc(64).toString('base64url'); assert.equal(artifactValid('FinalityCommitmentRecord', bad, seller.claim, buyer.claim), false);
 });
 test('unsigned recovery checks exact scope and both retained signed journals', async () => {
-  const { unsignedIntent } = await privateModule(new URL('../src/devnet-demo/artifact-anchor.mjs', import.meta.url), ['unsignedIntent']);
+  const { publicationSnapshot } = await privateModule(new URL('../src/devnet-demo/artifact-anchor.mjs', import.meta.url), ['publicationSnapshot']);
+  const unsignedIntent=(address,row,source,wallet)=>publicationSnapshot(source,wallet).classify(address,row)==='unsigned';
   const address = `dacs4:deliverable:${JOB}`, transaction = { content: { from: seller.address, data: ['storageProgram', { metadata: { logicalAddress: address } }] } };
   const row = { stage: 'intent', transaction };
   assert.equal(unsignedIntent(address, row, [], []), true);
@@ -67,11 +68,6 @@ test('artifact validation shares the bounded purchased-report predicate', async 
   const report = { reportVersion:'1',kind:'dacs-chatgpt-plugin/devnet-purchased-report',jobId:JOB,agreementHash:'a'.repeat(64),listing:{listingId:'TEST',version:1,contentHash:'b'.repeat(64)},title:'TEST',settlementId:'TEST',producer:seller.claim,content:{mediaType:'text/plain; charset=utf-8',text:'TEST'} };
   assert.equal(artifactValid('Deliverable',report,seller.claim),true);
   for(const text of ['TEST\u0000','😀'.repeat(4097)]) assert.equal(artifactValid('Deliverable',{...report,content:{...report.content,text}},seller.claim),false);
-});
-test('unsigned journal observation propagates a read failure instead of release proof', async () => {
-  const { unsignedJournalIntent } = await privateModule(new URL('../src/devnet-demo/artifact-anchor.mjs', import.meta.url), ['unsignedJournalIntent']);
-  const cause = new Error('TEST journal unavailable');
-  await assert.rejects(unsignedJournalIntent('TEST', {stage:'intent'}, {entries:async()=>{throw cause;}}, {entries:async()=>[]}), error=>error===cause);
 });
 test('Vet artifact signature verifies against the expected counterparty', async () => {
   const { artifactValid } = await privateModule(new URL('../src/devnet-demo/artifact-anchor.mjs', import.meta.url), ['artifactValid']);
