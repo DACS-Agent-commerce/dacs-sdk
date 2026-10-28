@@ -419,7 +419,6 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
     if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority,{fresh:true}))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
     const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(record),signer:authority};
-    invocations.push({evaluatedParty:wallet.claim,recordRef:clone(recordRef),receipt:clone(read.receipt),record:clone(record),strictStatus:strict.status});
     return {record,recordRef,identityBundle};
   }
   // Marks the job durably before its first signature or anchor intent; from
