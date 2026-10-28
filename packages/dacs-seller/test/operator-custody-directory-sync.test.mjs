@@ -6,6 +6,8 @@ import { dirname, join, relative } from 'node:path';
 import { loadCustody } from './helpers/operator-custody-fixture.mjs';
 
 const ORIGIN = 'http://127.0.0.1:8787';
+// The inherited retry marker records directory durability, not credentials.
+const markerEvent = event => event.includes('/.directory-sync-pending');
 const initializers = [
   ['wallet bootstrap', (custody, directory) => custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN })],
   ['operator secret', (custody, directory) => custody.ensureOperatorSecret({ directory })],
@@ -23,7 +25,7 @@ async function fixture(t) {
 // A successful call must flush the real containing entries, deepest first,
 // before it reads or creates credentials, including on a restart.
 function assertParentsSynced(events, directory, boundary) {
-  const firstCredentialAccess = events.findIndex(event => /^(readFile|write|link) /.test(event));
+  const firstCredentialAccess = events.findIndex(event => /^(readFile|write|link) /.test(event) && !markerEvent(event));
   const beforeCredentials = firstCredentialAccess < 0 ? events : events.slice(0, firstCredentialAccess);
   let previous = -1;
   for (let parent = dirname(directory); ; parent = dirname(parent)) {
@@ -86,7 +88,7 @@ for (const [name, initialize] of initializers) {
         custody.state[phase === 'open' ? 'failOpen' : 'failSync'] = path => path === failedParent;
         await assert.rejects(initialize(custody, directory), error => error === failure);
         assert.equal(custody.state.generated, 0);
-        assert.deepEqual(await readdir(directory), []);
+        assert.deepEqual((await readdir(directory)).filter(name => name !== '.directory-sync-pending'), []);
         if (phase === 'sync') {
           const events = custody.state.events;
           assert.ok(events.indexOf(`close ${failedParent}`) > events.indexOf(`sync ${failedParent}`));
@@ -141,7 +143,7 @@ test('wallet opening propagates a parent sync failure before reading a retained 
   custody.state.filesystemError = failure;
   custody.state.failSync = path => path === root;
   await assert.rejects(custody.openTestWalletCustody({ directory, role: 'buyer', publicOrigin: ORIGIN }), error => error === failure);
-  assert.equal(custody.state.events.some(event => event.startsWith('readFile ')), false);
+  assert.equal(custody.state.events.some(event => event.startsWith('readFile ') && !markerEvent(event)), false);
 });
 
 test('relative custody paths sync their resolved parents', async (t) => {

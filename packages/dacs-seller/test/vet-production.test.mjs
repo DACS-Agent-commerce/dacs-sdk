@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
+import { createDevnetDemoAgreementContextProvider, SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
 import { JOB, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
@@ -69,12 +69,23 @@ for(const state of ['accepted','included'])for(const provider of ['same','fresh'
  assert.equal(f.local.writes.length,2,'the retry rereads the same intent');assert.equal(f.controls.signs,signs,'nothing is signed twice');f.base.close();
 });
 test('two provider instances that both see an unattempted nonce converge on the buyer\'s retained record',async()=>{
- const f=productionFixture(),first=await f.provider(),second=await f.provider(),input=f.input(),read=f.counterparty.readRecord;
+ const f=productionFixture(),input=f.input(),{generatedAt:_generatedAt,...terms}=input.scope;
+ const sign=f.config.wallet.signBytes;let presentationSigns=0;
+ f.config.wallet.signBytes=(bytes,request)=>{if(request?.reservation)presentationSigns++;return sign(bytes,request);};
+ // Complete exactly one seller presentation first: the race under test is the
+ // buyer's one-use nonce, not the presentation reservation (covered separately).
+ const binding={scope:terms,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
+ const ops=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoints:{},steps:{},signing:{}}});
+ const setup=await f.provider();
+ await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops()}));
+ await setup.sellerSession({jobId:input.scope.jobId,binding,open:()=>true,writeStarted:false});
+ assert.equal(presentationSigns,1);
+ const first=await f.provider(),second=await f.provider(),read=f.counterparty.readRecord;
  let arrived=0,release;const both=new Promise(resolve=>{release=resolve;});
  f.counterparty.readRecord=async request=>{const answer=await read(request);if(++arrived<=2){if(arrived===2)release();await both;}return answer;};
  const runs=await Promise.all([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
  for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
- assert.equal(runs[0].sellerVet.recordRef.contentHash,runs[1].sellerVet.recordRef.contentHash);assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);f.base.close();
+ assert.equal(runs[0].sellerVet.recordRef.contentHash,runs[1].sellerVet.recordRef.contentHash);assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);assert.equal(presentationSigns,1,'the completed presentation is replayed, never signed twice');f.base.close();
 });
 test('a failed evaluate with no retained record stays a failure that keeps its cause',async()=>{
  const f=productionFixture(),cause=new Error('TEST evaluate failed');f.counterparty.evaluate=async()=>{throw cause;};
@@ -86,7 +97,16 @@ test('a retained record read after a failed evaluate is still verified against t
  await assert.rejects(f.run(),e=>e.code==='seller_vet_invalid');assert.equal(f.local.writes.length,1);f.base.close();
 });
 test('a losing evaluate race waits for the winner to retain its record',async()=>{
- const f=productionFixture(),first=await f.provider(),second=await f.provider(),input=f.input(),read=f.counterparty.readRecord,buyerSign=buyer.signBytes;
+ const f=productionFixture(),input=f.input(),{generatedAt:_generatedAt,...terms}=input.scope;
+ const sign=f.config.wallet.signBytes;let presentationSigns=0;
+ f.config.wallet.signBytes=(bytes,request)=>{if(request?.reservation)presentationSigns++;return sign(bytes,request);};
+ // Finish the presentation reservation before racing the buyer's evaluation.
+ const binding={scope:terms,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
+ const ops=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoints:{},steps:{},signing:{}}});
+ const setup=await f.provider();
+ await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops()}));
+ await setup.sellerSession({jobId:input.scope.jobId,binding,open:()=>true,writeStarted:false});
+ const first=await f.provider(),second=await f.provider(),read=f.counterparty.readRecord,buyerSign=buyer.signBytes;
  let arrived=0,releaseReads;const both=new Promise(resolve=>{releaseReads=resolve;});
  let held=false,releaseSign;const holdSign=new Promise(resolve=>{releaseSign=resolve;});
  f.counterparty.readRecord=async request=>{
@@ -101,7 +121,7 @@ test('a losing evaluate race waits for the winner to retain its record',async()=
  try{
   const runs=await Promise.all([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
   for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
-  assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);
+  assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);assert.equal(presentationSigns,1,'the completed presentation is replayed, never signed twice');
  }finally{buyer.signBytes=buyerSign;f.base.close();}
 });
 test('a finished job fresh-reads and fresh-verifies the seller receipt',async()=>{
