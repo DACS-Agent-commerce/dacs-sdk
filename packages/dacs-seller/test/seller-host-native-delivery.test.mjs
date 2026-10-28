@@ -403,7 +403,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const hosts = [];
   t.after(async () => {try{for (const host of hosts) await host.close();}finally{journal.close();rmSync(dataDirectory,{recursive:true,force:true});rmSync(walletDirectory,{recursive:true,force:true});} });
   const capabilities = () => ({ signer: sellerSigner, listing,
-    buyerAccess: seller.createOperatorBuyerAccess(buyerAccessOptions), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
+    buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: jobId => buyerBundles.has(jobId) ? buyerKey.address : null, ...buyerAccessOptions }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: rails.authority,
