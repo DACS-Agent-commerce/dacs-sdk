@@ -5,6 +5,7 @@ import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OperationError } from '../operations.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { types as nodeTypes } from 'node:util';
 import { admitRawJson, canonicalize, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 
 const operationQueues=new Map(),signingContext=new AsyncLocalStorage();
@@ -215,7 +216,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     try{
       const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('counterparty deadline expired','TimeoutError'));},timeoutMs);});
       const value=await Promise.race([Promise.resolve().then(()=>counterparty[method](clone(input),{signal:controller.signal,maxBytes,timeoutMs})),timeout]);
-      if(value instanceof Uint8Array)return admitRawJson(value,{maxBytes});
+      // A genuine Uint8Array from another JavaScript realm does not pass
+      // instanceof; the Node brand check is the same one admitRawJson uses.
+      if(nodeTypes.isUint8Array(value))return admitRawJson(value,{maxBytes});
       let budget=maxBytes;
       const text=JSON.stringify(value,(key,member)=>{
         budget-=Buffer.byteLength(key)+(typeof member==='string'?Buffer.byteLength(member):8);

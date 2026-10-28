@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
 import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
@@ -47,6 +48,18 @@ test('a challenge that expires during the durable write is never signed',async()
  const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');
  assert.equal(f.local.writes.length,2);assert.equal(f.controls.signs,2);
  f.base.close();
+});
+test('a counterparty raw reply from another JavaScript realm is admitted',async()=>{
+ const f=productionFixture(),issue=f.counterparty.issueChallenge;
+ const ForeignUint8Array=vm.runInNewContext('Uint8Array');
+ f.counterparty.issueChallenge=async args=>ForeignUint8Array.from(Buffer.from(JSON.stringify(await issue(args))));
+ const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(f.seen.length,1);
+ f.base.close();
+});
+test('an oversized raw counterparty reply is refused before signatures',async()=>{
+ const f=productionFixture(),issue=f.counterparty.issueChallenge;
+ f.counterparty.issueChallenge=async args=>Buffer.from(JSON.stringify({...await issue(args),extra:'x'.repeat(65537)}));
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause instanceof Error);assert.equal(f.controls.signs,0);f.base.close();
 });
 test('counterparty raw-byte and decoded budgets refuse oversized replies before signatures',async()=>{
  const f=productionFixture(),issue=f.counterparty.issueChallenge;f.counterparty.issueChallenge=async args=>({...await issue(args),extra:'x'.repeat(65537)});
