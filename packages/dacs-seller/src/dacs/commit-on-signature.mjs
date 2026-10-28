@@ -3,11 +3,15 @@ import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 import { deriveStorageAddress } from './wallet-transactions.mjs';
 const plainJson = value => JSON.parse(canonicalize(value));
 
+/** Validates the commitOnSignature switch; returns it unchanged. */
 export function commitOnSignatureConfig(value = false) {
   if (typeof value !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
   return value;
 }
 
+// Rebuilds the Agreement from the retained plan contributions and returns its
+// plain JSON; throws when the signed bytes differ from the retained parties,
+// terms, job or Listing.
 export async function verifySignatureAgreement(agreement, session, verify) {
   if (!session.proposal || !session.sellerContribution) throw new Error('no retained Agreement proposal');
   const expected = await finalizeFixedPriceAgreementContributions(session.proposal.plan,
@@ -17,6 +21,8 @@ export async function verifySignatureAgreement(agreement, session, verify) {
 }
 
 // Public signed CREATE evidence authorizes exact bytes, not broadcast or inclusion.
+// Returns undefined on success and throws unless the buyer's signature covers
+// the exact canonical Agreement CREATE at the logical address.
 export function verifyAgreementCreateAuthorization(signed, agreement, logicalAddress, writer) {
   const c = signed?.content, op = c?.data?.[1], owner = addressForClaim(writer);
   const programName = logicalToStorageProgramName(logicalAddress);
@@ -32,6 +38,9 @@ export function verifyAgreementCreateAuthorization(signed, agreement, logicalAdd
     || op.metadata?.envelopeHash !== sha256Hex(canonicalize(agreement))) throw new Error('buyer has not authorized the exact Agreement CREATE');
 }
 
+// Returns the anchor unchanged unless enabled with an onCreateAuthorized hook;
+// otherwise wraps anchorAgreement so the retained signed CREATE triggers the
+// seller commitment asynchronously without delaying or failing the anchor call.
 export function signatureCommitmentAnchor(anchor, seller, enabled) {
   if (!enabled || typeof anchor.onCreateAuthorized !== 'function') return anchor;
   const { onCreateAuthorized, ...sdkAnchor } = anchor;
