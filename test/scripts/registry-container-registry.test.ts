@@ -1,8 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+const dispositionModule = "../../scripts/registry-container-disposition.mjs";
+const { registryDependencyViolations } = await import(dispositionModule);
 const roots: string[] = [];
 const scratch = () => { const root = mkdtempSync(join(tmpdir(), "dacs-registry-bring-up-")); roots.push(root); return root; };
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -26,14 +29,22 @@ printf '%s\\n' "$consumer_registry" "\${consumer_network_args[*]}" "\${build_net
       registry_network: "fixture-network", registry_container: "fixture-registry",
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("http://fixture-registry:4873\n--network fixture-network\n");
+    const registry = result.stdout.trim().split("\n")[0];
+    const manifest = { dependencies: { "@kynesyslabs/dacs": "1.0.0" } };
+    const lock = { packages: { "": manifest, "node_modules/@kynesyslabs/dacs": { version: "1.0.0",
+      resolved: `${registry}/@kynesyslabs/dacs/-/dacs-1.0.0.tgz`,
+      integrity: "sha512-" + createHash("sha512").update("fixture archive").digest("base64"),
+    } } };
+    expect(registryDependencyViolations({ manifest, lock, registry })).toEqual([]);
+    expect(result.stdout).toContain("http://host.docker.internal:4873\n--network fixture-network\n");
     expect(result.stdout).toContain("--builder fixture-network --load --network host");
     const commands = readFileSync(log, "utf8");
     expect(commands).toContain("buildx create --name fixture-network --driver docker-container --driver-opt network=fixture-network");
     expect(commands).toContain("--publish 127.0.0.1::4873");
     // Build-step host mode refers to the dedicated builder container, whose
     // network is fixture-network. Consumer and registry never use host mode.
-    expect(commands).not.toMatch(/--network host|host-gateway|host\.docker\.internal/);
+    expect(commands).toContain("--network fixture-network --network-alias host.docker.internal");
+    expect(commands).not.toMatch(/--network host|host-gateway/);
     expect(result.stdout.split("\n")[1]).toBe("--network fixture-network");
   });
 
@@ -149,4 +160,10 @@ printf '%s' "$auth_token"`, {
         expect(existsSync(join(root, "published"))).toBe(false);
       }
     });
+});
+
+// The alias is admitted by the existing policy; arbitrary bridge HTTP remains refused.
+it.each(["http://fixture-registry:4873", "http://registry.invalid:4873"])("retains policy refusal for %s", registry => {
+  expect(() => registryDependencyViolations({ manifest: {}, lock: { packages: { "": {} } }, registry }))
+    .toThrow("HTTPS or loopback registry");
 });
