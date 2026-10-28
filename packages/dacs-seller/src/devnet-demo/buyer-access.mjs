@@ -31,7 +31,9 @@ export function createOperatorBuyerAccess({openBuyerAccess,custodyBuyer,custodyS
     if(!wallet)throw new OperationError('buyer_access_closed','the seller job has no retained authorized buyer');
     capability.assertSellerWallet(wallet,jobId);
   },assertSellerWallet(wallet,jobId){
-    if(!allowsWallet(wallet)&&paymentObserved(jobId)!==true)assertWallet(wallet);
+    if(allowsWallet(wallet))return;
+    const buyer=buyerLookupReady()===true?claimOrNull(buyerForJob(jobId)):null;
+    if(!buyer||claimOrNull(wallet)!==buyer||paymentObserved(jobId)!==true)assertWallet(wallet);
   },jobAccess(jobId){
     // 'open'; 'custody' (the custody buyer's job); 'outside' (any other or no
     // retained buyer, paid or not); 'unknown' (the lookup is not attached yet).
@@ -41,7 +43,7 @@ export function createOperatorBuyerAccess({openBuyerAccess,custodyBuyer,custodyS
     return wallet&&allowsWallet(wallet)?'custody':'outside';
   },sellerNotice(wallet,jobId){
     if(allowsWallet(wallet))return null;
-    if(paymentObserved(jobId)!==true)assertWallet(wallet);
+    capability.assertSellerWallet(wallet,jobId);
     return 'This buyer is outside closed access. Payment was already observed. Approve this exact seller transaction manually to continue delivery.';
   }});
   capabilities.add(capability);return capability;
