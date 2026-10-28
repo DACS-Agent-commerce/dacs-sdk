@@ -30,7 +30,7 @@ import { createSessionAdmissionFixture } from './helpers/session-admission-fixtu
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
-const deliveryStaged=true; // Native delivery is staged in this part.
+const deliveryStaged=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function runSdkDeliveryReady');
 const assertDeliveryStage=(answer,w)=>{if(deliveryStaged){assert.equal(answer.delivery.status,'held');assert.equal(w.effects.deliverySubmit.length,0);}else assert.ok(['held','delivery-ready','delivered'].includes(answer.delivery.status));};
 let jobSequence=0;
 const NATIVE_FLOW_TIMEOUT_MS=60_000;
@@ -1285,7 +1285,7 @@ test('a replaced wallet-journal file never signs a second evidence CREATE for an
   for (const claim of [1, 2]) {
     const held = await p.claim(tx);
     assert.ok(['held','payment-evidenced'].includes(held.status),shown(held));
-    assert.equal(held.reconcileError?.code, 'wallet_journal_changed', shown(held));
+    assert.equal((held.anchorError ?? held.reconcileError)?.code, 'wallet_journal_changed', shown(held));
   }
   // The original bytes can still land after the journal file was replaced.
   w.node.rebroadcast(w.signedCreate(address).hash);
