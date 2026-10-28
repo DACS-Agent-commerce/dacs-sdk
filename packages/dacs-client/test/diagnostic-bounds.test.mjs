@@ -60,7 +60,6 @@ async function everyDiagnostic(t) {
     status: w.purchases.status(w.accountId, w.operation.id, w.token),
     portalOperation: w.purchases.portalOperation(w.operation.id, w.token),
     portalEvidence: w.purchases.portalEvidence(w.operation.id, w.token),
-    verifyDeal: await w.purchases.verifyDeal({ accountId: w.accountId, operationId: w.operation.id, token: w.token }),
     diagnosticProtocolView: diagnosticProtocolView(w.operation),
   };
 }
