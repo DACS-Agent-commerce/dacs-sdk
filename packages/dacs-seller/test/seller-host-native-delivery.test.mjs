@@ -30,8 +30,12 @@ import { createSessionAdmissionFixture } from './helpers/session-admission-fixtu
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
-const deliveryStaged=true; // Native delivery is staged in this part.
-const assertDeliveryStage=(answer,w)=>{if(deliveryStaged){assert.equal(answer.delivery.status,'held');assert.equal(w.effects.deliverySubmit.length,0);}else assert.ok(['held','delivery-ready','delivered'].includes(answer.delivery.status));};
+// A paid order that has healed reaches delivery: the seller prepares and sends
+// its Deliverable exactly once, and every later claim reads it back.
+const assertDeliveryStage=(answer,w)=>{
+  assert.equal(answer.delivery?.status,'delivery-ready');
+  assert.deepEqual(w.effects.deliverySubmit,[answer.delivery.logicalAddress],'the Deliverable is submitted once');
+};
 let jobSequence=0;
 const NATIVE_FLOW_TIMEOUT_MS=60_000;
 const RPC = 'http://127.0.0.1:9/';

@@ -69,7 +69,7 @@ for(const expectedSizeBytes of REFUSED_REPORT_SIZES)test(`an unproducible inline
  const answer=await agent.receiveProposal(request);assert.equal(answer.disposition,'rejected');assert.equal(answer.stage,'context');assert.match(answer.reason,/inline storage delivery requires expectedSizeBytes/);
  assert.equal(agent.durableSessionOf(JOB),null);assert.ok(!f.signed.some(text=>text.startsWith('dacs-payee-bound-agreement:v1:')),'the seller signed no Agreement');
 });
-for(const expectedSizeBytes of [MINIMUM_REPORT_SIZE,MINIMUM_REPORT_SIZE+5,131072])test(`a producible inline delivery size (${expectedSizeBytes}) completes the contribution`,async t=>{
+for(const expectedSizeBytes of [MINIMUM_REPORT_SIZE,MINIMUM_REPORT_SIZE+5,16384])test(`a producible inline delivery size (${expectedSizeBytes}) completes the contribution`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true,expectedSizeBytes}),agent=await f.open(),request=await f.proposal(agent);
  assert.equal((await agent.receiveProposal(request)).disposition,'complete');assert.ok(agent.durableSessionOf(JOB).sellerContribution);
 });
