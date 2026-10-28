@@ -1226,6 +1226,27 @@ for (const [label, fault, claimsToResend] of [['whose broadcast failed after sig
   }
 }
 
+// The journal keeps the signed CREATE, so a failed rebroadcast is not a
+// delivery: the order is held, and the held cause is the journal's own
+// (a refused broadcast is told apart from a timeout or a lost answer).
+test('a kept Deliverable CREATE whose rebroadcast fails is held with the journal\'s cause, signed once', async (t) => {
+  const w = await world(t, { deliveryJournal: true });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliveryBroadcast.push('throw', 'throw');
+  assert.notEqual((await p.claim(tx)).delivery?.status, 'delivery-ready', 'the first broadcast failed');
+  const held = await p.claim(tx);
+  assert.equal(held.delivery?.status, 'held', shown(held));
+  assert.match(held.delivery.reason, /TEST delivery broadcast failed/, 'the journal\'s cause is kept, not replaced by a bare status');
+  assert.equal(w.effects.deliveryBroadcast.length, 2, 'the kept bytes were sent again once');
+  assert.deepEqual(w.effects.deliverySignCreate, [deliverable], 'the wallet signed the Deliverable once');
+  const resent = await p.claim(tx);
+  assert.equal(resent.delivery?.status, 'held', shown(resent));
+  assert.match(resent.delivery.reason, /rebroadcast/, 'the next claim sends the kept bytes again');
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
 test('a Deliverable CREATE the node applied whose answer was lost is read back, not broadcast again', async (t) => {
   const w = await world(t, { deliveryJournal: true });
   const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;

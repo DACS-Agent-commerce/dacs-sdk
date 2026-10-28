@@ -1057,8 +1057,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       answer = await reconcileDeliverableCreate({ logicalAddress: deliverableAddress(session.jobId), report, writer: claim, jobId: session.jobId,
         receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: nativeDeliveryBinding(session, work, fulfilmentId) });
     } catch (error) { return { status: 'held', reason: `${error?.code ?? 'wallet_journal_error'}: ${String(error?.message ?? error).slice(0, 180)}` }; }
-    if (answer?.status === 'unsigned') return { status: 'unsigned' };
-    if (['rebroadcast', 'pending', 'applied'].includes(answer?.status)) return { status: 'held', reason: `the kept signed Deliverable CREATE was answered ${answer.status}; its readback is awaited` };
+    // The journal's bounded cause is kept with the held outcome: a refused or
+    // timed-out broadcast, or a supersession, is told apart from a lost answer.
+    const cause = typeof answer?.reason === 'string' && answer.reason ? `: ${answer.reason.slice(0, 240)}` : '';
+    if (answer?.status === 'unsigned') return { status: 'unsigned', reason: typeof answer.reason === 'string' ? answer.reason.slice(0, 240) : undefined };
+    if (['rebroadcast', 'pending', 'applied'].includes(answer?.status)) return { status: 'held', reason: `the kept signed Deliverable CREATE was answered ${answer.status}; its readback is awaited${cause}` };
     return { status: 'held', reason: 'the wallet journal answered no known status for the Deliverable CREATE' };
   }
 
