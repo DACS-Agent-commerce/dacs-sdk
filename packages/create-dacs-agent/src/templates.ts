@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import { liveProjectTemplates } from "./liveTemplates.js";
 
 export interface ProjectTemplateOptions {
@@ -8,6 +10,11 @@ export interface ProjectTemplateOptions {
   rails?: "x402" | "pay-dem" | "both";
   runtimeUid?: number;
   runtimeGid?: number;
+  /**
+   * A live project's identity, 32 lower-case hex digits; random by default.
+   * Its Docker compose project name is derived from it and the project's path.
+   */
+  projectIdentity?: string;
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
@@ -320,6 +327,10 @@ export function projectTemplates(
     if (options.role === "demo-all") {
       throw new TypeError("live templates require an authority-separated role");
     }
+    if (options.projectIdentity !== undefined &&
+        (typeof options.projectIdentity !== "string" || !/^[0-9a-f]{32}$/.test(options.projectIdentity))) {
+      throw new TypeError("projectIdentity must be 32 lower-case hex digits");
+    }
     return liveProjectTemplates({
       packageName: options.packageName,
       deployment: options.deployment,
@@ -327,6 +338,7 @@ export function projectTemplates(
       rails: options.rails ?? "both",
       runtimeUid: options.runtimeUid ?? 10001,
       runtimeGid: options.runtimeGid ?? 10001,
+      projectIdentity: options.projectIdentity ?? randomBytes(16).toString("hex"),
     });
   }
   return Object.freeze({

@@ -1,0 +1,73 @@
+name: Generated Docker image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  generated-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        rail: [x402, pay-dem]
+        toolchain: [minimum, previous, current]
+        include:
+          - toolchain: minimum
+            docker: "24.0.9"
+            compose: "2.10.2"
+          - toolchain: previous
+            docker: "28.5.1"
+            compose: "2.40.3"
+          - toolchain: current
+            docker: "29.9.1"
+            compose: "5.6.0"
+    name: image (${{ matrix.rail }}, Docker ${{ matrix.docker }}, Compose ${{ matrix.compose }})
+    env:
+      DOCKER_HOST: unix:///tmp/dacs-ci-docker.sock
+      DOCKER_CONFIG: /tmp/dacs-ci-docker-config
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.12.0"
+      - name: Install exact Docker CLI, Engine and Compose versions
+        env:
+          DOCKER_VERSION: ${{ matrix.docker }}
+          COMPOSE_VERSION: ${{ matrix.compose }}
+        run: |
+          tools="$RUNNER_TEMP/dacs-docker"
+          mkdir -p "$tools" "$DOCKER_CONFIG/cli-plugins"
+          curl --fail --silent --show-error --location "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" -o "$tools/docker.tgz"
+          tar -xzf "$tools/docker.tgz" --strip-components=1 -C "$tools"
+          curl --fail --silent --show-error --location "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-x86_64" -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+          chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+          export PATH="$tools:$PATH"
+          echo "$tools" >> "$GITHUB_PATH"
+          sudo env PATH="$PATH" "$tools/dockerd" --host "$DOCKER_HOST" \
+            --data-root "$RUNNER_TEMP/dacs-docker-data" --exec-root "$RUNNER_TEMP/dacs-docker-exec" \
+            --pidfile "$RUNNER_TEMP/dacs-docker.pid" --storage-driver vfs \
+            --bridge none --iptables=false --ip-masq=false > "$RUNNER_TEMP/dacs-dockerd.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if sudo test -S /tmp/dacs-ci-docker.sock; then sudo chown "$(id -u):$(id -g)" /tmp/dacs-ci-docker.sock; sudo chmod 600 /tmp/dacs-ci-docker.sock; fi
+            if docker info > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          test "$(docker version --format '{{.Client.Version}} {{.Server.Version}}')" = "$DOCKER_VERSION $DOCKER_VERSION"
+          test "$(docker compose version --short | sed 's/^v//')" = "$COMPOSE_VERSION"
+      - name: Install and build the package set
+        run: |
+          npm ci --no-audit
+          npm run build
+          npm run host:build
+          npm run generator:build
+      - name: Build the generated Dockerfile and run its image smoke
+        run: node scripts/verify-generated-docker.mjs '${{ matrix.rail }}'
+      - name: Show daemon diagnostics
+        if: failure()
+        run: cat "$RUNNER_TEMP/dacs-dockerd.log"
