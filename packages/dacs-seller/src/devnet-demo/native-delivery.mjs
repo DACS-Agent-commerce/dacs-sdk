@@ -57,7 +57,10 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
     },
   });
   purchasedReaders.set(capability,async(input)=>{
-    if(!isCanonicalJobId(input?.jobId) || input.jobId!==input?.deliveryBinding?.jobId || input.logicalAddress!==`dacs4:deliverable:${input.jobId}` ||
+    // An incomplete scope is answered, not thrown: canonicalize(undefined)
+    // throws, so the binding and Listing must be present before hashing.
+    if(!input || typeof input!=='object' || !input.deliveryBinding?.listing || !input.listing ||
+        !isCanonicalJobId(input.jobId) || input.jobId!==input?.deliveryBinding?.jobId || input.logicalAddress!==`dacs4:deliverable:${input.jobId}` ||
         input.receiptContentHash!==input.deliveryBinding?.payloadHash || input.deliveryBinding?.agreementHash!==input.agreementHash ||
         canonicalize(input.deliveryBinding?.listing)!==canonicalize(input.listing) || input.deliveryBinding?.fulfilmentId!==input.fulfilmentId ||
         input.seller!==anchor.writer) return {status:'rejected',reason:'native purchased-report reader scope differs'};

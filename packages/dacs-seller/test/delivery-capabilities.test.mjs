@@ -200,6 +200,19 @@ test('native delivery maps successful publish, reconcile and retained readback a
   assert.equal((await readDevnetPurchasedReport(capability, scope)).status, 'absent');
 });
 
+test('purchased-report reader answers an incomplete scope without throwing or reading the anchor', async () => {
+  let calls = 0;
+  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => { calls++; }, read: async () => { calls++; },
+    readRetained: async () => { calls++; return { status: 'absent' }; }, verifyReceipt: async () => { calls++; } };
+  const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor });
+  for (const input of [{ jobId: JOB }, { jobId: JOB, deliveryBinding: {} },
+    { jobId: JOB, deliveryBinding: { jobId: JOB } }, { jobId: JOB, listing: {} },
+    { jobId: JOB, deliveryBinding: { listing: {} } }]) {
+    assert.equal((await readDevnetPurchasedReport(capability, input)).status, 'rejected');
+  }
+  assert.equal(calls, 0);
+});
+
 test('delivery evidence binds the signature and exact canonical job addresses', async () => {
   const unsigned = { evidenceVersion: '1', jobId: JOB, phase: 'deliver-storage-program', outcome: 'success', observedAt: NOW,
     dacsSdkAuditSourceHash: 'a'.repeat(64), deliverableContentHash: 'b'.repeat(64), deliverableAnchor: { kind: 'storage-program', locator: `dacs4:deliverable:${JOB}` } };
