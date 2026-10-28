@@ -1250,6 +1250,9 @@ test('read-only reconciliation of a held payment claim neither signs nor sends: 
   const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
   w.node.faults.indexEmpty = (programName) => programName === name;
+  // A retained signed projection reads its transaction directly, independently
+  // of the name index. Keep that read unavailable so this is still held work.
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(address)?.hash;
   assert.equal((await p.claim(tx)).status, 'held');
   const agent = await w.agentFor();
   try {
@@ -1294,8 +1297,10 @@ test('a supersession decision lost before the agent checkpoint replays after res
   const old = w.signedCreate(address);
   await w.purchase(); // Its commitment overtakes the dropped evidence nonce.
   const kept = await w.retainedSession(p.jobId); // Stop the host before the cut.
-  const answer = await w.walletJournal().reconcilePaymentEvidence({ logicalAddress: address, receiptContentHash: kept.nativeEvidenceWork.intake.evidenceHash,
-    attempt: { answer: { txHash: old.hash } } });
+  const answer = await w.walletJournal().reconcilePaymentEvidence({ logicalAddress: address,
+    artifact: kept.nativeEvidenceWork.evidence, writer: w.sellerKey.claim, artifactKind: 'SettlementEvidence', jobId: p.jobId,
+    receiptContentHash: kept.nativeEvidenceWork.intake.evidenceHash,
+    attempt: { outcome: kept.nativeEvidenceWork.anchorOutcome, answer: { txHash: old.hash } } });
   assert.equal(answer.status, 'unsigned');
   assert.equal(answer.txHash, old.hash);
   // Process death here: the wallet decision is durable, the agent saw none of it.
