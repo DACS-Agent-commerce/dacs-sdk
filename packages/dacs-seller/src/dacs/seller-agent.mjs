@@ -141,7 +141,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   const memoryChallenges = new Map();
   const challenges = durable ? durable : {
     issueChallenge: (nonce, value, limits) => {
-      admitSessionChallenge(memoryChallenges,value,limits,id=>memoryChallenges.delete(id));
+      admitSessionChallenge(memoryChallenges,value,limits);
       if (memoryChallenges.has(nonce)) throw new SellerAgentError('seller_challenge_taken', 'this nonce was issued before', 409);
       memoryChallenges.set(nonce, { kind: 'session-challenge', ...structuredClone(value), attempt: null });
     },

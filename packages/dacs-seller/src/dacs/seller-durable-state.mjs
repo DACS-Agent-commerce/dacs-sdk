@@ -622,10 +622,19 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
                 if(page.length<CHALLENGE_PAGE_SIZE)return;
               }
             }
-            admitSessionChallenge(retained(),value,limits,id=>run('DELETE FROM seller_effects WHERE id=?',id));
+            admitSessionChallenge(retained(),value,limits);
           }
           putEffect(`session-challenge:${nonce}`, { kind: 'session-challenge', ...clone(value), attempt: null });
         });
+      },
+      // Read-only authenticated lookup of one challenge this seller issued, for
+      // binding a retained session to the exact nonce it was admitted with.
+      challenge(nonce) {
+        if (typeof nonce !== 'string' || !/^[0-9a-f]{64}$/.test(nonce)) return null;
+        const retained = effect(`session-challenge:${nonce}`);
+        if (retained === null) return null;
+        if (retained.kind !== 'session-challenge') fail('seller_state_corrupt');
+        return retained;
       },
       // The challenge as it was before this attempt (null when never issued);
       // the attempt is kept only when it is the first. A malformed first
