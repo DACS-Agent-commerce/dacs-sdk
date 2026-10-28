@@ -189,6 +189,16 @@ describe("total command deadline and retry budget", () => {
     h.timers[1]?.(); expect(await result).toBe(124);
     expect(h.kills).toEqual([[100, "SIGKILL"]]);
   });
+  it.each([{ attempts: 1, code: 0 }, { attempts: 1, code: 7 }, { attempts: 3, code: 0 }, { attempts: 3, code: 7 }])(
+    "reports the timeout when a final exit arrives after the deadline before the timer (attempts $attempts, code $code)",
+    async ({ attempts, code }) => {
+      const h = signalHarness(); let clock = 0;
+      const result = runBoundedCommand("docker", ["pull", "fixture"], { ...h.options, attempts, seconds: 1, now: () => clock });
+      clock = 1100; h.children[0]?.emit("exit", code);
+      expect(h.children).toHaveLength(1);
+      h.timers[1]?.(); expect(await result).toBe(124);
+      expect(h.kills).toEqual([[100, "SIGKILL"]]);
+    });
   function running(pid: number) {
     try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
     try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z"); } catch { return false; }
