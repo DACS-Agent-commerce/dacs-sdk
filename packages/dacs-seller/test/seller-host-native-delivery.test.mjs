@@ -224,7 +224,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [], componentSigns: [] };
-  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [] };
+  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
@@ -311,8 +311,14 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       if(artifactKind==='SettlementEvidence'&&read.status==='present'&&faults.evidenceRead)read=faults.evidenceRead(clone(read));
       return read.status === 'absent' && !signedCreates.has(logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
     },
-    verifyReceipt: async ({ logicalAddress, artifact, artifactKind, receipt, signedProjection }) =>
-      (artifactKind==='FinalityCommitmentRecord'?finalized:node.reader).verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection }),
+    verifyReceipt: async (input) => {
+      if (faults.verifyReceipt) {
+        const forced = await faults.verifyReceipt(input);
+        if (forced !== undefined) return forced;
+      }
+      const { logicalAddress, artifact, artifactKind, receipt, signedProjection } = input;
+      return (artifactKind==='FinalityCommitmentRecord'?finalized:node.reader).verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection });
+    },
   };
   // The seller wallet's payment-evidence journal (DACS-4 PC-7(b)).
   const walletDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-wallet-')));
@@ -1488,6 +1494,45 @@ test('a delivery-ready session retained without its own evidence copy recovers i
   assert.equal(done.delivery.evidencePublication, 'native-read-back');
   assert.equal(w.createsAt(address), 1);
   assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('a delivery evidence verifier that throws leaves a held delivery-ready answer, not an uncertain 503', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true }), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivered');
+  const signed = await w.signedClaim(p, tx);
+  w.faults.verifyReceipt = ({ artifactKind, logicalAddress }) => {
+    if (artifactKind === 'SettlementEvidence' && logicalAddress === address) throw new Error('TEST receipt read timed out');
+  };
+  const post = async () => { const res = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); return { status: res.status, body: await res.json() }; };
+  const held = await post();
+  assert.equal(held.status, 200, shown(held.body));
+  assert.equal(held.body.status, 'payment-evidenced', shown(held.body));
+  assert.equal(held.body.delivery?.status, 'delivery-ready', shown(held.body));
+  assert.equal(held.body.delivery?.evidencePublication, 'held-readback-only', shown(held.body));
+  assert.match(held.body.delivery?.reason ?? '', /receipt read timed out/);
+  assert.equal(w.createsAt(address), 1, 'a verifier failure never asks the wallet again');
+  w.faults.verifyReceipt = null;
+  assert.equal((await post()).body.delivery?.status, 'delivered');
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('an indeterminate delivery evidence verdict is reported as unavailable, not as differing evidence', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true }), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivered');
+  const signed = await w.signedClaim(p, tx);
+  w.faults.verifyReceipt = ({ artifactKind, logicalAddress }) =>
+    artifactKind === 'SettlementEvidence' && logicalAddress === address ? 'indeterminate' : undefined;
+  const res = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
+  assert.equal(res.status, 200);
+  const held = await res.json();
+  assert.equal(held.delivery?.status, 'delivery-ready', shown(held));
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only');
+  assert.match(held.delivery?.reason ?? '', /unavailable/);
+  assert.doesNotMatch(held.delivery?.reason ?? '', /differs/);
+  w.faults.verifyReceipt = null;
+  const done = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
+  assert.equal((await done.json()).delivery?.status, 'delivered');
+  assert.equal(w.createsAt(address), 1);
 });
 
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
