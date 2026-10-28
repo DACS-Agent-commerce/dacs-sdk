@@ -48,9 +48,9 @@ fi
 acceptance_root=$(mktemp -d "$temp_parent/dacs-registry-acceptance.XXXXXX")
 release_set="$acceptance_root/release-set"
 registry_config="$acceptance_root/verdaccio.yaml"
-# Consumer containers write only gen/, measure-out/ and exec-out/. The host
-# reads them only through acceptance-seal.mjs, which never follows a link, and
-# no container mounts the sealed build context or the evidence stage.
+# Install and measure containers write gen/ and measure-out/. The host reads
+# them through acceptance-seal.mjs. Image checks have no host mounts; the host
+# captures their output in exec-out/. No package code can write sealed/ or artifacts/.
 generated_root="$acceptance_root/gen"
 sealed_root="$acceptance_root/sealed"
 measure_out="$acceptance_root/measure-out"
@@ -136,6 +136,9 @@ cleanup() {
   fi
   if [ "$image_started" -eq 1 ]; then
     docker image rm --force "$runtime_image" >/dev/null 2>&1 || true
+  fi
+  if [ "${builder_started:-0}" -eq 1 ]; then
+    docker buildx rm --force "$registry_builder" >/dev/null 2>&1 || true
   fi
   if [ "$network_started" -eq 1 ]; then
     docker network rm "$registry_network" >/dev/null 2>&1 || true
@@ -281,37 +284,6 @@ stage=evidence-collect
 node scripts/acceptance-seal.mjs collect "$measure_out" "$artifact_stage" "${measure_evidence[@]}"
 measure_collected=1
 
-stage=consumer
-# Execute: package code runs here, with no mount the host trusts afterwards.
-consumer_phases="$consumer_phases execute"
-run_bounded docker run --rm --name "$consumer_container-execute" --init \
-  "${consumer_network_args[@]}" "${consumer_env[@]}" \
-  --volume "$generated_root:/work" \
-  --volume "$execute_out:/out" \
-  --volume "$bounded_support:/acceptance-support:ro" \
-  --workdir /work/one-click-agent \
-  "$consumer_image" \
-  sh -ceu '
-    restore_host_ownership() {
-      chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work /out || true
-    }
-    trap restore_host_ownership EXIT
-    npm install --global --ignore-scripts npm@11.19.0
-    npm rebuild better-sqlite3
-    tests_status=0
-    { npm run build && npm test; } || tests_status=$?
-    printf "%s\n" "$tests_status" > /out/generated-tests.exit-code
-    test "$tests_status" -eq 0
-    doctor_status=0
-    DACS_DEPLOYMENT=local DACS_SELLER_PUBLIC_BASE_URL=https://seller.example/engage \
-      npm run --silent dacs:doctor -- --json > /out/doctor.json 2> /out/doctor.log || doctor_status=$?
-    printf "%s\n" "$doctor_status" > /out/doctor.exit-code
-    test "$doctor_status" -eq 5
-  ' 2>&1 | tee -a "$artifact_stage/generation.log"
-stage=evidence-collect
-node scripts/acceptance-seal.mjs collect "$execute_out" "$artifact_stage" "${execute_evidence[@]}"
-execute_collected=1
-
 stage=audit-policy
 # Directness comes from the audited lock, not npm's name-level flag.
 node scripts/registry-container-disposition.mjs --audit-policy \
@@ -420,6 +392,29 @@ policy.productionDependencyPolicyPassed = !policy.typescriptPresent &&
   !policy.rubicSdkPresent;
 fs.writeFileSync(process.argv[2], JSON.stringify(policy, null, 2) + "\n");
 NODE
+
+stage=image-checks
+# Fresh containers check the accepted image. Its code is read-only; all writable
+# data is private, owned by its runtime user, and never used as host evidence.
+image_check_args=(--read-only --network none --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges
+  --tmpfs /tmp:mode=1777 --tmpfs /app/data:uid=10001,gid=10001,mode=0700 --env DACS_DEPLOYMENT=local --entrypoint node)
+consumer_phases="$consumer_phases tests doctor"
+tests_status=0
+run_bounded docker run --rm --name "$consumer_container-tests" --init "${image_check_args[@]}" \
+  "$runtime_image" --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js \
+  >> "$artifact_stage/generation.log" 2>&1 || tests_status=$?
+printf '%s\n' "$tests_status" > "$execute_out/generated-tests.exit-code"
+test "$tests_status" -eq 0 || exit "$tests_status"
+doctor_status=0
+run_bounded docker run --rm --name "$consumer_container-doctor" --init "${image_check_args[@]}" \
+  --env DACS_SELLER_PUBLIC_BASE_URL=https://seller.example/engage \
+  "$runtime_image" --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor --json \
+  > "$execute_out/doctor.json" 2> "$execute_out/doctor.log" || doctor_status=$?
+printf '%s\n' "$doctor_status" > "$execute_out/doctor.exit-code"
+test "$doctor_status" -eq 5 || exit "$((doctor_status ? doctor_status : 1))"
+stage=evidence-collect
+node scripts/acceptance-seal.mjs collect "$execute_out" "$artifact_stage" "${execute_evidence[@]}"
+execute_collected=1
 
 cp "$release_set/release-provenance.json" "$artifact_stage/"
 cp "$release_set/SHA256SUMS" "$artifact_stage/"
