@@ -1108,6 +1108,8 @@ test('a landed Deliverable whose records were lost is not submitted again while 
   const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`, name = core.logicalToStorageProgramName(deliverable);
   w.faults.deliverySubmit.push('land-lose-lock');
   w.node.faults.indexEmpty = (programName) => programName === name;
+  // A retained CREATE can bypass the name index; keep its transaction unreadable too.
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(deliverable)?.hash;
   assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the job lost its lock during the submission');
   await w.restart();
   for (const claim of [1, 2]) {
@@ -1116,6 +1118,7 @@ test('a landed Deliverable whose records were lost is not submitted again while 
   }
   assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
   w.node.faults.indexEmpty = () => false;
+  w.node.faults.transactionDown = () => false;
   const answer = await p.claim(tx);
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
   assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
@@ -1210,6 +1213,8 @@ test('a gate that refuses a held paid claim for now keeps it bound to the job: a
   const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), name = core.logicalToStorageProgramName(paymentAddress(p)), original = w.rails.authority;
   w.node.faults.indexEmpty = (programName) => programName === name;
+  // A retained CREATE can bypass the name index; keep its transaction unreadable too.
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(paymentAddress(p))?.hash;
   assert.equal((await p.claim(tx)).status, 'held');
   w.rails.authority = w.otherRail(); await w.restart();
   assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the pinned rail is refused for now');
@@ -1217,6 +1222,7 @@ test('a gate that refuses a held paid claim for now keeps it bound to the job: a
   const second = p.pay();
   for (const other of [`0x${tx}`, second]) assert.equal((await p.claim(other)).error, 'peer_operation_conflict', `another claim (${other.slice(0, 6)}) is refused`);
   w.node.faults.indexEmpty = () => false;
+  w.node.faults.transactionDown = () => false;
   const answer = await p.claim(tx);
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
   await w.restart();
@@ -1230,6 +1236,8 @@ test('a replaced wallet-journal file never signs a second evidence CREATE for an
   const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
   w.node.faults.indexEmpty = (programName) => programName === name;
+  // Keep the original signed CREATE pending so reconciliation must consult its owning journal.
+  w.faults.broadcast.push('drop');
   assert.equal((await p.claim(tx)).anchorOutcome, 'sent');
   w.replaceWallet('replaced-wallet-journal.sqlite'); await w.restart();
   for (const claim of [1, 2]) {
@@ -1237,6 +1245,8 @@ test('a replaced wallet-journal file never signs a second evidence CREATE for an
     assert.ok(['held','payment-evidenced'].includes(held.status),shown(held));
     assert.equal(held.reconcileError?.code, 'wallet_journal_changed', shown(held));
   }
+  // The original bytes can still land after the journal file was replaced.
+  w.node.rebroadcast(w.signedCreate(address).hash);
   assert.deepEqual(w.effects.signCreate, [address], 'signed once');
   assert.equal(w.createsAt(address), 1);
   w.node.faults.indexEmpty = () => false;
