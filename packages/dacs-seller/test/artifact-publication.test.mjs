@@ -107,3 +107,101 @@ test('accepted signed CREATE publishes, reopens, verifies receipts and preserves
   assert.equal(await reopened.verifyReceipt({...input,receipt:{...result.receipt,transactionRef:{...result.receipt.transactionRef,value:changed.hash}},signedProjection:changed,fresh:true}),'invalid');
   assert.equal((await reopened.publish(input)).status,'present');assert.equal(f.captured.length,1);assert.equal(contentHash(backend.native.data),result.receipt.contentHash);
 });
+
+for (const extra of [undefined, NaN, new Date(0), () => true]) test(`projection admission rejects converted JSON value ${String(extra)}`, async () => {
+  const f = await anchorFixture(), artifact = await f.artifact(JOB);
+  let reads = 0;
+  f.controls.reader.verifyReceipt = async () => { reads++; return 'valid'; };
+  const content = {data:['storageProgram',{metadata:{artifactKind:'FinalityCommitmentRecord',artifactBinding:{jobId:JOB}}}], extra};
+  const hash = sha256Hex(JSON.stringify(content));
+  const projection = {content, hash, signature:{type:'ed25519',data:`0x${seller.signBytes(Buffer.from(hash)).toString('hex')}`}};
+  assert.equal(await f.open().verifyReceipt({logicalAddress:finalityCommitmentAddress(JOB), artifact, artifactKind:'FinalityCommitmentRecord',
+    receipt:{transactionRef:{value:hash}}, signedProjection:projection, fresh:true}), 'invalid');
+  assert.equal(reads, 0);
+});
+
+test('publication snapshots each journal a constant number of times as unsigned history grows', async () => {
+  for (const count of [3, 12]) {
+    const f = await anchorFixture();
+    await f.publish(f.open(), JOB);
+    const intent = [...f.journal.rows.values()][0];
+    for (let i = 0; i < count; i++) {
+      const row = structuredClone(intent);
+      row.transaction.content.data[1].metadata.logicalAddress = `TEST-history-${i}`;
+      await f.journal.put(`demo/artifact/TEST-${i}`, row);
+    }
+    let scans = 0;
+    for (const journal of [f.journal, f.sourceJournal]) {
+      const entries = journal.entries;
+      journal.entries = async () => { scans++; return entries(); };
+    }
+    await f.publish(f.open(), JOB);
+    assert.ok(scans <= 12, `${count} historical rows caused ${scans} scans`);
+  }
+});
+
+for (const entry of ['publish', 'read', 'readRetained', 'retainedSignedCreate', 'verifyReceipt']) test(`real buyer access refuses protected ${entry}`, async () => {
+  const f = await anchorFixture(), anchor = f.open();
+  await f.publish(anchor, JOB);
+  const input = {logicalAddress:finalityCommitmentAddress(JOB),artifact:await f.artifact(JOB),artifactKind:'FinalityCommitmentRecord'};
+  f.controls.accessClosed = true;
+  const before = f.captured.length;
+  if (entry === 'retainedSignedCreate') assert.equal(await anchor[entry](input), null);
+  else if (entry === 'verifyReceipt') {
+    const content={data:['storageProgram',{metadata:{artifactKind:input.artifactKind,artifactBinding:{jobId:JOB}}}]};
+    const hash=sha256Hex(JSON.stringify(content));
+    await assert.rejects(anchor.verifyReceipt({...input,receipt:{transactionRef:{value:hash}},signedProjection:{hash,content,signature:{type:'ed25519',data:`0x${seller.signBytes(Buffer.from(hash)).toString('hex')}`}}}), {code:'buyer_access_closed'});
+  } else await assert.rejects(anchor[entry](input), {code:'buyer_access_closed'});
+  assert.equal(f.captured.length, before);
+});
+
+for (const which of ['sourceJournal', 'journal']) test(`failed ${which} snapshot never proves unsigned absence`, async () => {
+  const f=await anchorFixture();
+  await f.publish(f.open(),JOB);
+  f[which].entries=async()=>{throw Object.assign(new Error('TEST snapshot unavailable'),{code:'TEST_IO'});};
+  await assert.rejects(f.publish(f.open(),JOB),{code:'TEST_IO'});
+  assert.equal(f.captured.length,1);
+});
+
+for (const abortAware of [false,true]) test(`nonce read preserves cause and releases lane, abort aware ${abortAware}`, async t => {
+  const f=await anchorFixture(), cause=Object.assign(new Error('TEST RPC failure'),{code:'TEST_RPC'});
+  f.source.readRpc=async()=>{throw cause;};
+  await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&error.cause===cause);
+  f.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null});
+  await f.publish(f.open(),JOB);
+  assert.equal(f.captured.length,1);
+  if (!abortAware) return;
+  let entered;
+  const ready=new Promise(resolve=>entered=resolve);
+  f.source.readRpc=(_path,_body,{signal})=>new Promise((_,reject)=>{signal.addEventListener('abort',()=>reject(new DOMException('TEST abort','AbortError')));entered();});
+  t.mock.timers.enable({apis:['setTimeout']});
+  const pending=f.publish(f.open(),JOB), result=pending.catch(error=>error);
+  await ready; t.mock.timers.tick(10000);
+  assert.equal((await result).code,'indeterminate');
+});
+
+for (const where of ['sourceJournal','journal']) test(`orphan retained signature in ${where} never authorizes a new CREATE`, async () => {
+  const f=await anchorFixture();
+  await f.publish(f.open(),JOB);
+  const request=f.captured[0];
+  for(const key of f.journal.rows.keys()) if(key.startsWith('demo/artifact/'))f.journal.rows.delete(key);
+  await f[where].put('demo/wallet/TEST-orphan',{stage:'observed',signedTransaction:request.transaction});
+  f.controls.nonce=1;
+  assert.equal((await f.publish(f.open(),JOB)).status,'indeterminate');
+  assert.equal(f.captured.length,1);
+});
+
+for (const answer of [null,{}, {success:true}, {success:true,data:{hash:'TEST-invalid'}}, {success:true,data:{hash:'a'.repeat(64)}}]) test(`unbound wallet answer stays fenced ${JSON.stringify(answer)}`,async()=>{
+  const f=await anchorFixture();f.controls.request=async()=>answer;
+  await f.publish(f.open(),JOB);
+  assert.equal((await f.publish(f.open(),JOB)).status,'indeterminate');
+  assert.equal(f.captured.length,1);
+});
+
+for(const field of ['projection','signature'])test(`strict JSON admission includes the ${field} envelope before receipt reads`,async()=>{
+ const f=await anchorFixture(),artifact=await f.artifact(JOB);let reads=0;f.controls.reader.verifyReceipt=async()=>{reads++;return 'valid';};
+ const content={data:['storageProgram',{metadata:{artifactKind:'FinalityCommitmentRecord',artifactBinding:{jobId:JOB}}}]},hash=sha256Hex(JSON.stringify(content));
+ const projection={hash,content,signature:{type:'ed25519',data:`0x${seller.signBytes(Buffer.from(hash)).toString('hex')}`}};
+ (field==='projection'?projection:projection.signature).TESTomitted=undefined;
+ assert.equal(await f.open().verifyReceipt({logicalAddress:finalityCommitmentAddress(JOB),artifact,artifactKind:'FinalityCommitmentRecord',receipt:{transactionRef:{value:hash}},signedProjection:projection,fresh:true}),'invalid');assert.equal(reads,0);
+});
