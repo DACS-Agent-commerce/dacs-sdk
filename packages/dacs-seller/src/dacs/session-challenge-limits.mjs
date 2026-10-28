@@ -10,7 +10,11 @@ export function admitSessionChallenge(entries,value,{maxOutstanding,maxPerJob}){
   let total=0,job=0;
   for(const [id,row] of entries){
     if(row.kind!=='session-challenge')throw Object.assign(new Error('retained challenge is malformed'),{code:'seller_state_corrupt'});
-    if(row.attempt!==null||!Number.isSafeInteger(row.expiresAt)||row.expiresAt<=value.issuedAt)continue;
+    // A retained issuance whose lifetime or attempt is unreadable is corruption,
+    // not a tombstone: treating it as expired would free live issuance capacity.
+    if(!Number.isSafeInteger(row.expiresAt)||row.expiresAt<0)throw Object.assign(new Error('the retained challenge lifetime is malformed'),{code:'seller_state_corrupt'});
+    if(row.attempt!==null&&(typeof row.attempt!=='object'||Array.isArray(row.attempt)))throw Object.assign(new Error('the retained challenge attempt is malformed'),{code:'seller_state_corrupt'});
+    if(row.attempt!==null||row.expiresAt<=value.issuedAt)continue;
     total++;if(row.jobId===value.jobId)job++;
   }
   if(total>=maxOutstanding||job>=maxPerJob)throw Object.assign(new Error('the seller has reached retained challenge capacity'),{code:'seller_challenge_capacity'});
