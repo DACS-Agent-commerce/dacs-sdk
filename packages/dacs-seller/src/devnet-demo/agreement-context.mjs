@@ -666,7 +666,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         ||!await validReceipt(read,logicalAddress,read.artifact,authority))return null;
     }
     const current=await state.read(scope.jobId);
-    return cut&&eligible(current,ticket)&&same([current.presentation,current.counterpartyRecord,current.ops?.buyer?.checkpoints],[row.presentation,row.counterpartyRecord,row.ops?.buyer?.checkpoints])?{writes}:null;
+    return cut&&eligible(current,ticket)&&same([current.presentation??null,current.counterpartyRecord??null,current.ops?.buyer?.checkpoints??{}],[row.presentation??null,row.counterpartyRecord??null,row.ops?.buyer?.checkpoints??{}])?{writes}:null;
   }
   const logged=(what,jobId)=>(error)=>log(`party-vet-store: job ${jobId} ${what} failed: ${oneLine(error?.code??'error')}\n`);
   function evict(jobId,generatedAt){
