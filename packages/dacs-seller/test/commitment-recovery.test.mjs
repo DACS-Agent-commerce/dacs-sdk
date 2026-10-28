@@ -1,8 +1,4 @@
 import test from'node:test';
-import {readFileSync}from'node:fs';
-const stageSource=readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8');
-const nativeStaged=stageSource.includes('typeof submitNativePaymentEvidence')&&!stageSource.includes('async function submitNativePaymentEvidence(');
-const nativeCommit=(name,run)=>test(name,{skip:nativeStaged},run);
 import assert from'node:assert/strict';
 import * as core from'@kynesyslabs/dacs';
 import {commitmentFixture}from'./helpers/commitment-fixture.mjs';
@@ -32,7 +28,7 @@ for(const early of [false,true])test(`cached ${early?'signature':'ordinary'} com
  for(let attempt=0;attempt<2;attempt++)assert.equal((await post()).status,503,'a retained answer cannot replace current authentication');
  f.local.controls.read=read;assert.equal((await post()).status,200);assert.equal(f.local.writes.length,writes);
 });
-nativeCommit('successful native commitment replays exact state after restart and rejects contradictory block time',async t=>{
+test('successful native commitment replays exact state after restart and rejects contradictory block time',async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');const kept=agent.durableSessionOf(JOB).commitment;agent.close();const fresh=await f.open();assert.equal((await fresh.commit({jobId:JOB})).status,'committed');assert.deepEqual(fresh.durableSessionOf(JOB).commitment,kept);assert.equal(f.local.writes.length,1);
  f.local.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,blockRef:{...row.receipt.blockRef,timestamp:row.receipt.blockRef.timestamp+1000}}}:row;
  await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='commitment_changed');assert.deepEqual(fresh.durableSessionOf(JOB).commitment,kept);
@@ -45,7 +41,7 @@ nativeCommit('successful native commitment replays exact state after restart and
  assert.equal(fresh.stageOf(JOB),stage);assert.equal(f.local.writes.length,1);
 });
 });
-for(const finalizedReadback of[false,true])nativeCommit(`real publisher retries unsigned pre-intent absence once and ${finalizedReadback?'accepts finalized readback':'holds included readback after restart'}`,async t=>{
+for(const finalizedReadback of[false,true])test(`real publisher retries unsigned pre-intent absence once and ${finalizedReadback?'accepts finalized readback':'holds included readback after restart'}`,async t=>{
  const publisher=await anchorFixture({now:()=>NOW}),f=await commitmentFixture(t,{publisher:publisher.open()}),{agent}=await f.prepare();publisher.source.readRpc=async()=>({result:503,response:null,require_reply:false,extra:null});
  let failure;try{await agent.commit({jobId:JOB});}catch(error){failure=error;}assert.equal(failure?.code,'commitment_failed');assert.equal(publisher.journal.rows.size,0);assert.equal(publisher.captured.length,0);agent.close();
  publisher.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null});publisher.source.binding=async()=>({disposition:'included'});publisher.source.observeBinding=async()=>publisher.source.transportBinding;
@@ -57,7 +53,7 @@ for(const finalizedReadback of[false,true])nativeCommit(`real publisher retries 
  assert.equal(retained.status,'present');assert.equal(retained.receipt.state,'included');assert.equal(publisher.journal.rows.size,1);
  fresh.close();await assert.rejects((await f.open()).commit({jobId:JOB}),included);assert.equal(publisher.captured.length,1);
 });
-for(const early of[false,true])nativeCommit(`early commitment ${early?'enabled':'disabled'} is explicit and never duplicated`,async t=>{
+for(const early of[false,true])test(`early commitment ${early?'enabled':'disabled'} is explicit and never duplicated`,async t=>{
  const f=await commitmentFixture(t,{early}),{agent,agreement}=await f.prepare(),request={jobId:JOB,agreement,signedProjection:projection(agreement)};
  if(!early){await assert.rejects(agent.commitOnSignature(request),e=>e.code==='signature_commitment_disabled');assert.equal(f.local.writes.length,0);return;}
  f.controls.agreement=null;assert.equal((await agent.commitOnSignature(request)).status,'commitment-held');assert.equal((await agent.commitOnSignature(request)).status,'commitment-held');assert.equal(f.local.writes.length,1);
@@ -74,14 +70,14 @@ for(const read of[null,{status:'indeterminate',reason:'TEST read timeout'},{stat
  const f=await fixtureProfile(t);f.anchors.controls.read=()=>read;await assert.rejects(f.agent.commit({jobId:JOB}),e=>e.code===(read?.status==='absent'?'agreement_not_anchored':read?.status==='rejected'?'agreement_anchor_invalid':'substrate_unavailable'));
 });
 
-nativeCommit('commitment wrapper keeps the actual provider failure chain',async t=>{
+test('commitment wrapper keeps the actual provider failure chain',async t=>{
  const f=await commitmentFixture(t),cause=Object.assign(new Error('TEST wallet connection refused'),{code:'ECONNREFUSED'});f.native.publish=async()=>{throw cause;};const {agent}=await f.prepare();await assert.rejects(agent.commit({jobId:JOB}),error=>error.code==='commitment_failed'&&error.cause?.cause===cause);
 });
 
-nativeCommit('valid native receipts may omit the optional nonce and still replay',async t=>{
+test('valid native receipts may omit the optional nonce and still replay',async t=>{
  const f=await commitmentFixture(t),read=f.native.readRetained;f.native.readRetained=async input=>{const out=await read(input);if(out.receipt)delete out.receipt.nonce;return out;};const {agent}=await f.prepare();await agent.commit({jobId:JOB});assert.equal((await agent.commit({jobId:JOB})).status,'committed');
 });
-for(const changed of['proof','time','phase'])nativeCommit(`retained native checkpoint ${changed} is reauthenticated before cached success`,async t=>{
+for(const changed of['proof','time','phase'])test(`retained native checkpoint ${changed} is reauthenticated before cached success`,async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();await agent.commit({jobId:JOB});agent.close();const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
  try{await state.withJob(JOB,session=>{if(changed==='proof')session.commitment.anchorReceipt.evidence.value='TEST-broken-proof';else if(changed==='time')session.commitment.committedAt++;else session.phaseResults[1].invokedAt++;state.saveSession(session);});}finally{state.close();}
  const fresh=await f.open();await assert.rejects(fresh.commit({jobId:JOB}),e=>['commitment_changed','seller_phase_conflict'].includes(e.code));assert.equal(f.local.writes.length,1);
