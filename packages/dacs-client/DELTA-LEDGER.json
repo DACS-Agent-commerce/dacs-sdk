@@ -3919,6 +3919,7 @@
           "after": "aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2"
         }
       ]
-    }
+    },
+    {"delta":"D11","subject":"fix(client): D11 record the current public diagnostic sources","files":[{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"b6179e3b5fb7afbdf0324c48e3c5711ff4b42922","after":"b6179e3b5fb7afbdf0324c48e3c5711ff4b42922"}]}
   ]
 }
