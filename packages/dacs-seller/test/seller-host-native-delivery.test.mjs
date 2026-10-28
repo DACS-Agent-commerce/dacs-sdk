@@ -1162,6 +1162,33 @@ test('a Deliverable submission that fails before anything is signed does not str
   }
 });
 
+// Regression (delivery recovery): the recorded delivery hold must not let a
+// retry skip the fresh payment-evidence check. A submission that failed before
+// signing leaves an ambiguous hold; while the buyer's payment evidence cannot
+// be read back, every retry is held and asks for no Deliverable. Only a fresh
+// authenticated payment read may drive recovery.
+test('a failed delivery does not skip the payment-evidence check: an unreadable payment holds it with no second submission', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('fail');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the first submission failed before signing');
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+  assert.equal(w.createsAt(deliverable), 0, 'nothing was signed');
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(paymentAddress(p)).hash;
+  for (const attempt of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', `attempt ${attempt}: ${shown(held)}`);
+    assert.notEqual(held.delivery?.status, 'delivery-ready', `attempt ${attempt}: ${shown(held)}`);
+  }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is asked for once');
+  assert.equal(w.createsAt(deliverable), 0);
+  w.node.faults.transactionDown = () => false;
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable, deliverable], 'asked again only after the payment is read back');
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
 // The proof is the capability's: a CREATE it signed and kept, whose answer was
 // lost before it was broadcast, reads back as a plain absence. The host holds
 // it and never asks again, since the kept bytes may still land.
