@@ -1517,7 +1517,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   async function finishDeliveryEvidence(session, work, pointer) {
-    if(!deliveryEvidenceEnabled)return nativeEvidenceResponse(work,pointer);
+    if(!deliveryEvidenceEnabled&&!session.deliveryEvidenceWork)return nativeEvidenceResponse(work,pointer);
     const ready=session.deliveryReady,report=deliveryReport(session,work.intake.settlementId),address=deliveryEvidenceAddress(session.jobId),evidence=ready.evidence;
     const held=(reason)=>nativeEvidenceResponse(work,{...pointer,evidencePublication:'held-readback-only',reason});
     if(!isNativeDeliveryEvidence(evidence,claim,address)||contentHash(evidence)!==ready.evidenceHash||evidence.deliverableContentHash!==sha256Hex(canonicalize(report)))return held('retained delivery evidence differs from the verified Deliverable');
@@ -1537,7 +1537,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       }else{
         if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
         read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence'});
-        if(read?.status==='absent')read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+        if(read?.status==='absent'&&deliveryEvidenceEnabled)read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }
     }catch(error){return held(String(error.message).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
