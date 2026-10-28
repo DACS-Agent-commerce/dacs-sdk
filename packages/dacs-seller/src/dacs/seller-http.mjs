@@ -158,6 +158,12 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         // for new work, recording the start in the reserve transaction.
         reservation = contextStep ? await context.reserve(request, body, authentication.store) : authentication.store.reserve(request, body);
         if (reservation.disposition === 'cached') agent.assertSettlementCredit?.(request.jobId);
+        if (reservation.disposition === 'cached' && reservation.status === 200 && ['/dacs/v1/commitments','/dacs/v1/commitments/signature'].includes(req.url)) {
+          const answer = await agent.readCommitment({jobId:request.jobId,signedProjection:body.signedProjection,
+            signatureAgreement:req.url==='/dacs/v1/commitments/signature'?body.agreement:undefined});
+          if (!['committed','commitment-held'].includes(answer?.status)) throw new SellerTransportError('commitment_readback_required',503);
+          return await send(res,200,answer,request,{text:await pointed(200,JSON.stringify(answer),request.jobId,req.url)});
+        }
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         if (reservation.disposition === 'uncertain') {
           // Resume only retained work through the authenticated reducers
