@@ -3733,6 +3733,7 @@
       "delta": "D11",
       "subject": "fix(client): D11 record the 07 lease formatting integration",
       "files": []
-    }
+    },
+    {"delta":"D11","subject":"fix(client): D11 record the current public diagnostic sources","files":[{"path":"packages/dacs-client/src/wallet/devnet-native-transport.mjs","before":"b6179e3b5fb7afbdf0324c48e3c5711ff4b42922","after":"b6179e3b5fb7afbdf0324c48e3c5711ff4b42922"}]}
   ]
 }
