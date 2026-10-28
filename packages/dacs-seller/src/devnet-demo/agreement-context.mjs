@@ -323,10 +323,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     // The bundle hash leaves presentation bytes out. Authenticate the exact
     // bundles this job retained (including the seller's signed presentation)
     // before accepting references derived from them.
-    const retained=await state.read(input.jobId).catch(()=>null);
+    const retained=await state.read(input?.jobId).catch(()=>null);
     if(!retained?.binding || !retained.presentation?.bundle
-      || !same(input.buyer?.identityBundle,retained.binding.buyerIdentityBundle)
-      || !same(input.seller?.identityBundle,retained.presentation.bundle))return false;
+      || !input?.buyer?.identityBundle || !input?.seller?.identityBundle
+      || !same(input.buyer.identityBundle,retained.binding.buyerIdentityBundle)
+      || !same(input.seller.identityBundle,retained.presentation.bundle))return false;
     for(const [role,authority,requirement] of [['buyer',wallet.claim,listing.buyerRequirement],['seller',input.buyer.identityBundle.presentedBy,SELLER_REQUIREMENT]]){
       const bundle=input[role].identityBundle,ref=input[role].vetRecordRef;
       const logicalAddress=compositeVerificationAddress(input.jobId,bundle.presentedBy);

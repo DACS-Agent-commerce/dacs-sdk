@@ -240,6 +240,24 @@ test('a finished job replays its retained seller Vet without a buyer verifier',a
  assert.equal(f.controls.signs,signs);
  f.base.close();
 });
+test('context authentication refuses an incomplete context instead of throwing',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
+  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
+ assert.equal(await p.contextAuthentic({}),false);
+ assert.equal(await p.contextAuthentic(null),false);
+ for(const [label,mutate] of [
+  ['no seller',ctx=>{delete ctx.seller;}],
+  ['null buyer',ctx=>{ctx.buyer=null;}],
+  ['no buyer bundle',ctx=>{delete ctx.buyer.identityBundle;}],
+  ['no seller bundle',ctx=>{delete ctx.seller.identityBundle;}],
+ ]){
+  const altered=context();mutate(altered);
+  assert.equal(await p.contextAuthentic(altered),false,label);
+ }
+ f.base.close();
+});
 test('context authentication binds the supplied references to the canonical anchor',async()=>{
  const f=productionFixture(),p=await f.provider(),input=f.input();
  const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
