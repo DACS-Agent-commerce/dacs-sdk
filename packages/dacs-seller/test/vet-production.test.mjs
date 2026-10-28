@@ -103,3 +103,26 @@ test('a losing evaluate race waits for the winner to retain its record',async()=
   assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);
  }finally{buyer.signBytes=buyerSign;f.base.close();}
 });
+test('a finished job fresh-reads and fresh-verifies the seller receipt',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input(),read=f.anchor.readRetained,verify=f.anchor.verifyReceipt;
+ const sellerAddress=compositeVerificationAddress(JOB,seller.claim),cached=new Map();let staleRead=false,staleVerify=false;
+ f.anchor.readRetained=async options=>{
+  const result=await read(options);
+  if(options.logicalAddress!==sellerAddress)return result;
+  // Emulate the native anchor's short immutable cache: an ordinary read may
+  // answer the retained finalized evidence; only `fresh` sees current state.
+  if(result.status==='present'&&!options.fresh)cached.set(sellerAddress,result);
+  if(options.fresh)return staleRead&&result.status==='present'?{...result,receipt:{...result.receipt,state:'accepted'}}:result;
+  return cached.get(sellerAddress)??result;
+ };
+ f.anchor.verifyReceipt=async options=>{
+  if(options.logicalAddress===sellerAddress&&staleVerify&&options.fresh)return 'invalid';
+  return verify(options);
+ };
+ const first=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);assert.equal(first.sellerVet.record.overallDecision,'pass');
+ staleRead=true;
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='seller_vet_receipt_invalid');
+ staleRead=false;staleVerify=true;
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='seller_vet_receipt_invalid');
+ f.base.close();
+});

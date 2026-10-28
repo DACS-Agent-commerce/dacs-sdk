@@ -229,9 +229,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     {jobId,evaluatedParty:bundle.presentedBy,bundleHash:identityBundleHash(bundle),requirement,verifier:authority,freshness:[],dealSpecific:[]},
     {nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,
       resolvePublicKey:signature=>sameCanonicalClaimIdentity(signature.signer,authority)?authority:null,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
-  const validReceipt = async (read,logicalAddress,artifact,authority) => read?.status==='present'
+  const validReceipt = async (read,logicalAddress,artifact,authority,{fresh=false}={}) => read?.status==='present'
     && read.receipt?.state==='finalized' && read.receipt?.observationDisposition==='established'
-    && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority})==='valid';
+    && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority,fresh})==='valid';
   const unattempted=(read,request)=>read?.status==='unattempted'
     && sameCanonicalClaimIdentity(read.issuer,request.buyer) && read.jobId===request.jobId
     && read.bundleHash===identityBundleHash(request.identityBundle)
@@ -344,12 +344,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
     if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid')fail('seller_vet_invalid','retained seller Vet is not authenticated by the buyer');
     if(record.overallDecision!=='pass')return {refused:nonPass(record)};
-    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});
+    // The native anchor caches verified readbacks briefly, and that cache is
+    // per provider instance. Returning success on a repeat therefore needs a
+    // fresh read and a fresh receipt verification, not cached evidence.
+    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
       read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>job.open()});
     }
-    if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
+    if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority,{fresh:true}))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
     const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(record),signer:authority};
     invocations.push({evaluatedParty:wallet.claim,recordRef:clone(recordRef),receipt:clone(read.receipt),record:clone(record),strictStatus:strict.status});
     return {record,recordRef,identityBundle};
