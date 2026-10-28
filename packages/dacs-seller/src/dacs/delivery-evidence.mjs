@@ -5,6 +5,8 @@ import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join(',')===[...keys].sort().join(',');
 
+// True only for a signed native delivery SettlementEvidence whose exact bytes,
+// job, writer, logical address and deliverable anchor are canonical. Never throws.
 export function isNativeDeliveryEvidence(value,writer,logicalAddress){
   if(!exact(value,['evidenceVersion','jobId','phase','outcome','dacsSdkAuditSourceHash','deliverableContentHash','deliverableAnchor','observedAt','signature'])
     ||!isSettlementEvidence(value)||value.evidenceVersion!=='1'||!isCanonicalJobId(value.jobId)||value.phase!=='deliver-storage-program'||value.outcome!=='success'
