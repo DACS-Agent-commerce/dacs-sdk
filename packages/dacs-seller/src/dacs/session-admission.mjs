@@ -41,6 +41,10 @@
 //    sha-256 hash. It is read once, and only for a requirement that names a
 //    presence-only claim; without it, or with another answer, such a
 //    requirement is refused.
+//    A requirement with verified claims replays only through the optional
+//    `vetEvidence = { resolveContent, resolveRecipe, isRecipeSignerAuthorized,
+//    isVerifyResultSignerAuthorized, verifyAuthorityAttestation }`, read with the
+//    admission readers' limits (see vetRecordProblem).
 //  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
@@ -110,6 +114,10 @@ export function sessionAdmissionConfig(value) {
   }
   if (value.readSessionRecipeRegistryPin !== undefined && typeof value.readSessionRecipeRegistryPin !== 'function') {
     throw new TypeError('sessionAdmission.readSessionRecipeRegistryPin must be a function when given');
+  }
+  const evidence = value.vetEvidence;
+  if (evidence !== undefined && (!object(evidence) || VET_EVIDENCE_READERS.some((name) => typeof evidence[name] !== 'function'))) {
+    throw new TypeError(`sessionAdmission.vetEvidence must expose ${VET_EVIDENCE_READERS.join(', ')}`);
   }
   return value;
 }
@@ -238,18 +246,79 @@ export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
   return null;
 }
 
+// The readers of `sessionAdmission.vetEvidence`, the operator's authenticated
+// evidence for a record whose requirement names verified claims.
+const VET_EVIDENCE_READERS = ['resolveContent', 'resolveRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'];
+// One strict replay reads its evidence within this time in total, on top of
+// each read's own byte, value and deadline limits.
+const VET_EVIDENCE_REPLAY_TIMEOUT_MS = 30_000;
+// Without `vetEvidence` nothing resolves, so a requirement whose decision needs
+// a result body is unresolved and refused.
+const NO_EVIDENCE_DEPS = Object.freeze({ resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
+  verifyAuthorityAttestation: () => 'unresolved' });
+
+// The evidence reads of one replay, each bounded by readAdmissionCapability
+// and all by one deadline. The first failure is kept so the caller sees the
+// real cause (timeout, oversize, throw), not the verifier's "unresolved".
+function vetEvidenceReads(evidence, scope) {
+  let expired = false, failure;
+  const timer = setTimeout(() => { expired = true; }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
+  const read = async (method, input, decode = (reply) => reply) => {
+    try {
+      if (expired) throw new DOMException('the Vet evidence deadline expired', 'TimeoutError');
+      return decode(await readAdmissionCapability(evidence, method, { ...scope, ...input }));
+    } catch (error) { failure ??= error; throw error; }
+  };
+  return { read, failure: () => failure, close: () => clearTimeout(timer) };
+}
+
+// The content shape the core verifier takes from an operator reply: null
+// (absent), canonical JSON, or base64url bytes. Anything else is malformed.
+function vetEvidenceContent(reply) {
+  if (reply === null) return null;
+  if (exactKeys(reply, ['encoding', 'value'])) {
+    if (reply.encoding === 'canonical-json' && object(reply.value)) return reply;
+    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) return { encoding: 'bytes', value: Uint8Array.from(Buffer.from(reply.value, 'base64url')) };
+  }
+  throw new TypeError('the Vet evidence content reply is malformed');
+}
+
+// The core verifier's resolvers over the operator's readers. Content is
+// authenticated by the verifier itself (hash against its reference, both
+// signatures); the operator decides which signers may sign and whether the
+// authority proof holds. Only an explicit `true` authorizes a signer, and only
+// `valid` or `unresolved` is a usable attestation verdict.
+const vetEvidenceDeps = (read) => ({
+  resolve: (ref) => read('resolveContent', { anchor: ref.anchor, contentHash: ref.contentHash }, vetEvidenceContent),
+  resolveRecipe: (selector) => read('resolveRecipe', selector),
+  isRecipeSignerAuthorized: async (recipe, signature) => (await read('isRecipeSignerAuthorized', { recipe, signature })) === true,
+  isVerifyResultSignerAuthorized: async (result, signature, expected) => (await read('isVerifyResultSignerAuthorized', { result, signature, expected })) === true,
+  verifyAuthorityAttestation: async (input) => {
+    const verdict = await read('verifyAuthorityAttestation', input);
+    return verdict === 'valid' || verdict === 'unresolved' ? verdict : 'invalid';
+  },
+});
+
+// The core verifier's expectation for each invocation result: the retained
+// `sourceJobId` is bound to the job by the invocation check, not by the verifier.
+const expectedResults = (results) => results.map(({ ref, scheme, identifier, method, requirement }) => ({ ref, scheme, identifier, method, requirement }));
+
 // The reason a resolved Vet record does not back its reference and the
 // requirement invocation that names it, or null. `verifier` is the evaluated
 // party's counterparty (DACS-2 §7.7.2). DACS-2 §7.7.1: the record must hash
 // the invocation's exact BundleRequirement (`requirementHash`) and its
 // decision must replay from the invocation's expected results under the core
-// strict verifier. No VerifyResult resolver is configured, so a requirement
-// whose decision needs a result body is unresolved and refused. A presence-only
-// claim needs none (DACS-2 forbids a synthetic result for it): its record is
-// replayed over the exact `presence.bundle`, whose presentation is verified
-// (BP-4), against the operator's `presence.registryPin` (PCR-6, CRQ-1), and is
-// refused without a valid pin.
-export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, verifier, invocation, now, presence }) {
+// strict verifier. The VerifyResults, recipes and authority proofs that replay
+// needs come from the operator's `evidence` (`sessionAdmission.vetEvidence`),
+// read for this `role`'s record. Without it a requirement whose decision needs
+// a result body is unresolved and refused. Throws the first failure of an
+// evidence reader (timeout, oversize, a throw): that is unavailable evidence,
+// not a record that fails its requirement.
+// A presence-only claim needs no VerifyResult (DACS-2 forbids a synthetic
+// result): its record is replayed over the exact `presence.bundle`, whose
+// presentation is verified (BP-4), against the operator's `presence.registryPin`
+// (PCR-6, CRQ-1), and is refused without a valid pin.
+export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
@@ -260,16 +329,21 @@ export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, 
   const presenceOnly = hasPresenceOnlyClaim(invocation.requirement);
   const registryPin = presence?.registryPin;
   if (presenceOnly && !REGISTRY_PIN_PATTERN.test(registryPin)) return 'the Vet requirement names a presence-only claim and no pinned registry authority was supplied';
-  let strict;
+  const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
+  // The verifier checks every signature itself with the signer's own key; the
+  // operator's policy decides which signers other than the verifier may sign.
+  const resolvePublicKey = (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : reads && signature.algorithm === 'ed25519' ? signature.signer : null);
+  let strict, thrown;
   try {
     strict = await verifyCompositeVerificationRecord(record,
-      { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: invocation.freshness, dealSpecific: invocation.dealSpecific,
+      { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific),
         ...(presenceOnly ? { presence: { bundle: presence.bundle, sessionRecipeRegistrySnapshotHash: registryPin } } : {}) },
-      { nowMs: now, resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
-        resolvePublicKey: (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : null), verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
-        verifyAuthorityAttestation: () => 'unresolved', isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
+      { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
+        isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
         verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash) });
-  } catch (error) { return `the Vet record does not verify against its requirement: ${String(error?.message ?? error).slice(0, 120)}`; }
+  } catch (error) { thrown = error; } finally { reads?.close(); }
+  if (reads?.failure() !== undefined) throw reads.failure();
+  if (thrown) return `the Vet record does not verify against its requirement: ${String(thrown?.message ?? thrown).slice(0, 120)}`;
   if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;
   return null;
 }

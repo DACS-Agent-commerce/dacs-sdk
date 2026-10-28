@@ -10,10 +10,12 @@ import {compositeVerificationAddress,vetPhaseFailureClass} from '@kynesyslabs/da
 const buyer='did:demos:agent:'+'1'.repeat(64),seller='did:demos:agent:'+'2'.repeat(64),jobId='01ARZ3NDEKTSV4RRFFQ69G5FAW';
 let decision='pass',nonPassParty=buyer,records=new Map(),madeRequirements=[],strictRequirements=[];
 globalThis.__d5Strict=async(_record,expected)=>{strictRequirements.push(structuredClone(expected.requirement));return {status:'valid'}};
-globalThis.__d5PartyVet=async input=>{
+globalThis.__d5PartyVet=async (input,deps)=>{
  madeRequirements.push(structuredClone(input.requirement));
  const record={recordVersion:'1',jobId:input.jobId,evaluatedParty:input.evaluatedParty,overallDecision:input.evaluatedParty===nonPassParty?decision:'pass',signature:{signer:seller}};
- records.set(compositeVerificationAddress(input.jobId,input.evaluatedParty),record);
+ const address=compositeVerificationAddress(input.jobId,input.evaluatedParty);
+ await deps.operationStore.compareAndSet({operationKey:address,expected:await deps.operationStore.load(address),next:{stage:'complete',record}});
+ records.set(address,record);
  return {record,recordRef:{anchor:{kind:'storage-program',locator:'native'},contentHash:'a'.repeat(64),signer:seller},receipt:{nativeAddress:'native'}};
 };
 const sourceUrl=new URL('../src/devnet-demo/agreement-context.mjs',import.meta.url);
@@ -30,7 +32,7 @@ const {seller:fixtureSeller}=await import('./helpers/protocol-fixture.mjs');
 const sdkFixtureListing=fixtureListing(fixtureSeller,{now:1800000000000});sdkFixtureListing.seller.identity={...bundleTemplate()};
 function bundleTemplate(){return {presentedBy:seller,bundleVersion:'1',presentedAt:1800000000000,sessionNonce:'b'.repeat(64),claims:[{ref:seller}]};}
 const {listingPin:pinFor}=await import('../src/dacs/purchase-protocol.mjs');
-const scope={jobId,generatedAt:1800000000000,payee:'0x'+'2'.repeat(64)};
+const scope={jobId,listingPin:pinFor(sdkFixtureListing),generatedAt:1800000000000,payee:'0x'+'2'.repeat(64)};
 const bundle={presentedBy:buyer,bundleVersion:'1',presentedAt:scope.generatedAt,sessionNonce:'a'.repeat(64),claims:[{ref:buyer}],presentation:{kind:'per-claim',signatures:[{ref:buyer,signature:'fixture'}]}};
 function provider(buyerRequirement={requirementVersion:'1',required:[],preferredPresentation:'any'}){
  let store=stores.get(records);if(!store){store=createInMemoryPartyVetStore();stores.set(records,store);}
@@ -40,12 +42,16 @@ function provider(buyerRequirement={requirementVersion:'1',required:[],preferred
  }};
  return createDevnetDemoAgreementContextProvider({anchor:{writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:()=>Buffer.alloc(64)},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
 }
+async function retainProofs(){
+ const store=stores.get(records),[key]= (await store.entries())[0];
+ await store.update(key,row=>{row.ops.buyer.checkpoints={exact:{stage:'complete',record:structuredClone(records.get(compositeVerificationAddress(jobId,buyer)))}};row.counterpartyRecord=structuredClone(records.get(compositeVerificationAddress(jobId,seller)));return row;});
+}
 for(const party of [buyer,seller])for(const value of ['fail','indeterminate','error'])test(`VPC4 ${party===buyer?'buyer':'seller'} ${value}: valid record never creates initial or recovered context`,async()=>{
  records=new Map();decision=value;nonPassParty=party;const p=provider();
  const answer=await p.resolveBuyer({scope,buyerIdentityBundle:bundle});assert.deepEqual(answer,{disposition:'rejected',code:'party_vet_non_pass',errorClass:value==='fail'?'counterparty':'permanent',reason:`${party===buyer?'buyer':'seller'} Vet decision: ${value}`});assert.equal(p.contexts.size,0);
  // Supply both authenticated records to the recovery path, retaining the non-pass decision.
  for(const evaluatedParty of [buyer,seller])records.set(compositeVerificationAddress(jobId,evaluatedParty),{recordVersion:'1',jobId,evaluatedParty,overallDecision:evaluatedParty===party?value:'pass',signature:{signer:evaluatedParty===seller?buyer:seller}});
- assert.deepEqual(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),answer);assert.equal(p.contexts.size,0);
+ await retainProofs();assert.deepEqual(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),answer);assert.equal(p.contexts.size,0);
 });
 test('VPC4 pass control can produce context and recover it read-only',async()=>{
  records=new Map();decision='pass';const p=provider();assert.equal((await p.resolveBuyer({scope,buyerIdentityBundle:bundle})).disposition,'present');
@@ -55,9 +61,9 @@ test('VPC4 pass control can produce context and recover it read-only',async()=>{
 test('VPC2 initial, retained and recovered contexts keep distinct buyer and explicit empty seller requirements',async()=>{
  records=new Map();decision='pass';madeRequirements=[];strictRequirements=[];
  const buyerRequirement={requirementVersion:'1',required:[{scheme:'key',verificationRequired:false}],preferredPresentation:'any'},empty={requirementVersion:'1',required:[],preferredPresentation:'any'};
- const p=provider(buyerRequirement);await p.resolveBuyer({scope,buyerIdentityBundle:bundle});assert.deepEqual(madeRequirements,[buyerRequirement,empty]);assert.deepEqual(strictRequirements,[buyerRequirement,empty,empty,buyerRequirement,empty]);
+ const p=provider(buyerRequirement),boundScope={...scope,listingPin:pinFor({...sdkFixtureListing,buyerRequirement})};await p.resolveBuyer({scope:boundScope,buyerIdentityBundle:bundle});assert.deepEqual(madeRequirements,[buyerRequirement,empty]);assert.deepEqual(strictRequirements,[buyerRequirement,empty,empty,buyerRequirement,empty]);
  const retained=await p.resolveSeller({jobId,listingPin:pinFor({...sdkFixtureListing,buyerRequirement}),buyerIdentityBundle:bundle,generatedAt:scope.generatedAt});assert.deepEqual(retained.value.vetRequirements.map(r=>r.requirement),[buyerRequirement,empty]);
- strictRequirements=[];await provider(buyerRequirement).recoverBuyer({scope,buyerIdentityBundle:bundle});assert.deepEqual(strictRequirements,[buyerRequirement,empty]);
+ strictRequirements=[];await provider(buyerRequirement).recoverBuyer({scope:boundScope,buyerIdentityBundle:bundle});assert.deepEqual(strictRequirements,[buyerRequirement,empty]);
 });
 
 // The route parses the sole Demos presentation before invoking this profile's
@@ -79,6 +85,7 @@ test('VPC4 an unknown authenticated decision cannot become pass or a classified 
  await assert.rejects(p.resolveBuyer({scope,buyerIdentityBundle:bundle}),/unknown DACS-2 verification decision/);
  assert.equal(p.contexts.size,0);
  records.set(compositeVerificationAddress(jobId,buyer),{recordVersion:'1',jobId,evaluatedParty:buyer,overallDecision:'unknown',signature:{signer:seller}});
+ records.set(compositeVerificationAddress(jobId,seller),{recordVersion:'1',jobId,evaluatedParty:seller,overallDecision:'pass',signature:{signer:buyer}});await retainProofs();
  await assert.rejects(p.recoverBuyer({scope,buyerIdentityBundle:bundle}),/unknown DACS-2 verification decision/);
  assert.equal(p.contexts.size,0);
 });
