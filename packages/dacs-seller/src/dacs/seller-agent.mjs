@@ -338,7 +338,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // counterparty-signed records and their verified SR-2 receipts (DACS-2
   // VPC-3). Anything else is held: never restored and never returned.
   function retainedChallengeProblem(session) {
-    if (!durable) return null;
+    if (!nativeProfile || !durable) return null;
     const bundle = session.buyerBundle, nonce = bundle?.sessionNonce;
     const challenge = durable.challenge(nonce);
     if (!challenge) return 'the retained session names no challenge this seller issued';
@@ -352,8 +352,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!/^[0-9a-f]{64}$/.test(ref.contentHash) || !sameCanonicalClaimIdentity(ref.signer, verifier)) return 'the retained Vet reference is not signed by its counterparty verifier';
     return null;
   }
+  const retainedVetRefs=session=>session.vetCheckpoint??(session.demDeliveryContext?.input?{buyer:session.demDeliveryContext.input.buyer.vetRecordRef,seller:session.demDeliveryContext.input.seller.vetRecordRef}:null);
   function retainedVetCheckpointProblem(session) {
-    const checkpoint = session.vetCheckpoint;
+    if(!nativeProfile)return null;
+    const checkpoint = retainedVetRefs(session);
     if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint) || Object.keys(checkpoint).sort().join(',') !== 'buyer,seller') return 'the retained session has no exact buyer and seller Vet checkpoint';
     const buyer = session.buyerBundle?.presentedBy;
     if (typeof buyer !== 'string' || buyer.length === 0 || buyer.normalize('NFC') !== buyer) return 'the retained session names no canonical buyer';
@@ -364,10 +366,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return null;
   }
   async function retainedVetEvidenceProblem(session) {
+    if(!nativeProfile)return null;
+    const checkpoint=retainedVetRefs(session);
     if (!admission) return 'the seller has no session admission to authenticate retained Vet records';
     const parties = [
-      ['buyer', session.buyerBundle.presentedBy, session.vetCheckpoint.buyer, identityBundleHash(session.buyerBundle), claim],
-      ['seller', claim, session.vetCheckpoint.seller, identityBundleHash(session.sellerBundle ?? listing.seller.identity), session.buyerBundle.presentedBy],
+      ['buyer', session.buyerBundle.presentedBy, checkpoint.buyer, identityBundleHash(session.buyerBundle), claim],
+      ['seller', claim, checkpoint.seller, identityBundleHash(session.sellerBundle ?? session.demDeliveryContext?.input?.seller?.identityBundle ?? listing.seller.identity), session.buyerBundle.presentedBy],
     ];
     for (const [role, party, ref, bundleHash, verifier] of parties) {
       let record, receipt, verdict;
