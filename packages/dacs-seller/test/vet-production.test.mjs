@@ -84,3 +84,82 @@ test('a retained record read after a failed evaluate is still verified against t
  f.counterparty.evaluate=async input=>{await evaluate(input);throw new Error('TEST reply lost');};
  await assert.rejects(f.run(),e=>e.code==='seller_vet_invalid');assert.equal(f.local.writes.length,1);f.base.close();
 });
+test('a losing evaluate race waits for the winner to retain its record',async()=>{
+ const f=productionFixture(),first=await f.provider(),second=await f.provider(),input=f.input(),read=f.counterparty.readRecord,buyerSign=buyer.signBytes;
+ let arrived=0,releaseReads;const both=new Promise(resolve=>{releaseReads=resolve;});
+ let held=false,releaseSign;const holdSign=new Promise(resolve=>{releaseSign=resolve;});
+ f.counterparty.readRecord=async request=>{
+  const answer=await read(request);
+  if(answer.status==='unattempted'&&++arrived<=2){if(arrived===2)releaseReads();await both;}
+  else if(answer.status==='indeterminate'&&held)setTimeout(releaseSign,0);
+  return answer;
+ };
+ // The first evaluation consumes the one-use nonce and then stalls in signing,
+ // so the second provider observes an in-progress ledger before a result exists.
+ buyer.signBytes=bytes=>{if(!held){held=true;return holdSign.then(()=>buyerSign(bytes));}return buyerSign(bytes);};
+ try{
+  const runs=await Promise.all([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
+  for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
+  assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);
+ }finally{buyer.signBytes=buyerSign;f.base.close();}
+});
+test('a finished job fresh-reads and fresh-verifies the seller receipt',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input(),read=f.anchor.readRetained,verify=f.anchor.verifyReceipt;
+ const sellerAddress=compositeVerificationAddress(JOB,seller.claim),cached=new Map();let staleRead=false,staleVerify=false;
+ f.anchor.readRetained=async options=>{
+  const result=await read(options);
+  if(options.logicalAddress!==sellerAddress)return result;
+  // Emulate the native anchor's short immutable cache: an ordinary read may
+  // answer the retained finalized evidence; only `fresh` sees current state.
+  if(result.status==='present'&&!options.fresh)cached.set(sellerAddress,result);
+  if(options.fresh)return staleRead&&result.status==='present'?{...result,receipt:{...result.receipt,state:'accepted'}}:result;
+  return cached.get(sellerAddress)??result;
+ };
+ f.anchor.verifyReceipt=async options=>{
+  if(options.logicalAddress===sellerAddress&&staleVerify&&options.fresh)return 'invalid';
+  return verify(options);
+ };
+ const first=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);assert.equal(first.sellerVet.record.overallDecision,'pass');
+ staleRead=true;
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='seller_vet_receipt_invalid');
+ staleRead=false;staleVerify=true;
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='seller_vet_receipt_invalid');
+ f.base.close();
+});
+for(const [status,code] of [['rejected','seller_vet_receipt_invalid'],['indeterminate','indeterminate']])test(`a ${status} seller publication reply keeps its reason and class`,async()=>{
+ const f=productionFixture(),publish=f.anchor.publish,sellerAddress=compositeVerificationAddress(JOB,seller.claim);
+ f.anchor.publish=async options=>options.logicalAddress===sellerAddress?{status,reason:`TEST ${status}`}:publish(options);
+ await assert.rejects(f.run(),e=>e.code===code&&e.cause?.status===status&&String(e.message).includes(`TEST ${status}`));f.base.close();
+});
+test('a resumed signed presentation without a buyer verifier is refused before any callback',async()=>{
+ const f=productionFixture(),read=f.counterparty.readRecord;let fail=true;
+ f.counterparty.readRecord=async request=>{if(fail){fail=false;throw Object.assign(new Error('TEST ledger unavailable'),{code:'ECONNREFUSED'});}return read(request);};
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable');
+ f.config.counterparty=null;
+ const provider=await f.provider(),input=f.input();
+ await assert.rejects(provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_required'&&e.cause===undefined);
+ f.base.close();
+});
+test('context authentication binds the supplied references to the canonical anchor',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
+  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
+ assert.equal(await p.contextAuthentic(context()),true);
+ for(const [role,field,value] of [['buyer','kind','https'],['buyer','locator','https://absent.invalid/wrong'],['seller','kind','https'],['seller','locator','https://absent.invalid/wrong']]){
+  const altered=context();altered[role].vetRecordRef.anchor[field]=value;
+  assert.equal(await p.contextAuthentic(altered),false,`${role} ${field}`);
+ }
+ f.base.close();
+});
+test('context authentication binds the exact identity bundles including presentations',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
+  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
+ const unsigned=context();delete unsigned.seller.identityBundle.presentation;
+ assert.equal(await p.contextAuthentic(unsigned),false);
+ const changed=context();changed.buyer.identityBundle.presentedAt-=1;
+ assert.equal(await p.contextAuthentic(changed),false);
+ f.base.close();
+});
