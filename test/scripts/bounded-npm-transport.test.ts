@@ -164,6 +164,18 @@ describe("inert bounded npm HTTP admission", () => {
     transport.request().emit("response", response([gzipSync(Buffer.alloc(65 * 1024 * 1024))]));
     expect(await rejected).toMatchObject({ code: "ELIMIT" });
   });
+  it("keeps the audit budget even when a gzip body would expand into a tar", async () => {
+    // The tar promotion belongs to archive-capable metadata requests; an audit
+    // reply stays at its own decoded ceiling.
+    const tar = Buffer.alloc(512 + 17 * 1024 * 1024);
+    tar.write("ustar", 257, "latin1");
+    const pending = Object.assign(new EventEmitter(), { path: "/-/npm/v1/security/audits/quick", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
+    transport.request().emit("response", response([gzipSync(tar)]));
+    expect(await rejected).toMatchObject({ code: "ELIMIT" });
+  });
   it("keeps separate finite wire and unpacked archive bounds", async () => {
     const archive = gzipSync(Buffer.alloc(2048));
     expect(await readBoundedResponse(response([archive]), 1024, false, 4096)).toEqual(archive);

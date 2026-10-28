@@ -108,11 +108,11 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
       try {
         decodeBounded(bytes, gunzipSync, maximum);
       } catch (error) {
-        // A registry may redirect an archive to a suffixless download URL, so
-        // the path alone cannot deny the archive budget. Admit an over-budget
-        // gzip body only when its payload is a tar stream npm's reader can
-        // consume; JSON responses stay limited to their own path budget.
-        if (error.code !== "ELIMIT" || maximum >= archiveMaximum) throw error;
+        // A direct suffixless download URL may still serve an archive npm's
+        // reader consumes, so the metadata budget admits an over-budget gzip
+        // body when its payload is a tar stream. Every other route, including
+        // the audit budget, keeps its own decoded ceiling.
+        if (error.code !== "ELIMIT" || maximum !== NPM_METADATA_MAX_BYTES) throw error;
         if (!isTarArchive(decodeBounded(bytes, gunzipSync, archiveMaximum))) throw limitError();
       }
     }
