@@ -1,7 +1,7 @@
 import { createPrivateKey, randomBytes, sign } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { lstat, mkdir, readFile, realpath, unlink } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { publishFileExclusive, syncDirectory } from './durable-file.mjs';
 import { createSdkWalletSession, createDevnetAgreementWalletTransport } from '../../public/portal/embedded-wallet/sdk-provider.mjs';
 import { claimForAddress } from '../wallet/demos-signature.mjs';
@@ -14,7 +14,15 @@ const checkRole=(role)=>{if(!Object.hasOwn(FILES,role))throw new TypeError('wall
 
 async function privateDirectory(path){
   path=resolve(path);await mkdir(path,{recursive:true,mode:0o700});
-  path=await realpath(path);const info=await lstat(path);if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid()))throw new Error('operator custody directory must be a private real mode-0700 directory owned by this process user');return path;
+  path=await realpath(path);const info=await lstat(path);if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid()))throw new Error('operator custody directory must be a private real mode-0700 directory owned by this process user');
+  // A prior attempt or another caller may have created private entries without
+  // syncing them. Include their first non-private parent: mode-0700 mkdir cannot
+  // have created that ancestor, so its own parent entry is outside this creation.
+  for(let parent=dirname(path);;parent=dirname(parent)){
+    await syncDirectory(parent);
+    if(((await lstat(parent)).mode&0o077)!==0||dirname(parent)===parent)break;
+  }
+  return path;
 }
 async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');}
 
@@ -103,11 +111,13 @@ async function ensureWallet({directory,role,Demos}){
 /**
  * Makes the buyer and seller test wallet files in a private custody directory.
  * Each file is published whole (synced temporary file, then a link) and the
- * directory is synced before this returns. A role file that is already there is
- * kept as it is, so a run that stopped between the two files, or a repeat, ends
+ * directory, its private ancestors and their containing parent are synced before
+ * this returns. A role file that is already there is kept as it is, so a run
+ * that stopped between the two files, or a repeat, ends
  * with the same pair and never replaces a mnemonic. Returns the directory and
  * both wallets (role, address, claim, path); recovery phrases are not returned.
- * Throws when a role file exists but is not a private, whole record of its role.
+ * Throws on directory sync failure or when a role file exists but is not a
+ * private, whole record of its role.
  */
 export async function bootstrapTestWalletCustody({directory,publicOrigin}){
   directory=await privateDirectory(directory);const {Demos}=await runtime(publicOrigin);const wallets=[];
@@ -118,6 +128,7 @@ export async function bootstrapTestWalletCustody({directory,publicOrigin}){
 
 // inProcessRelay(address), optional, returns {run(work)}: every request of
 // this wallet runs inside it (the operator seller's in-process source relay).
+// Private custody ancestors and their parent are synced before opening; failures throw.
 export async function openTestWalletCustody({directory,role,publicOrigin,transactionTransport,anchorJournal,approve,inProcessRelay=null}){
   role=checkRole(role);directory=await privateDirectory(directory);const path=join(directory,FILES[role]);await exactPrivateFile(path);
   const record=await readWalletRecord(path,role);
@@ -175,6 +186,8 @@ async function readOperatorSecret(path){
  * creating the file first when it is missing. A new file is published whole and synced
  * with its directory before the key is returned; when another writer publishes first,
  * that writer's key is returned. Throws when the stored record is not private or is malformed.
+ * Private custody ancestors and their parent are synced on every call, including
+ * repeats; an open or sync failure throws.
  */
 export async function ensureOperatorSecret({directory}){
   directory=await privateDirectory(directory);const path=join(directory,'app-secret.json');

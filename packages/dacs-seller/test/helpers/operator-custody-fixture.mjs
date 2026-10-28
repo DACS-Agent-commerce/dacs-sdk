@@ -20,7 +20,7 @@ export class Demos {
     if (state.failGenerationAt === state.generated) throw new Error('TEST key generation failed');
     return \`TEST mnemonic \${state.generated}\`;
   }
-  async connectWallet(mnemonic) { this.mnemonic = mnemonic; }
+  async connectWallet(mnemonic) { this.mnemonic = mnemonic; this.keypair = { privateKey: new Uint8Array(32) }; }
   getAddress() { return \`addr-\${this.mnemonic.replace(/\\W/g, '')}\`; }
   disconnect() {}
 }`;
@@ -34,9 +34,14 @@ const state = globalThis[${JSON.stringify(key)}];
 const record = (...parts) => state.events.push(parts.join(' '));
 export async function open(path, ...rest) {
   record('open', path, rest[0]);
+  if (state.failOpen?.(path)) throw state.filesystemError;
   const handle = await real.open(path, ...rest);
   return new Proxy(handle, { get(target, property) {
-    if (property === 'sync') return async () => { record('sync', path); return target.sync(); };
+    if (property === 'sync') return async () => {
+      record('sync', path);
+      if (state.failSync?.(path)) throw state.filesystemError;
+      return target.sync();
+    };
     if (property === 'close') return async () => { record('close', path); return target.close(); };
     if (property === 'writeFile') return async (data, ...more) => {
       record('write', path);
@@ -47,6 +52,14 @@ export async function open(path, ...rest) {
     return typeof value === 'function' ? value.bind(target) : value;
   } });
 }
+export async function mkdir(path, ...rest) {
+  record('mkdir', path);
+  await state.beforeMkdir?.(path);
+  const created = await real.mkdir(path, ...rest);
+  state.mkdirCreated.push(created);
+  return created;
+}
+export async function readFile(path, ...rest) { record('readFile', path); return real.readFile(path, ...rest); }
 export async function link(temporary, path) { record('link', temporary, path); await state.beforePublish?.(path); return real.link(temporary, path); }
 export async function unlink(path) { record('unlink', path); return real.unlink(path); }
 export async function writeFile(path, data, ...rest) {
@@ -60,13 +73,16 @@ export async function writeFile(path, data, ...rest) {
 /**
  * Loads the real custody source with stubbed imports.
  * Returns the custody exports, the load's `state` (record of file operations in
- * `events`, and the hooks `failWrite(path)`, `beforePublish(path)` and the key
- * generation counter `failGenerationAt`) and `normalized(directory)`, which
+ * `events`, and the hooks `failWrite(path)`, `beforePublish(path)`, `beforeMkdir(path)`,
+ * `failOpen(path)`, `failSync(path)`, the injected `filesystemError`, the mkdir
+ * results in `mkdirCreated`, and the key generation counter `failGenerationAt`)
+ * and `normalized(directory)`, which
  * returns the events with the directory and the temporary-file suffix masked.
  */
 export async function loadCustody() {
   const key = `TEST_CUSTODY_FIXTURE_${(loads += 1)}`;
-  const state = { events: [], generated: 0, failGenerationAt: null, failWrite: null, beforePublish: null };
+  const state = { events: [], generated: 0, failGenerationAt: null, failWrite: null, beforePublish: null,
+    beforeMkdir: null, mkdirCreated: [], failOpen: null, failSync: null, filesystemError: null };
   globalThis[key] = state;
   const fileSystem = dataUrl(filesystemStub(key));
   const swap = (source, replacements) => replacements.reduce((text, [from, to]) => text.split(from).join(to), source);
