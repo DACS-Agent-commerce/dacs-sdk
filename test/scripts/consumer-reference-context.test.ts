@@ -28,14 +28,19 @@ it.each([0, 23])("checks the consumer reference on the read-only install before 
       npm() { printf 'npm:%s\n' "$*" >> "$TRACE"; if [ "$1" = --version ]; then echo 11.19.0; fi; }
       node() {
         if [ "$1" = -p ]; then echo '{}'; return 0; fi
+        printf 'checker-npm:%s cache:%s omit:%s\n' "\${npm_execpath-}" "$npm_config_cache" "$npm_config_omit" >> "$TRACE"
         if [ "$#" -ne 7 ]; then return 97; fi; printf 'node:%s:%s\n' "$PWD" "$*" >> "$TRACE"; return "$POLICY_STATUS";
       }
     `;
     const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", stubs + snippet], {
       cwd: working, encoding: "utf8", env: { PATH: process.env.PATH, TRACE: trace, POLICY_STATUS: String(status),
-        DACS_PACKAGE_VERSION: "0.1.0-test", npm_config_registry: "http://127.0.0.1:4873", npm_config_omit: "optional" },
+        DACS_PACKAGE_VERSION: "0.1.0-test", npm_config_registry: "http://127.0.0.1:4873", npm_config_omit: "optional",
+        npm_config_cache: "/work/.npm-cache" },
     });
     const commands = readFileSync(trace, "utf8");
+    // Module loading and reference replay must use the just-installed client,
+    // while archive reads still use the read-only original installation cache.
+    expect(commands).toContain("checker-npm:/tmp/npm/lib/node_modules/npm/bin/npm-cli.js cache:/work/.npm-cache omit:optional");
     expect(commands).toContain(`node:${working}:`);
     expect(commands).toContain(`--dependency-policy ${working} http://127.0.0.1:4873 ${out}/dependency-policy.json`);
     expect(readFileSync(join(out, "dependency-policy.exit-code"), "utf8")).toBe(status + "\n");
