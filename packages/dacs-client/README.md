@@ -96,6 +96,8 @@ After `npm ci` and `npm run build` at the SDK root, run `npm test --workspace @k
 
 The reciprocal integrity record pins the complete package tree, exact bytes and Git modes. Package changes require a reviewed re-pin and an enumerated source delta. The raw JSON default remains 1 MiB; bounded opt-in RPC and Directory limits and exact signed-content comparisons are unchanged.
 
+Delta records also check parent continuity against the newest ancestor records for each path, or the publication baseline when no earlier record exists. A later record cannot legitimize a stale merge, deletion or restoration. Divergent parallel records require an explicit record of the merge resolution; that choice then constrains descendant records.
+
 ### Operations store contract
 
 `ops` is a trusted, synchronous application service using the same SQLite connection and transaction as the coordinate store. All methods must throw their original errors. Required methods are listed below. A hydrated operation has these fields:

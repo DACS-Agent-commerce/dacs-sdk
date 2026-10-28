@@ -94,12 +94,30 @@ export function checkDeltas(packageDir=pkg) {
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
-        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,after:f.after}]);
+        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,before:f.before,after:f.after}]);
         for(const [rev,want] of [[`${sha}^`,f.before],[sha,f.after]]) {
           let actual=null;try{actual=git('rev-parse','--verify',`${rev}:${f.path}`);}catch{}
           if(actual!==want) failures.push(`${f.path}: delta ${c.delta} blob differs at ${rev}`);
         }
       }
+    }
+  }
+  // A merge can already have discarded a reviewed blob before the next
+  // record. Check every record against its ancestors, not just its actual
+  // parent or the terminal blob. Resolve all records first: ledger order and
+  // unrelated sibling records must not determine continuity.
+  const independent=shas=>git('merge-base','--independent',...shas).split('\n');
+  const ancestors=new Map();
+  for(const [path,records] of recorded) {
+    let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    for(const {sha,before} of records) {
+      if(!ancestors.has(sha)) ancestors.set(sha,new Set(git('rev-list',`${BASELINE}..${sha}^`).split('\n')));
+      const previous=records.filter(record=>ancestors.get(sha).has(record.sha));
+      const expected=previous.length?expectedBlob(previous,independent):{blob:baseline};
+      // Divergent newest ancestors require an explicit resolution record.
+      // Its actual parent/commit bytes are checked above; once recorded,
+      // that resolution constrains every descendant in turn.
+      if(!expected.conflict&&before!==expected.blob) failures.push(`${path}: delta parent is discontinuous at ${sha}`);
     }
   }
   const inventory=JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'));
@@ -132,7 +150,6 @@ export function checkDeltas(packageDir=pkg) {
   // Merges are not record subjects, so HEAD, the index and the working bytes
   // must all hold the newest recorded blob; a merge that keeps a stale side,
   // rolls back or deletes a recorded file fails here.
-  const independent=shas=>git('merge-base','--independent',...shas).split('\n');
   for(const path of allowed) {
     let expected=null;
     if(recorded.has(path)) {

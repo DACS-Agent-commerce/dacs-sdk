@@ -2751,6 +2751,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1056`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1058`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1074`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1084` |
 | fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| fix(client): validate delta record ancestor continuity | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): validate delta record ancestor continuity | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): validate delta record ancestor continuity | `packages/dacs-client/HOLD.json:1` |
+| fix(client): validate delta record ancestor continuity | `packages/dacs-client/README.md:1` |
+| fix(client): validate delta record ancestor continuity | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): validate delta record ancestor continuity | `packages/dacs-client/scripts/delta-continuity.test.mjs:1` |
+| fix(client): validate delta record ancestor continuity | `packages/dacs-client/scripts/delta-map.mjs:1` |
 
 ## Original moved files
 
