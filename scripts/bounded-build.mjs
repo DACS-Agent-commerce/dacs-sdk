@@ -2,6 +2,7 @@
 import { constants, copyFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { requireDirectory } from "./acceptance-directory.mjs";
 import { atomicWriteFile, readBoundedFile } from "./acceptance-evidence-io.mjs";
 
 // Reads a generated file without following a link to anything outside the project.
@@ -15,6 +16,7 @@ function readProjectFile(project, name) {
  * Returns its path; throws if the generated Dockerfile lacks a build stage, if the Dockerfile or
  * .dockerignore is a link, or if either created file already exists. */
 export function prepareBoundedBuild(project) {
+  requireDirectory(project);
   const source = readProjectFile(project, "Dockerfile");
   const ignored = readProjectFile(project, ".dockerignore");
   if (!/^FROM .+ AS build$/m.test(source)) throw new Error("generated Dockerfile has no build stage");
