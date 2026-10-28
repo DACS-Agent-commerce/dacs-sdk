@@ -11,8 +11,7 @@ export function deriveStorageAddress(owner, programName, nonce, salt = '') {
   return `stor-${sha256Hex(`${owner}:${programName}:${nonce}:${salt}`).slice(0, 40)}`;
 }
 
-/** The largest canonical artifact one storage CREATE carries, in UTF-8 bytes. */
-export const MAX_STORAGE_ARTIFACT_BYTES = 16_384;
+const MAX_LISTING_BYTES = 16_384;
 const MAX_STORAGE_JSON_DEPTH = 64;
 
 function assertStorageJsonDepth(value, depth = 1) {
@@ -34,7 +33,7 @@ export function buildStorageProgramCreatePayload({ from, storageAddress, program
     throw new TypeError('storage CREATE requires a valid owner, program name, nonce, timestamp, logical address, artifact and matching storage address');
   }
   const canonical = canonicalize(signedListing);
-  if (Buffer.byteLength(canonical, 'utf8') > MAX_STORAGE_ARTIFACT_BYTES) throw new TypeError('canonical listing exceeds the storage byte limit');
+  if (Buffer.byteLength(canonical, 'utf8') > MAX_LISTING_BYTES) throw new TypeError('canonical listing exceeds the storage byte limit');
   const snapshot = JSON.parse(canonical);
   assertStorageJsonDepth(snapshot);
   return {
