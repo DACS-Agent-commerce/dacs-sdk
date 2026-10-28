@@ -1720,6 +1720,39 @@ test('a landed Deliverable with a lost adapter checkpoint recovers on immediatel
   }
 });
 
+// Recovery must answer a definite hold when the capability's answer cannot be
+// authenticated: a missing answer, a `present` answer with no transaction
+// reference, and an older adapter checkpoint with no delivery binding. None of
+// these may become a thrown seller_unavailable or another submission.
+test('native delivery recovery holds on a missing, malformed or binding-less readback', async (t) => {
+  const cases = [
+    ['a missing readback', () => null],
+    ['a present readback without a transaction reference', () => ({ status: 'present' })],
+    ['an older adapter checkpoint without a delivery binding', null],
+  ];
+  for (const [label, read] of cases) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('land-lose-lock');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable', label);
+    await w.editRetainedSession(p.jobId, (session) => {
+      delete session.deliveryAdapter;
+      const { disposition, fulfilment, reason, permitId, ...authorization } = session.nativeEvidenceWork.intake;
+      session.deliveryHold = { reason: 'indeterminate:delivery-resolution-pending:canonical delivery is absent', result: {
+        decision: 'indeterminate', code: 'delivery-resolution-pending', fulfilmentId: session.deliverySubmitted[0], safeToRetryDelivery: false,
+        recovery: { action: 'reconcile-delivery', reconciliationId: w.signedCreate(address).hash }, consumedPaymentAuthorization: authorization,
+      } };
+      if (!read) session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0] };
+    });
+    if (read) w.faults.deliveryRead = read;
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'payment-evidenced', `${label}: ${shown(held)}`);
+    assert.equal(held.delivery?.status, 'held', `${label}: ${shown(held)}`);
+    assert.deepEqual(w.effects.deliverySubmit, [address], `${label}: no second submission`);
+    assert.equal(w.createsAt(address), 1, label);
+  }
+});
+
 
 test('settlement disclosure checks durable payment identities even when this agent only cached the unpaid proposal', async (t) => {
   const w = await world(t);
