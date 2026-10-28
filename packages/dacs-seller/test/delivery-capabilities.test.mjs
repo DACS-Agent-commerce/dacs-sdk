@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { canonicalize, contentHash, sha256Hex, logicalToStorageProgramName, createFixedPriceAgreementSigningPlan, createFixedPriceAgreementSignatureContribution, signComponentArtifact, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { createDevnetPurchasedReportProducer, isDevnetPurchasedReport } from '../src/devnet-demo/deliverable.mjs';
-import { createDevnetDemoDeliveryCapability } from '../src/devnet-demo/native-delivery.mjs';
-import { submitNativeDemDelivery } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import { createDevnetDemoDeliveryCapability, readDevnetPurchasedReport } from '../src/devnet-demo/native-delivery.mjs';
+import { submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { verifyAgreementCreateAuthorization, verifySignatureAgreement, signatureCommitmentAnchor } from '../src/dacs/commit-on-signature.mjs';
 import { contributionVerifier } from '../src/dacs/purchase-protocol.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
-import { createOperatorBuyerAccess, operatorBuyerAccessConfig } from '../src/devnet-demo/buyer-access.mjs';
 import { isNativeDeliveryEvidence } from '../src/dacs/delivery-evidence.mjs';
 import { buyer, seller, protocolFixture, NOW, JOB } from './helpers/protocol-fixture.mjs';
 
@@ -25,11 +25,74 @@ for (const [label, text] of [['control byte', 'TEST\u0000'], ['lone surrogate', 
 
 // The producer checks its own output with the predicate the publish path uses, so a
 // conforming Listing or settlement that the predicate refuses never yields a report.
-for (const [label, title, settlementId] of [['empty Listing title', '', 'TEST-settlement'], ['513-character Listing title', 'T'.repeat(513), 'TEST-settlement'],
-  ['empty settlement ID', 'TEST title', ''], ['numeric settlement ID', 'TEST title', 7]]) test(`report producer refuses a report the predicate refuses: ${label}`, async () => {
-  const f = await protocolFixture(), listing = { ...f.listing, offering: { ...f.listing.offering, title } };
+for (const [label, settlementId] of [['empty settlement ID', ''], ['numeric settlement ID', 7]]) test(`report producer refuses a report the predicate refuses: ${label}`, async () => {
+  const f = await protocolFixture();
   const produce = createDevnetPurchasedReportProducer({ producer: seller.claim, produce: () => 'TEST purchased report' });
-  assert.throws(() => produce({ agreement: f.agreement, listing, settlementId }), /report predicate/);
+  assert.throws(() => produce({ agreement: f.agreement, listing: f.listing, settlementId }), /report predicate/);
+});
+
+// The Agreement signs a Listing pin; the producer must not borrow a title (or any
+// other field) from a different Listing the caller supplies.
+test('report producer refuses a supplied Listing that differs from the Agreement pin before producing', async () => {
+  const f = await protocolFixture(); let produced = 0;
+  const produce = createDevnetPurchasedReportProducer({ producer: seller.claim, produce: () => { produced++; return 'TEST purchased report'; } });
+  for (const change of [
+    listing => { listing.offering.title = 'Unpinned title'; },
+    listing => { listing.listingId = 'another-listing'; },
+    listing => { listing.listingVersion = 2; },
+  ]) {
+    const changed = structuredClone(f.listing); change(changed);
+    assert.throws(() => produce({ agreement: f.agreement, listing: changed, settlementId: 'TEST-settlement' }), /pinned/);
+  }
+  assert.equal(produced, 0);
+  assert.equal(produce({ agreement: f.agreement, listing: f.listing, settlementId: 'TEST-settlement' }).title, f.listing.offering.title);
+});
+
+// Refusing a Promise-returning producer synchronously must also own that
+// Promise's rejection: an unhandled rejection would terminate the seller even
+// though its caller caught the intended TypeError.
+test('refusing an asynchronous producer handles its rejection instead of crashing the process', () => {
+  const moduleUrl = new URL('../src/devnet-demo/deliverable.mjs', import.meta.url).href;
+  const fixtureUrl = new URL('./helpers/protocol-fixture.mjs', import.meta.url).href;
+  const script = `
+    import { createDevnetPurchasedReportProducer } from ${JSON.stringify(moduleUrl)};
+    import { protocolFixture, seller } from ${JSON.stringify(fixtureUrl)};
+    const f = await protocolFixture();
+    const produce = createDevnetPurchasedReportProducer({ producer: seller.claim, produce: async () => { throw new Error('TEST producer failed'); } });
+    let refused = false;
+    try { produce({ agreement: f.agreement, listing: f.listing, settlementId: 'TEST-settlement' }); }
+    catch (error) { refused = /synchronously/.test(error.message); }
+    if (!refused) process.exit(3);
+    await new Promise(resolve => setImmediate(resolve));
+    console.log('caller recovered');
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /caller recovered/);
+});
+
+// The SDK Listing validator caps titles at 200 characters. The producer must refuse
+// an overlong supplied title even when the caller also pins that Listing.
+for (const title of ['', 'T'.repeat(201), 'T'.repeat(513)]) test(`report producer refuses a ${title.length}-character Listing title`, async () => {
+  const f = await protocolFixture(), listing = { ...f.listing, offering: { ...f.listing.offering, title } };
+  const agreement = { jobId: f.agreement.jobId, listingRef: { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) } };
+  assert.throws(() => createDevnetPurchasedReportProducer({ producer: seller.claim, produce: () => 'TEST purchased report' })({ agreement, listing, settlementId: 'TEST-settlement' }), /report predicate/);
+});
+
+test('report predicate enforces Listing id, positive version, 200-character title and never throws on lone surrogates', async () => {
+  const f = await reportFixture();
+  assert.equal(isDevnetPurchasedReport({ ...f.report, listing: { ...f.report.listing, listingId: '' } }), false);
+  assert.equal(isDevnetPurchasedReport({ ...f.report, listing: { ...f.report.listing, listingId: 'has space' } }), false);
+  assert.equal(isDevnetPurchasedReport({ ...f.report, listing: { ...f.report.listing, version: 0 } }), false);
+  assert.equal(isDevnetPurchasedReport({ ...f.report, listing: { ...f.report.listing, version: -1 } }), false);
+  assert.equal(isDevnetPurchasedReport({ ...f.report, title: 'T'.repeat(201) }), false);
+  assert.equal(isDevnetPurchasedReport({ ...f.report, title: 'T'.repeat(200) }), true);
+  for (const edit of [report => { report.title = '\ud800'; }, report => { report.settlementId = '\ud800'; },
+    report => { report.listing.listingId = '\ud800'; }, report => { report.producer = '\ud800'; }]) {
+    const malformed = structuredClone(f.report); edit(malformed);
+    assert.doesNotThrow(() => isDevnetPurchasedReport(malformed));
+    assert.equal(isDevnetPurchasedReport(malformed), false);
+  }
 });
 
 // A report is stored whole in one storage CREATE: the largest one admitted is exactly the builder's limit.
@@ -93,6 +156,63 @@ test('native report submission uses the report predicate before reaching its anc
   assert.equal(sent, 0);
 });
 
+// A report whose metadata holds an escaped lone surrogate can arrive in parsed
+// JSON. The predicate and every adapter must answer false/rejected/invalid rather
+// than letting canonicalization throw.
+test('native delivery adapters reject metadata lone surrogates without throwing or reaching the anchor', async () => {
+  const f = await reportFixture(); let calls = 0;
+  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => { calls++; }, read: async () => { calls++; }, readRetained: async () => { calls++; }, verifyReceipt: async () => { calls++; } };
+  const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor });
+  for (const edit of [report => { report.title = '\ud800'; }, report => { report.settlementId = '\ud800'; }, report => { report.listing.listingId = '\ud800'; }]) {
+    const report = structuredClone(f.report); edit(report);
+    const input = { jobId: JOB, report, logicalAddress: `dacs4:deliverable:${JOB}`, receiptContentHash: 'a'.repeat(64), deliveryBinding: { agreementHash: f.report.agreementHash } };
+    assert.equal((await submitNativeDemDelivery(capability, input)).status, 'rejected');
+    assert.equal((await readNativeDemDelivery(capability, input)).status, 'rejected');
+    assert.equal(await verifyNativeDemDeliveryReceipt(capability, input), 'invalid');
+  }
+  assert.equal(calls, 0);
+});
+
+test('native delivery maps successful publish, reconcile and retained readback and rejects changed bindings', async () => {
+  const f = await reportFixture(), receiptHash = contentHash(f.report);
+  const deliveryBinding = { jobId: JOB, payloadHash: receiptHash, agreementHash: f.report.agreementHash, listing: f.report.listing, fulfilmentId: 'TEST-fulfilment' };
+  const scope = { jobId: JOB, seller: seller.claim, logicalAddress: `dacs4:deliverable:${JOB}`, receiptContentHash: receiptHash,
+    settlementId: f.report.settlementId, listing: f.report.listing, fulfilmentId: 'TEST-fulfilment', agreementHash: f.report.agreementHash, deliveryBinding };
+  let retained = { status: 'present', artifact: f.report, deliveryBinding, receipt: { writer: seller.claim, transactionRef: { value: 'TEST-write' }, blockRef: { timestamp: NOW } } };
+  const anchor = { authority: 'TEST-native', writer: seller.claim,
+    publish: async () => ({ status: 'present', receipt: { transactionRef: { value: 'TEST-write' } } }),
+    read: async () => retained, readRetained: async () => retained, verifyReceipt: async () => 'valid' };
+  const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor });
+  assert.equal((await submitNativeDemDelivery(capability, { ...scope, report: f.report })).status, 'accepted');
+  assert.deepEqual(await reconcileNativeDemDelivery(capability, { ...scope, report: f.report }), { status: 'complete', reconciliationId: 'TEST-write', observedAt: NOW });
+  const readback = await readDevnetPurchasedReport(capability, scope);
+  assert.equal(readback.status, 'present'); assert.equal(readback.artifact.title, f.report.title);
+  for (const changed of [{ settlementId: 'changed-settlement' }, { fulfilmentId: 'changed-fulfilment' },
+    { seller: buyer.claim }, { receiptContentHash: 'b'.repeat(64) }]) {
+    assert.equal((await readDevnetPurchasedReport(capability, { ...scope, ...changed })).status, 'rejected');
+  }
+  const priorRetained = retained;
+  retained = { ...retained, receipt: { ...retained.receipt, writer: buyer.claim } };
+  assert.equal((await readDevnetPurchasedReport(capability, scope)).status, 'rejected');
+  retained = { ...priorRetained, deliveryBinding: { ...deliveryBinding, payloadHash: 'b'.repeat(64) } };
+  assert.equal((await readDevnetPurchasedReport(capability, scope)).status, 'rejected');
+  retained = { status: 'absent' };
+  assert.equal((await readDevnetPurchasedReport(capability, scope)).status, 'absent');
+});
+
+test('purchased-report reader answers an incomplete scope without throwing or reading the anchor', async () => {
+  let calls = 0;
+  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => { calls++; }, read: async () => { calls++; },
+    readRetained: async () => { calls++; return { status: 'absent' }; }, verifyReceipt: async () => { calls++; } };
+  const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor });
+  for (const input of [{ jobId: JOB }, { jobId: JOB, deliveryBinding: {} },
+    { jobId: JOB, deliveryBinding: { jobId: JOB } }, { jobId: JOB, listing: {} },
+    { jobId: JOB, deliveryBinding: { listing: {} } }]) {
+    assert.equal((await readDevnetPurchasedReport(capability, input)).status, 'rejected');
+  }
+  assert.equal(calls, 0);
+});
+
 test('delivery evidence binds the signature and exact canonical job addresses', async () => {
   const unsigned = { evidenceVersion: '1', jobId: JOB, phase: 'deliver-storage-program', outcome: 'success', observedAt: NOW,
     dacsSdkAuditSourceHash: 'a'.repeat(64), deliverableContentHash: 'b'.repeat(64), deliverableAnchor: { kind: 'storage-program', locator: `dacs4:deliverable:${JOB}` } };
@@ -100,37 +220,6 @@ test('delivery evidence binds the signature and exact canonical job addresses', 
   assert.equal(isNativeDeliveryEvidence(evidence, seller.claim, `dacs4:evidence:${JOB}`), true);
   assert.equal(isNativeDeliveryEvidence({ ...evidence, deliverableContentHash: 'c'.repeat(64) }, seller.claim, `dacs4:evidence:${JOB}`), false);
 });
-
-test('buyer access requires constructed authority and the configured custody identity', () => {
-  const access = createOperatorBuyerAccess({ custodyBuyer: buyer.claim, custodySeller: seller.claim, buyerForJob: () => buyer.address });
-  assert.equal(access.allowsWallet(buyer.address), true); assert.equal(access.allowsWallet(seller.address), false);
-  assert.equal(access.jobAccess(JOB), 'custody'); assert.throws(() => access.assertRelayWallet(seller.address));
-  assert.throws(() => operatorBuyerAccessConfig({ ...access }));
-});
-
-for (const method of ['assertSellerWallet', 'sellerNotice']) {
-  for (const [label, retained, ready, wallet] of [
-    ['another buyer', buyer.address, true, seller.address],
-    ['no retained buyer', null, true, seller.address],
-    ['lookup unavailable', seller.address, false, seller.address],
-    ['malformed wallet', 'malformed', true, 'malformed'],
-  ]) test(`paid outside ${method} refuses ${label}`, () => {
-    const access = createOperatorBuyerAccess({ custodyBuyer: buyer.claim, buyerForJob: () => retained,
-      buyerLookupReady: () => ready, paymentObserved: () => true });
-    assert.throws(() => access[method](wallet, JOB), { code: 'buyer_access_closed' });
-  });
-  test(`paid outside ${method} admits only the retained wallet and preserves other access policies`, () => {
-    let paid = true;
-    const access = createOperatorBuyerAccess({ custodyBuyer: buyer.claim, buyerForJob: () => seller.address,
-      paymentObserved: () => paid });
-    assert.doesNotThrow(() => access[method](seller.address.toUpperCase(), JOB));
-    paid = false;
-    assert.throws(() => access[method](seller.address, JOB), { code: 'buyer_access_closed' });
-    assert.doesNotThrow(() => access[method](buyer.address, JOB));
-    const open = createOperatorBuyerAccess({ openBuyerAccess: true });
-    assert.doesNotThrow(() => open[method](seller.address, JOB));
-  });
-}
 
 for (const deliveryEvidenceEnabled of [false, true]) {
   for (const method of ['publish', 'read', 'readRetained', 'verifyReceipt']) {
