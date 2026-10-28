@@ -1491,7 +1491,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // under the job lock and settlement credit, its attempt kept before the call
   // as `anchorOutcome: 'unknown'`. Any answer makes it 'sent' (no answer of the
   // anchor proves that nothing was signed: only the journal's reconciliation
-  // can), and a throw or a crash during the call leaves it 'unknown'.
+  // can). A caught throw with no projection in that journal is a proven
+  // pre-signing failure; a crash or an unreadable journal stays 'unknown'.
   async function anchorNativePaymentEvidence(session, work) {
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     work.anchorAttempts = (work.anchorAttempts ?? 1) + 1;
@@ -1506,7 +1507,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       work.anchorAnswer = walletAnswer(answer);
       work.anchorOutcome = 'sent';
       delete work.anchorError;
-    } catch (error) { work.anchorError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) }; }
+    } catch (error) {
+      work.anchorError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) };
+      // This exact journal keeps every CREATE before broadcast. A caught
+      // failure with explicitly no retained projection reached no send.
+      try { if (await walletJournal.readSignedProjection({ logicalAddress: work.address }) === null) work.anchorOutcome = 'failed-before-signing'; } catch { /* unknown stays fenced */ }
+    }
     persist(session);
   }
 
