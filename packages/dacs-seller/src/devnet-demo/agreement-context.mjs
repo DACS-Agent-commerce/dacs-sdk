@@ -255,10 +255,17 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function sellerSession(job) {
     let kept=(await state.read(job.jobId))?.presentation;
     let expired=null;
-    if(kept&&!kept.bundle.presentation&&kept.challenge.expiresAt<=now()){
+    if(kept&&kept.challenge.expiresAt<=now()){
       const request={jobId:job.jobId,buyer:job.binding.buyerIdentityBundle.presentedBy,seller:wallet.claim,identityBundle:kept.bundle,requirement:SELLER_REQUIREMENT};
-      if(!unattempted(await readRecordSettled(request),request))fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
-      expired=kept;kept=null;
+      const read=await readRecordSettled(request);
+      // An expired presentation cannot be evaluated, signed or not. A result
+      // already retained for it is still reused as-is (produceSeller reads and
+      // verifies it); an exact unused outcome lets a fresh challenge replace
+      // the presentation. Anything else is uncertainty and must hold. An
+      // unsigned presentation can never have produced a result.
+      if(!unattempted(read,request)){
+        if(!kept.bundle.presentation||read?.status!=='present')fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
+      }else{expired=kept;kept=null;}
     }
     if(!kept){
       if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
@@ -363,6 +370,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       await state.update(job.jobId,current=>{
         if(!current?.binding || !same(current.binding,job.binding)) fail('binding-changed','counterparty Vet binding changed');
         if(current.counterpartyRecord){if(!same(current.counterpartyRecord,record))fail('conflict','counterparty returned another Vet record');return undefined;}
+        // Another provider may replace an expired presentation while this
+        // evaluation runs. The record already names the old bundle hash, so
+        // pinning it to another challenge's presentation would wedge the job:
+        // retry against the presentation that is actually retained.
+        if(!current.presentation?.bundle || identityBundleHash(current.presentation.bundle)!==identityBundleHash(identityBundle))
+          fail('binding-changed','the seller presentation changed while its Vet was evaluated');
         return {...current,counterpartyRecord:clone(record)};
       });
     }

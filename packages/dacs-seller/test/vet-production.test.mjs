@@ -118,6 +118,25 @@ test('a purchase closed during the ledger read starts no evaluation',async()=>{
  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>closed?'closed':true),e=>e.code==='not-pending');
  assert.equal(evaluations,0);assert.equal(f.seen.length,0);f.base.close();
 });
+test('a record evaluated under a rotated presentation is not pinned to the new one',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ // Sign the presentation, then lose the ledger read, so the job is left with a
+ // signed presentation and no retained counterparty record.
+ const read=f.counterparty.readRecord;let unavailable=true;
+ f.counterparty.readRecord=async request=>{if(unavailable){unavailable=false;throw new Error('TEST ledger unavailable');}return read(request);};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_unavailable');
+ const evaluate=f.counterparty.evaluate;
+ f.counterparty.evaluate=async request=>{
+  const record=await evaluate(request);
+  // Another provider rotates the expired challenge while this record is in flight.
+  await p.state.update(input.scope.jobId,current=>({...current,presentation:{challenge:{...current.presentation.challenge,sessionNonce:'b'.repeat(32)},bundle:{...current.presentation.bundle,sessionNonce:'b'.repeat(32)}}}));
+  return record;
+ };
+ const row=await p.state.read(input.scope.jobId);
+ await assert.rejects(p.produceSeller({jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
+ assert.equal((await p.state.read(input.scope.jobId)).counterpartyRecord,undefined);
+ f.base.close();
+});
 test('a failed evaluate with no retained record stays a failure that keeps its cause',async()=>{
  const f=productionFixture(),cause=new Error('TEST evaluate failed');f.counterparty.evaluate=async()=>{throw cause;};
  await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause===cause);assert.equal(f.local.writes.length,1);f.base.close();
