@@ -29,7 +29,7 @@
 // report; anything else is refused (TypeError) before the wallet is asked.
 // startSellerHost and createSellerAgent take the pair only from one journal
 // (isDeliverableWalletJournalPair) with the capability whose submit it is.
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { nativeDemDeliverySubmitOf } from './native-dem-delivery-consumer.mjs';
 import { createSignedCreateJournal } from './payment-evidence-wallet-journal.mjs';
 
@@ -54,10 +54,12 @@ export function deliverableJournalFor(nativeDemDelivery, reconcile) {
   return journal;
 }
 
-// The input of the shared journal for this Deliverable, or a TypeError.
+// The input of the shared journal for this Deliverable, or a TypeError. The job
+// id is checked as CORE §B.1 names it before the wallet is asked, so no
+// protocol effect is ever derived from an alternate spelling.
 function createInput({ logicalAddress, report, writer, jobId, receiptContentHash, deliveryBinding } = {}) {
-  if (!object(report) || !object(deliveryBinding) || typeof writer !== 'string' || typeof jobId !== 'string' || receiptContentHash !== sha256Hex(canonicalize(report))) {
-    throw new TypeError('the Deliverable journal needs the report, its writer, job, delivery binding and the report\'s canonical SHA-256 as receiptContentHash');
+  if (!object(report) || !object(deliveryBinding) || typeof writer !== 'string' || !isCanonicalJobId(jobId) || receiptContentHash !== sha256Hex(canonicalize(report))) {
+    throw new TypeError('the Deliverable journal needs the report, its writer, a canonical job id, delivery binding and the report\'s canonical SHA-256 as receiptContentHash');
   }
   return { logicalAddress, artifact: report, writer, artifactKind: DELIVERABLE_KIND, jobId, receiptContentHash, deliveryBinding };
 }

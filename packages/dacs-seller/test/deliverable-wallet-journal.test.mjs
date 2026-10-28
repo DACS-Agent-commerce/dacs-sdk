@@ -121,6 +121,21 @@ test('a report that is not hashed as its receiptContentHash, or no report, is re
   assert.equal(w.calls.sign, 0);
 });
 
+test('a job id that is not a canonical ULID is refused before the wallet is asked', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  // CORE §B.1/JID: the 26-character uppercase Crockford-Base32 form only; an
+  // alternate spelling is not silently accepted as another idempotency key.
+  for (const jobId of ['TEST-job', '01j8n4yv7yvyq4db7m8t4c7w0a', '01J8N4YV7YVYQ4DB7M8T4C7W0', '01J8N4YV7YVYQ4DB7M8T4C7W0AA',
+    '01J8N4YV7YVYQ4DB7M8T4C7W0I', '81J8N4YV7YVYQ4DB7M8T4C7W0A', 42]) {
+    await assert.rejects(journal.submit(w.input({ jobId })), TypeError, String(jobId));
+    await assert.rejects(journal.reconcile(w.input({ jobId })), TypeError, String(jobId));
+  }
+  assert.equal(w.calls.sign, 0, 'no signature is asked for a malformed job');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
+});
+
 test('the question belongs to the capability only when both are one journal\'s: a wrapper, two journals, an evidence journal or a scripted question is refused', async (t) => {
   const w = wallet(t);
   const journal = w.open(), other = w.open(join(w.dir, 'other.sqlite')), evidence = w.open(join(w.dir, 'evidence.sqlite'), createPaymentEvidenceWalletJournal);
