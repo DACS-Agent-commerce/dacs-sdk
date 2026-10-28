@@ -266,9 +266,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   };
   // The SDK calls claim only after authenticating the complete payment tuple.
   // Keep that tuple before the primitive's provisional election, including a loser.
+  // The delivery runner inspects and consumes the permit before it prepares or sends the Deliverable.
+  // Each call re-checks the settlement credit: a permit whose settlement another job also claims is invalid,
+  // never a thrown store failure (which the runner would hold as an ambiguous, retryable read).
+  const permitCredit = (permit) => !['available', 'already-consumed'].includes(permit?.status) || !permit.claim || hasSettlementCredit(permit.claim.settlementId, permit.claim.jobId);
   const receiptStore = {
     claim: async candidate => { bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate)); return rawReceiptStore.claim(candidate); },
-
+    inspectPermit: async permitId => { const permit = await rawReceiptStore.inspectPermit(permitId); return permitCredit(permit) ? permit : { status: 'invalid' }; },
+    consumePermit: async (permitId, handoff) => permitCredit(await rawReceiptStore.inspectPermit(permitId)) ? rawReceiptStore.consumePermit(permitId, handoff) : { status: 'invalid' },
   };
   // A retained session may be exposed only once the exact attempt that admitted
   // it is proven from this seller's own authenticated ledger (CORE SN-3/SN-4: a
