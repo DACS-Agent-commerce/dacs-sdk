@@ -253,9 +253,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
   }
   async function sellerSession(job) {
-    let kept=(await state.read(job.jobId))?.presentation;
+    const retained=await state.read(job.jobId);
+    let kept=retained?.presentation;
     let expired=null;
-    if(kept&&kept.challenge.expiresAt<=now()){
+    // A retained buyer-issued record already proves what happened; a finished
+    // job must not depend on the buyer's ledger staying reachable.
+    if(kept&&kept.challenge.expiresAt<=now()&&!retained?.counterpartyRecord){
       const request={jobId:job.jobId,buyer:job.binding.buyerIdentityBundle.presentedBy,seller:wallet.claim,identityBundle:kept.bundle,requirement:SELLER_REQUIREMENT};
       const read=await readRecordSettled(request);
       // An expired presentation cannot be evaluated, signed or not. A result

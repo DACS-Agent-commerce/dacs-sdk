@@ -137,6 +137,20 @@ test('a record evaluated under a rotated presentation is not pinned to the new o
  assert.equal((await p.state.read(input.scope.jobId)).counterpartyRecord,undefined);
  f.base.close();
 });
+test('a finished job repeats without the buyer ledger after the challenge expires',async()=>{
+ const f=productionFixture();let at=NOW;f.config.now=()=>at;
+ const p=await f.provider(),input=f.input();
+ assert.equal((await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).sellerVet.record.overallDecision,'pass');
+ // The job's row already retains the buyer-issued record and the anchor holds
+ // the receipt; an expired challenge must not make the repeat depend on the
+ // buyer's ledger being reachable.
+ at=NOW+60001;
+ f.counterparty.readRecord=async()=>{throw new Error('TEST ledger offline');};
+ f.counterparty.issueChallenge=async()=>{throw new Error('TEST ledger offline');};
+ const repeat=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ assert.equal(repeat.sellerVet.record.overallDecision,'pass');assert.equal(f.seen.length,1);
+ f.base.close();
+});
 test('a failed evaluate with no retained record stays a failure that keeps its cause',async()=>{
  const f=productionFixture(),cause=new Error('TEST evaluate failed');f.counterparty.evaluate=async()=>{throw cause;};
  await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause===cause);assert.equal(f.local.writes.length,1);f.base.close();
