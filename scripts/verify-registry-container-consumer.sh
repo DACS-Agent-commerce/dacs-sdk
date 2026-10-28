@@ -254,6 +254,9 @@ run_bounded docker run --rm --name "$consumer_container-measure" --init \
     # The installer cache is read-only here; npm requests of its own use a private one.
     npm_config_cache=/tmp/npm-cache npm install --global --prefix /tmp/npm --ignore-scripts npm@11.19.0
     export PATH="/tmp/npm/bin:$PATH"
+    # The checker loads npm modules directly; a private PATH entry alone leaves
+    # its global-prefix fallback pointing at the image-provided npm.
+    export npm_execpath=/tmp/npm/lib/node_modules/npm/bin/npm-cli.js
     dependency_status=0
     node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \
       /out/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION" || dependency_status=$?
