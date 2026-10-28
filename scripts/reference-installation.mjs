@@ -70,7 +70,14 @@ function referenceConfig(project, cache, contract) {
   const config = { ...contract.config };
   // These describe the original invocation/storage, rather than install semantics.
   for (const key of ["prefix", "cache", "userconfig", "globalconfig", "location", "npm-version", "json", "logs-dir"]) delete config[key];
-  const ini = createRequire(contract.toolchain.cli)("ini");
+  const requireNpm = createRequire(contract.toolchain.cli);
+  const { definitions } = requireNpm("@npmcli/config/lib/definitions");
+  // Presence can conflict even when false. Omit only inactive, default-false
+  // exclusive options; the round-trip below still verifies their defaults.
+  for (const [key, definition] of Object.entries(definitions)) {
+    if (definition.exclusive && definition.default === false && config[key] === false) delete config[key];
+  }
+  const ini = requireNpm("ini");
   if (Number.isInteger(config.umask)) config.umask = config.umask.toString(8).padStart(3, "0");
   writeFileSync(join(project, ".npmrc"), ini.stringify(Object.fromEntries(Object.entries(config).filter(([, value]) => value !== null))));
   const userconfig = join(project, "empty-user.npmrc");
