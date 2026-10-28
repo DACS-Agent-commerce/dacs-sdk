@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chmodSync} from 'node:fs';
-import {mkdtemp,rm,chmod,access} from 'node:fs/promises';
+import {createServer} from 'node:http';
+import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
-import {seller,buyer,NOW} from './helpers/protocol-fixture.mjs';
+import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
+import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
+import {startSellerHost} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
 import {createSellerTransportClientAuth} from '../src/dacs/seller-transport-auth.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
@@ -19,6 +23,10 @@ async function fixture(t,{wrap=agent=>agent}={}){
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
  const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW})});
  return{...f,start,options,dataDirectory,client};
+}
+async function anchorAgreement(f,request,answer){
+ const agreement=await core.finalizeFixedPriceAgreementContributions(request.proposal.plan,[request.proposal.buyerContribution,answer.contribution],contributionVerifier);
+ f.controls.agreement=fixtureRecord(core.fixedPriceAgreementLogicalAddress(agreement.jobId),agreement,buyer);
 }
 test('host refuses non-loopback before opening state',async t=>{
  const f=await fixture(t);for(const host of ['0.0.0.0','localhost','192.0.2.1'])await assert.rejects(f.start({host}),/literal loopback/);
@@ -45,4 +53,132 @@ test('startup failure remains the original cause when cleanup also fails',async 
  const f=await fixture(t,{wrap:()=>{chmodSync(directory,0o500);throw original;}});directory=f.dataDirectory;
  try{await assert.rejects(f.start(),error=>error===original&&error.cleanupError?.errors.some(e=>e.code==='EACCES'));}
  finally{await chmod(directory,0o700);}
+});
+
+test('a frozen startup failure is kept as the aggregate cause when cleanup also fails',async t=>{
+ let directory;const original=Object.freeze(new Error('TEST frozen startup cause'));
+ const f=await fixture(t,{wrap:()=>{chmodSync(directory,0o500);throw original;}});directory=f.dataDirectory;
+ try{
+  await assert.rejects(f.start(),error=>{
+   assert.ok(error instanceof AggregateError,'the frozen cause is carried by an aggregate error');
+   assert.equal(error.cause,original,'the original startup error stays the cause');
+   assert.ok(error.errors.some(e=>e.errors?.some(n=>n.code==='EACCES')),'the cleanup failure is reported');
+   return true;
+  });
+ }finally{await chmod(directory,0o700);}
+});
+
+test('the host still refuses a native artifact capability without its readbacks',async t=>{
+ const f=await fixture(t);const {readRetained:_removed,...anchor}=f.native;
+ await assert.rejects(f.start({artifactAnchor:anchor}),/native demo artifact capability is incomplete/);
+ const host=await f.start();await host.close();
+});
+
+test('close aborts and drains an accepted native artifact readback before releasing state',async t=>{
+ const entered=defer(),releaseRead=defer();let block=true;
+ const f=await fixture(t),native=f.native;
+ const artifactAnchor=Object.freeze({...native,readRetained:async input=>{
+  if(block&&input.artifactKind==='FinalityCommitmentRecord'){entered.resolve();await releaseRead.promise;}
+  return native.readRetained(input);
+ }});
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);
+ assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ const pending=client.commit(request.transportIdentity.jobId).then(()=>'answered',error=>error.code??error.name);
+ await entered.promise;
+ try{
+  const closed=await Promise.race([host.close().then(()=>'closed'),new Promise(resolve=>setTimeout(()=>resolve('stuck'),8000))]);
+  assert.equal(closed,'closed','close aborts the accepted native readback instead of waiting for it');
+  const reopened=await f.start();await reopened.close();
+ }finally{block=false;releaseRead.resolve();}
+ await pending;
+});
+
+test('wrapped native artifact readbacks keep their capability receiver',async t=>{
+ const f=await fixture(t),native=f.native;
+ const artifactAnchor={...native,reads:0,verifies:0,
+  async readRetained(input){this.reads++;return native.readRetained(input);},
+  async verifyReceipt(input){this.verifies++;return native.verifyReceipt(input);}};
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
+ assert.ok(artifactAnchor.reads>=1,'readRetained ran with its capability as receiver');
+ assert.ok(artifactAnchor.verifies>=1,'verifyReceipt ran with its capability as receiver');
+ await host.close();
+});
+
+test('wrapped native artifact publish keeps its capability receiver',async t=>{
+ const f=await fixture(t),native=f.native;
+ const artifactAnchor={...native,published:0,async publish(input){this.published++;return native.publish(input);}};
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
+ assert.equal(artifactAnchor.published,1,'publish ran with its capability as receiver');
+ await host.close();
+});
+
+test('host issues no session challenge once close has begun',async t=>{
+ const entered=defer(),release=defer();
+ const f=await fixture(t,{wrap:agent=>({...agent,receiveProposal:async request=>{entered.resolve();await release.promise;return agent.receiveProposal(request);}})}),host=await f.start();
+ const request=await f.proposal(host),pending=f.client(host,request).propose(request).catch(error=>error);
+ await entered.promise;
+ const closing=host.close();
+ try{
+  assert.throws(()=>host.issueSessionChallenge({jobId:request.transportIdentity.jobId,buyer:buyer.claim}),error=>error.code==='seller_host_closing');
+ }finally{release.resolve();}
+ await pending;await closing;
+});
+
+test('host close does not wait for the keep-alive timeout',async t=>{
+ const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
+ assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
+ const started=performance.now();
+ await host.close();
+ assert.ok(performance.now()-started<2000,'close does not wait for the idle keep-alive timeout');
+});
+
+test('a listen failure releases the state lock and everything opened before it',async t=>{
+ const f=await fixture(t),blocker=createServer();
+ await new Promise(resolve=>blocker.listen({host:'127.0.0.1',port:0,exclusive:true},resolve));
+ const port=blocker.address().port;
+ try{await assert.rejects(f.start({port}),error=>error.code==='EADDRINUSE');}
+ finally{await new Promise(resolve=>blocker.close(resolve));}
+ const host=await f.start();await host.close();
+});
+
+test('host reports both literal loopback URLs',async t=>{
+ const f=await fixture(t);
+ const v4=await f.start();assert.match(v4.url,/^http:\/\/127\.0\.0\.1:\d+$/);await v4.close();
+ const v6=await f.start({host:'::1'});assert.match(v6.url,/^http:\/\/\[::1\]:\d+$/);await v6.close();
+});
+
+test('host refuses malformed options before opening any state',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'TEST-host-options-')),dataDirectory=await mkdtemp(join(root,'state-'));
+ const loose=await mkdtemp(join(tmpdir(),'TEST-host-loose-'));await chmod(loose,0o755);
+ const link=join(root,'link');await symlink(dataDirectory,link);
+ const file=join(root,'regular');await writeFile(file,'TEST');
+ t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{}});
+ const cases=[
+  ['non-object',null,/must be an object/],
+  ['array options',[],/must be an object/],
+  ['unknown option',{...base(),extra:true},/unknown seller host option: extra/],
+  ['missing required',(()=>{const value=base();delete value.agreementAnchor;return value;})(),/requires agreementAnchor/],
+  ['non-loopback host',{...base(),host:'localhost'},/literal loopback/],
+  ['negative port',{...base(),port:-1},/port must be an integer/],
+  ['port above 65535',{...base(),port:65536},/port must be an integer/],
+  ['fractional port',{...base(),port:1.5},/port must be an integer/],
+  ['string port',{...base(),port:'80'},/port must be an integer/],
+  ['relative dataDirectory',{...base(),dataDirectory:'relative/state'},/absolute path/],
+  ['non-private dataDirectory',{...base(),dataDirectory:loose},/existing private \(mode 0700\) directory/],
+  ['symbolic link dataDirectory',{...base(),dataDirectory:link},/existing private \(mode 0700\) directory/],
+  ['regular file dataDirectory',{...base(),dataDirectory:file},/existing private \(mode 0700\) directory/],
+  ['observeDemosTransfer is not a function',{...base(),observeDemosTransfer:5},/must be functions/],
+  ['now is not a function',{...base(),now:5},/must be functions/],
+  ['mismatched payment evidence pair',{...base(),nativePaymentEvidence:{anchorEvidence:()=>{}}},/payment-evidence anchor and reconcilePaymentEvidence/],
+ ];
+ for(const [label,options,expected] of cases)await assert.rejects(startSellerHost(options),expected,label);
 });
