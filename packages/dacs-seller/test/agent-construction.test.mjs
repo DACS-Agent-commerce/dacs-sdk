@@ -233,3 +233,21 @@ test('restart refuses a retained session admitted for a different presentation',
  }finally{state.close();}
  await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&/another presentation/.test(error.message));
 });
+// DACS-2 VPC-3: a session another opener saved after this instance verified its
+// retained evidence is refused by every live read, however exact its shapes.
+test('live reads refuse a shape-valid session another writer saved after open',async t=>{
+ const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
+ const issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),bundle=presentWith(buyer,issued.sessionNonce);
+ const session={...sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}),paymentWork:{txHash:'a'.repeat(64),payerPayingKey:buyer.claim}};
+ await saveSession(f,session,state=>admitWith(state,issued.sessionNonce,session));
+ for(const read of [()=>agent.stageOf(JOB),()=>agent.durableSessionOf(JOB),()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB),()=>agent.durableSessions()])
+  assert.throws(read,error=>error.code==='seller_state_unverified'&&/not verified by this seller instance/.test(error.message));
+ assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
+});
+test('live reads refuse a retained session changed after this instance verified it',async t=>{
+ const {f,admission}=await vettedSession(t),agent=await f.open({sessionAdmission:admission.sessionAdmission});t.after(()=>agent.close());
+ assert.equal(agent.stageOf(JOB),'vetted');
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ try{await state.withJob(JOB,()=>state.saveSession({...state.loadSession(JOB),stage:'delivered'}));}finally{state.close();}
+ assert.throws(()=>agent.stageOf(JOB),error=>error.code==='seller_state_unverified'&&/changed after this seller instance verified it/.test(error.message));
+});

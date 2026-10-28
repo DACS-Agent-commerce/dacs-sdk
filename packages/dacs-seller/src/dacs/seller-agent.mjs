@@ -1,7 +1,7 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
-import { admitRawJson, contentHash, isListing, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, compositeVerificationAddress } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, contentHash, isListing, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, compositeVerificationAddress, sha256Hex } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
@@ -166,6 +166,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     }
     for (const id of ids) if (!hasSettlementCredit(id, jobId)) throw new SellerAgentError('settlement_collision', 'competing admissible settlement claims require binding authority', 503);
   };
+  const verifiedSessions = new Map(), sessionFingerprint = (session) => sha256Hex(canonicalize(session)); // jobId -> verified bytes hash
+  function retainedSnapshotProblem(session) {
+    return !durable ? null : verifiedSessions.get(session.jobId) === undefined ? 'the retained session was not verified by this seller instance' : sessionFingerprint(session) !== verifiedSessions.get(session.jobId) ? 'the retained session changed after this seller instance verified it' : null;
+  }
   // A retained session may be exposed only once the exact attempt that admitted
   // it is proven from this seller's own authenticated ledger (CORE SN-3/SN-4: a
   // nonce is bound to one job and buyer and consumed on attempt), and, since a
@@ -225,7 +229,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   }
   function sessionView (session) {
     if(!session)return null;
-    const problem = retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session);
+    const problem = retainedSnapshotProblem(session) ?? retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
     const copy=structuredClone(session);
     try { assertSettlementCredit(session.jobId); }
@@ -238,7 +242,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (identityBundleHash(session.buyerBundle) !== session.buyerBundleHash) throw new SellerAgentError('seller_state_corrupt', 'retained buyer binding is invalid', 503);
     const problem = retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session) ?? await retainedVetEvidenceProblem(session);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
-    sessions.set(session.jobId, session);
+    sessions.set(session.jobId, session);verifiedSessions.set(session.jobId, sessionFingerprint(session));
   }
   for (const session of durable?.sessions() ?? []) await restore(session);
 
@@ -305,7 +309,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       // An unverified retained session retains nothing: the transport may
       // release the claim's effect rather than keep work it cannot attribute.
-      if (session && (retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session))) return false;
+      if (session && (retainedSnapshotProblem(session) ?? retainedChallengeProblem(session) ?? retainedVetCheckpointProblem(session))) return false;
       const work = session?.nativeEvidenceWork ?? session?.paymentWork;
       return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
     },
