@@ -52,7 +52,7 @@ test('retired admission history remains bounded even when no live job is held',a
  const f=await proposalAdmissionFixture(t,{assembled:true,maxJobs:1}),agent=await f.open();agent.close();
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const {sha256Hex}=await import('@kynesyslabs/dacs');const {buyer,NOW}=await import('./helpers/protocol-fixture.mjs');
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});try{for(let i=0;i<16;i++){const nonce=sha256Hex('TEST retired history '+i),hash=sha256Hex('TEST accepted presentation '+i);state.issueChallenge(nonce,{jobId:JOB.slice(0,-2)+i.toString(16).toUpperCase().padStart(2,'0'),buyer:buyer.claim,issuedAt:NOW,expiresAt:NOW+600000});state.attemptChallenge(nonce,{presentationHash:hash});state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}}finally{state.close();}
- const fresh=await f.open();assert.throws(()=>fresh.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
+ const fresh=await f.open();await assert.rejects(fresh.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
 });
 
 test('an exact retry reuses the retained context admission after the callback is lost',async t=>{
