@@ -94,7 +94,7 @@ test('B13 start-limit rejection commits only the required anti-replay consumptio
  t.after(()=>{DatabaseSync.prototype.prepare=originalPrepare;DatabaseSync.prototype.exec=originalExec});
  const w=await world(t);await exchange(w.handler,await w.wire());const input=await w.wire({jobId:JOBS[1]}),before=w.effects();watch=true;
  const response=await exchange(w.handler,input);watch=false;
- assert.equal(response.status,409);assert.deepEqual(mutations,['UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', 'INSERT INTO peer_nonces VALUES (?, ?, ?, ?, ?)', 'INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)'],'challenge consumption and the definite refusal nonce commit together');assert.deepEqual(effectState(w.effects()),effectState(before));
+ assert.equal(response.status,409);assert.equal(mutations.filter(sql=>sql.startsWith('DELETE FROM peer_nonce')).length,2,'both nonce tables are reclaimed before insertion');assert.deepEqual(mutations.filter(sql=>!sql.startsWith('DELETE FROM peer_nonce')),['UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', 'INSERT INTO peer_nonces VALUES (?, ?, ?, ?, ?)', 'INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)'],'challenge consumption and the definite refusal nonce commit together');assert.deepEqual(effectState(w.effects()),effectState(before));
 });
 test('B14 an uncertain context effect is read back without a second hold or provider write',async t=>{
  const w=await world(t,{perform:async()=>{throw new Error('unknown fixture outcome')}});const first=await exchange(w.handler,await w.wire());assert.equal(first.status,503);const before=w.effects();
