@@ -157,10 +157,13 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (!['committed','commitment-held'].includes(answer?.status)) throw new SellerTransportError('commitment_readback_required',503);
           return await send(res,200,answer,request,{text:await pointed(200,JSON.stringify(answer),request.jobId,req.url)});
         }
-        if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && reportsDeliveryReady(reservation.text)) {
+        const readbackOnly = authentication.readbackOnly?.(request) === true;
+        if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && reportsDeliveryReady(reservation.text) && !readbackOnly) {
           // A cached delivery-ready answer is only a record of it: the agent
           // authenticates the payment evidence and reads the Deliverable again,
-          // and what it answers now is sent, never the saved success.
+          // and what it answers now is sent, never the saved success. An expired
+          // delegation admits journaled readback only (below): that refresh can
+          // publish new delivery evidence, so it never runs then.
           const answer = await route(agent, body), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
 
