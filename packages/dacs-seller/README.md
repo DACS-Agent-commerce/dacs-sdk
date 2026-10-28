@@ -419,11 +419,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected })` answer `true` only for a signer the operator trusts; and
   `verifyAuthorityAttestation({ result, expected, recipe, content })` answers
   `'valid'`, `'invalid'` or `'unresolved'`. The SDK still hashes each content
-  against its reference, verifies both signatures and recomputes the
-  aggregation. Each read has the 64 KiB, value, list and 10 s limits of the
-  other admission readers, and one replay has a 30 s total deadline; a reader
-  that throws, stalls or answers too much makes the proposal `indeterminate`
-  with that cause. Without `vetEvidence`, a requirement with a required claim
+  against its reference, verifies both signatures, re-derives a
+  `ClaimRequirement.parameters` predicate and recomputes the aggregation. A
+  verified claim must pin `recipeVersion`: this seller's evidence contract has
+  no authenticated session registry snapshot, so it cannot prove that an
+  implicit version is the family's latest (DACS-2 §7.4.3) and refuses it. Each
+  read has the 64 KiB, value, list and 10 s limits of the
+  other admission readers, and one replay has a 30 s total deadline that also
+  aborts the read in flight; a reader
+  that throws, stalls, rejects with `undefined` or answers too much makes the
+  proposal `indeterminate` with that cause. Without `vetEvidence`, a
+  requirement with a required claim
   is refused. Otherwise the Agreement is not signed, before any
   payment. A session
   in flight, signed under its pin, continues without a new admission or
