@@ -921,8 +921,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // retained network binding (or binds afresh) under the source-read lock and
   // one connection fence, then reads status, body and block once each through
   // the SDK core. Included facts need this exact hash's retained native intent,
-  // and the one body the core validated must match its signed content.
-  // Resolves the core observation, an included one as {...,sourceDisposition:
+  // and the one body the core validated must match its signed content. Only an
+  // explicit allowUnretained:true (non-native diagnostics) permits an absent
+  // intent, returning unqualified core facts without sourceDisposition.
+  // Resolves the core observation, a retained included one as {...,sourceDisposition:
   // 'included'}; rejects invalid_params, readback_unverified, a binding
   // failure, or the abort reason (caller, close(), or OutboundError 'timeout').
   // Abort contract: fetchImpl and transportOwner honour AbortSignal and settle.
@@ -931,9 +933,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);
-    return tracked(()=>observeWithDeadline(({signal})=>passiveRead(hash,signal),{timeoutMs:PASSIVE_TRANSFER_TIMEOUT_MS,signal:stop}));
+    return tracked(()=>observeWithDeadline(({signal})=>passiveRead(hash,signal,options.allowUnretained===true),{timeoutMs:PASSIVE_TRANSFER_TIMEOUT_MS,signal:stop}));
   }
-  async function passiveRead(hash, signal) {
+  async function passiveRead(hash, signal, allowUnretained) {
     const issued=await journal.get(intent(hash));
     const retained=Boolean(issued?.hash===hash && issued.signedTransaction?.hash===hash && issued.signedTransaction.content?.type==='native' && issued.networkBinding);
     const reads=[]; let body;
@@ -951,6 +953,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       return observation;
     }); });
     if(result.status!=='included') return result;
+    if(allowUnretained && issued==null) return result;
     if(!retained || body===undefined) fail('readback_unverified','the included native transfer has no retained original signed transaction');
     // node() removed the RPC envelope; the core must interpret this same body.
     if(Object.hasOwn(body,'response')) fail('readback_unverified','the included native transfer has an additional response envelope');
