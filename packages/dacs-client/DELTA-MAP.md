@@ -992,6 +992,8 @@ Engine floors, tests and refusal: a new iterator whose own `next` is not a funct
 | | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` | f11b772c4912bbd399a17ebc0b7cf061de341ce6 |
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | 5fa4b7cbc5b7c5b758afbb9f257ab6500da7a5c8 |
 | | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` | bb118dd861e66c1f7f15d9268ae8e721103efd9d |
+| D11 | fix(client): D11 record the current public diagnostic sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1056`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1058`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1074`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1084` | b6179e3b5fb7afbdf0324c48e3c5711ff4b42922 |
 
 ## Complete commit and file inventory
 
@@ -2764,6 +2766,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` |
 | fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 | fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` |
+| fix(client): D11 record the current public diagnostic sources | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the current public diagnostic sources | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the current public diagnostic sources | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the current public diagnostic sources | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the current public diagnostic sources | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
