@@ -554,6 +554,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const bound=await bind(job,addresses);if(bound!=='bound')return{refused:bound};
     const row=await state.update(job.jobId,current=>{
       if(!current?.binding||!same(current.binding,job.binding))fail('binding-changed','context binding changed before admission');
+      if(!current.lifecycle&&current.seller)fail('context_lifecycle_uncertain','the retained context has no provable lifecycle membership');
       current.lifecycle??={incarnation:randomUUID(),epoch:0,state:'open',times:[]};
       const life=current.lifecycle;
       if(life.state==='ended'||(life.state==='selected'&&life.selected!==scope.generatedAt))fail('context_released','the context request was released');
