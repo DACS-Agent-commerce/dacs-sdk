@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test } from "vitest";
 
 import { buildAgent } from "../../src/agent/Agent.js";
@@ -169,7 +170,7 @@ function fakeAdapter(
       return { address, txRef: `tx-${address}` };
     },
     async readAnchor(address: string) {
-      return state.records.get(address) ?? null;
+      return admittedFixture(state.records.get(address) ?? null);
     },
   } as unknown as DemosAdapter;
 
@@ -344,7 +345,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
     // index, and native read seam cross the boundary. It receives neither the
     // writer's opaque StorageProgram name nor its transaction nonce.
     const read = await resolveAndRead(bindings, LOGICAL, OWNER, {
-      read: async (nativeAddress) => state.records.get(nativeAddress) ?? null,
+      read: async (nativeAddress) => admittedFixture(state.records.get(nativeAddress) ?? null),
       contentHashOf: contentHash,
       verifySignature: async (record, binding) => {
         if (!isListing(record)) return false;

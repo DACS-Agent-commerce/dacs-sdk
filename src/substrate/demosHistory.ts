@@ -1,16 +1,18 @@
-import type {
-  AnchorHistoryPageFetcher,
-  RawAnchorEntry,
+import {
+  AnchorHistoryRestartRequiredError,
+  historyMetadataConflictError,
+  type AnchorHistoryPageFetcher,
+  type RawAnchorEntry,
 } from "../discovery/scanner.js";
 
-const CURSOR_PREFIX = "dacs-demos-history-v1.";
+const CURSOR_PREFIX = "dacs-demos-history-v2.";
 export const DEMOS_HISTORY_MAX_PAGE_SIZE = 100;
+const DECIMAL = /^(0|[1-9][0-9]*)$/;
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
 const DEMOS_OWNER = /^(?:0x)?[0-9a-f]{64}$/i;
 const STORAGE_OPERATIONS = new Set([
   "CREATE_STORAGE_PROGRAM",
   "WRITE_STORAGE",
-  "READ_STORAGE",
   "UPDATE_ACCESS_CONTROL",
   "DELETE_STORAGE_PROGRAM",
   "SET_FIELD",
@@ -29,11 +31,20 @@ export interface DemosHistoryClient {
   ): Promise<unknown>;
 }
 
+/**
+ * The node orders history by transaction timestamp only, so rows that share a
+ * timestamp may come back in any order on each query. The cursor therefore names
+ * the last emitted timestamp and every row emitted with it, not one row.
+ */
 interface HistoryCursor {
-  v: 1;
+  v: 2;
   owner: string;
+  /** Raw offset of the boundary group's start plus its emitted rows. */
   offset: number;
-  boundaryTxHash: string;
+  /** Timestamp of the last emitted row, as a decimal string. */
+  boundaryTimestamp: string;
+  /** Every row emitted so far with the boundary timestamp. */
+  boundaryTxHashes: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,9 +63,10 @@ function encodeCursor(cursor: HistoryCursor): string {
   return `${CURSOR_PREFIX}${Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url")}`;
 }
 
+/** A cursor that cannot be decoded for this owner never resumes; restart from null. */
 function decodeCursor(value: string, owner: string): HistoryCursor {
   if (!value.startsWith(CURSOR_PREFIX)) {
-    throw new Error("invalid Demos history cursor prefix");
+    throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor prefix");
   }
 
   let decoded: unknown;
@@ -65,21 +77,27 @@ function decodeCursor(value: string, owner: string): HistoryCursor {
       ),
     ) as unknown;
   } catch {
-    throw new Error("invalid Demos history cursor encoding");
+    throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor encoding");
   }
+  const hashes = isRecord(decoded) ? decoded.boundaryTxHashes : undefined;
   if (
     !isRecord(decoded) ||
-    decoded.v !== 1 ||
+    decoded.v !== 2 ||
     typeof decoded.owner !== "string" ||
     !Number.isSafeInteger(decoded.offset) ||
-    (decoded.offset as number) <= 0 ||
-    typeof decoded.boundaryTxHash !== "string" ||
-    decoded.boundaryTxHash.trim().length === 0
+    typeof decoded.boundaryTimestamp !== "string" ||
+    !DECIMAL.test(decoded.boundaryTimestamp) ||
+    !Array.isArray(hashes) ||
+    hashes.length === 0 ||
+    hashes.length > DEMOS_HISTORY_MAX_PAGE_SIZE ||
+    (decoded.offset as number) < hashes.length ||
+    hashes.some((hash) => typeof hash !== "string" || hash.trim().length === 0) ||
+    new Set(hashes).size !== hashes.length
   ) {
-    throw new Error("invalid Demos history cursor payload");
+    throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor payload");
   }
   if (decoded.owner !== normalizedOwner(owner)) {
-    throw new Error("Demos history cursor belongs to a different owner");
+    throw new AnchorHistoryRestartRequiredError("Demos history cursor belongs to a different owner");
   }
   return decoded as unknown as HistoryCursor;
 }
@@ -93,6 +111,14 @@ function transactionHash(value: unknown, index: number): string {
     throw new Error(`Demos history row ${index} has no transaction hash`);
   }
   return value.hash;
+}
+
+/** The node's ordering key; Postgres may return its bigint as a decimal string. */
+function transactionTimestamp(value: unknown, index: number): bigint {
+  const timestamp = isRecord(value) && isRecord(value.content) ? value.content.timestamp : undefined;
+  if (Number.isSafeInteger(timestamp) && (timestamp as number) >= 0) return BigInt(timestamp as number);
+  if (typeof timestamp === "string" && DECIMAL.test(timestamp)) return BigInt(timestamp);
+  throw new Error(`Demos history row ${index} has no transaction timestamp`);
 }
 
 function logicalAddressFromMetadata(
@@ -115,7 +141,7 @@ function logicalAddressFromMetadata(
     throw new Error(`Demos history row ${index} has invalid logical_address metadata`);
   }
   if (camel !== undefined && snake !== undefined && camel !== snake) {
-    throw new Error(`Demos history row ${index} has conflicting logical metadata`);
+    throw historyMetadataConflictError(`Demos history row ${index} has conflicting logical metadata`);
   }
   return (camel ?? snake) as string;
 }
@@ -207,10 +233,23 @@ async function fetchRows(
 /**
  * Bind Demos address-history paging to the substrate-neutral discovery scanner.
  *
- * The cursor is owner-bound and locates the previous raw transaction in a
- * bounded overlap window before advancing. This tolerates normal prepends to
- * Demos' newest-first, confirmed history. A missing/duplicated boundary fails
- * closed; the caller can restart from a null cursor against a fresh snapshot.
+ * The node pages history by offset, ordered by transaction timestamp alone, so
+ * rows that share a timestamp can change places between queries. The cursor is
+ * owner-bound and names the last emitted timestamp and every row emitted with
+ * it. A continuation re-reads a bounded window that starts just before that
+ * timestamp group, emits the group's rows not yet emitted, then older rows. A
+ * group whose emitted rows are missing or duplicated, that does not fit in the
+ * window, or a cursor that cannot be decoded for this owner, fails closed with
+ * {@link AnchorHistoryRestartRequiredError}; the caller must restart from a null
+ * cursor against a fresh snapshot. Rows prepended at the head after a traversal
+ * starts, and rows confirmed later with a timestamp newer than the cursor's
+ * group, are behind the cursor: only a new traversal sees them.
+ *
+ * Conflicting logical metadata for one native address is remembered from the
+ * first page (null cursor) of a traversal, so a new traversal starts clean.
+ * Use a separate fetcher instance for each concurrent traversal: a null-cursor
+ * call resets this instance's metadata memory. Callers sharing an instance must
+ * retain their own traversal-specific logical metadata in the scanner.
  *
  * Only confirmed CREATE_STORAGE_PROGRAM transactions carrying explicit logical
  * metadata are candidates. Program names are deliberately ignored: DACS makes
@@ -236,54 +275,63 @@ export function createDemosHistoryPageFetcher(
 
     const cursor =
       cursorValue === null ? null : decodeCursor(cursorValue, owner);
-    const start = cursor?.offset ?? 0;
-    let rows: unknown[];
-    let rowsStart: number;
-    let pageWasShort: boolean;
-    let pageEndOffset: number;
-    let bufferedRowsRemain = false;
+    // A null cursor begins a traversal; earlier traversals' metadata is not kept.
+    if (cursor === null) logicalByNativeAddress.clear();
+    // Fetch the overlap and new rows in ONE node call. Splitting the boundary
+    // check and page fetch would permit a history change between calls to skip
+    // a row. The window starts one row before the boundary group, so the row
+    // at its head shows that the whole group is inside it.
+    const windowStart = cursor === null
+      ? 0
+      : Math.max(0, cursor.offset - cursor.boundaryTxHashes.length - 1);
+    const requested = cursor === null ? limit : DEMOS_HISTORY_MAX_PAGE_SIZE;
+    const window = await fetchRows(client, owner, windowStart, requested);
+    const hashes = window.map((row, index) => transactionHash(row, windowStart + index));
+    const timestamps = window.map((row, index) => transactionTimestamp(row, windowStart + index));
+    for (let index = 1; index < timestamps.length; index++) {
+      if (timestamps[index]! > timestamps[index - 1]!) {
+        throw new Error("Demos transaction-history RPC returned rows out of timestamp order");
+      }
+    }
+    const windowWasShort = window.length < requested;
+
+    let candidates: number[];
     if (cursor === null) {
-      rows = await fetchRows(client, owner, 0, limit);
-      rowsStart = 0;
-      pageWasShort = rows.length < limit;
-      pageEndOffset = rows.length;
+      candidates = window.map((_row, index) => index);
     } else {
-      // Fetch the overlap and new rows in ONE node call. Splitting the boundary
-      // check and page fetch would permit a history change between calls to skip
-      // a row. Searching the bounded window also tolerates normal head prepends.
-      const pageStart = start - 1;
-      const overlapAndRows = await fetchRows(
-        client,
-        owner,
-        pageStart,
-        DEMOS_HISTORY_MAX_PAGE_SIZE,
-      );
-      const boundaryIndexes = overlapAndRows.flatMap((row, index) =>
-        transactionHash(row, pageStart + index) === cursor.boundaryTxHash
-          ? [index]
-          : [],
-      );
-      if (boundaryIndexes.length !== 1) {
-        throw new Error(
-          "Demos transaction history boundary is missing or duplicated; restart from null",
+      const boundary = BigInt(cursor.boundaryTimestamp);
+      let groupStart = timestamps.findIndex((timestamp) => timestamp <= boundary);
+      if (groupStart === -1) groupStart = window.length;
+      let groupEnd = groupStart;
+      while (groupEnd < window.length && timestamps[groupEnd] === boundary) groupEnd++;
+      const group = hashes.slice(groupStart, groupEnd);
+      if (
+        (groupStart === 0 && windowStart > 0) ||
+        (groupEnd === window.length && !windowWasShort) ||
+        new Set(group).size !== group.length ||
+        cursor.boundaryTxHashes.some((hash) => !group.includes(hash))
+      ) {
+        throw new AnchorHistoryRestartRequiredError(
+          "Demos transaction history boundary is missing, duplicated or outside the overlap window; restart from null",
         );
       }
-      const boundaryIndex = boundaryIndexes[0]!;
-      const afterBoundary = overlapAndRows.slice(boundaryIndex + 1);
-      rows = afterBoundary.slice(0, limit);
-      rowsStart = pageStart + boundaryIndex + 1;
-      bufferedRowsRemain = afterBoundary.length > rows.length;
-      pageWasShort = overlapAndRows.length < DEMOS_HISTORY_MAX_PAGE_SIZE;
-      pageEndOffset = pageStart + overlapAndRows.length;
+      const emitted = new Set(cursor.boundaryTxHashes);
+      candidates = [];
+      for (let index = groupStart; index < window.length; index++) {
+        if (index >= groupEnd || !emitted.has(hashes[index]!)) candidates.push(index);
+      }
     }
+    const taken = candidates.slice(0, limit);
+    const bufferedRowsRemain = candidates.length > taken.length;
 
     const entries: RawAnchorEntry[] = [];
-    for (const [index, row] of rows.entries()) {
-      const entry = parseHistoryEntry(row, rowsStart + index, owner);
+    for (const index of taken) {
+      const entry = parseHistoryEntry(window[index], windowStart + index, owner);
       if (!entry?.logicalAddress) continue;
       const previous = logicalByNativeAddress.get(entry.nativeAddress);
       if (previous !== undefined && previous !== entry.logicalAddress) {
-        throw new Error(
+        // Remembered for the traversal, so no retry of its cursors clears it.
+        throw historyMetadataConflictError(
           `Demos history assigns conflicting logical metadata to ${entry.nativeAddress}`,
         );
       }
@@ -291,30 +339,34 @@ export function createDemosHistoryPageFetcher(
       entries.push(entry);
     }
 
-    if (pageWasShort && !bufferedRowsRemain) {
+    if (windowWasShort && !bufferedRowsRemain) {
       // The node has no total/count marker. Probe the next raw offset so a short,
       // incomplete page is not silently mistaken for the end of history.
-      const lookahead = await fetchRows(client, owner, pageEndOffset, 1);
+      const lookahead = await fetchRows(client, owner, windowStart + window.length, 1);
       if (lookahead.length !== 0) {
         throw new Error("Demos transaction-history RPC returned an incomplete page");
       }
       return { entries, nextCursor: null };
     }
 
-    const boundaryTxHash =
-      rows.length === 0
-        ? cursor!.boundaryTxHash
-        : transactionHash(
-            rows[rows.length - 1],
-            rowsStart + rows.length - 1,
-          );
+    // A full window always yields a row: a group reaching its end restarts above.
+    const last = taken[taken.length - 1]!;
+    const lastTimestamp = timestamps[last]!;
+    const carried = cursor !== null && lastTimestamp === BigInt(cursor.boundaryTimestamp)
+      ? cursor.boundaryTxHashes
+      : [];
+    const boundaryTxHashes = [
+      ...carried,
+      ...taken.filter((index) => timestamps[index] === lastTimestamp).map((index) => hashes[index]!),
+    ];
     return {
       entries,
       nextCursor: encodeCursor({
-        v: 1,
-        owner: normalizedOwner(owner),
-        offset: rowsStart + rows.length,
-        boundaryTxHash,
+        v: 2,
+        owner,
+        offset: windowStart + timestamps.indexOf(lastTimestamp) + boundaryTxHashes.length,
+        boundaryTimestamp: lastTimestamp.toString(),
+        boundaryTxHashes,
       }),
     };
   };

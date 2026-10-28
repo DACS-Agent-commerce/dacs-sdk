@@ -68,12 +68,17 @@ function requireStructuralSegment(value: string, label: string): void {
   }
 }
 
+/** CF-4 text rule; scheme-specific identifier grammar belongs to its verifier. */
+export function isCanonicalAddressSegmentValue(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.normalize("NFC") === value &&
+    !/\p{Cs}/u.test(value)
+  );
+}
+
 function requireVariableSegment(value: string, label: string): void {
-  if (
-    value.length === 0 ||
-    value.normalize("NFC") !== value ||
-    /[\s\u0000-\u001f\u007f]/.test(value)
-  ) {
+  if (!isCanonicalAddressSegmentValue(value)) {
     throw new DacsError(`${label} must be non-empty canonical text`);
   }
 }

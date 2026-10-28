@@ -1,14 +1,24 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test } from "vitest";
 
 import {
   canonicalize,
   contentHash,
+  attestationAddress,
+  listingAddress,
+  logicalToStorageProgramName,
+  paymentEvidenceAddress,
+  ratingAddress,
   sha256Hex,
 } from "../../src/canonical/index.js";
+import { artifactBindingHashOf as rootBindingHashOf } from "../../src/index.js";
 import {
+  artifactBindingHashOf,
   createBoundArtifactRepository,
   createInMemoryBindingIndex,
   createInMemoryBindingStore,
+  type AnchorBinding,
+  type BindingIndex,
   type BindingPublisher,
   type BoundArtifactAdapter,
 } from "../../src/discovery/index.js";
@@ -64,7 +74,7 @@ function fakeAdapter(owner: string, backend: FakeBackend): BoundArtifactAdapter 
     },
     async readAnchor(address) {
       const record = backend.records.get(address);
-      return record ? { ...record } : null;
+      return admittedFixture(record ? { ...record } : null);
     },
   };
 }
@@ -117,6 +127,51 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     });
   });
 
+  // DACS-4 §9.6.1 DV-1: a deliverable is an unsigned payload hashed whole.
+  test("a deliverable binds its complete payload, so a changed signature member fails the hash", async () => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend),
+      index: bindings,
+      publisher: bindings,
+    });
+    const deliverable = "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+    const payload = { report: "ok", signature: "A" };
+    const payloadHash = sha256Hex(canonicalize(payload));
+    expect(payloadHash).not.toBe(contentHash(payload));
+
+    const written = await writer.write(deliverable, payload);
+    expect(written).toMatchObject({
+      status: "published",
+      binding: { logicalAddress: deliverable, contentHash: payloadHash },
+    });
+    expect(backend.anchorMetadata).toEqual([{
+      logicalAddress: deliverable,
+      contentHash: payloadHash,
+      envelopeHash: payloadHash,
+    }]);
+    const approve = () => true;
+    expect(await writer.read(deliverable, SELLER, approve)).toMatchObject({
+      status: "verified",
+      record: payload,
+    });
+
+    backend.records.set(written.anchor.address, { ...payload, signature: "B" });
+    expect(await writer.read(deliverable, SELLER, approve)).toMatchObject({
+      status: "hash-mismatch",
+    });
+  });
+
+  test("exports the binding hash rule that write and read use", () => {
+    const deliverable = "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+    const payload = { report: "ok", signature: "A" };
+    expect(rootBindingHashOf).toBe(artifactBindingHashOf);
+    expect(artifactBindingHashOf(deliverable)(payload)).toBe(sha256Hex(canonicalize(payload)));
+    expect(artifactBindingHashOf(LOGICAL)(RECORD)).toBe(contentHash(RECORD));
+    expect(artifactBindingHashOf(LOGICAL)(RECORD)).not.toBe(sha256Hex(canonicalize(RECORD)));
+  });
+
   test("retry after reconnect reuses the physical anchor and publication", async () => {
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
@@ -156,7 +211,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
         return { address: "stor-pinned", txRef: "tx-pinned" };
       },
       async readAnchor() {
-        return anchored ?? null;
+        return admittedFixture(anchored ?? null);
       },
     };
     const repository = createBoundArtifactRepository({
@@ -235,6 +290,64 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       /trimmed and NFC-normalized/,
     );
     expect(backend.writes).toBe(0);
+  });
+
+  test.each(["", " ", "\t"])("rejects an empty logical key %j with an explicit storage name", async (address) => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    await expect(writer.write(address, RECORD, { storageName: "opaque" }))
+      .rejects.toThrow("logicalAddress must not be empty");
+    expect(backend.writes).toBe(0);
+    expect(bindings.snapshot()).toEqual([]);
+  });
+
+  test("retains NFC validation for custom logical keys", async () => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    expect((await writer.write("custom:café", RECORD)).status).toBe("published");
+    await expect(writer.write("custom:cafe\u0301", RECORD))
+      .rejects.toThrow(/trimmed and NFC-normalized/);
+    expect(backend.writes).toBe(1);
+  });
+
+  test.each([
+    ["colon + combining acute", "did:web:\u0301x"],
+    ["question mark + combining dot", "evm?\u0307x"],
+    ["equals + combining dot", "evm=\u0307x"],
+  ])("publishes and reads exact CF-4 keys with %s", async (_name, value) => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    const reader = createBoundArtifactRepository({
+      adapter: fakeAdapter("0xreader", backend), index: bindings, publisher: bindings,
+    });
+    const job = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+    const addresses = [
+      listingAddress(value, "svc", 1),
+      attestationAddress(job, "cci-xm", value, 1),
+      paymentEvidenceAddress(job, value, 0),
+      ratingAddress(job, value),
+    ];
+    for (const address of addresses) {
+      expect(value.normalize("NFC")).toBe(value);
+      expect(address.normalize("NFC")).not.toBe(address);
+      const written = await writer.write(address, RECORD);
+      expect(written.status).toBe("published");
+      expect(written.binding.logicalAddress).toBe(address);
+      expect(backend.anchorMetadata.at(-1)?.logicalAddress).toBe(address);
+      expect(await reader.read(address, SELLER, () => true)).toEqual({
+        status: "verified", nativeAddress: written.anchor.address, record: RECORD,
+      });
+    }
+    expect(backend.writes).toBe(addresses.length);
   });
 
   test("publication failure is indeterminate and a retry does not duplicate the anchor", async () => {
@@ -483,4 +596,59 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     expect(second.anchor.address).toBe("stor-2");
     expect(backend.writes).toBe(2);
   });
+});
+
+const DELIVERABLE = "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+
+async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
+  try {
+    await pending;
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error("expected the write to reject");
+}
+
+describe("createBoundArtifactRepository write guards", () => {
+  function guardedWriter(adapter?: Partial<BoundArtifactAdapter>) {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    let publishes = 0;
+    const writer = createBoundArtifactRepository({
+      adapter: { ...fakeAdapter(SELLER, backend), ...adapter },
+      index: bindings,
+      publisher: {
+        async publish(binding) {
+          publishes += 1;
+          return bindings.publish(binding);
+        },
+      },
+    });
+    return { backend, bindings, writer, publishes: () => publishes };
+  }
+
+  function expectNothingWritten(setup: ReturnType<typeof guardedWriter>): void {
+    expect(setup.backend.writes).toBe(0);
+    expect(setup.backend.anchorMetadata).toEqual([]);
+    expect(setup.publishes()).toBe(0);
+    expect(setup.bindings.snapshot()).toEqual([]);
+  }
+
+  // The deliverable hash canonicalizes any JSON value, so this guard is the only
+  // thing that keeps a non-object deliverable from being anchored for good.
+  test.each([
+    ["null", null],
+    ["an array", [1]],
+    ["a string", "x"],
+  ])("refuses %s as a deliverable before anchoring", async (_name, artifact) => {
+    const setup = guardedWriter();
+    const error = await rejectionOf(
+      setup.writer.write(DELIVERABLE, artifact as unknown as Record<string, unknown>),
+    );
+    expect(error.message).toBe("artifact must be a canonicalizable JSON object");
+    expect((error.cause as Error).message).toBe("artifact is not a JSON object");
+    expectNothingWritten(setup);
+  });
+
+
 });

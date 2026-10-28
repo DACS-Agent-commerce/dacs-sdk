@@ -264,17 +264,16 @@ export interface SubstrateAdapter {
   /**
    * SR-2 — the storage address a name would anchor to for THIS writer, without
    * writing. NOT third-party derivable (#58 / DACS-Standard #242): the physical
-   * address folds in the writer's account nonce at create time, so a reader that
-   * doesn't know that nonce must resolve by program name through the node's name
-   * index instead of precomputing an address.
+   * address folds in the writer's account nonce at create time. Independent
+   * consumers resolve through the published BindingIndex and verify the record;
+   * the opaque program name is only a writer-local reconciliation input.
    */
   anchorAddress(name: string): Promise<string>;
   /**
-   * SR-2 discovery — resolve a logical program name to its storage address, bound
-   * to the expected writer. The reader-side counterpart to `anchorAddress`: the
-   * physical address folds in the writer's create-time nonce, so a third party
-   * must resolve by name rather than precompute. Owner binding is required — a
-   * program name is not exclusive, so name-only resolution is squattable.
+   * SR-2 writer-local reconciliation — resolve an opaque program name to its
+   * native address, bound to the expected writer. Independent consumers use the
+   * published BindingIndex and post-read verification. Owner binding remains
+   * required here because program names are not exclusive.
    *
    * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
    * `absent` (readable candidates, none the writer's), or `indeterminate` (the
@@ -286,7 +285,11 @@ export interface SubstrateAdapter {
     expectedOwner: string,
   ): Promise<AnchorResolution>;
 
-  /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
+  /**
+   * SR-2 — read an admitted artifact by its storage address, or null if absent.
+   * External implementations use admitArtifactJson on exact received bytes;
+   * discovery rejects parsed objects without that runtime provenance.
+   */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 
   /** SR-3 — consensus-backed proxy fetch of a public HTTPS endpoint (DAHR). */

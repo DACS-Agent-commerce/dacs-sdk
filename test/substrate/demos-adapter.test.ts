@@ -489,11 +489,16 @@ describe("DemosAdapter", () => {
       status: "present",
       address: "stor-existing",
     });
-    vi.spyOn(adapter, "readAnchor").mockResolvedValue({
-      serviceId: "svc",
-      description: "original",
-      signature: "old-signature",
-    });
+    // Immutable reconciliation reads the SDK transport against the owned
+    // write intent; public readAnchor enforces external byte admission.
+    vi.spyOn(adapter.raw.storagePrograms, "read").mockResolvedValue({
+      success: true,
+      data: {
+        serviceId: "svc",
+        description: "original",
+        signature: "old-signature",
+      },
+    } as never);
 
     await expect(
       adapter.anchorWriteOnce("listing-v1", {
@@ -526,7 +531,7 @@ describe("DemosAdapter", () => {
       status: "indeterminate",
       reason: "candidate unreadable",
     });
-    const read = vi.spyOn(adapter, "readAnchor");
+    const read = vi.spyOn(adapter.raw.storagePrograms, "read");
 
     await expect(
       adapter.anchorWriteOnce("listing-v1", { serviceId: "svc" }),
@@ -627,9 +632,15 @@ describe("DemosAdapter", () => {
           resolveRead({ serviceId: "svc", signature: "old-signature" });
       },
     );
-    vi.spyOn(adapter, "readAnchor")
-      .mockReturnValueOnce(firstReadBlocked)
-      .mockResolvedValue({ serviceId: "svc", signature: "old-signature" });
+    vi.spyOn(adapter.raw.storagePrograms, "read")
+      .mockImplementationOnce(async () => ({
+        success: true,
+        data: await firstReadBlocked,
+      } as never))
+      .mockResolvedValue({
+        success: true,
+        data: { serviceId: "svc", signature: "old-signature" },
+      } as never);
 
     const first = adapter.anchorWriteOnce("listing-v1", {
       serviceId: "svc",

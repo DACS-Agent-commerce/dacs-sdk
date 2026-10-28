@@ -50,12 +50,17 @@ function canonString(value: string, normalizeValue: boolean): string {
   return out + '"';
 }
 
-function canonValue(value: unknown, ancestors: Set<object>, depth: number): string {
+function canonValue(
+  value: unknown,
+  ancestors: Set<object>,
+  depth: number,
+  normalizeValues: boolean,
+): string {
   if (value === null) return "null";
 
   const t = typeof value;
   if (t === "boolean") return value ? "true" : "false";
-  if (t === "string") return canonString(value as string, true);
+  if (t === "string") return canonString(value as string, normalizeValues);
 
   if (t === "number") {
     const n = value as number;
@@ -101,7 +106,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
             "canonical form: arrays must be dense enumerable data properties",
           );
         }
-        items.push(canonValue(descriptor.value, ancestors, depth + 1));
+        items.push(canonValue(descriptor.value, ancestors, depth + 1, normalizeValues));
       }
       const ownKeys = Reflect.ownKeys(value);
       if (ownKeys.length !== value.length + 1) {
@@ -149,7 +154,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
         "{" +
         entries
           .map(([key, entry]) =>
-            canonString(key, false) + ":" + canonValue(entry, ancestors, depth + 1)
+            canonString(key, false) + ":" + canonValue(entry, ancestors, depth + 1, normalizeValues)
           )
           .join(",") +
         "}"
@@ -168,7 +173,15 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
  * canonical form.
  */
 export function canonicalize(value: unknown): string {
-  return canonValue(value, new Set<object>(), 0);
+  return canonValue(value, new Set<object>(), 0, true);
+}
+
+/**
+ * Internal transport JCS: preserve string values exactly, including CF-4 keys
+ * already encoded from NFC text. Signed DACS artifacts still use canonicalize.
+ */
+export function canonicalizeWireJson(value: unknown): string {
+  return canonValue(value, new Set<object>(), 0, false);
 }
 
 function assertNoLoneSurrogates(value: string): void {

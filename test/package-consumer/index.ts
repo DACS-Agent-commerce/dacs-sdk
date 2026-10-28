@@ -41,8 +41,32 @@ import {
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
   verifyBundleCore,
+  artifactBindingHashOf,
+  createScanningArtifactRepository,
+  UnsupportedArtifactKindError,
+  AnchorHistoryRestartRequiredError,
+  type ScanningArtifactRepositoryDeps,
+  type ArtifactScanState,
+  type ArtifactScanPage,
+  type ArtifactScanDeferredRow,
+  type ArtifactRowIndeterminateCode,
+  type ArtifactScanIndeterminateCode,
+  type ArtifactScanRestartCode,
+  type ScannedArtifactOutcome,
+  type ScanPageCode,
 } from "@kynesyslabs/dacs";
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
+import {
+  AnchorHistoryRestartRequiredError as DiscoveryRestartRequiredError,
+  artifactBindingHashOf as discoveryBindingHashOf,
+  createScanningArtifactRepository as createScanningFromDiscovery,
+  scanAnchorPage,
+  UnsupportedArtifactKindError as DiscoveryUnsupportedKindError,
+  type AnchorHistoryPageFetcher,
+  type ArtifactRowIndeterminateCode as DiscoveryRowIndeterminateCode,
+  type ArtifactScanPage as DiscoveryArtifactScanPage,
+  type ScanPageCode as DiscoveryScanPageCode,
+} from "@kynesyslabs/dacs/discovery";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
   advanceSolanaSplSettlement,
@@ -127,6 +151,82 @@ const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSett
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
+declare const scanningDeps: ScanningArtifactRepositoryDeps;
+const scanningRepository = createScanningArtifactRepository({ ...scanningDeps, maxRowAttempts: 5 });
+async function nextScanState(state?: ArtifactScanState): Promise<ArtifactScanState> {
+  const page: ArtifactScanPage = await scanningRepository.scanPage(state, { limit: 100 });
+  const deferredRows: readonly ArtifactScanDeferredRow[] = [...page.deferred, ...page.state.deferred];
+  void deferredRows;
+  switch (page.status) {
+    case "page":
+    case "conflict":
+      return page.state;
+    case "indeterminate": {
+      const code: ArtifactScanIndeterminateCode = page.code;
+      void code;
+      return page.state;
+    }
+    case "restart-required": {
+      const code: ArtifactScanRestartCode = page.code;
+      void code;
+      return page.state;
+    }
+  }
+}
+const scanOutcomeCode = (outcome: ScannedArtifactOutcome): string => {
+  if (outcome.status === "indeterminate") {
+    const code: ArtifactRowIndeterminateCode = outcome.code;
+    return code;
+  }
+  return outcome.status === "unverifiable" ? (outcome.code ?? outcome.reason) : outcome.status;
+};
+const deferredRowCode = (row: ArtifactScanDeferredRow): ArtifactRowIndeterminateCode => row.code;
+// Exact unions: a missing or extra member fails the type check.
+const rowIndeterminateCodes = {
+  "index-indeterminate": true,
+  "binding-not-yet-visible": true,
+  "read-indeterminate": true,
+  "record-not-yet-visible": true,
+  "verifier-unavailable": true,
+} satisfies Record<ArtifactRowIndeterminateCode, true>;
+const scanOutcomeStatuses = {
+  "verified": true,
+  "hash-mismatch": true,
+  "signature-invalid": true,
+  "binding-mismatch": true,
+  "unverifiable": true,
+  "indeterminate": true,
+  "unclassified": true,
+  "conflict": true,
+} satisfies Record<ScannedArtifactOutcome["status"], true>;
+const scanPageCodes = {
+  "metadata-conflict": true,
+  "cursor-cycle": true,
+  "history-restart-required": true,
+  "page-limit-exceeded": true,
+  "invalid-limit": true,
+} satisfies Record<ScanPageCode, true>;
+const unsupportedKindCode: "unsupported-kind" = new UnsupportedArtifactKindError("unsupported").code;
+const historyRestartCode: "history-restart-required" =
+  new AnchorHistoryRestartRequiredError("restart from null").code;
+
+// The same surface through the discovery subpath.
+declare const historyFetcher: AnchorHistoryPageFetcher;
+async function historyPageCode(): Promise<ScanPageCode | null> {
+  const page = await scanAnchorPage(historyFetcher, null, { limit: 100 });
+  const code: DiscoveryScanPageCode | undefined = page.status === "indeterminate" ? page.code : undefined;
+  return code ?? null;
+}
+const discoveryScanning: typeof createScanningArtifactRepository = createScanningFromDiscovery;
+async function discoveryRowCodes(): Promise<DiscoveryRowIndeterminateCode[]> {
+  const page: DiscoveryArtifactScanPage = await discoveryScanning(scanningDeps).scanPage();
+  return page.deferred.map(deferredRowCode);
+}
+const discoveryUnsupported: UnsupportedArtifactKindError = new DiscoveryUnsupportedKindError("unsupported");
+const discoveryRestart: AnchorHistoryRestartRequiredError = new DiscoveryRestartRequiredError("restart");
+const deliverableBindingHash: string = artifactBindingHashOf("dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D")({ report: "ok" });
+const discoveryHashOf: typeof artifactBindingHashOf = discoveryBindingHashOf;
+
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
@@ -177,6 +277,19 @@ void buildEvidenceBound;
 void deriveSettlementVerified;
 void deriveReplayableSettlementVerified;
 void replaySettlementVerified;
+void nextScanState;
+void scanOutcomeCode;
+void rowIndeterminateCodes;
+void scanOutcomeStatuses;
+void scanPageCodes;
+void unsupportedKindCode;
+void historyRestartCode;
+void historyPageCode;
+void discoveryRowCodes;
+void discoveryUnsupported;
+void discoveryRestart;
+void deliverableBindingHash;
+void discoveryHashOf;
 void adapter;
 void journal;
 void result;

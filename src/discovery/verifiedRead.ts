@@ -1,4 +1,6 @@
+import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import type { AnchorBinding, BindingIndex } from "./binding.js";
+import { describeError } from "./describeError.js";
 import { normalizedBindingOwner } from "./owner.js";
 
 /**
@@ -38,10 +40,14 @@ export type VerifiedRead =
     }
   | { status: "unreadable"; nativeAddress: string }
   | { status: "absent" }
-  | { status: "indeterminate"; reason: string };
+  | { status: "indeterminate"; reason: string; code?: "binding-conflict" };
 
 export interface VerifiedReadDeps {
-  /** Read the record at its native locator and optional catalog anchor kind. */
+  /**
+   * Read an unchanged record from admitArtifactJson(exactReceivedBytes).
+   * Parsed external objects without runtime admission provenance are refused
+   * before hashing. Null remains an ordinary, non-authoritative not-found.
+   */
   read: (
     nativeAddress: string,
     anchorKind?: string,
@@ -55,6 +61,9 @@ export interface VerifiedReadDeps {
    * Artifact-specific signature and authorization check. When omitted the record
    * can be returned for inspection, but it MUST remain `unverifiable`: the
    * binding, including its contentHash, is untrusted discovery data.
+   * Unsupported or unavailable verification must throw, producing `unverifiable`.
+   * Return false only for a completed negative signature or authorization check,
+   * producing `signature-invalid`; only literal true passes.
    */
   verifySignature?: (
     record: Record<string, unknown>,
@@ -75,17 +84,25 @@ export async function resolveAndRead(
   let resolution;
   try {
     resolution = await index.resolve(logicalAddress, expectedOwner);
+    const { status } = resolution;
+    if (status === "indeterminate") {
+      // Guard once-only field reads as well as resolution: accessors may throw.
+      const { reason, code } = resolution;
+      if (typeof reason !== "string") throw new Error("binding index returned an invalid reason");
+      return {
+        status: "indeterminate",
+        reason,
+        ...(code === "binding-conflict" ? { code: "binding-conflict" as const } : {}),
+      };
+    }
+    if (status === "absent") return { status: "absent" };
+    if (status !== "present") throw new Error("binding index returned an unknown status");
   } catch (e) {
     return {
       status: "indeterminate",
-      reason: `binding resolution failed: ${e instanceof Error ? e.message : String(e)}`,
+      reason: `binding resolution failed: ${describeError(e)}`,
     };
   }
-  if (resolution.status === "indeterminate") {
-    return { status: "indeterminate", reason: resolution.reason };
-  }
-  if (resolution.status === "absent") return { status: "absent" };
-
   let binding: AnchorBinding;
   try {
     const snapshot: unknown = structuredClone(resolution.binding);
@@ -100,7 +117,7 @@ export async function resolveAndRead(
   } catch (e) {
     return {
       status: "indeterminate",
-      reason: `binding snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
+      reason: `binding snapshot failed: ${describeError(e)}`,
     };
   }
   if (
@@ -133,12 +150,12 @@ export async function resolveAndRead(
     // momentarily unreachable. Fail closed to `indeterminate`.
     return {
       status: "indeterminate",
-      reason: `read of ${nativeAddress} failed: ${e instanceof Error ? e.message : String(e)}`,
+      reason: `read of ${nativeAddress} failed: ${describeError(e)}`,
     };
   }
   if (!record) return { status: "unreadable", nativeAddress };
   try {
-    const snapshot: unknown = structuredClone(record);
+    const snapshot: unknown = snapshotAdmittedArtifact(record);
     if (
       typeof snapshot !== "object" ||
       snapshot === null ||
@@ -150,7 +167,7 @@ export async function resolveAndRead(
   } catch (e) {
     return {
       status: "indeterminate",
-      reason: `read record snapshot failed: ${e instanceof Error ? e.message : String(e)}`,
+      reason: `read record snapshot failed: ${describeError(e)}`,
     };
   }
 
@@ -174,7 +191,7 @@ export async function resolveAndRead(
       status: "unverifiable",
       nativeAddress,
       record,
-      reason: `content hash computation failed: ${e instanceof Error ? e.message : String(e)}`,
+      reason: `content hash computation failed: ${describeError(e)}`,
     };
   }
   if (actualContentHash !== binding.contentHash) {
@@ -187,7 +204,7 @@ export async function resolveAndRead(
     let ok: boolean;
     try {
       ok = await deps.verifySignature(
-        structuredClone(record),
+        snapshotAdmittedArtifact(record),
         structuredClone(binding),
       );
     } catch (e) {
@@ -195,10 +212,10 @@ export async function resolveAndRead(
         status: "unverifiable",
         nativeAddress,
         record,
-        reason: `signature verification threw: ${e instanceof Error ? e.message : String(e)}`,
+        reason: `signature verification threw: ${describeError(e)}`,
       };
     }
-    if (!ok) return { status: "signature-invalid", nativeAddress, record };
+    if (ok !== true) return { status: "signature-invalid", nativeAddress, record };
   } else {
     return {
       status: "unverifiable",

@@ -5,6 +5,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { canonicalizeWireJson } from "../canonical/jcs.js";
 import type { DemosWriteEvidence } from "./SubstrateAdapter.js";
 
 export interface DemosPortableAnchorReceiptInput {
@@ -57,7 +58,7 @@ function parseCanonicalJson(value: string, label: string): unknown {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value) as unknown;
-    if (canonicalize(parsed) !== value) throw new Error();
+    if (canonicalizeWireJson(parsed) !== value) throw new Error();
   } catch {
     throw new DacsError(`${label} is not canonical JSON`);
   }
@@ -83,7 +84,7 @@ function normalizedDemosTransactionContent(
   content: Record<string, unknown>,
   expectedTxRef: string,
 ): Record<string, unknown> {
-  const normalized = JSON.parse(canonicalize(content)) as Record<string, unknown>;
+  const normalized = JSON.parse(canonicalizeWireJson(content)) as Record<string, unknown>;
   for (const field of ["nonce", "timestamp", "amount"] as const) {
     if (field in normalized) {
       normalized[field] = normalizeDemosWireInteger(normalized[field]);
@@ -205,7 +206,7 @@ export function demosSignedTransactionProofHash(value: unknown): string {
   if (Object.hasOwn(value, "signature")) {
     projection.signature = value.signature;
   }
-  return sha256Hex(canonicalize(projection));
+  return sha256Hex(canonicalizeWireJson(projection));
 }
 
 /**
@@ -286,7 +287,7 @@ export function assertDemosWriteEvidence(
   const metadataHash = payload.metadata === undefined
     ? undefined
     : isRecord(payload.metadata)
-      ? exactJsonHash(payload.metadata)
+      ? sha256Hex(canonicalizeWireJson(payload.metadata))
       : null;
   if (metadataHash === null || metadataHash !== evidence.nativeRead.metadataHash) {
     throw new DacsError("Demos signed transaction does not bind its metadata");
@@ -367,7 +368,7 @@ export function demosWriteEvidenceToAnchorReceipt(
     },
   };
   const encodedEvidence = Buffer.from(
-    canonicalize(proof),
+    canonicalizeWireJson(proof),
     "utf8",
   ).toString("base64url");
   return {
@@ -436,7 +437,7 @@ export function decodeDemosAnchorReceiptProof(
   try {
     const json = bytes.toString("utf8");
     proof = JSON.parse(json) as unknown;
-    if (canonicalize(proof) !== json) throw new Error();
+    if (canonicalizeWireJson(proof) !== json) throw new Error();
   } catch {
     throw new DacsError("Demos write evidence is not canonical JSON");
   }
