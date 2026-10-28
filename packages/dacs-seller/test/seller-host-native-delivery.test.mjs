@@ -1494,3 +1494,16 @@ test('one exact prepared candidate uses one successful schema verdict within the
  const w=await world(t,{deliverableExtension:{schemaUrl},deliverySchemaVerifier:{schemaUrl,verify:()=>++calls===1?{disposition:'valid'}:{disposition:'invalid',reason:'TEST inconsistent second answer'}}});
  const p=await w.purchase(),done=await p.claim(p.pay());assert.equal(done.delivery?.status,'delivery-ready',shown(done));assert.equal(calls,1);
 });
+
+// A native read is authenticated whole: a projection that conflicts with the
+// receipt it arrived with is not a delivery, on the first claim as on a repeat.
+test('a native delivery read whose signed projection conflicts with its receipt is held',async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay(),deliverable=`dacs4:deliverable:${p.jobId}`;
+ w.faults.deliveryRead=read=>{read.signedProjection.content.nonce++;return read;};
+ const held=await p.claim(tx);
+ assert.equal(held.delivery?.status,'held',shown(held));
+ w.faults.deliveryRead=null;
+ const done=await p.claim(tx);
+ assert.equal(done.delivery?.status,'delivery-ready',shown(done));
+ assert.equal(w.createsAt(deliverable),1);
+});

@@ -1066,12 +1066,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         const result=await readNativeDemDelivery(nativeDelivery,{jobId:session.jobId,logicalAddress,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:deliveryBinding(fulfilmentId)});
         if(result.status==='present')return{status:'present',artifact:result.artifact,receipt:result.receipt,signedProjection:result.signedProjection,demosEvidence:result.demosEvidence};
         if(result.status==='rejected')throw new SellerAgentError('delivery_readback_invalid',result.reason,503);
-        return null;
+        // An absent read is an answer; any other non-present read is an outage whose bounded cause is not proof the Deliverable is gone.
+        if(result.status==='absent')return null;
+        return {status:'indeterminate',reason:String(result.reason ?? `native delivery read is ${result.status ?? 'unclassified'}`).slice(0,180)};
       }
       const record = await anchors.read(logicalAddress);
-      if (record.status !== 'present') return null;
-      if (verifyFixtureRecord(record, { logicalAddress, expectedWriter: claim }) !== 'valid') throw new SellerAgentError('delivery_readback_invalid', 'delivery receipt is not the seller write', 503);
-      return record;
+      if (record.status === 'present') {
+        if (verifyFixtureRecord(record, { logicalAddress, expectedWriter: claim }) !== 'valid') throw new SellerAgentError('delivery_readback_invalid', 'delivery receipt is not the seller write', 503);
+        return record;
+      }
+      if (record.status === 'absent') return null;
+      return {status:'indeterminate',reason:String(record.reason ?? 'the delivery address returned no verdict').slice(0,180)};
     };
     let verifiedSchemaPayload;
     const deps = {
@@ -1141,6 +1146,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         }
         const record = await readDelivery(deliverableAddress(session.jobId),input.fulfilmentId);
         if (!record) return { status: 'absent', reason: 'canonical delivery address is empty' };
+        if (record.status === 'indeterminate') return { status: 'indeterminate', reason: `canonical delivery readback is unavailable: ${record.reason}` };
         if (!reportMatches(record.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
         return { status: 'complete', reconciliationId: input.reconciliationId ?? input.fulfilmentId, observedAt: record.receipt.blockRef.timestamp };
       },
@@ -1150,7 +1156,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         }
         const record = await readDelivery(logicalAddress,session.deliveryAdapter?.fulfilmentId);
         if (!record) return { status: 'indeterminate', reason: 'canonical delivery is absent' };
+        if (record.status === 'indeterminate') return { status: 'indeterminate', reason: `canonical delivery readback is unavailable: ${record.reason}` };
         if (!reportMatches(record.artifact, session, work.intake.settlementId)) return { status: 'rejected', reason: 'canonical delivery bytes differ' };
+        if (nativeDelivery) {
+          // The read is authenticated whole: its signed projection must prove the receipt it arrived with, not only the bytes.
+          const report = deliveryReport(session, work.intake.settlementId);
+          const verdict = await verifyNativeDemDeliveryReceipt(nativeDelivery, { jobId: session.jobId, logicalAddress, report, receipt: record.receipt,
+            receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: deliveryBinding(session.deliveryAdapter?.fulfilmentId),
+            ...(record.signedProjection ? { signedProjection: record.signedProjection } : {}) });
+          if (verdict !== 'valid') return { status: 'indeterminate', reason: `native delivery receipt is ${verdict} against the bytes read back` };
+        }
         return { status: 'verified', value: { artifact: { kind: phase, cleartextPayload: structuredClone(record.artifact), anchoredValue: structuredClone(record.artifact), access: { model: 'public' } }, anchorReceipt: structuredClone(record.receipt) } };
       },
       verifyAnchorReceipt: async ({ purpose, expectedWriter, ref, receipt }) => {
@@ -1212,7 +1227,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           const report = deliveryReport(session, work.intake.settlementId);
           let read;
           try { read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: input.logicalAddress, report, receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: deliveryBinding(input.fulfilmentId) }); }
-          catch (error) { return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` }; }
+          catch (error) { return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.code ?? 'unknown').slice(0, 64)}: ${String(error?.message ?? error).slice(0, 180)}` }; }
           if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
           if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
           if (!reportMatches(read.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
@@ -1225,6 +1240,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         }
         const record = await readDelivery(input.logicalAddress,input.fulfilmentId);
         if (!record) return { status: 'absent', reason: 'current fence registered canonical delivery absence' };
+        if (record.status === 'indeterminate') return { status: 'indeterminate', reason: `canonical delivery readback is unavailable: ${record.reason}` };
         if (!reportMatches(record.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
         return { status: 'accepted', reconciliationId: nativeDelivery ? record.receipt.transactionRef.value : input.fulfilmentId };
       },
