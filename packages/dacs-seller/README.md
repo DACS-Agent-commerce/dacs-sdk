@@ -5,17 +5,26 @@ Listing, behind the authenticated seller transport and its durable journal, on
 loopback. The agent runs negotiation (DACS-3), the finalized commitment,
 `pay-dem` payment intake and delivery through the core SDK
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
-evidence and native DEM delivery capabilities, which the host requires. This is the devnet-demo seller kit, ported from the
-plugin seller kit (see [SOURCES.md](SOURCES.md)). It is a **fixture-only kit**: its native capabilities accept
-only `TEST-` authorities and a loopback fixture node, so it cannot start
-against, or read from, a real Demos node (see "What the host does and does
-not do"). It is not qualified for mainnet. The standalone host retains
-all jobs and refuses new jobs before admission after `maxJobs` (default 10,000); terminal
-DACS-5 bundle completion and transport-row reclamation are not wired.
+evidence and native DEM delivery capabilities, which the host requires. This
+is the devnet-demo seller kit, ported from the plugin seller kit (see
+[SOURCES.md](SOURCES.md)). Its packaged native readers are **fixture-only**:
+the native DEM delivery capability and the DEM delivery context accept only a
+`TEST-` authority (`src/dacs/native-dem-delivery-consumer.mjs`,
+`src/dacs/dem-delivery-context-consumer.mjs`), and
+`createNativePaymentEvidenceConsumer` accepts only a literal `127.0.0.1` RPC
+origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
+`agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
+`broadcast` is the operator's own callback, so an operator-supplied anchor or
+broadcast can still reach a real Demos node: keep them on the fixture too. It
+is not qualified for mainnet. The standalone host retains all jobs and refuses
+new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
+bundle completion and transport-row reclamation are not wired.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
-Requires Node.js 20.19.x or 22.12+ and a core SDK built from this checkout.
+The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
+durable stores use the native `better-sqlite3` module. Use the same version of
+`@kynesyslabs/dacs` as this kit.
 The private package uses a core tarball built from the same checkout.
 
 ```js
@@ -32,6 +41,10 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
+  host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
+  port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
+  now,                   // optional () -> epoch milliseconds; default Date.now
   observeDemosTransfer, // optional compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
@@ -44,7 +57,10 @@ const host = await startSellerHost({
                          // readRevocationSurfaces, readRevocationMarker, readSessionRecipeRegistryPin?, vetEvidence? }: the
                          // seller-owned session admission, Vet record reader, receipt reader and receipt
                          // verifier, revocation readers, optional registry pin reader for presence-only
-                         // Vet requirements, and optional Vet evidence readers (src/dacs/session-admission.mjs)
+                         // Vet requirements, and optional Vet evidence readers (src/dacs/session-admission.mjs); admit must name both participants on the exact
+                         // [PROFILE.json](PROFILE.json) profile: standardRevision
+                         // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
+                         // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
 });
@@ -86,9 +102,11 @@ payloads only. The native host requires an explicit `expectedSizeBytes` in the
 signed Listing before any Agreement is signed. Pass it to `buildListingDraft`;
 it is the exact UTF-8 byte length of the canonical JSON payload, not an estimate
 or an upper bound. It must fit the report's job/Agreement/settlement bindings
-and must not exceed 131072 bytes. Listings without a size remain valid general
-DACS Listings but need a different delivery profile. DACS-4 §9.6.1 requires an
-extended pointer above 128 KiB; this profile has no pointer publisher. An actual
+and must not exceed 16384 bytes (`MAX_STORAGE_ARTIFACT_BYTES`, the capacity of
+the one storage CREATE that carries it). Listings without a size remain valid
+general DACS Listings but need a different delivery profile. DACS-4 §9.6.1
+requires an extended pointer above 128 KiB; this profile has no pointer
+publisher and refuses a larger Listing before any Agreement is signed. An actual
 producer output that exceeds the limit or differs from the declared exact size
 holds preparation for retry without consuming the payment permit. After fixing
 the producer, retry the same payment claim; do not collect another payment.
@@ -123,8 +141,14 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It fails closed on configuration: unknown options, a missing capability, a
   non-loopback host, a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
-  The host checks the data directory's ownership, private mode and real path.
-  The durable and transport stores validate their immediate store directories.
+  Two private stores also check the ancestors of their own paths: the party
+  Vet store requires each ancestor to be owned by root or by this user and not
+  be group- or world-writable (a sticky root scratch directory is allowed),
+  and the wallet journal refuses a non-sticky ancestor that others can write. The host
+  checks only the data directory itself — a private, real, 0700 directory
+  owned by this user — not its ancestors, so place it where no other user can
+  replace it.
+  The other durable and transport stores validate their immediate store directories.
   Job capacity counts saved sessions and active reservations. An unsaved
   reservation is reclaimed only when its holder is proven exited; live or
   unproven holders continue to reserve capacity.
@@ -186,21 +210,27 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an error, or a CREATE it signed that is not on the chain) holds the
   delivery and never submits again: a landed CREATE would be made twice. A
   `read` that never returns the proof strands a paid order after one failed
-  submission. The package's devnet artifact anchor returns it from `read` for an
-  address with no stored intent (`readRetained` reports plain absence there),
-  and from both readers for a stored intent that carries no hash and no signed
-  transaction when neither the source nor the seller's wallet retains a signed CREATE for the address: one a
-  shutdown cut before it was signed (`closing`), one the wallet answered
-  without signing (`unsigned`), and one the process died on while the wallet
-  was asked (`intent`; the wallet journals a signature before it sends
-  anything, so a signature it made but did not journal was never sent).
+  submission. An operator-supplied `artifactAnchor` must return it from `read`
+  for an address with no stored intent (`readRetained` reports plain absence
+  there), and from both readers for a stored intent that carries no hash and
+  no signed transaction when neither the source nor the seller's wallet
+  retains a signed CREATE for the address: one a shutdown cut before it was
+  signed (`closing`), one the wallet answered without signing (`unsigned`),
+  and one the process died on while the wallet was asked (`intent`; the wallet
+  journals a signature before it sends anything, so a signature it made but
+  did not journal was never sent).
   Publishing such an intent again replaces it under the address's lock and
   asks the wallet once more. An operator's refusal (`denied`), a broadcast
   rejection, or any row with a hash or a signed CREATE is only read back. The
   proof rests on the artifact journal and the wallet journal being the ones
   that recorded the attempt: a journal lost, or restored from an older copy,
   after a Deliverable landed reads as never asked, and the order is submitted
-  again (an operator-induced limit).
+  again (an operator-induced limit). The package's reference implementation,
+  `createDevnetDemoArtifactAnchor` (`src/devnet-demo/artifact-anchor.mjs`),
+  cannot be constructed in this snapshot: its constructor requires the opaque
+  devnet-demo source capability, and `isDevnetDemoTransport` always returns
+  `false` (`src/dacs/devnet-source.mjs`), so it refuses every input. Supply an
+  anchor that enforces the contract.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
   `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
   required `reconcilePaymentEvidence`. The agent, whether the host composes
@@ -429,11 +459,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected })` answer `true` only for a signer the operator trusts; and
   `verifyAuthorityAttestation({ result, expected, recipe, content })` answers
   `'valid'`, `'invalid'` or `'unresolved'`. The SDK still hashes each content
-  against its reference, verifies both signatures and recomputes the
-  aggregation. Each read has the 64 KiB, value, list and 10 s limits of the
-  other admission readers, and one replay has a 30 s total deadline; a reader
-  that throws, stalls or answers too much makes the proposal `indeterminate`
-  with that cause. Without `vetEvidence`, a requirement with a required verified claim
+  against its reference, verifies both signatures, re-derives a
+  `ClaimRequirement.parameters` predicate and recomputes the aggregation. A
+  verified claim must pin `recipeVersion`: this seller's evidence contract has
+  no authenticated session registry snapshot, so it cannot prove that an
+  implicit version is the family's latest (DACS-2 §7.4.3) and refuses it. Each
+  read has the 64 KiB, value, list and 10 s limits of the
+  other admission readers, and one replay has a 30 s total deadline that also
+  aborts the read in flight; a reader
+  that throws, stalls, rejects with `undefined` or answers too much makes the
+  proposal `indeterminate` with that cause. Without `vetEvidence`, a
+  requirement with a required verified claim
   is refused. Otherwise the Agreement is not signed, before any
   payment. A session
   in flight, signed under its pin, continues without a new admission or
