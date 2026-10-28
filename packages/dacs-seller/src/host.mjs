@@ -216,13 +216,18 @@ export async function startSellerHost(options) {
     // journal and the agent state they write to and releases the state lock.
     const close = () => closing ??= (async () => {
       stopping = true;
-      // Aborting the native readback signal turns every accepted readback into
-      // its uncertain result, so a request waiting on one drains instead of
-      // holding the journal, agent and lock below open.
-      shutdown.abort();
       const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
+      // Drain accepted requests with their real outcomes before stopping the
+      // capability work they may still depend on: a readback that completes
+      // inside its deadline is answered and journaled, not turned into a
+      // shutdown-induced uncertain effect. A readback past its deadline has
+      // already answered uncertain, so this wait stays bounded.
       await Promise.allSettled([...active]);
+      // Only now stop the underlying native work, then wait for it: a
+      // capability that honours the signal stops early; one that does not
+      // keeps ownership until it finishes.
+      shutdown.abort();
       await artifact.drain();
       // A connection that became idle while its last response was written is
       // swept here; the first sweep could only see it still busy.

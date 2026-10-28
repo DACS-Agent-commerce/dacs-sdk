@@ -97,8 +97,11 @@ test('close waits for an accepted native artifact readback before releasing stat
  }finally{block=false;releaseRead.resolve();}
  await closing;
  assert.equal(afterClose,0,'a late readback never writes after ownership transfers');
- await pending;
- const reopened=await f.start();await reopened.close();
+ assert.equal(await pending,'answered','the accepted readback outcome answers the request instead of becoming an uncertain shutdown');
+ const reopened=await f.start(),recovered=f.client(reopened,request);
+ assert.equal((await recovered.commit(request.transportIdentity.jobId)).status,'committed','the commitment completed before shutdown stays committed after restart');
+ assert.equal((await recovered.commit(request.transportIdentity.jobId)).status,'committed','an authenticated retry recovers the same commitment');
+ await reopened.close();
 });
 
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
