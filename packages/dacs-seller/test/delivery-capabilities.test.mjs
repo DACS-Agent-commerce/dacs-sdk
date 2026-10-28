@@ -86,7 +86,7 @@ test('signature commitment verifies retained contributions and only enables the 
 
 test('native report submission uses the report predicate before reaching its anchor', async () => {
   const f = await reportFixture(); let sent = 0;
-  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => { sent++; return { status: 'present', receipt: { transactionRef: { value: 'TEST-write' } } }; }, read: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
+  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => { sent++; return { status: 'present', receipt: { transactionRef: { value: 'TEST-write' } } }; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
   const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor });
   const report = { ...f.report, content: { ...f.report.content, text: 'TEST\u0000' } };
   assert.equal((await submitNativeDemDelivery(capability, { jobId: JOB, report, logicalAddress: `dacs4:deliverable:${JOB}`, receiptContentHash: contentHash(report) })).status, 'rejected');
@@ -107,3 +107,37 @@ test('buyer access requires constructed authority and the configured custody ide
   assert.equal(access.jobAccess(JOB), 'custody'); assert.throws(() => access.assertRelayWallet(seller.address));
   assert.throws(() => operatorBuyerAccessConfig({ ...access }));
 });
+
+for (const method of ['assertSellerWallet', 'sellerNotice']) {
+  for (const [label, retained, ready, wallet] of [
+    ['another buyer', buyer.address, true, seller.address],
+    ['no retained buyer', null, true, seller.address],
+    ['lookup unavailable', seller.address, false, seller.address],
+    ['malformed wallet', 'malformed', true, 'malformed'],
+  ]) test(`paid outside ${method} refuses ${label}`, () => {
+    const access = createOperatorBuyerAccess({ custodyBuyer: buyer.claim, buyerForJob: () => retained,
+      buyerLookupReady: () => ready, paymentObserved: () => true });
+    assert.throws(() => access[method](wallet, JOB), { code: 'buyer_access_closed' });
+  });
+  test(`paid outside ${method} admits only the retained wallet and preserves other access policies`, () => {
+    let paid = true;
+    const access = createOperatorBuyerAccess({ custodyBuyer: buyer.claim, buyerForJob: () => seller.address,
+      paymentObserved: () => paid });
+    assert.doesNotThrow(() => access[method](seller.address.toUpperCase(), JOB));
+    paid = false;
+    assert.throws(() => access[method](seller.address, JOB), { code: 'buyer_access_closed' });
+    assert.doesNotThrow(() => access[method](buyer.address, JOB));
+    const open = createOperatorBuyerAccess({ openBuyerAccess: true });
+    assert.doesNotThrow(() => open[method](seller.address, JOB));
+  });
+}
+
+for (const deliveryEvidenceEnabled of [false, true]) {
+  for (const method of ['publish', 'read', 'readRetained', 'verifyReceipt']) {
+    test(`native anchor requires ${method} with evidence ${deliveryEvidenceEnabled}`, () => {
+      const anchor = { authority: 'TEST-native', writer: seller.claim, publish() {}, read() {}, readRetained() {}, verifyReceipt() {} };
+      delete anchor[method];
+      assert.throws(() => createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor, deliveryEvidenceEnabled }), /native artifact anchor/);
+    });
+  }
+}
