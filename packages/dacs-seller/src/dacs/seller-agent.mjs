@@ -354,11 +354,19 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
           if (query.seller !== claim || canonicalize(query.listingPin) !== canonicalize(pin)) return { disposition: 'rejected', reason: 'proposal names another Listing or seller' };
           if (query.buyer !== session.buyerBundle.presentedBy || query.jobId !== jobId) return { disposition: 'rejected', reason: 'proposal names another buyer or job' };
           const generatedAt = draft?.generatedAt;
-          const observedAt = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission.observedAt : now();
+          // The admission decision belongs to the exact proposal the seller
+          // first saw: an exact retry after a crash replays the retained
+          // contribution, so it must not re-ask a callback that has since been
+          // lost or changed. An older retained admission is therefore reused
+          // as it was decided, with the observation time it was decided at.
+          const priorAdmission = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
+          const observedAt = priorAdmission?.observedAt ?? now();
+          const admitted = typeof priorAdmission?.admitted === 'boolean' ? priorAdmission.admitted
+            : admittedContextRequest({ jobId, buyerBundle: session.buyerBundle, generatedAt });
           const timeProblem = proposalTimeProblem({ generatedAt, observedAt, deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit,
-            admitted: admittedContextRequest({ jobId, buyerBundle: session.buyerBundle, generatedAt }) });
+            admitted });
           if (timeProblem) return { disposition: 'rejected', reason: timeProblem };
-          session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt };
+          if (!priorAdmission) session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt, admitted };
           if (deliveryContext) {
             const retained = session.demDeliveryContext;
             const resolved = retained ?? await resolveDemDeliverySellerContext(deliveryContext, { jobId, listing, buyerBundle: session.buyerBundle, generatedAt });

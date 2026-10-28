@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {proposalAdmissionFixture,proposalForInput} from './helpers/proposal-admission-fixture.mjs';
-import {JOB} from './helpers/protocol-fixture.mjs';
+import {JOB,NOW} from './helpers/protocol-fixture.mjs';
 
 test('completed proposal survives reject-different-proposal and exact replay after restart',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),a=await f.proposal(agent),complete=await agent.receiveProposal(a);assert.equal(complete.disposition,'complete');
@@ -37,6 +37,15 @@ test('retired admission history remains bounded even when no live job is held',a
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const {sha256Hex}=await import('@kynesyslabs/dacs');const {buyer,NOW}=await import('./helpers/protocol-fixture.mjs');
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});try{for(let i=0;i<16;i++){const nonce=sha256Hex('TEST retired history '+i),hash=sha256Hex('TEST accepted presentation '+i);state.issueChallenge(nonce,{jobId:JOB,buyer:buyer.claim,issuedAt:NOW,expiresAt:NOW+600000});state.attemptChallenge(nonce,{presentationHash:hash});state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}}finally{state.close();}
  const fresh=await f.open();assert.throws(()=>fresh.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
+});
+
+test('an exact retry reuses the retained context admission after the callback is lost',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});f.config.contextRequest=()=>true;
+ const agent=await f.open(),request=await f.proposal(agent,JOB,{generatedAt:NOW-30000});
+ // The challenge is still live, but the proposal is older than the plain clock window.
+ f.advance(590000);const complete=await agent.receiveProposal(request);assert.equal(complete.disposition,'complete');agent.close();
+ f.config.contextRequest=()=>false;
+ const replay=await (await f.open()).receiveProposal(request);assert.equal(replay.disposition,'complete');assert.deepEqual(replay.contribution,complete.contribution);
 });
 
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{
