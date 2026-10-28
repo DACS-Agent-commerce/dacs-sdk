@@ -92,7 +92,8 @@ start_registry() {
   registry_builder="$registry_network"
   builder_started=1
   docker buildx create --name "$registry_builder" --driver docker-container \
-    --driver-opt "network=$registry_network" >/dev/null
+    --driver-opt "network=$registry_network" \
+    --buildkitd-flags '--allow-insecure-entitlement network.host' >/dev/null
   registry_started=1
   docker run --detach \
     --name "$registry_container" \
@@ -107,6 +108,12 @@ start_registry() {
   case "$host_port" in
     ''|*[!0-9]*) echo "Verdaccio host port is invalid" >&2; exit 1 ;;
   esac
+  # Bound the digit count before arithmetic; 10# also accepts leading zeros.
+  if [ "${#host_port}" -gt 5 ]; then echo "Verdaccio host port is invalid" >&2; exit 1; fi
+  host_port=$((10#$host_port))
+  if [ "$host_port" -lt 1 ] || [ "$host_port" -gt 65535 ]; then
+    echo "Verdaccio host port is invalid" >&2; exit 1
+  fi
   host_registry="http://127.0.0.1:$host_port"
   # Resolve the policy-approved alias to Verdaccio inside this run's bridge,
   # including the dedicated builder, rather than to the machine's gateway.
@@ -114,7 +121,8 @@ start_registry() {
   consumer_network_args=(--network "$registry_network")
   # Host mode shares the dedicated builder container's bridge namespace,
   # retaining Docker DNS for the run-local registry during RUN instructions.
-  build_network_args=(--builder "$registry_builder" --load --network host)
+  # The builder daemon and each build request both grant network.host.
+  build_network_args=(--builder "$registry_builder" --load --network host --allow network.host)
   host_uid=$(id -u)
   host_gid=$(id -g)
   case "$host_uid:$host_gid" in
@@ -153,9 +161,11 @@ authenticate_registry() {
   auth_token=$(AUTH_RESPONSE="$auth_response" node -e '
 const value = JSON.parse(process.env.AUTH_RESPONSE);
 const MAX_AUTH_FIELDS = 32, MIN_TOKEN_CHARS = 8, MAX_TOKEN_CHARS = 4096;
+const BEARER_TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > MAX_AUTH_FIELDS ||
     Object.values(value).some(entry => entry !== null && typeof entry === "object") ||
-    typeof value.token !== "string" || value.token.length < MIN_TOKEN_CHARS || value.token.length > MAX_TOKEN_CHARS) process.exit(1);
+    typeof value.token !== "string" || value.token.length < MIN_TOKEN_CHARS || value.token.length > MAX_TOKEN_CHARS ||
+    !BEARER_TOKEN.test(value.token)) process.exit(1);
 process.stdout.write(value.token);
 ')
 }

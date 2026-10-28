@@ -6,11 +6,15 @@ export const COMMAND_TIMEOUT_SECONDS = 900;
 export const DOCKER_PULL_TIMEOUT_SECONDS = 180;
 export const COMMAND_MAX_ATTEMPTS = 3;
 const COMMAND_KILL_GRACE_MS = 250;
+const TERMINATION_SIGNALS = { SIGINT: 130, SIGTERM: 143 };
 
-/** Runs attempts within one total deadline, kills the process group on timeout, and returns its exit code.
- * Injectable process/timer operations support deterministic stalled-command tests. */
+/** Runs attempts within one total deadline, kills the process group on timeout or
+ * termination, and returns its exit code. Injectable process/timer/signal operations
+ * support deterministic stalled-command and cancellation tests. */
 export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SECONDS, attempts = 1,
-  start = spawn, schedule = setTimeout, cancel = clearTimeout,
+  start = spawn, schedule = setTimeout, cancel = clearTimeout, now = () => performance.now(),
+  onSignal = (signal, handler) => process.on(signal, handler),
+  offSignal = (signal, handler) => process.removeListener(signal, handler),
   kill = (pid, signal) => { try { process.kill(-pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; } },
   diagnostic = message => process.stderr.write(message + "\n") } = {}) {
   if (!Number.isInteger(seconds) || seconds <= 0 || !Number.isInteger(attempts) || attempts < 1 || attempts > COMMAND_MAX_ATTEMPTS) {
@@ -18,13 +22,27 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
   }
   return new Promise(resolve => {
     let child, attempt = 0, expired = false, finished = false;
-    const finish = code => { if (!finished) { finished = true; cancel(deadline); resolve(code); } };
-    const deadline = schedule(() => {
+    const signalHandlers = new Map();
+    const removeSignalHandlers = () => {
+      for (const [signal, handler] of signalHandlers) offSignal(signal, handler);
+      signalHandlers.clear();
+    };
+    const finish = code => { if (!finished) { finished = true; cancel(deadline); removeSignalHandlers(); resolve(code); } };
+    const terminate = (code, message) => {
+      if (expired || finished) return;
       expired = true;
-      diagnostic("ETIMEDOUT command deadline: " + command);
+      if (message) diagnostic(message);
       if (child?.pid) kill(child.pid, "SIGTERM");
-      schedule(() => { if (child?.pid) kill(child.pid, "SIGKILL"); finish(124); }, COMMAND_KILL_GRACE_MS);
-    }, seconds * 1000);
+      // Retain the grace window so descendants that ignore SIGTERM are killed too.
+      schedule(() => { if (child?.pid) kill(child.pid, "SIGKILL"); finish(code); }, COMMAND_KILL_GRACE_MS);
+    };
+    const deadlineAt = now() + seconds * 1000;
+    const deadline = schedule(() => terminate(124, "ETIMEDOUT command deadline: " + command), seconds * 1000);
+    for (const [signal, code] of Object.entries(TERMINATION_SIGNALS)) {
+      const handler = () => terminate(code, "received " + signal + ": " + command);
+      signalHandlers.set(signal, handler);
+      onSignal(signal, handler);
+    }
     const next = () => {
       attempt++;
       const current = child = start(command, args, { stdio: "inherit", detached: true });
@@ -39,7 +57,12 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
         // this attempt's group before returning or replacing the active child.
         cleanGroup();
         if (code === 0 || attempt >= attempts) finish(code ?? 1);
-        else next();
+        else if (now() >= deadlineAt) {
+          // A delayed deadline callback must not let a new attempt start; the
+          // group was already reaped above, so only the grace timer remains.
+          child = undefined;
+          terminate(124, "ETIMEDOUT command deadline: " + command);
+        } else next();
       });
     };
     next();
