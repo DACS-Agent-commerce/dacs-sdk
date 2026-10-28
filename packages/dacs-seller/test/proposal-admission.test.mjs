@@ -66,6 +66,17 @@ test('legacy admitted flags without the exact retained presentation hold without
  const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),e=>e.code==='session_admission_unavailable');assert.equal(f.admission.calls.some(([method])=>method==='admit'),false);
 });
 
+// A proposal stage session has no Vet evidence to authenticate it, so the
+// accepted presentation and its validated admission answer are the only proof
+// this seller admitted it. A bare legacy `admitted` flag is not enough.
+test('a saved proposal stage session without its accepted presentation does not restore',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)}),hash=sha256Hex(canonicalize(input.buyerIdentityBundle));
+ state.attemptChallenge(input.buyerIdentityBundle.sessionNonce,{presentationHash:hash});state.admitChallenge(input.buyerIdentityBundle.sessionNonce,hash);
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));state.close();
+ await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/accepted presentation/.test(error.message));
+});
+
 test('an admitted proposal that claims no Vet stays readable at its proposed stage',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);
  assert.equal(agent.stageOf(JOB),'proposed','a session before Vet claims no Vet checkpoint or evidence');

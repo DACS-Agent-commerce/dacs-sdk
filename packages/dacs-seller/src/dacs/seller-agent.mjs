@@ -219,6 +219,16 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (challenge.jobId !== session.jobId || !sameCanonicalClaimIdentity(challenge.buyer, bundle.presentedBy) || challenge.sessionNonce !== nonce) return 'the retained session challenge was issued for another job or buyer';
     if (challenge.attempt?.admitted !== true) return 'the retained session challenge was not consumed and admitted for this attempt';
     if (challenge.attempt.presentationHash !== contentHash(bundle)) return 'the retained session challenge was admitted for another presentation';
+    // A pre-Vet proposal session has no Vet evidence to authenticate it: only
+    // the exact accepted presentation and its validated admission answer,
+    // written with that admission, prove this seller admitted it. Legacy
+    // sessions past proposal keep their own Vet evidence check instead.
+    if (!claimsVet(session)) {
+      const accepted = challenge.attempt.accepted;
+      if (!accepted || accepted.buyerBundleHash !== session.buyerBundleHash || canonicalize(accepted.buyerBundle ?? null) !== canonicalize(bundle)) return 'the retained proposal session has no exact accepted presentation';
+      const admissionProblem = sessionAdmissionProblem(accepted.admission, { jobId: session.jobId, buyer: bundle.presentedBy, buyerBundleHash: session.buyerBundleHash, seller: claim, listingPin: pin });
+      if (admissionProblem) return `the retained proposal session ${admissionProblem}`;
+    }
     return null;
   }
   function retainedVetRefProblem(ref, jobId, party, verifier) {
