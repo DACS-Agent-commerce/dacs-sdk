@@ -84,6 +84,24 @@ test('a retry that signed no commitment CREATE cannot publish after the Listing 
  await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='commitment_failed'&&/provisional time checks/.test(e.message));
  assert.equal(f.local.writes.length,0,'a commitment CREATE is never requested after the Listing expired');
 });
+// C-1: a wallet refusal leaves an unsigned intent. The retry re-stamps the
+// provisional time (the Listing check uses the current clock), so the real
+// publisher must replace that proven-unsigned intent instead of refusing the
+// new record as an immutable conflict; otherwise a temporary wallet refusal or
+// shutdown strands the job forever.
+test('an advancing-clock retry replaces a proven-unsigned commitment intent',async t=>{
+ let publisherTime=NOW;const publisher=await anchorFixture({now:()=>publisherTime}),f=await commitmentFixture(t,{publisher:publisher.open()}),{agent}=await f.prepare();
+ let failure;try{await agent.commit({jobId:JOB});}catch(error){failure=error;}
+ assert.equal(failure?.code,'commitment_failed');assert.equal(publisher.journal.rows.size,1);assert.equal(publisher.captured.length,1);
+ assert.equal([...publisher.journal.rows.values()][0].stage,'unsigned','the wallet refusal retained an unsigned intent');
+ agent.close();f.advance(1000);publisherTime+=1000;
+ publisher.source.binding=async()=>({disposition:'included'});publisher.source.observeBinding=async()=>publisher.source.transportBinding;
+ publisher.controls.request=async request=>{const signed=structuredClone(request.transaction);signed.hash=core.sha256Hex(JSON.stringify(signed.content));signed.signature={type:'ed25519',data:'0x'+seller.signBytes(Buffer.from(signed.hash)).toString('hex')};const backend=readbackFixture({signedTransaction:signed,observedAt:NOW});Object.assign(publisher.controls.reader,backend.adapter);await publisher.sourceJournal.put('TEST accepted',{stage:'observed',hash:signed.hash,signedTransaction:signed});return{success:true,data:{hash:signed.hash,writeProof:{disposition:'included'}}};};
+ const fresh=await f.open();
+ await assert.rejects(fresh.commit({jobId:JOB}),error=>error.code==='commitment_failed');
+ assert.equal(publisher.captured.length,2,'the proven-unsigned retry asks the wallet once more');
+ assert.notEqual([...publisher.journal.rows.values()][0].stage,'unsigned');
+});
 async function fixtureProfile(t,inspect=false){
  const create=inspect?(await (await import('./helpers/private-module.mjs')).privateModule(new URL('../src/dacs/seller-agent.mjs',import.meta.url),[],source=>source.replace('  return api;','  return {...api,TESTsessions:sessions};'))).createSellerAgent:createSellerAgent;
  const listing=fixtureListing(seller,{now:NOW}),bundle=fixtureIdentityBundle(buyer,NOW),input=agreementInput({jobId:JOB,listing,buyerBundle:bundle,generatedAt:NOW}),plan=core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(input)),contribution=await core.createFixedPriceAgreementSignatureContribution(plan,'buyer',{party:buyer.claim,algorithm:'ed25519',sign:buyer.signBytes});const material={proposalVersion:'1',plan,buyerContribution:contribution},proposal={...material,proposalHash:core.sha256Hex(core.canonicalize(material))},transportIdentity={jobId:JOB,planHash:plan.planHash,agreementHash:plan.agreementHash,buyer:buyer.claim,seller:seller.claim,proposalHash:proposal.proposalHash};
