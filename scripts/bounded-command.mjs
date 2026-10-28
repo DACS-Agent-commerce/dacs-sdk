@@ -12,7 +12,7 @@ const TERMINATION_SIGNALS = { SIGINT: 130, SIGTERM: 143 };
  * termination, and returns its exit code. Injectable process/timer/signal operations
  * support deterministic stalled-command and cancellation tests. */
 export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SECONDS, attempts = 1,
-  start = spawn, schedule = setTimeout, cancel = clearTimeout,
+  start = spawn, schedule = setTimeout, cancel = clearTimeout, now = () => performance.now(),
   onSignal = (signal, handler) => process.on(signal, handler),
   offSignal = (signal, handler) => process.removeListener(signal, handler),
   kill = (pid, signal) => { try { process.kill(-pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; } },
@@ -36,6 +36,7 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
       // Retain the grace window so descendants that ignore SIGTERM are killed too.
       schedule(() => { if (child?.pid) kill(child.pid, "SIGKILL"); finish(code); }, COMMAND_KILL_GRACE_MS);
     };
+    const deadlineAt = now() + seconds * 1000;
     const deadline = schedule(() => terminate(124, "ETIMEDOUT command deadline: " + command), seconds * 1000);
     for (const [signal, code] of Object.entries(TERMINATION_SIGNALS)) {
       const handler = () => terminate(code, "received " + signal + ": " + command);
@@ -56,7 +57,12 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
         // this attempt's group before returning or replacing the active child.
         cleanGroup();
         if (code === 0 || attempt >= attempts) finish(code ?? 1);
-        else next();
+        else if (now() >= deadlineAt) {
+          // A delayed deadline callback must not let a new attempt start; the
+          // group was already reaped above, so only the grace timer remains.
+          child = undefined;
+          terminate(124, "ETIMEDOUT command deadline: " + command);
+        } else next();
       });
     };
     next();

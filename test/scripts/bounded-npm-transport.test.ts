@@ -161,6 +161,14 @@ describe("total command deadline and retry budget", () => {
     h.children[0]?.emit("exit", 0); expect(await result).toBe(0);
     expect(h.signals.size).toBe(0); expect(h.removed.sort()).toEqual(["SIGINT", "SIGTERM"]);
   });
+  it("does not retry once the absolute deadline has passed", async () => {
+    const h = signalHarness(); let clock = 0;
+    const result = runBoundedCommand("docker", ["pull", "fixture"], { ...h.options, attempts: 3, seconds: 1, now: () => clock });
+    clock = 1100; h.children[0]?.emit("exit", 1);
+    expect(h.children).toHaveLength(1);
+    h.timers[1]?.(); expect(await result).toBe(124);
+    expect(h.kills).toEqual([[100, "SIGKILL"]]);
+  });
   function running(pid: number) {
     try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
     try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z"); } catch { return false; }
