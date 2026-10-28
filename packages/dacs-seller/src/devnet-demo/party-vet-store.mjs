@@ -59,7 +59,14 @@ function limitsFor({ maxJobs = PARTY_VET_STORE_LIMITS.maxJobs, maxValueBytes = P
 // The shared store logic over a row backend whose `transaction` runs its
 // function atomically and synchronously.
 function storeOver(backend, limits) {
-  const usage = (rows = backend.totals()) => ({ jobs: rows.jobs, bytes: rows.bytes, maxJobs: limits.maxJobs, maxTotalBytes: limits.maxTotalBytes,
+  // Compact ended-job rows retain replay authority and byte accounting, but
+  // contain no active Vet work. Keep them outside the active-job quota.
+  const replayFence=(key,row)=>key.startsWith('party-vet/')
+    && row?.version==='dacs-devnet-demo-party-vet-state/v2'
+    && Object.keys(row).sort().join(',')==='jobId,lifecycle,revision,version,writer'
+    && row.lifecycle?.state==='ended';
+  const activeJobs=()=>backend.entries().filter(([key,row])=>!replayFence(key,row)).length;
+  const usage = (rows = {...backend.totals(),jobs:activeJobs()}) => ({ jobs: rows.jobs, bytes: rows.bytes, maxJobs: limits.maxJobs, maxTotalBytes: limits.maxTotalBytes,
     remainingJobs: Math.max(0, limits.maxJobs - rows.jobs), remainingBytes: Math.max(0, limits.maxTotalBytes - rows.bytes) });
   // change(current) answers undefined (no change), null (delete the row) or
   // the next row. It must be synchronous: nothing may interleave between the
@@ -80,7 +87,8 @@ function storeOver(backend, limits) {
       const text = encode(next), bytes = Buffer.byteLength(text);
       if (bytes > limits.maxValueBytes) fail('journal-capacity', `the party Vet store row exceeds ${limits.maxValueBytes} bytes; nothing was written`);
       const totals = backend.totals(), old = backend.size(key);
-      if ((old === null ? totals.jobs + 1 : totals.jobs) > limits.maxJobs || totals.bytes - (old ?? 0) + bytes > limits.maxTotalBytes) fail('journal-capacity', 'the party Vet store is full; nothing was written');
+      const jobs=activeJobs() - (current&&!replayFence(key,current)?1:0) + (replayFence(key,next)?0:1);
+      if (jobs > limits.maxJobs || totals.bytes - (old ?? 0) + bytes > limits.maxTotalBytes) fail('journal-capacity', 'the party Vet store is full; nothing was written');
       backend.put(key, text, bytes);
       return JSON.parse(text);
     }); } catch (error) { throw refused ? refused.error : error; }
