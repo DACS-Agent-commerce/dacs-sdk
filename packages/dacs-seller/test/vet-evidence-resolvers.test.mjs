@@ -352,6 +352,18 @@ test('an unbound unpinned alternative the core cannot project does not refuse a 
   assert.equal(fixture.calls.some(([name]) => name === 'resolveLatestRecipe'), false);
 });
 
+test('an unpinned alternative cannot be projected from a result bound to an identified member', async () => {
+  // The committed result's own requirement names an identifier, so the core's
+  // compatibility key is null and nothing can be projected from that entry: the
+  // pinned, identified member alone satisfies the group at its own version.
+  const identifiedPinned = { scheme: 'domain', verificationRequired: true, recipeVersion: 1, parameters: { identifier: 'bob' } };
+  const other = { scheme: 'domain', verificationRequired: true };
+  const bundleRequirement = { requirementVersion: '1', required: [], oneOf: [[identifiedPinned, other]] };
+  const fixture = await verifiedClaimFixture({ bundleRequirement, boundRequirement: identifiedPinned, data: { active: true, identifier: 'bob' } });
+  assert.equal(await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability: 'live' }) } }), null);
+  assert.equal(fixture.calls.some(([name]) => name === 'resolveLatestRecipe'), false);
+});
+
 test('a recipe steward using a canonical key: claim passes operator evidence', async () => {
   const fixture = await verifiedClaimFixture({ steward: keyWallet(41) });
   assert.equal(await fixture.replay(), null);

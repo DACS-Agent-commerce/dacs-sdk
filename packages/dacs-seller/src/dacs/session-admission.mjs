@@ -290,9 +290,12 @@ function verifiedRequirementMembers(requirement) {
 // an invocation entry binds exactly is satisfied by that entry; an unbound
 // member is satisfied only by projection, which the core permits for a
 // `consensus-backed-proxy` result of the same scheme (and the requirement's
-// method, when it names one). A member with its own `identifier` parameter can
-// never be projected: the core's compatibility key returns null for it, so the
-// pinned member that does satisfy the group must not be refused for it.
+// method, when it names one), and never onto a member that carries its own
+// `identifier` parameter nor from a result whose own requirement carries one:
+// the core's compatibility key is null on either side. Such an alternative can
+// never contribute, so a pinned alternative that does satisfy the group must
+// not be refused for it.
+const namesIdentifier = (parameters) => object(parameters) && Object.prototype.hasOwnProperty.call(parameters, 'identifier');
 function unpinnedVerifiedClaims(invocation) {
   const entries = [...(Array.isArray(invocation.freshness) ? invocation.freshness : []), ...(Array.isArray(invocation.dealSpecific) ? invocation.dealSpecific : [])]
     .filter((entry) => object(entry) && object(entry.ref) && object(entry.requirement));
@@ -309,7 +312,7 @@ function unpinnedVerifiedClaims(invocation) {
       try { boundKey = canonicalize(entry.requirement); } catch { continue; }
       if (isBound) { if (boundKey !== memberKey) continue; }
       else if (entry.method !== 'consensus-backed-proxy' || member.scheme !== entry.scheme
-        || (member.parameters !== undefined && Object.prototype.hasOwnProperty.call(member.parameters, 'identifier'))
+        || namesIdentifier(member.parameters) || namesIdentifier(entry.requirement.parameters)
         || (member.parameters?.verificationMethod !== undefined && member.parameters.verificationMethod !== entry.method)) continue;
       const { recipeVersion } = entry.ref;
       if (!Number.isSafeInteger(recipeVersion) || recipeVersion < 1) continue; // the core refuses the reference
