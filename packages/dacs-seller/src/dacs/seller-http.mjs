@@ -140,7 +140,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
         request = authentication.readRequest(req.headers[SELLER_TRANSPORT_HEADER]);
-        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.attemptPresentation ? {onAuthenticatedBody:()=>context.attemptPresentation(request,body,authentication.store)} : {}) });
+        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
         if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         // The context step reads the journal first and runs its admission only
         // for new work, recording the start in the reserve transaction.
@@ -177,7 +177,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (!settled) settle(proof);
           if (settled) {
             const text = JSON.stringify(proof.value);
-            if (contextStep) await context.settled({ jobId: request.jobId });
+            if (contextStep) await context.settled({ jobId: request.jobId, hold: reservation.effectKey });
             return await send(res, 200, proof.value, request, { text: await pointed(200, text, request.jobId, req.url) });
           }
           // The second exception: the context route proved a shutdown cut its step
@@ -214,7 +214,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         try { authentication.store.finish(reservation, status, JSON.stringify(answer), retained ? { retry: true } : { noEffect: agentRefusal && !reservation.resumed }); } catch { /* durable intent remains uncertain */ }
         // The context step has ended either way: its unused write reservation
         // is released (its writes keep their own rows; it runs again only as a resume).
-        if (context !== null) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
+        if (context !== null && req.url === SELLER_CONTEXT_PATH && status < 500) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
       }
       try { return await send(res, status, answer, request, { close: status === 408 || status === 413 }); } catch {
         // A failed seller signer or journal cannot turn into a definite refusal.

@@ -215,3 +215,13 @@ test('transaction locking preserves one-leaf parent creation and refuses two mis
   const missing = join(f.dir, 'TEST absent', 'TEST leaf', 'approval.jsonl');
   await assert.rejects(createSellerContextAdmission({ ...f.config, evidencePath: missing }).reserve(f.reserve), error => error.code === 'ENOENT');
 });
+
+test('final effect release covers only that effect and its resume owners',async t=>{
+ const f=await fixture(t),base={...f.reserve,hold:effect};
+ for(const hold of [effect,`${effect}:owner`,`${'b'.repeat(64)}:other`])assert.equal(await f.admission.reserve({...base,hold}),null);
+ await f.admission.release({jobId:JOB,hold:effect});
+ const rows=parsePolicyLedger(await text(f)).rows.filter(row=>row.contextHold);
+ assert.equal(rows.find(row=>row.contextHold===effect).released,true);
+ assert.equal(rows.find(row=>row.contextHold===`${effect}:owner`).released,true);
+ assert.equal(rows.find(row=>row.contextHold===`${'b'.repeat(64)}:other`).released,false);
+});
