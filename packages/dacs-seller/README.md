@@ -52,7 +52,10 @@ const host = await startSellerHost({
   sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
                          // readRevocationSurfaces, readRevocationMarker }: the seller-owned session admission,
                          // Vet record reader, receipt reader and receipt verifier, and revocation readers
-                         // (src/dacs/session-admission.mjs)
+                         // (src/dacs/session-admission.mjs); admit must name both participants on the exact
+                         // [PROFILE.json](PROFILE.json) profile: standardRevision
+                         // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
+                         // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
 });
