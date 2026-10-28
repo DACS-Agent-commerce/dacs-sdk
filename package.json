@@ -117,7 +117,8 @@
     "package:verify": "node scripts/verify-package.mjs",
     "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
     "release:set:verify": "node scripts/verify-release-set.mjs",
-    "release:set:publish": "node scripts/publish-release-set.mjs"
+    "release:set:publish": "node scripts/publish-release-set.mjs",
+    "seller:test": "npm run build && node --experimental-vm-modules --disable-warning=ExperimentalWarning --test --test-concurrency=1 packages/dacs-seller/test/d5-admission.test.mjs packages/dacs-seller/test/d5-challenge-retention.test.mjs packages/dacs-seller/test/d5-limits-before-effects.test.mjs packages/dacs-seller/test/d5-vet-decisions.test.mjs packages/dacs-seller/test/d5-recovery.test.mjs packages/dacs-seller/test/canonical-job-boundaries.test.mjs packages/dacs-seller/test/bilateral-vet.test.mjs packages/dacs-seller/test/party-vet-store.test.mjs packages/dacs-seller/test/seller-raw-json.test.mjs packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs packages/dacs-seller/test/devnet-delivery-wallet-refusal.test.mjs packages/dacs-seller/test/settlement-collisions.test.mjs packages/dacs-seller/test/seller-lifecycle-gates.test.mjs packages/dacs-seller/test/demos-claims.test.mjs packages/dacs-seller/test/seller-substrate-profile.test.mjs packages/dacs-seller/test/seller-settlement-profile.test.mjs packages/dacs-seller/test/seller-http-roundtrip.test.mjs packages/dacs-seller/test/seller-payment-retry.test.mjs packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs packages/dacs-seller/test/seller-host-native-delivery.test.mjs packages/dacs-seller/test/installed-package.test.mjs"
   },
   "publishConfig": {
     "access": "public",
