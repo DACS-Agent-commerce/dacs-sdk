@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadCustody } from './helpers/operator-custody-fixture.mjs';
@@ -97,6 +97,82 @@ test('an empty role file left by the earlier bootstrap is replaced', async (t) =
   assert.equal(JSON.parse(await read(directory, BUYER)).address, result.wallets[0].address);
   assert.deepEqual(await files(directory), ['.wallet-repair', BUYER, SELLER]);
   assert.equal((await stat(join(directory, '.wallet-repair'))).mode & 0o777, 0o700);
+});
+
+test('a new custody directory is synced in every parent this bootstrap creates', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-parent-'));
+  const custody = await loadCustody();
+  t.after(async () => { custody.release(); await rm(root, { recursive: true, force: true }); });
+  const one = join(root, 'one'), two = join(one, 'two'), directory = join(two, 'wallets');
+  await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+  const events = custody.state.events;
+  for (const parent of [root, one, two]) {
+    assert.ok(events.includes(`sync ${parent}`), `the new directory's name must be synced in ${parent}`);
+  }
+});
+
+test('an oversized role file is refused before it is parsed', async (t) => {
+  const { bootstrap, directory } = await fixture(t);
+  const content = 'x'.repeat(64 * 1024 + 1);
+  await writeFile(join(directory, BUYER), content, { mode: 0o600 });
+  await assert.rejects(bootstrap(), /buyer custody record is larger than 65536 bytes/);
+  assert.equal(await read(directory, BUYER), content);
+});
+
+test('an empty role file with unsafe permissions is refused, not replaced', async (t) => {
+  const { bootstrap, directory } = await fixture(t);
+  await writeFile(join(directory, BUYER), '', { mode: 0o600 });
+  await chmod(join(directory, BUYER), 0o644);
+  await assert.rejects(bootstrap(), /must be private real mode-0600 files/);
+  assert.equal(await read(directory, BUYER), '');
+  assert.deepEqual((await files(directory)).filter((name) => name !== '.wallet-repair'), [BUYER]);
+});
+
+test('bootstrap and secret initialization do not open ancestors they did not create', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-ancestor-'));
+  const custody = await loadCustody();
+  const outer = join(root, 'outer'), directory = join(outer, 'wallets');
+  t.after(async () => { await chmod(outer, 0o700).catch(() => {}); custody.release(); await rm(root, { recursive: true, force: true }); });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  // `outer` is an established ancestor: it must not be opened for syncing,
+  // because a directory that cannot be read is still a usable parent.
+  await chmod(outer, 0o300);
+  try {
+    const result = await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+    assert.deepEqual(result.wallets.map((wallet) => wallet.role), ['buyer', 'seller']);
+    const key = await custody.ensureOperatorSecret({ directory });
+    assert.equal(JSON.parse(await read(directory, SECRET)).cookieKey, key);
+  } finally { await chmod(outer, 0o700); }
+  assert.deepEqual(await files(directory).then((names) => names.filter((name) => name !== '.wallet-repair')), [SECRET, BUYER, SELLER].sort());
+});
+
+test('a failed directory-name marker removes created directories so a retry syncs their names', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-marker-'));
+  const custody = await loadCustody();
+  t.after(async () => { custody.release(); await rm(root, { recursive: true, force: true }); });
+  const one = join(root, 'one'), directory = join(one, 'wallets');
+  custody.state.failWrite = (path) => path.includes('.directory-sync-pending');
+  await assert.rejects(custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN }), /TEST disk full/);
+  assert.deepEqual(await files(root), [], 'nothing remains that a retry could mistake for an established directory');
+  custody.state.failWrite = null; custody.state.events.length = 0;
+  await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+  for (const parent of [root, one]) {
+    assert.ok(custody.state.events.includes(`sync ${parent}`), `the retry must sync ${parent}`);
+  }
+});
+
+test('a retry after a failed parent sync makes every created directory name durable', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-parent-retry-'));
+  const custody = await loadCustody();
+  t.after(async () => { custody.release(); await rm(root, { recursive: true, force: true }); });
+  const one = join(root, 'one'), directory = join(one, 'wallets');
+  custody.state.failSync = (path) => path === root;
+  await assert.rejects(custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN }), /TEST sync failed/);
+  custody.state.failSync = null; custody.state.events.length = 0;
+  await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+  for (const parent of [root, one]) {
+    assert.ok(custody.state.events.includes(`sync ${parent}`), `the retry must sync ${parent} again`);
+  }
 });
 
 test('bootstrap syncs each file before publishing it and the directory after', async (t) => {
