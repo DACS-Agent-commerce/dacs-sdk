@@ -645,6 +645,35 @@ describe("settlement idempotency store (#43)", () => {
     })).resolves.toBe(true);
   });
 
+  test("one fixed owner across a restart is fenced by generation alone", async () => {
+    const log = createInMemorySettlementLog();
+    const bindingHash = settlementBindingHash(binding());
+    const claim = (now: number) => log.claimIntent({
+      key: KEY,
+      bindingHash,
+      owner: "fixed-owner",
+      now,
+      leaseDurationMs: 10,
+    });
+    const paused = await claim(0);
+    const restarted = await claim(10);
+    if (paused.status !== "acquired" || restarted.status !== "acquired") {
+      throw new Error("expected two generations");
+    }
+    expect(restarted.lease).toMatchObject({ owner: "fixed-owner", generation: 2, stage: "reconcile" });
+    // The paused process's own clock is still inside its original lease.
+    const stale = { key: KEY, bindingHash, lease: paused.lease, now: 5 };
+    await expect(log.isCurrent(stale)).resolves.toBe(false);
+    await expect(log.grantRecovery({
+      ...stale,
+      owner: "fixed-owner",
+      leaseDurationMs: 10,
+    })).resolves.toEqual({ status: "stale" });
+    await expect(log.putOutcome({ ...stale, result: ok("0xstale") })).resolves.toEqual({ status: "stale" });
+    await expect(log.releaseIntent(stale)).resolves.toBe("stale");
+    await expect(log.isCurrent({ ...stale, lease: restarted.lease, now: 10 })).resolves.toBe(true);
+  });
+
   test("rejects lease arithmetic that would exceed safe integer time", async () => {
     const log = createInMemorySettlementLog();
     await expect(log.claimIntent({
