@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { commits, expectedBlob, git, ledger } from './delta-map.mjs';
 
-test('every recorded path has an agreed newest blob matching HEAD after the final carry merge', () => {
+function recordedPaths() {
   const history = commits(), records = new Map();
   for (const change of ledger().changes) {
     const matches = history.filter(commit => commit.subject === change.subject);
@@ -17,6 +17,10 @@ test('every recorded path has an agreed newest blob matching HEAD after the fina
       records.set(file.path, [...(records.get(file.path) ?? []), { sha: matches[0].sha, after: file.after }]);
     }
   }
+  return records;
+}
+test('every recorded path has an agreed newest blob matching HEAD after the final carry merge', () => {
+  const records = recordedPaths();
   const head = new Map(git('ls-tree', '-r', 'HEAD').split('\n').map(row => {
     const [meta, path] = row.split('\t'); return [path, meta.split(' ')[2]];
   }));
@@ -26,6 +30,16 @@ test('every recorded path has an agreed newest blob matching HEAD after the fina
     if (expected.conflict || expected.blob !== (head.get(path) ?? null)) failures.push({ path, expected, head: head.get(path) ?? null });
   }
   assert.deepEqual(failures, []);
+});
+for (const path of [
+  'packages/dacs-client/src/purchases.mjs',
+  'packages/dacs-client/src/wallet/devnet-native-transport.mjs',
+  'packages/dacs-client/test/diagnostic-reader.test.mjs',
+]) test(`the completed carry chooses the HEAD blob for ${path}`, () => {
+  const records = recordedPaths().get(path);
+  assert.ok(records?.length, `missing records for ${path}`);
+  assert.deepEqual(expectedBlob(records, shas => git('merge-base', '--independent', ...shas).split('\n')),
+    { blob: git('rev-parse', `HEAD:${path}`) });
 });
 
 // A small commit graph: each commit names its parents. Returns the
@@ -77,6 +91,12 @@ test('parallel records of different blobs conflict until a later record chooses 
   assert.deepEqual(sorted(expectedBlob(records, chosen)), { conflict: ['c2', 'c3'] });
   assert.deepEqual(expectedBlob([...records, { sha: 'c4', after: 'c' }], chosen), { blob: 'c' });
 });
+for (const after of ['b', null]) test(`a parallel deletion requires a descendant choice of ${after}`, () => {
+  const chosen = graph({ x: ['c1'], y: ['c1'], m: ['x', 'y'], c2: ['m'] });
+  const records = [{ sha: 'x', after: 'b' }, { sha: 'y', after: null }];
+  assert.deepEqual(sorted(expectedBlob(records, chosen)), { conflict: ['x', 'y'] });
+  assert.deepEqual(expectedBlob([...records, { sha: 'c2', after }], chosen), { blob: after });
+});
 test('a three-parent merge needs a later record only when its parents recorded different blobs', () => {
   const octopus = graph({ x: ['c1'], y: ['c1'], z: ['c1'], o: ['x', 'y', 'z'], c5: ['o'] });
   const records = [{ sha: 'x', after: 'b' }, { sha: 'y', after: 'c' }, { sha: 'z', after: 'd' }];
@@ -107,6 +127,31 @@ function scratch(t, fixtureRef, sourceRoot = root) {
   };
   return { dir, git, node, check };
 }
+test('each missing carry choice leaves exactly its path unresolved', t => {
+  const { dir, git, node, check } = scratch(t);
+  let result = check(); assert.equal(result.status, 0, result.text);
+  const ledgerPath = join(dir, prefix + 'DELTA-LEDGER.json');
+  const original = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+  const history = commits();
+  const choices = original.changes.filter(change => /^fix\(client\): D11 finalize (06a|07|09) carry choices$/.test(change.subject));
+  assert.ok(choices.length, 'the completed carry must have a descendant choice');
+  const byCommit = new Map(choices.map(change => [history.find(commit => commit.subject === change.subject).sha, change]));
+  const newest = git('merge-base', '--independent', ...byCommit.keys()).split('\n');
+  assert.equal(newest.length, 1, 'the final choice must descend from the earlier choices');
+  const chosen = byCommit.get(newest[0]);
+  assert.equal(chosen.files.length, 3);
+  for (let mask = 1; mask < 8; mask++) {
+    const data = structuredClone(original), change = data.changes.find(change => change.subject === chosen.subject);
+    const missing = chosen.files.filter((_, index) => mask & (1 << index)).map(file => file.path).sort();
+    change.files = chosen.files.filter((_, index) => !(mask & (1 << index)));
+    writeFileSync(ledgerPath, JSON.stringify(data)); node(prefix + 'scripts/delta-map.mjs');
+    result = check(); assert.equal(result.status, 1, result.text);
+    assert.deepEqual(result.failures.map(failure => failure.split(':')[0]).sort(), missing, result.text);
+    for (const failure of result.failures) assert.match(failure, /: newest records disagree /);
+  }
+  writeFileSync(ledgerPath, JSON.stringify(original)); node(prefix + 'scripts/delta-map.mjs');
+  result = check(); assert.equal(result.status, 0, result.text);
+});
 test('a recorded fix cannot be dropped by a merge that keeps the stale parent', t => {
   const { dir, git, node, check } = scratch(t), moved = prefix + 'src/dacs/buyer-chain-readback.mjs';
   const start = git('rev-parse', 'HEAD'), stale = readFileSync(join(dir, moved));
