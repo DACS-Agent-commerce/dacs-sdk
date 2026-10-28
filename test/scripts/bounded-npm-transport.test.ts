@@ -35,6 +35,10 @@ describe("inert bounded npm HTTP admission", () => {
   it.each(["constructor", "__proto__"])("refuses unsupported content encoding %s instead of admitting it", async encoding => {
     await expect(readBoundedResponse(response([Buffer.from("{}")], { "content-encoding": encoding }), 1024)).rejects.toThrow("unsupported npm HTTP content encoding");
   });
+  it("decodes the x-gzip alias npm's fetch accepts", async () => {
+    const body = gzipSync(Buffer.from("{}"));
+    expect((await readBoundedResponse(response([body], { "content-encoding": "x-gzip" }), 1024)).toString()).toBe("{}");
+  });
   it.each([
     ["a HEAD request", 200, "HEAD"],
     ["a 204 response", 204, "GET"],
