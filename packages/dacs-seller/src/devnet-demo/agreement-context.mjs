@@ -294,11 +294,21 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     return clone(kept.bundle);
   }
   async function contextAuthentic(input) {
+    // The bundle hash leaves presentation bytes out. Authenticate the exact
+    // bundles this job retained (including the seller's signed presentation)
+    // before accepting references derived from them.
+    const retained=await state.read(input.jobId).catch(()=>null);
+    if(!retained?.binding || !retained.presentation?.bundle
+      || !same(input.buyer?.identityBundle,retained.binding.buyerIdentityBundle)
+      || !same(input.seller?.identityBundle,retained.presentation.bundle))return false;
     for(const [role,authority,requirement] of [['buyer',wallet.claim,listing.buyerRequirement],['seller',input.buyer.identityBundle.presentedBy,SELLER_REQUIREMENT]]){
       const bundle=input[role].identityBundle,ref=input[role].vetRecordRef;
       const logicalAddress=compositeVerificationAddress(input.jobId,bundle.presentedBy);
       const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
-      if(read.status!=='present' || !sameCanonicalClaimIdentity(ref.signer,authority) || contentHash(read.artifact)!==ref.contentHash
+      // A supplied reference must name the canonical logical address this
+      // profile reads, not an unrelated or merely equivalent-looking anchor.
+      if(ref?.anchor?.kind!=='storage-program' || ref?.anchor?.locator!==logicalAddress
+        || read.status!=='present' || !sameCanonicalClaimIdentity(ref.signer,authority) || contentHash(read.artifact)!==ref.contentHash
         || !await validReceipt(read,logicalAddress,read.artifact,authority))return false;
       if((await strictRecord(read.artifact,{jobId:input.jobId,bundle,requirement,authority})).status!=='valid')return false;
     }

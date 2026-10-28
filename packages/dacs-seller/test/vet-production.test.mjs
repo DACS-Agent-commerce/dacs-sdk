@@ -140,3 +140,26 @@ test('a resumed signed presentation without a buyer verifier is refused before a
  await assert.rejects(provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_required'&&e.cause===undefined);
  f.base.close();
 });
+test('context authentication binds the supplied references to the canonical anchor',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
+  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
+ assert.equal(await p.contextAuthentic(context()),true);
+ for(const [role,field,value] of [['buyer','kind','https'],['buyer','locator','https://absent.invalid/wrong'],['seller','kind','https'],['seller','locator','https://absent.invalid/wrong']]){
+  const altered=context();altered[role].vetRecordRef.anchor[field]=value;
+  assert.equal(await p.contextAuthentic(altered),false,`${role} ${field}`);
+ }
+ f.base.close();
+});
+test('context authentication binds the exact identity bundles including presentations',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
+  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
+ const unsigned=context();delete unsigned.seller.identityBundle.presentation;
+ assert.equal(await p.contextAuthentic(unsigned),false);
+ const changed=context();changed.buyer.identityBundle.presentedAt-=1;
+ assert.equal(await p.contextAuthentic(changed),false);
+ f.base.close();
+});
