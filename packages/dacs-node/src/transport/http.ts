@@ -549,10 +549,12 @@ export function createDacsHttpMessageRequestHandlerV1(
           validatePayload: options.validatePayload,
         });
         if (authenticated.status !== "authenticated") {
-          throw new HttpRequestFailure(
-            authenticated.category === "authentication" ? 401 : 400,
-            authenticated.reasonCode,
-          );
+          throw authenticated.category === "unavailable"
+            ? new HttpRequestFailure(503, authenticated.reasonCode, 1)
+            : new HttpRequestFailure(
+                authenticated.category === "authentication" ? 401 : 400,
+                authenticated.reasonCode,
+              );
         }
         if (authenticated.envelope.type === "acknowledgement") {
           throw new HttpRequestFailure(400, "acknowledgement-request-forbidden");
@@ -608,17 +610,30 @@ export function createDacsHttpMessageRequestHandlerV1(
   };
 }
 
-/** Resume inbox reservations left pending by a process exit. */
+/**
+ * Resume inbox reservations left pending by a process exit or a handler that
+ * is still waiting. One call resumes one page of pending reservations, after
+ * `cursor` if given; pass the returned `nextCursor` to the next call, and
+ * start again without one when it is absent. A message that stays pending
+ * then never keeps later ones from being resumed.
+ */
 export async function resumeDacsHttpInboxV1(
   rawOptions: Readonly<DacsHttpMessageEndpointOptionsV1>,
-  input: Readonly<{ limit?: number }> = {},
-): Promise<Readonly<{ inspected: number; disposed: number; pending: number }>> {
+  input: Readonly<{ limit?: number; cursor?: string }> = {},
+): Promise<Readonly<{ inspected: number; disposed: number; pending: number; nextCursor?: string }>> {
   const options = captureEndpointOptions(rawOptions);
   const limit = input.limit ?? 100;
   if (!safePositiveInteger(limit, 1_000)) {
     throw new TypeError("HTTP inbox resume limit is invalid");
   }
-  const page = await options.inbox.list({ limit, state: "pending" });
+  if (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length === 0)) {
+    throw new TypeError("HTTP inbox resume cursor is invalid");
+  }
+  const page = await options.inbox.list({
+    limit,
+    state: "pending",
+    ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+  });
   let disposed = 0;
   let pending = 0;
   for (const item of page.items) {
@@ -626,7 +641,35 @@ export async function resumeDacsHttpInboxV1(
     if (result.status === "disposed") disposed += 1;
     else pending += 1;
   }
-  return Object.freeze({ inspected: page.items.length, disposed, pending });
+  return Object.freeze({
+    inspected: page.items.length,
+    disposed,
+    pending,
+    ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+  });
+}
+
+/**
+ * `resumeDacsHttpInboxV1` a page per call, carrying the cursor from one call
+ * to the next and starting again after the last page. The live service
+ * resumes its inbox this way every cycle.
+ */
+export function createDacsHttpInboxResumerV1(
+  options: Readonly<DacsHttpMessageEndpointOptionsV1>,
+): Readonly<{
+  resume(input?: Readonly<{ limit?: number }>): ReturnType<typeof resumeDacsHttpInboxV1>;
+}> {
+  let cursor: string | undefined;
+  return Object.freeze({
+    async resume(input: Readonly<{ limit?: number }> = {}) {
+      const report = await resumeDacsHttpInboxV1(options, {
+        ...(input.limit === undefined ? {} : { limit: input.limit }),
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      cursor = report.nextCursor;
+      return report;
+    },
+  });
 }
 
 export async function startDacsHttpMessageServerV1(

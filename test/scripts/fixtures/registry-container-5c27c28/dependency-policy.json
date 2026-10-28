@@ -1,0 +1,11 @@
+{
+  "schema": "dacs-registry-dependency-policy/v1",
+  "passed": false,
+  "violations": [
+    {
+      "location": "node_modules/@bundlr-network/client/node_modules/arbundles",
+      "field": "dependencies.avsc",
+      "value": "https://github.com/Irys-xyz/avsc#csp-fixes"
+    }
+  ]
+}

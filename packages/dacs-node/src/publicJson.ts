@@ -23,12 +23,14 @@ export interface DacsPublicJsonReadDependenciesV1 {
     approvedAddresses: readonly string[];
     timeoutMs: number;
     maxBytes: number;
+    signal?: AbortSignal;
   }>): Promise<Readonly<DacsPublicJsonResponseV1>>;
 }
 
 export interface DacsPublicJsonReadOptionsV1 {
   timeoutMs?: number;
   maxBytes?: number;
+  signal?: AbortSignal;
   dependencies?: Readonly<DacsPublicJsonReadDependenciesV1>;
 }
 
@@ -55,6 +57,7 @@ function pinnedHttpsRequest(input: Readonly<{
   approvedAddresses: readonly string[];
   timeoutMs: number;
   maxBytes: number;
+  signal?: AbortSignal;
 }>): Promise<Readonly<DacsPublicJsonResponseV1>> {
   return new Promise((resolve, reject) => {
     const url = new URL(input.url);
@@ -70,6 +73,7 @@ function pinnedHttpsRequest(input: Readonly<{
       port: url.port === "" ? 443 : Number(url.port),
       path: `${url.pathname}${url.search}`,
       method: "GET",
+      signal: input.signal,
       // Refuse pooled socket reuse: every call must traverse its own validated,
       // pinned lookup rather than inherit a prior hostname/port connection.
       agent: false,
@@ -166,6 +170,7 @@ export async function readDacsPublicJsonV1(
   try {
     response = await dependencies.request({
       url: url.toString(), approvedAddresses: addresses, timeoutMs, maxBytes,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
   } catch (error) {
     if (error instanceof DacsPublicJsonError) throw error;

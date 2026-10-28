@@ -152,7 +152,7 @@ describe("durable role-owned audit tracks", () => {
     await expect(track(current.input as never)).resolves.toEqual({
       status: "final",
       outcome: "success",
-      reference: finalized.logicalAddress,
+      reference: finalized.nativeAddress,
       authenticationHash: BUNDLE_HASH,
     });
     expect(bundleTransport.publishRequest).toHaveBeenCalledWith({
@@ -244,11 +244,19 @@ describe("durable role-owned audit tracks", () => {
     };
     const result = {
       logicalAddress: "dacs5:bundle:buyer",
+      nativeAddress: "native:buyer",
       bundleContentHash: BUNDLE_HASH,
+    };
+    const completion = {
+      sellerClosure: {
+        verificationInput: { agreement: { jobId: JOB_ID } },
+        result: { logicalAddress: "dacs5:bundle:seller" },
+      },
     };
     advanceBuyer.mockResolvedValue({
       disposition: "finalised",
       result,
+      completion,
       recovered: false,
     });
     const roleContext = context("buyer");
@@ -264,7 +272,7 @@ describe("durable role-owned audit tracks", () => {
     await expect(track(current.input as never)).resolves.toEqual({
       status: "final",
       outcome: "success",
-      reference: result.logicalAddress,
+      reference: result.nativeAddress,
       authenticationHash: BUNDLE_HASH,
     });
     expect(advanceBuyer).toHaveBeenCalledOnce();
@@ -279,6 +287,110 @@ describe("durable role-owned audit tracks", () => {
     );
     expect(advanceBuyer.mock.calls[0]![2].transport.resolveSellerFinalization)
       .toBe(bundleTransport.resolveSellerFinalization);
+  });
+
+  function finalisedBuyerTrack(authorizeFinalized: ReturnType<typeof vi.fn>) {
+    const retained = { application: { purchase: true } };
+    loadOrderInput.mockReturnValue(retained);
+    const material = {
+      input: {
+        sellerVerificationInput: { agreement: { jobId: JOB_ID } },
+        settlementContext: {},
+        settlement: {},
+        buyer: { primaryClaim: BUYER, bundleHash: "f".repeat(64) },
+      },
+      provider: { submitBuyerBundle: vi.fn() },
+      durability: buyerDurability(),
+    };
+    const result = {
+      logicalAddress: "dacs5:bundle:buyer",
+      nativeAddress: "native:buyer",
+      bundleContentHash: BUNDLE_HASH,
+    };
+    const completion = {
+      sellerClosure: {
+        verificationInput: { agreement: { jobId: JOB_ID } },
+        result: { logicalAddress: "dacs5:bundle:seller" },
+      },
+    };
+    advanceBuyer.mockResolvedValue({
+      disposition: "finalised",
+      result,
+      completion,
+      recovered: true,
+    });
+    const track = createDacsBuyerAuditTrackV1({
+      context: context("buyer") as never,
+      workerId: "buyer-audit-worker",
+      bundleTransport: {
+        resolveSellerRequest: vi.fn(),
+        publishCounterSignature: vi.fn(),
+        resolveCounterSignatures: vi.fn(),
+        resolveSellerFinalization: vi.fn(),
+      },
+      resolveMaterial: vi.fn(async () => material as never),
+      authorizeFinalized: authorizeFinalized as never,
+      retryDelayMs: 2_000,
+    });
+    return { completion, material, result, retained, track };
+  }
+
+  it("authorizes buyer completion with the resolved material and seller closure", async () => {
+    const authorizeFinalized = vi.fn(async () => true);
+    const { completion, material, result, retained, track } =
+      finalisedBuyerTrack(authorizeFinalized);
+    const current = operation("buyer");
+
+    await expect(track(current.input as never)).resolves.toMatchObject({
+      status: "final",
+      reference: "native:buyer",
+    });
+    expect(authorizeFinalized).toHaveBeenCalledOnce();
+    expect(authorizeFinalized).toHaveBeenCalledWith({
+      operation: current.input,
+      retained,
+      material,
+      completion,
+      result,
+    });
+  });
+
+  // A coordinator rejects an `indeterminate` result without `retryAt` as
+  // malformed, so the stage's own reason must carry one.
+  it("keeps an indeterminate buyer finalization stage retryable at the retry delay", async () => {
+    const { track } = finalisedBuyerTrack(vi.fn(async () => true));
+    advanceBuyer.mockResolvedValueOnce({
+      disposition: "indeterminate", stage: "seller-finalisation",
+    } as never);
+
+    await expect(track(operation("buyer").input as never)).resolves.toEqual({
+      status: "indeterminate",
+      reasonCode: "buyer-audit-seller-finalisation-indeterminate",
+      retryAt: 12_000,
+    });
+  });
+
+  it("keeps an unanswered buyer completion read retryable", async () => {
+    const { track } = finalisedBuyerTrack(vi.fn(async () => "indeterminate"));
+
+    await expect(track(operation("buyer").input as never)).resolves.toEqual({
+      status: "indeterminate",
+      reasonCode: "buyer-audit-completion-indeterminate",
+      retryAt: 12_000,
+    });
+  });
+
+  it.each([
+    ["rejected", async () => false],
+    ["malformed", async () => "valid"],
+    ["thrown", async () => { throw new Error("verifier crashed"); }],
+  ])("keeps a %s buyer completion authorization terminal", async (_label, authorize) => {
+    const { track } = finalisedBuyerTrack(vi.fn(authorize));
+
+    await expect(track(operation("buyer").input as never)).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "buyer-audit-result-unauthorized",
+    });
   });
 
   it("retains a buyer wait state as a bounded coordinator retry", async () => {

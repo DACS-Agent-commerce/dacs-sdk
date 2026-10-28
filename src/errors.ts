@@ -50,6 +50,14 @@ export class SubstrateError extends DacsError {
   }
 }
 
+/** An unavailable substrate read or verification may succeed on retry. */
+export class IndeterminateSubstrateError extends SubstrateError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "IndeterminateSubstrateError";
+  }
+}
+
 /**
  * The requested operation is valid, but this SDK component cannot execute the
  * required capability. This is a local implementation boundary, not evidence

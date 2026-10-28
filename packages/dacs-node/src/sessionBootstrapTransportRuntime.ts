@@ -541,10 +541,10 @@ async function outboundSemantics(
       admission.buyerVetRef.contentHash !== contentHash(
         admission.buyerVetRecord as unknown as Record<string, unknown>) ||
       admission.buyerVetRef.anchor.kind !== "storage-program" ||
-      admission.buyerVetRef.anchor.locator !==
-        compositeVerificationAddress(order.jobId, order.buyer) ||
+      admission.buyerVetRef.anchor.locator !== admission.buyerVetReceipt.nativeAddress ||
       !sameCanonicalClaimIdentity(admission.buyerVetRef.signer, order.seller) ||
-      admission.buyerVetReceipt.logicalAddress !== admission.buyerVetRef.anchor.locator ||
+      admission.buyerVetReceipt.logicalAddress !==
+        compositeVerificationAddress(order.jobId, order.buyer) ||
       admission.buyerVetReceipt.contentHash !== admission.buyerVetRef.contentHash ||
       !sameCanonicalClaimIdentity(admission.buyerVetReceipt.writer, order.seller) ||
       !vetSignatureValid(admission, order.seller)) {

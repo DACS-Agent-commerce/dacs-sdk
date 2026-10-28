@@ -515,6 +515,7 @@ function buildAuditSource(input: Readonly<{
       vetRequirements: [
         {
           vetRecordRef: copy(session.buyerVetRef),
+          anchorReceipt: copy(session.buyerVetReceipt),
           evaluatedParty: order.buyer,
           requirement: copy(application.listing.buyerRequirement),
           verifier: order.seller,
@@ -523,6 +524,7 @@ function buildAuditSource(input: Readonly<{
         },
         {
           vetRecordRef: copy(sellerVet.recordRef),
+          anchorReceipt: copy(sellerVet.anchorReceipt),
           evaluatedParty: order.seller,
           requirement: copy(DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1),
           verifier: order.buyer,

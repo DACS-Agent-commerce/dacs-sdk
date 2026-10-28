@@ -1,0 +1,20 @@
+npm error code ECONNREFUSED
+npm error syscall connect
+npm error errno ECONNREFUSED
+npm error FetchError: request to http://127.0.0.1:34551/left-pad failed, reason: connect ECONNREFUSED 127.0.0.1:34551
+npm error     at ClientRequest.<anonymous> (/usr/lib/node_modules/npm/node_modules/minipass-fetch/lib/index.js:130:14)
+npm error     at ClientRequest.emit (node:events:519:28)
+npm error     at emitErrorEvent (node:_http_client:108:11)
+npm error     at _destroy (node:_http_client:967:9)
+npm error     at onSocketNT (node:_http_client:987:5)
+npm error     at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+npm error   code: 'ECONNREFUSED',
+npm error   errno: 'ECONNREFUSED',
+npm error   syscall: 'connect',
+npm error   address: '127.0.0.1',
+npm error   port: 34551,
+npm error   type: 'system',
+npm error   requiredBy: '.'
+npm error }
+npm error If you are behind a proxy, please make sure that the
+npm error 'proxy' config is set properly.  See: 'npm help config'

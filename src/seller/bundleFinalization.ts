@@ -45,8 +45,10 @@ import {
 } from "../canonical/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { ed25519Sign, signedBytes } from "../crypto/index.js";
-import { DacsError, SubstrateError } from "../errors.js";
+import { DacsError, SubstrateError, IndeterminateSubstrateError } from "../errors.js";
+import { isUnresolvedBundleBindingCandidateSet } from "../discovery/bundleBindingCandidates.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   assertNoRawSessionSeed,
   attestationBundleHash,
@@ -71,6 +73,7 @@ import {
   type SellerFulfilmentAgreement,
   type SellerFulfilmentResult,
 } from "../agent/runFulfilmentCore.js";
+import { compositeVerificationAddress } from "../agent/vetCore.js";
 /*
  * Payment authorization is an operational handoff, not a bundle artifact.
  * Its store-backed shape is nevertheless revalidated at this boundary before
@@ -386,8 +389,16 @@ export interface SellerBundleFinalizationProvider {
   }) =>
     | Promise<SellerPaymentPhaseIndexResolution>
     | SellerPaymentPhaseIndexResolution;
+  /**
+   * `indeterminate`, a thrown `SubstrateError` and any thrown error that is
+   * not a `DacsError` mean the read could not be answered and may be retried.
+   * Throw a `DacsError` that is not a `SubstrateError` for a permanent
+   * failure, such as invalid anchored content or an invalid receipt. The same
+   * applies to `resolveBundleBinding`.
+   */
   resolveSellerBundle: (
     logicalAddress: string,
+    carried?: Readonly<BundleBinding>,
   ) => Promise<SellerBundleLookup> | SellerBundleLookup;
   submitSellerBundle: (
     logicalAddress: string,
@@ -403,10 +414,19 @@ export interface SellerBundleFinalizationProvider {
   ) =>
     | Promise<SellerBundleVerificationDisposition>
     | SellerBundleVerificationDisposition;
-  /** BB-4..BB-8 resolved candidate disposition, after authorization/multiplicity handling. */
+  /**
+   * BB-4..BB-8 resolved candidate disposition, after authorization/multiplicity
+   * handling. `carried`, when given, is a signed binding already held for this
+   * copy (BB-2); the provider adds it to the candidates it discovered.
+   * Non-observation is `indeterminate` with a
+   * `BUNDLE_BINDING_NON_OBSERVATION_REASONS` reason (BB-8); re-verifying a
+   * retained binding treats every other `indeterminate` reason as a candidate
+   * set that did not resolve, which holds it back.
+   */
   resolveBundleBinding?: (
     logicalAddress: string,
     signer: string,
+    carried?: Readonly<BundleBinding>,
   ) => Promise<SellerBundleBindingLookup> | SellerBundleBindingLookup;
   publishBundleBinding?: (
     binding: Readonly<BundleBinding>,
@@ -1508,7 +1528,7 @@ function dispositionFailure(
   disposition: SellerBundleVerificationDisposition,
 ): never {
   if (disposition === "indeterminate" || disposition === "error") {
-    throw new SubstrateError(`${subject} is not established (${disposition})`);
+    throw new IndeterminateSubstrateError(`${subject} is not established (${disposition})`);
   }
   throw new DacsError(`${subject} is invalid`);
 }
@@ -1523,7 +1543,7 @@ async function verifiedDisposition(
   try {
     disposition = await operation();
   } catch (error) {
-    throw new SubstrateError(`${subject} verification errored`, { cause: error });
+    throw new IndeterminateSubstrateError(`${subject} verification errored`, { cause: error });
   }
   if (disposition !== "valid") dispositionFailure(subject, disposition);
 }
@@ -1731,16 +1751,14 @@ async function resolveAuthenticatedPaymentBinding(
   }
   let binding: SellerPaymentPhaseIndexResolution;
   try {
-    binding = snapshot(
-      await provider.resolvePaymentPhaseIndex({
+    binding = await provider.resolvePaymentPhaseIndex({
         dependency: snapshot(dependency, "payment phase binding dependency"),
         evidence: snapshot(evidence, "payment phase binding evidence"),
-      }),
-      "payment phase binding result",
-    );
+      });
   } catch (error) {
-    throw new SubstrateError("payment phase binding resolution errored", { cause: error });
+    throw new IndeterminateSubstrateError("payment phase binding resolution errored", { cause: error });
   }
+  binding = snapshot(binding, "payment phase binding result");
   const validShape =
     isRecord(binding) &&
     ["valid", "invalid", "indeterminate", "error"].includes(
@@ -2102,6 +2120,12 @@ async function auditResolvedDependencyGraph(
     ) {
       throw new DacsError("completed session carries an invalid Vet record/requirement invocation");
     }
+    const vetDependency = dependencies.get(dependencySourceId(refSource(ref)));
+    if (vetDependency !== undefined && ref.anchor.locator === vetDependency.anchorReceipt.nativeAddress &&
+        vetDependency.anchorReceipt.logicalAddress !==
+          compositeVerificationAddress(session.jobId, record.evaluatedParty)) {
+      throw new DacsError("native Vet dependency receipt binds a different logical address");
+    }
     await verifiedDisposition("Vet requirement invocation provenance", () =>
       provider.verifyVetRequirementProvenance({
         invocation: snapshot(invocation, "Vet requirement provenance input"),
@@ -2147,13 +2171,13 @@ async function auditResolvedDependencyGraph(
         },
       );
     } catch (error) {
-      throw new SubstrateError(
+      throw new IndeterminateSubstrateError(
         "CompositeVerificationRecord strict verification errored",
         { cause: error },
       );
     }
     if (verification.status === "unresolved") {
-      throw new SubstrateError(
+      throw new IndeterminateSubstrateError(
         `CompositeVerificationRecord strict verification is unresolved (${verification.code})`,
       );
     }
@@ -2675,7 +2699,9 @@ async function verifyDependencies(
         : requirement.source.kind === "deliverable"
           ? requirement.source.anchor.locator
           : undefined;
-    if (locator !== undefined && receipt.logicalAddress !== locator) {
+    const nativeVetRef = requirement.kinds.includes("vet-record") &&
+      locator === receipt.nativeAddress;
+    if (locator !== undefined && !nativeVetRef && receipt.logicalAddress !== locator) {
       throw new DacsError(`dependency ${id} receipt binds a different logical address`);
     }
     await verifiedDisposition(`dependency ${id} receipt proof`, () =>
@@ -2692,7 +2718,7 @@ async function verifyDependencies(
         snapshot(requirement, "dependency resolution requirement"),
       );
     } catch (error) {
-      throw new SubstrateError(`dependency ${id} resolution errored`, { cause: error });
+      throw new IndeterminateSubstrateError(`dependency ${id} resolution errored`, { cause: error });
     }
     const lookupProperties = ownEnumerableDataProperties(rawLookup);
     const disposition = lookupProperties?.get("disposition");
@@ -2714,7 +2740,7 @@ async function verifyDependencies(
           `dependency ${id} resolution returned an invalid indeterminate disposition`,
         );
       }
-      throw new SubstrateError(
+      throw new IndeterminateSubstrateError(
         `dependency ${id} resolution is indeterminate: ${reason}`,
       );
     }
@@ -3280,28 +3306,40 @@ function assertCanonicalBundleSignatures(value: unknown, subject: string): void 
   }
 }
 
+/**
+ * Classifies an error thrown by a provider read. The provider decides: a
+ * DacsError that is not a substrate fault reports a permanent failure (for
+ * example invalid anchored content or an invalid receipt) and passes through.
+ * Any other thrown read failure may succeed on retry.
+ */
+function unavailableUnlessPermanent(error: unknown, message: string): Error {
+  if (error instanceof DacsError && !(error instanceof SubstrateError)) return error;
+  return new IndeterminateSubstrateError(message, { cause: error });
+}
+
 async function resolveBundle(
   logicalAddress: string,
   provider: SellerBundleFinalizationProvider,
+  carried?: Readonly<BundleBinding>,
 ): Promise<SellerBundleLookup> {
+  let raw: SellerBundleLookup;
   try {
-    const lookup = snapshot(
-      await provider.resolveSellerBundle(logicalAddress),
-      "seller bundle lookup",
-    );
-    if (
-      !isRecord(lookup) ||
-      !["present", "absent", "indeterminate"].includes(String(lookup.disposition))
-    ) {
-      throw new SubstrateError("seller bundle lookup returned an invalid disposition");
-    }
-    return lookup;
+    raw = await provider.resolveSellerBundle(logicalAddress, carried);
   } catch (error) {
-    if (error instanceof SubstrateError) throw error;
-    throw new SubstrateError("seller bundle lookup errored and is indeterminate", {
-      cause: error,
-    });
+    throw unavailableUnlessPermanent(error, "seller bundle lookup errored and is indeterminate");
   }
+  const lookup = snapshot(raw, "seller bundle lookup");
+  if (
+    !isRecord(lookup) ||
+    !["present", "absent", "indeterminate"].includes(String(lookup.disposition)) ||
+    (lookup.disposition === "absent" && !hasOnlyKeys(lookup, ["disposition"])) ||
+    (lookup.disposition === "indeterminate" &&
+      (!hasOnlyKeys(lookup, ["disposition", "reason"]) ||
+        typeof lookup.reason !== "string" || lookup.reason.length === 0))
+  ) {
+    throw new SubstrateError("seller bundle lookup returned an invalid disposition");
+  }
+  return lookup;
 }
 
 async function verifyAnchoredBundle(
@@ -3633,28 +3671,47 @@ async function publishBinding(
   if (publication.disposition === "rejected") {
     throw new DacsError(`BundleBinding publication was rejected: ${publication.reason}`);
   }
-  let publishedLookup: SellerBundleBindingLookup;
+  // The publisher confirmed the write. Discovery may lag it, so a lookup that
+  // does not show the binding yet gates nothing (ST-11, BB-8); a different
+  // binding resolved for this seller does.
+  let publishedLookup: SellerBundleBindingLookup | undefined;
   try {
     publishedLookup = snapshot(
       await provider.resolveBundleBinding(expected.logicalAddress, signer),
       "published BundleBinding readback",
     );
   } catch (error) {
-    throw new SubstrateError("published BundleBinding is not independently readable", {
-      cause: error,
-    });
+    if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
+    publishedLookup = undefined;
+  }
+  if (publishedLookup !== undefined) {
+    if (!isRecord(publishedLookup) || !(
+      (publishedLookup.disposition === "present" && hasOnlyKeys(publishedLookup, ["disposition", "binding"])) ||
+      (publishedLookup.disposition === "absent" && hasOnlyKeys(publishedLookup, ["disposition"])) ||
+      (publishedLookup.disposition === "indeterminate" &&
+        hasOnlyKeys(publishedLookup, ["disposition", "reason"]) &&
+        typeof publishedLookup.reason === "string" && publishedLookup.reason.length > 0)
+    )) throw new DacsError("published BundleBinding readback returned an invalid disposition");
+    if (publishedLookup.disposition === "indeterminate" &&
+        isUnresolvedBundleBindingCandidateSet(publishedLookup.reason)) {
+      throw new IndeterminateSubstrateError(
+        `published BundleBinding candidate set is unresolved: ${publishedLookup.reason}`,
+      );
+    }
   }
   if (
-    publishedLookup.disposition !== "present" ||
-    !isBundleBinding(publishedLookup.binding) ||
-    !bindingMatches(publishedLookup.binding, expected) ||
-    !exact(publishedLookup.binding, binding)
+    isRecord(publishedLookup) && publishedLookup.disposition === "present" && (
+      !isBundleBinding(publishedLookup.binding) ||
+      !bindingMatches(publishedLookup.binding, expected) ||
+      !exact(publishedLookup.binding, binding)
+    )
   ) {
     throw new SubstrateError("published BundleBinding is not independently readable and exact");
   }
-  await locallyVerifyBindingSignature(publishedLookup.binding, provider);
+  // Signature, then the provider's exact native read of the bound copy.
+  await locallyVerifyBindingSignature(binding, provider);
   return {
-    binding: snapshot(publishedLookup.binding, "published BundleBinding"),
+    binding: snapshot(binding, "published BundleBinding"),
     resumed: false,
   };
 }
@@ -3925,12 +3982,17 @@ export async function verifyFinalizedSellerBundleReadOnly(
     retainedAnchored,
     retainedProvider,
   );
-  const current = await resolveBundle(logicalAddress, retainedProvider);
-  if (current.disposition !== "present") {
-    throw new SubstrateError(
-      current.disposition === "indeterminate"
-        ? `retained seller bundle readback is indeterminate: ${current.reason}`
-        : "retained seller bundle is authoritatively absent",
+  const current = await resolveBundle(logicalAddress, retainedProvider, result.binding);
+  if (current.disposition === "indeterminate") {
+    throw new IndeterminateSubstrateError(
+      `retained seller bundle readback is indeterminate: ${current.reason}`,
+    );
+  }
+  // The retained bundle's finalized anchor was verified above; a name index
+  // that does not show it yet (on Demos it may lag finality) is unanswered.
+  if (current.disposition === "absent") {
+    throw new IndeterminateSubstrateError(
+      "retained seller bundle is not yet visible in the bundle name index",
     );
   }
   const currentSellerBundle = await verifyAnchoredBundle(
@@ -3940,12 +4002,12 @@ export async function verifyFinalizedSellerBundleReadOnly(
     retainedProvider,
   );
   if (
-    !exact(currentSellerBundle, retainedSellerBundle) ||
-    current.anchored.nativeAddress !== result.nativeAddress ||
-    !sameAnchorPublicationIdentity(current.anchored.anchorReceipt, result.anchorReceipt) ||
-    (current.anchored.anchorTx !== undefined &&
-      result.anchorTx !== undefined &&
-      current.anchored.anchorTx !== result.anchorTx)
+    !exact(bundleSignedScope(currentSellerBundle), bundleSignedScope(retainedSellerBundle)) ||
+    ((retainedProvider.mapping === "pure" || current.anchored.nativeAddress === result.nativeAddress) && (
+      current.anchored.nativeAddress !== result.nativeAddress ||
+      !sameAnchorPublicationIdentity(current.anchored.anchorReceipt, result.anchorReceipt) ||
+      (current.anchored.anchorTx !== undefined && result.anchorTx !== undefined &&
+        current.anchored.anchorTx !== result.anchorTx)))
   ) {
     throw new DacsError("retained seller bundle differs from its authenticated readback");
   }
@@ -3993,25 +4055,61 @@ export async function verifyFinalizedSellerBundleReadOnly(
     if (!bindingMatches(result.binding, expectedBinding)) {
       throw new DacsError("retained BundleBinding maps different bundle content");
     }
+    // Signature, then the provider's exact native read of the bound copy.
     await locallyVerifyBindingSignature(result.binding, retainedProvider);
     let bindingLookup: SellerBundleBindingLookup;
     try {
-      bindingLookup = snapshot(
-        await retainedProvider.resolveBundleBinding(logicalAddress, session.seller.primaryClaim),
-        "retained BundleBinding readback",
-      );
+      // The retained binding joins the provider's BB-6 candidates (BB-2).
+      bindingLookup = await retainedProvider.resolveBundleBinding(logicalAddress,
+        session.seller.primaryClaim, snapshot(result.binding, "retained BundleBinding"));
     } catch (error) {
-      throw new SubstrateError("retained BundleBinding readback errored", { cause: error });
+      // A permanent provider answer passes through; an unanswered lookup is
+      // no evidence either way (BB-8).
+      if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
+      bindingLookup = { disposition: "indeterminate", reason: "bundle-binding-unanswered" };
     }
-    if (
-      bindingLookup.disposition !== "present" ||
-      !isBundleBinding(bindingLookup.binding) ||
-      !bindingMatches(bindingLookup.binding, expectedBinding) ||
-      !exact(bindingLookup.binding, result.binding)
-    ) {
-      throw new DacsError("retained BundleBinding is not independently readable and exact");
+    bindingLookup = snapshot(bindingLookup, "retained BundleBinding readback");
+    if (!isRecord(bindingLookup) || !(
+      (bindingLookup.disposition === "present" && hasOnlyKeys(bindingLookup, ["disposition", "binding"])) ||
+      (bindingLookup.disposition === "absent" && hasOnlyKeys(bindingLookup, ["disposition"])) ||
+      (bindingLookup.disposition === "indeterminate" &&
+        hasOnlyKeys(bindingLookup, ["disposition", "reason"]) &&
+        typeof bindingLookup.reason === "string" && bindingLookup.reason.length > 0)
+    )) {
+      throw new DacsError("retained BundleBinding readback returned an invalid disposition");
     }
-    await locallyVerifyBindingSignature(bindingLookup.binding, retainedProvider);
+    // ST-11: discovery visibility never gates completion, and non-discovery is
+    // no evidence either way (BB-8). BB-6 may select another independently
+    // authenticated native publication of the same signed content.
+    if (bindingLookup.disposition === "present" && !exact(bindingLookup.binding, result.binding)) {
+      const selected = bindingLookup.binding;
+      // BB-6 collapses equal signed content across native publications. Each
+      // binding still authenticates its own receipt/readback, never the other's.
+      // The signer is the same party by CORE B.1 CF-3 identity, as BB-6 selects.
+      if (!isBundleBinding(selected) || selected.jobId !== expectedBinding.jobId ||
+          selected.role !== "seller" || selected.logicalAddress !== logicalAddress ||
+          selected.bundleContentHash !== expectedBundleHash ||
+          !sameCanonicalClaimIdentity(selected.signer, expectedBinding.signer) ||
+          !retainedProvider.verifyBundleBinding) {
+        throw new DacsError("retained BundleBinding is not independently readable and exact");
+      }
+      await locallyVerifyBindingSignature(selected, retainedProvider);
+    }
+    // BB-6, BB-7: candidates that did not resolve to one copy (for example an
+    // equally signed second copy) keep the seller side indeterminate. Any
+    // reason other than non-observation is such a set.
+    if (bindingLookup.disposition === "indeterminate" &&
+        isUnresolvedBundleBindingCandidateSet(bindingLookup.reason)) {
+      throw new IndeterminateSubstrateError(
+        `retained BundleBinding candidate set is unresolved: ${bindingLookup.reason}`,
+      );
+    }
+    if (current.anchored.nativeAddress !== result.nativeAddress &&
+        (bindingLookup.disposition !== "present" ||
+          !isBundleBinding(bindingLookup.binding) ||
+          bindingLookup.binding.nativeAddress !== current.anchored.nativeAddress)) {
+      throw new DacsError("alternate seller readback lacks its authenticated selected BundleBinding");
+    }
   }
 
   return snapshot(result as unknown as FinalizedSellerBundle, "verified seller bundle result");

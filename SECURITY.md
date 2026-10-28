@@ -169,6 +169,32 @@ WebSocket transport — an app already running a full chain stack with these dep
   closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
+- **Registry/container consumer acceptance** audits the generated one-click
+  consumer's whole tree by advisory ID against
+  `scripts/registry-container-audit-baseline.json` (explained in
+  `scripts/registry-container-audit-baseline.md`). On pull requests an advisory
+  ID outside that baseline, including one newly published against an unchanged
+  tree, is a warning and a step-summary line, not a failure, unless npm reports
+  it at high or critical severity on a direct dependency of the consumer: that
+  fails pull requests too. The scheduled `Registry consumer advisory-ID drift`
+  job, manual runs and any release or publication path fail closed on it until
+  it is reviewed. `Publish gated npm prerelease` runs this acceptance with
+  drift enforced as a prerequisite job, so its publish job does not start
+  unless the acceptance passed under the fail-closed policy, nor unless a
+  `publish-environment` job finds `npm-prerelease-gated` already protected
+  (GitHub would otherwise create it unprotected on first use). That publish job
+  and its `npm-prerelease-gated` environment must be the only holders of
+  publication credentials: an older ref's ungated `publish-prerelease.yml` can
+  still be dispatched, so the `npm-prerelease` environment must hold no token
+  and npm must trust no other workflow (owner steps in
+  `docs/npm-prerelease-release.md`). Following the transitive
+  rule above, an ID recorded in the baseline's `assessedAdvisories` with its
+  reachability assessment does not block that gate; a high or critical
+  advisory on a direct dependency of the consumer always does, even when the
+  #191 baseline lists it. A run whose only findings are recorded in the #191
+  baseline (exit 4) passes that prerequisite, so baseline-only findings do not
+  stop a prerelease. Production publication stays blocked by #191 until its
+  baseline findings are resolved.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.

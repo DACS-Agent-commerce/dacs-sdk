@@ -26,6 +26,7 @@ import {
 import {
   DacsHttpTransportError,
   createDacsHttpMessageClientV1,
+  createDacsHttpInboxResumerV1,
   resumeDacsHttpInboxV1,
   startDacsHttpMessageServerV1,
   type DacsHttpMessageEndpointOptionsV1,
@@ -69,17 +70,18 @@ async function proposal(
   nonceByte: number,
   audience = SELLER,
   sender = BUYER,
+  jobId = JOB_ID,
 ): Promise<Readonly<DacsHttpEnvelopeV1>> {
   return createDacsHttpEnvelopeV1({
     type: "agreement-proposal",
-    jobId: JOB_ID,
+    jobId,
     sender,
     audience,
     issuedAt: now - 1_000,
     expiresAt: now + 299_000,
     nonce: nonce(nonceByte),
     payload: {
-      proposal: { jobId: JOB_ID, label: "http-runtime-test" },
+      proposal: { jobId, label: "http-runtime-test" },
       transportIdentity: { sender, audience },
     } as never,
   }, (bytes) => ed25519Sign(bytes, BUYER_KEY));
@@ -286,6 +288,54 @@ describe("authenticated HTTP listener and durable client", () => {
     await expect(client.queue(signed)).rejects.toMatchObject({
       reasonCode: "outbox-envelope-conflict",
     });
+  });
+
+  // Final r11 review: resume listed pending messages from the first one every
+  // cycle, so a page of messages that stay pending (plans waiting for this
+  // role's own Vet) kept every later message from ever being resumed.
+  it("resumes pending inbox messages page by page past ones that stay pending", async () => {
+    const databasePath = join(root(), "seller.sqlite");
+    const sellerDatabase = await open(databasePath, SELLER, "seller");
+    const server = await start(endpointOptions(sellerDatabase, vi.fn(async () => {
+      throw new Error("simulated-process-boundary");
+    })));
+    const inbox = sellerDatabase.createHttpInboxStore();
+    // One proposal per job: the inbox holds one message per job, type and sender.
+    for (const [nonceByte, jobId] of [[41, JOB_ID], [42, `${JOB_ID.slice(0, -1)}W`], [43, `${JOB_ID.slice(0, -1)}X`]] as const) {
+      const response = await fetch(server.endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: canonicalize(await proposal(await inbox.readTime(), nonceByte, SELLER, BUYER, jobId)),
+      });
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "transport-handler-pending" });
+    }
+    await closeServer(server);
+    const order = (await inbox.list({ limit: 10, state: "pending" })).items
+      .map((item) => item.authenticated.envelope.envelopeId);
+    expect(order).toHaveLength(3);
+    // The first message in envelope order stays pending; the others decide.
+    const handled: string[] = [];
+    const options = endpointOptions(sellerDatabase, vi.fn(async (message) => {
+      handled.push(message.envelope.envelopeId);
+      if (message.envelope.envelopeId === order[0]) throw new Error("waiting for this role's own Vet");
+      return { disposition: "accepted" as const };
+    }));
+    // The live service's resumer carries the cursor from one cycle to the next.
+    const resumer = createDacsHttpInboxResumerV1(options);
+    const first = await resumer.resume({ limit: 1 });
+    expect(first).toMatchObject({ inspected: 1, disposed: 0, pending: 1 });
+    expect(first.nextCursor).toEqual(expect.any(String));
+    await expect(resumer.resume({ limit: 1 })).resolves.toMatchObject({ inspected: 1, disposed: 1, pending: 0 });
+    const third = await resumer.resume({ limit: 1 });
+    expect(third).toMatchObject({ inspected: 1, disposed: 1, pending: 0 });
+    expect(handled).toEqual(order);
+    // Past the last page it starts again; only the waiting one is left.
+    expect(third.nextCursor).toBeUndefined();
+    await expect(resumer.resume({ limit: 1 })).resolves.toEqual({ inspected: 1, disposed: 0, pending: 1 });
+    expect(handled).toEqual([...order, order[0]]);
+    await expect(resumeDacsHttpInboxV1(options, { cursor: "" })).rejects.toThrow(/cursor is invalid/);
+    closeDatabase(sellerDatabase);
   });
 
   it("recovers a pending inbox reservation after restart before acknowledging replay", async () => {
@@ -495,6 +545,50 @@ describe("authenticated HTTP listener and durable client", () => {
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "envelope-signature-invalid" });
     await expect(inbox.list({ limit: 10 })).resolves.toEqual({ items: [] });
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  // Final re-review 1: a validator that could not read its own state (its
+  // SQLite store stayed locked) could only answer 4xx, which parks the sender.
+  it("answers a validator that cannot decide now with 503, and the sender retries", async () => {
+    const directory = root();
+    const sellerDatabase = await open(join(directory, "seller.sqlite"), SELLER, "seller");
+    const buyerDatabase = await open(join(directory, "buyer.sqlite"), BUYER, "buyer");
+    const handled = vi.fn(async () => ({ disposition: "accepted" as const }));
+    const server = await start(endpointOptions(sellerDatabase, handled, {
+      validatePayload: async () => ({ status: "unavailable", reasonCode: "vet-terminal-store-busy" }),
+    }));
+    const inbox = sellerDatabase.createHttpInboxStore();
+
+    const response = await fetch(server.endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: canonicalize(await proposal(await inbox.readTime(), 8)),
+    });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    await expect(response.json()).resolves.toEqual({ error: "vet-terminal-store-busy" });
+    await expect(inbox.list({ limit: 10 })).resolves.toEqual({ items: [] });
+
+    const outbox = buyerDatabase.createHttpOutboxStore({ retryJitter: () => 0 });
+    const client = createDacsHttpMessageClientV1({
+      endpoint: server.endpoint,
+      authority: BUYER,
+      outbox,
+      resolveIdentity: identityResolver(),
+      workerId: "buyer-worker",
+    });
+    const signed = await proposal(await outbox.readTime(), 9);
+    await expect(client.send(signed)).rejects.toMatchObject({
+      name: "DacsHttpTransportError",
+      reasonCode: "response-ambiguous",
+      retryable: true,
+    });
+    await expect(outbox.load(signed.envelopeId)).resolves.toMatchObject({
+      state: "pending",
+      attempts: 1,
+      reasonCode: "response-ambiguous",
+    });
     expect(handled).not.toHaveBeenCalled();
   });
 

@@ -4,6 +4,7 @@ import {
   type BuyerBundleTransport,
   type DurableBuyerBundleFinalizationInput,
   type DurableBuyerBundleFinalizationProvider,
+  type DurableBuyerSessionCompletion,
   type DurableFinalizedBuyerBundle,
 } from "@kynesyslabs/dacs";
 import type {
@@ -92,6 +93,13 @@ export interface DacsSellerAuditRuntimeOptionsV1
   }>): Promise<boolean> | boolean;
 }
 
+/**
+ * Buyer completion authorization. `true` authorizes the final audit result and
+ * `false` is an authentication failure that needs an operator. `indeterminate`
+ * means a required read could not be answered; the track retries it.
+ */
+export type DacsBuyerAuditAuthorizationV1 = boolean | "indeterminate";
+
 export interface DacsBuyerAuditRuntimeOptionsV1
   extends DacsAuditRuntimeCommonOptionsV1 {
   bundleTransport: Readonly<BuyerBundleTransport>;
@@ -103,8 +111,10 @@ export interface DacsBuyerAuditRuntimeOptionsV1
   authorizeFinalized(input: Readonly<{
     operation: Readonly<FixedPriceX402TrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1>;
+    material: Readonly<DacsBuyerAuditMaterialV1>;
+    completion: Readonly<DurableBuyerSessionCompletion>;
     result: Readonly<DurableFinalizedBuyerBundle>;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<DacsBuyerAuditAuthorizationV1> | DacsBuyerAuditAuthorizationV1;
 }
 
 export interface DacsPayDemSellerAuditRuntimeOptionsV1
@@ -131,8 +141,10 @@ export interface DacsPayDemBuyerAuditRuntimeOptionsV1
   authorizeFinalized(input: Readonly<{
     operation: Readonly<FixedPricePayDemTrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    material: Readonly<DacsBuyerAuditMaterialV1>;
+    completion: Readonly<DurableBuyerSessionCompletion>;
     result: Readonly<DurableFinalizedBuyerBundle>;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<DacsBuyerAuditAuthorizationV1> | DacsBuyerAuditAuthorizationV1;
 }
 
 export class DacsAuditRuntimeError extends Error {
@@ -419,7 +431,7 @@ export function createDacsSellerAuditTrackV1(
       return Object.freeze({
         status: "final" as const,
         outcome: "success" as const,
-        reference: result.logicalAddress,
+        reference: result.nativeAddress,
         authenticationHash: result.bundleContentHash,
       });
     } catch {
@@ -579,6 +591,7 @@ export function createDacsBuyerAuditTrackV1(
         return Object.freeze({
           status: "indeterminate" as const,
           reasonCode: `buyer-audit-${progress.stage}-indeterminate`,
+          retryAt: retryAt(context, delay),
         });
       }
       return Object.freeze({
@@ -588,18 +601,28 @@ export function createDacsBuyerAuditTrackV1(
     }
     try {
       await operation.fence.assertCurrent();
-      if (await options.authorizeFinalized({
+      const authorization = await options.authorizeFinalized({
         operation,
         retained,
+        material,
+        completion: progress.completion,
         result: progress.result,
-      }) !== true) {
+      });
+      if (authorization === "indeterminate") {
+        return Object.freeze({
+          status: "indeterminate" as const,
+          reasonCode: "buyer-audit-completion-indeterminate",
+          retryAt: retryAt(context, delay),
+        });
+      }
+      if (authorization !== true) {
         throw new DacsAuditRuntimeError("buyer-audit-result-unauthorized");
       }
       await operation.fence.assertCurrent();
       return Object.freeze({
         status: "final" as const,
         outcome: "success" as const,
-        reference: progress.result.logicalAddress,
+        reference: progress.result.nativeAddress,
         authenticationHash: progress.result.bundleContentHash,
       });
     } catch {

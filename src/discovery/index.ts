@@ -49,3 +49,16 @@ export {
   type ScanOptions,
   type ScanSeen,
 } from "./scanner.js";
+export {
+  BUNDLE_BINDING_FETCH_BUDGET,
+  BUNDLE_BINDING_NON_OBSERVATION_REASONS,
+  isBundleBindingNonObservation,
+  isUnresolvedBundleBindingCandidateSet,
+  resolveBundleBindingCandidates,
+  type BundleBindingCandidateResolution,
+  type BundleBindingNonObservationReason,
+  type ResolveBundleBindingCandidatesInput,
+} from "./bundleBindingCandidates.js";
+
+export { authenticateSessionProfile, requireAuthenticatedSessionProfile } from "./sessionProfileAdmission.js";
+export type { AuthenticateSessionProfile } from "./sessionProfileAdmission.js";

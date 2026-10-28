@@ -33,7 +33,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
-import { DacsError, SubstrateError } from "../../src/errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../../src/errors.js";
 import {
   attestationBundleHash,
   bundleSignedScope,
@@ -649,6 +649,116 @@ describe("DACS-5 buyer role finalization", () => {
     ).resolves.toMatchObject({
       binding: { role: "buyer", signer: BUYER },
     });
+  });
+
+  // Retry versus permanent for each answer of a BundleBinding read after the
+  // first (pre-publication) lookup found nothing.
+  const bindingReads: Array<[string, () => unknown, "retry" | "permanent" | "discovery"]> = [
+    ["a non-DacsError throw", () => { throw new TypeError("fetch failed"); }, "retry"],
+    ["a plain SubstrateError", () => { throw new SubstrateError("node down"); }, "retry"],
+    ["an IndeterminateSubstrateError",
+      () => { throw new IndeterminateSubstrateError("unanswered"); }, "retry"],
+    ["a permanent DacsError", () => { throw new DacsError("binding content invalid"); }, "permanent"],
+    ["absent", () => ({ disposition: "absent" }), "discovery"],
+    ["indeterminate", () => ({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" }), "discovery"],
+  ];
+  function lookupAfterFirst(f: ReturnType<typeof fixture>, answer: () => unknown) {
+    let calls = 0;
+    f.provider.resolveBundleBinding = vi.fn(() => {
+      calls += 1;
+      return calls === 1 ? { disposition: "absent" as const } : answer();
+    }) as never;
+  }
+
+  test.each(bindingReads)("reconciles an ambiguous publication whose readback is %s", async (_label, answer, kind) => {
+    const f = fixture("write-input");
+    f.state.anchored = anchoredBuyer(f.buyerBundle);
+    const permanent = new DacsError("binding content invalid");
+    f.provider.publishBundleBinding = vi.fn(() => {
+      throw new Error("timeout after publication");
+    });
+    lookupAfterFirst(f, kind === "permanent" ? () => { throw permanent; } : answer);
+    const error = await finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider)
+      .catch((caught: unknown) => caught);
+    if (kind === "permanent") {
+      expect(error).toBe(permanent);
+    } else {
+      // Nothing shows the exact binding, so the outcome stays unknown.
+      expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+      expect((error as Error).message).toContain("ambiguous; resolve before any retry");
+    }
+  });
+
+  // ST-11/BB-8: discovery never gates completion once the publisher confirmed.
+  test.each(bindingReads)("accepts a confirmed publication whose readback is %s unless it is permanent", async (_label, answer, kind) => {
+    const f = fixture("write-input");
+    f.state.anchored = anchoredBuyer(f.buyerBundle);
+    const permanent = new DacsError("binding content invalid");
+    lookupAfterFirst(f, kind === "permanent" ? () => { throw permanent; } : answer);
+    const settled = await finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider)
+      .then((value) => ({ value }), (error: unknown) => ({ error }));
+    if (kind === "permanent") {
+      expect(settled).toEqual({ error: permanent });
+    } else {
+      expect(settled).toMatchObject({ value: { binding: f.state.binding } });
+    }
+  });
+
+  test.each(["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
+    "bundle-binding-candidates-rejected", "bundle-binding-candidates-unfetched", "unknown-reason"])(
+    "holds initial publication for unresolved candidates: %s", async (reason) => {
+      const f = fixture("write-input");
+      f.state.anchored = anchoredBuyer(f.buyerBundle);
+      lookupAfterFirst(f, () => ({ disposition: "indeterminate", reason }));
+      await expect(finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider))
+        .rejects.toThrow(/candidate set is unresolved/);
+    });
+
+  test.each([null, { disposition: "unknown" }, { disposition: "indeterminate", reason: "" }])(
+    "rejects malformed initial publication lookup %j", async (lookup) => {
+      const f = fixture("write-input");
+      f.state.anchored = anchoredBuyer(f.buyerBundle);
+      lookupAfterFirst(f, () => lookup);
+      await expect(finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider))
+        .rejects.toThrow(/invalid disposition/);
+    });
+
+  test("refuses a confirmed publication whose readback resolves a different binding", async () => {
+    const f = fixture("write-input");
+    f.state.anchored = anchoredBuyer(f.buyerBundle);
+    lookupAfterFirst(f, () => ({
+      disposition: "present",
+      binding: { ...f.state.binding!, anchorTx: "test:other-anchor-tx" },
+    }));
+    await expect(finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider))
+      .rejects.toBeInstanceOf(IndeterminateSubstrateError);
+  });
+
+  // A verification callback that throws, whatever its class, has not answered.
+  test.each((["verifyBundleAnchorReceipt", "verifyBundleBinding"] as const).flatMap((callback) => [
+    [callback, "a non-DacsError", () => new TypeError("fetch failed")],
+    [callback, "a plain SubstrateError", () => new SubstrateError("node down")],
+    [callback, "a DacsError", () => new DacsError("verifier crashed")],
+  ] as const))("retries a %s that throws %s", async (callback, _label, thrown) => {
+    const f = fixture("write-input");
+    f.state.anchored = anchoredBuyer(f.buyerBundle);
+    f.provider[callback] = vi.fn(() => { throw thrown(); }) as never;
+    const error = await finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect((error as Error).message).toContain("verification errored");
+  });
+
+  test("retries, without publishing, when the first BundleBinding lookup is indeterminate", async () => {
+    const f = fixture("write-input");
+    f.state.anchored = anchoredBuyer(f.buyerBundle);
+    f.provider.resolveBundleBinding = vi.fn(() => ({
+      disposition: "indeterminate" as const,
+      reason: "bundle-binding-undiscovered",
+    })) as never;
+    await expect(finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider))
+      .rejects.toBeInstanceOf(IndeterminateSubstrateError);
+    expect(f.provider.publishBundleBinding).not.toHaveBeenCalled();
   });
 
   test("publishes a verified buyer binding and returns a frozen identical result on repeat", async () => {

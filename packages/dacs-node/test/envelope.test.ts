@@ -194,6 +194,10 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
     algorithm: "ed25519",
     signature: "vector-signature",
   },
+  "terminal-bundle-proposal-buyer": { vector: "buyer-terminal-proposal" },
+  "terminal-bundle-proposal-seller": { vector: "seller-terminal-proposal" },
+  "terminal-bundle-contribution-buyer": { vector: "buyer-terminal-contribution" },
+  "terminal-bundle-contribution-seller": { vector: "seller-terminal-contribution" },
   "diagnostic-probe-buyer": {
     purpose: "transport-readiness",
     challenge: Buffer.alloc(32, 8).toString("base64url"),
@@ -212,7 +216,10 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
 function roleFor(type: DacsHttpMessageType): "buyer" | "seller" {
   return type === "session-challenge" || type === "session-admission" ||
       type === "agreement-response" || type === "payment-evidence-request" ||
-      type === "bundle-signature-request" || type === "diagnostic-probe-seller"
+      type === "bundle-signature-request" ||
+      type === "terminal-bundle-proposal-seller" ||
+      type === "terminal-bundle-contribution-seller" ||
+      type === "diagnostic-probe-seller"
     ? "seller" : "buyer";
 }
 
@@ -655,4 +662,14 @@ describe("DACS HTTP envelope v1", () => {
     });
     expect(resolver).not.toHaveBeenCalled();
   });
+});
+
+
+it("preserves established vector nonce assignments when terminal message types are appended", () => {
+  const types = ["acknowledgement", "diagnostic-probe-buyer", "diagnostic-probe-seller",
+    "session-init", "session-challenge", "session-presentation", "session-admission"];
+  for (const [index, type] of types.entries()) {
+    expect(vectorDocument.cases.find((entry) => entry.type === type)?.nonce)
+      .toBe(Buffer.alloc(32, 8 + index).toString("base64url"));
+  }
 });

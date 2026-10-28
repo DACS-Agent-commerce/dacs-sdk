@@ -92,6 +92,8 @@ export interface SellerFulfilmentExpectedVerifyResult {
  */
 export interface SellerFulfilmentVetRequirementInvocation {
   vetRecordRef: AttestationRef;
+  /** Required when the Vet reference uses a native rather than logical locator. */
+  anchorReceipt?: AnchorReceipt;
   evaluatedParty: string;
   requirement: BundleRequirement;
   verifier: string;
@@ -266,7 +268,9 @@ function isVetRequirementInvocation(
   return isRecord(value) && hasExactKeys(value, [
     "vetRecordRef", "evaluatedParty", "requirement", "verifier",
     "freshness", "dealSpecific",
-  ]) && isAttestationRef(value.vetRecordRef) && isNonEmpty(value.evaluatedParty) &&
+  ], ["anchorReceipt"]) &&
+    (value.anchorReceipt === undefined || isAnchorReceipt(value.anchorReceipt)) &&
+    isAttestationRef(value.vetRecordRef) && isNonEmpty(value.evaluatedParty) &&
     isStrictBundleRequirement(value.requirement) && isNonEmpty(value.verifier) &&
     Array.isArray(value.freshness) && value.freshness.every(isExpectedVerifyResult) &&
     Array.isArray(value.dealSpecific) && value.dealSpecific.every(isExpectedVerifyResult);

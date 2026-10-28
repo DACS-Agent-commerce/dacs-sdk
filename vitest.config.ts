@@ -1,6 +1,18 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
+import { compilerOptions } from "./tsconfig.json";
+
 export default defineConfig({
+  resolve: {
+    // Root integration tests also import host sources. Resolve their core
+    // imports just as tsc does, without requiring a previous build's dist/.
+    alias: Object.entries(compilerOptions.paths).map(([specifier, [source]]) => ({
+      find: new RegExp(`^${specifier}$`),
+      replacement: fileURLToPath(new URL(source!, import.meta.url)),
+    })),
+  },
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",

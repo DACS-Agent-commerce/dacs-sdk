@@ -106,6 +106,13 @@ async function admit(
   if (x402Result.status === "valid" || payDemResult.status === "valid") {
     return Object.freeze({ status: "valid" as const });
   }
+  // A rail that could not read its state decided nothing: the sender retries.
+  if (x402Result.status === "unavailable" || payDemResult.status === "unavailable") {
+    return Object.freeze({
+      status: "unavailable" as const,
+      reasonCode: "multirail-message-validation-unavailable",
+    });
+  }
   const unavailable = x402Result.status === "authentication-failure" ||
     payDemResult.status === "authentication-failure";
   return Object.freeze({
@@ -239,7 +246,7 @@ export function createDacsMultirailLiveCommerceGraphV1(
         "multirail-message-validation-unavailable",
       );
     }
-    if (validation.status === "authentication-failure") {
+    if (validation.status === "authentication-failure" || validation.status === "unavailable") {
       // The HTTP inbox converts thrown handler failures into retained pending
       // work. Never durably reject a valid message for a temporary verifier or
       // store outage on the rail that owns it.

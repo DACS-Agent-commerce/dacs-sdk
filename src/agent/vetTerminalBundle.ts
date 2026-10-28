@@ -3,8 +3,11 @@
  *
  * This module does not perform Vet and does not own either party's signer. It accepts the exact
  * finalized `VetProduction`, asks a caller-supplied verifier to authenticate that production,
- * and converts only an objective `fail` decision into the data-only authority consumed by the
- * role-local terminal-bundle coordinator. `indeterminate` and `error` remain non-terminal.
+ * and converts a non-pass decision into the data-only authority consumed by the role-local
+ * terminal-bundle coordinator. Per DACS-2 VPC-4, `fail` is the evaluated party's fault
+ * (`counterparty`); `indeterminate` and `error` are `permanent` (the verifier's fault) unless
+ * the authenticator proves a sole, session-bound counterparty presentation parse cause.
+ * DACS-5 ST-2 ends authenticated failures at `vet-failed`.
  */
 import { types as nodeTypes } from "node:util";
 
@@ -64,9 +67,12 @@ export interface VetFailureTerminalSessionRecord {
     invokedAt: number;
     result: Readonly<{
       ok: false;
-      reason: "authenticated-vet-failure";
+      reason:
+        | "authenticated-vet-failure"
+        | "authenticated-vet-indeterminate"
+        | "authenticated-vet-error";
       attestationRef: Readonly<AttestationRef>;
-      errorClass: "counterparty";
+      errorClass: "counterparty" | "permanent";
     }>;
     contextDelta: Readonly<Record<string, never>>;
   }>[];
@@ -89,17 +95,30 @@ export interface PrepareVetTerminalBundleInput {
   parties: readonly Readonly<VetTerminalSessionParty>[];
   evaluatedRole: "buyer" | "seller";
   production: Readonly<VetProduction>;
+  /** The other direction's available finalized CVR; authenticated independently. */
+  complementaryProduction?: Readonly<VetProduction>;
 }
 
 export type VetProductionAuthentication =
-  | Readonly<{ status: "valid" }>
+  | Readonly<{ status: "valid"; cause?: Readonly<{
+      kind: "counterparty-presentation-parse" | "verifier";
+      jobId: string;
+      recordHash: string;
+      evaluatedIdentityHash: string;
+      verifierIdentityHash: string;
+    }> }>
   | Readonly<{ status: "invalid"; reason: string }>
   | Readonly<{ status: "indeterminate"; reason: string }>;
 
 export interface PrepareVetTerminalBundleDeps {
   /**
    * Authenticate the CVR signature, its complete VerifyResult/recipe/authority closure, and the
-   * finalized CVR anchor/readback. Returning `valid` is a trust boundary, not an advisory hook.
+   * finalized CVR anchor/readback. For error/indeterminate, also independently
+   * verify the complete cause closure, including counterparty-supplied bytes,
+   * their declared parser format and every oneOf alternative. Return `cause`
+   * only if the sole proximate cause is established and session-bound; without
+   * it an authenticated error/indeterminate ends as `permanent`. Never
+   * project a sender-selected errorClass. Returning `valid` is a trust boundary.
    */
   authenticateProduction(input: Readonly<{
     production: Readonly<VetProduction>;
@@ -111,11 +130,6 @@ export interface PrepareVetTerminalBundleDeps {
 export type PreparedVetTerminalBundle =
   | Readonly<{
       status: "pass";
-      record: Readonly<CompositeVerificationRecord>;
-    }>
-  | Readonly<{
-      status: "retry";
-      decision: "indeterminate" | "error";
       record: Readonly<CompositeVerificationRecord>;
     }>
   | Readonly<{
@@ -224,7 +238,7 @@ function validListingRef(value: unknown): value is ListingRef {
 
 function captureInput(source: Readonly<PrepareVetTerminalBundleInput>): PrepareVetTerminalBundleInput {
   const input = canonicalSnapshot(source, "Vet terminal input");
-  if (Object.keys(input).length !== 11 ||
+  if ((Object.keys(input).length !== 11 + (input.complementaryProduction === undefined ? 0 : 1)) ||
       ![
         "jobId", "listingRef", "pipeline", "vetPhaseIndex", "vetInvokedAt", "startedAt",
         "recipeRegistryVersion", "railRegistryVersion", "parties", "evaluatedRole",
@@ -294,7 +308,8 @@ function assertProductionBindings(
       !sameCanonicalClaimIdentity(anchorReceipt.writer,
         verifier.identityBundle.presentedBy) ||
       anchorReceipt.state !== "finalized" ||
-      anchorReceipt.observationDisposition !== "established") {
+      anchorReceipt.observationDisposition !== "established" ||
+      anchorReceipt.observedAt < record.generatedAt) {
     throw new DacsError("Vet production is not bound to the exact session roles and anchor");
   }
 }
@@ -303,6 +318,13 @@ function captureAuthentication(value: unknown): VetProductionAuthentication {
   const result = canonicalSnapshot(value, "Vet production authentication") as
     VetProductionAuthentication;
   if (result.status === "valid" && Object.keys(result).length === 1) return result;
+  if (result.status === "valid" && Object.keys(result).length === 2 && result.cause &&
+      Object.keys(result.cause).length === 5 &&
+      (result.cause.kind === "counterparty-presentation-parse" || result.cause.kind === "verifier") &&
+      typeof result.cause.jobId === "string" && HASH_RE.test(result.cause.recordHash) &&
+      HASH_RE.test(result.cause.evaluatedIdentityHash) && HASH_RE.test(result.cause.verifierIdentityHash)) {
+    return result;
+  }
   if ((result.status === "invalid" || result.status === "indeterminate") &&
       Object.keys(result).length === 2 && typeof result.reason === "string" &&
       result.reason.length > 0) return result;
@@ -329,8 +351,8 @@ function captureAuthenticator(
 }
 
 /**
- * Authenticate and classify one role-owned Vet production. Only a finalized, recursively
- * authenticated `fail` decision enters DACS-5 `vet-failed` and creates terminal authority.
+ * Authenticate and classify one role-owned Vet production. A finalized, recursively
+ * authenticated non-pass decision enters DACS-5 `vet-failed` and creates terminal authority.
  */
 export async function prepareVetTerminalBundle(
   source: Readonly<PrepareVetTerminalBundleInput>,
@@ -364,26 +386,66 @@ export async function prepareVetTerminalBundle(
   const authentication = captureAuthentication(rawAuthentication);
   if (authentication.status !== "valid") return deepFreeze(authentication);
 
+  // Authenticate the opposite direction with the same session/role/receipt joins.
+  const productions = [{ role: input.evaluatedRole, production: input.production }];
+  if (input.complementaryProduction !== undefined) {
+    const { complementaryProduction, ...base } = input;
+    const complementary = captureInput({ ...base, evaluatedRole: verifier.role,
+      production: complementaryProduction });
+    assertProductionBindings(complementary, verifier, evaluated);
+    let checked: VetProductionAuthentication;
+    try {
+      checked = captureAuthentication(await authenticateProduction(deepFreeze({
+        production: complementary.production, evaluatedIdentity: verifier.identityBundle,
+        verifierIdentity: evaluated.identityBundle,
+      })));
+    } catch { return deepFreeze({ status: "indeterminate", reason: "complementary Vet authentication failed" }); }
+    if (checked.status !== "valid") return deepFreeze(checked);
+    productions.push({ role: verifier.role, production: complementary.production });
+  }
+  productions.sort((a, b) => a.role < b.role ? -1 : a.role > b.role ? 1 : 0);
+  const vetRecords = productions.map(({ production }) => production.recordRef);
+  const finalizedReceipts = productions.map(({ production }) => production.anchorReceipt);
   const record = deepFreeze(canonicalSnapshot(input.production.record, "Vet record"));
   if (record.overallDecision === "pass") return deepFreeze({ status: "pass", record });
-  if (record.overallDecision === "indeterminate" || record.overallDecision === "error") {
-    return deepFreeze({ status: "retry", decision: record.overallDecision, record });
-  }
-  if (record.overallDecision !== "fail") {
+  if (record.overallDecision !== "fail" && record.overallDecision !== "indeterminate" &&
+      record.overallDecision !== "error") {
     throw new DacsError("authenticated Vet record carries an unsupported decision");
   }
+  // Only the independent authenticator may establish proximate cause. The
+  // sender's production and errorClass never supply fault authority. VPC-4's
+  // default for indeterminate/error is `permanent` (the verifier's own fault),
+  // which needs no cause; only a proven sole counterparty parse cause moves it.
+  // A cause that is present but bound to another production is malformed
+  // authority, not an absent one, so it stays indeterminate.
+  const cause = authentication.cause;
+  if (record.overallDecision !== "fail" && cause !== undefined && (
+    cause.jobId !== input.jobId || cause.recordHash !== input.production.recordRef.contentHash ||
+      cause.evaluatedIdentityHash !== identityBundleHash(evaluated.identityBundle) ||
+      cause.verifierIdentityHash !== identityBundleHash(verifier.identityBundle))) {
+    return deepFreeze({ status: "indeterminate",
+      reason: "Vet cause authentication is not bound to this production" });
+  }
+  const permanent = record.overallDecision !== "fail" &&
+    cause?.kind !== "counterparty-presentation-parse";
+  const errorClass = permanent ? "permanent" as const : "counterparty" as const;
+  const faultedParty = permanent ? verifier.role : input.evaluatedRole;
+  const reason = record.overallDecision === "fail" ? "authenticated-vet-failure" as const
+    : record.overallDecision === "error" ? "authenticated-vet-error" as const
+      : "authenticated-vet-indeterminate" as const;
 
-  const endedAt = input.production.anchorReceipt.observedAt;
-  if (!isSafeUint(endedAt) || endedAt < input.vetInvokedAt || endedAt < record.generatedAt) {
+  const endedAt = Math.max(...finalizedReceipts.map((receipt) => receipt.observedAt));
+  if (!isSafeUint(endedAt) || input.production.anchorReceipt.observedAt < input.vetInvokedAt ||
+      endedAt < input.vetInvokedAt || endedAt < record.generatedAt) {
     throw new DacsError("Vet terminal time precedes the authenticated phase evidence");
   }
   const parties = input.parties.map((party) => ({
     role: party.role,
     bundleHash: identityBundleHash(party.identityBundle),
     primaryClaim: party.identityBundle.presentedBy,
-    ...(party.role === input.evaluatedRole
-      ? { vetRecordRef: input.production.recordRef }
-      : {}),
+    ...(productions.find((entry) => entry.role === party.role) === undefined ? {} : {
+      vetRecordRef: productions.find((entry) => entry.role === party.role)!.production.recordRef,
+    }),
   }));
   const sessionRecord: VetFailureTerminalSessionRecord = {
     recordVersion: "1",
@@ -398,9 +460,9 @@ export async function prepareVetTerminalBundle(
       invokedAt: input.vetInvokedAt,
       result: {
         ok: false,
-        reason: "authenticated-vet-failure",
+        reason,
         attestationRef: input.production.recordRef,
-        errorClass: "counterparty",
+        errorClass,
       },
       contextDelta: {},
     }],
@@ -423,12 +485,12 @@ export async function prepareVetTerminalBundle(
   const authority = createTerminalBundleAuthority({
     jobId: input.jobId,
     terminalClass: "failure",
-    faultedParty: input.evaluatedRole,
+    faultedParty,
     terminalPhase: {
       index: input.vetPhaseIndex,
       kind: "vet-credentials",
       state: "failed",
-      errorClass: "counterparty",
+      errorClass,
     },
     sessionRecordHash: sha256Hex(canonicalize(frozenSession)),
     terminalEvidenceHash: sha256Hex(canonicalize(productionEvidence)),
@@ -439,8 +501,8 @@ export async function prepareVetTerminalBundle(
         bundleHash,
         primaryClaim,
       })),
-      vetRecords: [input.production.recordRef],
-      finalizedReceipts: [input.production.anchorReceipt],
+      vetRecords,
+      finalizedReceipts,
     })),
     listingRef: input.listingRef,
     parties: verifiedParties,
@@ -448,10 +510,11 @@ export async function prepareVetTerminalBundle(
       index: input.vetPhaseIndex,
       kind: "vet-credentials",
       outcome: "fail",
-      errorClass: "counterparty",
+      errorClass,
       attestationRef: input.production.recordRef,
     }],
-    vetRecords: [input.production.recordRef],
+    // Inventory and dependency closure use the same authenticated, role-ordered set.
+    vetRecords,
     settlementEvidence: [],
     recipeRegistryVersion: input.recipeRegistryVersion,
     railRegistryVersion: input.railRegistryVersion,
@@ -460,7 +523,7 @@ export async function prepareVetTerminalBundle(
   return deepFreeze({
     status: "terminal",
     state: "vet-failed",
-    faultedParty: input.evaluatedRole,
+    faultedParty,
     sessionRecord: frozenSession,
     authority,
   });

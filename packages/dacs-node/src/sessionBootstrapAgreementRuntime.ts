@@ -1,3 +1,13 @@
+import {
+  DacsAgreementTransportRuntimeError,
+  loadDacsAgreementTerminalBoundaryForOrderV1,
+} from "./agreementTransportRuntime.js";
+import {
+  claimDacsPreAgreementPhaseV1,
+  loadDacsPreAgreementPhaseV1,
+  DACS_PRE_AGREEMENT_PHASE_CONFLICT,
+  DacsPreAgreementPhaseError,
+} from "./preAgreementPhase.js";
 import { randomBytes } from "node:crypto";
 
 import {
@@ -21,6 +31,9 @@ import type {
   FixedPriceX402TrackOperationInput,
   FixedPriceX402TrackOperationResult,
 } from "@kynesyslabs/dacs/commerce";
+import type {
+  PrepareVetTerminalBundleInput,
+} from "@kynesyslabs/dacs";
 import { identityBundleHash, sameCanonicalClaimIdentity } from "@kynesyslabs/dacs/identity";
 import type { ProtocolAnchorReceipt } from "@kynesyslabs/dacs";
 
@@ -29,22 +42,42 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { isDacsNodeSqliteBusyError } from "./sqlite.js";
 import {
   authenticateDacsSessionVetProductionV1,
   createDacsLiveSessionIdentityV1,
   produceDacsEmptyRequirementSessionVetV1,
+  type DacsSessionVetProductionOutcomeV1,
   type DacsSessionVetProductionV1,
+  type DacsSessionVetRuntimeV1,
 } from "./sessionIdentityVetRuntime.js";
 import type {
   DacsBuyerSessionBootstrapTransportRuntimeV1,
   DacsSellerSessionBootstrapTransportRuntimeV1,
 } from "./sessionBootstrapTransportRuntime.js";
+import { dacsSessionAgreementFactsIdV1 } from "./sessionAgreementFactsId.js";
 import { dacsHttpPayloadHashV1 } from "./transport/envelope.js";
+import {
+  DACS_VET_TERMINAL_LOCAL_VET_PENDING,
+  DACS_VET_TERMINAL_PLAN_DISAGREEMENT,
+  DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING,
+  DacsVetTerminalBundleTransportError,
+  type DacsVetTerminalBundleTransportRuntimeV1,
+} from "./terminalBundleTransportRuntime.js";
 
 const FACTS_VERSION = "1" as const;
-const FACTS_DOMAIN = "dacs-live-session-agreement-facts:v1:" as const;
+const VET_INVOCATION_VERSION = "1" as const;
+const VET_INVOCATION_DOMAIN = "dacs-live-session-vet-invocation:v1:" as const;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
+
+interface DacsSessionVetInvocationV1 {
+  invocationVersion: typeof VET_INVOCATION_VERSION;
+  localBindingHash: string;
+  evaluatedRole: "buyer" | "seller";
+  evaluatedParty: string;
+  invokedAt: number;
+}
 
 interface CommonFactsV1 {
   factsVersion: typeof FACTS_VERSION;
@@ -76,10 +109,36 @@ export interface DacsSessionBootstrapRequirementsV1 {
   seller: Readonly<BundleRequirement>;
 }
 
+export interface DacsSessionVetTerminalTrackV1 {
+  runtime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
+  createInput(input: Readonly<{
+    operation: Readonly<
+      FixedPriceX402TrackOperationInput | FixedPricePayDemTrackOperationInput
+    >;
+    retained: Readonly<DacsLiveOrderInputV1>;
+    buyerIdentity: Readonly<IdentityBundle>;
+    sellerIdentity: Readonly<IdentityBundle>;
+    evaluatedRole: "buyer" | "seller";
+    production: Readonly<DacsSessionVetProductionV1>;
+    vetInvokedAt: number;
+  }>): Readonly<PrepareVetTerminalBundleInput>;
+}
+
 interface CommonOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   agreement: FixedPriceX402TrackOperation;
   retryDelayMs?: number;
+  /**
+   * Optional non-empty DACS-2 producer/authenticator. When absent, the narrow
+   * built-in empty-requirement producer remains the only admitted Vet path.
+   */
+  vet?: Readonly<DacsSessionVetRuntimeV1>;
+  /**
+   * Optional DACS-5 failure finalizer. The factory supplies the exact
+   * Listing/pipeline/registry projection while this track owns durable phase
+   * invocation and coordinator termination.
+   */
+  terminalBundle?: Readonly<DacsSessionVetTerminalTrackV1>;
 }
 
 export interface DacsBuyerSessionBootstrapAgreementTrackOptionsV1
@@ -188,6 +247,36 @@ function operator(reasonCode: string): Readonly<FixedPriceX402TrackOperationResu
   return Object.freeze({ status: "operator-action", reasonCode });
 }
 
+// A durable read that failed under SQLite lock contention (another process
+// held the lock past the busy timeout) is retried; any other failure to read
+// durable state still needs an operator, as `reasonCode`.
+function operatorUnlessBusy(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
+  error: unknown,
+  reasonCode: string,
+): Readonly<FixedPriceX402TrackOperationResult> {
+  return isDacsNodeSqliteBusyError(error)
+    ? pending(context, delay, `${reasonCode}-busy`, "indeterminate")
+    : operator(reasonCode);
+}
+
+// Commit the job to the agreement immediately before this role signs on it.
+// Returns the operator result when the role already committed to a terminal.
+function claimAgreementPhase(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
+  operation: Readonly<FixedPriceX402TrackOperationInput>,
+): Readonly<FixedPriceX402TrackOperationResult> | undefined {
+  try {
+    claimDacsPreAgreementPhaseV1(context, operation.order, "agreement");
+    return undefined;
+  } catch (error) {
+    return operatorUnlessBusy(context, delay, error, error instanceof DacsPreAgreementPhaseError
+      ? error.reasonCode : "pre-agreement-phase-corrupt");
+  }
+}
+
 function operationBound(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   operation: Readonly<FixedPriceX402TrackOperationInput>,
@@ -198,8 +287,276 @@ function operationBound(
     operation.order.bindingHash === operation.fence.bindingHash;
 }
 
+function sessionVetRuntime(
+  value: Readonly<DacsSessionVetRuntimeV1> | undefined,
+): Readonly<DacsSessionVetRuntimeV1> {
+  if (value === undefined) {
+    return Object.freeze({
+      produce: produceDacsEmptyRequirementSessionVetV1,
+      authenticate: authenticateDacsSessionVetProductionV1,
+    });
+  }
+  if (!plainObject(value) || typeof value.produce !== "function" ||
+      typeof value.authenticate !== "function") {
+    throw new TypeError("session Vet runtime is invalid");
+  }
+  return value;
+}
+
+function invocationId(
+  role: "buyer" | "seller",
+  jobId: string,
+  evaluatedRole: "buyer" | "seller",
+): string {
+  return sha256Hex(`${VET_INVOCATION_DOMAIN}${canonicalize({
+    role,
+    jobId,
+    evaluatedRole,
+  })}`);
+}
+
+function captureVetInvocation(value: unknown): Readonly<DacsSessionVetInvocationV1> {
+  if (!plainObject(value) || !exactKeys(value, [
+    "invocationVersion", "localBindingHash", "evaluatedRole", "evaluatedParty",
+    "invokedAt",
+  ]) || value.invocationVersion !== VET_INVOCATION_VERSION ||
+      typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash) ||
+      (value.evaluatedRole !== "buyer" && value.evaluatedRole !== "seller") ||
+      typeof value.evaluatedParty !== "string" || value.evaluatedParty.length === 0 ||
+      typeof value.invokedAt !== "number" || !Number.isSafeInteger(value.invokedAt) ||
+      value.invokedAt < 0) {
+    throw new DacsSessionBootstrapAgreementRuntimeError("session-vet-invocation-corrupt");
+  }
+  return value as unknown as Readonly<DacsSessionVetInvocationV1>;
+}
+
+function retainVetInvocation(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  operation: Readonly<
+    FixedPriceX402TrackOperationInput | FixedPricePayDemTrackOperationInput
+  >,
+  evaluatedRole: "buyer" | "seller",
+  evaluatedParty: string,
+): number {
+  const id = invocationId(context.role, operation.order.jobId, evaluatedRole);
+  const existing = context.database.loadEffectInput("session", id);
+  if (existing !== undefined) {
+    const retained = captureVetInvocation(existing);
+    if (retained.localBindingHash !== operation.order.localBindingHash ||
+        retained.evaluatedRole !== evaluatedRole ||
+        !sameCanonicalClaimIdentity(retained.evaluatedParty, evaluatedParty)) {
+      throw new DacsSessionBootstrapAgreementRuntimeError(
+        "session-vet-invocation-conflict",
+      );
+    }
+    return retained.invokedAt;
+  }
+  const invocation: DacsSessionVetInvocationV1 = {
+    invocationVersion: VET_INVOCATION_VERSION,
+    localBindingHash: operation.order.localBindingHash,
+    evaluatedRole,
+    evaluatedParty,
+    invokedAt: context.database.readTime(),
+  };
+  const put = context.database.putEffectIntent({
+    kind: "session",
+    effectId: id,
+    bindingHash: operation.order.localBindingHash,
+    input: invocation,
+    idempotencyKey: id,
+    jobId: operation.order.jobId,
+  });
+  if (put.status === "conflict") {
+    throw new DacsSessionBootstrapAgreementRuntimeError(
+      "session-vet-invocation-conflict",
+    );
+  }
+  return captureVetInvocation(
+    context.database.loadEffectInput("session", id),
+  ).invokedAt;
+}
+
+export async function advanceDacsVetTerminalTrackV1(
+  runtime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>,
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
+  jobId: string,
+): Promise<Readonly<FixedPriceX402TrackOperationResult> | undefined> {
+  let progress: Awaited<ReturnType<
+    DacsVetTerminalBundleTransportRuntimeV1["advanceRegisteredTerminal"]
+  >>;
+  try {
+    progress = await runtime.advanceRegisteredTerminal(jobId);
+  } catch (error) {
+    // No terminal, or one that local agreement state contradicts: the
+    // ordinary track decides the job.
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        (error.reasonCode === "vet-terminal-material-unavailable" ||
+          error.reasonCode === "vet-terminal-not-pre-agreement")) return undefined;
+    // The peer's plan waits for this role's own Vet result, which the
+    // ordinary track reads next and records before it advances again.
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_LOCAL_VET_PENDING) return undefined;
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === "vet-terminal-production-indeterminate") {
+      return pending(
+        context,
+        delay,
+        error.reasonCode,
+        "indeterminate",
+      );
+    }
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_PRE_AGREEMENT_PHASE_CONFLICT) {
+      return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+    }
+    // Both Vets failed with different plans: an operator decides, on both
+    // roles, once the peer has this role's plan.
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT) {
+      return operator(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+    }
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING) {
+      return pending(context, delay, error.reasonCode);
+    }
+    return operatorUnlessBusy(context, delay, error, error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode.endsWith("-conflict")
+      ? "vet-terminal-finalization-conflict"
+      : "vet-terminal-finalization-unavailable");
+  }
+  if (progress.disposition === "finalised") {
+    const faultedParty = progress.result.bundle.faultedParty;
+    // VPC-4: the independently authenticated terminal plan carries the cause
+    // mapping, including parse-caused error/indeterminate counterparty faults.
+    const errorClass = progress.result.bundle.phaseSummary
+      .find((phase) => phase.kind === "vet-credentials" && phase.outcome === "fail")?.errorClass;
+    if ((faultedParty !== "buyer" && faultedParty !== "seller") ||
+        (errorClass !== "counterparty" && errorClass !== "permanent") ||
+        !HASH_RE.test(progress.result.planHash) ||
+        typeof progress.result.publication.nativeAddress !== "string" ||
+        progress.result.publication.nativeAddress.length === 0) {
+      return operator("vet-terminal-finalization-invalid");
+    }
+    return Object.freeze({
+      status: "final" as const,
+      outcome: "failure" as const,
+      errorClass,
+      faultedParty,
+      reference: progress.result.publication.nativeAddress,
+      authenticationHash: progress.result.planHash,
+    });
+  }
+  // A second plan the peer offered after this role committed is an operator
+  // alert; while the job continues with the retained plan, its track says so.
+  const alert = await peerEquivocationAlert(runtime, jobId);
+  if (progress.disposition === "waiting") {
+    return pending(context, delay, alert ?? "vet-terminal-finalization-pending");
+  }
+  if (progress.disposition === "indeterminate") {
+    return pending(
+      context,
+      delay,
+      alert ?? "vet-terminal-finalization-indeterminate",
+      "indeterminate",
+    );
+  }
+  return operator("vet-terminal-finalization-rejected");
+}
+
+async function peerEquivocationAlert(
+  runtime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>,
+  jobId: string,
+): Promise<string | undefined> {
+  try {
+    const evidence = await runtime.loadPeerEquivocationEvidence?.(jobId);
+    return evidence?.afterCommit?.operatorAlert === true
+      ? "vet-terminal-peer-equivocation-alert" : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function finalizeLocalVetFailure(
+  terminalBundle: CommonOptionsV1["terminalBundle"],
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
+  input: Parameters<
+    NonNullable<CommonOptionsV1["terminalBundle"]>["createInput"]
+  >[0],
+): Promise<Readonly<FixedPriceX402TrackOperationResult>> {
+  if (terminalBundle === undefined) return operator("vet-terminal-runtime-unavailable");
+  try {
+    const terminalInput = terminalBundle.createInput(input);
+    await terminalBundle.runtime.registerLocalTerminal(terminalInput);
+  } catch (error) {
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === "vet-terminal-production-indeterminate") {
+      return pending(
+        context,
+        delay,
+        "vet-terminal-production-indeterminate",
+        "indeterminate",
+      );
+    }
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_PRE_AGREEMENT_PHASE_CONFLICT) {
+      return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+    }
+    // The track sends this role's plan to the peer before it stops.
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT) {
+      return await advanceDacsVetTerminalTrackV1(
+        terminalBundle.runtime,
+        context,
+        delay,
+        input.operation.order.jobId,
+      ) ?? operator(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+    }
+    return operatorUnlessBusy(context, delay, error, error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode.endsWith("-conflict")
+      ? "vet-terminal-registration-conflict"
+      : "vet-terminal-registration-invalid");
+  }
+  return await advanceDacsVetTerminalTrackV1(
+    terminalBundle.runtime,
+    context,
+    delay,
+    input.operation.order.jobId,
+  ) ?? operator("vet-terminal-registration-missing");
+}
+
+// This role's own Vet of the peer passed: record it, then advance the peer's
+// plan that waited for it, if any. Undefined when no terminal is left.
+async function finalizeLocalVetPass(
+  terminalBundle: CommonOptionsV1["terminalBundle"],
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
+  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  input: Parameters<DacsSessionVetTerminalTrackV1["createInput"]>[0],
+): Promise<Readonly<FixedPriceX402TrackOperationResult> | undefined> {
+  if (terminalBundle === undefined) return undefined;
+  try {
+    await terminalBundle.runtime.registerLocalVetPass?.({
+      jobId: operation.order.jobId,
+      localBindingHash: operation.order.localBindingHash,
+    }, await terminalBundle.createInput(input));
+  } catch (error) {
+    return error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode.endsWith("-conflict")
+      ? operator("vet-terminal-registration-conflict")
+      : pending(context, delay, "vet-terminal-local-vet-unavailable", "indeterminate");
+  }
+  return await advanceDacsVetTerminalTrackV1(
+    terminalBundle.runtime,
+    context,
+    delay,
+    operation.order.jobId,
+  );
+}
+
 function factsId(role: "buyer" | "seller", jobId: string): string {
-  return sha256Hex(`${FACTS_DOMAIN}${canonicalize({ role, jobId })}`);
+  return dacsSessionAgreementFactsIdV1(role, jobId);
 }
 
 function productionFieldsValid(input: Readonly<{
@@ -213,7 +570,7 @@ function productionFieldsValid(input: Readonly<{
   const ref = input.ref as AttestationRef;
   return ref.anchor?.kind === "storage-program" &&
     ref.contentHash === contentHash(input.record as unknown as Record<string, unknown>) &&
-    input.receipt.logicalAddress === ref.anchor.locator &&
+    input.receipt.nativeAddress === ref.anchor.locator &&
     input.receipt.contentHash === ref.contentHash;
 }
 
@@ -409,13 +766,43 @@ function requirements(value: unknown): value is Readonly<DacsSessionBootstrapReq
 function vetProgress(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   delay: number,
-  outcome: Awaited<ReturnType<typeof produceDacsEmptyRequirementSessionVetV1>>,
+  outcome: Readonly<DacsSessionVetProductionOutcomeV1>,
 ): Readonly<FixedPriceX402TrackOperationResult> | undefined {
   if (outcome.status === "operator-action") return operator(outcome.reasonCode);
   if (outcome.status === "indeterminate") {
     return pending(context, delay, outcome.reasonCode, "indeterminate");
   }
   return undefined;
+}
+
+async function authenticateProducedVet(
+  vet: Readonly<DacsSessionVetRuntimeV1>,
+  input: Readonly<{
+    context: Readonly<DacsLiveRoleOperationContextV1>;
+    jobId: string;
+    evaluatedIdentity: Readonly<IdentityBundle>;
+    requirement: Readonly<BundleRequirement>;
+    verifier: string;
+    production: Readonly<DacsSessionVetProductionV1>;
+  }>,
+): Promise<"valid" | "invalid" | "indeterminate"> {
+  try {
+    const result = await vet.authenticate(input);
+    return result === "valid" || result === "invalid" || result === "indeterminate"
+      ? result : "indeterminate";
+  } catch {
+    return "indeterminate";
+  }
+}
+
+// DACS-2 VPC-4 and VP-R4: every authenticated non-pass decision fails the Vet
+// phase and is never retried. `fail` is the evaluated party's fault;
+// `indeterminate`/`error` attribution comes from independently authenticated
+// cause provenance in the terminal bridge. All end at `vet-failed`.
+function terminalVetDecision(
+  decision: CompositeVerificationRecord["overallDecision"],
+): boolean {
+  return decision === "fail" || decision === "indeterminate" || decision === "error";
 }
 
 export function createDacsBuyerSessionBootstrapAgreementTrackV1(
@@ -429,9 +816,22 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
   }
   const context = options.context;
   const delay = retryDelay(options.retryDelayMs);
+  const vet = sessionVetRuntime(options.vet);
   return async (operation) => {
     if (!operationBound(context, operation)) {
       return operator("buyer-session-bootstrap-track-mismatch");
+    }
+    // This role's own plan, or the peer's once this role's own Vet result is
+    // recorded and agrees with it. A peer's plan that still waits for that
+    // result is not advanced: the Vet below reads it and records it first.
+    if (options.terminalBundle !== undefined) {
+      const terminal = await advanceDacsVetTerminalTrackV1(
+        options.terminalBundle.runtime,
+        context,
+        delay,
+        operation.order.jobId,
+      );
+      if (terminal !== undefined) return terminal;
     }
     let retained: Readonly<DacsLiveOrderInputV1>;
     let resolvedRequirements: Readonly<DacsSessionBootstrapRequirementsV1>;
@@ -439,10 +839,10 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       resolvedRequirements = await options.resolveRequirements({ operation, retained });
       if (!requirements(resolvedRequirements) ||
-          resolvedRequirements.buyer.required.length !== 0 ||
-          (resolvedRequirements.buyer.oneOf?.length ?? 0) !== 0 ||
-          resolvedRequirements.seller.required.length !== 0 ||
-          (resolvedRequirements.seller.oneOf?.length ?? 0) !== 0) throw new Error();
+          (resolvedRequirements.buyer.required.length !== 0 ||
+            (resolvedRequirements.buyer.oneOf?.length ?? 0) !== 0 ||
+            resolvedRequirements.seller.required.length !== 0 ||
+            (resolvedRequirements.seller.oneOf?.length ?? 0) !== 0)) throw new Error();
     } catch {
       return operator("buyer-session-requirements-invalid");
     }
@@ -479,19 +879,89 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
     } catch {
       return operator("buyer-session-identity-invalid");
     }
-    const [sent, sellerVet] = await Promise.all([
-      options.sessionBootstrap.publishPresentation(operation, presentation),
-      produceDacsEmptyRequirementSessionVetV1({
+    let sellerVetInvokedAt: number;
+    try {
+      sellerVetInvokedAt = retainVetInvocation(
         context,
         operation,
-        evaluatedIdentity: challenge.sellerIdentity,
-        requirement: resolvedRequirements.seller,
-      }),
-    ]);
+        "seller",
+        challenge.sellerIdentity.presentedBy,
+      );
+    } catch (error) {
+      return operatorUnlessBusy(context, delay, error, "buyer-session-seller-vet-invocation-invalid");
+    }
+    let sent: Awaited<ReturnType<
+      DacsBuyerSessionBootstrapTransportRuntimeV1["publishPresentation"]
+    >>;
+    let sellerVet: Readonly<DacsSessionVetProductionOutcomeV1>;
+    try {
+      [sent, sellerVet] = await Promise.all([
+        options.sessionBootstrap.publishPresentation(operation, presentation),
+        vet.produce({
+          context,
+          operation,
+          evaluatedIdentity: challenge.sellerIdentity,
+          requirement: resolvedRequirements.seller,
+        }),
+      ]);
+    } catch {
+      return pending(
+        context,
+        delay,
+        "buyer-session-seller-vet-producer-unavailable",
+        "indeterminate",
+      );
+    }
     if (sent === "rejected") return operator("buyer-session-presentation-rejected");
     const vetResult = vetProgress(context, delay, sellerVet);
     if (vetResult !== undefined) return vetResult;
     if (sellerVet.status !== "ready") return operator("buyer-session-seller-vet-invalid");
+    const sellerAuthentication = await authenticateProducedVet(vet, {
+      context,
+      jobId: operation.order.jobId,
+      evaluatedIdentity: challenge.sellerIdentity,
+      requirement: resolvedRequirements.seller,
+      verifier: context.authority,
+      production: sellerVet.production,
+    });
+    if (sellerAuthentication === "invalid") {
+      return operator("buyer-session-seller-vet-invalid");
+    }
+    if (sellerAuthentication === "indeterminate") {
+      return pending(
+        context,
+        delay,
+        "buyer-session-seller-vet-pending",
+        "indeterminate",
+      );
+    }
+    if (terminalVetDecision(sellerVet.production.record.overallDecision)) {
+      return await finalizeLocalVetFailure(
+        options.terminalBundle,
+        context,
+        delay,
+        {
+          operation,
+          retained,
+          buyerIdentity: presentation.buyerIdentity,
+          sellerIdentity: challenge.sellerIdentity,
+          evaluatedRole: "seller",
+          production: sellerVet.production,
+          vetInvokedAt: sellerVetInvokedAt,
+        },
+      );
+    }
+    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation, {
+      operation, retained, buyerIdentity: presentation.buyerIdentity, sellerIdentity: challenge.sellerIdentity,
+      evaluatedRole: "seller", production: sellerVet.production, vetInvokedAt: sellerVetInvokedAt,
+    });
+    if (passed !== undefined) return passed;
+    if (resolvedRequirements.buyer.required.length !== 0 ||
+        (resolvedRequirements.buyer.oneOf?.length ?? 0) !== 0 ||
+        resolvedRequirements.seller.required.length !== 0 ||
+        (resolvedRequirements.seller.oneOf?.length ?? 0) !== 0) {
+      return operator("buyer-session-audit-requirements-unsupported");
+    }
     const admission = options.sessionBootstrap.resolveAdmission(operation);
     if (admission === undefined) {
       return pending(context, delay, "buyer-session-admission-pending");
@@ -501,7 +971,7 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
       recordRef: admission.buyerVetRef,
       anchorReceipt: admission.buyerVetReceipt,
     };
-    const buyerVet = await authenticateDacsSessionVetProductionV1({
+    const buyerVet = await authenticateProducedVet(vet, {
       context,
       jobId: operation.order.jobId,
       evaluatedIdentity: presentation.buyerIdentity,
@@ -512,6 +982,14 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
     if (buyerVet === "invalid") return operator("buyer-session-admission-vet-invalid");
     if (buyerVet === "indeterminate") {
       return pending(context, delay, "buyer-session-admission-vet-pending", "indeterminate");
+    }
+    if (buyerProduction.record.overallDecision !== "pass") {
+      // The seller, who ran this Vet, produces the terminal plan.
+      return pending(
+        context,
+        delay,
+        "buyer-session-admission-terminal-pending",
+      );
     }
     try {
       retainFacts(context, operation, {
@@ -530,6 +1008,12 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
         sellerVetRef: sellerVet.production.recordRef,
         sellerVetReceipt: sellerVet.production.anchorReceipt,
       });
+    } catch {
+      return operator("buyer-session-agreement-handoff-invalid");
+    }
+    const phaseConflict = claimAgreementPhase(context, delay, operation);
+    if (phaseConflict !== undefined) return phaseConflict;
+    try {
       await operation.fence.assertCurrent();
       return await options.agreement(operation);
     } catch {
@@ -550,17 +1034,70 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
   }
   const context = options.context;
   const delay = retryDelay(options.retryDelayMs);
+  const vet = sessionVetRuntime(options.vet);
   return async (operation) => {
     if (!operationBound(context, operation)) {
       return operator("seller-session-bootstrap-track-mismatch");
+    }
+    // Read the decision directly: readiness callbacks may turn transport
+    // errors into false, but corrupt or unreadable durable state needs an operator.
+    try {
+      loadDacsPreAgreementPhaseV1(context, operation.order);
+    } catch (error) {
+      return operatorUnlessBusy(context, delay, error, error instanceof DacsPreAgreementPhaseError
+        ? error.reasonCode : "pre-agreement-phase-unavailable");
+    }
+    // Recover a durably signed response before advancing any competing terminal.
+    let responseRetained: boolean;
+    try {
+      responseRetained = loadDacsAgreementTerminalBoundaryForOrderV1(
+        context,
+        operation.order,
+      ).sellerResponseRetained;
+    } catch (error) {
+      return operatorUnlessBusy(context, delay, error, error instanceof DacsAgreementTransportRuntimeError ||
+          error instanceof DacsPreAgreementPhaseError
+        ? error.reasonCode : "seller-agreement-binding-unavailable");
+    }
+    if (responseRetained) {
+      const phaseConflict = claimAgreementPhase(context, delay, operation);
+      if (phaseConflict !== undefined) return phaseConflict;
+      try {
+        await operation.fence.assertCurrent();
+        return await options.agreement(operation);
+      } catch {
+        return operator("seller-agreement-runtime-failed");
+      }
+    }
+    // As for the buyer: a peer's plan waits for this role's own Vet below.
+    if (options.terminalBundle !== undefined) {
+      const terminal = await advanceDacsVetTerminalTrackV1(
+        options.terminalBundle.runtime,
+        context,
+        delay,
+        operation.order.jobId,
+      );
+      if (terminal !== undefined) return terminal;
+    }
+    // A job committed to the Vet terminal with no terminal left to advance
+    // (for example a crash before its material was written) must not wait on
+    // agreement readiness, which only reports the conflict as pending.
+    try {
+      if (loadDacsPreAgreementPhaseV1(context, operation.order) === "vet-terminal") {
+        return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+      }
+    } catch (error) {
+      return operatorUnlessBusy(context, delay, error, error instanceof DacsPreAgreementPhaseError
+        ? error.reasonCode : "pre-agreement-phase-unavailable");
     }
     let retained: Readonly<DacsLiveOrderInputV1>;
     let buyerRequirement: Readonly<BundleRequirement>;
     try {
       retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       buyerRequirement = await options.resolveBuyerRequirement({ operation, retained });
-      if (!isBundleRequirement(buyerRequirement) || buyerRequirement.required.length !== 0 ||
-          (buyerRequirement.oneOf?.length ?? 0) !== 0) {
+      if (!isBundleRequirement(buyerRequirement) ||
+          (buyerRequirement.required.length !== 0 ||
+            (buyerRequirement.oneOf?.length ?? 0) !== 0)) {
         throw new Error();
       }
     } catch {
@@ -595,15 +1132,80 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         ? operator("seller-session-challenge-rejected")
         : pending(context, delay, "seller-session-presentation-pending");
     }
-    const buyerVet = await produceDacsEmptyRequirementSessionVetV1({
-      context,
-      operation,
-      evaluatedIdentity: presentation.buyerIdentity,
-      requirement: buyerRequirement,
-    });
+    let buyerVetInvokedAt: number;
+    try {
+      buyerVetInvokedAt = retainVetInvocation(
+        context,
+        operation,
+        "buyer",
+        presentation.buyerIdentity.presentedBy,
+      );
+    } catch (error) {
+      return operatorUnlessBusy(context, delay, error, "seller-session-buyer-vet-invocation-invalid");
+    }
+    let buyerVet: Readonly<DacsSessionVetProductionOutcomeV1>;
+    try {
+      buyerVet = await vet.produce({
+        context,
+        operation,
+        evaluatedIdentity: presentation.buyerIdentity,
+        requirement: buyerRequirement,
+      });
+    } catch {
+      return pending(
+        context,
+        delay,
+        "seller-session-buyer-vet-producer-unavailable",
+        "indeterminate",
+      );
+    }
     const vetResult = vetProgress(context, delay, buyerVet);
     if (vetResult !== undefined) return vetResult;
     if (buyerVet.status !== "ready") return operator("seller-session-buyer-vet-invalid");
+    const buyerAuthentication = await authenticateProducedVet(vet, {
+      context,
+      jobId: operation.order.jobId,
+      evaluatedIdentity: presentation.buyerIdentity,
+      requirement: buyerRequirement,
+      verifier: context.authority,
+      production: buyerVet.production,
+    });
+    if (buyerAuthentication === "invalid") {
+      return operator("seller-session-buyer-vet-invalid");
+    }
+    if (buyerAuthentication === "indeterminate") {
+      return pending(
+        context,
+        delay,
+        "seller-session-buyer-vet-pending",
+        "indeterminate",
+      );
+    }
+    if (terminalVetDecision(buyerVet.production.record.overallDecision)) {
+      return await finalizeLocalVetFailure(
+        options.terminalBundle,
+        context,
+        delay,
+        {
+          operation,
+          retained,
+          buyerIdentity: presentation.buyerIdentity,
+          sellerIdentity: challenge.sellerIdentity,
+          evaluatedRole: "buyer",
+          production: buyerVet.production,
+          vetInvokedAt: buyerVetInvokedAt,
+        },
+      );
+    }
+    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation, {
+      operation, retained, buyerIdentity: presentation.buyerIdentity, sellerIdentity: challenge.sellerIdentity,
+      evaluatedRole: "buyer", production: buyerVet.production, vetInvokedAt: buyerVetInvokedAt,
+    });
+    if (passed !== undefined) return passed;
+    if (buyerRequirement.required.length !== 0 ||
+        (buyerRequirement.oneOf?.length ?? 0) !== 0) {
+      return operator("seller-session-audit-requirements-unsupported");
+    }
     let admission = options.sessionBootstrap.resolveAdmission(operation);
     if (admission === undefined) {
       admission = Object.freeze({
@@ -642,6 +1244,8 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
     } catch {
       return pending(context, delay, "seller-agreement-proposal-pending");
     }
+    const phaseConflict = claimAgreementPhase(context, delay, operation);
+    if (phaseConflict !== undefined) return phaseConflict;
     try {
       return await options.agreement(operation);
     } catch {

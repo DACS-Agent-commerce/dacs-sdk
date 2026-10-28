@@ -13,7 +13,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DACS_NODE_LIVE_PROFILE,
+  createDacsFixedPriceMultirailBuyerLiveV1,
+  createDacsFixedPriceMultirailSellerLiveV1,
+  createDacsFixedPricePayDemBuyerLiveV1,
+  createDacsFixedPricePayDemSellerLiveV1,
+  createDacsFixedPriceX402BuyerLiveV1,
+  createDacsFixedPriceX402SellerLiveV1,
   createDacsLiveRoleRuntimeV1,
+  createDacsSessionProfileGatedCommerceGraphV1,
   runDacsRoleTransportDiagnosticV1,
   type DacsDemosAdapterV1,
 } from "../src/index.js";
@@ -356,6 +363,90 @@ describe("complete role-owned live runtime", () => {
       }) as never,
     })).rejects.toMatchObject({ reasonCode: "role-commerce-graph-invalid" });
   });
+
+  // The generated one-click service builds its graph from the real live
+  // factories, which refuse to build without session profile admission.
+  const liveFactoryGraph = (rails: "x402" | "pay-dem" | "both") =>
+    (context: Parameters<typeof createDacsFixedPriceX402BuyerLiveV1>[0]["context"]) => {
+      const options = { context } as never;
+      if (context.role === "buyer") {
+        return rails === "x402" ? createDacsFixedPriceX402BuyerLiveV1(options)
+          : rails === "pay-dem" ? createDacsFixedPricePayDemBuyerLiveV1(options)
+          : createDacsFixedPriceMultirailBuyerLiveV1({ x402: options, payDem: options });
+      }
+      return rails === "x402" ? createDacsFixedPriceX402SellerLiveV1(options)
+        : rails === "pay-dem" ? createDacsFixedPricePayDemSellerLiveV1(options)
+        : createDacsFixedPriceMultirailSellerLiveV1({ x402: options, payDem: options });
+    };
+
+  function gatedRuntimeOptions(
+    role: "buyer" | "seller",
+    rails: "x402" | "pay-dem" | "both",
+    createCommerceGraph: (context: never) => unknown,
+  ) {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
+    const roleConfig = rails === "x402" ? config(directory, role)
+      : rails === "pay-dem" ? payDemConfig(directory, role) : bothConfig(directory, role);
+    return {
+      config: roleConfig,
+      role,
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: `${role}-${rails}-gated-worker`,
+      demosIdentityFilePath: secretPath,
+      ...(rails === "pay-dem" ? {} : {
+        evmPrivateKeyFilePath: evmSecretPath,
+        evmRpcUrl: "http://127.0.0.1:8545",
+      }),
+      createDemosAdapter: async () => ({ ...adapter(), getAddress: vi.fn(() => wallet) }),
+      createPayDemRail: async () => ({ address: wallet, settle: vi.fn() }),
+      createCommerceGraph: createCommerceGraph as never,
+      server: { hostname: "127.0.0.1", port: 0 },
+    };
+  }
+
+  it("fails to start when the live factories build without session profile admission", async () => {
+    // The factory's TypeError surfaces as an unexplained service-create failure.
+    await expect(createDacsLiveRoleRuntimeV1(gatedRuntimeOptions(
+      "buyer", "x402", liveFactoryGraph("x402") as never,
+    ))).rejects.toMatchObject({ reasonCode: "role-service-create-failed" });
+  });
+
+  for (const role of ["buyer", "seller"] as const) {
+    for (const rails of ["x402", "pay-dem", "both"] as const) {
+      it(`starts a ${role} ${rails} service with commerce blocked while the profile is unreleased`, async () => {
+        const build = vi.fn(liveFactoryGraph(rails));
+        const authenticateSessionProfile = vi.fn(() => {
+          throw new Error("admission must not be asked while the profile is unreleased");
+        });
+        for (const admission of [{}, { authenticateSessionProfile }]) {
+          const runtime = await createDacsLiveRoleRuntimeV1({
+            ...gatedRuntimeOptions(role, rails,
+              createDacsSessionProfileGatedCommerceGraphV1(build as never) as never),
+            ...admission,
+          });
+          try {
+            await runtime.start();
+            expect((await runtime.service.status()).commerce).toEqual({
+              status: "blocked", reasonCode: "session-profile-unreleased",
+            });
+            expect(runtime.service.coordinator.profiles).toEqual(
+              rails === "both" ? ["x402", "pay-dem"] : [rails]);
+          } finally {
+            await runtime.stop();
+          }
+        }
+        expect(build).not.toHaveBeenCalled();
+        expect(authenticateSessionProfile).not.toHaveBeenCalled();
+      });
+    }
+  }
 
   it("opens one wallet/store/service authority and gates HTTP on its signed latch", async () => {
     const directory = root();

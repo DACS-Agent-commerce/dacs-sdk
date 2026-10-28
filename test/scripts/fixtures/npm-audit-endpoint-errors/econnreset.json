@@ -1,0 +1,7 @@
+{
+  "message": "request to http://127.0.0.1:41921/-/npm/v1/security/audits/quick failed, reason: read ECONNRESET",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}
