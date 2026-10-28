@@ -10,6 +10,40 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const runStages = (body: string, env: Record<string, string>) => spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c",
   `source scripts/registry-container-registry.sh\n${body}`], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", ...env } });
 
+describe("registry network isolation", () => {
+  it.each(["Linux", "Darwin"])("keeps consumers and the image builder off the %s host network", platform => {
+    const log = join(scratch(), "commands");
+    const result = runStages(`
+uname() { echo "$platform"; }
+pull_bounded() { :; }
+docker() {
+  printf '%s\\n' "$*" >> "$log"
+  if [ "$1" = inspect ]; then echo 49152; fi
+}
+start_registry
+printf '%s\\n' "$consumer_registry" "\${consumer_network_args[*]}" "\${build_network_args[*]}"`, {
+      platform, log, registry_log: join(scratch(), "registry.log"), registry_config: "/fixture/config.yaml",
+      registry_network: "fixture-network", registry_container: "fixture-registry",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("http://fixture-registry:4873\n--network fixture-network\n");
+    expect(result.stdout).toContain("--builder fixture-network --load --network default");
+    const commands = readFileSync(log, "utf8");
+    expect(commands).toContain("buildx create --name fixture-network --driver docker-container --driver-opt network=fixture-network");
+    expect(commands).toContain("--publish 127.0.0.1::4873");
+    expect(commands + result.stdout).not.toMatch(/--network host|host-gateway|host\.docker\.internal/);
+  });
+
+  it("requires Buildx before creating resources", () => {
+    const result = runStages(`
+pull_bounded() { echo unexpected-pull; }
+docker() { [ "$1 $2" != "buildx version" ] || return 42; echo unexpected-resource; }
+start_registry`, { registry_network: "fixture", registry_container: "fixture", registry_log: "/dev/null", registry_config: "/fixture/config" });
+    expect(result.status).toBe(42);
+    expect(result.stdout).not.toMatch(/unexpected/);
+  });
+});
+
 function verdaccioConfig() {
   const path = join(scratch(), "verdaccio.yaml");
   const result = runStages("write_registry_config", { registry_config: path });
