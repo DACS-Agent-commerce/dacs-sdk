@@ -1310,6 +1310,7 @@ test('an accepted Deliverable CREATE the node dropped and another write of the w
   for (const claim of [1, 2]) {
     const held = await p.claim(tx);
     assert.equal(held.delivery?.status, 'held', `claim ${claim}: ${shown(held)}`);
+    assert.match(held.delivery.reason, /can no longer be executed/, `claim ${claim}: the journal\'s supersession cause is kept`);
   }
   assert.equal(w.effects.deliverySigned.length, 1, 'never signed a second time');
   assert.equal(w.createsAt(deliverable), 0, 'nothing landed');

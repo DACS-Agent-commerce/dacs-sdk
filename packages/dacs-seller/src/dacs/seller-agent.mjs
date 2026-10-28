@@ -1060,7 +1060,20 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // The journal's bounded cause is kept with the held outcome: a refused or
     // timed-out broadcast, or a supersession, is told apart from a lost answer.
     const cause = typeof answer?.reason === 'string' && answer.reason ? `: ${answer.reason.slice(0, 240)}` : '';
-    if (answer?.status === 'unsigned') return { status: 'unsigned', reason: typeof answer.reason === 'string' ? answer.reason.slice(0, 240) : undefined };
+    if (answer?.status === 'unsigned') {
+      // A supersession reason is a fact of the chain read that proved the row
+      // cannot land; once the row is superseded every later question about it
+      // answers only that nothing is live. Keep the first cause with the
+      // submission record, for the one CREATE it names, so the held outcome
+      // keeps saying why (it authorizes nothing).
+      const retained = session.deliveryJournalUnsigned, reason = typeof answer.reason === 'string' ? answer.reason.slice(0, 240) : undefined;
+      if (typeof answer.txHash === 'string' && reason) {
+        if (retained?.txHash === answer.txHash && typeof retained.reason === 'string') return { status: 'unsigned', reason: retained.reason };
+        session.deliveryJournalUnsigned = { txHash: answer.txHash, reason };
+        persist(session);
+      }
+      return { status: 'unsigned', reason };
+    }
     if (['rebroadcast', 'pending', 'applied'].includes(answer?.status)) return { status: 'held', reason: `the kept signed Deliverable CREATE was answered ${answer.status}; its readback is awaited${cause}` };
     return { status: 'held', reason: 'the wallet journal answered no known status for the Deliverable CREATE' };
   }
@@ -1227,6 +1240,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if(answer.status==='absent'&&deliverableJournal&&(session.deliverySubmitted??[]).includes(input.fulfilmentId)){
             const asked=await askDeliverableJournal(session,work,input.fulfilmentId);
             if(asked.status!=='unsigned')return{status:'pending',reason:asked.reason};
+            // The journal proved why nothing it signed can still land (superseded
+            // under the nonce rule): keep that cause in the held outcome, while
+            // the absence itself is unchanged and authorizes nothing by itself.
+            if(asked.reason)answer={...answer,reason:asked.reason};
           }
           if(answer.status==='complete'){
             // A consumed permit can reconcile before the submission WAL is
@@ -1317,7 +1334,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
           if (read?.status === 'absent' && deliverableJournal) {
             const asked = await askDeliverableJournal(session, work, input.fulfilmentId);
-            return asked.status === 'unsigned' ? { status: 'absent', reason: 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
+            return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason ?? 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
           }
           if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
           if (!reportMatches(read.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
