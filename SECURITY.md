@@ -169,21 +169,18 @@ WebSocket transport — an app already running a full chain stack with these dep
   closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
-- **Registry/container consumer acceptance** audits the generated one-click
-  consumer's whole tree by advisory ID against
-  `scripts/registry-container-audit-baseline.json`. On pull requests an advisory
-  ID outside that baseline is a warning and a step-summary line, unless npm
-  reports it at high or critical severity on a direct dependency of the
-  consumer: that fails pull requests too. The scheduled
-  `Registry consumer advisory-ID drift` job and manual runs fail closed on an
-  unlisted ID until it is reviewed. An ID recorded in `assessedAdvisories` with
-  its transitive reachability assessment does not block acceptance; a direct
-  high or critical advisory always blocks, including one in the #191 baseline.
-  CI independently rechecks exit 4, which permits recorded baseline findings
-  or the advisory warning allowed only for pull requests. This acceptance
-  workflow does not publish packages. Publication configuration is documented
-  in `docs/npm-prerelease-release.md`. Production publication stays blocked by
-  #191 until its baseline findings are resolved.
+- **Registry/container consumer acceptance** audits the generated consumer's
+  current production dependencies (`npm audit --omit=dev`) by advisory ID against
+  `scripts/registry-container-audit-baseline.json`. On non-enforcing pull requests,
+  unlisted IDs warn and are recorded in the step summary. Scheduled drift checks,
+  manual runs and callers enforcing drift fail on unlisted IDs. Direct high or
+  critical advisories always block, including listed or assessed IDs; transitive
+  assessments follow the reachability policy above.
+  CI waives exit 4 only when this run's summary independently classifies as 4
+  under the same caller policy. Missing, interrupted or inconsistent evidence,
+  failed generated tests and independent policy failures remain blocking.
+  Acceptance records evidence and replay fixtures after failures; it does not
+  publish packages.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.

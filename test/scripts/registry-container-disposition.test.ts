@@ -120,7 +120,7 @@ function runBash(args: string[], options: { cwd: string; env: Record<string, str
 // exits with the acceptance status. `event` is the run's GITHUB_EVENT_NAME;
 // `stepSummary` is GITHUB_STEP_SUMMARY's contents afterwards.
 function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAudit = false,
-  stepName = "Run registry-shaped Linux and Docker acceptance", event = "pull_request") {
+  stepName = "Run registry-shaped Linux and Docker acceptance", event = "pull_request", priorSummary?: unknown) {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-step-"));
   scratch.push(directory);
   const checkout = join(directory, "checkout");
@@ -128,9 +128,13 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   cpSync(join(repoRoot, "scripts"), join(checkout, "scripts"), { recursive: true });
   // The disposition reads the release version from the checkout's manifest.
   writeFileSync(join(checkout, "package.json"), readFileSync(join(repoRoot, "package.json")));
+  if (priorSummary !== undefined) {
+    mkdirSync(join(checkout, "registry-container-artifacts"));
+    writeFileSync(join(checkout, "registry-container-artifacts/acceptance-summary.json"), JSON.stringify(priorSummary));
+  }
   const write = summary === undefined ? "" : [
     "mkdir -p registry-container-artifacts",
-    `cat > registry-container-artifacts/acceptance-summary.json <<'JSON'\n${JSON.stringify(summary)}\nJSON`,
+    `cat > registry-container-artifacts/acceptance-summary.json <<'JSON'\n${typeof summary === "string" ? summary : JSON.stringify(summary)}\nJSON`,
   ].join("\n");
   const PATH = stubBin(directory, { npm: `${write}\nexit ${acceptanceExitCode}` });
   // The drift step runs after acceptance has (or has not) written the summary.
@@ -142,7 +146,7 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   const result = runBash(["-e", "-c", workflowStepScript(stepName)], {
     cwd: checkout, env: { ENFORCE_AUDIT_DRIFT: String(strictAudit), GITHUB_EVENT_NAME: event, GITHUB_STEP_SUMMARY, PATH },
   });
-  return { ...result, stepSummary: readFileSync(GITHUB_STEP_SUMMARY, "utf8") };
+  return { ...result, checkout, stepSummary: readFileSync(GITHUB_STEP_SUMMARY, "utf8") };
 }
 const runDriftStep = (summary?: unknown, strictAudit = false) =>
   runWorkflowStep(0, summary, strictAudit, "Check advisory-ID drift");
@@ -257,13 +261,13 @@ describe("registry/container pull_request job", () => {
   it("does not fail a pull request for audit findings within the recorded #191 baseline", () => {
     const result = runWorkflowStep(4, baselineOnlySummary());
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(result.stdout).toContain("::warning title=Registry/container policy warning::");
   });
 
   it("fails an early exit 4 that wrote no acceptance summary", () => {
     const result = runWorkflowStep(4);
     expect(result.status).toBe(4);
-    expect(result.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    expect(result.stdout).not.toContain("::warning title=Registry/container policy warning::");
     expect(result.stdout).toContain("::error title=Registry/container acceptance failed::");
   });
 
@@ -275,7 +279,7 @@ describe("registry/container pull_request job", () => {
   ])("fails exit 4 when the summary records %s", (_label, summary) => {
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(4);
-    expect(result.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    expect(result.stdout).not.toContain("::warning title=Registry/container policy warning::");
   });
 
   it.each([1, 2, 3])("still fails the job on acceptance exit %i", (code) => {
@@ -283,9 +287,30 @@ describe("registry/container pull_request job", () => {
   });
 
   it("passes when acceptance passes", () => {
-    expect(runWorkflowStep(0).status).toBe(0);
+    const summary = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    Object.assign(summary.audit, { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 });
+    summary.audit.observedAdvisories = [];
+    summary.securityGate.auditExitCode = 0;
+    expect(runWorkflowStep(0, summary).status).toBe(0);
   });
 
+  it("refuses existing evidence before producer launch and preserves its contents", () => {
+    const summary = baselineOnlySummary();
+    const result = runWorkflowStep(4, undefined, false, undefined, "pull_request", summary);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("Existing evidence requires a fresh checkout");
+    expect(JSON.parse(readFileSync(join(result.checkout, "registry-container-artifacts/acceptance-summary.json"), "utf8"))).toEqual(summary);
+  });
+  it.each([
+    ["missing", undefined], ["malformed JSON", "{"], ["empty", ""],
+    ["oversized", "x".repeat(16 * 1024 * 1024 + 1)],
+    ["wrong version", { ...baselineOnlySummary(), packageVersion: "0.0.0" }],
+    ["interrupted", { ...baselineOnlySummary(), complete: false }],
+  ])("blocks successful producer status with %s evidence", (_name, summary) => {
+    expect(runWorkflowStep(0, summary).status).not.toBe(0);
+    expect(runWorkflowStep(4, summary).status).toBe(4);
+  });
   it("checks drift, publishes the summary and uploads evidence even after acceptance fails", () => {
     // Without always(), Actions' default success() would skip drift whenever
     // acceptance exits 3, which masked drift in round 4.
@@ -303,12 +328,19 @@ describe("registry/container workflow wiring", () => {
   it("runs pull-request acceptance when either workflow or the gate's scripts change", () => {
     const paths = /\n  pull_request:\n    paths:\n((?: {6}- .+\n)+)/.exec(acceptance)?.[1]?.split("\n")
       .map((line) => line.trim().replace(/^- "(.*)"$/, "$1")).filter(Boolean) ?? [];
-    expect(paths).toEqual(expect.arrayContaining([".github/workflows/registry-container-acceptance.yml",
-      ".github/workflows/registry-container-audit-drift.yml", "scripts/registry-container-disposition.mjs", "scripts/sync-vectors.mjs",
-      "scripts/registry-container-audit-baseline.json", "scripts/verify-registry-container-consumer.sh",
-      "scripts/acceptance-evidence-io.mjs", "scripts/bounded-build.mjs", "scripts/bounded-command.mjs",
-      "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh", "scripts/bounded-http.sh", "scripts/http-json-limits.mjs",
-      "scripts/acceptance-seal.mjs", "scripts/registry-container-registry.sh"]));
+    const changedInputs = [".github/workflows/registry-container-acceptance.yml",
+      ".github/workflows/registry-container-audit-drift.yml", "package.json", "package-lock.json",
+      "scripts/check-npm-advisories.mjs", "scripts/installation-closure.mjs", "scripts/installation-archive-worker.mjs",
+      "scripts/reference-installation.mjs", "scripts/acceptance-directory.mjs", "scripts/acceptance-seal.mjs",
+      "scripts/registry-container-registry.sh", "scripts/sync-vectors.mjs", "src/index.ts", "packages/dacs-node/src/index.ts",
+      "packages/create-dacs-agent/src/index.ts", "test/scripts/registry-container-disposition.test.ts",
+      "tsconfig.json", "tsconfig.build.json", "vitest.config.ts"];
+    const matches = (path: string, pattern: string) => new RegExp("^" + pattern.split("*")
+      .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$").test(path);
+    for (const input of changedInputs) expect(paths.some(pattern => matches(input, pattern)), input).toBe(true);
+    for (const input of ["README.md", "packageXjson", "tsconfig-buildXjson"]) {
+      expect(paths.some(pattern => matches(input, pattern)), input).toBe(false);
+    }
   });
 
   it("has the scheduled drift workflow call acceptance with drift enforced", () => {
@@ -326,7 +358,7 @@ describe("registry/container workflow wiring", () => {
     // is set nowhere but the acceptance step, which never warns when it is true.
     expect(/\n  workflow_call:\n((?: {4}.+\n)+)/.exec(acceptance)?.[1])
       .toBe("    inputs:\n      enforce-audit-drift:\n        type: boolean\n        default: false\n");
-    expect(acceptance.match(/DACS_UNLISTED_ADVISORIES/g)).toHaveLength(2);
+    expect(acceptance).toContain("bash scripts/acceptance-ci.sh acceptance");
     expect(workflowStepLines("Run registry-shaped Linux and Docker acceptance").lines.join("\n"))
       .toContain("ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}");
     const summary = baselineOnlySummary();
@@ -337,7 +369,7 @@ describe("registry/container workflow wiring", () => {
       for (const status of [3, 4]) {
         const result = runWorkflowStep(status, summary, true, undefined, event);
         expect(result.status).toBe(status);
-        expect(result.stdout).not.toContain("::warning title=#191 security gate blocked::");
+        expect(result.stdout).not.toContain("::warning title=Registry/container policy warning::");
         expect(result.stdout).not.toContain("::warning title=Advisory IDs outside the #191 baseline::");
       }
     }
@@ -1507,7 +1539,7 @@ describe("advisory-ID baseline", () => {
       expect(claimed.status).toBe(4);
       expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
       expect(claimed.stdout).toContain(unlisted[0]);
-      expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+      expect(claimed.stdout).not.toContain("::warning title=Registry/container policy warning::");
     }
     const warned = registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" });
     expect(warned).toMatchObject({ exitCode: 4, failureClass: "policy", unlistedAdvisories: unlisted,
@@ -1518,7 +1550,7 @@ describe("advisory-ID baseline", () => {
     expect(pullRequest.status).toBe(0);
     expect(pullRequest.stdout).toContain(`::warning title=Advisory IDs outside the #191 baseline::${unlisted.join(", ")}. ` +
       "Pull requests only warn; the scheduled drift job and release paths fail");
-    expect(pullRequest.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(pullRequest.stdout).toContain("::warning title=Registry/container policy warning::");
     // A baseline-only disposition (exit 4) is no error annotation.
     expect(pullRequest.stdout).not.toContain("::error title=Registry/container acceptance");
     expect(pullRequest.stepSummary).toBe("- Advisory IDs outside the #191 baseline (warning on this pull request; the " +
@@ -1603,7 +1635,7 @@ describe("advisory-ID baseline", () => {
       checks: { audit: "baseline" } });
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(result.stdout).toContain("::warning title=Registry/container policy warning::");
     expect(result.stdout).not.toContain("::warning title=Advisory IDs outside the #191 baseline::");
     expect(result.stepSummary).toBe("");
     expect(runWorkflowStep(4, summary, false, undefined, "schedule").status).toBe(0);
@@ -2132,6 +2164,8 @@ describe("runtime-image package inventory", () => {
   it("assembles disposition fixtures with the inventory from a run's evidence", () => {
     const checkout = mkdtempSync(join(tmpdir(), "dacs-registry-fixtures-"));
     scratch.push(checkout);
+    cpSync(join(repoRoot, "scripts"), join(checkout, "scripts"), { recursive: true });
+    writeFileSync(join(checkout, "package.json"), readFileSync(join(repoRoot, "package.json")));
     const evidence = join(checkout, "registry-container-artifacts");
     mkdirSync(evidence);
     for (const name of readdirSync(b7b180f)) {

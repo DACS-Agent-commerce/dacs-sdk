@@ -776,6 +776,8 @@ describe("pinned npm loader", () => {
 
   it("pins the same npm version the acceptance workflow installs", () => {
     const workflow = readFileSync(".github/workflows/registry-container-acceptance.yml", "utf8");
-    expect(workflow).toContain(`timeout 900 npm install --global --ignore-scripts --no-audit npm@${PINNED_ACCEPTANCE_NPM_VERSION}`);
+    expect(workflow).toContain("run_bounded node scripts/acceptance-bootstrap.mjs");
+    const bootstrap = readFileSync("scripts/acceptance-bootstrap.mjs", "utf8");
+    expect(bootstrap).toContain(`version: "${PINNED_ACCEPTANCE_NPM_VERSION}"`);
   });
 });
