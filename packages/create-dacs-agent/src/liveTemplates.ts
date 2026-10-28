@@ -674,6 +674,18 @@ function decimalAtMost(value: string, ceiling: string): boolean {
   return units(left) <= units(right);
 }
 
+// True when value <= first + second; all three are non-negative decimals.
+function decimalAtMostSum(value: string, first: string, second: string): boolean {
+  const parts = [value, first, second].map(canonicalizeDecimal);
+  if (parts.some((part) => part.startsWith("-"))) return false;
+  const scale = Math.max(...parts.map((part) => part.split(".")[1]?.length ?? 0));
+  const [left, a, b] = parts.map((input) => {
+    const [whole, fraction = ""] = input.split(".");
+    return BigInt(whole! + fraction.padEnd(scale, "0"));
+  });
+  return left! <= a! + b!;
+}
+
 async function x402FacilitatorSupported(url: string): Promise<unknown> {
   // The non-literal optional import keeps DEM-only generated projects free of
   // x402 packages while retaining an exact runtime capability check when x402
@@ -1568,12 +1580,19 @@ function baseProbes(
               const result = await selectedListing();
               if (result.status !== "verified") return result;
               const amount = listingPriceAmount(result.admission.listing);
-              return amount !== undefined &&
-                  decimalAtMost(amount, payDemCost.maximumTotalDebitDem) &&
-                  decimalAtMost(payDemCost.maximumTotalDebitDem,
-                    configuredMaximumPayDemTotalDebit())
+              if (amount === undefined ||
+                  !decimalAtMost(amount, payDemCost.maximumTotalDebitDem) ||
+                  !decimalAtMost(payDemCost.maximumTotalDebitDem,
+                    configuredMaximumPayDemTotalDebit())) {
+                return fail("pay-dem-total-debit-invalid");
+              }
+              // The wallet reservation allows total debit minus price as the
+              // network fee, and the wallet policy refuses any fee above the
+              // buyer's Demos fee limit, so refuse that plan before it starts.
+              return decimalAtMostSum(payDemCost.maximumTotalDebitDem, amount,
+                  loadRoleConfig("buyer").limits.maxDemosNetworkFeeDem)
                 ? pass({ maximumTotalDebitDem: payDemCost.maximumTotalDebitDem })
-                : fail("pay-dem-total-debit-invalid");
+                : fail("pay-dem-total-debit-exceeds-network-fee-limit");
             } catch { return blocked("pay-dem-cost-estimate-unavailable"); }
           },
   });
