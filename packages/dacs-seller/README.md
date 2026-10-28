@@ -485,8 +485,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   answer that is not a hash, a presence-only requirement is refused; a reader
   that fails or times out makes the check indeterminate.
   A requirement with a required verified claim replays only through the
-  operator's optional `sessionAdmission.vetEvidence`, five readers that each
-  also receive `{ jobId, role, party }`: `resolveContent({ anchor, contentHash })`
+  operator's optional `sessionAdmission.vetEvidence`, five required readers and
+  an optional sixth that each also receive `{ jobId, role, party }`:
+  `resolveContent({ anchor, contentHash })`
   answers `null`, `{ encoding: 'canonical-json', value }` or
   `{ encoding: 'bytes', value }` (base64url) for a VerifyResult or its
   authority content; `resolveRecipe({ scheme, method, recipeVersion })` the
@@ -495,17 +496,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
   signature })` and `isVerifyResultSignerAuthorized({ result, signature,
   expected })` answer `true` only for a signer the operator trusts; and
   `verifyAuthorityAttestation({ result, expected, recipe, content })` answers
-  `'valid'`, `'invalid'` or `'unresolved'`. The SDK still hashes each content
+  `'valid'`, `'invalid'` or `'unresolved'`. A claim that omits `recipeVersion`
+  selects the family's latest live version under DACS-2 §7.4.3, so it also
+  needs `resolveLatestRecipe({ scheme, method, required })`, which answers the
+  operator's authenticated session registry selection
+  `{ sessionRecipeRegistrySnapshotHash, recipeVersion }` (or `null`); the
+  result's pinned version must equal it, and every such claim in one replay
+  must resolve against one snapshot pin. Without that reader an unpinned
+  claim is refused rather than guessed. The SDK still hashes each content
   against its reference, verifies both signatures, re-derives a
-  `ClaimRequirement.parameters` predicate and recomputes the aggregation. A
-  verified claim must pin `recipeVersion`: this seller's evidence contract has
-  no authenticated session registry snapshot, so it cannot prove that an
-  implicit version is the family's latest (DACS-2 §7.4.3) and refuses it. Each
+  `ClaimRequirement.parameters` predicate and recomputes the aggregation. Each
   read has the 64 KiB, value, list and 10 s limits of the
   other admission readers, and one replay has a 30 s total deadline that also
   aborts the read in flight; a reader
   that throws, stalls, rejects with `undefined` or answers too much makes the
-  proposal `indeterminate` with that cause. Without `vetEvidence`, a
+  proposal `indeterminate` with that cause, while a malformed content reply
+  rejects the Vet record with its cause. Without `vetEvidence`, a
   requirement with a required verified claim
   is refused. Otherwise the Agreement is not signed, before any
   payment. A session

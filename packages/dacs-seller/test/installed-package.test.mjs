@@ -19,7 +19,7 @@ const ENTRY_MODULES = ['src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-co
 // Operator-side sources that need the operator's wallet, journal or custody.
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs', 'src/devnet-demo/seller-write-batch.mjs'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
-  'contributionVerifier', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
+  'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
   'createSellerTransportServerAuth', 'createSellerTransportStore', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 
 test('every executable seller test has one complete CLI and CI entry',()=>{
