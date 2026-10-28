@@ -318,3 +318,15 @@ test('the retained Listing admission never records a revocation reading',async t
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{const context=state.context();assert.equal(context.validation.disposition,'verified');assert.equal(Object.hasOwn(context.validation,'revocation'),false,'the construction check is not a revocation reading');}finally{state.close();}
 });
+// A close during the live revocation read must not let the issuance settle:
+// the nonce is not retained and the caller sees the same coded refusal as any
+// other operation on a closed agent.
+test('a close during the live revocation read refuses the issuance',async t=>{
+ const f=fixture(t);let release;const gate=new Promise(resolve=>{release=resolve;});
+ f.admission.readRevocationWith(()=>gate);
+ const agent=await f.open();t.after(()=>agent.close());
+ const pending=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});
+ agent.close();
+ release([{kind:'catalog',status:'active',readStatus:'ok',catalogObservedAt:NOW}]);
+ await assert.rejects(pending,error=>error.code==='seller_closed'&&error.status===503);
+});
