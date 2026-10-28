@@ -211,6 +211,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // Capabilities must bound wire bytes before decoding. Independently bound
   // their returned representation and deadline, including a stalled callback.
   const callCounterparty = async(method,input)=>{
+    if(!counterpartyReady())fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
     const controller=new AbortController(),maxBytes=65536,timeoutMs=10000;
     let timer;
     try{
@@ -231,19 +232,31 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     {jobId,evaluatedParty:bundle.presentedBy,bundleHash:identityBundleHash(bundle),requirement,verifier:authority,freshness:[],dealSpecific:[]},
     {nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,
       resolvePublicKey:signature=>sameCanonicalClaimIdentity(signature.signer,authority)?authority:null,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
-  const validReceipt = async (read,logicalAddress,artifact,authority) => read?.status==='present'
+  const validReceipt = async (read,logicalAddress,artifact,authority,{fresh=false}={}) => read?.status==='present'
     && read.receipt?.state==='finalized' && read.receipt?.observationDisposition==='established'
-    && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority})==='valid';
+    && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority,fresh})==='valid';
   const unattempted=(read,request)=>read?.status==='unattempted'
     && sameCanonicalClaimIdentity(read.issuer,request.buyer) && read.jobId===request.jobId
     && read.bundleHash===identityBundleHash(request.identityBundle)
     && read.requirementHash===sha256Hex(canonicalize(request.requirement));
+  // The buyer's ledger answers indeterminate while another provider has
+  // consumed the challenge but has not retained its result yet. Retry that
+  // authoritative read over a bounded interval instead of losing the race;
+  // any record it returns is still strictly verified by the caller.
+  const READ_POLL_MS=25,READ_POLL_ATTEMPTS=40;
+  async function readRecordSettled(request) {
+    for(let attempt=1;;attempt+=1){
+      const read=await callCounterparty('readRecord',request);
+      if(read?.status!=='indeterminate'||attempt>=READ_POLL_ATTEMPTS)return read;
+      await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
+    }
+  }
   async function sellerSession(job) {
     let kept=(await state.read(job.jobId))?.presentation;
     let expired=null;
     if(kept&&!kept.bundle.presentation&&kept.challenge.expiresAt<=now()){
       const request={jobId:job.jobId,buyer:job.binding.buyerIdentityBundle.presentedBy,seller:wallet.claim,identityBundle:kept.bundle,requirement:SELLER_REQUIREMENT};
-      if(!unattempted(await callCounterparty('readRecord',request),request))fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
+      if(!unattempted(await readRecordSettled(request),request))fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
       expired=kept;kept=null;
     }
     if(!kept){
@@ -295,7 +308,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function evaluateOrReadRetained(request) {
     try{return await callCounterparty('evaluate',request);}
     catch(error){
-      const retained=await callCounterparty('readRecord',request).catch(()=>null);
+      const retained=await readRecordSettled(request).catch(()=>null);
       if(retained?.status==='present')return retained.record;
       throw error;
     }
@@ -310,7 +323,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // Buyer retains its result before answering evaluate. A lost seller save
       // reads that result; only an exact, authoritative unattempted nonce may
       // start evaluation. Absence/unknown never authorizes another consumption.
-      const retained=await callCounterparty('readRecord',request);
+      const retained=await readRecordSettled(request);
       if(retained?.status==='present')record=retained.record;
       else if(unattempted(retained,request)){await authorizeEffect(job);record=await evaluateOrReadRetained(request);}
       else fail('seller_vet_reconciliation_required','the buyer nonce ledger has no authoritative outcome');
@@ -325,12 +338,22 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
     if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid')fail('seller_vet_invalid','retained seller Vet is not authenticated by the buyer');
     if(record.overallDecision!=='pass')return {refused:nonPass(record)};
-    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});
+    // The native anchor caches verified readbacks briefly, and that cache is
+    // per provider instance. Returning success on a repeat therefore needs a
+    // fresh read and a fresh receipt verification, not cached evidence.
+    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
       read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job)});
+      // A returned refusal and an unknown submission are different outcomes:
+      // keep the anchor's own reason and its retryable/terminal class.
+      if(read?.status!=='present'){
+        const outcome=writerCode(null,read),reason=oneLine(read?.reason??'no reason');
+        if(outcome==='indeterminate')fail('indeterminate',`seller Vet publication is not known yet: ${reason}`,read);
+        fail('seller_vet_receipt_invalid',`seller Vet publication was ${outcome}: ${reason}`,read);
+      }
     }
-    if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
+    if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority,{fresh:true}))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
     const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(record),signer:authority};
     rememberInvocation({evaluatedParty:wallet.claim,recordRef:clone(recordRef),receipt:clone(read.receipt),record:clone(record),strictStatus:strict.status});
     return {record,recordRef,identityBundle};
