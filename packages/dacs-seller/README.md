@@ -511,5 +511,7 @@ Setup derives the consumer graph from `package-lock.json`, packs this checkout,
 and installs the native SQLite binding. Tests use that prepared environment
 offline and run every executable seller file once. Root `npm test` runs the
 separate TypeScript suite. Existing unresolved stack failures still block a
-complete seller-suite pass. For another setup, pass a new empty directory to
-`seller:prepare -- <path>` and set `DACS_SELLER_SMOKE_DIR` to it for tests.
+complete seller-suite pass. For another setup, pass a directory to
+`seller:prepare -- <path>` and set `DACS_SELLER_SMOKE_DIR` to it for tests: a
+completed setup is reused, an interrupted or outdated one is rebuilt, and a
+directory that is not a seller consumer setup is never replaced.
