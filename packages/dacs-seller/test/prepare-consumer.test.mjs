@@ -83,6 +83,19 @@ test('an interrupted setup of ours is rebuilt and a foreign directory is never r
   assert.ok(!existsSync(join(foreign, 'prepared.json')));
 });
 
+test('a setup built for another Node ABI is rebuilt, not reused', (t) => {
+  const probe = fixture(t), directory = join(probe.base, 'consumer');
+  assert.equal(probe.run(directory).status, 0);
+  const markerPath = join(directory, 'prepared.json'), marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+  assert.equal(typeof marker.runtime, 'string');
+  marker.runtime = 'other-abi-other-platform-other-arch';
+  writeFileSync(markerPath, JSON.stringify(marker, null, 2) + '\n');
+  const before = probe.calls().length, rebuilt = probe.run(directory);
+  assert.equal(rebuilt.status, 0, rebuilt.stderr);
+  assert.equal(probe.calls().length - before, 3, 'the native binding is built for this runtime again');
+  assert.notEqual(JSON.parse(readFileSync(markerPath, 'utf8')).runtime, 'other-abi-other-platform-other-arch');
+});
+
 test('two setups of one directory both succeed with one prepared consumer', async (t) => {
   const probe = fixture(t), directory = join(probe.base, 'shared');
   const [first, second] = await Promise.all([probe.runSlow(directory), probe.runSlow(directory)]);

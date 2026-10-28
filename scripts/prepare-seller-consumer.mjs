@@ -33,10 +33,12 @@ function consumerLock(lock,manifest,core,seller,corePack,sellerPack){
  }
  return{name:manifest.name,version:manifest.version,lockfileVersion:3,requires:true,packages:Object.fromEntries(Object.entries(selected).sort(([a],[b])=>a.localeCompare(b)))};
 }
-// A finished setup for these exact sources and this exact lock.
+// The native SQLite binding is built for one Node ABI, platform and architecture.
+const runtimeKey=()=>process.versions.modules+'-'+process.platform+'-'+process.arch;
+// A finished setup for these exact sources, this exact lock and this runtime.
 function preparedAt(directory,fingerprint){
  try{const marker=json(join(directory,'prepared.json'));
-  return marker.sourceFingerprint===fingerprint&&marker.lockDigest===digest(readFileSync(join(directory,'package-lock.json')))&&existsSync(join(directory,'run.mjs'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs-seller/package.json'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs/package.json'));}catch{return false;}
+  return marker.runtime===runtimeKey()&&marker.sourceFingerprint===fingerprint&&marker.lockDigest===digest(readFileSync(join(directory,'package-lock.json')))&&existsSync(join(directory,'run.mjs'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs-seller/package.json'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs/package.json'));}catch{return false;}
 }
 // A directory this script completed or was interrupted while preparing.
 function ourSetup(directory){
@@ -56,7 +58,7 @@ function install(app,fingerprint){
  npm(['ci','--no-audit','--no-fund','--omit=optional','--foreground-scripts'],app);
  if(digest(readFileSync(join(app,'package-lock.json')))!==digest(text))throw new Error('consumer install changed the pinned graph');
  copyFileSync(join(root,'packages/dacs-seller/test/helpers/installed-seller-host.mjs'),join(app,'run.mjs'));
- writeFileSync(join(app,'prepared.json'),JSON.stringify({sourceFingerprint:fingerprint,lockDigest:digest(text),corePack,sellerPack},null,2)+'\n');
+ writeFileSync(join(app,'prepared.json'),JSON.stringify({runtime:runtimeKey(),sourceFingerprint:fingerprint,lockDigest:digest(text),corePack,sellerPack},null,2)+'\n');
 }
 function prepare(directory){
  const app=resolve(directory??defaultSellerConsumer);mkdirSync(dirname(app),{recursive:true});
