@@ -24,7 +24,9 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
   const authorityValue = { active: true };
   const authorityContent = authority === 'bytes'
     ? { encoding: 'bytes', value: Buffer.from('{"active":true}').toString('base64url'), hash: core.sha256Hex(Buffer.from('{"active":true}')) }
-    : { encoding: 'canonical-json', value: authorityValue, hash: core.sha256Hex(core.canonicalize(authorityValue)) };
+    : authority === 'empty-bytes'
+      ? { encoding: 'bytes', value: '', hash: core.sha256Hex(new Uint8Array(0)) }
+      : { encoding: 'canonical-json', value: authorityValue, hash: core.sha256Hex(core.canonicalize(authorityValue)) };
   const result = await sign({ resultVersion: '1', scheme: 'domain', identifier: 'alice.example', recipeVersion: 1, method: 'consensus-backed-proxy', decision: 'pass',
     reason: 'authority confirmed the claim', attestation: { anchor: { kind: 'https', locator: AUTHORITY_LOCATOR }, contentHash: authorityContent.hash, signer: resultSigner.claim },
     data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultSigner);
@@ -228,6 +230,11 @@ test('a canonical-json VerifyResult cannot exceed the decoded collection limits'
     const fixture = await verifiedClaimFixture({ data });
     await assert.rejects(fixture.replay(), RangeError);
   }
+});
+
+test('an empty raw authority attestation passes', async () => {
+  const fixture = await verifiedClaimFixture({ authority: 'empty-bytes' });
+  assert.equal(await fixture.replay({ evidence: { verifyAuthorityAttestation: async ({ content }) => (content.encoding === 'bytes' && content.value.length === 0 ? 'valid' : 'invalid') } }), null);
 });
 
 test('a parameterized required claim passes only when its exact parameters match the result', async () => {

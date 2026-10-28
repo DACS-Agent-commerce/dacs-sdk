@@ -328,12 +328,13 @@ function vetEvidenceReads(evidence, scope) {
 // (absent), canonical JSON, or base64url bytes. A VerifyResult returned as
 // bytes is decoded to the canonical JSON object the core re-hashes, under the
 // same value and list bounds a canonical-json reply receives; an authority
-// proof stays bytes so its byte hash is preserved.
+// proof stays bytes so its byte hash is preserved, and its empty value is a
+// legitimate (hashing to the empty digest) raw body.
 function vetEvidenceContent(reply, resultContent = false) {
   if (reply === null) return null;
   if (exactKeys(reply, ['encoding', 'value'])) {
     if (reply.encoding === 'canonical-json' && object(reply.value)) return reply;
-    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) {
+    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && (reply.value === '' ? !resultContent : isCanonicalBase64Url(reply.value))) {
       const value = Uint8Array.from(Buffer.from(reply.value, 'base64url'));
       if (!resultContent) return { encoding: 'bytes', value };
       let decoded;
