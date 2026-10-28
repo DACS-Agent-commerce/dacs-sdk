@@ -24,6 +24,7 @@ import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
+import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
 const deliveryStaged=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function runSdkDeliveryReady');
@@ -257,19 +258,22 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       : { disposition: 'absent', reason: 'TEST not anchored' }); } };
   // Seller CREATEs, by logical address; each is read back through the SR-2 adapter.
   const signedCreates = new Map(), written = new Map();
+  const finalized=finalizedCommitmentReader(node.reader,sellerKey);
   const readBack = async (logicalAddress, artifactKind, deliveryBinding) => {
     const signed = signedCreates.get(logicalAddress);
     if (!signed) return { status: 'absent', reason: 'TEST no seller CREATE at this address' };
-    const read = await node.reader.read(logicalAddress, { expectedWriter: sellerKey.claim, expectedArtifactKind: artifactKind, signedProjection: clone(signed),
+    const read = await (artifactKind==='FinalityCommitmentRecord'?finalized:node.reader).read(logicalAddress, { expectedWriter: sellerKey.claim, expectedArtifactKind: artifactKind, signedProjection: clone(signed),
       ...(deliveryBinding ? { expectedDeliveryBinding: deliveryBinding } : {}) });
     if (read.status !== 'present') return { status: read.status, reason: 'TEST seller CREATE did not read back' };
     return { status: 'present', artifact: read.artifact, receipt: read.receipt, txRef: { kind: 'demos', txHash: signed.hash, blockNumber: read.demosEvidence.blockNumber },
       signedProjection: clone(signed), demosEvidence: read.demosEvidence };
   };
+  const recordFinality=(logicalAddress,artifact,artifactKind)=>{if(artifactKind==='FinalityCommitmentRecord'){const signedProjection=signedCreates.get(logicalAddress),included=node.inclusion(signedProjection.hash);finalized.record({logicalAddress,artifact,signedProjection,blockRef:{id:core.sha256Hex('TEST-finalized-block:'+included.blockNumber),height:String(included.blockNumber),timestamp:included.includedAt}});}};
   const writeOnce = (logicalAddress, artifact, artifactKind, deliveryBinding) => {
     if (!signedCreates.has(logicalAddress)) {
       signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind, deliveryBinding }));
       written.set(logicalAddress, clone(artifact));
+      recordFinality(logicalAddress,artifact,artifactKind);
     }
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
@@ -281,6 +285,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
         effects.published.push(artifactKind);
         signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind }));
         written.set(logicalAddress, clone(artifact));
+        recordFinality(logicalAddress,artifact,artifactKind);
         if (faults.artifactPublish.shift() === artifactKind + ':land-throw') throw new Error('TEST publication response lost after CREATE');
         return readBack(logicalAddress, artifactKind);
       }
@@ -302,7 +307,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       return read.status === 'absent' && !signedCreates.has(logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
     },
     verifyReceipt: async ({ logicalAddress, artifact, artifactKind, receipt, signedProjection }) =>
-      node.reader.verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection }),
+      (artifactKind==='FinalityCommitmentRecord'?finalized:node.reader).verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection }),
   };
   // The seller wallet's payment-evidence journal (DACS-4 PC-7(b)).
   const walletDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-wallet-')));
@@ -319,7 +324,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const openJournal = (file = 'wallet-journal.sqlite') => seller.createPaymentEvidenceWalletJournal({ path: join(walletDirectory, file),
     signCreate: async ({ logicalAddress, artifact, artifactKind }) => {
       effects.signCreate.push(logicalAddress);
-      if (faults.signCreate.shift() === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
+      const fault=faults.signCreate.shift();
+      if (fault === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
+      if (fault === 'invalid') return {signedTransaction:'TEST invalid transaction',txHash:'e'.repeat(64),nonce:1};
       const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind }, { land: false });
       signedCreates.set(logicalAddress, signed); written.set(logicalAddress, clone(artifact)); effects.signed.push(signed.hash);
       return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
@@ -715,7 +722,7 @@ test('a wallet that threw before signing is asked its journal: nothing signed, s
     w.faults.signCreate.push('throw');
     const held = await p.claim(tx);
     assert.equal(held.status, 'held', shown(held));
-    assert.equal(held.anchorOutcome, 'unknown', 'a throw is not a refusal');
+    assert.equal(held.anchorOutcome, 'failed-before-signing', 'the owning journal proves no CREATE was retained after the throw');
     assert.equal(held.anchorError?.code, 'TEST-wallet-failed', 'the wallet error keeps its cause');
     assert.equal(held.readback, 'indeterminate', 'the first claim only reads back');
     assert.deepEqual(w.effects.signCreate, [address]);
@@ -871,4 +878,15 @@ test('deterministic fixture transfers advance the payer nonce',()=>{
   const node=demosNode(),from=key(12).address,to=key(17).address,input={from,to,amountOs:'2500000000'};
   assert.notEqual(node.pay(input),node.pay(input));
   assert.equal(node.accountNonce(from),2);
+});
+
+test('a rejected signing answer with no retained CREATE recovers from the owning journal after restart',async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p);w.faults.signCreate.push('invalid');
+ const first=await p.claim(tx);assert.equal(first.status,'held');assert.equal(await w.walletJournal().readSignedProjection({logicalAddress:address}),null);
+ await w.restart();const done=await p.claim(tx);assert.equal(done.status,'payment-evidenced',shown(done));assert.equal(w.effects.signCreate.length,2);assert.equal(w.createsAt(address),1);
+});
+test('an unreadable signing journal supplies no proof to release an unknown attempt',async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p);w.walletJournal().close();
+ assert.equal((await p.claim(tx)).status,'held');w.restartWallet();await w.restart();const again=await p.claim(tx);
+ assert.equal(again.status,'held');assert.equal(w.effects.signCreate.length,0);assert.equal(w.createsAt(address),0);
 });
