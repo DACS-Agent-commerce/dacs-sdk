@@ -198,6 +198,14 @@ describe("total command deadline and retry budget", () => {
     h.children[0]?.emit("exit", 0); expect(await result).toBe(0);
     expect(h.signals.size).toBe(0); expect(h.removed.sort()).toEqual(["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]);
   });
+  it("releases the deadline and signal handlers when the command cannot start", async () => {
+    const h = signalHarness(); const failure = new Error("invalid command");
+    const result = runBoundedCommand(123, [], { ...h.options, start: () => { throw failure; } });
+    await expect(result).rejects.toBe(failure);
+    expect(h.signals.size).toBe(0);
+    h.timers[0]?.();
+    expect(h.kills).toEqual([]);
+  });
   it("does not retry once the absolute deadline has passed", async () => {
     const h = signalHarness(); let clock = 0;
     const result = runBoundedCommand("docker", ["pull", "fixture"], { ...h.options, attempts: 3, seconds: 1, now: () => clock });

@@ -22,7 +22,7 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
   if (!Number.isInteger(seconds) || seconds <= 0 || !Number.isInteger(attempts) || attempts < 1 || attempts > COMMAND_MAX_ATTEMPTS) {
     throw new Error("invalid command deadline or retry budget");
   }
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     let child, attempt = 0, expired = false, finished = false;
     const signalHandlers = new Map();
     const removeSignalHandlers = () => {
@@ -30,6 +30,13 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
       signalHandlers.clear();
     };
     const finish = code => { if (!finished) { finished = true; cancel(deadline); removeSignalHandlers(); resolve(code); } };
+    const fail = error => {
+      if (finished) return;
+      finished = true;
+      cancel(deadline);
+      removeSignalHandlers();
+      reject(error);
+    };
     const terminate = (code, message) => {
       if (expired || finished) return;
       expired = true;
@@ -66,10 +73,13 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
           child = undefined;
           terminate(124, "ETIMEDOUT command deadline: " + command);
         } else if (code === 0 || attempt >= attempts) finish(code ?? 1);
-        else next();
+        else attemptNext();
       });
     };
-    next();
+    // A synchronous start failure (for example an invalid command type) must
+    // release the deadline timer and signal handlers before rejecting.
+    const attemptNext = () => { try { next(); } catch (error) { fail(error); } };
+    attemptNext();
   });
 }
 
