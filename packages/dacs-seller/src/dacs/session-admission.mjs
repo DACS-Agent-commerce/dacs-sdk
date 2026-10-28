@@ -261,12 +261,19 @@ function vetEvidenceReads(evidence, scope) {
 }
 
 // The content shape the core verifier takes from an operator reply: null
-// (absent), canonical JSON, or base64url bytes. Anything else is malformed.
-function vetEvidenceContent(reply) {
+// (absent), canonical JSON, or base64url bytes. A VerifyResult returned as
+// bytes is decoded to the canonical JSON object the core re-hashes; an
+// authority proof stays bytes so its byte hash is preserved.
+function vetEvidenceContent(reply, resultContent = false) {
   if (reply === null) return null;
   if (exactKeys(reply, ['encoding', 'value'])) {
     if (reply.encoding === 'canonical-json' && object(reply.value)) return reply;
-    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) return { encoding: 'bytes', value: Uint8Array.from(Buffer.from(reply.value, 'base64url')) };
+    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) {
+      const value = Uint8Array.from(Buffer.from(reply.value, 'base64url'));
+      if (!resultContent) return { encoding: 'bytes', value };
+      const decoded = admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+      if (object(decoded)) return { encoding: 'canonical-json', value: decoded };
+    }
   }
   throw new TypeError('the Vet evidence content reply is malformed');
 }
@@ -277,7 +284,7 @@ function vetEvidenceContent(reply) {
 // authority proof holds. Only an explicit `true` authorizes a signer, and only
 // `valid` or `unresolved` is a usable attestation verdict.
 const vetEvidenceDeps = (read) => ({
-  resolve: (ref) => read('resolveContent', { anchor: ref.anchor, contentHash: ref.contentHash }, vetEvidenceContent),
+  resolve: (ref) => read('resolveContent', { anchor: ref.anchor, contentHash: ref.contentHash }, (reply) => vetEvidenceContent(reply, ref.recipeVersion !== undefined)),
   resolveRecipe: (selector) => read('resolveRecipe', selector),
   isRecipeSignerAuthorized: async (recipe, signature) => (await read('isRecipeSignerAuthorized', { recipe, signature })) === true,
   isVerifyResultSignerAuthorized: async (result, signature, expected) => (await read('isVerifyResultSignerAuthorized', { result, signature, expected })) === true,

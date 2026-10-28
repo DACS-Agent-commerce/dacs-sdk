@@ -193,6 +193,12 @@ test('an evidence reader that rejects with undefined is still an unavailable rea
   assert.equal(reason, undefined);
 });
 
+test('a VerifyResult returned as canonical bytes passes', async () => {
+  const fixture = await verifiedClaimFixture();
+  const bytes = Buffer.from(core.canonicalize(fixture.result)).toString('base64url');
+  assert.equal(await fixture.replay({ evidence: { resolveContent: async (input) => (input.anchor.locator === RESULT_LOCATOR ? { encoding: 'bytes', value: bytes } : fixture.contents.get(input.anchor.locator)) } }), null);
+});
+
 test('vetEvidence must expose every reader', () => {
   const admission = Object.fromEntries(['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].map((name) => [name, async () => null]));
   const complete = Object.fromEntries(['resolveContent', 'resolveRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'].map((name) => [name, async () => null]));
