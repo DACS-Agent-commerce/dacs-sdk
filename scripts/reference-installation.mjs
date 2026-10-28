@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { isDeepStrictEqual } from "node:util";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { ARCHIVE_LIMITS, npmToolchain, packedFileSets, runNpmNode, verifyArchive } from "./installation-closure.mjs";
@@ -144,13 +145,22 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
 
 // Evaluate exclusions with the selected npm's configuration and install checks in
 // its own process: npm's flattening may change the lifecycle environment.
-function excludedSources(unavailable, entries, contract, scratch) {
+function excludedSources(unavailable, entries, contract, scratch, manifest, lock) {
   if (!unavailable.size) return new Set();
+  // npm recalculates dependency flags when root declarations change. Such flags
+  // cannot establish that a failed source read was an intentional exclusion.
+  for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "peerDependenciesMeta"]) {
+    if (!isDeepStrictEqual(manifest[field] ?? {}, lock.packages[""]?.[field] ?? {})) {
+      throw new Error("root dependency metadata differs: " + field);
+    }
+  }
   const input = join(scratch, "unavailable.json");
   writeFileSync(input, JSON.stringify({ config: contract.config,
     entries: [...unavailable.keys()].map(location => [location, entries.get(location).entry]) }));
   const command = `const requireNpm = require('node:module').createRequire(process.argv[1]);
     const { config, entries } = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
+    const npmVersion = requireNpm('../package.json').version;
+    if (config['npm-version'] !== npmVersion) throw Error('npm-version differs from selected npm');
     const options = requireNpm('@npmcli/config/lib/definitions').flatten(config);
     const { checkPlatform, checkEngine } = requireNpm('npm-install-checks');
     const omit = new Set(options.omit);
@@ -161,7 +171,7 @@ function excludedSources(unavailable, entries, contract, scratch) {
       if (entry.optional) {
         try {
           checkPlatform(entry, false, options);
-          checkEngine(entry, config['npm-version'], process.version, false);
+          checkEngine(entry, npmVersion, process.version, false);
         } catch (error) {
           if (error.code === 'EBADPLATFORM' || error.code === 'EBADENGINE') return true;
           throw error;
@@ -193,6 +203,7 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     const cache = join(scratch, "cache");
     mkdirSync(project);
     const unavailable = sourceEntries(lock, readArchive, installer, cache, entries, roots);
+    const excluded = excludedSources(unavailable, entries, installer, scratch, manifest, lock);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
     const { args, env } = referenceConfig(project, cache, installer);
@@ -207,7 +218,6 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
       throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
     }
     const inventory = installationInventory(project);
-    const excluded = excludedSources(unavailable, entries, installer, scratch);
     for (const [location, cause] of unavailable) {
       if (inventory.has(location) || !excluded.has(location)) {
         throw new Error(`cannot read source ${location}: ${cause.message}`, { cause });
