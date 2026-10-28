@@ -452,7 +452,7 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
   }
   const pinned = join(directory, "npm-pinned"); const built = join(directory, "image-built"); const commands = join(directory, "docker-commands");
   const builtLock = join(directory, "built-lock"); const lateRemovals = join(directory, "late-removals");
-  const phase = (name: keyof ConsumerHooks, steps: string[]) => [`  *-${name})`, ...steps, hooks[name] ?? "", `  exit ${name === "execute" && !complete ? 1 : 0} ;;`];
+  const phase = (name: keyof ConsumerHooks, steps: string[]) => [`  *-${name})`, ...steps, hooks[name] ?? "", `  exit ${name === "doctor" ? complete ? 5 : 1 : 0} ;;`];
   const PATH = stubBin(directory, {
     curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
     npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
@@ -472,8 +472,9 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
       '  esac', '  previous=$argument', 'done',
       'case "$name" in', ...phase("install", [`  cp -r '${fixture}/install/.' "$work/"`]),
       ...phase("measure", ['  case "$*" in *--dependency-policy*) ;; *) exit 99 ;; esac', `  cp '${fixture}/measure/'* "$out/"`]),
-      ...phase("execute", complete ? [`  cp '${fixture}/execute/'* "$out/"`] : [`  printf '0\\n' > "$out/generated-tests.exit-code"`,
-        `  printf 'doctor: release metadata is unreadable\\n' > "$out/doctor.log"`, `  printf '1\\n' > "$out/doctor.exit-code"`, "  echo 'npm run dacs:doctor exited 1'"]),
+      ...phase("tests", [`  [ -f '${built}' ] || exit 98`, '  echo generated-image-tests']),
+      ...phase("doctor", complete ? [`  [ -f '${built}' ] || exit 98`, `  cat '${fixture}/execute/doctor.json'`,
+        `  cat '${fixture}/execute/doctor.log' >&2`] : ['  echo "doctor: release metadata is unreadable" >&2']),
       'esac', 'case "$*" in', `  *--entrypoint*) [ -f '${built}' ] || exit 98 ;;`, 'esac', 'case "$*" in', '  *"--entrypoint id"*) echo 10001 ;;',
       '  *"--entrypoint test"*) exit 1 ;;', `  *"--entrypoint node"*) printf '%s' '${JSON.stringify({ schema: "dacs-runtime-image-inventory/v1", packages: inventory })}' ;;`, 'esac', 'exit 0'].join("\n"),
   });
@@ -491,7 +492,7 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
 // Shell run by the fake consumer phase of that name, after it copied its fixture
 // and before it exits, with the phase's mounts in $work and $out and every
 // writable host mount in $writable.
-type ConsumerHooks = Partial<Record<"install" | "measure" | "execute", string>>;
+type ConsumerHooks = Partial<Record<"install" | "measure" | "tests" | "doctor", string>>;
 // The volumes and environment of each named consumer phase run, as Docker received them.
 function consumerRuns(commands: string) {
   return Object.fromEntries(readFileSync(commands, "utf8").split("\n").filter(line => line.startsWith("run ") && line.includes(" --name dacs-consumer-"))
@@ -1065,18 +1066,18 @@ describe("registry/container evidence", () => {
     expect(JSON.parse(evidence("generated-package.json"))).toMatchObject({ name: "one-click-agent" });
     expect(evidence("generated-package-lock.json")).toBe(lockText);
     expect(evidence("dependency-policy.json")).toContain('"passed":true');
-    expect(evidence("generation.log")).toContain("dacs:doctor exited 1");
+    expect(evidence("generation.log")).toContain("generated-image-tests");
     for (const name of ["release-provenance.json", "SHA256SUMS", "registry.log", "runner-tools.txt"]) {
       expect(existsSync(join(output, name)), name).toBe(true);
     }
-    expect(JSON.parse(evidence("acceptance-summary.json"))).toMatchObject({ complete: false, failedStage: "consumer",
+    expect(JSON.parse(evidence("acceptance-summary.json"))).toMatchObject({ complete: false, failedStage: "image-checks",
       exitCode: 1, failureClass: "functional" });
-    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage consumer");
+    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage image-checks");
     // The temporary acceptance root, which held them, is gone.
     expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
   });
 
-  it("gives each consumer phase a closed set of mounts, in install, measure, execute order", async () => {
+  it("gives each consumer phase a closed set of mounts, in install, measure, tests, doctor order", async () => {
     const { result, commands } = await runToConsumerStage(true);
     expect(result.status, result.stderr).toBe(0);
     const runs = consumerRuns(commands);
@@ -1085,27 +1086,28 @@ describe("registry/container evidence", () => {
     expect(runs.install?.volumes.map(local)).toEqual(["<root>/gen:/work", support]);
     expect(runs.measure?.volumes.map(local)).toEqual(["<root>/gen:/work:ro", "<root>/measure-out:/out", support,
       "<repo>/scripts:/acceptance-sdk/scripts:ro", "<repo>/package.json:/acceptance-sdk/package.json:ro", "<root>/release-set:/release-set:ro"]);
-    expect(runs.execute?.volumes.map(local)).toEqual(["<root>/gen:/work", "<root>/exec-out:/out", support]);
+    expect(runs.tests?.volumes).toEqual([]); expect(runs.doctor?.volumes).toEqual([]);
     // Neither the evidence stage nor the sealed build context is ever mounted.
     for (const line of readFileSync(commands, "utf8").split("\n").filter(line => line.startsWith("run "))) {
       expect(line).not.toMatch(/--volume \S*\/(?:artifacts|sealed)[/:]/);
     }
-    expect([runs.install?.order, runs.measure?.order, runs.execute?.order]).toEqual([0, 1, 2]);
+    expect([runs.install?.order, runs.measure?.order, runs.tests?.order, runs.doctor?.order]).toEqual([0, 1, 2, 3]);
   }, 30_000);
 
   it("measures before any package code runs and keeps scripts off during install", async () => {
     const { result, commands } = await runToConsumerStage(true);
     expect(result.status, result.stderr).toBe(0);
-    const { install, measure, execute } = consumerRuns(commands);
+    const { install, measure, tests, doctor } = consumerRuns(commands);
     for (const step of ["--dependency-policy", "npm audit ", "npm sbom --sbom-format", "npm sbom --package-lock-only", "--engine-strict"]) {
-      expect(measure?.line, step).toContain(step); expect(execute?.line, step).not.toContain(step);
+      expect(measure?.line, step).toContain(step); expect(doctor?.line, step).not.toContain(step);
     }
-    expect(execute?.line).toContain("npm rebuild better-sqlite3"); expect(measure?.line).not.toContain("npm rebuild");
-    expect(install?.line).toContain("--env npm_config_ignore_scripts=true"); expect(execute?.line).not.toContain("npm_config_ignore_scripts");
+    expect(readFileSync(join(repoRoot, "packages/create-dacs-agent/src/liveTemplates.ts"), "utf8")).toContain("RUN npm rebuild better-sqlite3");
+    expect(measure?.line).not.toContain("npm rebuild"); expect(tests?.line).toContain("--read-only");
+    expect(install?.line).toContain("--env npm_config_ignore_scripts=true"); expect(doctor?.line).not.toContain("npm ");
     expect(install?.line).toContain("npm install --global --ignore-scripts npm@11.19.0");
     expect(install?.line).toContain("npm install --ignore-scripts ");
     expect(measure?.line).toMatch(new RegExp(` --user ${process.getuid?.()}:${process.getgid?.()} `));
-    for (const run of [install, measure, execute]) {
+    for (const run of [install, measure]) {
       for (const setting of ["--init", "--env npm_config_cache=/work/.npm-cache", "--env DACS_BOUNDED_NPM_HTTP=1",
         "--env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs", "--env npm_config_fetch_retries=2"]) {
         expect(run?.line, setting).toContain(setting);
@@ -1117,7 +1119,7 @@ describe("registry/container evidence", () => {
     const report = (violations: unknown[]) => JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0, violations });
     const { output, result } = await runToConsumerStage(true, false, {
       measure: `  printf '%s' '${report([{ location: "node_modules/viem", field: "resolved", value: "https://codeload.github.com/fixture/viem/tar.gz/main" }])}' > "$out/dependency-policy.json"`,
-      execute: `  for mount in $writable; do printf '%s' '${report([])}' > "$mount/dependency-policy.json"; done`,
+      doctor: `  for mount in $writable; do printf '%s' '${report([])}' > "$mount/dependency-policy.json"; done`,
     });
     expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8")), result.stderr).toMatchObject({
       complete: true, registryDependencyOnly: false, securityGate: { passed: false, registryDependencyPolicyPassed: false } });
@@ -1126,7 +1128,7 @@ describe("registry/container evidence", () => {
 
   it("builds and records the lock as measured when package code rewrites it afterwards", async () => {
     const { output, result, commands, lockText, builtLock } = await runToConsumerStage(true, false, {
-      execute: `  printf '%s' '{"packages":{"node_modules/viem":{"resolved":"https://codeload.github.com/fixture/viem/tar.gz/main"}}}' > "$work/one-click-agent/package-lock.json"`,
+      doctor: `  [ -z "$work" ] || printf '%s' '{"packages":{"node_modules/viem":{"resolved":"https://codeload.github.com/fixture/viem/tar.gz/main"}}}' > "$work/one-click-agent/package-lock.json"`,
     });
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(builtLock, "utf8")).toBe(lockText);
@@ -1138,9 +1140,6 @@ describe("registry/container evidence", () => {
   }, 30_000);
 
   it.each([
-    ["execute", "evidence-collect", ['  rm -f "$out/doctor.json" "$out/doctor.log"', "  ln -s HOST/target.json \"$out/doctor.json\"",
-      '  ln -s HOST/secret "$out/doctor.log"', '  ln -s HOST/target.json "$work/one-click-agent/Dockerfile.acceptance"',
-      '  rm "$work/one-click-agent/.dockerignore"', '  ln -s HOST/secret "$work/one-click-agent/.dockerignore"']],
     ["install", "evidence-seal", ['  rm "$work/one-click-agent/.dockerignore"', '  ln -s HOST/secret "$work/one-click-agent/.dockerignore"']],
   ])("refuses links planted in the %s phase without changing or exporting a host file", async (phase, failedStage, plant) => {
     const host = mkdtempSync(join(tmpdir(), "dacs-registry-host-")); scratch.push(host);
@@ -1155,11 +1154,11 @@ describe("registry/container evidence", () => {
 
   it("removes a consumer container its deadline stopped before collecting or deleting its mounts", async () => {
     const { output, result, commands, lateRemovals } = await runToConsumerStage(true, false, {
-      execute: '  printf "partial\\n" > "$out/doctor.log"\n  exit 124' });
+      doctor: '  printf "partial\\n" >&2\n  exit 124' });
     expect(result.status).toBe(124);
-    expect(readFileSync(commands, "utf8")).toMatch(/^rm --force dacs-consumer-\S+-execute\s*$/m);
+    expect(readFileSync(commands, "utf8")).toMatch(/^rm --force dacs-consumer-\S+-doctor\s*$/m);
     expect(existsSync(lateRemovals)).toBe(false);
-    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial\n");
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toContain("partial\n");
   }, 30_000);
 
   it("finishes cleanup and keeps the original status when an evidence write fails", () => {
