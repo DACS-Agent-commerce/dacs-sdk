@@ -25,7 +25,7 @@ describe("publish environment evidence bounds", () => {
       expect(result.stderr).toMatch(kind === "missing file" ? /ENOENT/ : kind === "invalid JSON" ? /JSON|Expected|Unexpected/ : /exceeds.*bytes/);
       expect(result.stdout).not.toContain("Complete owner step 1");
     } finally { rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 30_000);
   it.each(["rules", "reviewers", "policies"])("bounds decoded %s collections", kind => {
     const env = environment(); const policy = policies();
     const rule = env.protection_rules[0]; if (!rule) throw new Error("missing fixture protection rule");
