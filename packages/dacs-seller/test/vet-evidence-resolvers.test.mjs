@@ -208,6 +208,11 @@ test('a parameterized required claim passes only when its exact parameters match
   assert.match(await mismatched.replay(), /requirement-parameters/);
 });
 
+test('a verified claim whose requirement leaves the recipe version unpinned is refused', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: { requirementVersion: '1', required: [{ scheme: 'domain', verificationRequired: true }] } });
+  assert.match(await fixture.replay(), /does not pin a recipe version/);
+});
+
 test('vetEvidence must expose every reader', () => {
   const admission = Object.fromEntries(['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].map((name) => [name, async () => null]));
   const complete = Object.fromEntries(['resolveContent', 'resolveRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'].map((name) => [name, async () => null]));

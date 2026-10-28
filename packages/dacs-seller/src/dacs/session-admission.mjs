@@ -35,7 +35,9 @@
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
 //    `requirementHash` and replayed aggregation are checked here. A requirement
-//    with verified claims replays only through the optional
+//    with verified claims must pin each claim's `recipeVersion` (the seller has
+//    no authenticated registry snapshot to prove an implicit version is the
+//    latest) and replays only through the optional
 //    `vetEvidence = { resolveContent, resolveRecipe, isRecipeSignerAuthorized,
 //    isVerifyResultSignerAuthorized, verifyAuthorityAttestation }`, read with the
 //    admission readers' limits (see vetRecordProblem).
@@ -246,6 +248,16 @@ function requirementParametersMatch({ result, expected }) {
   return true;
 }
 
+// DACS-2 §7.4.3: a ClaimRequirement without `recipeVersion` selects the latest
+// live version in the authenticated session registry snapshot. This seller's
+// evidence contract carries no such snapshot, so an implicit version cannot be
+// proven to be the latest family version; accepting the result's own version
+// would let an old signed recipe replay. Refuse rather than guess.
+function unpinnedVerifiedResult(results) {
+  return Array.isArray(results) && results.some((entry) => object(entry?.requirement)
+    && entry.requirement.verificationRequired !== false && entry.requirement.recipeVersion === undefined);
+}
+
 // The evidence reads of one replay, each bounded by readAdmissionCapability
 // and all by one deadline. The deadline also aborts the read in flight, so a
 // reader that ignores its own per-read limit cannot hold the replay past 30 s.
@@ -329,6 +341,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
+  if (unpinnedVerifiedResult(invocation.freshness) || unpinnedVerifiedResult(invocation.dealSpecific)) return 'the Vet requirement does not pin a recipe version for a verified claim';
   const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
   // The verifier checks every signature itself with the signer's own key; the
   // operator's policy decides which signers other than the verifier may sign.
