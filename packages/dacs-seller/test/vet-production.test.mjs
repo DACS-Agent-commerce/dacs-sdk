@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
-import { JOB, buyer, seller } from './helpers/protocol-fixture.mjs';
+import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { createDemDeliveryContext, resolveDemDeliverySellerContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 
@@ -10,10 +11,12 @@ test('Vet factory validates ownership before any signer, anchor or row operation
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
  assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{claim:seller.claim,signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled|Vet producer and native anchor/);assert.equal(effects,0);
 });
-for(const length of [32,64])test(`real staged bilateral engine accepts a ${length}-hex verifier nonce`,async()=>{
+// SN-2 bounds the challenge by characters, not by byte pairs: odd lengths
+// between the 32 and 256 character bounds are conforming and must complete.
+for(const length of [32,33,64,255,256])test(`real staged bilateral engine accepts a ${length}-hex verifier nonce`,async()=>{
  const f=productionFixture();f.controls.nonce='a'.repeat(length);const result=await f.run();assert.equal(result.buyerVet.record.overallDecision,'pass');assert.equal(result.sellerVet.record.signature.signer,f.seen[0].buyer);assert.equal(f.local.writes.length,2);assert.equal(f.seen.length,1);f.base.close();
 });
-for(const length of [31,258])test(`nonce length ${length} refuses before signing`,async()=>{
+for(const length of [31,257])test(`nonce length ${length} refuses before signing`,async()=>{
  const f=productionFixture();f.controls.nonce='a'.repeat(length);await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);f.base.close();
 });
 test('buyer result is recovered after a lost seller checkpoint without consuming its challenge again',async()=>{
@@ -28,6 +31,36 @@ test('inherited core verifier refusal of qualified CVR signer stays closed',asyn
 });
 for(const state of ['accepted','included'])test(`merely ${state} receipts never close staged Vet`,async()=>{
  const f=productionFixture();f.controls.receiptState=state;f.controls.receiptVerdict='valid';await assert.rejects(f.run());f.base.close();
+});
+test('a challenge that expires during the durable write is never signed',async()=>{
+ const f=productionFixture();let at=NOW;
+ f.config.now=()=>at;
+ const issue=f.counterparty.issueChallenge;
+ f.counterparty.issueChallenge=async request=>({...await issue(request),expiresAt:at+1});
+ const update=f.store.update;
+ f.config.store={...f.store,update:async(key,change)=>update(key,(old,rows)=>{
+  const next=change(old,rows);
+  // markWrite is the durable update that starts this purchase's first write.
+  if(next?.writeStarted&&!old?.writeStarted)at+=2;
+  return next;
+ })};
+ await assert.rejects(f.run(),e=>e.code==='seller_challenge_expired');
+ assert.equal(f.controls.signs,0);
+ const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');
+ assert.equal(f.local.writes.length,2);assert.equal(f.controls.signs,2);
+ f.base.close();
+});
+test('a counterparty raw reply from another JavaScript realm is admitted',async()=>{
+ const f=productionFixture(),issue=f.counterparty.issueChallenge;
+ const ForeignUint8Array=vm.runInNewContext('Uint8Array');
+ f.counterparty.issueChallenge=async args=>ForeignUint8Array.from(Buffer.from(JSON.stringify(await issue(args))));
+ const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(f.seen.length,1);
+ f.base.close();
+});
+test('an oversized raw counterparty reply is refused before signatures',async()=>{
+ const f=productionFixture(),issue=f.counterparty.issueChallenge;
+ f.counterparty.issueChallenge=async args=>Buffer.from(JSON.stringify({...await issue(args),extra:'x'.repeat(65537)}));
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause instanceof Error);assert.equal(f.controls.signs,0);f.base.close();
 });
 test('counterparty raw-byte and decoded budgets refuse oversized replies before signatures',async()=>{
  const f=productionFixture(),issue=f.counterparty.issueChallenge;f.counterparty.issueChallenge=async args=>({...await issue(args),extra:'x'.repeat(65537)});
@@ -75,6 +108,49 @@ test('two provider instances that both see an unattempted nonce converge on the 
  const runs=await Promise.all([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
  for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
  assert.equal(runs[0].sellerVet.recordRef.contentHash,runs[1].sellerVet.recordRef.contentHash);assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);f.base.close();
+});
+test('a purchase closed during the ledger read starts no evaluation',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ let closed=false,evaluations=0;
+ const read=f.counterparty.readRecord;
+ f.counterparty.readRecord=async request=>{const out=await read(request);closed=true;return out;};
+ const evaluate=f.counterparty.evaluate;
+ f.counterparty.evaluate=async request=>{evaluations++;return evaluate(request);};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>closed?'closed':true),e=>e.code==='not-pending');
+ assert.equal(evaluations,0);assert.equal(f.seen.length,0);f.base.close();
+});
+test('a record evaluated under a rotated presentation is not pinned to the new one',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ // Sign the presentation, then lose the ledger read, so the job is left with a
+ // signed presentation and no retained counterparty record.
+ const read=f.counterparty.readRecord;let unavailable=true;
+ f.counterparty.readRecord=async request=>{if(unavailable){unavailable=false;throw new Error('TEST ledger unavailable');}return read(request);};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_unavailable');
+ const evaluate=f.counterparty.evaluate;
+ f.counterparty.evaluate=async request=>{
+  const record=await evaluate(request);
+  // Another provider rotates the expired challenge while this record is in flight.
+  await p.state.update(input.scope.jobId,current=>({...current,presentation:{challenge:{...current.presentation.challenge,sessionNonce:'b'.repeat(32)},bundle:{...current.presentation.bundle,sessionNonce:'b'.repeat(32)}}}));
+  return record;
+ };
+ const row=await p.state.read(input.scope.jobId);
+ await assert.rejects(p.produceSeller({jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
+ assert.equal((await p.state.read(input.scope.jobId)).counterpartyRecord,undefined);
+ f.base.close();
+});
+test('a finished job repeats without the buyer ledger after the challenge expires',async()=>{
+ const f=productionFixture();let at=NOW;f.config.now=()=>at;
+ const p=await f.provider(),input=f.input();
+ assert.equal((await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).sellerVet.record.overallDecision,'pass');
+ // The job's row already retains the buyer-issued record and the anchor holds
+ // the receipt; an expired challenge must not make the repeat depend on the
+ // buyer's ledger being reachable.
+ at=NOW+60001;
+ f.counterparty.readRecord=async()=>{throw new Error('TEST ledger offline');};
+ f.counterparty.issueChallenge=async()=>{throw new Error('TEST ledger offline');};
+ const repeat=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ assert.equal(repeat.sellerVet.record.overallDecision,'pass');assert.equal(f.seen.length,1);
+ f.base.close();
 });
 test('a failed evaluate with no retained record stays a failure that keeps its cause',async()=>{
  const f=productionFixture(),cause=new Error('TEST evaluate failed');f.counterparty.evaluate=async()=>{throw cause;};

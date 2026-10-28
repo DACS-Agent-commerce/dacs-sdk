@@ -20,12 +20,12 @@ const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{p
 async function fixture(t,{wrap=agent=>agent}={}){
  const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;
- const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout'));
+ const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
  const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW}),timeoutMs:60000});
- return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout};
+ return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout,setReadbackTimeout:api.setTestReadbackTimeout};
 }
 async function anchorAgreement(f,request,answer){
  const agreement=await core.finalizeFixedPriceAgreementContributions(request.proposal.plan,[request.proposal.buyerContribution,answer.contribution],contributionVerifier);
@@ -97,8 +97,61 @@ test('close waits for an accepted native artifact readback before releasing stat
  }finally{block=false;releaseRead.resolve();}
  await closing;
  assert.equal(afterClose,0,'a late readback never writes after ownership transfers');
- await pending;
- const reopened=await f.start();await reopened.close();
+ assert.equal(await pending,'answered','the accepted readback outcome answers the request instead of becoming an uncertain shutdown');
+ const reopened=await f.start(),recovered=f.client(reopened,request);
+ assert.equal((await recovered.commit(request.transportIdentity.jobId)).status,'committed','the commitment completed before shutdown stays committed after restart');
+ assert.equal((await recovered.commit(request.transportIdentity.jobId)).status,'committed','an authenticated retry recovers the same commitment');
+ await reopened.close();
+});
+
+test('a readback past its deadline answers uncertain and close still releases state',async t=>{
+ const f=await fixture(t),native=f.native;let aborted=0;
+ // The deadline is a host setting; shorten it so a readback that cannot finish
+ // inside it is exercised without waiting the production fifteen seconds.
+ f.setReadbackTimeout(400);
+ const artifactAnchor=Object.freeze({...native,readRetained:async(input,options)=>{
+  if(input.artifactKind==='FinalityCommitmentRecord'){
+   await new Promise((resolve,reject)=>{
+    const onAbort=()=>{aborted++;reject(new Error('TEST readback aborted'));};
+    if(options?.signal?.aborted){onAbort();return;}
+    options?.signal?.addEventListener('abort',onAbort,{once:true});
+   });
+  }
+  return native.readRetained(input);
+ }});
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ const outcome=await client.commit(request.transportIdentity.jobId).then(()=> 'answered',error=>`${error.name}/${error.code}`);
+ assert.match(outcome,/SellerUnavailableError\/seller_unavailable/,'a readback that cannot finish inside its deadline answers uncertain');
+ const closeOutcome=await Promise.race([
+  host.close().then(()=> 'closed'),
+  new Promise(resolve=>setTimeout(()=>resolve('still-open'),10000)),
+ ]);
+ assert.equal(closeOutcome,'closed','close does not wait for a readback past its deadline');
+ assert.ok(aborted>=1,'shutdown stops the underlying readback once the request has drained');
+ const reopened=await f.start({artifactAnchor:native});
+ assert.ok(reopened.url,'the state lock is released after the deadline');
+ await reopened.close();
+});
+
+test('host close destroys a connection that never finishes its request headers',async t=>{
+ const f=await fixture(t),host=await f.start();
+ const socket=connect({host:'127.0.0.1',port:Number(new URL(host.url).port)});
+ try{
+  await once(socket,'connect');
+  // A buyer may open a connection and send a partial request line; no request
+  // is dispatched, so nothing of it can be drained.
+  socket.write('POST /dacs/v1/commitments HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n');
+  await new Promise(resolve=>setImmediate(resolve));
+  let guard;
+  const outcome=await Promise.race([
+   host.close().then(()=> 'closed'),
+   new Promise(resolve=>{guard=setTimeout(()=>resolve('still-open'),10000);}),
+  ]);
+  clearTimeout(guard);
+  assert.equal(outcome,'closed','a connection with no dispatched request cannot hold close');
+ }finally{socket.destroy();}
 });
 
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
