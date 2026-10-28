@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {proposalAdmissionFixture,proposalForInput} from './helpers/proposal-admission-fixture.mjs';
 import {JOB,NOW} from './helpers/protocol-fixture.mjs';
-import {canonicalize} from '@kynesyslabs/dacs';
+import {canonicalize,identityBundleHash} from '@kynesyslabs/dacs';
 import {createDemDeliveryContext} from '../src/dacs/dem-delivery-context-consumer.mjs';
 
 const MINIMUM_REPORT_SIZE=Buffer.byteLength(canonicalize({jobId:'0'.repeat(26),agreementHash:'0'.repeat(64),settlementId:`demos:${'0'.repeat(64)}`}));
@@ -101,6 +101,18 @@ test('a clock crossing the proposal window during the responder checkpoints is r
  assert.notEqual(answer.disposition,'complete');assert.match(answer.reason,/clock window/);
  assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
  assert.ok(!f.signed.some(text=>text.startsWith('dacs-payee-bound-agreement:v1:')),'the stale proposal is never signed');
+});
+
+test('a pre-upgrade session without a retained generatedAt keeps its context-time signing decision',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),first=await f.open(),request=await f.proposal(first);first.close();
+ // A session retained before generatedAt was recorded: its admission was
+ // decided at the context time, so the signing gate must not re-interpret the
+ // missing field as an out-of-window proposal.
+ const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ try{await state.withJob(JOB,async()=>state.saveSession({jobId:JOB,buyerBundle:structuredClone(request.buyerIdentityBundle),buyerBundleHash:identityBundleHash(request.buyerIdentityBundle),proposal:null,stage:'proposed',proposalAdmission:{proposalHash:request.proposal.proposalHash,observedAt:NOW,admitted:true}}));}finally{state.close();}
+ const agent=await f.open(),answer=await agent.receiveProposal(request);
+ assert.equal(answer.disposition,'complete');assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,answer.contribution);
 });
 
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{
