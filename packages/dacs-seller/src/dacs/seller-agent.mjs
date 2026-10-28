@@ -497,7 +497,13 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if(status==='absent')throw new SellerAgentError('agreement_not_anchored','the buyer has not anchored the Agreement');
     if(status==='rejected'||status==='invalid')throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor does not authenticate the buyer write',422,{cause:returnedAgreementCause??read});
     if(status!=='present')throw new SellerAgentError('substrate_unavailable','SR-2 Agreement readback is unavailable',503,{cause:returnedAgreementCause??read});
-    if(agreementAnchor)return{agreement:read.artifact,ref:read.ref,native:read.native};
+    if(agreementAnchor){
+      // The capability's present answer is caller data: hash it before any
+      // commitment effect so malformed bytes are a definite refusal, not an
+      // uncertain transport outcome after a write.
+      try{contentHash(read.artifact);}catch(cause){throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor artifact is malformed',422,{cause});}
+      return{agreement:read.artifact,ref:read.ref,native:read.native};
+    }
     let verdict;
     try{verdict=verifyFixtureRecord(read,{logicalAddress:agreementAddress,expectedWriter:buyer});}
     catch(cause){throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor is malformed',422,{cause});}

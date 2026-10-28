@@ -140,3 +140,10 @@ test('signature_agreement_invalid is a definite no-effect HTTP refusal',async()=
  assert.equal(res.status,422);assert.equal(JSON.parse(res.text).error,'signature_agreement_invalid');
  assert.equal(store.finishes.length,1);assert.equal(store.finishes[0][3].noEffect,true);
 });
+
+test('native Agreement present without an artifact is a definite refusal before any effect',async t=>{
+ const f=await commitmentFixture(t),{agent}=await f.prepare();
+ f.controls.read=()=>({disposition:'present',artifact:null,ref:{anchor:{kind:'storage-program',locator:core.fixedPriceAgreementLogicalAddress(JOB)},contentHash:'a'.repeat(64)},native:{source:'TEST-native-agreement',evidenceMode:'TEST-writer-proof',nativeAddress:'TEST-native',txRef:{kind:'demos',txHash:'b'.repeat(64),blockNumber:1}}});
+ let failure;try{await agent.commit({jobId:JOB});}catch(error){failure=error;}
+ assert.equal(failure?.code,'agreement_anchor_invalid');assert.equal(failure?.status,422);assert.equal(f.local.writes.length,0);
+});
