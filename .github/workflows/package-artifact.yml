@@ -10,12 +10,12 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same pull request makes an older run's result useless; cancel it so it stops holding a
-# runner. Only pull_request runs share a group: merge_group, push and manual runs each get their own (run_id),
-# so they are never cancelled.
+# First-attempt PR runs share a group; newly queued runs cancel its other members.
+# GitHub does not guarantee commit-age ordering. Reruns and other events use run_id
+# groups so they do not replace PR checks or cancel one another.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
   package-artifact:
