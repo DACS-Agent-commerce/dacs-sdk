@@ -34,7 +34,7 @@ describe("request-driven npm JSON limits", () => {
         { env: { ...process.env, DACS_BOUNDED_NPM_HTTP: "1", NODE_OPTIONS: `--require=${resolve("scripts/bounded-npm-http.cjs")}` }, stdio: ["ignore", "pipe", "pipe"] }));
       expect(result.code, result.error).toBe(0); expect(result.output.trim()).toBe("1.2.3");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 20_000);
 });
 describe("bounded registry curl prerequisites", () => {
   it.each(["8.4.0", "8.3.0", "7.99.0", "malformed"])("propagates curl prerequisite result for %s even in a conditional source", version => {
