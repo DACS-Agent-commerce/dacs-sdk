@@ -30,5 +30,5 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
  agent.close();store=await openStore();
  if(paid){for(const jobId of JOBS)await store.withJob(jobId,session=>{session.payment={settlementId:'demos:one',txHash:'a'.repeat(64),deliveredAt:NOW};session.stage='delivered';store.saveSession(session);});await store.withJob(JOBS[0],()=>store.bindSettlement('demos:one',JOBS[0],{jobId:JOBS[0],phaseIndex:2}));if(collision)await store.withJob(JOBS[1],()=>store.bindSettlement('demos:one',JOBS[1],{jobId:JOBS[1],phaseIndex:2}));}
  store.close();agent=await create();store=await openStore();
- return{get agent(){return agent;},createAgent:create,buildReport,get store(){return store;},negotiate,seller,buyer,pin,listing,anchors,agreements,controls,protocol,reopen:async()=>{agent.close();store.close();agent=await create();store=await openStore();return agent;},close:()=>{agent.close();store.close();rmSync(dir,{recursive:true,force:true});}};
+ return{config,get agent(){return agent;},createAgent:create,buildReport,get store(){return store;},negotiate,seller,buyer,pin,listing,anchors,agreements,controls,protocol,reopen:async()=>{agent.close();store.close();agent=await create();store=await openStore();return agent;},close:()=>{agent.close();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
