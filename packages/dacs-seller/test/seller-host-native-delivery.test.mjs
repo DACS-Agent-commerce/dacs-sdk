@@ -995,6 +995,21 @@ test('a native payment is delivered: the Deliverable CREATE reads back bound to 
   assert.equal(w.createsAt(deliverable), 1);
 });
 
+// Regression: the durable fulfilment runner captures `claim`, `inspectPermit`
+// and `consumePermit` from the seller's receipt store and refuses to run when
+// any of them is not callable. A wrapper that exposed only `claim` answered
+// every native claim with `durable-dependencies-invalid` before any delivery
+// work, so the paid order could never reach delivery-ready.
+test('a native claim runs the durable delivery with every receipt-store dependency callable', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
+  assert.doesNotMatch(JSON.stringify(answer), /durable-dependencies-invalid/, shown(answer));
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
 test('a Deliverable the producer does not bind to this job, Agreement and settlement is not sent', async (t) => {
   const changes = { 'another job': { jobId: '01J8N4YV7YVYQ4DB7M8T'+String(++jobSequence).padStart(6,'0') }, 'another Agreement': { agreementHash: core.sha256Hex('TEST another Agreement') },
     'another settlement': { settlementId: core.sha256Hex('TEST another settlement') } };
