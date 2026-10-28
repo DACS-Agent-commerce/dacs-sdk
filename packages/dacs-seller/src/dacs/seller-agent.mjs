@@ -2,7 +2,7 @@ import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
-import { contentHash, isListing, canonicalize, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, sha256Hex, compositeVerificationAddress } from '@kynesyslabs/dacs';
+import { admitRawJson, contentHash, isListing, canonicalize, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, sha256Hex, compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
@@ -31,6 +31,33 @@ const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, ''
 // empty requirement); the buyer's own bundle is vetted against the Listing's
 // exact buyerRequirement.
 const SELLER_REQUIREMENT = Object.freeze({ requirementVersion: '1', required: Object.freeze([]), preferredPresentation: 'any' });
+// The independent operator readers that authenticate retained Vet evidence run
+// during construction: cap their decoded reply and their deadline so a stalled
+// or oversized reader fails the restore instead of holding the seller offline.
+const VET_READ_LIMITS = Object.freeze({ maxBytes: 64 * 1024, maxValues: 4096, timeoutMs: 10_000 });
+function boundedVetValue(value) {
+  if (value instanceof Uint8Array) return admitRawJson(value, { maxBytes: VET_READ_LIMITS.maxBytes });
+  let remaining = VET_READ_LIMITS.maxBytes, values = 0;
+  const text = JSON.stringify(value, (key, child) => {
+    if (++values > VET_READ_LIMITS.maxValues || key.length > remaining || (typeof child === 'string' && child.length > remaining)) throw new RangeError('Vet reader reply exceeds its byte or value limit');
+    remaining -= Buffer.byteLength(JSON.stringify(key)) + 2;
+    remaining -= child === null || ['string', 'number', 'boolean'].includes(typeof child) ? Buffer.byteLength(JSON.stringify(child)) : 2;
+    if (remaining < 0) throw new RangeError('Vet reader reply exceeds its byte limit');
+    return child;
+  });
+  if (typeof text !== 'string' || Buffer.byteLength(text) > VET_READ_LIMITS.maxBytes) throw new RangeError('Vet reader reply exceeds its byte limit');
+  return admitRawJson(Buffer.from(text), { maxBytes: VET_READ_LIMITS.maxBytes });
+}
+async function boundedVetRead(read, query) {
+  const controller = new AbortController(), { maxBytes, timeoutMs } = VET_READ_LIMITS;
+  let timer;
+  const deadline = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('the Vet reader deadline expired')); }, timeoutMs); });
+  try {
+    const value = await Promise.race([Promise.resolve().then(() => read(query, { signal: controller.signal, maxBytes, timeoutMs })), deadline]);
+    if (controller.signal.aborted) throw new Error('the Vet reader was aborted');
+    return boundedVetValue(value);
+  } finally { clearTimeout(timer); controller.abort(); }
+}
 
 // Staged internal proposal admission and authenticated retained reads.
 // Proposal signing, commitment, payment and delivery remain unavailable.
@@ -213,18 +240,18 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     ];
     for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
       let record, receipt, verdict;
-      try { record = await admission.resolveVetRecord({ jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record cannot be resolved`; }
+      try { record = await boundedVetRead((query, options) => admission.resolveVetRecord(query, options), { jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record cannot be resolved`; }
       // DACS-2 §7.7.1/§7.7.2: the strict verifier replays the record's decision
       // against the exact requirement this profile invoked, binding its signed
       // requirementHash and result references; shape and signer alone would
       // accept a record the counterparty signed for another requirement.
       const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now });
       if (recordProblem) return `the ${role} ${recordProblem}`;
-      try { receipt = await admission.readVetAnchorReceipt({ jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record has no SR-2 receipt`; }
+      try { receipt = await boundedVetRead((query, options) => admission.readVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record has no SR-2 receipt`; }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
       const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId: session.jobId, party });
       if (receiptProblem) return `the ${role} ${receiptProblem}`;
-      try { verdict = await admission.verifyVetAnchorReceipt({ jobId: session.jobId, role, party, ref, record, receipt }); } catch { return `the ${role} Vet receipt cannot be verified`; }
+      try { verdict = await boundedVetRead((query, options) => admission.verifyVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref, record, receipt }); } catch { return `the ${role} Vet receipt cannot be verified`; }
       if (verdict !== 'valid') return `the ${role} Vet receipt does not verify`;
     }
     return null;
