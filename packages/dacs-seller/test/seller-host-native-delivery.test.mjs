@@ -1456,6 +1456,40 @@ test('a delivery evidence publication that never reached the wallet is published
   assert.equal(w.createsAt(address), 1);
 });
 
+test('enabling publication after a delivery-ready order publishes the evidence retained while it was off', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  const first = await p.claim(tx);
+  assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
+  assert.equal(first.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
+  assert.equal(w.createsAt(address), 0);
+  const signed = await w.signedClaim(p, tx);
+  await w.host().close();
+  const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
+  const post = async () => { const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const done = await post();
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(done.delivery.evidencePublication, 'native-read-back');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.deliverySubmit.length, 1, 'the Deliverable is not submitted again');
+});
+
+test('a delivery-ready session retained without its own evidence copy recovers it from the SDK checkpoint', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  const signed = await w.signedClaim(p, tx);
+  // Simulate a delivery-ready session written before this seller retained its
+  // own copy: the SDK checkpoint still holds the exact signed evidence.
+  await w.editRetainedSession(p.jobId, (session) => { delete session.deliveryReady.evidence; });
+  await w.host().close();
+  const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
+  const post = async () => { const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const done = await post();
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(done.delivery.evidencePublication, 'native-read-back');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
   const first=await world(t),second=await world(t);
   assert.notEqual((await first.purchase()).jobId,(await second.purchase()).jobId);
