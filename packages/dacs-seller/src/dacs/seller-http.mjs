@@ -37,10 +37,10 @@ const PAYMENT_PATH = '/dacs/v1/payments';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
-// A delivery-ready answer rests on the retained payment evidence and a readback
-// of the Deliverable; repeating it repeats both (see the cached branch below).
+// A completed delivery answer rests on fresh payment, Deliverable and any
+// published evidence readbacks; repeating it repeats those checks.
 const reportsDeliveryReady = (text) => {
-  try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && answer.delivery?.status === 'delivery-ready'; } catch { return false; }
+  try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
 };
 
 const ROUTES = {
