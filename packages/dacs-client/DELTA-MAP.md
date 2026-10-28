@@ -2724,6 +2724,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 retain current 08 sources after diagnostics split | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 retain current 08 sources after diagnostics split | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 retain current 08 sources after diagnostics split | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 pin historical frontier test graphs | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 pin historical frontier test graphs | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 pin historical frontier test graphs | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 pin historical frontier test graphs | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 pin historical frontier test graphs | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
 
 ## Original moved files
 
