@@ -114,27 +114,29 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
       pending.once("error", () => { failed = true; cancel(timer); });
       pending.emit = function (event, response, ...rest) {
         if (event !== "response") return emit.call(this, event, response, ...rest);
+        const statusCode = response.statusCode ?? 200;
         // npm follows redirects with a fresh request; remember where an archive
-        // route sent it so the target keeps the archive budget.
-        if (isArchiveResponse(pending.path) && response.statusCode >= 300 && response.statusCode < 400) {
+        // route sent it so the target keeps the archive budget. Archive intent
+        // also carries through a chain of redirects.
+        const archiveRequest = isArchiveResponse(pending.path) || archiveRedirects.has(pending.path);
+        if (archiveRequest && statusCode >= 300 && statusCode < 400) {
           const location = response.headers.location;
           if (location) try {
             const target = new URL(location, "http://redirect.invalid" + pending.path);
             archiveRedirects.add(target.pathname + target.search);
-            if (archiveRedirects.size > 256) archiveRedirects.clear();
+            if (archiveRedirects.size > 256) archiveRedirects.delete(archiveRedirects.values().next().value);
           } catch {}
         }
         // Forward bodyless responses unchanged: decoding an empty body (for
         // example a 304 with Content-Encoding: gzip) fails, and rewriting
         // entity headers would corrupt cache revalidation.
-        if (isBodylessResponse(pending.method, response.statusCode)) {
+        if (isBodylessResponse(pending.method, statusCode)) {
           cancel(timer);
           return emit.call(this, event, response, ...rest);
         }
-        const maximum = responseBudget(pending.path, response.statusCode);
+        const maximum = responseBudget(pending.path, statusCode);
         // Error and redirect replies at a redirect target stay JSON-admitted.
-        const archive = isArchiveResponse(pending.path, response.statusCode) ||
-          (response.statusCode < 300 && archiveRedirects.has(pending.path));
+        const archive = statusCode < 300 && archiveRequest;
         // npm's request-error path relays a failure to this original response
         // (req.res) after the response event. Admission hands npm a separate
         // stream, so absorb that relay; otherwise it throws inside the relay

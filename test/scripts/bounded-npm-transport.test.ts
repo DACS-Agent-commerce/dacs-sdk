@@ -110,35 +110,34 @@ describe("inert bounded npm HTTP admission", () => {
     transport.request().emit("response", response([archive]));
     expect(await admitted).toEqual(archive);
   });
-  it("carries archive intent from a redirect to its suffixless target", async () => {
+  it("carries archive intent through a redirect chain to its suffixless target", async () => {
     // The target keeps the archive budget even when the payload has no tar
     // signature, matching the archive the registry redirected.
-    const target = "/download/signed-token-intent";
+    const paths = ["/fixture/-/fixture-1.0.0.tgz", "/download/hop", "/download/signed-token-intent"];
     const body = gzipSync(Buffer.alloc(65 * 1024 * 1024));
-    const pendings: EventEmitter[] = [];
-    const transport = { request: () => {
-      const pending = Object.assign(new EventEmitter(), {
-        path: pendings.length ? target : "/fixture/-/fixture-1.0.0.tgz", destroy: () => {},
-      });
-      pendings.push(pending); return pending;
-    } };
+    let issued = 0;
+    const transport = { request: () => Object.assign(new EventEmitter(), { path: paths[issued++], destroy: () => {} }) };
     installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
-    const first = transport.request();
-    const redirected = new Promise<void>((resolve, reject) => {
-      first.once("error", reject); first.once("response", () => resolve());
-    });
-    first.emit("response", Object.assign(response([], { location: target }), { statusCode: 302 }));
-    await redirected;
-    const second = transport.request();
+    const redirect = async (location: string) => {
+      const pending = transport.request();
+      const admitted = new Promise<void>((resolve, reject) => {
+        pending.once("error", reject); pending.once("response", () => resolve());
+      });
+      pending.emit("response", Object.assign(response([], { location }), { statusCode: 302 }));
+      await admitted;
+    };
+    await redirect("/download/hop");
+    await redirect(paths[2]);
+    const target = transport.request();
     const admitted = new Promise<Buffer>((resolve, reject) => {
-      second.once("error", reject);
-      second.once("response", async (stream: Readable) => {
+      target.once("error", reject);
+      target.once("response", async (stream: Readable) => {
         const chunks: Buffer[] = [];
         for await (const chunk of stream) chunks.push(chunk);
         resolve(Buffer.concat(chunks));
       });
     });
-    second.emit("response", Object.assign(response([body]), { statusCode: 200 }));
+    target.emit("response", Object.assign(response([body]), { statusCode: 200 }));
     expect(await admitted).toEqual(body);
   });
   it("refuses an over-budget gzip body lacking the tar payload at a suffixless URL", async () => {
