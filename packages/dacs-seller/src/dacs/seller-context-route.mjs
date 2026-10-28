@@ -1,7 +1,6 @@
 // Seller-owned Vet and Agreement context over the authenticated transport.
 // Admission reserves two writes. Pre-payment writes still require exact
-// seller approval; see ADMISSION.md. This is the kit's only context mode.
-import { randomUUID } from 'node:crypto';
+// seller approval. This is the kit's only context mode.
 import { identityBundleHash, isCanonicalJobId, isIdentityBundle } from '@kynesyslabs/dacs';
 import { sellerData } from '../mcp/seller-content.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
@@ -14,7 +13,7 @@ import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOP
 // The same bound as the other authenticated seller calls: the seller waits
 // for both Vet CREATEs inside this one call.
 export const SELLER_CONTEXT_TIMEOUT_MS = 240000;
-// Per buyer: five accepted starts per rolling hour, as in the frozen PR.
+// Per buyer: five accepted starts per rolling hour.
 // Overall, 12 starts of two Vet CREATEs fill the default 24 policy writes an
 // hour (operator-approval.mjs SELLER_POLICY_DEFAULTS). Counted from the
 // durable admission records, so only accepted new starts count, also after a
@@ -75,7 +74,7 @@ function bundleAuthentic(bundle) {
 // as main's in-process path does); synchronous, true or why no new write may
 // start. All write-policy, purchase and recovery capabilities are mandatory.
 export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAccess, knownJob = null, writable, admitWrites, releaseWrites,
-  recover, resumable = null, limits = SELLER_CONTEXT_LIMITS, now = () => Date.now() }) {
+  recover, resumable = null, limits = SELLER_CONTEXT_LIMITS, now = () => Date.now(), log = line => process.stderr.write(line) }) {
   const support = purchaseSupport(listing);
   if (!support.supported || typeof resolveBuyer !== 'function' || typeof assertBuyerAccess !== 'function' || (knownJob !== null && typeof knownJob !== 'function') || typeof writable !== 'function'
       || (resumable !== null && typeof resumable !== 'function')
@@ -84,23 +83,10 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     throw new TypeError('the seller context route needs a supported Listing, its context provider, buyer access, write admission and positive limits');
   }
   const seller = listing.seller.identity.presentedBy, pin = listingPin(listing);
-  // All jobs' journal reads, admission and starts run one at a time: a request
-  // for bytes another request is starting waits, then gets the journal's answer.
-  const starting = new Map();
-  const admissions=new Map();
-  const admitOneAtATime=async(request,store,work)=>{
-    const pending=admissions.get(store)??new Map(),key=sellerTransportEffect(request);
-    admissions.set(store,pending);pending.set(key,(pending.get(key)??0)+1);
-    return oneAtATime(store,work).finally(()=>{const left=pending.get(key)-1;if(left)pending.set(key,left);else pending.delete(key);if(!pending.size)admissions.delete(store);});
+  const release=async(jobId,hold)=>{
+    try { await releaseWrites({jobId,hold}); }
+    catch(error) { log(`context hold release failed: ${jobId} ${hold} ${String(error?.code??'error').slice(0,64)}\n`); }
   };
-  async function oneAtATime(jobId, work) {
-    const run = (starting.get(jobId) ?? Promise.resolve()).then(work), tail = run.catch(() => {});
-    starting.set(jobId, tail);
-    try { return await run; } finally { if (starting.get(jobId) === tail) starting.delete(jobId); }
-  }
-  // A failed release leaves the reservation held and preserves the answer.
-  const quietly = async (work) => { try { await work(); } catch { /* see above */ } };
-  const refused = async (_request, code) => { refuse(code); };
   // The unpaid-start limits, read inside the reserve transaction.
   const admitStart = (request) => ({ starts }) => {
     const at = now();
@@ -131,22 +117,14 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     if (answer?.disposition !== 'present') throw new Error('the saved context answer\'s Vet records no longer verify; it was not reported');
     return reservation;
   }
-  const attempted=new WeakSet();
-  const consume=(request,body,store)=>{
-    if(attempted.has(request))return;
-    store.attemptContextPresentation(request,body);attempted.add(request);
-  };
   return Object.freeze({
-    // Called once exact bytes authenticate, before protocol/admission checks.
-    attemptPresentation: (request,body,store) => {
-      requireContextJob(request, body);
-      if(admissions.get(store)?.has(sellerTransportEffect(request)))return;
-      try { if(store.classify(request,body)!=='start')return; } catch { /* admission cannot preserve an issued nonce */ }
-      consume(request,body,store);
+    onRejectedBody(request,body,store) {
+      requireContextJob(request,body);
+      store.attemptContextPresentation(request,body);
     },
     path: SELLER_CONTEXT_PATH,
     challengePath: SELLER_CONTEXT_CHALLENGE_PATH,
-    challenge: (request, body, store) => oneAtATime(store, async () => {
+    challenge: async (request, body, store) => {
       requireContextJob(request, body);
       if (request.jobId !== body.scope.jobId) refuse('peer_job_mismatch');
       const problem = scopeProblem(body, true);
@@ -154,49 +132,40 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       try { await assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') refuse('buyer_access_closed'); throw error; }
       if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) refuse('context_job_unknown');
       return store.issueContextChallenge(request, body.scope, { maxPerBuyer: limits.maxStartsPerBuyerPerHour, maxGlobal: limits.maxStartsPerHour, admit: admitStart(request) });
-    }),
+    },
     // Runs after transport authentication (seller-http.mjs) and returns the
     // journal's reservation. Every refusal before a 'perform' reservation is
     // definite; only required anti-replay consumption may have been written.
-    reserve: (request, body, store) => admitOneAtATime(request,store, async () => {
-      requireContextJob(request, body);
-      let kind;
-      try { kind = store.classify(request, body); }
-      catch (error) { consume(request, body, store); throw error; }
-      if (kind !== 'start') return verifiedReplay(body, store.reserve(request, body));
-
-      consume(request, body, store);
-      try { await assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') await refused(request, 'buyer_access_closed'); throw error; }
-      if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) await refused(request, 'context_job_unknown');
-      // Check every start limit before even a policy hold or refusal log.
-      store.classify(request, body, { admit: admitStart(request) });
-      const problem = scopeProblem(body);
-      if (problem) await refused(request, problem);
-      const hold = randomUUID();
-      if ((await admitWrites({ jobId: request.jobId, effect: sellerTransportEffect(request), writes: VET_WRITES, hold })) !== null) await refused(request, 'seller_budget_refused');
-      let reservation;
-      try { reservation = store.reserve(request, body, { admit: admitStart(request) }); }
-      catch (error) {
-        await quietly(() => releaseWrites({ jobId: request.jobId, hold }));
-        if (['unpaid_start_limit', 'buyer_unpaid_start_limit'].includes(error?.code)) await refused(request, error.code);
-        throw error;
+    reserve: async (request,body,store)=>{
+      requireContextJob(request,body);
+      let verdict=scopeProblem(body);
+      try { await assertBuyerAccess(request.buyer); }
+      catch(error) { if(error?.code!=='buyer_access_closed')throw error;verdict='buyer_access_closed'; }
+      if(knownJob!==null && await knownJob(request.jobId,request.buyer)!==true)verdict='context_job_unknown';
+      const reservation=store.reserve(request,body,{admit:admitStart(request),contextDecision:true,verdict});
+      const effect=sellerTransportEffect(request);
+      if(reservation.disposition==='cached') {
+        await release(request.jobId,effect);
+        return verifiedReplay(body,reservation);
       }
-      // A guard: if the journal already knows the bytes, it answers.
-      if (reservation.disposition !== 'perform') { await quietly(() => releaseWrites({ jobId: request.jobId, hold })); return reservation; }
-      return { ...reservation, contextHold: { jobId: request.jobId, hold } };
-    }),
+      if(reservation.disposition!=='perform')return reservation;
+      if(await admitWrites({jobId:request.jobId,effect,writes:VET_WRITES,hold:effect})!==null) {
+        store.finish(reservation,409,JSON.stringify({error:'seller_budget_refused'}),{noEffect:true});
+        await release(request.jobId,effect);
+        refuse('seller_budget_refused');
+      }
+      return {...reservation,contextHold:{jobId:request.jobId,hold:effect}};
+    },
     perform: (body) => {
       requireJobId(body?.scope?.jobId);
       return resolveBuyer(structuredClone(body), { writable: () => writable(body.scope.jobId, body.scope.buyer) });
     },
-    // Whenever the step has ended (a definite or an uncertain answer, or a
-    // reconciliation): the reservation's unused part is released. The writes
-    // it made keep their own policy rows, and an uncertain step is run again
-    // only as resume below allows.
-    settled: (contextHold) => {
-      if (!contextHold) return Promise.resolve();
+    // Final answers release this effect's unused holds; uncertain replays
+    // retain them until authenticated recovery reaches a final answer.
+    settled: (contextHold)=>{
+      if(!contextHold?.hold)return;
       requireJobId(contextHold.jobId);
-      return quietly(() => releaseWrites(contextHold));
+      return release(contextHold.jobId,contextHold.hold.split(':')[0]);
     },
     // An uncertain step is answered from both Vet records read back and
     // verified; nothing is written or run again. Failing that, a step a
@@ -212,23 +181,22 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       try { cut = await resumable(structuredClone(body)); } catch { return null; }
       return Number.isSafeInteger(cut?.writes) && cut.writes > 0 && cut.writes <= VET_WRITES ? { disposition: 'resume', writes: cut.writes } : null;
     },
-    // After reconcile answered 'resume': the start's checks that can change
-    // since its admission run again (buyer access, the job the app knows), a
-    // new reservation is taken for the writes still to make, and the journal
-    // hands the same effect to this request (seller-transport-auth.mjs
-    // resume). Any of them failing answers null: the step stays uncertain,
-    // with no refusal, so the buyer keeps its saved request. Not a new start:
-    // no admission record and no start limit.
-    resume: (reservation, request, store, { writes }) => oneAtATime(store, async () => {
+    // Reserve the new journal owner before taking its hold. A budget refusal
+    resume: async(reservation,request,store,{writes})=>{
       requireJobId(request?.jobId);
-      if (typeof store?.resume !== 'function') return null;
+      if(typeof store?.resume!=='function')return null;
       try { await assertBuyerAccess(request.buyer); } catch { return null; }
-      if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) return null;
-      const hold = randomUUID();
-      if ((await admitWrites({ jobId: request.jobId, effect: reservation.effectKey, writes, hold })) !== null) return null;
-      try { return { ...store.resume(reservation, request), contextHold: { jobId: request.jobId, hold } }; }
-      catch { await quietly(() => releaseWrites({ jobId: request.jobId, hold })); return null; }
-    }),
+      if(knownJob!==null && await knownJob(request.jobId,request.buyer)!==true)return null;
+      let resumed;
+      try { resumed=store.resume(reservation,request); } catch { return null; }
+      await release(request.jobId,resumed.effectKey);
+      const hold=`${resumed.effectKey}:${resumed.owner}`;
+      if(await admitWrites({jobId:request.jobId,effect:resumed.effectKey,writes,hold})!==null) {
+        store.finish(resumed,503,JSON.stringify({error:'seller_budget_refused'}));
+        return null;
+      }
+      return {...resumed,contextHold:{jobId:request.jobId,hold}};
+    },
   });
 }
 
@@ -242,7 +210,7 @@ const KNOWN_REFUSALS = new Set(['peer_job_invalid', 'context_challenge_mismatch'
 
 // Signed admission refusals the seller returns only for bytes its journal
 // does not know: it answers known bytes from the journal before admission
-// (classify), one job at a time, and the start limits are checked inside the
+// in the same transaction as challenge consumption; start limits use the
 // reserve transaction. The buyer may then drop its saved request. A refusal
 // the journal makes (peer_operation_conflict, peer_job_conflict) is not here.
 export const SELLER_CONTEXT_FRESH_REFUSALS = Object.freeze(['peer_job_invalid', 'context_challenge_mismatch', 'context_challenge_consumed', 'context_challenge_expired', 'buyer_bundle_unauthenticated', 'context_scope_invalid', 'context_generated_at', 'buyer_access_closed',
@@ -301,7 +269,7 @@ export function createSellerContextClient({ clientFor }) {
       const saved = operation?.state?.protocol?.sellerContextRequest;
       if (!record(saved) || saved.generatedAt !== sellerScope.generatedAt || !same(saved.buyerBundle, buyerIdentityBundle)) throw new TypeError('the context request differs from the one saved on the purchase; nothing was sent');
       let answer;
-      try { answer = await client.agreementContext({ scope: sellerScope, buyerIdentityBundle: saved.buyerBundle }); }
+      try { answer = await client.agreementContext(JSON.parse(canonicalize({ scope: sellerScope, buyerIdentityBundle: saved.buyerBundle }))); }
       catch (error) {
         // Any other failure is the client's unavailable request: the purchase
         // records main's facts about this attempt (seller-http.mjs
