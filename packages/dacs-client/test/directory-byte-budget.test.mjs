@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDirectoryClient } from '../src/dacs/directory.mjs';
+import { createDirectoryClient, projectSummary } from '../src/dacs/directory.mjs';
 
 const DIRECTORY_LIMIT = 10_000_000;
 const origin = 'https://directory.invalid';
@@ -10,6 +10,77 @@ const summary = {
   seller: { primaryClaim: `did:demos:agent:${'c'.repeat(64)}` },
   offering: { title: 'Example', description: '' }, status: 'active',
 };
+const revocationBinding = {
+  sellerPrimaryClaim: summary.seller.primaryClaim, listingId: summary.listingId, listingVersion: 1,
+  listingContentHash: summary.contentHash, logicalAddress: `dacs1-revoked:${encodeURIComponent(summary.seller.primaryClaim)}:example:v1`,
+  markerAnchor: { kind: 'storage-program', locator: `stor-${'d'.repeat(40)}` }, markerContentHash: 'e'.repeat(64),
+};
+// Community 074f040: listings/route.ts filters activeCatalogListings;
+// sellers/[primaryClaimRef]/route.ts returns seller.listings, including revoked.
+test('exact lookup uses the pinned seller route to discover a revoked summary', async () => {
+  const raw = { ...summary, status: 'revoked', revocation: revocationBinding };
+  assert.deepEqual(projectSummary(raw).revocationBinding, revocationBinding);
+  const paths = [];
+  const client = createDirectoryClient({ origin, fetchImpl: async input => {
+    const url = new URL(input); paths.push(url.pathname);
+    const body = url.pathname === '/api/dacs/listings' ? { listings: [], total: 0 }
+      : { listings: [raw], identity: {}, reputation: {}, deals: [] };
+    return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+  } });
+  assert.deepEqual((await client.search()).listings, []);
+  const found = await client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim });
+  assert.deepEqual(found.revocationBinding, revocationBinding);
+  assert.equal(found.verified, false);
+  assert.deepEqual(paths, ['/api/dacs/listings', `/api/dacs/sellers/${encodeURIComponent(summary.seller.primaryClaim)}`]);
+});
+for (const alias of ['revocation', 'revocationBinding']) {
+  test(`active summaries refuse ${alias} while valid revoked hints remain unverified`, () => {
+    assert.throws(() => projectSummary({ ...summary, [alias]: revocationBinding }), { kind: 'invalid', message: 'active-record-has-binding' });
+    const revoked = projectSummary({ ...summary, status: 'revoked', [alias]: revocationBinding });
+    assert.deepEqual(revoked.revocationBinding, revocationBinding);
+    assert.equal(revoked.verified, false);
+    assert.equal(projectSummary(summary).verified, false);
+  });
+}
+for (const patch of [
+  { listingId: 'TEST-other' }, { listingVersion: 2 }, { sellerPrimaryClaim: 'TEST-other' },
+  { listingContentHash: 'f'.repeat(64) }, { markerContentHash: 'TEST-not-hash' },
+  { logicalAddress: 'TEST-wrong-prefix' },
+]) {
+  test(`revoked discovery drops malformed or unrelated binding ${Object.keys(patch)[0]}`, () => {
+    for (const aliases of [{ revocation: { ...revocationBinding, ...patch } },
+      { revocation: { ...revocationBinding, ...patch }, revocationBinding: { ...revocationBinding, ...patch } }]) {
+      assert.equal(projectSummary({ ...summary, status: 'revoked', ...aliases }).revocationBinding, undefined);
+    }
+  });
+}
+test('revoked discovery preserves a generic Standard marker anchor', () => {
+  const binding = { ...revocationBinding, markerAnchor: { kind: 'TEST-other-substrate', locator: 'TEST-native-locator' } };
+  assert.deepEqual(projectSummary({ ...summary, status: 'revoked', revocation: binding }).revocationBinding, binding);
+});
+test('Directory projects equal aliases and drops ambiguous or malformed aliases', () => {
+  const both = { ...summary, status: 'revoked', revocationBinding, revocation: { ...revocationBinding } };
+  assert.deepEqual(projectSummary(both).revocationBinding, revocationBinding);
+  assert.equal(projectSummary({ ...both, revocation: { ...revocationBinding, markerContentHash: 'f'.repeat(64) } }).revocationBinding, undefined);
+  assert.equal(projectSummary({ ...both, revocation: {} }).revocationBinding, undefined);
+});
+test('Directory revocation discovery projects seven bounded fields and copies nested anchors', () => {
+  const raw = { ...revocationBinding, extra: { text: 'TEST-untrusted-extension' },
+    markerAnchor: { ...revocationBinding.markerAnchor, extra: ['TEST-extension'] } };
+  const projected = projectSummary({ ...summary, status: 'revoked', revocationBinding: raw }).revocationBinding;
+  assert.deepEqual(projected, revocationBinding);
+  assert.notEqual(projected, raw);
+  assert.notEqual(projected.markerAnchor, raw.markerAnchor);
+});
+for (const binding of [[], {}, { ...revocationBinding, logicalAddress: 'x'.repeat(1025) },
+  { ...revocationBinding, markerContentHash: {} }, { ...revocationBinding, listingVersion: 0 },
+  { ...revocationBinding, markerAnchor: { kind: 'TEST', locator: 'x'.repeat(1025) } }]) {
+  test(`Directory drops malformed or oversized revocation discovery ${JSON.stringify(binding).slice(0, 70)}`, () => {
+    const result = projectSummary({ ...summary, status: 'revoked', revocationBinding: binding });
+    assert.equal(result.revocationBinding, undefined);
+    assert.equal(result.listingId, summary.listingId);
+  });
+}
 function listingBytes(length) {
   const body = { listings: Array.from({ length: 50 }, (_, i) => ({
     ...summary, listingId: `example-${i}`, offering: { ...summary.offering },
@@ -87,4 +158,86 @@ test('Directory rejects invalid byte budgets before making a request', async () 
     await assert.rejects(client.search(), error => error.kind === 'invalid' && /request byte limit/.test(error.message));
   }
   assert.equal(calls, 0);
+});
+
+test('discovery hints cannot bypass held public artifact verification', async () => {
+  const { createListingVerifier } = await import('@kynesyslabs/dacs-client');
+  const hint = projectSummary({ ...summary, verified: true });
+  assert.equal(hint.verified, false);
+  let reads = 0;
+  const verifier = createListingVerifier({ directory: { findSummary() { reads++; return hint; } } });
+  await assert.rejects(verifier.verify(hint), { code: 'profile_not_admitted' });
+  assert.equal(reads, 0);
+});
+for (const listings of [Array(201).fill(summary), [summary, summary]]) {
+  test(`exact discovery refuses ${listings.length === 201 ? 'oversized' : 'ambiguous'} seller summaries`, async () => {
+    const client = createDirectoryClient({ origin, fetchImpl: async () => new Response(JSON.stringify({ listings }), { headers: { 'content-type': 'application/json' } }) });
+    await assert.rejects(client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim }), error => error.kind === 'invalid');
+  });
+}
+
+for (const logicalAddress of ['dacs1-revoked:bogus',
+  `dacs1-revoked:${summary.seller.primaryClaim}:example:v1`,
+  revocationBinding.logicalAddress.replaceAll('%3A', '%3a'),
+  revocationBinding.logicalAddress.replace(':example:', ':other:'),
+  revocationBinding.logicalAddress.replace(':v1', ':v2')]) {
+  test(`revocation hints require the exact CF-4 address: ${logicalAddress}`, () => {
+    for (const alias of ['revocation', 'revocationBinding']) {
+      assert.equal(projectSummary({ ...summary, status: 'revoked', [alias]: { ...revocationBinding, logicalAddress } }).revocationBinding, undefined);
+      assert.deepEqual(projectSummary({ ...summary, status: 'revoked', [alias]: revocationBinding }).revocationBinding, revocationBinding);
+    }
+  });
+}
+for (const kind of ['fixed', 'negotiable', 'auction', 'metered']) {
+  test(`Directory retains the pinned pricing kind ${kind}`, () => {
+    assert.equal(projectSummary({ ...summary, pricing: { kind } }).pricingHint.kind, kind);
+  });
+}
+for (const artifactProfile of ['dacs-v0.1', 'legacy-sdk-v0.1', 'fixture-listing']) {
+  test(`Directory retains the pinned artifact profile ${artifactProfile}`, () => {
+    assert.equal(projectSummary({ ...summary, artifactProfile }).artifactProfile, artifactProfile);
+  });
+}
+test('Directory omits unknown presentation enums without discarding unverified discovery', () => {
+  for (const value of ['TEST-unknown', '', null, {}, 1]) {
+    const hint = projectSummary({ ...summary, pricing: { kind: value }, artifactProfile: value });
+    assert.equal(hint.pricingHint.kind, undefined);
+    assert.equal(hint.artifactProfile, undefined);
+    assert.equal(hint.verified, false);
+  }
+});
+test('Directory retains epoch milliseconds and bounded legacy ISO observation times', () => {
+  for (const value of [1000, '1970-01-01T00:00:01.000Z']) {
+    assert.equal(projectSummary({ ...summary, catalogObservedAt: value }).catalogObservedAt, 1000);
+  }
+  for (const value of [NaN, 1.5, -1, 'TEST-invalid-date', 'x'.repeat(65)]) {
+    assert.equal(projectSummary({ ...summary, catalogObservedAt: value }).catalogObservedAt, undefined);
+  }
+});
+for (const status of [404, 429, 500]) {
+  test(`exact lookup preserves the meaning of HTTP ${status}`, async () => {
+    const client = createDirectoryClient({ origin, fetchImpl: async () => new Response('{}', { status }) });
+    const read = () => client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim });
+    if (status === 404) assert.equal(await read(), null);
+    else await assert.rejects(read, error => error.kind === 'unavailable' && error.status === status);
+  });
+}
+
+for (const alias of ['revocation', 'revocationBinding']) {
+  for (const binding of [revocationBinding, {}, null]) {
+    test(`Directory search and exact lookup refuse active ${alias} evidence (${binding === null ? 'null' : Object.keys(binding).length})`, async () => {
+      const raw = { ...summary, [alias]: binding };
+      const client = createDirectoryClient({ origin, fetchImpl: async () =>
+        new Response(JSON.stringify({ listings: [raw] }), { headers: { 'content-type': 'application/json' } }) });
+      await assert.rejects(client.search(), { kind: 'invalid', message: 'active-record-has-binding' });
+      await assert.rejects(client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim }),
+        { kind: 'invalid', message: 'active-record-has-binding' });
+    });
+  }
+}
+test('Directory search and exact lookup accept active summaries without a binding', async () => {
+  const client = createDirectoryClient({ origin, fetchImpl: async () =>
+    new Response(JSON.stringify({ listings: [summary] }), { headers: { 'content-type': 'application/json' } }) });
+  assert.equal((await client.search()).listings[0].status, 'active');
+  assert.equal((await client.findSummary({ listingId: summary.listingId, version: 1, seller: summary.seller.primaryClaim })).status, 'active');
 });

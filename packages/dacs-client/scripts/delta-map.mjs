@@ -76,7 +76,7 @@ export function checkDeltas(packageDir=pkg) {
   for(const c of data.changes) {
     if(subjects.has(c.subject)) failures.push(`duplicate delta subject ${c.subject}`);
     subjects.add(c.subject);
-    if(!['D10','D9','D1','D15','D16'].includes(c.delta)||!c.subject.startsWith(`delta(client): ${c.delta} `)) failures.push(`invalid delta ${c.subject}`);
+    if(!['D10','D9','D1','D11','D15','D16'].includes(c.delta)||!c.subject.startsWith(`delta(client): ${c.delta} `)) failures.push(`invalid delta ${c.subject}`);
     const matches=history.filter(h=>h.subject===c.subject);
     if(matches.length!==1) failures.push(`delta commit selector must resolve once: ${c.subject}`);
     if(matches.length===1) {
