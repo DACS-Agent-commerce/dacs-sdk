@@ -41,9 +41,10 @@ const host = await startSellerHost({
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
-                         // readRevocationSurfaces, readRevocationMarker }: the seller-owned session admission,
-                         // Vet record reader, receipt reader and receipt verifier, and revocation readers
-                         // (src/dacs/session-admission.mjs)
+                         // readRevocationSurfaces, readRevocationMarker, readSessionRecipeRegistryPin?, vetEvidence? }: the
+                         // seller-owned session admission, Vet record reader, receipt reader and receipt
+                         // verifier, revocation readers, optional registry pin reader for presence-only
+                         // Vet requirements, and optional Vet evidence readers (src/dacs/session-admission.mjs)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
   reconcileDeliverableCreate: deliveryJournal.reconcile, // optional: the Deliverable journal's answer for a
@@ -436,12 +437,37 @@ per-client limiter so one client cannot exhaust the shared request budget.
   check (`sellerFulfilmentVetRequirementsViolation`) before it signs: exactly
   one per record, evaluating its party, naming that counterparty as
   verifier, the Listing's `buyerRequirement` for the buyer's record, and
-  every required claim covered by a result for this job. Each record must
+  every required claim covered by a result for this job, except a
+  presence-only claim (`verificationRequired: false`), which has no result
+  (DACS-2 forbids a synthetic one). Each record must
   also pass the SDK's strict CompositeVerificationRecord check against its
   invocation: its `requirementHash` is the hash of that exact requirement
   and its decision replays from the invocation's results (DACS-2 §7.7.1).
-  This package resolves no VerifyResult, so a requirement with a required
-  claim is refused. Otherwise the Agreement is not signed, before any
+  A presence-only claim is counted in the party's exact bundle, whose
+  presentation is verified, against the registry snapshot the operator
+  pinned for the job: the optional `readSessionRecipeRegistryPin({ jobId })`
+  returns its sha-256 hash (read once, only for such a requirement, with the
+  other readers' byte, list and time limits). Without that reader, or with an
+  answer that is not a hash, a presence-only requirement is refused; a reader
+  that fails or times out makes the check indeterminate.
+  A requirement with a required verified claim replays only through the
+  operator's optional `sessionAdmission.vetEvidence`, five readers that each
+  also receive `{ jobId, role, party }`: `resolveContent({ anchor, contentHash })`
+  answers `null`, `{ encoding: 'canonical-json', value }` or
+  `{ encoding: 'bytes', value }` (base64url) for a VerifyResult or its
+  authority content; `resolveRecipe({ scheme, method, recipeVersion })` the
+  steward-signed recipe or `null` (the registry read; the core `resolveRecipe`
+  over the operator's pinned registry fits); `isRecipeSignerAuthorized({ recipe,
+  signature })` and `isVerifyResultSignerAuthorized({ result, signature,
+  expected })` answer `true` only for a signer the operator trusts; and
+  `verifyAuthorityAttestation({ result, expected, recipe, content })` answers
+  `'valid'`, `'invalid'` or `'unresolved'`. The SDK still hashes each content
+  against its reference, verifies both signatures and recomputes the
+  aggregation. Each read has the 64 KiB, value, list and 10 s limits of the
+  other admission readers, and one replay has a 30 s total deadline; a reader
+  that throws, stalls or answers too much makes the proposal `indeterminate`
+  with that cause. Without `vetEvidence`, a requirement with a required verified claim
+  is refused. Otherwise the Agreement is not signed, before any
   payment. A session
   in flight, signed under its pin, continues without a new admission or
   revocation check. The agent's startup check reads only the Listing's own
