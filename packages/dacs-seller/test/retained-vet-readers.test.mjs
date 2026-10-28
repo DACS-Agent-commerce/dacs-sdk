@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
 import {JOB} from './helpers/protocol-fixture.mjs';
-const signatures=f=>f.signed.filter(text=>text.startsWith('dacs-agreement:')).length;
+const signatures=f=>f.signed.filter(text=>text===Buffer.from(f.body.proposal.plan.signedBytes).toString()).length;
 async function completed(t){
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);
  const answer=await agent.receiveProposal(body);assert.equal(answer.disposition,'complete');
+ assert.equal(signatures({...f,body}),1,'the fixture must observe its exact Agreement signing bytes');
  return {...f,agent,body,answer};
 }
 for(const method of ['resolveVetRecord','readVetAnchorReceipt','verifyVetAnchorReceipt'])for(const role of ['buyer','seller'])test(`retained ${role} ${method} accepts authenticated raw JSON after restart`,async t=>{
