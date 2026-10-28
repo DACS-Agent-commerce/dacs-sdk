@@ -6,6 +6,30 @@ import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
 import { seller, JOB, protocolFixture } from './helpers/protocol-fixture.mjs';
 import { createDevnetPurchasedReportProducer } from '../src/devnet-demo/deliverable.mjs';
 
+for (const allowed of [true, false]) test(`fresh publication awaits durable authorization ${allowed}`, async () => {
+  const f = await anchorFixture(), anchor = f.open();
+  const input = { logicalAddress: finalityCommitmentAddress(JOB), artifact: await f.artifact(JOB), artifactKind: 'FinalityCommitmentRecord' };
+  let resume, entered;
+  const gate = new Promise(resolve => { resume = resolve; }), ready = new Promise(resolve => { entered = resolve; });
+  const pending = anchor.publish({ ...input, authorize: async () => { entered(); return gate; } });
+  const outcome = pending.catch(error => error);
+  await ready;
+  assert.equal(f.journal.rows.size, 0); assert.equal(f.captured.length, 0);
+  resume(allowed);
+  const result = await outcome;
+  if (allowed) assert.equal(result.status, 'indeterminate');
+  else assert.equal(result.code, 'not-authorized');
+  assert.equal(f.captured.length, allowed ? 1 : 0); assert.equal(f.journal.rows.size, allowed ? 1 : 0);
+});
+
+test('fresh publication preserves a rejected durable authorization cause without effects', async () => {
+  const f = await anchorFixture(), cause = new Error('TEST lifecycle store unavailable');
+  const verdict = Promise.reject(cause); void verdict.catch(() => {});
+  await assert.rejects(f.open().publish({ logicalAddress: finalityCommitmentAddress(JOB), artifact: await f.artifact(JOB),
+    artifactKind: 'FinalityCommitmentRecord', authorize: () => verdict }), error => error === cause);
+  assert.equal(f.journal.rows.size, 0); assert.equal(f.captured.length, 0);
+});
+
 for(const answer of [{result:200,response:0,success:false,error:'TEST failed'},{result:200,response:0},{result:200,response:0,require_reply:false,extra:null,error:'TEST refused'}]) test(`contradictory/incomplete nonce envelope refuses before wallet (${JSON.stringify(answer)})`,async()=>{
   const f=await anchorFixture();f.source.readRpc=async()=>answer;
   await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate');assert.equal(f.captured.length,0);assert.equal(f.journal.rows.size,0);
