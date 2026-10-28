@@ -54,7 +54,7 @@ async function world(t, { listingChanges = () => {} } = {}) {
   };
   const capabilities = {
     signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
-    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
+    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: candidate => candidate === jobId ? buyerKey.address : null }),
     agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },
     nativeArtifactAnchor: { writer: sellerKey.claim, publish: refuse('publish'), readRetained: refuse('readRetained'), verifyReceipt: refuse('verifyReceipt') },
     deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: refuse('verifyDeliverySchema') },
