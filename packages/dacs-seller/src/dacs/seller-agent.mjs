@@ -1458,10 +1458,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if(check.decision!=='pass')return held('delivery evidence verifier refused the retained evidence');
     // No-resend: the artifact anchor journals its CREATE intent before it asks
     // the wallet. A retained intent (sent, lost, denied or unknown) is only
-    // ever read back. 'absent' means this seller never reached the wallet for
-    // this address (for example the intent write itself failed), so the
-    // write is published again; publish() re-checks the journal under the
-    // wallet lock and falls back to readback if an intent appeared meanwhile.
+    // ever read back. Only an absence the capability itself proves unsigned (a
+    // branded no-intent verdict, as the shipped artifact anchor returns for
+    // proofOfNoIntent) permits the write again; a plain absent (a lagging name
+    // index, or a verdict that lost its proof) does not establish that nothing
+    // was signed, so it holds instead of asking a non-idempotent capability for
+    // a second CREATE at the same address.
     let read;
     try{
       if(!session.deliveryEvidenceWork){
@@ -1469,8 +1471,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }else{
         if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
-        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence'});
-        if(read?.status==='absent'&&deliveryEvidenceEnabled)read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true});
+        if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }
     }catch(error){return held(String(error?.message??error).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
