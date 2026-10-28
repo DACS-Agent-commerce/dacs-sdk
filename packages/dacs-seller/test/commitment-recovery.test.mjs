@@ -14,7 +14,23 @@ import {contributionVerifier,agreementInput}from'../src/dacs/purchase-protocol.m
 import {buildStorageProgramCreatePayload,deriveStorageAddress}from'../src/dacs/wallet-transactions.mjs';
 import {createSellerAgent}from'../src/dacs/seller-agent.mjs';
 import {fixtureListing,fixtureIdentityBundle}from'./fixtures/listings.mjs';
+import {createSellerHttpHandler}from'../src/dacs/seller-http.mjs';
+import {exchange}from'./helpers/d5-http-fixture.mjs';
 function projection(agreement){const logicalAddress=core.fixedPriceAgreementLogicalAddress(agreement.jobId),programName=core.logicalToStorageProgramName(logicalAddress),storageAddress=deriveStorageAddress(buyer.address,programName,1,'');const tx=buildStorageProgramCreatePayload({from:buyer.address,storageAddress,programName,logicalAddress,signedListing:agreement,nonce:1,timestamp:NOW});tx.content.from_ed25519_address=buyer.address;Object.assign(tx.content.data[1].metadata,{artifactKind:'Agreement',contentHash:core.contentHash(agreement),envelopeHash:core.sha256Hex(core.canonicalize(agreement))});tx.hash=core.sha256Hex(JSON.stringify(tx.content));tx.signature={type:'ed25519',data:'0x'+buyer.signBytes(Buffer.from(tx.hash)).toString('hex')};return tx;}
+for(const early of [false,true])test(`cached ${early?'signature':'ordinary'} commitment authenticates fresh receipt on every HTTP replay`,async t=>{
+ const f=await commitmentFixture(t,{early}),{agent,agreement}=await f.prepare();
+ const body=early?{jobId:JOB,agreement,signedProjection:projection(agreement)}:{jobId:JOB};
+ const cached=await (early?agent.commitOnSignature(body):agent.commit(body)),writes=f.local.writes.length;
+ const store={reserve:()=>({disposition:'cached',status:200,text:JSON.stringify(cached)})};
+ const authentication={seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>({jobId:JOB}),validate(){},responseHeader:async()=> 'TEST-header'};
+ const handler=createSellerHttpHandler(agent,{authentication,commitOnSignature:early});
+ const post=()=>exchange(handler,{url:early?'/dacs/v1/commitments/signature':'/dacs/v1/commitments',text:JSON.stringify(body)});
+ assert.equal((await post()).status,200);
+ const read=f.local.controls.read;
+ f.local.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,evidence:{...row.receipt.evidence,value:'TEST changed proof'}}}:row;
+ for(let attempt=0;attempt<2;attempt++)assert.equal((await post()).status,503,'a retained answer cannot replace current authentication');
+ f.local.controls.read=read;assert.equal((await post()).status,200);assert.equal(f.local.writes.length,writes);
+});
 nativeCommit('successful native commitment replays exact state after restart and rejects contradictory block time',async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');const kept=agent.durableSessionOf(JOB).commitment;agent.close();const fresh=await f.open();assert.equal((await fresh.commit({jobId:JOB})).status,'committed');assert.deepEqual(fresh.durableSessionOf(JOB).commitment,kept);assert.equal(f.local.writes.length,1);
  f.local.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,blockRef:{...row.receipt.blockRef,timestamp:row.receipt.blockRef.timestamp+1000}}}:row;
@@ -73,4 +89,11 @@ for(const stage of ['delivered','copies-exchanged'])for(const failing of [false,
  const f=await fixtureProfile(t,true),agent=f.agent;await agent.commit({jobId:JOB});agent.TESTsessions.get(JOB).stage=stage;
  if(failing){f.anchors.controls.read=()=>({status:'indeterminate'});await assert.rejects(agent.commit({jobId:JOB}),e=>e.code==='substrate_unavailable');}else assert.equal((await agent.commit({jobId:JOB})).status,'committed');
  assert.equal(agent.stageOf(JOB),stage);
+});
+
+test('read-only commitment authentication with no retained CREATE never signs or publishes',async t=>{
+ const f=await commitmentFixture(t),{agent}=await f.prepare();let signs=0;
+ f.config.signer.sign=()=>{signs++;throw new Error('TEST read-only signer called');};
+ await assert.rejects(agent.readCommitment({jobId:JOB}),error=>error.code==='commitment_readback_required');
+ assert.equal(f.local.writes.length,0);assert.equal(signs,0);
 });
