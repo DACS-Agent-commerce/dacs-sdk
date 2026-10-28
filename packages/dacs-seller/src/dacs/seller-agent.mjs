@@ -27,6 +27,7 @@ import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreat
 import { canonicalize, commitFixedPriceAgreement, contentHash, isListing, createFsFencedSessionStore, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, paymentEvidenceAddress, respondToFixedPriceAgreementProposalDurable, runDurableFulfilmentToDeliveryReady, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, verifySellerPaymentIntake, verifySettlementEvidence, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { randomBytes } from 'node:crypto';
+import { MAX_STORAGE_ARTIFACT_BYTES } from './wallet-transactions.mjs';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
@@ -1106,8 +1107,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         const expected = listing.offering.deliverable.expectedSizeBytes;
         // A producer can be corrected after payment. Do not let a size
         // disagreement become the core's permanent preparation-failed handoff.
-        if (size > 128 * 1024 || (expected !== undefined && size !== expected)) {
-          return { status: 'indeterminate', reason: `inline delivery size ${size} differs from supported expectedSizeBytes ${expected ?? 'undeclared'} (maximum 131072)` };
+        if (size > MAX_STORAGE_ARTIFACT_BYTES || (expected !== undefined && size !== expected)) {
+          return { status: 'indeterminate', reason: `inline delivery size ${size} differs from supported expectedSizeBytes ${expected ?? 'undeclared'} (maximum ${MAX_STORAGE_ARTIFACT_BYTES})` };
         }
         return { status: 'prepared', delivery: { artifact: { kind: phase, cleartextPayload: report, anchoredValue: report, access: { model: 'public' } } } };
       },
@@ -1484,8 +1485,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const binding = nativeDeliveryBinding(session, work, ready.fulfilmentId);
     const reread = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: ready.logicalAddress, report,
       receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding });
-    const valid = reread.status === 'present' && ready.paymentPermitId === work.intake.permitId && ready.contentHash === sha256Hex(canonicalize(report)) &&
-      canonicalize(ready.deliveryBinding) === canonicalize(binding) && sameNativeDeliveryReceipt(reread.receipt, ready.anchorReceipt);
+    const valid = reread.status === 'present' && reread.artifact && canonicalize(reread.artifact) === canonicalize(report) && ready.paymentPermitId === work.intake.permitId && ready.contentHash === sha256Hex(canonicalize(report)) &&
+      canonicalize(ready.deliveryBinding) === canonicalize(binding) && sameNativeDeliveryReceipt(reread.receipt, ready.anchorReceipt) &&
+      await verifyNativeDemDeliveryReceipt(nativeDelivery, {jobId:session.jobId,logicalAddress:ready.logicalAddress,report,receipt:reread.receipt,receiptContentHash:ready.contentHash,deliveryBinding:binding,signedProjection:reread.signedProjection}) === 'valid';
     if (!valid) return nativeEvidenceResponse(work, { status: 'held', reason: reread.reason ?? 'persisted SDK delivery-ready result did not authenticate on fresh native read' });
     return finishDeliveryEvidence(session, work, { status: 'delivery-ready', fulfilmentId: ready.fulfilmentId, logicalAddress: ready.logicalAddress,
       contentHash: ready.contentHash, anchorReceipt: reread.receipt, evidenceHash: ready.evidenceHash, deliveryBinding: binding,
