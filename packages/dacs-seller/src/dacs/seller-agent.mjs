@@ -580,6 +580,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             const presentationProblem = sellerSessionPresentationProblem(sessionSeller, sellerBundle);
             if (presentationProblem) return { disposition: 'rejected', reason: `seller identity differs: ${presentationProblem}` };
             const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sessionSeller, session.buyerBundle.presentedBy]];
+            // One job-wide pin: both party records' unpinned claims must resolve
+            // the same authenticated session registry snapshot before signing.
+            const sessionRegistryPins = [];
             for (const [role, party, bundle, verifier] of parties) {
               const ref = resolved.input[role].vetRecordRef;
               const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
@@ -587,7 +590,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
               let problem;
-              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, evidence: admission.vetEvidence }); }
+              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, evidence: admission.vetEvidence, sessionRegistryPins }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet evidence is unavailable`); }
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on

@@ -458,8 +458,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   needs `resolveLatestRecipe({ scheme, method, required })`, which answers the
   operator's authenticated session registry selection
   `{ sessionRecipeRegistrySnapshotHash, recipeVersion }` (or `null`); the
-  result's pinned version must equal it, and every such claim in one replay
-  must resolve against one snapshot pin. Without that reader an unpinned
+  result's pinned version must equal it, and every such claim across both
+  party records of one job must resolve against one snapshot pin. Without that
+  reader an unpinned
   claim is refused rather than guessed. The SDK still hashes each content
   against its reference, verifies both signatures, re-derives a
   `ClaimRequirement.parameters` predicate and recomputes the aggregation. Each

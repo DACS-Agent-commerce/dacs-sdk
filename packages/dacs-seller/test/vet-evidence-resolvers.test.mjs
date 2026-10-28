@@ -17,7 +17,7 @@ const sign = (unsigned, separator, wallet) => core.signComponentArtifact(unsigne
 
 // A counterparty-signed record of `buyer` (verified by `seller`) whose requirement names one verified claim,
 // with that claim's VerifyResult, recipe and authority content kept as an operator would hold them.
-async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true } } = {}) {
+async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller } = {}) {
   const recipe = await sign({ recipeVersion: 1, scheme: 'domain', defaultMethod: { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate: 'https://authority.example/{identifier}' } },
     defaultMaxAgeSec: 3600, parserRules: { format: 'json', successJsonPath: '$.active' }, retryClass: 'permanent', availability: 'live',
     governance: { proposedBy: recipeSteward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' } }, 'dacs-recipe:v1:', recipeSteward);
@@ -30,11 +30,11 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
     data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultSigner);
   const resultRef = { anchor: { kind: 'storage-program', locator: RESULT_LOCATOR }, contentHash: core.contentHash(result), recipeVersion: 1 };
   const bundleHash = core.sha256Hex('TEST evaluated bundle');
-  const record = await sign({ recordVersion: '1', jobId: JOB, evaluatedParty: buyer.claim, bundleHash, requirementHash: core.sha256Hex(core.canonicalize(bundleRequirement)),
-    freshness: list === 'freshness' ? [resultRef] : [], supplementary: [], dealSpecific: list === 'dealSpecific' ? [resultRef] : [], overallDecision: 'pass', generatedAt: NOW }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, seller);
-  const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(JOB, buyer.claim) }, contentHash: core.contentHash(record), signer: seller.claim };
+  const record = await sign({ recordVersion: '1', jobId: JOB, evaluatedParty: party.claim, bundleHash, requirementHash: core.sha256Hex(core.canonicalize(bundleRequirement)),
+    freshness: list === 'freshness' ? [resultRef] : [], supplementary: [], dealSpecific: list === 'dealSpecific' ? [resultRef] : [], overallDecision: 'pass', generatedAt: NOW }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, verifier);
+  const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(JOB, party.claim) }, contentHash: core.contentHash(record), signer: verifier.claim };
   const expected = [{ ref: resultRef, sourceJobId: JOB, scheme: 'domain', identifier: 'alice.example', method: 'consensus-backed-proxy', requirement: bundleRequirement.required[0] }];
-  const invocation = { vetRecordRef: ref, evaluatedParty: buyer.claim, requirement: bundleRequirement, verifier: seller.claim, freshness: list === 'freshness' ? expected : [], dealSpecific: list === 'dealSpecific' ? expected : [] };
+  const invocation = { vetRecordRef: ref, evaluatedParty: party.claim, requirement: bundleRequirement, verifier: verifier.claim, freshness: list === 'freshness' ? expected : [], dealSpecific: list === 'dealSpecific' ? expected : [] };
   const contents = new Map([[RESULT_LOCATOR, { encoding: 'canonical-json', value: result }],
     [AUTHORITY_LOCATOR, authorityContent.encoding === 'bytes' ? { encoding: 'bytes', value: authorityContent.value } : { encoding: 'canonical-json', value: authorityValue }]]);
   const calls = [];
@@ -46,7 +46,7 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
     isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === resultSigner.claim,
     verifyAuthorityAttestation: async ({ content }) => (content.encoding === 'bytes' ? Buffer.from(content.value).toString() === '{"active":true}' : content.value.active === true) ? 'valid' : 'invalid',
   };
-  const replay = (overrides = {}) => vetRecordProblem(record, { ref, jobId: JOB, role: 'buyer', party: buyer.claim, bundleHash, verifier: seller.claim, invocation, now: () => NOW,
+  const replay = (overrides = {}) => vetRecordProblem(record, { ref, jobId: JOB, role: party === buyer ? 'buyer' : 'seller', party: party.claim, bundleHash, verifier: verifier.claim, invocation, now: () => NOW,
     evidence: { ...evidence, ...overrides.evidence }, ...overrides.input });
   return { record, ref, result, recipe, contents, calls, evidence, replay, invocation };
 }
@@ -248,6 +248,16 @@ test('one replay resolves every unpinned claim against one session registry snap
   let calls = 0;
   const problem = await fixture.replay({ input: { invocation },
     evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: (calls++ === 0 ? 'ab' : 'cd').repeat(32), recipeVersion: 1 }) } });
+  assert.match(problem, /another session registry snapshot/);
+});
+
+test('one job resolves both party records against one session registry snapshot', async () => {
+  const pins = [];
+  const buyerRecord = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  const sellerRecord = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement, party: seller, verifier: buyer });
+  assert.equal(await buyerRecord.replay({ input: { sessionRegistryPins: pins } }), null);
+  const problem = await sellerRecord.replay({ input: { sessionRegistryPins: pins },
+    evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: 'cd'.repeat(32), recipeVersion: 1 }) } });
   assert.match(problem, /another session registry snapshot/);
 });
 

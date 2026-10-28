@@ -38,7 +38,8 @@
 //    claim without `recipeVersion` selects the latest live family version in
 //    the authenticated session registry snapshot (DACS-2 §7.4.3), answered by
 //    the optional `resolveLatestRecipe` reader; without that reader such a
-//    claim is refused. Replay uses the optional
+//    claim is refused, and both records of a job must select one snapshot pin.
+//    Replay uses the optional
 //    `vetEvidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
 //    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
 //    verifyAuthorityAttestation }`, read with the admission readers' limits
@@ -266,8 +267,9 @@ function unpinnedVerifiedResults(...lists) {
 }
 
 // The result version an unpinned claim must match: the family version the
-// operator's authenticated session registry snapshot selects as latest. One
-// replay must resolve every such claim against one snapshot pin.
+// operator's authenticated session registry snapshot selects as latest. Every
+// unpinned claim the checked records of one job name must resolve against one
+// snapshot pin, so the seller never signs under two session snapshots.
 async function latestSessionRecipeProblem(read, entry, pins) {
   const selection = await read('resolveLatestRecipe', { scheme: entry.scheme, method: entry.method, required: true });
   if (selection === null) return 'the Vet session registry has no live recipe version for the unpinned claim';
@@ -368,7 +370,10 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // refused. Throws the first failure of an evidence reader (timeout, oversize,
 // a throw): that is unavailable evidence, not a record that fails its
 // requirement. A malformed content reply is a record problem, not a throw.
-export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence }) {
+// `sessionRegistryPins` is one array shared by the record checks of one job:
+// the first authenticated session registry pin a record resolves becomes the
+// job's pin, and every later record of that job must resolve the same one.
+export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
@@ -381,7 +386,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   // The verifier checks every signature itself with the signer's own key; the
   // operator's policy decides which signers other than the verifier may sign.
   const resolvePublicKey = (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : reads && signature.algorithm === 'ed25519' ? signature.signer : null);
-  const pins = [];
+  const pins = sessionRegistryPins ?? [];
   let strict, thrown, problem;
   try {
     if (unpinned.length > 0) {
