@@ -5,7 +5,7 @@ import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
 import { canonicalize, commitFixedPriceAgreement, contentHash, isListing, createFsFencedSessionStore, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, paymentEvidenceAddress, respondToFixedPriceAgreementProposalDurable, runDurableFulfilmentToDeliveryReady, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, verifySellerPaymentIntake, verifySettlementEvidence, ARTIFACT_SEPARATORS, compositeVerificationAddress, isCompositeVerificationRecord, isCanonicalBase64Url, signedBytes } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
-import { MAX_STORAGE_ARTIFACT_BYTES } from './wallet-transactions.mjs';
+import { MAX_STORAGE_ARTIFACT_BYTES, assertStorageJsonDepth } from './wallet-transactions.mjs';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
@@ -1097,6 +1097,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if (size > MAX_STORAGE_ARTIFACT_BYTES || (expected !== undefined && size !== expected)) {
           return { status: 'indeterminate', reason: `inline delivery size ${size} differs from supported expectedSizeBytes ${expected ?? 'undeclared'} (maximum ${MAX_STORAGE_ARTIFACT_BYTES})` };
         }
+        // The CREATE writer refuses JSON past its depth bound before it builds a transaction; a throw after the permit is spent would keep a prepared handoff no correction replaces.
+        try { assertStorageJsonDepth(report); } catch { return { status: 'indeterminate', reason: 'the report nests deeper than one storage CREATE can carry' }; }
         if (schemaUrl !== undefined) {
           const verdict = await deps.verifyDeliverySchema({ schemaUrl, cleartextPayload: report });
           if (verdict?.disposition !== 'valid') return { status: 'indeterminate', reason: verdict?.reason || 'report schema validation is not valid' };

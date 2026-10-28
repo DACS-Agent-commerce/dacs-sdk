@@ -1507,3 +1507,24 @@ test('a native delivery read whose signed projection conflicts with its receipt 
  assert.equal(done.delivery?.status,'delivery-ready',shown(done));
  assert.equal(w.createsAt(deliverable),1);
 });
+
+// The storage CREATE writer refuses JSON nested past 64 levels before it builds
+// a transaction. A report that deep is refused at preparation, so the payment
+// permit is never spent and a corrected producer still delivers this order.
+test('a report nested past the storage CREATE depth is held before the permit is spent and recovers with corrected bytes',async t=>{
+ let deep=true;
+ // Both answers are the same canonical size, as the Listing declares.
+ const producer=input=>{const value=report({body:['a'.repeat(172)]})(input);
+  if(deep){let node=['a'.repeat(32)];for(let level=0;level<70;level++)node=[node];value.body=node;}
+  return value;};
+ const w=await world(t,{schemaUrl:false,deliverableProducer:producer});
+ const p=await w.purchase(),tx=p.pay(),deliverable=`dacs4:deliverable:${p.jobId}`;
+ const held=await p.claim(tx);
+ assert.equal(held.delivery?.status,'held',shown(held));
+ assert.match(held.delivery.reason,/nests deeper than one storage CREATE can carry/);
+ assert.equal(w.createsAt(deliverable),0,'the deep report never reaches the CREATE writer');
+ deep=false;
+ const done=await p.claim(tx);
+ assert.equal(done.delivery?.status,'delivery-ready',shown(done));
+ assert.equal(w.createsAt(deliverable),1);
+});
