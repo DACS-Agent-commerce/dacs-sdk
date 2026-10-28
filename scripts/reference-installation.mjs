@@ -216,6 +216,14 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     for (const [location, record] of entries) {
       record.present = inventory.get(location)?.kind === "directory";
       if (record.entry.inBundle === true && !roots.has(location)) {
+        // An unavailable, explicitly excluded source has no archive roots.
+        // Find this bundle's source owner, including through nested bundles.
+        let owner = location;
+        while (entries.get(owner)?.entry.inBundle === true) {
+          const split = owner.lastIndexOf("/node_modules/");
+          owner = split < 0 ? "" : owner.slice(0, split);
+        }
+        if (!record.present && excluded.has(owner)) continue;
         throw new Error("bundled lock entry is not in the archive of the package bundling it: " + location);
       }
       if (!record.present) continue;
