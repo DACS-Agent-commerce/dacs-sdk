@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {proposalAdmissionFixture,proposalForInput} from './helpers/proposal-admission-fixture.mjs';
 import {JOB,NOW} from './helpers/protocol-fixture.mjs';
 import {canonicalize} from '@kynesyslabs/dacs';
+import {createDemDeliveryContext} from '../src/dacs/dem-delivery-context-consumer.mjs';
 
 const MINIMUM_REPORT_SIZE=Buffer.byteLength(canonicalize({jobId:'0'.repeat(26),agreementHash:'0'.repeat(64),settlementId:`demos:${'0'.repeat(64)}`}));
 const REFUSED_REPORT_SIZES=[null,MINIMUM_REPORT_SIZE-1,...[1,2,3,4].map(offset=>MINIMUM_REPORT_SIZE+offset)];
@@ -34,6 +35,17 @@ test('oversized Vet data is held before cloning and authentication',async t=>{
 test('a stalled Vet reader aborts and releases the active job fence',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);let enter,limits;const started=new Promise(r=>enter=r);f.admission.sessionAdmission.resolveVetRecord=(_input,options)=>{limits=options;enter();return new Promise(()=>{});};
  t.mock.timers.enable({apis:['setTimeout']});const pending=agent.receiveProposal(request);await started;t.mock.timers.tick(10001);const answer=await pending;assert.equal(answer.disposition,'indeterminate');assert.equal(answer.cause?.name,'TimeoutError');assert.equal(limits.signal.aborted,true);agent.close();
+});
+
+test('a stalled DEM delivery context resolver aborts and releases the job fence',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let enter,limits,calls=0;
+ const started=new Promise(r=>enter=r);
+ f.config.demDeliveryContext=createDemDeliveryContext({authority:'TEST-stalled-delivery',resolveBuyer:async()=>null,
+  resolveSeller:(request,options)=>{if(calls++===0){limits=options;enter();return new Promise(()=>{});}return {disposition:'present',value:structuredClone(f.contexts.get(request.jobId))};}});
+ const agent=await f.open(),request=await f.proposal(agent),pending=agent.receiveProposal(request);
+ await started;const answer=await pending;
+ assert.equal(answer.disposition,'indeterminate');assert.match(answer.reason,/^DEM delivery seller context failed: /);assert.equal(limits.signal.aborted,true);
+ assert.equal((await agent.receiveProposal(request)).disposition,'complete','the same job runs again after the fence is released');
 });
 
 test('retired admission history remains bounded even when no live job is held',async t=>{
