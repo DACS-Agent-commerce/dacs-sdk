@@ -161,9 +161,11 @@ authenticate_registry() {
   auth_token=$(AUTH_RESPONSE="$auth_response" node -e '
 const value = JSON.parse(process.env.AUTH_RESPONSE);
 const MAX_AUTH_FIELDS = 32, MIN_TOKEN_CHARS = 8, MAX_TOKEN_CHARS = 4096;
+const BEARER_TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > MAX_AUTH_FIELDS ||
     Object.values(value).some(entry => entry !== null && typeof entry === "object") ||
-    typeof value.token !== "string" || value.token.length < MIN_TOKEN_CHARS || value.token.length > MAX_TOKEN_CHARS) process.exit(1);
+    typeof value.token !== "string" || value.token.length < MIN_TOKEN_CHARS || value.token.length > MAX_TOKEN_CHARS ||
+    !BEARER_TOKEN.test(value.token)) process.exit(1);
 process.stdout.write(value.token);
 ')
 }

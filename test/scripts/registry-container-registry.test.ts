@@ -183,6 +183,14 @@ printf '%s' "$auth_token"`, {
     expect(passwords[0]).not.toBe(passwords[1]);
   });
 
+  it("rejects a token outside the bearer-token character set", () => {
+    const result = runStages(`http_json_curl=()
+curl() { printf '%s' '{"token":"bad\\nvalue123"}'; }
+authenticate_registry
+printf '%s' "$auth_token"`, { host_registry: "http://127.0.0.1:1", registry_log: "/dev/null" });
+    expect(result.status, result.stdout).not.toBe(0);
+  });
+
   it.each([["readiness", "wait_for_registry"], ["authentication", "authenticate_registry"]])(
     "bounds a simulated stalled or oversized %s response and never publishes", (kind, stage) => {
       const root = scratch();
