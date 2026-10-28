@@ -16,3 +16,14 @@ test('the fixture-only claim names the packaged readers and excludes operator-su
   assert.match(readme, /`agreementAnchor` and `artifactAnchor` only by shape/);
   assert.match(readme, /`broadcast` is the operator's own callback/);
 });
+
+test('the absence proof is a contract for an operator-supplied anchor, not the unbuildable package anchor', () => {
+  // createDevnetDemoArtifactAnchor refuses every input because
+  // isDevnetDemoTransport is always false (devnet-source.mjs:13), and no part
+  // in the stack changes either file.
+  assert.doesNotMatch(readme, /The package's devnet artifact anchor returns it from `read`/);
+  assert.match(readme, /An operator-supplied `artifactAnchor` must return it from `read`/);
+  assert.match(readme, /createDevnetDemoArtifactAnchor[\s\S]{0,300}cannot be constructed/);
+  assert.match(readme, /isDevnetDemoTransport[\s\S]{0,100}`false`/);
+  assert.match(readme, /src\/dacs\/devnet-source\.mjs/);
+});
