@@ -16,9 +16,12 @@ const NPM_JSON_MAX_ENTRIES = 2_000_000, NPM_JSON_MAX_DEPTH = 128;
 const limitError = () => Object.assign(new Error("ELIMIT npm HTTP response byte limit exceeded"), { code: "ELIMIT" });
 
 /** Returns the HTTP response byte budget for an npm request path. */
-function responseBudget(path) {
+function responseBudget(path, statusCode = 200) {
   if (/\/-\/npm\/v1\/security\//.test(path)) return NPM_AUDIT_MAX_BYTES;
-  return /\.(?:tgz|tar\.gz)(?:\?|$)/.test(path) ? NPM_TARBALL_MAX_BYTES : NPM_METADATA_MAX_BYTES;
+  // A package name can end in .tgz; only an unambiguous archive route gets
+  // the larger budget. Redirects and error replies still need JSON admission.
+  return statusCode < 300 && /\/-\/[^/?]+\.(?:tgz|tar\.gz)(?:\?[^#]*)?$/.test(path)
+    ? NPM_TARBALL_MAX_BYTES : NPM_METADATA_MAX_BYTES;
 }
 
 function validateJsonLists(bytes) {
@@ -60,7 +63,12 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
   // Validate expansion without changing the exact archive bytes npm hashes.
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) decodeBounded(bytes, gunzipSync, archiveMaximum);
-  if (json) validateJsonLists(bytes);
+  // npm also auto-detects zstd, which has no bounded decoder on supported Node.
+  if (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
+    throw new Error("unsupported npm archive compression: zstd");
+  }
+  const first = bytes.find(byte => ![0x20, 0x09, 0x0a, 0x0d].includes(byte));
+  if (json || first === 0x7b || first === 0x5b) validateJsonLists(bytes);
   return bytes;
 }
 
@@ -76,7 +84,7 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
       pending.once("error", () => { failed = true; cancel(timer); });
       pending.emit = function (event, response, ...rest) {
         if (event !== "response") return emit.call(this, event, response, ...rest);
-        const maximum = responseBudget(pending.path);
+        const maximum = responseBudget(pending.path, response.statusCode);
         readBoundedResponse(response, maximum, maximum !== NPM_TARBALL_MAX_BYTES,
           maximum === NPM_TARBALL_MAX_BYTES ? NPM_TARBALL_MAX_UNPACKED_BYTES : maximum).then(bytes => {
           cancel(timer);

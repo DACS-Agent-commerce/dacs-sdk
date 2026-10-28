@@ -27,10 +27,17 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
     }, seconds * 1000);
     const next = () => {
       attempt++;
-      child = start(command, args, { stdio: "inherit", detached: true });
-      child.once("error", error => { diagnostic(String(error)); finish(1); });
-      child.once("exit", code => {
+      const current = child = start(command, args, { stdio: "inherit", detached: true });
+      const cleanGroup = () => { if (current.pid) kill(current.pid, "SIGKILL"); };
+      current.once("error", error => {
         if (expired || finished) return;
+        cleanGroup(); diagnostic(String(error)); finish(1);
+      });
+      current.once("exit", code => {
+        if (expired || finished) return;
+        // A leader's exit does not imply its descendants have stopped. Reap
+        // this attempt's group before returning or replacing the active child.
+        cleanGroup();
         if (code === 0 || attempt >= attempts) finish(code ?? 1);
         else next();
       });
