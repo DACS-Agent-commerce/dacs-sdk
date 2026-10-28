@@ -16,7 +16,7 @@ import { DEM_RAIL } from './listing.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { cutText } from '../util/text.mjs';
-import { resolveWithDeadline } from '../util/bounded-resolution.mjs';
+import { resolveWithDeadline, boundedResolutionValue } from '../util/bounded-resolution.mjs';
 
 /** Limits passed to context providers, which must cap wire bytes before decoding. */
 export const DEM_DELIVERY_CONTEXT_LIMITS = Object.freeze({ timeoutMs: 10_000, maxBytes: 64 * 1024, maxValues: 4096, maxDepth: 32, maxListEntries: 256, maxVetRequirements: 64 });
@@ -99,16 +99,20 @@ function inputProblem(input, { scope, listing, buyerBundle }) {
   return null;
 }
 
+/** Resolve the exact seller derive input under fixed read limits. Returns present or a
+ * held disposition with its cause; throws for an invalid job or copied capability. */
 export async function resolveDemDeliverySellerContext(capability, { jobId, listing, buyerBundle, generatedAt }) {
   requireCanonicalJobId(jobId);
   const configured = capabilityFor(capability);
   if (!configured) return held('indeterminate', 'DEM delivery context capability is absent');
   try {
     const request = structuredClone({ jobId, listingPin: listingPin(listing), buyerIdentityBundle: buyerBundle, generatedAt });
-    const answer = await resolveWithDeadline(options => configured.resolveSeller(request, options), DEM_DELIVERY_CONTEXT_LIMITS);
+    const reply = await resolveWithDeadline(options => configured.resolveSeller(request, options), DEM_DELIVERY_CONTEXT_LIMITS);
+    const answer = boundedResolutionValue(reply, DEM_DELIVERY_CONTEXT_LIMITS);
     if (!object(answer) || answer.disposition !== 'present' || !object(answer.value) || !object(answer.value.input) || !Array.isArray(answer.value.vetRequirements)) {
       return held(answer?.disposition ?? 'indeterminate', answer?.reason ?? 'DEM delivery seller context is malformed');
     }
+    if (answer.value.vetRequirements.length > DEM_DELIVERY_CONTEXT_LIMITS.maxVetRequirements) return held('indeterminate', 'DEM delivery context exceeds Vet requirement limit');
     const input = JSON.parse(canonicalize(answer.value.input));
     const syntheticScope = {
       jobId, buyer: buyerBundle.presentedBy, buyerBundleHash: identityBundleHash(buyerBundle), seller: listing.seller.identity.presentedBy,
