@@ -45,6 +45,65 @@ for (const marked of [false,true]) test(`public factory uses the actual passive 
     assert.deepEqual(await native.journal.entries(),journal); assert.deepEqual(native.writes,[]); assert.deepEqual(w.snapshot(),state);
   }
 });
+for (const marked of [false,true]) test(`public passive diagnostic without a retained intent, native=${marked}`, async t => {
+  const native = passiveNativeWorld(); t.after(() => native.source.close());
+  const chain = native.source.chainReader();
+  assert.equal((await chain.observeTransfer(HASH)).status, 'included');
+  chain.observeTransfer = async () => { throw new Error('TEST-active-reader-called'); };
+  const w = diagnostic(t, chain, { native: marked }), state = w.snapshot();
+  const journal = await native.journal.entries();
+  for (let repeat = 0; repeat < 2; repeat++) {
+    const results = await Promise.all([w.verify(), w.verify()]);
+    for (const result of results) {
+      assert.equal(result.verification.outcome, 'readback_only');
+      assert.equal(result.verification.authority, 'unqualified_host');
+      assert.equal(result.verification.observation.status, marked ? 'unavailable' : 'included');
+      assert.equal(result.verification.termsMatch, marked ? null : true);
+      if (marked) assert.equal(result.verification.observation.code, 'readback_unverified');
+      else assert.equal(Object.hasOwn(result.verification.observation, 'sourceDisposition'), false);
+    }
+    assert.deepEqual(await native.journal.entries(), journal);
+    assert.deepEqual(native.writes, []); assert.deepEqual(w.snapshot(), state);
+  }
+});
+for (const [field, edit] of [
+  ['payer', c => { c.from = '0x' + 'e'.repeat(64); c.from_ed25519_address = c.from; }],
+  ['payee', c => { c.to = '0x' + 'e'.repeat(64); c.data[1].args[0] = c.to; }],
+  ['amount', c => { c.amount = '1000000001'; c.data[1].args[1] = c.amount; }],
+]) test(`unretained non-native diagnostic compares the saved ${field}`, async t => {
+  const native = passiveNativeWorld(); t.after(() => native.source.close()); edit(native.transaction.content);
+  const w = diagnostic(t, native.source.chainReader()), state = w.snapshot();
+  const result = await w.verify();
+  assert.equal(result.verification.observation.status, 'included');
+  assert.equal(result.verification.termsMatch, false);
+  assert.deepEqual(await native.journal.entries(), []);
+  assert.deepEqual(native.writes, []); assert.deepEqual(w.snapshot(), state);
+});
+for (const marked of [false,true]) test(`passive diagnostic still compares retained signed content, native=${marked}`, async t => {
+  const native = passiveNativeWorld(); t.after(() => native.source.close()); await native.seed();
+  native.transaction.content.nonce++;
+  const chain = native.source.chainReader();
+  chain.observeTransfer = async () => { throw new Error('TEST-active-reader-called'); };
+  const w = diagnostic(t, chain, { native: marked }), state = w.snapshot();
+  const journal = await native.journal.entries(), result = await w.verify();
+  assert.equal(result.verification.observation.status, 'unavailable');
+  assert.equal(result.verification.observation.code, 'readback_unverified');
+  assert.equal(result.verification.termsMatch, null);
+  assert.deepEqual(await native.journal.entries(), journal);
+  assert.deepEqual(native.writes, []); assert.deepEqual(w.snapshot(), state);
+});
+for (const [options, status] of [[{ state: 'pending' }, 'pending'], [{ state: 'unknown' }, 'not-found'],
+  [{ state: 'failed' }, 'failed'], [{ status: 'failed' }, 'invalid']]) {
+  test(`unretained non-native passive diagnostic preserves ${status}`, async t => {
+    const native = passiveNativeWorld(options); t.after(() => native.source.close());
+    const w = diagnostic(t, native.source.chainReader()), state = w.snapshot();
+    const result = await w.verify();
+    assert.equal(result.verification.observation.status, status);
+    assert.equal(result.verification.termsMatch, null);
+    assert.deepEqual(await native.journal.entries(), []);
+    assert.deepEqual(native.writes, []); assert.deepEqual(w.snapshot(), state);
+  });
+}
 for (const marked of [false,true]) test(`caller abort leaves actual native reader journals unchanged, native=${marked}`, async t => {
   const controller = new AbortController(); let abort = false, forwarded;
   const native = passiveNativeWorld({ onFetch: (_message, signal) => { if (abort) { forwarded = signal; controller.abort(); signal.throwIfAborted(); } } });
