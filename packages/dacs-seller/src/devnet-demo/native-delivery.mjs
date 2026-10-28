@@ -4,14 +4,21 @@ import { isDevnetPurchasedReport } from './deliverable.mjs';
 
 const purchasedReaders=new WeakMap(),evidenceReaders=new WeakMap();
 const requireJobId=jobId=>{if(!isCanonicalJobId(jobId))throw new TypeError('jobId must be a canonical uppercase ULID');};
+/** True when this capability was built with a delivery-evidence reader. */
 export const hasDevnetDeliveryEvidenceReader=(capability)=>evidenceReaders.has(capability);
+// Returns the retained SettlementEvidence for jobId; rejects a malformed job
+// and refuses a seller other than the anchor writer.
 export async function readDevnetDeliveryEvidence(capability,{jobId,seller}){
   requireJobId(jobId);
   const reader=evidenceReaders.get(capability);if(!reader)throw new TypeError('native delivery evidence reader is unavailable');
   return reader({jobId,seller});
 }
 
+/** True when this capability has an explicit purchased-report reader. */
 export function hasDevnetPurchasedReportReader(capability){return purchasedReaders.has(capability);}
+// Returns the retained deliverable only when its fulfilment binding, seller,
+// Listing, settlement and content hash all match the supplied scope; rejects a
+// malformed job and answers rejected/absent status otherwise.
 export async function readDevnetPurchasedReport(capability,input){
   requireJobId(input?.jobId);
   const reader=purchasedReaders.get(capability);
@@ -19,6 +26,11 @@ export async function readDevnetPurchasedReport(capability,input){
   return reader(structuredClone(input));
 }
 
+// Public contract: requires the seller's exact native artifact anchor (same
+// authority; publish/read/readRetained/verifyReceipt), so no copied descriptor
+// grants a write. Every callback first re-checks the job, seller, Listing and
+// receipt hash against the report; failures return rejected/indeterminate, never
+// throw. deliveryEvidenceEnabled adds the optional evidence reader.
 export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvidenceEnabled=false}) {
   if(anchor?.authority!==authority || typeof anchor.publish!=='function' || typeof anchor.read!=='function' || typeof anchor.readRetained!=='function' || typeof anchor.verifyReceipt!=='function') throw new TypeError('the exact seller native artifact anchor is required');
   const expected=(input)=>isDevnetPurchasedReport(input.report,{jobId:input.jobId ?? input.report?.jobId,agreementHash:input.deliveryBinding?.agreementHash,producer:anchor.writer})
@@ -45,7 +57,10 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
     },
   });
   purchasedReaders.set(capability,async(input)=>{
-    if(!isCanonicalJobId(input?.jobId) || input.jobId!==input?.deliveryBinding?.jobId || input.logicalAddress!==`dacs4:deliverable:${input.jobId}` ||
+    // An incomplete scope is answered, not thrown: canonicalize(undefined)
+    // throws, so the binding and Listing must be present before hashing.
+    if(!input || typeof input!=='object' || !input.deliveryBinding?.listing || !input.listing ||
+        !isCanonicalJobId(input.jobId) || input.jobId!==input?.deliveryBinding?.jobId || input.logicalAddress!==`dacs4:deliverable:${input.jobId}` ||
         input.receiptContentHash!==input.deliveryBinding?.payloadHash || input.deliveryBinding?.agreementHash!==input.agreementHash ||
         canonicalize(input.deliveryBinding?.listing)!==canonicalize(input.listing) || input.deliveryBinding?.fulfilmentId!==input.fulfilmentId ||
         input.seller!==anchor.writer) return {status:'rejected',reason:'native purchased-report reader scope differs'};
