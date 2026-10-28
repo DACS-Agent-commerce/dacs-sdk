@@ -89,6 +89,68 @@ describe("inert bounded npm HTTP admission", () => {
     expect(await admitted).toEqual(archive);
   });
 
+  it("admits a redirected archive that expands above the metadata budget at a suffixless URL", async () => {
+    // A registry may redirect a tarball to a signed download URL without a
+    // .tgz suffix. The gzip/tar payload, not the final path, is what npm's
+    // archive reader consumes.
+    const tar = Buffer.alloc(512 + 65 * 1024 * 1024);
+    tar.write("ustar", 257, "latin1");
+    const archive = gzipSync(tar);
+    const pending = Object.assign(new EventEmitter(), { path: "/download/signed-token", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const admitted = new Promise<Buffer>((resolve, reject) => {
+      pending.once("error", reject);
+      pending.once("response", async (stream: Readable) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        resolve(Buffer.concat(chunks));
+      });
+    });
+    transport.request().emit("response", response([archive]));
+    expect(await admitted).toEqual(archive);
+  });
+  it("carries archive intent through a redirect chain to its suffixless target", async () => {
+    // The target keeps the archive budget even when the payload has no tar
+    // signature, matching the archive the registry redirected.
+    const targetPath = "/download/signed-token-intent";
+    const paths = ["/fixture/-/fixture-1.0.0.tgz", "/download/hop", targetPath];
+    const body = gzipSync(Buffer.alloc(65 * 1024 * 1024));
+    let issued = 0;
+    const transport = { request: () => Object.assign(new EventEmitter(), { path: paths[issued++], destroy: () => {} }) };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const redirect = async (location: string) => {
+      const pending = transport.request();
+      const admitted = new Promise<void>((resolve, reject) => {
+        pending.once("error", reject); pending.once("response", () => resolve());
+      });
+      pending.emit("response", Object.assign(response([], { location }), { statusCode: 302 }));
+      await admitted;
+    };
+    await redirect("/download/hop");
+    await redirect(targetPath);
+    const target = transport.request();
+    const admitted = new Promise<Buffer>((resolve, reject) => {
+      target.once("error", reject);
+      target.once("response", async (stream: Readable) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        resolve(Buffer.concat(chunks));
+      });
+    });
+    target.emit("response", Object.assign(response([body]), { statusCode: 200 }));
+    expect(await admitted).toEqual(body);
+  });
+  it("refuses an over-budget gzip body lacking the tar payload at a suffixless URL", async () => {
+    // A redirect target does not get a larger expansion budget for arbitrary
+    // gzip data; only a tar archive npm's reader can consume qualifies.
+    const pending = Object.assign(new EventEmitter(), { path: "/download/signed-token", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
+    transport.request().emit("response", response([gzipSync(Buffer.alloc(65 * 1024 * 1024))]));
+    expect(await rejected).toMatchObject({ code: "ELIMIT" });
+  });
   it("keeps separate finite wire and unpacked archive bounds", async () => {
     const archive = gzipSync(Buffer.alloc(2048));
     expect(await readBoundedResponse(response([archive]), 1024, false, 4096)).toEqual(archive);
@@ -322,6 +384,18 @@ describe("bounded generated build", () => {
       })).toThrow("interrupted write");
       expect(readFileSync(target, "utf8")).toBe("**\n");
       expect(existsSync(`${target}.${process.pid}.tmp`)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("does not duplicate an existing ignore exception and refuses repeated output creation", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-repeat-"));
+    try {
+      writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
+      writeFileSync(join(root, ".dockerignore"), "**\n!acceptance-npm-http.cjs\n");
+      const once = readFileSync(join(root, ".dockerignore"), "utf8");
+      prepareBoundedBuild(root);
+      expect(() => prepareBoundedBuild(root)).toThrow(/EEXIST/);
+      expect(readFileSync(join(root, ".dockerignore"), "utf8")).toBe(once);
+      expect(once.match(/^!acceptance-npm-http\.cjs$/gm)).toHaveLength(1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("refuses an empty ignore file without publishing generated files", () => {
