@@ -370,6 +370,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       // The key is only a pointer. An intent or a thrown signer never makes
       // this pin in flight; signOnce's completed record is the authority.
       session.agreementSignatureKey = `signature:${sha256Hex(bytes)}`;
+      session.agreementSignatureProposalHash = proposal.proposalHash;
       persist(session);
       const signature = sign(bytes);
       if (session.railPin) { session.railPinSigned = true; persist(session); }
@@ -393,14 +394,22 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
           // The admission decision belongs to the exact proposal the seller
           // first saw: an exact retry after a crash replays the retained
           // contribution, so it must not re-ask a callback that has since been
-          // lost or changed. An older retained admission is therefore reused
-          // as it was decided, with the observation time it was decided at.
+          // lost or changed. A completed signature was made under that
+          // decision and replays with the observation time it was decided at.
           const priorAdmission = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
-          const observedAt = priorAdmission?.observedAt ?? now();
+          // A retained signing intent is not a signature: the first completed
+          // signature for this proposal is made now, so the clock is read now.
+          // Only replaying an already completed signature reuses the old
+          // observation, which is why it carries the proposal it was made for.
+          const signed = Boolean(session.sellerContribution ||
+            (session.agreementSignatureKey && session.agreementSignatureProposalHash === proposal.proposalHash &&
+              durable?.signature(session.agreementSignatureKey).disposition === 'present'));
           const admitted = typeof priorAdmission?.admitted === 'boolean' ? priorAdmission.admitted
             : admittedContextRequest({ jobId, buyerBundle: session.buyerBundle, generatedAt });
-          const timeProblem = proposalTimeProblem({ generatedAt, observedAt, deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit,
-            admitted });
+          const timeProblemAt = (observedAt) => proposalTimeProblem({ generatedAt, observedAt,
+            deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit, admitted });
+          const observedAt = signed && priorAdmission ? priorAdmission.observedAt : now();
+          const timeProblem = timeProblemAt(observedAt);
           if (timeProblem) return { disposition: 'rejected', reason: timeProblem };
           if (!priorAdmission) session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt, admitted };
           if (deliveryContext) {
@@ -455,8 +464,19 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
               catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
               if (verdict !== 'valid') return verdict==='invalid'?{disposition:'rejected',reason:`VET_RECORD_UNVERIFIED: ${role}: invalid Vet receipt`}:unavailable(new Error('Vet receipt verification is indeterminate'),`the ${role} Vet receipt verification is indeterminate`);
             }
+            // The clock is read again after every authenticated read: the
+            // admitted route's deadline is absolute, so the first completed
+            // signature must not be made once it has passed.
+            if (!signed) {
+              const lateProblem = timeProblemAt(now());
+              if (lateProblem) return { disposition: 'rejected', reason: lateProblem };
+            }
             session.demDeliveryContext = structuredClone(resolved);
             return { disposition: 'present', value: structuredClone(resolved.input) };
+          }
+          if (!signed) {
+            const lateProblem = timeProblemAt(now());
+            if (lateProblem) return { disposition: 'rejected', reason: lateProblem };
           }
           return { disposition: 'present', value: agreementInput({ jobId, listing, buyerBundle: session.buyerBundle, generatedAt }) };
         },
