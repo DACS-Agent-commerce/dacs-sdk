@@ -9,10 +9,12 @@ test('staged Vet factory refuses before any signer, anchor or row operation',()=
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
  assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled/);assert.equal(effects,0);
 });
-for(const length of [32,64])test(`real staged bilateral engine accepts a ${length}-hex verifier nonce`,async()=>{
+// SN-2 bounds the challenge by characters, not by byte pairs: odd lengths
+// between the 32 and 256 character bounds are conforming and must complete.
+for(const length of [32,33,64,255,256])test(`real staged bilateral engine accepts a ${length}-hex verifier nonce`,async()=>{
  const f=productionFixture();f.controls.nonce='a'.repeat(length);const result=await f.run();assert.equal(result.buyerVet.record.overallDecision,'pass');assert.equal(result.sellerVet.record.signature.signer,f.seen[0].buyer);assert.equal(f.local.writes.length,2);assert.equal(f.seen.length,1);f.base.close();
 });
-for(const length of [31,258])test(`nonce length ${length} refuses before signing`,async()=>{
+for(const length of [31,257])test(`nonce length ${length} refuses before signing`,async()=>{
  const f=productionFixture();f.controls.nonce='a'.repeat(length);await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);f.base.close();
 });
 test('buyer result is recovered after a lost seller checkpoint without consuming its challenge again',async()=>{
