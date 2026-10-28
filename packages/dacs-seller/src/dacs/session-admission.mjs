@@ -270,10 +270,49 @@ function requirementParametersMatch({ result, expected }) {
 // backward for an older live version. Without that reader the implicit version
 // cannot be proven to be the latest, so the record is refused rather than
 // guessed.
-function unpinnedVerifiedResults(...lists) {
-  return lists.flatMap((results) => (Array.isArray(results) ? results : []))
-    .filter((entry) => object(entry?.requirement)
-      && entry.requirement.verificationRequired !== false && entry.requirement.recipeVersion === undefined);
+//
+// The core can satisfy an unpinned member from a result that no invocation
+// entry names: `compatibleVerifiedExpectations` projects a committed result
+// onto a compatible member of the complete BundleRequirement, including an
+// unpinned `oneOf` alternative. Qualification therefore starts from the
+// requirement's members, not only from the invocation entries' own
+// requirements, so no contributing implicit pin escapes the snapshot check.
+function verifiedRequirementMembers(requirement) {
+  if (!object(requirement)) return [];
+  const groups = Array.isArray(requirement.oneOf) ? requirement.oneOf : [];
+  return [...(Array.isArray(requirement.required) ? requirement.required : []), ...groups.flatMap((group) => (Array.isArray(group) ? group : []))]
+    .filter((member) => object(member) && member.verificationRequired === true);
+}
+
+// Every unpinned verified claim of one replay the core could satisfy with a
+// committed result, as `{ scheme, method, recipeVersion }` selectors. A member
+// an invocation entry binds exactly is satisfied by that entry; an unbound
+// member is satisfied only by projection, which the core permits for a
+// `consensus-backed-proxy` result of the same scheme (and the requirement's
+// method, when it names one).
+function unpinnedVerifiedClaims(invocation) {
+  const entries = [...(Array.isArray(invocation.freshness) ? invocation.freshness : []), ...(Array.isArray(invocation.dealSpecific) ? invocation.dealSpecific : [])]
+    .filter((entry) => object(entry) && object(entry.ref) && object(entry.requirement));
+  const bound = new Set();
+  for (const entry of entries) { try { bound.add(canonicalize(entry.requirement)); } catch { /* the core refuses a non-canonical expectation */ } }
+  const claims = [];
+  for (const member of verifiedRequirementMembers(invocation.requirement)) {
+    if (member.recipeVersion !== undefined) continue;
+    let memberKey;
+    try { memberKey = canonicalize(member); } catch { continue; }
+    const isBound = bound.has(memberKey);
+    for (const entry of entries) {
+      let boundKey;
+      try { boundKey = canonicalize(entry.requirement); } catch { continue; }
+      if (isBound) { if (boundKey !== memberKey) continue; }
+      else if (entry.method !== 'consensus-backed-proxy' || member.scheme !== entry.scheme
+        || (member.parameters?.verificationMethod !== undefined && member.parameters.verificationMethod !== entry.method)) continue;
+      const { recipeVersion } = entry.ref;
+      if (!Number.isSafeInteger(recipeVersion) || recipeVersion < 1) continue; // the core refuses the reference
+      claims.push({ scheme: member.scheme, method: entry.method, recipeVersion });
+    }
+  }
+  return claims;
 }
 
 // The result version an unpinned claim must match: the family version the
@@ -281,8 +320,8 @@ function unpinnedVerifiedResults(...lists) {
 // must itself be live. Every unpinned claim the checked records of one job name
 // must resolve against one snapshot pin, so the seller never signs under two
 // session snapshots.
-async function latestSessionRecipeProblem(read, entry, pins) {
-  const selection = await read('resolveLatestRecipe', { scheme: entry.scheme, method: entry.method, required: true });
+async function latestSessionRecipeProblem(read, { scheme, method, recipeVersion }, pins) {
+  const selection = await read('resolveLatestRecipe', { scheme, method, required: true });
   if (selection === null) return 'the Vet session registry has no recipe version for the unpinned claim';
   if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion', 'availability'])) return 'the Vet session registry selection is malformed';
   const pin = selection.sessionRecipeRegistrySnapshotHash;
@@ -292,7 +331,7 @@ async function latestSessionRecipeProblem(read, entry, pins) {
   // The selection names the family's latest entry, not the latest live one: a
   // newer entry that is disabled, failed or mocked is refused, never skipped.
   if (selection.availability !== 'live') return 'the Vet session registry latest recipe version is not live';
-  if (selection.recipeVersion !== entry.ref.recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
+  if (selection.recipeVersion !== recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
   pins.push(pin);
   return null;
 }
@@ -405,7 +444,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
-  const unpinned = unpinnedVerifiedResults(invocation.freshness, invocation.dealSpecific);
+  const unpinned = unpinnedVerifiedClaims(invocation);
   const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
   // The verifier checks every signature itself with the signer's own key; the
   // operator's policy decides which signers other than the verifier may sign.
@@ -415,7 +454,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   try {
     if (unpinned.length > 0) {
       if (!reads || typeof evidence.resolveLatestRecipe !== 'function') problem = 'the Vet requirement does not pin a recipe version for a verified claim';
-      else for (const entry of unpinned) { problem = await latestSessionRecipeProblem(reads.read, entry, pins); if (problem) break; }
+      else for (const claim of unpinned) { problem = await latestSessionRecipeProblem(reads.read, claim, pins); if (problem) break; }
     }
     if (!problem) strict = await verifyCompositeVerificationRecord(record,
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific) },
