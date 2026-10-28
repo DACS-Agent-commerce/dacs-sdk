@@ -528,9 +528,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     session.proposal = structuredClone(proposal);
     session.transportIdentity = structuredClone(transportIdentity);
     session.agreementHash = transportIdentity.agreementHash;
-    const agreementRef = { anchor: { kind: 'storage-program', locator: fixedPriceAgreementLogicalAddress(jobId) }, contentHash: session.agreementHash };
-    recordPhase(session, 0, session.proposalAdmission.observedAt, { ok: true,
-      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } });
     persist(session);
     return { disposition: 'complete', contribution: progress.result.sellerContribution };
   }
