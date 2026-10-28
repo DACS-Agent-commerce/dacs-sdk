@@ -850,3 +850,40 @@ it("round-trips effective omit/include, peer and octal umask settings through np
   expect(reference.errors).toEqual([]);
   expect(installationDifferences(fixture.project, reference)).toEqual([]);
 }, 60_000);
+
+it.each(["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "peerDependenciesMeta"])(
+  "refuses unavailable-source exclusions with stale root %s", field => {
+    const fixture = simulatedInstall({ "node_modules/a": [{ optional: true, os: [`!${process.platform}`] },
+      { "package.json": manifest("a") }] });
+    const root = JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8"));
+    root[field] = field === "peerDependenciesMeta" ? { a: { optional: true } } : { ...root[field], a: "^1.0.0" };
+    writeFileSync(join(fixture.project, "package.json"), JSON.stringify(root));
+    const reference = installationClosure(fixture.project, fixture.lock, () => { throw Error("source unavailable"); });
+    expect(reference.inventory).toBeNull();
+    expect(reference.errors.join()).toContain("root dependency metadata differs: " + field);
+  }, 60_000);
+
+it("refuses stale dev flags after a dependency moves to optional", () => {
+  const fixture = simulatedInstall({ "node_modules/a": [{ dev: true }, { "package.json": manifest("a") }] });
+  writeFileSync(join(fixture.project, "package.json"), JSON.stringify({ name: "consumer", version: "1.0.0",
+    optionalDependencies: { a: "1.0.0" } }));
+  writeFileSync(join(fixture.project, ".npmrc"), "omit=dev\n");
+  const reference = installationClosure(fixture.project, fixture.lock, () => { throw Error("source unavailable"); });
+  expect(reference.inventory).toBeNull();
+  expect(reference.errors.join()).toContain("root dependency metadata differs");
+}, 60_000);
+
+it.each([
+  ["engine", { optional: true, engines: { npm: ">=1.0.0" } }, ""],
+  ["omit", { optional: true }, "omit=optional\n"],
+  ["platform", { optional: true, os: [`!${process.platform}`] }, ""],
+] as const)("refuses an inconsistent npm-version contract before %s exclusions", (_case, flags, config) => {
+  const fixture = simulatedInstall({ "node_modules/a": [flags, { "package.json": manifest("a") }] });
+  writeFileSync(join(fixture.project, ".npmrc"), config + "npm-version=0.0.0\n");
+  const installer = npmInstallContract(fixture.project);
+  installer.config["npm-version"] = "0.0.0";
+  const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+    lock: fixture.lock, installer, readArchive: () => { throw Error("source unavailable"); } });
+  expect(reference.inventory).toBeNull();
+  expect(reference.errors.join()).toContain("npm-version differs from selected npm");
+}, 60_000);
