@@ -2,11 +2,11 @@ import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
-import { contentHash, isListing, canonicalize, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, sha256Hex, compositeVerificationAddress } from '@kynesyslabs/dacs';
+import { contentHash, isListing, canonicalize, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, sha256Hex, compositeVerificationAddress, isCompositeVerificationRecord, isCanonicalBase64Url, signedBytes, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
-import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
+import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from './session-admission.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
@@ -208,8 +208,13 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       try { record = await admission.resolveVetRecord({ jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record cannot be resolved`; }
       if (!isCompositeVerificationRecord(record) || contentHash(record) !== ref.contentHash) return `the ${role} Vet reference names no authentic record`;
       if (record.jobId !== session.jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash || record.overallDecision !== 'pass' || !sameCanonicalClaimIdentity(record.signature?.signer, verifier)) return `the ${role} Vet record does not evaluate this job, bundle and party`;
+      // DACS-2 §7.7.2: the counterparty's signature over the exact record hash,
+      // not merely its signer field, is what makes the record theirs.
+      if (!isCanonicalBase64Url(record.signature?.value) || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return `the ${role} Vet record is not signed by its counterparty verifier`;
       try { receipt = await admission.readVetAnchorReceipt({ jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record has no SR-2 receipt`; }
-      if (receipt?.logicalAddress !== ref.anchor.locator || receipt?.contentHash !== ref.contentHash) return `the ${role} Vet receipt names another address or record`;
+      // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
+      const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId: session.jobId, party });
+      if (receiptProblem) return `the ${role} ${receiptProblem}`;
       try { verdict = await admission.verifyVetAnchorReceipt({ jobId: session.jobId, role, party, ref, record, receipt }); } catch { return `the ${role} Vet receipt cannot be verified`; }
       if (verdict !== 'valid') return `the ${role} Vet receipt does not verify`;
     }
