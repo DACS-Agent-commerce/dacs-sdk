@@ -147,3 +147,13 @@ test('native Agreement present without an artifact is a definite refusal before 
  let failure;try{await agent.commit({jobId:JOB});}catch(error){failure=error;}
  assert.equal(failure?.code,'agreement_anchor_invalid');assert.equal(failure?.status,422);assert.equal(f.local.writes.length,0);
 });
+
+test('fixture commitment replay accepts a fresh observation time without rewriting retained bytes',async t=>{
+ const f=await fixtureProfile(t,true),agent=f.agent;assert.equal((await agent.commit({jobId:JOB})).status,'committed');
+ const kept=structuredClone(agent.TESTsessions.get(JOB)),writes=f.anchors.writes.length;
+ f.anchors.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,observedAt:NOW+1000}}:row;
+ assert.equal((await agent.commit({jobId:JOB})).status,'committed');
+ assert.deepEqual(agent.TESTsessions.get(JOB).commitment,kept.commitment);
+ assert.deepEqual(agent.TESTsessions.get(JOB).phaseResults,kept.phaseResults);
+ assert.equal(f.anchors.writes.length,writes);
+});

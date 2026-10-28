@@ -656,17 +656,21 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       if (attempt && !session.signatureCommitmentHeld) { session.signatureCommitmentHeld = true; persist(session); }
       return { status: 'commitment-held', address: finalized.logicalAddress, resumed: finalized.resumed };
     }
-    // A native fresh read creates a new observation timestamp, not a new
-    // commitment or phase result. Authenticate it above, then retain the exact
-    // original SDK commitment/phase bytes when the immutable record, tx and
-    // receipt binding are unchanged.
-    if (nativeArtifactAnchor && session.commitment) {
+    // A fresh read creates a new observation timestamp, not a new commitment
+    // or phase result. Authenticate it above, then retain the exact original
+    // SDK commitment/phase bytes when the immutable record, tx and receipt
+    // binding are unchanged. This holds for the native readback and for the
+    // fixture substrate, whose receipt also carries a read observation time.
+    if (session.commitment) {
       const retained=session.commitment;
       if(contentHash(retained.record)!==contentHash(finalized.record) || retained.logicalAddress!==finalized.logicalAddress || retained.committedAt!==finalized.committedAt ||
           canonicalize(retained.anchorTxRef)!==canonicalize(finalized.anchorTxRef) || !sameNativeCommitmentReceipt(retained.anchorReceipt,finalized.anchorReceipt)) {
-        throw new SellerAgentError('commitment_changed','fresh native commitment readback differs from the retained finalized commitment',503);
+        throw new SellerAgentError('commitment_changed','fresh commitment readback differs from the retained finalized commitment',503);
       }
-      if(await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:retained.logicalAddress,artifact:retained.record,artifactKind:'FinalityCommitmentRecord',receipt:retained.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true})!=='valid')throw new SellerAgentError('commitment_changed','retained commitment proof no longer authenticates',503);
+      const verdict=nativeArtifactAnchor
+        ? await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:retained.logicalAddress,artifact:retained.record,artifactKind:'FinalityCommitmentRecord',receipt:retained.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true})
+        : commitmentReader(anchors, claim).verifyAnchorReceipt({record:retained.record,anchorReceipt:retained.anchorReceipt});
+      if(verdict!=='valid')throw new SellerAgentError('commitment_changed','retained commitment proof no longer authenticates',503);
       retainCommitmentPhase(session,retained);
       session.agreement=agreement;session.agreementRef=agreementRef;
       if(native)session.agreementAnchor=nativeAgreementView(native);
