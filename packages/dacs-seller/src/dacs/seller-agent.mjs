@@ -1472,7 +1472,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence'});
         if(read?.status==='absent'&&deliveryEvidenceEnabled)read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }
-    }catch(error){return held(String(error.message).slice(0,240));}
+    }catch(error){return held(String(error?.message??error).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
     if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash||canonicalize(read.artifact)!==canonicalize(evidence))return held('delivery evidence readback differs');
     const cause=(error)=>`delivery evidence verifier unavailable: ${String(error?.message??error).slice(0,200)}`;

@@ -224,7 +224,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], published: [], publishCalls: [], signCreate: [], signed: [], broadcast: [], componentSigns: [] };
-  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null };
+  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
@@ -304,6 +304,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       return readBack(logicalAddress, artifactKind);
     },
     readRetained: async ({ logicalAddress, artifactKind }) => {
+      if (faults.readRetainedThrowKind === artifactKind) { faults.readRetainedThrowKind = null; throw null; }
       const fault = faults.artifactRead.shift();
       if (fault === 'unknown') return { status: 'indeterminate', reason: 'TEST uncertain retained CREATE' };
       if (fault === 'absent') return { status: 'absent', reason: 'TEST lagging name index' };
@@ -1535,6 +1536,22 @@ test('an indeterminate delivery evidence verdict is reported as unavailable, not
   w.faults.verifyReceipt = null;
   const done = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
   assert.equal((await done.json()).delivery?.status, 'delivered');
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('a delivery evidence capability that rejects without an Error leaves a held answer, not an uncertain 503', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true }), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  const signed = await w.signedClaim(p, tx);
+  const post = async () => { const res = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); return { status: res.status, body: await res.json() }; };
+  assert.equal((await post()).body.delivery?.status, 'delivered');
+  // A capability may reject with no Error object at all; the paid claim must
+  // still be answered as a retryable held readback, never a thrown 503.
+  w.faults.readRetainedThrowKind = 'SettlementEvidence';
+  const held = await post();
+  assert.equal(held.status, 200);
+  assert.equal(held.body.delivery?.status, 'delivery-ready', shown(held.body));
+  assert.equal(held.body.delivery?.evidencePublication, 'held-readback-only', shown(held.body));
+  assert.equal((await post()).body.delivery?.status, 'delivered');
   assert.equal(w.createsAt(address), 1);
 });
 
