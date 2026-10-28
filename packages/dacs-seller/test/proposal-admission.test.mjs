@@ -122,4 +122,3 @@ test('a closed agent refuses proposal admission before it consumes the challenge
  const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),staged);
  assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);
 });
-
