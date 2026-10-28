@@ -387,10 +387,11 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     // it did sign (a lagging index, an unbroadcast one) is a plain absence.
     read: async (input) => {
       const read = await deliverable(input);
+      if(read.status==='present'&&faults.deliveryRead)return faults.deliveryRead(clone(read));
       return read.status === 'absent' && !signedCreates.has(input.logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
     },
-    verifyReceipt: async ({ logicalAddress, report, receipt, receiptContentHash, deliveryBinding }) => node.reader.verifyReceipt({ receipt, logicalAddress, artifact: report,
-      expectedWriter: sellerKey.claim, artifactKind: 'Deliverable', deliveryBinding, receiptContentHash, signedProjection: clone(signedCreates.get(logicalAddress)) }),
+    verifyReceipt: async ({ logicalAddress, report, receipt, receiptContentHash, deliveryBinding, signedProjection }) => node.reader.verifyReceipt({ receipt, logicalAddress, artifact: report,
+      expectedWriter: sellerKey.claim, artifactKind: 'Deliverable', deliveryBinding, receiptContentHash, signedProjection: signedProjection ?? clone(signedCreates.get(logicalAddress)) }),
   });
   const producer = deliverableProducer ?? report();
 
@@ -1227,10 +1228,10 @@ test('an unspecified-size Listing with oversized actual output is refused before
   await w.restart(); // The Listing can still reopen its retained state for recovery.
 });
 
-test('inline delivery refuses oversized Listings before signing and delivers the exact 128 KiB boundary', async (t) => {
+test('inline delivery refuses oversized Listings before signing and delivers the exact storage CREATE boundary', async (t) => {
   await assert.rejects(world(t, { deliverableExtension: { expectedSizeBytes: 132283 } }), /unsupported Listing: inline storage delivery/);
   await assert.rejects(world(t, { deliverableExtension: { expectedSizeBytes: 131073 } }), /unsupported Listing: inline storage delivery/);
-  const size = 128 * 1024;
+  const size = 16384;
   const producer = (input) => {
     const payload = report({ body: [''] })(input);
     payload.body[0] = 'a'.repeat(size - Buffer.byteLength(core.canonicalize(payload)));
@@ -1261,7 +1262,7 @@ test('inline size admission accepts feasible minimal reports and refuses impossi
 });
 
 test('producer size mismatches hold the paid permit and recover with corrected bytes, including restart', async (t) => {
-  for (const [declared, actual] of [[100000, 4000], [4000, 131073]]) for (const restart of [false, true]) {
+  for (const [declared, actual] of [[16000, 4000], [4000, 131073]]) for (const restart of [false, true]) {
     let size = actual;
     const producer = (input) => {
       const payload = report({ body: [''] })(input);
@@ -1409,4 +1410,19 @@ test('an unreadable signing journal supplies no proof to release an unknown atte
  const w=await world(t),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p);w.walletJournal().close();
  assert.equal((await p.claim(tx)).status,'held');w.restartWallet();await w.restart();const again=await p.claim(tx);
  assert.equal(again.status,'held');assert.equal(w.effects.signCreate.length,0);assert.equal(w.createsAt(address),0);
+});
+
+for(const field of ['artifact','missing-artifact','projection','receipt'])test(`completed native delivery authenticates fresh ${field} before answering a repeated claim`,async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay(),signed=await w.signedClaim(p,tx);
+ const post=async()=>{const res=await fetch(`${w.host().url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});assert.equal(res.status,200);return res.json();};
+ assert.equal((await post()).delivery?.status,'delivery-ready');await w.restart();
+ w.faults.deliveryRead=read=>{if(field==='artifact')read.artifact.body=['TEST different bytes'];else if(field==='missing-artifact')delete read.artifact;else if(field==='projection')read.signedProjection.content.nonce++;else read.receipt.evidence.value='TEST changed proof';return read;};
+ assert.equal((await post()).delivery?.status,'held');assert.equal((await p.claim(tx)).delivery?.status,'held');
+ w.faults.deliveryRead=null;assert.equal((await p.claim(tx)).delivery?.status,'delivery-ready');assert.equal(w.effects.deliverySubmit.length,1);
+});
+for(const size of [16385,131072])test(`an exact ${size}-byte producer result above the CREATE cap holds before retaining or sending a report`,async t=>{
+ const producer=input=>{const value=report({body:['']})(input);value.body[0]='a'.repeat(size-Buffer.byteLength(core.canonicalize(value)));return value;};
+ const w=await world(t,{deliverableProducer:producer,deliverableExtension:{expectedSizeBytes:size}}),p=await w.purchase(),tx=p.pay();
+ assert.equal((await p.claim(tx)).delivery?.status,'held');assert.equal(w.effects.deliverySubmit.length,0);
+ const kept=await w.retainedSession(p.jobId);assert.equal(kept.deliverySentReport,undefined);await w.restart();assert.equal((await p.claim(tx)).delivery?.status,'held');assert.equal(w.effects.deliverySubmit.length,0);
 });
