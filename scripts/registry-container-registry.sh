@@ -82,12 +82,17 @@ NODE
 # registry URLs, the consumer and build network arguments and the host user.
 start_registry() {
   stage=registry-start
+  docker buildx version >/dev/null
   registry_image=verdaccio/verdaccio@sha256:fcb86134563534e2f634752e6c6c3edcdb78242ec16578c73ce39d1dadbaa801
   consumer_image=node:20.19.1-bookworm-slim@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d
   pull_bounded --quiet "$registry_image" 2>&1 | tee -a "$registry_log"
   pull_bounded --quiet "$consumer_image" 2>&1 | tee -a "$registry_log"
   network_started=1
   docker network create "$registry_network" >/dev/null
+  registry_builder="$registry_network"
+  builder_started=1
+  docker buildx create --name "$registry_builder" --driver docker-container \
+    --driver-opt "network=$registry_network" >/dev/null
   registry_started=1
   docker run --detach \
     --name "$registry_container" \
@@ -103,19 +108,14 @@ start_registry() {
     ''|*[!0-9]*) echo "Verdaccio host port is invalid" >&2; exit 1 ;;
   esac
   host_registry="http://127.0.0.1:$host_port"
-  consumer_registry="http://host.docker.internal:$host_port"
-  consumer_network_args=(--add-host host.docker.internal:host-gateway)
-  build_network_args=(--add-host host.docker.internal:host-gateway)
+  consumer_registry="http://$registry_container:4873"
+  consumer_network_args=(--network "$registry_network")
+  build_network_args=(--builder "$registry_builder" --load --network default)
   host_uid=$(id -u)
   host_gid=$(id -g)
   case "$host_uid:$host_gid" in
     *[!0-9:]*) echo "host uid/gid is invalid" >&2; exit 1 ;;
   esac
-  if [ "$(uname -s)" = "Linux" ]; then
-    consumer_registry=$host_registry
-    consumer_network_args=(--network host)
-    build_network_args=(--network host)
-  fi
 }
 
 # Waits up to 30 bounded pings for Verdaccio; exits 1 with its log otherwise.
