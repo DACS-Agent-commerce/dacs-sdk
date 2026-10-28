@@ -43,7 +43,7 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
   const evidence = {
     resolveContent: async (input) => { calls.push(['resolveContent', input]); return contents.has(input.anchor.locator) ? structuredClone(contents.get(input.anchor.locator)) : null; },
     resolveRecipe: async (input) => { calls.push(['resolveRecipe', input]); return structuredClone(recipe); },
-    resolveLatestRecipe: async (input) => { calls.push(['resolveLatestRecipe', input]); return { sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: recipe.recipeVersion }; },
+    resolveLatestRecipe: async (input) => { calls.push(['resolveLatestRecipe', input]); return { sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: recipe.recipeVersion, availability: 'live' }; },
     isRecipeSignerAuthorized: async ({ signature }) => signature.signer === recipeSteward.claim,
     isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === resultSigner.claim,
     verifyAuthorityAttestation: async ({ content }) => (content.encoding === 'bytes' ? Buffer.from(content.value).toString() === '{"active":true}' : content.value.active === true) ? 'valid' : 'invalid',
@@ -255,8 +255,24 @@ test('a verified claim whose requirement leaves the recipe version unpinned pass
 
 test('an unpinned verified claim whose result is not the session registry latest is refused', async () => {
   const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
-  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2 }) } });
+  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability: 'live' }) } });
   assert.match(problem, /not the latest live recipe version/);
+});
+
+test('an unpinned verified claim is refused when the registry family head is not live', async () => {
+  // v2 is the family's latest entry but disabled; v1 is still live. DACS-2
+  // §7.4.3 selects the latest entry and refuses it, never falls back to v1.
+  for (const availability of ['disabled', 'failed', 'mocked']) {
+    const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+    const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability }) } });
+    assert.match(problem, /latest recipe version is not live/);
+  }
+});
+
+test('an unpinned verified claim is refused when the selection omits the latest entry availability', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 1 }) } });
+  assert.match(problem, /session registry selection is malformed/);
 });
 
 test('an unpinned verified claim without a session registry lookup stays refused', async () => {
@@ -267,14 +283,14 @@ test('an unpinned verified claim without a session registry lookup stays refused
 
 test('an unpinned session registry lookup with a malformed pin is refused', async () => {
   const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
-  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: 'not-a-hash', recipeVersion: 1 }) } });
+  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: 'not-a-hash', recipeVersion: 1, availability: 'live' }) } });
   assert.match(problem, /session registry pin is malformed/);
 });
 
-test('an unpinned claim with no live session recipe version is refused', async () => {
+test('an unpinned claim with no session recipe version is refused', async () => {
   const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
   const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => null } });
-  assert.match(problem, /no live recipe version/);
+  assert.match(problem, /no recipe version/);
 });
 
 test('one replay resolves every unpinned claim against one session registry snapshot', async () => {
@@ -282,7 +298,7 @@ test('one replay resolves every unpinned claim against one session registry snap
   const invocation = { ...fixture.invocation, dealSpecific: [fixture.invocation.dealSpecific[0], fixture.invocation.dealSpecific[0]] };
   let calls = 0;
   const problem = await fixture.replay({ input: { invocation },
-    evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: (calls++ === 0 ? 'ab' : 'cd').repeat(32), recipeVersion: 1 }) } });
+    evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: (calls++ === 0 ? 'ab' : 'cd').repeat(32), recipeVersion: 1, availability: 'live' }) } });
   assert.match(problem, /another session registry snapshot/);
 });
 
@@ -292,7 +308,7 @@ test('one job resolves both party records against one session registry snapshot'
   const sellerRecord = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement, party: seller, verifier: buyer });
   assert.equal(await buyerRecord.replay({ input: { sessionRegistryPins: pins } }), null);
   const problem = await sellerRecord.replay({ input: { sessionRegistryPins: pins },
-    evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: 'cd'.repeat(32), recipeVersion: 1 }) } });
+    evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: 'cd'.repeat(32), recipeVersion: 1, availability: 'live' }) } });
   assert.match(problem, /another session registry snapshot/);
 });
 

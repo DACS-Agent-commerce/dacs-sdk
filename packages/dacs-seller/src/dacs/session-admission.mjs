@@ -35,10 +35,12 @@
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
 //    `requirementHash` and replayed aggregation are checked here. A required
-//    claim without `recipeVersion` selects the latest live family version in
-//    the authenticated session registry snapshot (DACS-2 §7.4.3), answered by
-//    the optional `resolveLatestRecipe` reader; without that reader such a
-//    claim is refused, and both records of a job must select one snapshot pin.
+//    claim without `recipeVersion` selects the family's latest entry in the
+//    authenticated session registry snapshot (DACS-2 §7.4.3), and is refused
+//    unless that latest entry is live; the optional `resolveLatestRecipe`
+//    reader answers the latest entry's version, availability and snapshot pin.
+//    Without that reader such a claim is refused, and both records of a job
+//    must select one snapshot pin.
 //    Replay uses the optional
 //    `vetEvidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
 //    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
@@ -260,12 +262,14 @@ function requirementParametersMatch({ result, expected }) {
   return true;
 }
 
-// DACS-2 §7.4.3: a ClaimRequirement without `recipeVersion` selects the latest
-// live version in the authenticated session registry snapshot. The operator
-// answers that selection (and its snapshot pin) through the optional
-// `resolveLatestRecipe`; the seller compares it with the result's own pinned
-// version. Without that reader the implicit version cannot be proven to be the
-// latest, so the record is refused rather than guessed.
+// DACS-2 §7.4.3: a ClaimRequirement without `recipeVersion` selects the
+// family's latest entry in the authenticated session registry snapshot, and is
+// refused unless that exact latest entry is live. The operator answers that
+// selection (the latest entry's version and availability, and its snapshot pin)
+// through the optional `resolveLatestRecipe`; the seller never searches
+// backward for an older live version. Without that reader the implicit version
+// cannot be proven to be the latest, so the record is refused rather than
+// guessed.
 function unpinnedVerifiedResults(...lists) {
   return lists.flatMap((results) => (Array.isArray(results) ? results : []))
     .filter((entry) => object(entry?.requirement)
@@ -273,17 +277,21 @@ function unpinnedVerifiedResults(...lists) {
 }
 
 // The result version an unpinned claim must match: the family version the
-// operator's authenticated session registry snapshot selects as latest. Every
-// unpinned claim the checked records of one job name must resolve against one
-// snapshot pin, so the seller never signs under two session snapshots.
+// operator's authenticated session registry snapshot selects as latest, which
+// must itself be live. Every unpinned claim the checked records of one job name
+// must resolve against one snapshot pin, so the seller never signs under two
+// session snapshots.
 async function latestSessionRecipeProblem(read, entry, pins) {
   const selection = await read('resolveLatestRecipe', { scheme: entry.scheme, method: entry.method, required: true });
-  if (selection === null) return 'the Vet session registry has no live recipe version for the unpinned claim';
-  if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion'])) return 'the Vet session registry selection is malformed';
+  if (selection === null) return 'the Vet session registry has no recipe version for the unpinned claim';
+  if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion', 'availability'])) return 'the Vet session registry selection is malformed';
   const pin = selection.sessionRecipeRegistrySnapshotHash;
   if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) return 'the Vet session registry pin is malformed';
   if (pins.length > 0 && pins[0] !== pin) return 'the Vet session registry resolved another session registry snapshot';
   if (!Number.isSafeInteger(selection.recipeVersion) || selection.recipeVersion < 1) return 'the Vet session registry recipe version is malformed';
+  // The selection names the family's latest entry, not the latest live one: a
+  // newer entry that is disabled, failed or mocked is refused, never skipped.
+  if (selection.availability !== 'live') return 'the Vet session registry latest recipe version is not live';
   if (selection.recipeVersion !== entry.ref.recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
   pins.push(pin);
   return null;
@@ -380,7 +388,8 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // strict verifier. The VerifyResults, recipes and authority proofs that replay
 // needs come from the operator's `evidence` (`sessionAdmission.vetEvidence`),
 // read for this `role`'s record. A claim without `recipeVersion` is compared
-// with the operator's authenticated latest-session-recipe selection. Without
+// with the operator's authenticated session registry family head, and refused
+// unless that head is live. Without
 // it a requirement whose decision needs a result body is unresolved and
 // refused. Throws the first failure of an evidence reader (timeout, oversize,
 // a throw): that is unavailable evidence, not a record that fails its

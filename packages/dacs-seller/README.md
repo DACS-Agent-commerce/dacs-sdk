@@ -454,11 +454,15 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected })` answer `true` only for a signer the operator trusts; and
   `verifyAuthorityAttestation({ result, expected, recipe, content })` answers
   `'valid'`, `'invalid'` or `'unresolved'`. A claim that omits `recipeVersion`
-  selects the family's latest live version under DACS-2 §7.4.3, so it also
+  selects the family's latest entry under DACS-2 §7.4.3 and is refused unless
+  that exact entry is live, so it also
   needs `resolveLatestRecipe({ scheme, method, required })`, which answers the
   operator's authenticated session registry selection
-  `{ sessionRecipeRegistrySnapshotHash, recipeVersion }` (or `null`); the
-  result's pinned version must equal it, and every such claim across both
+  `{ sessionRecipeRegistrySnapshotHash, recipeVersion, availability }` (or
+  `null`), naming the family's latest entry and that entry's availability; the
+  result's pinned version must equal it and `availability` must be `live`.
+  An older live version is never selected as a fallback when the latest entry
+  is not live, and every such claim across both
   party records of one job must resolve against one snapshot pin. Without that
   reader an unpinned
   claim is refused rather than guessed. The SDK still hashes each content
