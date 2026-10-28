@@ -251,3 +251,25 @@ test('live reads refuse a retained session changed after this instance verified 
  try{await state.withJob(JOB,()=>state.saveSession({...state.loadSession(JOB),stage:'delivered'}));}finally{state.close();}
  assert.throws(()=>agent.stageOf(JOB),error=>error.code==='seller_state_unverified'&&/changed after this seller instance verified it/.test(error.message));
 });
+// DACS-2 §7.7.2: the seller bundle a buyer signs must be the Listing identity
+// or a signed presentation of it, never an altered bundle with its own Vet record.
+test('restart refuses a retained seller bundle that is not the Listing identity or a valid presentation',async t=>{
+ for(const [label,build] of [
+  ['an added claim',listing=>({...structuredClone(listing.seller.identity),claims:[...listing.seller.identity.claims,{ref:'did:demos:agent:'+'c'.repeat(64)}]})],
+  ['an invalid presentation signature',()=>{const bundle=presentWith(seller,'ab'.repeat(32));bundle.presentation.signatures[0].signature=Buffer.alloc(64,1).toString('base64url');return bundle;}],
+ ]) {
+  const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
+  const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
+  const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+  const bundle=presentWith(buyer,issued.sessionNonce),sellerBundle=build(f.listing);
+  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
+  const sellerRef=await admission.vetRecord(JOB,seller.claim,sellerBundle,{requirement:f.listing.buyerRequirement});
+  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+  try{
+   admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
+   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
+  }finally{state.close();}
+  await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),
+   error=>error.code==='seller_state_unverified'&&/seller (?:.*not a presentation of the Listing identity|.*presentation does not verify)/.test(error.message),label);
+ }
+});

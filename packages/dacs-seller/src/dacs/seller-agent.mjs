@@ -5,7 +5,7 @@ import { admitRawJson, canonicalize, contentHash, isListing, finalityCommitmentA
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
-import { sessionAdmissionConfig, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem, vetRecordProblem } from './session-admission.mjs';
+import { sessionAdmissionConfig, sellerSessionPresentationProblem, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem, vetRecordProblem } from './session-admission.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
@@ -205,9 +205,11 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   }
   async function retainedVetEvidenceProblem(session) {
     if (!admission) return 'the seller has no session admission to authenticate retained Vet records';
+    const sellerBundle = session.sellerBundle ?? listing.seller.identity, sellerProblem = sellerSessionPresentationProblem(sellerBundle, listing.seller.identity);
+    if (sellerProblem) return `seller ${sellerProblem}`;
     const parties = [
       ['buyer', session.buyerBundle.presentedBy, session.vetCheckpoint.buyer, identityBundleHash(session.buyerBundle), claim, listing.buyerRequirement],
-      ['seller', claim, session.vetCheckpoint.seller, identityBundleHash(session.sellerBundle ?? listing.seller.identity), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
+      ['seller', claim, session.vetCheckpoint.seller, identityBundleHash(sellerBundle), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
     ];
     for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
       let record, receipt, verdict;
