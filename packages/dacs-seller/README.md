@@ -36,7 +36,11 @@ const host = await startSellerHost({
   signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
   listing,              // the signed Listing this seller serves; the signer must control it
   dataDirectory,        // absolute real path of a private (0700) directory owned by this user
-  buyerAccess: createOperatorBuyerAccess({ openBuyerAccess: true }),
+  buyerAccess: createOperatorBuyerAccess({
+    openBuyerAccess: true,
+    buyerForJob,        // synchronous jobId -> retained buyer's 0x-hex wallet, or null for an unknown job
+    buyerLookupReady,   // synchronous () -> true only after the operator's purchase lookup is attached
+  }),
   agreementAnchor,      // { source, readAgreement(input) }: native Agreement readback
   artifactAnchor,       // { writer, publish, readRetained, verifyReceipt }: native artifact publication
   deliverableProducer,  // synchronous, deterministic (input) -> JSON bound to the Agreement and settlement
