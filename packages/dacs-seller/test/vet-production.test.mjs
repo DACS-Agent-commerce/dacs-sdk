@@ -108,6 +108,25 @@ test('two provider instances that both see an unattempted nonce converge on the 
  for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
  assert.equal(runs[0].sellerVet.recordRef.contentHash,runs[1].sellerVet.recordRef.contentHash);assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);f.base.close();
 });
+test('a purchase already closed starts no seller challenge',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const issue=f.counterparty.issueChallenge;let issued=0;
+ f.counterparty.issueChallenge=async request=>{issued++;return issue(request);};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>false),e=>e.code==='not-pending');
+ assert.equal(issued,0);assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);
+ f.base.close();
+});
+test('a purchase closed while the challenge is issued retains no presentation',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const issue=f.counterparty.issueChallenge;let closed=false;
+ // The verifier issues its one-use challenge, and the purchase closes before
+ // the seller can retain it.
+ f.counterparty.issueChallenge=async request=>{const challenge=await issue(request);closed=true;return challenge;};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>closed?'closed':true),e=>e.code==='not-pending');
+ assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);
+ assert.equal(await p.state.read(input.scope.jobId),null);
+ f.base.close();
+});
 test('a purchase closed during the ledger read starts no evaluation',async()=>{
  const f=productionFixture(),p=await f.provider(),input=f.input();
  let closed=false,evaluations=0;

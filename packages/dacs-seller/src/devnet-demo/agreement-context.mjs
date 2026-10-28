@@ -279,6 +279,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(!kept){
       if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
       const buyer=job.binding.buyerIdentityBundle.presentedBy;
+      // Issuing a challenge writes the buyer verifier's one-use nonce ledger.
+      // A purchase that is already closed must not start that effect.
+      guard(job,'seller challenge');
       const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim});
       if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
         // SN-2 sets only a floor for an issued challenge: at least 32
@@ -287,6 +290,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(expired&&challenge.sessionNonce===expired.challenge.sessionNonce)fail('seller_challenge_reused','the expired seller challenge cannot be issued again');
       const {presentation:_publicationProof,...identity}=listing.seller.identity;
       const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
+      // The challenge was issued while the purchase was pending; if it closed
+      // during that await, drop it instead of retaining a presentation for a
+      // purchase that cannot proceed.
+      const openState=job.open();
+      if(openState!==true)fail('not-pending',`the purchase is no longer pending (${typeof openState==='string'?openState:'its check gave no answer'}); the seller challenge was not retained`);
       kept=(await state.update(job.jobId,(current,rows)=>{
         // Claim the nonce in the job row, under the store transaction. It is
         // retained across restarts and released with the ended purchase.
