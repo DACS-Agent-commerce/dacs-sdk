@@ -51,7 +51,7 @@ test('a stalled DEM delivery context resolver aborts and releases the job fence'
 test('retired admission history remains bounded even when no live job is held',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true,maxJobs:1}),agent=await f.open();agent.close();
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const {sha256Hex}=await import('@kynesyslabs/dacs');const {buyer,NOW}=await import('./helpers/protocol-fixture.mjs');
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});try{for(let i=0;i<16;i++){const nonce=sha256Hex('TEST retired history '+i),hash=sha256Hex('TEST accepted presentation '+i);state.issueChallenge(nonce,{jobId:JOB,buyer:buyer.claim,issuedAt:NOW,expiresAt:NOW+600000});state.attemptChallenge(nonce,{presentationHash:hash});state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}}finally{state.close();}
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});try{for(let i=0;i<16;i++){const nonce=sha256Hex('TEST retired history '+i),hash=sha256Hex('TEST accepted presentation '+i);state.issueChallenge(nonce,{jobId:JOB.slice(0,-2)+i.toString(16).toUpperCase().padStart(2,'0'),buyer:buyer.claim,issuedAt:NOW,expiresAt:NOW+600000});state.attemptChallenge(nonce,{presentationHash:hash});state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}}finally{state.close();}
  const fresh=await f.open();assert.throws(()=>fresh.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
 });
 
@@ -110,6 +110,10 @@ test('a pre-upgrade session without a retained generatedAt keeps its context-tim
  // missing field as an out-of-window proposal.
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const {contentHash}=await import('@kynesyslabs/dacs'),{SELLER_PROFILE}=await import('../src/dacs/session-admission.mjs');
+ const bundle=request.buyerIdentityBundle,nonce=bundle.sessionNonce,presentationHash=contentHash(bundle),buyerBundleHash=identityBundleHash(bundle);
+ const admission=await f.admission.sessionAdmission.admit({jobId:JOB,buyer:bundle.presentedBy,buyerBundleHash,sessionNonce:nonce,seller:f.config.signer.claim,listingPin:listingPin(f.listing),profile:structuredClone(SELLER_PROFILE)});
+ state.attemptChallenge(nonce,{presentationHash});state.admitChallenge(nonce,presentationHash,{buyerBundle:structuredClone(bundle),buyerBundleHash,admission,admittedAt:NOW});
  try{await state.withJob(JOB,async()=>state.saveSession({jobId:JOB,buyerBundle:structuredClone(request.buyerIdentityBundle),buyerBundleHash:identityBundleHash(request.buyerIdentityBundle),proposal:null,stage:'proposed',proposalAdmission:{proposalHash:request.proposal.proposalHash,observedAt:NOW,admitted:true}}));}finally{state.close();}
  const agent=await f.open(),answer=await agent.receiveProposal(request);
  assert.equal(answer.disposition,'complete');assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,answer.contribution);

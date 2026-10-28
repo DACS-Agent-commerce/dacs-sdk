@@ -27,9 +27,9 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
   if(!assembled&&source.includes('await respondToFixedPriceAgreementProposalDurable(')){
    const file=ts.createSourceFile('agent.mjs',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);let method;
    const find=node=>{if(ts.isFunctionDeclaration(node)&&node.name?.text==='receiveProposal')method=node;ts.forEachChild(node,find);};find(file);
-   const admission=method.body.statements.find(node=>ts.isIfStatement(node)&&node.expression.getText(file)==='newSession');
-   if(!admission)throw new Error('TEST admission stage missing');
-   source=source.slice(0,admission.end)+"\nthrow new SellerAgentError('proposal_not_assembled','TEST isolated admission boundary',503);\n"+source.slice(method.body.end-1);
+   const signing=method.body.statements.find(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(declaration=>declaration.name.getText(file)==='signUnderPin'));
+   if(!signing)throw new Error('TEST signing stage missing');
+   source=source.slice(0,signing.getStart(file))+"\nthrow new SellerAgentError('proposal_not_assembled','TEST isolated admission boundary',503);\n"+source.slice(method.body.end-1);
   }
   if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal};');
  });
