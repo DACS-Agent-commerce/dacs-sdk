@@ -2117,3 +2117,41 @@ test('delivery evidence returns its first authenticated receipt across later obs
  assert.deepEqual((await post()).delivery?.evidenceReceipt,receipt);
  const saved=await w.retainedSession(p.jobId);assert.deepEqual(saved.deliveryEvidenceWork.receipt,receipt);assert.equal(w.createsAt(address),1);
 });
+
+for(const failure of ['none','unavailable','changed'])test(`disabling evidence publication preserves authenticated delivered facts with ${failure} readback after restart`,async t=>{
+ const w=await world(t,{deliveryEvidenceEnabled:true}),p=await w.purchase(),tx=p.pay(),address=evidenceAddress(p);
+ const first=await p.claim(tx);assert.equal(first.delivery?.status,'delivered',shown(first));
+ const signed=await w.signedClaim(p,tx);await w.host().close();
+ const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
+ const post=async(request=signed)=>{const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});assert.equal(res.status,200);return res.json();};
+ if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
+ if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
+ const observed=await post();
+ if(failure==='none')assert.equal(observed.delivery?.status,'delivered',shown(observed));
+ else{assert.equal(observed.delivery?.status,'delivery-ready',shown(observed));assert.equal(observed.delivery?.evidencePublication,'held-readback-only');}
+ w.node.faults.transactionDown=()=>false;w.faults.evidenceRead=null;
+ for(const request of [signed,await w.signedClaim(p,tx)]){
+  const done=await post(request);assert.equal(done.delivery?.status,'delivered',shown(done));
+  assert.deepEqual(done.delivery.evidenceRef,first.delivery.evidenceRef);assert.deepEqual(done.delivery.evidenceReceipt,first.delivery.evidenceReceipt);
+ }
+ assert.equal(w.createsAt(address),1);assert.equal(w.effects.deliverySubmit.length,1);
+});
+
+test('disabling publication recovers an already landed evidence CREATE with a lost answer by readback',async t=>{
+ const w=await world(t,{deliveryEvidenceEnabled:true}),p=await w.purchase(),tx=p.pay(),address=evidenceAddress(p);
+ w.faults.artifactPublish.push('SettlementEvidence:land-throw');const held=await p.claim(tx);
+ assert.equal(held.delivery?.evidencePublication,'held-readback-only');assert.equal(w.createsAt(address),1);
+ const signed=await w.signedClaim(p,tx);await w.host().close();const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
+ const response=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});
+ assert.equal(response.status,200);const done=await response.json();assert.equal(done.delivery?.status,'delivered',shown(done));
+ assert.equal(done.delivery.evidenceRef.anchor.locator,address);assert.equal(w.createsAt(address),1);
+});
+
+test('disabling publication holds absent prior work without a new CREATE and enabling resumes it once',async t=>{
+ const w=await world(t,{deliveryEvidenceEnabled:true}),p=await w.purchase(),tx=p.pay(),address=evidenceAddress(p);
+ w.faults.artifactPublish.push('SettlementEvidence');assert.equal((await p.claim(tx)).delivery?.evidencePublication,'held-readback-only');assert.equal(w.createsAt(address),0);
+ const signed=await w.signedClaim(p,tx);await w.host().close();let running=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>running.close());
+ const post=async()=>{const response=await fetch(`${running.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});assert.equal(response.status,200);return response.json();};
+ for(let attempt=0;attempt<2;attempt++){const held=await post();assert.equal(held.delivery?.evidencePublication,'held-readback-only',shown(held));assert.equal(w.createsAt(address),0);}
+ await running.close();running=await w.startShipped({deliveryEvidenceEnabled:true});assert.equal((await post()).delivery?.status,'delivered');assert.equal(w.createsAt(address),1);
+});
