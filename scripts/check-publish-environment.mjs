@@ -12,8 +12,33 @@ export const PUBLISH_ENVIRONMENT = "npm-prerelease-gated";
 export const PUBLISH_TAG_PATTERN = "v*";
 const MAX_COLLECTION_ENTRIES = 100;
 
+// The identity a required-reviewers entry can actually match, or null when the
+// entry is malformed and cannot approve anything.
+function reviewerIdentity(entry) {
+  const reviewer = entry?.reviewer;
+  if (!reviewer || typeof reviewer !== "object") return null;
+  if (entry.type === "User" && typeof reviewer.login === "string" && reviewer.login !== "") {
+    return { type: "User", login: reviewer.login };
+  }
+  if (entry.type === "Team" && typeof reviewer.slug === "string" && reviewer.slug !== "") {
+    return { type: "Team", slug: reviewer.slug };
+  }
+  return null;
+}
+
+// Whether someone other than the run's triggering actor can approve the job.
+// A team is assumed to have another member: the API evidence names no members.
+function hasEligibleApprover(rules, dispatchActor) {
+  if (dispatchActor === "") return true;
+  const actor = dispatchActor.toLowerCase();
+  return rules.some(rule => rule.reviewers.some(entry => {
+    const identity = reviewerIdentity(entry);
+    return identity.type === "Team" || identity.login.toLowerCase() !== actor;
+  }));
+}
+
 // Every reason the environment cannot gate publication; empty when it can.
-export function publishEnvironmentProblems(environment, policies) {
+export function publishEnvironmentProblems(environment, policies, dispatchActor = "") {
   if (environment?.name !== PUBLISH_ENVIRONMENT) {
     return [`the ${PUBLISH_ENVIRONMENT} environment does not exist or is another environment`];
   }
@@ -21,9 +46,11 @@ export function publishEnvironmentProblems(environment, policies) {
   if (environment.can_admins_bypass !== false) problems.push("it does not prohibit admin bypass");
   const rules = Array.isArray(environment.protection_rules) && environment.protection_rules.length <= MAX_COLLECTION_ENTRIES ? environment.protection_rules : [];
   const reviewers = rules.filter(rule => rule?.type === "required_reviewers" &&
-    Array.isArray(rule.reviewers) && rule.reviewers.length > 0 && rule.reviewers.length <= MAX_COLLECTION_ENTRIES);
+    Array.isArray(rule.reviewers) && rule.reviewers.length > 0 && rule.reviewers.length <= MAX_COLLECTION_ENTRIES &&
+    rule.reviewers.every(entry => reviewerIdentity(entry) !== null));
   if (reviewers.length === 0) problems.push("it has no required reviewers");
   else if (!reviewers.some(rule => rule.prevent_self_review === true)) problems.push("it does not prevent self-review");
+  else if (!hasEligibleApprover(reviewers, dispatchActor)) problems.push("its required reviewers cannot approve the job that the dispatch requester created");
   const branchPolicy = environment.deployment_branch_policy;
   const list = Array.isArray(policies?.branch_policies) ? policies.branch_policies : null;
   if (branchPolicy?.custom_branch_policies !== true || branchPolicy.protected_branches !== false) {
@@ -32,6 +59,8 @@ export function publishEnvironmentProblems(environment, policies) {
     problems.push("its deployment tag patterns could not be read in full");
   } else if (list.some(policy => policy?.type !== "tag" || policy.name !== PUBLISH_TAG_PATTERN)) {
     problems.push(`a deployment pattern other than the ${PUBLISH_TAG_PATTERN} tag pattern can deploy to it`);
+  } else if (list.length !== 1) {
+    problems.push("it has more than one deployment tag pattern");
   }
   return problems;
 }
@@ -45,7 +74,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch (error) { process.stderr.write(`${path}: ${error.message}\n`); process.exit(1); }
   };
-  const problems = environmentPath && policiesPath ? publishEnvironmentProblems(read(environmentPath), read(policiesPath))
+  const problems = environmentPath && policiesPath ? publishEnvironmentProblems(read(environmentPath), read(policiesPath),
+    process.env.GITHUB_TRIGGERING_ACTOR || process.env.GITHUB_ACTOR || "")
     : ["usage: check-publish-environment.mjs <environment.json> <deployment-branch-policies.json>"];
   if (problems.length) {
     process.stdout.write(`::error title=Unprotected publish environment::${PUBLISH_ENVIRONMENT} cannot gate ` +
