@@ -182,3 +182,77 @@ for(const role of ['buyer','seller'])for(const method of ['resolveSeller','recov
  assert.equal(w.seen.length,1);
  w.records.set(address,row);assert.equal((await restarted.resolveSeller(request(w,input))).disposition,'present');assert.equal(w.seen.length,1);
 });
+
+for (const boundary of ['presentation', 'composite', 'buyer-anchor', 'seller-anchor', 'counterparty']) {
+ test(`another provider ending during ${boundary} fences later effects and protects the active row`, async t => {
+  const w=fixture(),p=w.provider(),input=w.input();t.after(()=>w.store.close());
+  const entered=gate(),resume=gate();let once=true;
+  const pause=async()=>{if(once){once=false;entered.resolve();await resume.promise;}};
+  if(boundary==='presentation'||boundary==='composite'){
+   const sign=w.config.wallet.signBytes;
+   w.config.wallet.signBytes=async bytes=>{
+    const presentation=Buffer.from(bytes).toString().startsWith('dacs-bundle-presentation:');
+    if(presentation===(boundary==='presentation'))await pause();return sign(bytes);
+   };
+  }else if(boundary==='counterparty'){
+   const read=w.counterparty.readRecord;
+   w.counterparty.readRecord=async request=>{const result=await read(request);await pause();return result;};
+  }else{
+   const publish=w.anchor.publish;
+   w.anchor.publish=async request=>{
+    const buyerRecord=request.artifact.evaluatedParty===w.buyer.claim;
+    if(buyerRecord===(boundary==='buyer-anchor'))await pause();
+    if(request.authorize&&await request.authorize()!==true)throw Object.assign(new Error('TEST withdrawn write'),{code:'not-pending'});
+    return publish(request);
+   };
+  }
+  const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
+  const before={signs:w.controls.signs,writes:w.local.writes.length,evaluations:w.seen.length};
+  assert.equal((await w.provider().sweep(()=>true)).deleted,0,'an active shared row cannot disappear');
+  assert.ok((await w.store.entries()).some(([key])=>key.startsWith('party-vet/')));
+  resume.resolve();assert.ok((await held) instanceof Error);
+  assert.equal(w.local.writes.length,before.writes);assert.equal(w.seen.length,before.evaluations);
+  assert.equal(w.controls.signs,before.signs+(['presentation','composite'].includes(boundary)?1:0));
+  await w.provider().sweep(()=>true);
+  const replay=await w.provider().resolveBuyer(input).catch(error=>error);
+  assert.notEqual(replay?.disposition,'present');
+ });
+}
+
+for(const end of ['release','sweep'])test(`${end} keeps a restart replay fence when no native intent was ever created`,async t=>{
+ const w=fixture(),p=w.provider(),input=w.input(),entered=gate(),resume=gate(),sign=w.config.wallet.signBytes;
+ t.after(()=>w.store.close());let once=true;
+ w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered.resolve();await resume.promise;}return sign(bytes);};
+ const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
+ if(end==='release')assert.deepEqual(await w.provider().release({jobId:JOBS[0]}),{invalidated:true,deleted:false});
+ else assert.equal((await w.provider().sweep(()=>true)).deleted,0);
+ resume.resolve();await held;await p.sweep(()=>true);
+ const effects=[w.controls.signs,w.local.writes.length,w.seen.length];assert.equal(w.local.writes.length,0);
+ for(const candidate of [input,{...input,scope:{...input.scope,payee:w.buyer.address}}]){
+  await assert.rejects(w.provider().resolveBuyer(candidate),{code:'context_released'});
+  assert.equal(await w.provider().recoverBuyer(candidate),null);
+ }
+ await w.provider().release({jobId:JOBS[0]});await w.provider().sweep(()=>true);
+ assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],effects);
+});
+
+test('ending a never-started job keeps its authoritative replay marker',async t=>{
+ const w=fixture(),input=w.input();t.after(()=>w.store.close());
+ await w.provider().release({jobId:JOBS[0]});await w.provider().sweep(()=>true);
+ await assert.rejects(w.provider().resolveBuyer(input),{code:'context_released'});
+ assert.equal(await w.provider().recoverBuyer(input),null);
+ assert.equal(await w.provider().resumableBuyer(input),null);
+ assert.notEqual((await w.provider().resolveSeller(request(w,input))).disposition,'present');
+ assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],[0,0,0]);
+});
+
+test('cached producer revalidation retains its shared run fence at a later seller anchor',async t=>{
+ const w=fixture(),p=w.provider(),input=w.input();t.after(()=>w.store.close());await p.resolveBuyer(input);
+ const read=w.anchor.readRetained,publish=w.anchor.publish,entered=gate(),resume=gate();let absent=true;
+ w.anchor.readRetained=async request=>request.logicalAddress===compositeVerificationAddress(JOBS[0],w.seller.claim)&&absent?{status:'absent'}:read(request);
+ w.anchor.publish=async request=>{entered.resolve();await resume.promise;await request.authorize();return publish(request);};
+ const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
+ assert.equal((await w.provider().sweep(()=>true)).deleted,0);absent=false;resume.resolve();
+ assert.ok((await held) instanceof Error);assert.equal(w.local.writes.length,2);assert.equal(w.controls.signs,2);
+ await w.provider().sweep(()=>true);
+});
