@@ -128,6 +128,26 @@ function simulatedInstall(packages: Record<string, [Record<string, unknown>, Rec
   return { project, lock, closure, differences: () => installationDifferences(project, closure()) };
 }
 
+describe("reference exclusive options", { timeout: 60_000 }, () => {
+  it.each([
+    ["defaults", ""],
+    ...["save-dev", "save-optional", "save-peer", "save-prod", "provenance"].map(key => [key, `${key}=true\n`]),
+    ["provenance-file", "provenance-file=./provenance.json\n"],
+    ["expect-results", "expect-results=false\n"],
+    ["expect-result-count", "expect-result-count=0\n"],
+  ])("replays %s and preserves other false settings", (_selected, config) => {
+    const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
+    writeFileSync(join(fixture.project, ".npmrc"), `bin-links=false\n${config}`);
+    const installer = npmInstallContract(fixture.project);
+    expect(installer.config["bin-links"]).toBe(false);
+    const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+      lock: fixture.lock, installer, readArchive: (_location: string, locked: { integrity: string }) =>
+        cachedArchive(join(fixture.project, ".npm"), locked.integrity) });
+    expect(reference.errors).toEqual([]);
+    expect(reference.inventory).toBeInstanceOf(Map);
+  });
+});
+
 describe("installation closure", { timeout: 60_000 }, () => {
   it("accepts an installed tree that is exactly the locked archives", () => {
     const install = simulatedInstall({
