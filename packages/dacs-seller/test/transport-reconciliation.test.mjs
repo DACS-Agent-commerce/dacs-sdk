@@ -68,13 +68,13 @@ test('pending unauthenticated presentation releases its slot for a corrected pro
  const out=await w.peer.propose(body);assert.equal(out.disposition,'rejected');assert.equal(out.reason,'buyer_bundle_unauthenticated');assert.equal(agent.durableSessionOf(JOB),null);
  const corrected=await f.proposal(agent);w.setHash(corrected.proposal.plan.agreementHash);assert.equal((await w.peer.propose(corrected)).disposition,'complete');
 });
-for(const state of ['included','pending'])test(`fixture payment before work checkpoint recovers ${state} intake after a pending reservation`,async t=>{
+for(const state of ['included','pending'])test(`staged authenticated fixture payment refuses ${state} intake after a pending reservation`,async t=>{
  const f=await agentFixture({lifecycle:true});t.after(()=>f.close());const jobId=JOBS[0];await f.agent.commit({jobId});
  if(state==='pending')f.controls.observation={status:'pending'};
  const body={jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim},request=command(f.agent,'/dacs/v1/payments',body,f.agent.durableSessionOf(jobId).agreementHash);
  const dir=await mkdtemp(join(tmpdir(),'TEST-payment-restart-'));t.after(()=>rm(dir,{recursive:true,force:true}));const w=await transport(t,f.agent,dir,body,'/dacs/v1/payments'),first=w.store.reserve(w.request,body);
- const out=await w.peer.submitPayment(body);assert.equal(out.status,state==='included'?'delivered':'indeterminate');assert.throws(()=>w.store.finish(first,200,'{}'),{code:'peer_store_conflict'});
- if(state==='pending'){f.controls.observation=null;assert.equal((await w.peer.submitPayment(body)).status,'delivered');}
+ const writes=f.anchors.writes.length;await assert.rejects(w.peer.submitPayment(body),{code:'seller_unavailable'});assert.equal(f.anchors.writes.length,writes);assert.equal(f.agent.durableSessionOf(jobId).paymentWork,undefined);
+ assert.doesNotThrow(()=>w.store.finish(first,503,'{}'),'the staged refusal did not take over the retained reservation');
 });
 
 test('recovery fences an original proposal delayed between HTTP reservation and the seller job fence',async t=>{
