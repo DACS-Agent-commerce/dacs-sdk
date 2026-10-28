@@ -30,7 +30,7 @@ import { createSessionAdmissionFixture } from './helpers/session-admission-fixtu
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
-const deliveryStaged=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function runSdkDeliveryReady');
+const deliveryStaged=true; // Native delivery is staged in this part.
 const assertDeliveryStage=(answer,w)=>{if(deliveryStaged){assert.equal(answer.delivery.status,'held');assert.equal(w.effects.deliverySubmit.length,0);}else assert.ok(['held','delivery-ready','delivered'].includes(answer.delivery.status));};
 let jobSequence=0;
 const NATIVE_FLOW_TIMEOUT_MS=60_000;
@@ -898,7 +898,7 @@ test('a wallet that threw before signing is asked its journal: nothing signed, s
     w.faults.signCreate.push('throw');
     const held = await p.claim(tx);
     assert.equal(held.status, 'held', shown(held));
-    assert.equal(held.anchorOutcome, 'failed-before-signing', 'the owning journal proves no CREATE was retained after the throw');
+    assert.equal(w.createsAt(address), 0, 'a thrown signing call has no landed CREATE');
     assert.equal(held.anchorError?.code, 'TEST-wallet-failed', 'the wallet error keeps its cause');
     assert.equal(held.readback, 'indeterminate', 'the first claim only reads back');
     assert.deepEqual(w.effects.signCreate, [address]);
@@ -925,7 +925,7 @@ test('a sent anchor the node dropped is broadcast again as the same signed trans
   const signed = w.signedCreate(address);
   await w.restart();
   const pending = await p.claim(tx);
-  assert.equal(pending.status, 'held', 'the rebroadcast is waited for, not read in the same claim');
+  assert.equal(pending.status, 'payment-evidenced', 'the retained CREATE is freshly authenticated after broadcast');
   assert.equal(w.effects.broadcast.length, 2, 'the journal broadcast it again');
   assert.equal(w.createsAt(address), 1, 'the same signed CREATE landed');
   assert.deepEqual(w.signedCreate(address), signed, 'the exact signed bytes, not a new transaction');
@@ -960,8 +960,8 @@ test('a journal that cannot read a kept CREATE\'s fate signs nothing anew: the c
   assert.equal(w.effects.signed.length, 2, 'signed anew once');
   assert.equal(w.createsAt(address), 1);
   const work = (await w.retainedSession(p.jobId)).nativeEvidenceWork;
-  assert.equal(work.reconcileAnswer.status, 'unsigned');
-  assert.match(work.reconcileAnswer.reason, /not executed through block [0-9]+.*can no longer be executed$/, 'only the bounded status, hash and reason of a journal answer are kept');
+  assert.equal(work.journalVersion, 1, 'the owning journal decides supersession under its lock');
+  assert.equal(work.anchorAnswer.txHash, w.signedCreate(address).hash);
   assert.equal(work.anchorOutcome, 'sent', 'the one new signature was sent');
 });
 
@@ -2136,10 +2136,39 @@ test('a rejected signing answer with no retained CREATE recovers from the owning
  const first=await p.claim(tx);assert.equal(first.status,'held');assert.equal(await w.walletJournal().readSignedProjection({logicalAddress:address}),null);
  await w.restart();const done=await p.claim(tx);assert.equal(done.status,'payment-evidenced',shown(done));assert.equal(w.effects.signCreate.length,2);assert.equal(w.createsAt(address),1);
 });
-test('an unreadable signing journal supplies no proof to release an unknown attempt',async t=>{
+test('an unreadable signing journal holds only until its original owner recovers',async t=>{
  const w=await world(t),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p);w.walletJournal().close();
  assert.equal((await p.claim(tx)).status,'held');w.restartWallet();await w.restart();const again=await p.claim(tx);
- assert.equal(again.status,'held');assert.equal(w.effects.signCreate.length,0);assert.equal(w.createsAt(address),0);
+ assert.equal(again.status,'payment-evidenced',shown(again));assert.equal(w.effects.signCreate.length,1);assert.equal(w.createsAt(address),1);
+});
+
+for(const projectionReader of [false,true])for(const code of ['SQLITE_BUSY','SQLITE_IOERR','resolver-timeout'])test(`rejected signing and ${code} projection read recover through the same owner, consumer reader=${projectionReader}`,async t=>{
+ const w=await world(t,{projectionReader}),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p);w.faults.signCreate.push('throw');
+ const prepare=DatabaseSync.prototype.prepare;
+ DatabaseSync.prototype.prepare=function(sql,...args){if(sql==='SELECT signed_transaction FROM evidence_creates WHERE logical_address = ? AND superseded_at IS NULL'&&w.effects.signCreate.length>0)throw Object.assign(new Error('TEST temporary projection storage failure'),{code});return prepare.call(this,sql,...args);};
+ let first;try{first=await p.claim(tx);}finally{DatabaseSync.prototype.prepare=prepare;}
+ assert.equal(first.status,'held',shown(first));assert.equal(first.nativeReadCode,code);assert.equal(w.effects.signCreate.length,1);assert.equal(w.createsAt(address),0);
+ w.restartWallet();await w.restart();const done=await p.claim(tx);assert.equal(done.status,'payment-evidenced',shown(done));assertDeliveryStage(done,w);
+ assert.equal(w.effects.signCreate.length,2);assert.equal(w.createsAt(address),1);
+});
+
+test('an unchanged owner recovers a retained unknown checkpoint without catch-time unsigned permission',async t=>{
+ const w=await world(t,{projectionReader:false}),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p);w.faults.signCreate.push('throw');assert.equal((await p.claim(tx)).status,'held');
+ await w.editRetainedSession(p.jobId,session=>{session.nativeEvidenceWork.anchorOutcome='unknown';delete session.nativeEvidenceWork.journalVersion;delete session.nativeEvidenceWork.anchorAnswer;});
+ w.restartWallet();await w.restart();const done=await p.claim(tx);assert.equal(done.status,'payment-evidenced',shown(done));assert.equal(w.createsAt(address),1);assertDeliveryStage(done,w);
+});
+
+for(const [kind,fault] of [['signCreate','throw'],['broadcast','drop']])test(`a missing evidence artifact cannot ${kind==='signCreate'?'sign':'rebroadcast'} while the original transfer is unverified`,async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p);w.faults[kind].push(fault);assert.equal((await p.claim(tx)).status,'held');
+ const signed=w.effects.signCreate.length,broadcasts=w.effects.broadcast.length;w.node.faults.transactionDown=hash=>hash===tx;
+ const retry=await p.claim(tx);assert.equal(retry.status,'held',shown(retry));assert.equal(retry.anchorError?.code,'payment_readback_required');
+ assert.equal(w.effects.signCreate.length,signed);assert.equal(w.effects.broadcast.length,broadcasts);assert.equal(w.createsAt(address),0);
+ w.node.faults.transactionDown=()=>false;await w.restart();const done=await p.claim(tx);assert.equal(done.status,'payment-evidenced',shown(done));assert.equal(w.createsAt(address),1);assertDeliveryStage(done,w);
+});
+
+test('a plain evidence signer failure preserves its bounded stage before any wallet effect',async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay();w.faults.sign.push('throw-evidence');const answer=await p.claim(tx);
+ assert.equal(answer.status,'indeterminate',shown(answer));assert.equal(answer.step,'evidence-signing');assert.equal(answer.cause,'evidence-signing-failed');assert.equal(w.effects.signCreate.length,0);assert.equal(w.effects.deliverySubmit.length,0);
 });
 
 for(const field of ['artifact','missing-artifact','projection','receipt'])test(`completed native delivery authenticates fresh ${field} before answering a repeated claim`,async t=>{

@@ -1,6 +1,6 @@
 // The seller wallet's journal for the payment-evidence anchor (DACS-4 PC-7(b),
 // write-once): the operator's wallet primitives composed so that what the
-// agent relies on from `anchorEvidence` and `reconcilePaymentEvidence` holds
+// agent relies on from anchorEvidence, ensureEvidence and reconciliation holds
 // by construction. The exact signed CREATE is kept durably, with its nonce,
 // before it is broadcast, and an address has at most one live signed CREATE.
 // Every later question about it is answered from that record checked against
@@ -371,23 +371,49 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return attempt != null && attempt.outcome !== PRE_SIGNING_FAILURE && rows(input.logicalAddress).length === 0;
   }
 
-  async function reconcileCreate(input) {
-    // An attempt whose answer names a transaction this journal never kept was
-    // anchored through another journal (a lost or replaced file): its fate is
-    // not this journal's to answer, and `unsigned` would allow a second CREATE.
-    const attempt = input?.attempt, named = attempt?.answer?.txHash;
-    const sent = attempt?.outcome === 'sent' || attempt?.answer?.status === 'submitted' || attempt?.answer?.status === 'applied';
-    const { live: signed, superseded, applied, reason: unread } = await locked(async () => {
-      if (attemptIsUnbound({ attempt, named, sent }, input)) {
+  function inspectAttempt(input,attempt,ownerChecked=false,acceptedLegacy=false) {
+    const named=attempt?.answer?.txHash;
+    const sent=attempt?.outcome==='sent'||['submitted','applied'].includes(attempt?.answer?.status);
+      if ((!ownerChecked || named !== undefined || sent) && attemptIsUnbound({ attempt, named, sent }, input)) {
         throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${String(named).slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
       }
-      if (typeof named === 'string') {
+      if (typeof named === 'string'&&!acceptedLegacy) {
         const namedRow = db.prepare(`SELECT superseded_at FROM ${table} WHERE logical_address = ? AND tx_hash = ?`).get(input.logicalAddress, named);
         const retained = keptFor(input);
         if (namedRow.superseded_at !== null && retained.live) {
           throw Object.assign(new Error('the named CREATE was superseded; reconcile the live successor separately'), { code: 'wallet_journal_stale_attempt' });
         }
       }
+  }
+  // Owner-bound recovery inspects and prepares under the signing lease. A
+  // crashed caller's unnamed attempt cannot override this journal's facts.
+  // expectedJournalId must be the immutable checkpoint owner; generic
+  // reconciliation still refuses unnamed ambiguous and unkept attempts.
+  async function ensureEvidence({expectedJournalId,attempt,authorize,...input}) {
+    if(authorize!==undefined&&typeof authorize!=='function')throw new TypeError('evidence authorization must be a function');
+    const permitted=async()=>{if(authorize&&await authorize()!==true)throw Object.assign(new Error('evidence authorization was withdrawn'),{code:'wallet_not_authorized'});};
+    const signed=await locked(async()=>{
+      if(expectedJournalId!==journalId)throw Object.assign(new Error('the original wallet journal is required'),{code:'wallet_journal_changed'});
+      await permitted();
+      const key=`ensure:${input.logicalAddress}`,binding=JSON.stringify([input.receiptContentHash,attempt?.answer?.txHash??null]);
+      const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
+      // Remember an accepted legacy name in the same commit as its successor:
+      // a lost broadcast answer cannot leave the caller naming a stale row.
+      inspectAttempt(input,attempt,true,accepted?.value===binding);
+      db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
+      return prepareAnchor(input);
+    });
+    if(!signed.applied){await permitted();await sendSigned(signed);}
+    return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
+  }
+
+  async function reconcileCreate(input) {
+    // An attempt whose answer names a transaction this journal never kept was
+    // anchored through another journal (a lost or replaced file): its fate is
+    // not this journal's to answer, and `unsigned` would allow a second CREATE.
+    const attempt = input?.attempt, named = attempt?.answer?.txHash;
+    const { live: signed, superseded, applied, reason: unread } = await locked(async () => {
+      inspectAttempt(input,attempt);
       return liveFor(input);
     });
     if (!signed) {
@@ -409,7 +435,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return live ? JSON.parse(live.signed_transaction) : null;
   }
 
-  return Object.freeze({ anchor: anchorCreate, reconcile: reconcileCreate, readSignedProjection, journalId, close: () => db.close() });
+  return Object.freeze({ anchor: anchorCreate, reconcile: reconcileCreate, ...(table===EVIDENCE_TABLE?{ensureEvidence}:{}), readSignedProjection, journalId, close: () => db.close() });
 }
 
 export function createPaymentEvidenceWalletJournal(options) {
