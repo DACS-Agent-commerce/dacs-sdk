@@ -121,6 +121,25 @@ test('read paths refuse a retained session another writer left unverified',async
  for(const read of [()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB)])assert.throws(read,error=>error.code==='seller_state_unverified');
  assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
 });
+test('restart refuses a Vet record the counterparty did not sign or a receipt below accepted',async t=>{
+ const signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
+ for(const [options,pattern] of [
+  [{signer:{claim:buyer.claim,sign:seller.signBytes}},/not signed by its counterparty verifier/],
+  [{receipt:{state:'expired'}},/not accepted or later/],
+ ]) {
+  const f=fixture(t),admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
+  const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+  const bundle=presentWith(buyer,issued.sessionNonce);
+  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
+  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...options});
+  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+  try{
+   state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));
+   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
+  }finally{state.close();}
+  await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&pattern.test(error.message));
+ }
+});
 test('restart restores a session bound to its admitted challenge and to verified Vet records and receipts',async t=>{
  const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
  const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
