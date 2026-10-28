@@ -1,8 +1,7 @@
 // A valid strict-verification result authenticates a record, independently of
 // its overallDecision. Stub only those two SDK operations to supply each
 // valid non-pass result; run the actual provider and party-Vet state store.
-import vm from 'node:vm';
-import { readFile } from 'node:fs/promises';
+import { privateModule } from './helpers/private-module.mjs';
 import * as sdk from '@kynesyslabs/dacs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,12 +18,11 @@ globalThis.__d5PartyVet=async (input,deps)=>{
  return {record,recordRef:{anchor:{kind:'storage-program',locator:'native'},contentHash:'a'.repeat(64),signer:seller},receipt:{nativeAddress:'native'}};
 };
 const sourceUrl=new URL('../src/devnet-demo/agreement-context.mjs',import.meta.url);
-const module=new vm.SourceTextModule(await readFile(sourceUrl,'utf8'),{identifier:sourceUrl.href});
-await module.link(async specifier=>{
- const values=specifier==='@kynesyslabs/dacs'?{...sdk,partyVetCore:(...args)=>globalThis.__d5PartyVet(...args),verifyCompositeVerificationRecord:(...args)=>globalThis.__d5Strict(...args)}:await import(specifier.startsWith('.')?new URL(specifier,sourceUrl).href:specifier);
- return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value]of Object.entries(values))this.setExport(key,value);});
-});await module.evaluate();
-const {createDevnetDemoAgreementContextProvider}=module.namespace;
+const sdkSource=`export * from ${JSON.stringify(import.meta.resolve('@kynesyslabs/dacs'))};
+export const partyVetCore=(...args)=>globalThis.__d5PartyVet(...args);
+export const verifyCompositeVerificationRecord=(...args)=>globalThis.__d5Strict(...args);`;
+const sdkUrl=`data:text/javascript;base64,${Buffer.from(sdkSource).toString('base64')}`;
+const {createDevnetDemoAgreementContextProvider}=await privateModule(sourceUrl,[],source=>source.replace("from '@kynesyslabs/dacs'",`from ${JSON.stringify(sdkUrl)}`));
 const {createInMemoryPartyVetStore}=await import('../src/devnet-demo/party-vet-store.mjs');
 const stores=new WeakMap();
 const {fixtureListing}=await import('./fixtures/listings.mjs');
