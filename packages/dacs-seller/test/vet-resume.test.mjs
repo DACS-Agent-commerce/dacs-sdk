@@ -14,7 +14,7 @@ for(const status of ['proven','absent','indeterminate','present'])test(`resume w
 test('one finalized buyer proof and one interrupted unsigned seller intent need exactly one remaining write',async()=>{
  const w=fixture(),input=w.input(),sellerAddress=compositeVerificationAddress(JOBS[0],w.seller.claim),publish=w.anchor.publish,read=w.anchor.readRetained;
  w.anchor.publish=async asked=>asked.logicalAddress===sellerAddress?{status:'indeterminate'}:publish(asked);
- await assert.rejects(w.provider().resolveBuyer(input),{code:'seller_vet_receipt_invalid'});
+ await assert.rejects(w.provider().resolveBuyer(input),{code:'indeterminate'});
  w.anchor.hasIntent=async()=>true;w.anchor.readRetained=async asked=>asked.logicalAddress===sellerAddress?provenUnsignedAbsence('TEST unsigned seller intent'):read(asked);
  const effects=[w.controls.signs,w.local.writes.length,w.seen.length];w.config.store.update=()=>assert.fail('resume wrote state');
  assert.deepEqual(await w.provider().resumableBuyer(input),{writes:1});assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],effects);w.base.close();
