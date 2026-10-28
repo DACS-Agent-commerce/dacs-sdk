@@ -11,29 +11,11 @@ import { referenceInstallation, installationDifferences, npmInstallContract } fr
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence } from "./acceptance-evidence-io.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
-// Observing only advisory IDs listed in the #191 baseline, or a subset of
-// them, is baseline-only (exit 4). An ID missing from the baseline fails closed
-// (exit 3) unless DACS_UNLISTED_ADVISORIES=warn, which only the pull_request
-// acceptance job sets: there it is a warning, so an advisory newly published
-// against an unchanged tree cannot turn every PR red. The scheduled drift job,
-// manual acceptance runs and callers that enforce drift fail; an unlisted
-// ID that is high or critical on a direct dependency fails pull requests too.
-// An observed ID recorded in `assessedAdvisories` (a transitive advisory
-// assessed for reachability, as SECURITY.md's audit policy allows) does not
-// block the gate, and one recorded in the #191 baseline is baseline-only; one
-// on a direct dependency at high or critical severity always blocks, whichever
-// list records it. Nothing here permits production publication while #191
-// remains blocked.
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
-// The evidence a complete summary embeds, by the schema its producer writes.
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
 export const POLICY_FINDINGS_SCHEMA = "dacs-registry-policy-findings/v1";
-// Every entry under the final image's node_modules (runtime-image-inventory.mjs).
-export { RUNTIME_IMAGE_INVENTORY_SCHEMA };
-const baselinePath = new URL("./registry-container-audit-baseline.json", import.meta.url);
-// The release the acceptance packs and installs: the checkout's own version,
-// as verify-registry-container-consumer.sh reads it.
 export const RELEASE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+const baselinePath = new URL("./registry-container-audit-baseline.json", import.meta.url);
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
 function validIds(ids) {

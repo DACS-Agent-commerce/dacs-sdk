@@ -13,25 +13,13 @@ on:
       - ".github/workflows/registry-container-audit-drift.yml"
       - "package.json"
       - "package-lock.json"
-      - "scripts/publish-exact-local-registry.mjs"
-      - "scripts/registry-container-disposition.mjs"
-      - "scripts/acceptance-evidence-io.mjs"
-      - "scripts/bounded-build.mjs"
-      - "scripts/bounded-command.mjs"
-      - "scripts/bounded-npm-http.cjs"
-      - "scripts/bounded-transport.sh"
-      - "scripts/bounded-http.sh"
-      - "scripts/http-json-limits.mjs"
-      - "scripts/registry-container-audit-baseline.json"
-      - "scripts/runtime-image-inventory.mjs"
-      - "scripts/verify-registry-container-consumer.sh"
-      - "scripts/acceptance-seal.mjs"
-      - "scripts/registry-container-registry.sh"
-      - "scripts/verify-release-set.mjs"
-      - "scripts/sync-vectors.mjs"
+      - "scripts/**"
       - "src/**"
       - "packages/dacs-node/**"
       - "packages/create-dacs-agent/**"
+      - "test/scripts/**"
+      - "tsconfig*.json"
+      - "vitest.config.ts"
 
 permissions:
   contents: read
@@ -49,7 +37,9 @@ jobs:
           node-version: "20.19.1"
 
       - name: Pin acceptance npm client
-        run: timeout 900 npm install --global --ignore-scripts --no-audit npm@11.19.0
+        run: |
+          source scripts/bounded-transport.sh
+          run_bounded node scripts/acceptance-bootstrap.mjs
 
       - name: Install exact source lock
         run: |
@@ -57,70 +47,33 @@ jobs:
           run_bounded npm ci --no-audit
 
       - name: Run registry-shaped Linux and Docker acceptance
-        # Exit 4 means the functional rehearsal passed and the release security
-        # gate is blocked only by findings recorded exactly in the #191
-        # baseline. Production publication stays blocked without failing every
-        # pull request; any other failure still fails. An advisory ID outside
-        # the baseline, even one newly published against an unchanged tree, is
-        # a warning and a step-summary line on pull_request only; every other
-        # event (the scheduled drift job, manual and release runs) and every
-        # caller that sets enforce-audit-drift=true fails closed on
-        # it with exit 3. Any command can exit 4 under set -e, so status 4
-        # is waived only when the written summary independently re-checks as 4
-        # under the same policy. acceptance-summary.json records failureClass:
-        # network, policy or functional.
+        # Only non-enforcing PRs warn on unlisted advisories. Exit 4 is waived
+        # after independent classification of this run's summary under the same policy.
         env:
           ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}
         run: |
-          export DACS_UNLISTED_ADVISORIES=fail
-          if [ "${GITHUB_EVENT_NAME-}" = pull_request ] && [ "${ENFORCE_AUDIT_DRIFT:-false}" != true ]; then
-            DACS_UNLISTED_ADVISORIES=warn
-          fi
-          status=0
-          npm run acceptance:registry-container -- --output-dir registry-container-artifacts || status=$?
-          if [ "$status" -eq 4 ]; then
-            summary=registry-container-artifacts/acceptance-summary.json
-            disposition=1
-            if test -f "$summary"; then
-              disposition=0
-              node scripts/registry-container-disposition.mjs "$summary" || disposition=$?
-            fi
-            if [ "$disposition" -ne 4 ]; then
-              echo "::error title=Registry/container acceptance failed::Exit 4 was not produced by a baseline-only acceptance summary (summary disposition: $disposition)."
-              exit "$status"
-            fi
-            echo "::warning title=#191 security gate blocked::Release security gate remains blocked by findings recorded in the #191 baseline. See acceptance-summary.json."
-            exit 0
-          fi
-          exit "$status"
+          bash scripts/acceptance-ci.sh acceptance
 
       - name: Check advisory-ID drift
-        # Runs whenever a summary exists, so a non-audit failure above cannot
-        # mask drift. On pull_request both acceptance and this step only warn
-        # on an unlisted ID; in the scheduled/manual drift workflow and before
-        # prerelease publication, which enforce drift, both fail.
         if: always()
         env:
           ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}
         run: |
-          summary=registry-container-artifacts/acceptance-summary.json
-          if ! test -f "$summary"; then
-            echo "::warning title=Registry audit advisory drift::No acceptance summary; advisory-ID drift was not evaluated."
-            if [ "${ENFORCE_AUDIT_DRIFT:-false}" = true ]; then exit 1; fi
-            exit 0
-          fi
-          status=0
-          node scripts/registry-container-disposition.mjs --audit-drift "$summary" || status=$?
-          if [ "${ENFORCE_AUDIT_DRIFT:-false}" = true ]; then exit "$status"; fi
-          exit 0
+          bash scripts/acceptance-ci.sh drift
 
       - name: Publish acceptance summary
         if: always()
         run: |
-          if test -f registry-container-artifacts/acceptance-summary.json; then
-            echo '## Registry-shaped consumer acceptance' >> "$GITHUB_STEP_SUMMARY"
-            cat registry-container-artifacts/acceptance-summary.json >> "$GITHUB_STEP_SUMMARY"
-          fi
+          bash scripts/acceptance-ci.sh summary
+
+      - name: Upload bootstrap diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dacs-acceptance-bootstrap-${{ github.sha }}
+          path: ${{ runner.temp }}/dacs-acceptance-npm-*/bootstrap.log
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Upload registry/container evidence
         if: always()
@@ -132,26 +85,10 @@ jobs:
           retention-days: 30
 
       - name: Assemble disposition fixtures
-        # The evidence the disposition tests replay, in the layout of
-        # test/scripts/fixtures/registry-container-b7b180f, with the image's
-        # package inventory that the b7b180f run predates. The #191 baseline
-        # fixtures are regenerated from this artifact. engine-strict.log is
-        # stored as .txt because .gitignore ignores *.log.
+        # Copy the closed policy evidence set after the producer has exited.
         if: always()
         run: |
-          evidence=registry-container-artifacts
-          fixtures="registry-container-fixtures/registry-container-${GITHUB_SHA::7}"
-          if ! test -f "$evidence/acceptance-summary.json"; then exit 0; fi
-          mkdir -p "$fixtures"
-          for name in acceptance-summary.json consumer-lock-sbom.err consumer-lock-sbom.exit-code \
-            consumer-physical-sbom.err consumer-physical-sbom.exit-code dependency-policy.json \
-            engine-strict.exit-code engine-versions.json generated-package-lock.json \
-            runtime-image-policy.json runtime-image-inventory.json; do
-            if test -f "$evidence/$name"; then cp "$evidence/$name" "$fixtures/"; fi
-          done
-          if test -f "$evidence/engine-strict.log"; then
-            cp "$evidence/engine-strict.log" "$fixtures/engine-strict.log.txt"
-          fi
+          node scripts/acceptance-fixtures.mjs registry-container-artifacts "registry-container-fixtures/registry-container-${GITHUB_SHA::7}"
 
       - name: Upload disposition fixtures
         if: always()
