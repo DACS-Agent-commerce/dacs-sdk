@@ -232,14 +232,25 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const validReceipt = async (read,logicalAddress,artifact,authority) => read?.status==='present'
     && read.receipt?.state==='finalized' && read.receipt?.observationDisposition==='established'
     && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority})==='valid';
+  const unattempted=(read,request)=>read?.status==='unattempted'
+    && sameCanonicalClaimIdentity(read.issuer,request.buyer) && read.jobId===request.jobId
+    && read.bundleHash===identityBundleHash(request.identityBundle)
+    && read.requirementHash===sha256Hex(canonicalize(request.requirement));
   async function sellerSession(job) {
     let kept=(await state.read(job.jobId))?.presentation;
+    let expired=null;
+    if(kept&&!kept.bundle.presentation&&kept.challenge.expiresAt<=now()){
+      const request={jobId:job.jobId,buyer:job.binding.buyerIdentityBundle.presentedBy,seller:wallet.claim,identityBundle:kept.bundle,requirement:SELLER_REQUIREMENT};
+      if(!unattempted(await callCounterparty('readRecord',request),request))fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
+      expired=kept;kept=null;
+    }
     if(!kept){
       if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
       const buyer=job.binding.buyerIdentityBundle.presentedBy;
       const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim});
       if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
         || typeof challenge.sessionNonce!=='string' || !/^(?:[a-f0-9]{2}){16,128}$/.test(challenge.sessionNonce) || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
+      if(expired&&challenge.sessionNonce===expired.challenge.sessionNonce)fail('seller_challenge_reused','the expired seller challenge cannot be issued again');
       const {presentation:_publicationProof,...identity}=listing.seller.identity;
       const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
       kept=(await state.update(job.jobId,(current,rows)=>{
@@ -250,7 +261,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
           && row.presentation.challenge.sessionNonce===challenge.sessionNonce))
           fail('seller_challenge_reused','buyer challenge was already presented for another job');
         if(!current?.binding || !same(current.binding,job.binding)) fail('binding-changed','seller presentation binding changed');
-        if(current.presentation)return undefined;
+        if(current.presentation&&(!expired||!same(current.presentation,expired)))return undefined;
+        if(current.counterpartyRecord)fail('seller_vet_reconciliation_required','the seller challenge already has a retained record');
         return {...current,presentation:value};
       })).presentation;
     }
@@ -307,9 +319,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // start evaluation. Absence/unknown never authorizes another consumption.
       const retained=await callCounterparty('readRecord',request);
       if(retained?.status==='present')record=retained.record;
-      else if(retained?.status==='unattempted' && sameCanonicalClaimIdentity(retained.issuer,authority)
-        && retained.jobId===job.jobId && retained.bundleHash===identityBundleHash(identityBundle)
-        && retained.requirementHash===sha256Hex(canonicalize(SELLER_REQUIREMENT)))record=await evaluateOrReadRetained(request);
+      else if(unattempted(retained,request))record=await evaluateOrReadRetained(request);
       else fail('seller_vet_reconciliation_required','the buyer nonce ledger has no authoritative outcome');
       const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
       if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid') fail('seller_vet_invalid',`buyer-issued seller Vet failed strict verification: ${strict.status}:${strict.code}`);
