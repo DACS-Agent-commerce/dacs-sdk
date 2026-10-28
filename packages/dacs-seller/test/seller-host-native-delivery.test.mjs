@@ -33,6 +33,7 @@ import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sd
 const deliveryStaged=!readFileSync(new URL('../src/dacs/seller-agent.mjs',import.meta.url),'utf8').includes('async function runSdkDeliveryReady');
 const assertDeliveryStage=(answer,w)=>{if(deliveryStaged){assert.equal(answer.delivery.status,'held');assert.equal(w.effects.deliverySubmit.length,0);}else assert.ok(['held','delivery-ready','delivered'].includes(answer.delivery.status));};
 let jobSequence=0;
+const NATIVE_FLOW_TIMEOUT_MS=60_000;
 const RPC = 'http://127.0.0.1:9/';
 const clone = (value) => structuredClone(value);
 const demToOs = (amount) => { const [whole, fraction = ''] = amount.split('.'); return (BigInt(whole) * 10n ** 9n + BigInt(fraction.padEnd(9, '0'))).toString(); };
@@ -454,7 +455,7 @@ async function world(t, { deliveryJournal = false, deliverableProducer = null, s
     const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
     const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
     const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
-    const client = () => seller.createSellerAgentClient({ url: host.url, authentication: seller.createSellerTransportClientAuth({
+    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, authentication: seller.createSellerTransportClientAuth({
       buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock }) });
     const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundleFor(jobId) });
     if (!expectSigned) return answer;
@@ -466,7 +467,7 @@ async function world(t, { deliveryJournal = false, deliverableProducer = null, s
     return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
       claim: async (txHash) => { try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
-        catch (error) { return { error: error.code, status: error.status }; } } };
+        catch (error) { return { error: error.code, status: error.status, causeCode:error.causeCode }; } } };
   };
   const restart = async () => { await host.close(); hosts.splice(hosts.indexOf(host), 1); host = await start(); };
   // The operator's read-only view of a job's retained session (durableSessionOf),
@@ -708,10 +709,11 @@ test('a payment claim a crash left reserved and unfinished is not stranded: the 
 });
 
 test('a paid outside buyer recovers an uncertain payment after access closes and restart, with one signed evidence CREATE', async (t) => {
-  const paidJobs = new Set();
-  const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId) };
+  const paidJobs = new Set(), buyers = new Map();
+  const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId), buyerForJob: jobId => buyers.get(jobId) };
   const w = await world(t, { buyerAccessOptions: access });
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  buyers.set(p.jobId,w.buyerKey.address);
   w.faults.broadcast.push('drop');
   assert.equal((await p.claim(tx)).status, 'held');
   const retained = await w.retainedSession(p.jobId);
@@ -740,10 +742,11 @@ test('a paid outside buyer recovers an uncertain payment after access closes and
 
 test('closed-access recovery uses paid-job authority for reconcile and resume; unpaid outsiders only inspect issued unknown writes', async (t) => {
   for (const paid of [true, false]) {
-    const paidJobs = new Set();
-    const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId) };
+    const paidJobs = new Set(), buyers = new Map();
+    const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId), buyerForJob: jobId => buyers.get(jobId) };
     const w = await world(t, { buyerAccessOptions: access });
     const p = await w.purchase(), tx = paid ? p.pay() : core.sha256Hex('TEST-unpaid-claim'), address = paymentAddress(p);
+    buyers.set(p.jobId,w.buyerKey.address);
     if (paid) {
       w.faults.signCreate.push('throw');
       assert.equal((await p.claim(tx)).status, 'held');
@@ -2053,11 +2056,47 @@ for(const field of ['artifact','missing-artifact','projection','receipt'])test(`
  assert.equal((await post()).delivery?.status,'held');assert.equal((await p.claim(tx)).delivery?.status,'held');
  w.faults.deliveryRead=null;assert.equal((await p.claim(tx)).delivery?.status,'delivery-ready');assert.equal(w.effects.deliverySubmit.length,1);
 });
-for(const size of [16385,131072])test(`an exact ${size}-byte producer result above the CREATE cap holds before retaining or sending a report`,async t=>{
+for(const size of [16385,131072])test(`a ${size}-byte Listing above the CREATE cap is refused before an Agreement or payment`,async t=>{
  const producer=input=>{const value=report({body:['']})(input);value.body[0]='a'.repeat(size-Buffer.byteLength(core.canonicalize(value)));return value;};
- const w=await world(t,{deliverableProducer:producer,deliverableExtension:{expectedSizeBytes:size}}),p=await w.purchase(),tx=p.pay();
+ const w=await world(t,{deliverableProducer:producer,deliverableExtension:{expectedSizeBytes:size}});
+ const refused=await w.purchase({expectSigned:false});assert.equal(refused.disposition,'rejected');assert.match(refused.reason,/16384/);
+ assert.equal(w.effects.componentSigns.filter(bytes=>[core.ARTIFACT_SEPARATORS.AgreementDocument,core.ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument].some(separator=>bytes.startsWith(separator))).length,0);
+ assert.equal(w.effects.deliverySubmit.length,0);assert.equal(w.effects.published.length,0);assert.equal(w.effects.signCreate.length,0);
+ await w.restart();assert.equal((await w.purchase({expectSigned:false})).disposition,'rejected');
+});
+
+for(const restart of [false,true])test(`a corrected schema-invalid producer report keeps the same paid order retryable${restart?' after restart':''}`,async t=>{
+ let valid=false;
+ const schemaUrl='urn:TEST:correctable-schema',w=await world(t,{deliverableExtension:{schemaUrl},
+  deliverableProducer:input=>report({mustHave:valid?'present':'missing'})(input),
+  deliverySchemaVerifier:{schemaUrl,verify:({cleartextPayload})=>cleartextPayload.mustHave==='present'?{disposition:'valid'}:{disposition:'invalid',reason:'TEST schema rejects the current seller report'}}});
+ const p=await w.purchase(),tx=p.pay();assert.equal((await p.claim(tx)).delivery?.status,'held');assert.equal(w.effects.deliverySubmit.length,0);
+ if(restart)await w.restart();valid=true;
+ const done=await p.claim(tx);assert.equal(done.delivery?.status,'delivery-ready',shown(done));
+ assert.equal(w.effects.deliverySubmit.length,1);assert.equal(w.createsAt(paymentAddress(p)),1);
+});
+
+test('native integration claims use the filesystem-flow deadline and preserve its classified timeout cause',async t=>{
+ const w=await world(t),p=await w.purchase(),tx=p.pay(),deadlines=[];
+ t.mock.method(AbortSignal,'timeout',ms=>{deadlines.push(ms);return AbortSignal.abort(new DOMException('TEST deadline','TimeoutError'));});
+ t.mock.method(globalThis,'fetch',async(_url,input)=>{throw input.signal.reason;});
+ const answer=await p.claim(tx);
+ assert.deepEqual({causeCode:answer.causeCode,timeoutMs:deadlines[0]},{causeCode:'timeout',timeoutMs:60_000});
+});
+
+for(const fault of ['malformed','malformed-valid','throw'])test(`a ${fault} schema answer leaves the paid report correctable`,async t=>{
+ let available=false;const schemaUrl='urn:TEST:retryable-schema-answer';
+ const w=await world(t,{deliverableExtension:{schemaUrl},deliverySchemaVerifier:{schemaUrl,verify:()=>{
+  if(available)return{disposition:'valid'};if(fault==='throw')throw new Error('TEST schema reader stopped');return fault==='malformed-valid'?{disposition:'valid',extra:'TEST unexpected member'}:{disposition:'unknown'};
+ }}}),p=await w.purchase(),tx=p.pay();
  assert.equal((await p.claim(tx)).delivery?.status,'held');assert.equal(w.effects.deliverySubmit.length,0);
- const kept=await w.retainedSession(p.jobId);assert.equal(kept.deliverySentReport,undefined);await w.restart();assert.equal((await p.claim(tx)).delivery?.status,'held');assert.equal(w.effects.deliverySubmit.length,0);
+ available=true;assert.equal((await p.claim(tx)).delivery?.status,'delivery-ready');assert.equal(w.effects.deliverySubmit.length,1);
+});
+
+test('one exact prepared candidate uses one successful schema verdict within the delivery run',async t=>{
+ let calls=0;const schemaUrl='urn:TEST:single-candidate-check';
+ const w=await world(t,{deliverableExtension:{schemaUrl},deliverySchemaVerifier:{schemaUrl,verify:()=>++calls===1?{disposition:'valid'}:{disposition:'invalid',reason:'TEST inconsistent second answer'}}});
+ const p=await w.purchase(),done=await p.claim(p.pay());assert.equal(done.delivery?.status,'delivery-ready',shown(done));assert.equal(calls,1);
 });
 
 for(const failure of ['unavailable','changed'])test(`cached delivered claims reauthenticate ${failure} delivery evidence across restart`,async t=>{
