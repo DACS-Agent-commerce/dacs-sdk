@@ -92,7 +92,8 @@ start_registry() {
   registry_builder="$registry_network"
   builder_started=1
   docker buildx create --name "$registry_builder" --driver docker-container \
-    --driver-opt "network=$registry_network" >/dev/null
+    --driver-opt "network=$registry_network" \
+    --buildkitd-flags '--allow-insecure-entitlement network.host' >/dev/null
   registry_started=1
   docker run --detach \
     --name "$registry_container" \
@@ -114,7 +115,8 @@ start_registry() {
   consumer_network_args=(--network "$registry_network")
   # Host mode shares the dedicated builder container's bridge namespace,
   # retaining Docker DNS for the run-local registry during RUN instructions.
-  build_network_args=(--builder "$registry_builder" --load --network host)
+  # The builder daemon and each build request both grant network.host.
+  build_network_args=(--builder "$registry_builder" --load --network host --allow network.host)
   host_uid=$(id -u)
   host_gid=$(id -g)
   case "$host_uid:$host_gid" in

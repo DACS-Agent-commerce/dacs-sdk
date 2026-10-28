@@ -48,6 +48,27 @@ printf '%s\\n' "$consumer_registry" "\${consumer_network_args[*]}" "\${build_net
     expect(result.stdout.split("\n")[1]).toBe("--network fixture-network");
   });
 
+  it("grants host networking to the dedicated builder and its build requests", () => {
+    const log = join(scratch(), "commands");
+    const result = runStages(`
+pull_bounded() { :; }
+docker() {
+  printf '%s\\n' "$*" >> "$log"
+  if [ "$1" = inspect ]; then echo 49152; fi
+}
+start_registry
+printf '%s\\n' "\${build_network_args[*]}"`, {
+      log, registry_log: join(scratch(), "registry.log"), registry_config: "/fixture/config.yaml",
+      registry_network: "fixture-network", registry_container: "fixture-registry",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const commands = readFileSync(log, "utf8");
+    // Docker permits RUN --network=host only when the builder daemon and the
+    // build request each grant the network.host entitlement.
+    expect(commands).toContain("--buildkitd-flags --allow-insecure-entitlement network.host");
+    expect(result.stdout.trim()).toContain("--allow network.host");
+  });
+
   it("requires Buildx before creating resources", () => {
     const result = runStages(`
 pull_bounded() { echo unexpected-pull; }
