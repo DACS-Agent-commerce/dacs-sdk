@@ -65,6 +65,12 @@ test('an inline delivery Listing above the profile bound is refused at construct
  const f=await proposalAdmissionFixture(t,{assembled:true,expectedSizeBytes:131073});await assert.rejects(f.open(),/at most 131072/);
 });
 
+test('a non-canonical proposal job is a definite job-invalid refusal, not an uncertain outcome',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+ request.transportIdentity.jobId='bad:job';
+ await assert.rejects(agent.receiveProposal(request),{code:'job_invalid',status:422});
+});
+
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true,signatures=0;const original=f.config.signer.sign;
  f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(cut&&payload.body.session.proposal?.proposalHash){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};
