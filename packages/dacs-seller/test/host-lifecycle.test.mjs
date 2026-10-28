@@ -104,6 +104,25 @@ test('close waits for an accepted native artifact readback before releasing stat
  await reopened.close();
 });
 
+test('host close destroys a connection that never finishes its request headers',async t=>{
+ const f=await fixture(t),host=await f.start();
+ const socket=connect({host:'127.0.0.1',port:Number(new URL(host.url).port)});
+ try{
+  await once(socket,'connect');
+  // A buyer may open a connection and send a partial request line; no request
+  // is dispatched, so nothing of it can be drained.
+  socket.write('POST /dacs/v1/commitments HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n');
+  await new Promise(resolve=>setImmediate(resolve));
+  let guard;
+  const outcome=await Promise.race([
+   host.close().then(()=> 'closed'),
+   new Promise(resolve=>{guard=setTimeout(()=>resolve('still-open'),3000);}),
+  ]);
+  clearTimeout(guard);
+  assert.equal(outcome,'closed','a connection with no dispatched request cannot hold close');
+ }finally{socket.destroy();}
+});
+
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
  const f=await fixture(t),native=f.native;
  const artifactAnchor={...native,reads:0,verifies:0,
