@@ -61,6 +61,33 @@ describe("inert bounded npm HTTP admission", () => {
     await expect(readBoundedResponse(response([gzipSync(Buffer.alloc(8192))]), 1024, false, 4096)).rejects.toThrow("ELIMIT");
     await expect(readBoundedResponse(response([Buffer.alloc(1025)]), 1024, false, 4096)).rejects.toThrow("ELIMIT");
   });
+  it("admits full npm metadata with more than 1.24 million aggregate entries", async () => {
+    // npm 10 requests the full npm packument for a global self-install. Its
+    // observed 1,245,605 entries fit the 32 MiB decoded-byte budget.
+    const metadata = Buffer.from(JSON.stringify({ name: "npm", versions: {
+      "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
+    } }));
+    expect(metadata.length).toBeLessThan(NPM_METADATA_MAX_BYTES);
+    expect((await readBoundedResponse(response([metadata]), NPM_METADATA_MAX_BYTES)).equals(metadata)).toBe(true);
+  });
+  it("lets the selected npm read a full self-install packument through the guard", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-npm-packument-"));
+    const metadata = JSON.stringify({ name: "npm", "dist-tags": { latest: "11.19.0" }, versions: {
+      "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
+    } });
+    const server = createServer((_request, reply) => { reply.writeHead(200, { "content-type": "application/json" }); reply.end(metadata); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address(); if (!address || typeof address === "string") throw new Error("missing test address");
+      const child = spawn("npm", ["view", "npm@11.19.0", "version", "--json", "--fetch-retries=0", "--registry", `http://127.0.0.1:${address.port}`, "--cache", root], {
+        env: { ...process.env, DACS_BOUNDED_NPM_HTTP: "1", NODE_OPTIONS: `--require=${resolve("scripts/bounded-npm-http.cjs")}` }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = "", diagnostic = "";
+      child.stdout.on("data", bytes => { output += bytes; }); child.stderr.on("data", bytes => { diagnostic += bytes; });
+      const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
+      expect(code, diagnostic).toBe(0); expect(JSON.parse(output)).toBe("11.19.0");
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
+  });
   it("bounds decoded JSON list sizes", async () => {
     await expect(readBoundedResponse(response([Buffer.from(JSON.stringify(Array(NPM_JSON_MAX_ENTRIES + 1).fill(0)))], { "content-type": "application/json" }), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
   });

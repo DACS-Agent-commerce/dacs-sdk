@@ -11,7 +11,8 @@ const NPM_TARBALL_MAX_BYTES = 64 * 1024 * 1024;
 const NPM_TARBALL_MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
 const NPM_AUDIT_MAX_BYTES = 16 * 1024 * 1024;
 const NPM_HTTP_TIMEOUT_MS = 15_000;
-const NPM_JSON_MAX_ENTRIES = 1_000_000, NPM_JSON_MAX_DEPTH = 128;
+// Full npm self-install metadata exceeds 1.24 million aggregate entries.
+const NPM_JSON_MAX_ENTRIES = 2_000_000, NPM_JSON_MAX_DEPTH = 128;
 const limitError = () => Object.assign(new Error("ELIMIT npm HTTP response byte limit exceeded"), { code: "ELIMIT" });
 
 /** Returns the HTTP response byte budget for an npm request path. */
