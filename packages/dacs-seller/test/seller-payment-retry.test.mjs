@@ -66,8 +66,8 @@ test('an indeterminate answer before the evidence checkpoint keeps nothing: the 
   const w = await world(t, [{ status: 'indeterminate', reason: 'demos-pending' }, DELIVERED]);
   assert.deepEqual(await w.pay(), { status: 'indeterminate', reason: 'demos-pending' });
   assert.deepEqual(await w.pay(), DELIVERED, 'the transfer, now included, reaches payment intake');
-  assert.deepEqual(await w.pay(), DELIVERED, 'the delivered answer is final');
-  assert.equal(w.calls.length, 2);
+  assert.deepEqual(await w.pay(), DELIVERED, 'the delivered answer is freshly authenticated');
+  assert.equal(w.calls.length, 3);
   assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'peer_operation_conflict', status: 409 }, 'a delivered job takes no other claim');
 });
 
@@ -86,7 +86,7 @@ test('a held answer after the evidence checkpoint runs the agent again on a fres
   assert.deepEqual(await w.pay(), held, 'the readback is still absent');
   assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 3, 'the conflicting body and the final answer never reach the agent');
+  assert.equal(w.calls.length, 4, 'the conflicting body is refused; the completed claim authenticates again');
 });
 
 // Only payment claims and durable proposals resume through reconciliation.
@@ -118,7 +118,7 @@ test('evidenced payment with a delivery not done yet is retried until the delive
   for (const answer of pending) assert.deepEqual(await w.pay(), answer);
   assert.deepEqual(await w.pay(), DELIVERED);
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 4);
+  assert.equal(w.calls.length, 5);
 });
 
 // A session delegation admits a request after its expiry only to read back
