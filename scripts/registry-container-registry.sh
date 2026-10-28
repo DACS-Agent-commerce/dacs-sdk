@@ -110,7 +110,9 @@ start_registry() {
   host_registry="http://127.0.0.1:$host_port"
   consumer_registry="http://$registry_container:4873"
   consumer_network_args=(--network "$registry_network")
-  build_network_args=(--builder "$registry_builder" --load --network default)
+  # Host mode shares the dedicated builder container's bridge namespace,
+  # retaining Docker DNS for the run-local registry during RUN instructions.
+  build_network_args=(--builder "$registry_builder" --load --network host)
   host_uid=$(id -u)
   host_gid=$(id -g)
   case "$host_uid:$host_gid" in

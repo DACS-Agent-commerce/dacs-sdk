@@ -27,11 +27,14 @@ printf '%s\\n' "$consumer_registry" "\${consumer_network_args[*]}" "\${build_net
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("http://fixture-registry:4873\n--network fixture-network\n");
-    expect(result.stdout).toContain("--builder fixture-network --load --network default");
+    expect(result.stdout).toContain("--builder fixture-network --load --network host");
     const commands = readFileSync(log, "utf8");
     expect(commands).toContain("buildx create --name fixture-network --driver docker-container --driver-opt network=fixture-network");
     expect(commands).toContain("--publish 127.0.0.1::4873");
-    expect(commands + result.stdout).not.toMatch(/--network host|host-gateway|host\.docker\.internal/);
+    // Build-step host mode refers to the dedicated builder container, whose
+    // network is fixture-network. Consumer and registry never use host mode.
+    expect(commands).not.toMatch(/--network host|host-gateway|host\.docker\.internal/);
+    expect(result.stdout.split("\n")[1]).toBe("--network fixture-network");
   });
 
   it("requires Buildx before creating resources", () => {
