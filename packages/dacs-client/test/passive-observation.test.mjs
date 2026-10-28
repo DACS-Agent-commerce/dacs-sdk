@@ -118,6 +118,91 @@ for (const [field, edit] of [
     await assertUnchanged(w, before);
   });
 }
+// node() owns the wire envelope; a second one must not change the transaction
+// interpreted by the core while the retained comparison still sees the outer.
+async function assertReadOnlyAttempt(w, before, check, bodyReads = 1) {
+  const reads = w.calls.filter(call => call === 'getTxByHash').length;
+  const { acquired, released } = w.fences;
+  try { await check(); } finally {
+    assert.equal(w.calls.filter(call => call === 'getTxByHash').length - reads, bodyReads);
+    assert.equal(w.fences.acquired - acquired, 1); assert.equal(w.fences.released - released, 1);
+    await assertUnchanged(w, before);
+  }
+}
+function nestedTransaction(transaction, edit, result) {
+  const inner = structuredClone(transaction); edit(inner.content);
+  if (result !== undefined) inner.result = result;
+  return { ...transaction, response: inner };
+}
+const changeAmount = (content, amount) => { content.amount = amount; content.data[1].args[1] = amount; };
+for (const result of [undefined, 200]) {
+  for (const [field, edit] of [
+    ['payee and amount', c => { c.to = OTHER; c.data[1].args[0] = OTHER; changeAmount(c, '2000000000'); }],
+    ['one OS amount difference', c => changeAmount(c, '1000000001')],
+    ['minimum positive amount', c => changeAmount(c, '1')],
+    ['payer', c => { c.from = OTHER; c.from_ed25519_address = OTHER; }],
+    ['nonce', c => { c.nonce++; }],
+    ['signed timestamp', c => { c.timestamp++; }],
+    ['added payload memo', c => { c.data[1].memo = 'TEST-extra'; }],
+    ['deleted owner', c => { delete c.from_ed25519_address; }],
+  ]) {
+    test(`passive readback refuses nested ${field} with inner result ${result ?? 'absent'}`, async t => {
+      const w = await memoryWorld(t), before = await w.journal.entries();
+      w.transaction = nestedTransaction(w.transaction, edit, result);
+      await assertReadOnlyAttempt(w, before, () => assert.rejects(() => passive(w), { code: 'readback_unverified' }));
+    });
+  }
+}
+test('passive readback accepts one wire envelope and preserves a non-included nested result', async t => {
+  const w = await memoryWorld(t), before = await w.journal.entries();
+  await assertReadOnlyAttempt(w, before, async () => {
+    const observation = await passive(w);
+    assert.equal(observation.sourceDisposition, 'included'); assert.equal(observation.payee, PAYEE.slice(2));
+    assert.equal(observation.amountOs, '1000000000');
+  });
+  w.transaction = { ...w.transaction, response: { ...w.transaction, status: 'failed' } };
+  await assertReadOnlyAttempt(w, before, async () => assert.equal((await passive(w)).status, 'invalid'));
+});
+for (const stage of ['broadcast-started', 'broadcast-accepted', 'broadcast-answered', 'observed', 'failed']) {
+  test(`reopened ${stage} intent refuses nested nonce on both passive attempts`, async t => {
+    const dir = mkdtempSync(join(tmpdir(), 'TEST-passive-nested-')), path = join(dir, 'journal.sqlite');
+    let journal = openDurableWalletJournal({ path, mode: 'create' }), w = passiveNativeWorld({ journal });
+    t.after(async () => { await w.source.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); });
+    await w.seed(); await editIntent(w, row => { row.stage = stage; });
+    const before = await w.journal.entries(), journalId = journal.journalId;
+    await w.source.close(); journal.close();
+    journal = openDurableWalletJournal({ path, mode: 'open', expectedJournalId: journalId });
+    w = passiveNativeWorld({ journal }); w.transaction = nestedTransaction(w.transaction, c => { c.nonce++; });
+    for (let repeat = 0; repeat < 2; repeat++) {
+      await assertReadOnlyAttempt(w, before, () => assert.rejects(() => passive(w), { code: 'readback_unverified' }));
+    }
+  });
+}
+test('concurrent passive reads independently refuse nested bodies around a valid body', async t => {
+  let bodyReads = 0;
+  const w = await memoryWorld(t, { onFetch: message => {
+    if (message === 'getTxByHash') return json(++bodyReads === 2 ? w.transaction : nestedTransaction(w.transaction, c => { c.nonce++; }));
+  } });
+  const before = await w.journal.entries();
+  const results = await Promise.allSettled([passive(w), passive(w), passive(w)]);
+  assert.deepEqual(results.map(r => r.status), ['rejected', 'fulfilled', 'rejected']);
+  assert.equal(results[0].reason.code, 'readback_unverified'); assert.equal(results[2].reason.code, 'readback_unverified');
+  assert.equal(results[1].value.sourceDisposition, 'included'); assert.equal(results[1].value.payee, PAYEE.slice(2));
+  assert.equal(bodyReads, 3); assert.equal(w.calls.filter(call => call === 'getTxByHash').length, 3);
+  assert.deepEqual(w.fences, { acquired: 3, released: 3 }); await assertUnchanged(w, before);
+});
+for (const initial of ['pending', 'body error']) {
+  test(`passive retry after ${initial} refuses a nested changed nonce`, async t => {
+    let failBody = initial === 'body error';
+    const w = await memoryWorld(t, { state: initial === 'pending' ? 'pending' : 'included', onFetch: message => {
+      if (message === 'getTxByHash' && failBody) { failBody = false; throw new Error('TEST-body-read'); }
+    } });
+    const before = await w.journal.entries();
+    await assertReadOnlyAttempt(w, before, async () => assert.equal((await passive(w)).status, initial === 'pending' ? 'pending' : 'unavailable'), initial === 'pending' ? 0 : 1);
+    w.statusAnswer.state = 'included'; w.transaction = nestedTransaction(w.transaction, c => { c.nonce++; });
+    await assertReadOnlyAttempt(w, before, () => assert.rejects(() => passive(w), { code: 'readback_unverified' }));
+  });
+}
 for (const status of ['confirmed', 'included', 'finalized', 'Confirmed', 'FINALIZED']) {
   test(`passive readback accepts the core body label ${status}`, async t => {
     const w = await memoryWorld(t, { status });
