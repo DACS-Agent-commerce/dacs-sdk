@@ -468,6 +468,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const neededJobs = !job && !contextStep && !retained ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
         const retiredJobs = reclaimableJobs(neededJobs, undefined, time);
         if (retiredJobs.length < neededJobs) fail('peer_job_capacity', 503);
+        const reclaimNonces=()=>{
+          if(dryRun)return;
+          run('DELETE FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time);
+          run('DELETE FROM peer_nonce_retention WHERE expires_at <= ? AND created_at <= ? AND nonce NOT IN (SELECT nonce FROM peer_nonces)', time, time - nonceWindowMs);
+        };
         let admittedAt=null;
         if(contextStep&&!existing) {
           let problem=contextDecision?contextPresentationProblem(p,body):null;
@@ -479,6 +484,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
             if(!problem&&!uint(admittedAt))fail('peer_context_unadmitted',503);
           }
           if(problem) {
+            if(dryRun)return {contextRefusal:problem};
+            reclaimNonces();
             const text=JSON.stringify({error:problem});
             run('INSERT INTO peer_nonces VALUES (?, ?, ?, ?, ?)',nonce,requestHash,NO_EFFECT_KEY,409,text);
             run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)',nonce,p.buyer,time,p.expiresAt);
@@ -499,10 +506,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           reclaimContexts(db.prepare('SELECT effect FROM peer_effect_jobs WHERE job = ?').all(jobId));
           run('DELETE FROM peer_jobs WHERE job = ?', jobId);
         }
-        run('DELETE FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time);
-        // Keep the rate counters for the full rate window, even when the nonce
-        // itself has expired and was pruned.
-        run('DELETE FROM peer_nonce_retention WHERE expires_at <= ? AND created_at <= ? AND nonce NOT IN (SELECT nonce FROM peer_nonces)', time, time - nonceWindowMs);
+        reclaimNonces();
         if (creates) db.exec(CONTEXT_ADMISSIONS);
         if (!job && !contextStep && !retained) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
         run('INSERT INTO peer_nonces VALUES (?, ?, ?, NULL, NULL)', nonce, requestHash, effectKey);
