@@ -351,6 +351,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
       read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>job.open()});
+      // A returned refusal and an unknown submission are different outcomes:
+      // keep the anchor's own reason and its retryable/terminal class.
+      if(read?.status!=='present'){
+        const outcome=writerCode(null,read),reason=oneLine(read?.reason??'no reason');
+        if(outcome==='indeterminate')fail('indeterminate',`seller Vet publication is not known yet: ${reason}`,read);
+        fail('seller_vet_receipt_invalid',`seller Vet publication was ${outcome}: ${reason}`,read);
+      }
     }
     if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority,{fresh:true}))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
     const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(record),signer:authority};
