@@ -6,7 +6,7 @@ import { admitRawJson, contentHash, isListing, canonicalize, finalityCommitmentA
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
-import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem, vetRecordProblem } from './session-admission.mjs';
+import { listingRevocationProblem, sessionAdmissionConfig, sellerSessionPresentationProblem, sessionAdmissionProblem, readAdmissionCapability, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem, vetRecordProblem } from './session-admission.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { nativePaymentEvidenceConfig } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
@@ -58,6 +58,7 @@ async function boundedVetRead(read, query) {
     return boundedVetValue(value);
   } finally { clearTimeout(timer); controller.abort(); }
 }
+const vetUnverified = (reason, cause) => new SellerAgentError('seller_state_unverified', reason, 503, { cause });
 
 // Staged internal proposal admission and authenticated retained reads.
 // Proposal signing, commitment, payment and delivery remain unavailable.
@@ -200,6 +201,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     }
     for (const id of ids) if (!hasSettlementCredit(id, jobId)) throw new SellerAgentError('settlement_collision', 'competing admissible settlement claims require binding authority', 503);
   };
+  const verifiedSessions = new Map(), sessionFingerprint = (session) => sha256Hex(canonicalize(session)); // jobId -> verified bytes hash
+  function retainedSnapshotProblem(session) {
+    return !durable ? null : verifiedSessions.get(session.jobId) === undefined ? 'the retained session was not verified by this seller instance' : sessionFingerprint(session) !== verifiedSessions.get(session.jobId) ? 'the retained session changed after this seller instance verified it' : null;
+  }
   // A retained session may be exposed only once the exact attempt that admitted
   // it is proven from this seller's own authenticated ledger (CORE SN-3/SN-4: a
   // nonce is bound to one job and buyer and consumed on attempt), and, since a
@@ -213,6 +218,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (!challenge) return 'the retained session names no challenge this seller issued';
     if (challenge.jobId !== session.jobId || challenge.buyer !== bundle.presentedBy || challenge.sessionNonce !== nonce) return 'the retained session challenge was issued for another job or buyer';
     if (challenge.attempt?.admitted !== true) return 'the retained session challenge was not consumed and admitted for this attempt';
+    if (challenge.attempt.presentationHash !== contentHash(bundle)) return 'the retained session challenge was admitted for another presentation';
     return null;
   }
   function retainedVetRefProblem(ref, jobId, party, verifier) {
@@ -234,24 +240,26 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   }
   async function retainedVetEvidenceProblem(session) {
     if (!admission) return 'the seller has no session admission to authenticate retained Vet records';
+    const sellerBundle = session.sellerBundle ?? listing.seller.identity, sellerProblem = sellerSessionPresentationProblem(sellerBundle, listing.seller.identity);
+    if (sellerProblem) return `seller ${sellerProblem}`;
     const parties = [
       ['buyer', session.buyerBundle.presentedBy, session.vetCheckpoint.buyer, identityBundleHash(session.buyerBundle), claim, listing.buyerRequirement],
-      ['seller', claim, session.vetCheckpoint.seller, identityBundleHash(session.sellerBundle ?? listing.seller.identity), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
+      ['seller', claim, session.vetCheckpoint.seller, identityBundleHash(sellerBundle), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
     ];
     for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
       let record, receipt, verdict;
-      try { record = await boundedVetRead((query, options) => admission.resolveVetRecord(query, options), { jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record cannot be resolved`; }
+      try { record = await boundedVetRead((query, options) => admission.resolveVetRecord(query, options), { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(`the ${role} Vet record cannot be resolved (${error?.code ?? 'error'})`, error); }
       // DACS-2 §7.7.1/§7.7.2: the strict verifier replays the record's decision
       // against the exact requirement this profile invoked, binding its signed
       // requirementHash and result references; shape and signer alone would
       // accept a record the counterparty signed for another requirement.
       const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now });
       if (recordProblem) return `the ${role} ${recordProblem}`;
-      try { receipt = await boundedVetRead((query, options) => admission.readVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref }); } catch { return `the ${role} Vet record has no SR-2 receipt`; }
+      try { receipt = await boundedVetRead((query, options) => admission.readVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(error?.code === 'ENOENT' ? `the ${role} Vet record has no SR-2 receipt` : `the ${role} Vet record SR-2 receipt cannot be read (${error?.code ?? 'error'})`, error); }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
       const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId: session.jobId, party });
       if (receiptProblem) return `the ${role} ${receiptProblem}`;
-      try { verdict = await boundedVetRead((query, options) => admission.verifyVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref, record, receipt }); } catch { return `the ${role} Vet receipt cannot be verified`; }
+      try { verdict = await boundedVetRead((query, options) => admission.verifyVetAnchorReceipt(query, options), { jobId: session.jobId, role, party, ref, record, receipt }); } catch (error) { throw vetUnverified(`the ${role} Vet receipt cannot be verified (${error?.code ?? 'error'})`, error); }
       if (verdict !== 'valid') return `the ${role} Vet receipt does not verify`;
     }
     return null;
@@ -268,7 +276,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   }
   function sessionView (session) {
     if(!session)return null;
-    const problem = retainedSessionProblem(session);
+    const problem = retainedSnapshotProblem(session) ?? retainedSessionProblem(session);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
     const copy=structuredClone(session);
     try { assertSettlementCredit(session.jobId); }
@@ -281,7 +289,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (identityBundleHash(session.buyerBundle) !== session.buyerBundleHash) throw new SellerAgentError('seller_state_corrupt', 'retained buyer binding is invalid', 503);
     const problem = retainedSessionProblem(session) ?? (claimsVet(session) ? await retainedVetEvidenceProblem(session) : null);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
-    sessions.set(session.jobId, session);
+    sessions.set(session.jobId, session);verifiedSessions.set(session.jobId, sessionFingerprint(session));
   }
   for (const session of durable?.sessions() ?? []) await restore(session);
 
@@ -406,6 +414,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     }
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     else if (railPin && !inFlight) existing.railPin = railPin;
+    verifiedSessions.set(jobId, sessionFingerprint(sessions.get(jobId)));
     throw new SellerAgentError("proposal_not_assembled", "proposal signing is not assembled", 503);
   }
   const api = {
@@ -435,7 +444,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       // An unverified retained session retains nothing: the transport may
       // release the claim's effect rather than keep work it cannot attribute.
-      if (session && retainedSessionProblem(session)) return false;
+      if (session && (retainedSnapshotProblem(session) ?? retainedSessionProblem(session))) return false;
       const work = session?.nativeEvidenceWork ?? session?.paymentWork;
       return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
     },

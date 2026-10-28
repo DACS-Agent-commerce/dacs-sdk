@@ -24,8 +24,15 @@ const presentWith=(party,sessionNonce)=>{
  const unsigned=buildUnsignedIdentityBundle({address:party.address,presentedAt:NOW-1000,sessionSeed:'construction',sessionNonce});
  return attachIdentityPresentation(unsigned,'0x'+party.signBytes(unsigned.message).toString('hex'));
 };
+const presentAt=(party,sessionNonce,presentedAt)=>{
+ const unsigned=buildUnsignedIdentityBundle({address:party.address,presentedAt,sessionSeed:'construction',sessionNonce});
+ return attachIdentityPresentation(unsigned,'0x'+party.signBytes(unsigned.message).toString('hex'));
+};
 const vetRef=(jobId,party,verifier)=>({anchor:{kind:'storage-program',locator:core.compositeVerificationAddress(jobId,party)},contentHash:'b'.repeat(64),signer:verifier});
 const sessionFor=(jobId,bundle,checkpoint)=>({jobId,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),stage:'vetted',vetCheckpoint:checkpoint});
+// CORE SN-4: the admitted attempt binds the exact complete presentation.
+const admittedAttempt=session=>({presentationHash:core.contentHash(session.buyerBundle)});
+const admitWith=(state,nonce,session)=>{const attempt=admittedAttempt(session);state.attemptChallenge(nonce,attempt);state.admitChallenge(nonce,attempt.presentationHash);};
 async function saveSession(f,session,prepare){
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{prepare?.(state);await state.withJob(session.jobId,()=>state.saveSession(session));}finally{state.close();}
@@ -111,7 +118,7 @@ test('restart refuses a retained session whose challenge was issued for another 
 test('restart refuses a retained vetted session with no exact, job-bound, verifier-signed Vet checkpoint',async t=>{
  const f=fixture(t),agent=await f.open(),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
  const bundle=presentWith(buyer,issued.sessionNonce);
- const admit=async session=>saveSession(f,session,state=>{state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));});
+ const admit=async session=>saveSession(f,session,state=>admitWith(state,issued.sessionNonce,session));
  for(const [checkpoint,pattern] of [
   [null,/no exact buyer and seller Vet checkpoint/],
   [{buyer:null,seller:null},/not an exact signed record reference/],
@@ -147,7 +154,7 @@ test('restart refuses a Vet record the counterparty did not sign or a receipt be
   const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...options});
   const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
   try{
-   state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));
+   admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
    await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
   }finally{state.close();}
   await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&pattern.test(error.message));
@@ -162,7 +169,7 @@ test('restart restores a session bound to its admitted challenge and to verified
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{
-  state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));
+  admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
  }finally{state.close();}
  const fresh=await f.open({sessionAdmission:admission.sessionAdmission});
@@ -179,7 +186,7 @@ async function vettedSession(t,requirementHash={}){
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...requirementHash.seller?{requirementHash:requirementHash.seller}:{}});
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{
-  state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));
+  admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
  }finally{state.close();}
  return {f,admission};
@@ -199,7 +206,7 @@ test('restart fails closed when a Vet reader stalls past its deadline',async t=>
  t.mock.timers.enable({apis:['setTimeout']});
  const attempt=f.open({sessionAdmission:stall});let state='pending';
  attempt.then(()=>{state='resolved';},()=>{state='rejected';});
- const pending=assert.rejects(attempt,error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message));
+ const pending=assert.rejects(attempt,error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message)&&error.cause?.message==='the Vet reader deadline expired');
  await reached;await Promise.resolve();
  assert.equal(state,'pending','a stalled reader must not settle the restore');
  assert.equal(seen.maxBytes,64*1024);assert.equal(seen.timeoutMs,10_000);assert.ok(seen.signal instanceof AbortSignal,'every Vet reader receives an abort signal');
@@ -215,4 +222,71 @@ test('a malformed retained challenge issuance is corruption, not a released slot
  const value={jobId:JOB,issuedAt:NOW};
  for(const row of [{kind:'session-challenge',attempt:null,expiresAt:'invalid'},{kind:'session-challenge',attempt:null,expiresAt:-1},{kind:'session-challenge',attempt:'consumed',expiresAt:NOW+1000}])
   assert.throws(()=>admitSessionChallenge(new Map([['nonce',row]]),value,{maxOutstanding:1,maxPerJob:1}),error=>error.code==='seller_state_corrupt');
+});
+// CORE SN-4: an admitted nonce must name the exact complete presentation that
+// was presented, not just the nonce.
+test('restart refuses a retained session admitted for a different presentation',async t=>{
+ const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
+ const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
+ const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const bundle=presentWith(buyer,issued.sessionNonce),other=presentAt(buyer,issued.sessionNonce,NOW-2000);
+ assert.notEqual(core.contentHash(other),core.contentHash(bundle));
+ const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
+ const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ try{
+  const attempt={presentationHash:core.contentHash(other)};state.attemptChallenge(issued.sessionNonce,attempt);state.admitChallenge(issued.sessionNonce,attempt.presentationHash);
+  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
+ }finally{state.close();}
+ await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&/another presentation/.test(error.message));
+});
+// DACS-2 VPC-3: a session another opener saved after this instance verified its
+// retained evidence is refused by every live read, however exact its shapes.
+test('live reads refuse a shape-valid session another writer saved after open',async t=>{
+ const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
+ const issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),bundle=presentWith(buyer,issued.sessionNonce);
+ const session={...sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}),paymentWork:{txHash:'a'.repeat(64),payerPayingKey:buyer.claim}};
+ await saveSession(f,session,state=>admitWith(state,issued.sessionNonce,session));
+ for(const read of [()=>agent.stageOf(JOB),()=>agent.durableSessionOf(JOB),()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB),()=>agent.durableSessions()])
+  assert.throws(read,error=>error.code==='seller_state_unverified'&&/not verified by this seller instance/.test(error.message));
+ assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
+});
+test('live reads refuse a retained session changed after this instance verified it',async t=>{
+ const {f,admission}=await vettedSession(t),agent=await f.open({sessionAdmission:admission.sessionAdmission});t.after(()=>agent.close());
+ assert.equal(agent.stageOf(JOB),'vetted');
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ try{await state.withJob(JOB,()=>state.saveSession({...state.loadSession(JOB),stage:'delivered'}));}finally{state.close();}
+ assert.throws(()=>agent.stageOf(JOB),error=>error.code==='seller_state_unverified'&&/changed after this seller instance verified it/.test(error.message));
+});
+// DACS-2 §7.7.2: the seller bundle a buyer signs must be the Listing identity
+// or a signed presentation of it, never an altered bundle with its own Vet record.
+test('restart refuses a retained seller bundle that is not the Listing identity or a valid presentation',async t=>{
+ for(const [label,build] of [
+  ['an added claim',listing=>({...structuredClone(listing.seller.identity),claims:[...listing.seller.identity.claims,{ref:'did:demos:agent:'+'c'.repeat(64)}]})],
+  ['an invalid presentation signature',()=>{const bundle=presentWith(seller,'ab'.repeat(32));bundle.presentation.signatures[0].signature=Buffer.alloc(64,1).toString('base64url');return bundle;}],
+ ]) {
+  const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
+  const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
+  const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+  const bundle=presentWith(buyer,issued.sessionNonce),sellerBundle=build(f.listing);
+  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
+  const sellerRef=await admission.vetRecord(JOB,seller.claim,sellerBundle,{requirement:f.listing.buyerRequirement});
+  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+  try{
+   admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
+   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
+  }finally{state.close();}
+  await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),
+   error=>error.code==='seller_state_unverified'&&/seller (?:.*not a presentation of the Listing identity|.*presentation does not verify)/.test(error.message),label);
+ }
+});
+// A receipt reader failure is not a missing receipt: timeout, refusal and a
+// genuinely absent receipt stay distinguishable, and the cause is kept.
+test('a retained receipt read failure keeps its cause and only a missing result reports no receipt',async t=>{
+ for(const [code,pattern] of [['ENOENT',/has no SR-2 receipt/],['ETIMEDOUT',/cannot be read \(ETIMEDOUT\)/],['EACCES',/cannot be read \(EACCES\)/]]){
+  const {f,admission}=await vettedSession(t);
+  const readVetAnchorReceipt=async()=>{throw Object.assign(new Error(`receipt reader ${code}`),{code});};
+  await assert.rejects(f.open({sessionAdmission:{...admission.sessionAdmission,readVetAnchorReceipt}}),
+   error=>error.code==='seller_state_unverified'&&pattern.test(error.message)&&error.cause?.code===code);
+ }
 });
