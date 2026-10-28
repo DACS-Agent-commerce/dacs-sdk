@@ -608,6 +608,49 @@ describe("installation closure of real npm installations", () => {
     } finally { await server.close(); }
   }, 60_000);
 
+  it.each([
+    ["dev", "devDependencies", { dev: true }, "omit=dev\n"],
+    ["optional", "optionalDependencies", { optional: true }, "omit=optional\n"],
+    ["peer", "peerDependencies", { peer: true }, "omit=peer\n"],
+    ["devOptional", "optionalDependencies", { devOptional: true }, "omit[]=dev\nomit[]=optional\n"],
+    ["os", "optionalDependencies", { optional: true, os: [`!${process.platform}`] }, ""],
+    ["cpu", "optionalDependencies", { optional: true, cpu: [`!${process.arch}`] }, ""],
+    ["libc", "optionalDependencies", { optional: true, libc: ["unsupported-fixture-libc"] }, ""],
+    ["engine", "optionalDependencies", { optional: true, engines: { node: "<0.0.0" } }, ""],
+  ] as const)("accepts unavailable excluded %s bundlers and nested scoped bundles", async (_case, field, flags, config) => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const bundled = { dependencies: { "@scope/child": "1.0.0" }, bundleDependencies: ["@scope/child"] };
+    const archive = packTarball({ "package.json": manifest("parent", "1.0.0", bundled),
+      "node_modules/@scope/child/package.json": manifest("@scope/child", "1.0.0", {
+        dependencies: { grandchild: "1.0.0" }, bundleDependencies: ["grandchild"],
+      }), "node_modules/@scope/child/node_modules/grandchild/package.json": manifest("grandchild") });
+    const server = await serveArchives(new Map([["parent", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", [field]: { parent: "1.0.0" },
+        ...(_case === "devOptional" ? { devDependencies: { parent: "1.0.0" } } : {}) };
+      const owner = "node_modules/parent";
+      const child = `${owner}/node_modules/@scope/child`;
+      const grandchild = `${child}/node_modules/grandchild`;
+      const lock = { lockfileVersion: 3, packages: { "": root, [owner]: {
+        version: "1.0.0", resolved: `${server.registry}/parent.tgz`, integrity: sri(archive), ...bundled, ...flags,
+      }, [child]: { version: "1.0.0", inBundle: true, ...flags },
+      [grandchild]: { version: "1.0.0", inBundle: true, ...flags } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      writeFileSync(join(project, ".npmrc"), config);
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      const reference = installationClosure(project, lock, () => { throw new Error("archive was not acquired"); });
+      expect(reference.errors).toEqual([]);
+      for (const location of [owner, child, grandchild]) {
+        expect(reference.entries.get(location)?.present).toBe(false);
+        expect(reference.inventory.has(location)).toBe(false);
+      }
+      expect(installationDifferences(project, reference)).toEqual([]);
+    } finally { await server.close(); }
+  }, 60_000);
+
   it("finds a file added below an installed package after installation", async () => {
     const { project, closure } = await installFixture();
     writeFileSync(join(project, "node_modules/fixture-plugin/dist/node_modules/@kynesyslabs/dacs/extra.js"), "");
