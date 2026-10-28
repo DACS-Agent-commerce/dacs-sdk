@@ -27,9 +27,9 @@ const trackedStream = () => {
 
 test('bounded fetch settles on caller abort when fetchImpl ignores abort', async () => {
   const controller = new AbortController();
-  const request = bounded(never, { signal: controller.signal });
-  controller.abort(new Error('caller stopped'));
-  await assert.rejects(settles(request), { kind: 'unavailable' });
+  const request = bounded(never, { signal: controller.signal }), reason = new Error('caller stopped');
+  controller.abort(reason);
+  await assert.rejects(settles(request), error => error === reason);
 });
 test('bounded fetch settles on its deadline when fetchImpl ignores abort', async () => {
   await assert.rejects(settles(bounded(never, { timeoutMs: 1 })), { kind: 'unavailable', message: 'request timed out' });
@@ -39,7 +39,7 @@ test('bounded fetch cancels the body of a response that arrives after abort', as
   let deliver;
   const request = bounded(() => new Promise(resolve => { deliver = resolve; }), { signal: controller.signal });
   controller.abort();
-  await assert.rejects(settles(request), { kind: 'unavailable' });
+  await assert.rejects(settles(request), error => error === controller.signal.reason);
   deliver(new Response(body, { headers: JSON_HEADERS }));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(state.cancelled, true);
@@ -52,7 +52,7 @@ test('bounded fetch leaves no unhandled rejection when fetchImpl fails after abo
     let fail;
     const request = bounded(() => new Promise((_, reject) => { fail = reject; }), { signal: controller.signal });
     controller.abort();
-    await assert.rejects(settles(request), { kind: 'unavailable' });
+    await assert.rejects(settles(request), error => error === controller.signal.reason);
     fail(new Error('late failure'));
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(unhandled, []);
@@ -63,7 +63,7 @@ test('bounded fetch settles on abort when the response body never yields and can
   const request = bounded(async () => stuckResponse(), { signal: controller.signal });
   await new Promise(resolve => setImmediate(resolve));
   controller.abort();
-  await assert.rejects(settles(request), { kind: 'unavailable' });
+  await assert.rejects(settles(request), error => error === controller.signal.reason);
 });
 test('bounded fetch reports not-found without waiting for the body to cancel', async () => {
   await assert.rejects(settles(bounded(async () => stuckResponse({ status: 404, ok: false }))), { kind: 'not-found' });
