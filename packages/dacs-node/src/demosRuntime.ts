@@ -65,6 +65,8 @@ export interface DacsDemosAdapterV1 {
   readonly raw: Readonly<{
     getNetworkInfo(): Promise<unknown>;
     getAddressNonce(address: string): Promise<number>;
+    /** Uncoerced node response; required by the nonce readiness probe. */
+    nodeCall?(message: string, args: Readonly<Record<string, unknown>>): Promise<unknown>;
     getAddressInfo(address: string): Promise<unknown>;
   }>;
   connect(): Promise<void>;
@@ -515,7 +517,22 @@ export async function createDacsDemosActorRuntimeV1(
       }
       return adapter.getChainIdentity();
     },
-    addressNonce: () => adapter.raw.getAddressNonce(walletAddress),
+    addressNonce: async () => {
+      // demosdk's convenience method turns malformed responses into zero and
+      // partially parses strings. Neither is evidence of a healthy nonce read.
+      if (typeof adapter.raw.nodeCall !== "function") {
+        throw new DacsDemosRuntimeError("demos-adapter-raw-reader-missing");
+      }
+      const response = await adapter.raw.nodeCall("getAddressNonce", {
+        address: walletAddress,
+      });
+      const nonce = typeof response === "string" && /^(0|[1-9][0-9]*)$/.test(response)
+        ? Number(response) : response;
+      if (typeof nonce !== "number" || !Number.isSafeInteger(nonce) || nonce < 0) {
+        throw new DacsDemosRuntimeError("demos-nonce-unavailable");
+      }
+      return nonce;
+    },
     addressInfo: () => adapter.raw.getAddressInfo(walletAddress),
   });
 }

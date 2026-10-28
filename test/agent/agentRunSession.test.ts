@@ -589,7 +589,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       terms: TERMS,
       settle: async () => {
         settled = true;
-        return { ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
+        return { finality: { model: "block-depth" as const, finalityBlocks: 1 }, ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
       },
     });
     expect(res.profile).toBe("legacy-mvp-settlement-only");
@@ -629,6 +629,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const settle = async () => {
       settleCalls += 1;
       return {
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xbundle-retry",
         chainId: "demos",
@@ -638,13 +639,13 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     };
 
     const first = await agent.runSession(ref, {
-      jobId: "completed-bundle-retry",
+      jobId: "01JZ0000000000000000000362",
       terms: TERMS,
       settle,
     });
     await expect(
       agent.runSession(ref, {
-        jobId: "completed-bundle-retry",
+        jobId: "01JZ0000000000000000000362",
         terms: TERMS,
         settle,
       }),
@@ -659,7 +660,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     store.set(first.bundleRef, bundle);
     await expect(
       agent.runSession(ref, {
-        jobId: "completed-bundle-retry",
+        jobId: "01JZ0000000000000000000362",
         terms: TERMS,
         settle,
       }),
@@ -798,6 +799,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     await expect(supportedAgent.runSession(supportedRef, {
       terms: TERMS,
       settle: async () => ({
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xexplicit-method-paid",
         chainId: "c",
@@ -856,6 +858,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       const settle = async () => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xpaid-once",
           chainId: "c",
@@ -865,7 +868,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       };
 
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId: "01JZ0000000000000000000360", terms: TERMS, settle }),
       ).rejects.toThrow(/simulated process failure/);
       expect(settleCalls).toBe(1);
       // Fresh writes now bind the configured identity to the actual signer.
@@ -881,14 +884,14 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         "same address, substituted Listing bytes",
       );
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId: "01JZ0000000000000000000360", terms: TERMS, settle }),
       ).rejects.toThrow(/signed Listing pin/i);
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(1);
       store.set(ref, originalListing);
 
-      const agreementAddress = "stor:dacs3:agreement:job-expiry";
-      const evidenceAddress = "stor:dacs4:evidence:job-expiry";
+      const agreementAddress = "stor:dacs3:agreement:01JZ0000000000000000000360";
+      const evidenceAddress = "stor:dacs4:evidence:01JZ0000000000000000000360";
       const agreement = structuredClone(store.get(agreementAddress)!);
       const evidence = structuredClone(store.get(evidenceAddress)!);
       expect(typeof agreement.signature).toBe("string");
@@ -898,7 +901,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
 
       getPublicKey.mockResolvedValueOnce(Uint8Array.from(sellerPublicKey));
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId: "01JZ0000000000000000000360", terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic Agreement authentication/i);
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(2);
@@ -909,7 +912,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         signature: `${agreementSignature.startsWith("0") ? "1" : "0"}${agreementSignature.slice(1)}`,
       });
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId: "01JZ0000000000000000000360", terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic Agreement authentication/i);
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(3);
@@ -924,7 +927,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         },
       });
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId: "01JZ0000000000000000000360", terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic SettlementEvidence authentication/i);
       expect(settleCalls).toBe(1);
       // One key lookup serves both Agreement and evidence checks in this run.
@@ -932,13 +935,13 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       store.set(evidenceAddress, evidence);
 
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
-      ).resolves.toMatchObject({ outcome: "completed", jobId: "job-expiry" });
+        agent.runSession(ref, { jobId: "01JZ0000000000000000000360", terms: TERMS, settle }),
+      ).resolves.toMatchObject({ outcome: "completed", jobId: "01JZ0000000000000000000360" });
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(5);
 
       await expect(
-        agent.runSession(ref, { jobId: "job-arbitrary", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId: "01JZ0000000000000000000361", terms: TERMS, settle }),
       ).rejects.toThrow(/outside.*validity window.*no prior Agreement/i);
       expect(settleCalls).toBe(1);
       // Missing recovery state is rejected before key acquisition or Listing auth.
@@ -1025,7 +1028,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     await expect(
       agent.runSession(ref, {
         terms: TERMS,
-        jobId: "public-vet-finality",
+        jobId: "01JZ0000000000000000000363",
         listingValidationDeps: listingValidationDeps(),
         vet: async ({ jobId, evaluatedParty }): Promise<VetProduction> => {
           const record: CompositeVerificationRecord = {
@@ -1094,6 +1097,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         settle: async () => {
           settleCalls += 1;
           return {
+            finality: { model: "block-depth" as const, finalityBlocks: 1 },
             ok: true,
             txHash: "0xpublicvet",
             chainId: "test",

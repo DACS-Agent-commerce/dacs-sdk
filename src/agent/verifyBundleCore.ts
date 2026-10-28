@@ -4,6 +4,7 @@ import { contentHash, stripSignature } from "../canonical/index.js";
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
+  snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
@@ -38,6 +39,7 @@ import {
   isLegacyMvpSettlementEvidence,
 } from "../artifacts/legacyMvp.js";
 import {
+  isCanonicalJobId,
   isAgreementArtifact,
   isAnyAttestationBundle,
   isAttestationRef,
@@ -620,10 +622,10 @@ function snapshotDependencyRecord(
   if (value === null) return null;
   if (typeof value !== "object" || Array.isArray(value)) return {};
   try {
-    return snapshotCanonicalJsonRead(
-      value as Record<string, unknown>,
-      label,
-    );
+    const wire = snapshotWireJsonRead(value, label) as Record<string, unknown>;
+    // CORE JID-1/JID-3: reject a malformed wire ID before CF-1 can repair it.
+    if (Object.hasOwn(wire, "jobId") && !isCanonicalJobId(wire.jobId)) return {};
+    return snapshotCanonicalJsonRead(wire, label);
   } catch {
     return {};
   }
@@ -1297,10 +1299,28 @@ export async function verifyBundleCore(
   callerDeps: VerifyBundleDeps,
 ): Promise<BundleVerification> {
   const deps = captureVerifyBundleDeps(callerDeps);
-  const raw = snapshotDependencyRecord(
-    await deps.readArtifact(bundleRef),
-    "resolved attestation bundle",
-  );
+  const resolved = await deps.readArtifact(bundleRef);
+  let raw: Record<string, unknown> | null;
+  try {
+    const wire = resolved === null ? null : snapshotWireJsonRead(
+      resolved, "resolved attestation bundle",
+    );
+    // Preserve the diagnostic before the general dependency reader discards
+    // malformed IDs. Inspect exact wire bytes before CF-1 normalization.
+    if (wire && typeof wire === "object" && !Array.isArray(wire) &&
+        Object.hasOwn(wire, "jobId") && !isCanonicalJobId(wire.jobId)) {
+      return {
+        ok: false,
+        reason: "attestation bundle jobId must be a canonical uppercase ULID (CORE JID-1)",
+        fullyVerified: false,
+        signatures: [],
+        refs: [],
+      };
+    }
+    raw = snapshotDependencyRecord(wire, "resolved attestation bundle");
+  } catch {
+    raw = {};
+  }
   if (raw && isAbsoluteFaultBundle(raw) && !faultedPartyIsPermitted(raw)) {
     return {
       ok: false,
@@ -1725,6 +1745,16 @@ export async function verifyBundleCore(
         bundle.jobId
     ) {
       evidence.check.verdict = "invalid-binding";
+    }
+    if (evidence.check.verdict === "ok" && evidence.value &&
+        isAttestationRef(ev) && ev.signer !== undefined) {
+      const signature = evidence.value.signature;
+      // DACS-2 §7.5.2(3), CORE CF-3: a named reference issuer must be
+      // the actual evidence signer, including equivalent qualified claims.
+      if (!isComponentSignature(signature) ||
+          !sameCanonicalClaimIdentity(ev.signer, signature.signer)) {
+        evidence.check.verdict = "invalid-evidence";
+      }
     }
     if (evidence.check.verdict === "ok" && evidence.value) {
       let decision: unknown;

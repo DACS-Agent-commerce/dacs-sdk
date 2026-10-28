@@ -163,6 +163,11 @@ async function makeAdapter(options?: {
   vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
     status: "absent",
   });
+  // The secondary index lags in this fixture, including diagnostic reads that
+  // outlive a test. Keep those background reads off the network as well.
+  Object.assign(adapter, {
+    resolveAnchorByIndex: vi.fn(async () => ({ status: "absent" })),
+  });
   raw.getAddressNonce = vi.fn(async () => signedCount);
   raw.storagePrograms.read = vi.fn(async (address: string) => {
     const entry = [...signedPayloads.entries()]
@@ -199,9 +204,10 @@ async function makeAdapter(options?: {
     result: 200,
     response: { hash: validity.response.data.transaction.hash },
   }));
-  raw.nodeCall = vi
-    .fn()
-    .mockResolvedValue({ state: "included", blockNumber: 42 });
+  const statusRpc = vi.fn().mockResolvedValue({ state: "included", blockNumber: 42 });
+  // Keep status observations independent of the uncoerced account-nonce RPC.
+  raw.nodeCall = vi.fn((method: string, args: { address?: string }) =>
+    method === "getAddressNonce" ? raw.getAddressNonce(args.address) : statusRpc(method, args));
   raw.getTxByHash = vi.fn(async (txRef: string) => {
     lastObservedTxRef = txRef;
     const signed = signedPayloads.get(txRef);
@@ -241,6 +247,7 @@ async function makeAdapter(options?: {
   return {
     adapter,
     raw,
+    statusRpc,
     rpc,
     wallet,
     recordSignedPayload: (
@@ -295,7 +302,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("authenticates a pending native transfer and advances the next anchor nonce", async () => {
-    const { adapter, raw, wallet } = await makeAdapter();
+    const { adapter, raw, statusRpc, wallet } = await makeAdapter();
     const payer = wallet.replace(/^0x/, "").toLowerCase();
     const payee = "cd".repeat(32);
     const txRef = "12".repeat(32);
@@ -310,7 +317,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       txRef,
       9,
     ));
-    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 44 });
+    statusRpc.mockResolvedValue({ state: "included", blockNumber: 44 });
     raw.getTxByHash.mockResolvedValue({
       hash: txRef,
       status: "confirmed",
@@ -350,7 +357,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     await lease.release();
 
     raw.getAddressNonce.mockResolvedValue(0);
-    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    statusRpc.mockResolvedValue({ state: "failed" });
     await adapter.anchorAndWait(
       "after-native-transfer",
       { value: 1 },
@@ -363,7 +370,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("authenticates a pending anchor before a native transfer can reuse its nonce", async () => {
-    const { adapter, raw, wallet, recordSignedPayload } = await makeAdapter();
+    const { adapter, raw, statusRpc, wallet, recordSignedPayload } = await makeAdapter();
     const txRef = "78".repeat(32);
     const logicalName = "dacs4:payment-evidence:nonce-fence";
     const nativeAddress = "storage:pending-anchor";
@@ -383,7 +390,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     );
     await lease.put(pending.record);
     recordSignedPayload(txRef, pending.payload, 8);
-    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 46 });
+    statusRpc.mockResolvedValue({ state: "included", blockNumber: 46 });
     raw.getTxByHash.mockResolvedValue({
       ...signedStorageTransaction(wallet, txRef, pending.payload, 8),
       status: "confirmed",
@@ -419,7 +426,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("refuses to close a native transfer whose canonical amount changed", async () => {
-    const { adapter, raw, wallet } = await makeAdapter();
+    const { adapter, raw, statusRpc, wallet } = await makeAdapter();
     const payer = wallet.replace(/^0x/, "").toLowerCase();
     const payee = "cd".repeat(32);
     const txRef = "56".repeat(32);
@@ -434,7 +441,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       txRef,
       4,
     ));
-    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 45 });
+    statusRpc.mockResolvedValue({ state: "included", blockNumber: 45 });
     raw.getTxByHash.mockResolvedValue({
       hash: txRef,
       status: "confirmed",
@@ -479,8 +486,8 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("accepts canonical confirmed execution while the status index still lags", async () => {
-    const { adapter, raw } = await makeAdapter();
-    raw.nodeCall.mockResolvedValue({ state: "pending" });
+    const { adapter, raw, statusRpc } = await makeAdapter();
+    statusRpc.mockResolvedValue({ state: "pending" });
     raw.getTxByHash.mockResolvedValue({
       status: "confirmed",
       blockNumber: 43,
@@ -497,7 +504,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       blockNumber: 43,
       attempts: { inclusionPolls: 1 },
     });
-    expect(raw.nodeCall).toHaveBeenCalledTimes(1);
+    expect(statusRpc).toHaveBeenCalledTimes(1);
     expect(raw.getTxByHash).toHaveBeenCalledTimes(1);
   });
 
@@ -582,7 +589,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("fails closed when an accepted response changes the signed transaction hash", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, statusRpc } = await makeAdapter();
     raw.tx.broadcast.mockResolvedValue({
       result: 200,
       response: { hash: "tx-conflicting-response" },
@@ -601,7 +608,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(error.receipt.txRef).toMatch(/^tx-/);
     expect(error.receipt.txRef).not.toBe("tx-conflicting-response");
     await vi.waitFor(() =>
-      expect(raw.nodeCall).toHaveBeenCalledWith(
+      expect(statusRpc).toHaveBeenCalledWith(
         "getTransactionStatus",
         expect.objectContaining({ hash: error.receipt.txRef }),
       ),
@@ -775,7 +782,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("holds the nonce queue until authenticated native readback", async () => {
-    const { adapter, raw, wallet } = await makeAdapter();
+    const { adapter, raw, statusRpc, wallet } = await makeAdapter();
     const firstValue = { value: "first" };
     const secondValue = { value: "second" };
     const firstAddress = await adapter.anchorAddress("first");
@@ -811,7 +818,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     });
     await vi.waitFor(() => {
       expect(raw.storagePrograms.read).toHaveBeenCalledWith(firstAddress);
-      expect(raw.nodeCall).toHaveBeenCalled();
+      expect(statusRpc).toHaveBeenCalled();
     });
 
     const second = adapter.anchorAndWait("second", secondValue, {
@@ -950,7 +957,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     for (const fixture of [first, second]) {
       fixture.raw.getAddressNonce.mockResolvedValue(0);
     }
-    first.raw.nodeCall.mockResolvedValue({
+    first.statusRpc.mockResolvedValue({
       state: "included",
       blockNumber: 9,
     });
@@ -1002,7 +1009,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const first = await makeAdapter({ rpc, wallet });
     const second = await makeAdapter({ rpc, wallet });
     let firstIncluded = false;
-    first.raw.nodeCall.mockImplementation(async () =>
+    first.statusRpc.mockImplementation(async () =>
       firstIncluded
         ? { state: "included", blockNumber: 1 }
         : { state: "pending" },
@@ -1049,7 +1056,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       wallet,
     });
     let firstIncluded = false;
-    first.raw.nodeCall.mockImplementation(async () =>
+    first.statusRpc.mockImplementation(async () =>
       firstIncluded ? { state: "included" } : { state: "pending" },
     );
     first.raw.getTxByHash.mockImplementation(async () =>
@@ -1089,7 +1096,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       wallet,
     });
     let firstConfirmed = false;
-    first.raw.nodeCall.mockResolvedValue({ state: "included" });
+    first.statusRpc.mockResolvedValue({ state: "included" });
     first.raw.getTxByHash.mockImplementation(async () =>
       firstConfirmed
         ? { status: "confirmed", blockNumber: 5 }
@@ -1458,7 +1465,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("retains failed-attempt fees and blocks aggregate-budget overspend before rebroadcast", async () => {
-    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    const { adapter, raw, statusRpc } = await makeAdapter({ maximumFeeOs: 3n });
     raw.getNetworkInfo = vi.fn(async () => ({
       forks: { osDenomination: { activated: true } },
     }));
@@ -1472,7 +1479,7 @@ describe("DemosAdapter.anchorAndWait", () => {
         },
       },
     }));
-    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    statusRpc.mockResolvedValue({ state: "failed" });
     const feeBudget = {
       budgetId: "fixed-price:test-job:buyer",
       maximumPerWriteFeeOs: 3n,
@@ -1613,7 +1620,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("completes an immutable write by hash while its broadcast response hangs", async () => {
-    const { adapter, raw, wallet } = await makeAdapter();
+    const { adapter, raw, statusRpc, wallet } = await makeAdapter();
     const name = "hung-immutable";
     const value = { value: 1 };
     const address = await adapter.anchorAddress(name);
@@ -1639,15 +1646,15 @@ describe("DemosAdapter.anchorAndWait", () => {
       txRef: expect.stringMatching(/^tx-/),
       demosEvidence: { nativeAddress: address },
     });
-    expect(raw.nodeCall).toHaveBeenCalledWith(
+    expect(statusRpc).toHaveBeenCalledWith(
       "getTransactionStatus",
       expect.objectContaining({ hash: expect.stringMatching(/^tx-/) }),
     );
   });
 
   it("preserves immutable terminal-failure evidence after winner reconciliation", async () => {
-    const { adapter, raw } = await makeAdapter();
-    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    const { adapter, raw, statusRpc } = await makeAdapter();
+    statusRpc.mockResolvedValue({ state: "failed" });
 
     const error = asAnchorError(
       await adapter
@@ -1716,9 +1723,9 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("preserves immutable inclusion-timeout evidence at the shared completion deadline", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, statusRpc } = await makeAdapter();
     raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
-    raw.nodeCall
+    statusRpc
       .mockResolvedValueOnce({ state: "pending" })
       .mockImplementation(() => deferred<never>().promise);
 
@@ -1893,7 +1900,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const first = await makeAdapter({ rpc, wallet });
     const second = await makeAdapter({ rpc, wallet });
     let recover = false;
-    first.raw.nodeCall.mockImplementation(async () =>
+    first.statusRpc.mockImplementation(async () =>
       recover ? { state: "included" } : { state: "pending" },
     );
     first.raw.getTxByHash.mockImplementation(async () =>
@@ -1922,7 +1929,7 @@ describe("DemosAdapter.anchorAndWait", () => {
 
     recover = true;
     await vi.waitFor(() =>
-      expect(first.raw.nodeCall).toHaveBeenCalledWith(
+      expect(first.statusRpc).toHaveBeenCalledWith(
         "getTransactionStatus",
         expect.anything(),
       ),
@@ -1930,8 +1937,8 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("releases the queue after a terminal failure so a retry can proceed", async () => {
-    const { adapter, raw } = await makeAdapter();
-    raw.nodeCall
+    const { adapter, raw, statusRpc } = await makeAdapter();
+    statusRpc
       .mockResolvedValueOnce({ state: "failed" })
       .mockResolvedValue({ state: "included", blockNumber: 7 });
     raw.getTxByHash.mockImplementation(async (txRef: string) =>
@@ -1963,7 +1970,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("does not advance the confirmed nonce floor after terminal failure", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, statusRpc } = await makeAdapter();
     const signedNonces: number[] = [];
     let signedCount = 0;
     raw.getAddressNonce.mockResolvedValue(0);
@@ -1980,7 +1987,7 @@ describe("DemosAdapter.anchorAndWait", () => {
         );
       },
     );
-    raw.nodeCall.mockImplementation(
+    statusRpc.mockImplementation(
       async (_method: string, params: { hash: string }) =>
         params.hash.endsWith("-1")
           ? { state: "failed", blockNumber: 6 }
@@ -2014,9 +2021,9 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("preserves accepted state and tx hash on total-operation timeout", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, statusRpc } = await makeAdapter();
     let recover = false;
-    raw.nodeCall.mockImplementation(async () =>
+    statusRpc.mockImplementation(async () =>
       recover ? { state: "included", blockNumber: 9 } : { state: "pending" },
     );
     raw.getTxByHash.mockImplementation(async () =>
@@ -2042,7 +2049,7 @@ describe("DemosAdapter.anchorAndWait", () => {
 
     recover = true;
     await vi.waitFor(() => {
-      expect(raw.nodeCall.mock.calls.length).toBeGreaterThan(
+      expect(statusRpc.mock.calls.length).toBeGreaterThan(
         error.receipt.attempts.inclusionPolls,
       );
     });
@@ -2050,7 +2057,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("returns included when the hash lands while the broadcast response hangs", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, statusRpc } = await makeAdapter();
     const broadcast = deferred<unknown>();
     raw.tx.broadcast.mockImplementation(() => broadcast.promise);
 
@@ -2070,7 +2077,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       completion: "included",
     });
     broadcast.resolve({ result: 200, response: { hash: "late-response" } });
-    expect(raw.nodeCall).toHaveBeenCalled();
+    expect(statusRpc).toHaveBeenCalled();
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
@@ -2108,7 +2115,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   it.each([500, 503])(
     "accepts authoritative inclusion despite an ambiguous result-%i response",
     async (result) => {
-      const { adapter, raw } = await makeAdapter();
+      const { adapter, raw, statusRpc } = await makeAdapter();
       raw.tx.broadcast.mockImplementation(async (validity: any) => ({
         result,
         response: { hash: validity.response.data.transaction.hash },
@@ -2124,14 +2131,14 @@ describe("DemosAdapter.anchorAndWait", () => {
         state: "included",
         completion: "included",
       });
-      expect(raw.nodeCall).toHaveBeenCalled();
+      expect(statusRpc).toHaveBeenCalled();
     },
   );
 
   it("fails promptly when broadcast is definitively rejected and the hash is absent", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, statusRpc } = await makeAdapter();
     raw.tx.broadcast.mockResolvedValue({ result: 400, response: "invalid tx" });
-    raw.nodeCall.mockResolvedValue({ state: "unknown" });
+    statusRpc.mockResolvedValue({ state: "unknown" });
     raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
 
     const error = asAnchorError(
@@ -2162,7 +2169,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     first.raw.tx.broadcast.mockRejectedValue(
       Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" }),
     );
-    first.raw.nodeCall.mockImplementation(async () =>
+    first.statusRpc.mockImplementation(async () =>
       firstIncluded ? { state: "included" } : { state: "pending" },
     );
     first.raw.getTxByHash.mockImplementation(async () =>
@@ -2199,10 +2206,10 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("cancels during inclusion with a receipt and reconciles safely", async () => {
-    const { adapter, raw } = await makeAdapter();
+    const { adapter, raw, statusRpc } = await makeAdapter();
     const controller = new AbortController();
     let recover = false;
-    raw.nodeCall.mockImplementation(async () =>
+    statusRpc.mockImplementation(async () =>
       recover ? { state: "included", blockNumber: 10 } : { state: "pending" },
     );
     raw.getTxByHash.mockImplementation(async () =>
@@ -2221,7 +2228,7 @@ describe("DemosAdapter.anchorAndWait", () => {
         signal: controller.signal,
       },
     );
-    await vi.waitFor(() => expect(raw.nodeCall).toHaveBeenCalled());
+    await vi.waitFor(() => expect(statusRpc).toHaveBeenCalled());
     controller.abort();
 
     const error = asAnchorError(
@@ -2235,7 +2242,7 @@ describe("DemosAdapter.anchorAndWait", () => {
 
     recover = true;
     await vi.waitFor(() => {
-      expect(raw.nodeCall.mock.calls.length).toBeGreaterThan(
+      expect(statusRpc.mock.calls.length).toBeGreaterThan(
         error.receipt.attempts.inclusionPolls,
       );
     });

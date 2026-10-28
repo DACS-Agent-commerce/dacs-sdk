@@ -123,12 +123,12 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
       over.settle ??
       (async (req): Promise<SettleResult> => {
         settleCalls.n++;
-        return { ok: true, txHash: "0xpaid", chainId: "eip155:84532", payer: "0xbuyer", payee: req.payee };
+        return { finality: { model: "block-depth" as const, finalityBlocks: 1 }, ok: true, txHash: "0xpaid", chainId: "eip155:84532", payer: "0xbuyer", payee: req.payee };
       }),
     ...(over.resumeSettlement
       ? { resumeSettlement: over.resumeSettlement }
       : {}),
-    newJobId: over.newJobId ?? (() => "job-1"),
+    newJobId: over.newJobId ?? (() => "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
     // These fixtures exercise the durable store, not listing verification (#41).
@@ -149,7 +149,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(res.outcome).toBe("completed");
 
     // The store now has the session with the final status + all three receipts.
-    const loaded = await store.load("job-1");
+    const loaded = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(loaded.status).toBe("ok");
     if (loaded.status === "ok") {
       expect(loaded.record.phase).toBe("completed");
@@ -161,7 +161,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(loaded.record.agreementHash).toMatch(/^[0-9a-f]{64}$/);
       // The agreement hash is bound for anti-replay: another session can't reuse it.
       const reuse = await store.bindHash({ hash: loaded.record.agreementHash!, jobId: "other", kind: "agreement" });
-      expect(reuse).toEqual({ ok: false, boundTo: "job-1" });
+      expect(reuse).toEqual({ ok: false, boundTo: "02DAV3KGGXZ2N81SBRJDRAKPRV" });
     }
   });
 
@@ -186,13 +186,13 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     await expect(runSessionCore(boom.listingRef, terms, boom.deps)).rejects.toThrow(/crash/);
     expect(boom.settleCalls.n).toBe(1); // paid exactly once
     // The write-ahead outcome checkpoint recorded the payment before the crash.
-    const mid = await store.load("job-1");
+    const mid = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(mid.status === "ok" && mid.record.checkpoints.some((c) => c.stage === "outcome")).toBe(true);
 
     // Run 2: resume the SAME jobId with a healthy anchor. Evidence still isn't
     // anchored, so the anchoring guard alone would re-pay — the store must reconcile.
     const resumed = await makeDeps(store, { kv });
-    const res = await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
+    const res = await runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(res.outcome).toBe("completed");
     expect(resumed.settleCalls.n).toBe(0); // did NOT pay again — reconciled from the checkpoint
   });
@@ -268,7 +268,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       resumed.listingRef,
       terms,
       resumed.deps,
-      "job-1",
+      "02DAV3KGGXZ2N81SBRJDRAKPRV",
     );
     expect(payments).toBe(1);
     const anchoredEvidence = kv.get(result.settlementRef);
@@ -351,7 +351,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       resumed.listingRef,
       terms,
       resumed.deps,
-      "job-1",
+      "02DAV3KGGXZ2N81SBRJDRAKPRV",
     )).rejects.toThrow(/resumeSettlement/);
     expect(payments).toBe(1);
   });
@@ -377,7 +377,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       kv,
       settle,
       anchor: async (name, value) => {
-        if (name === sessionAnchorName.evidence("job-1")) {
+        if (name === sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")) {
           throw new Error("crash after settlement metadata checkpoint");
         }
         kv.set(`stor:${name}`, value as Record<string, unknown>);
@@ -389,9 +389,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     ).rejects.toThrow(/metadata checkpoint/);
 
     const resumed = await makeDeps(store, { kv, settle });
-    await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
+    await runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(settleCalls).toBe(1);
-    const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
+    const evidence = kv.get(`stor:${sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")}`);
     expect(evidence?.paymentTxRefs).toEqual([
       {
         rail: "demos:testnet",
@@ -426,7 +426,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         kv,
         settle,
         anchor: async (name, value) => {
-          if (name === sessionAnchorName.evidence("job-1")) {
+          if (name === sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")) {
             throw new Error("crash after finality checkpoint");
           }
           kv.set(`stor:${name}`, value as Record<string, unknown>);
@@ -438,9 +438,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       ).rejects.toThrow(/finality checkpoint/);
 
       const resumed = await makeDeps(store, { kv, settle });
-      await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
+      await runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV");
       expect(settleCalls).toBe(1);
-      const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
+      const evidence = kv.get(`stor:${sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")}`);
       expect(evidence?.settlementFinality).toEqual({
         ...finality,
         finalityObservedAt: 1780000000000,
@@ -467,7 +467,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       kv,
       settle,
       anchor: async (name, value) => {
-        if (name === sessionAnchorName.evidence("job-1")) {
+        if (name === sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")) {
           throw new Error("crash after checkpoint");
         }
         kv.set(`stor:${name}`, value as Record<string, unknown>);
@@ -494,7 +494,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     };
     const resumed = await makeDeps(malformedStore, { kv, settle });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/invalid|malformed/);
     expect(settleCalls).toBe(1);
   });
@@ -519,7 +519,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         kv,
         settle,
         anchor: async (name, value) => {
-          if (name === sessionAnchorName.evidence("job-1")) {
+          if (name === sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")) {
             throw new Error("crash after failed settlement checkpoint");
           }
           kv.set(`stor:${name}`, value as Record<string, unknown>);
@@ -548,7 +548,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       };
       const resumed = await makeDeps(malformedStore, { kv, settle });
       await expect(
-        runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+        runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
       ).rejects.toThrow(/invalid|finality/);
       expect(settleCalls).toBe(1);
     },
@@ -569,10 +569,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         runSessionCore(interrupted.listingRef, terms, interrupted.deps),
       ).rejects.toThrow(/durable intent/);
 
-      const before = await store.load("job-1");
+      const before = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
       if (before.status !== "ok") throw new Error("missing fixture session");
       const legacyWrite = await store.transition({
-        jobId: "job-1",
+        jobId: "02DAV3KGGXZ2N81SBRJDRAKPRV",
         expectedRevision: before.record.revision,
         checkpoint: {
           key: "settle:0",
@@ -604,7 +604,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         },
       });
       await expect(
-        runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+        runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
       ).rejects.toThrow(/invalid|finality/);
       expect(recoveries).toBe(0);
     },
@@ -646,7 +646,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     };
     const resumed = await makeDeps(store, { kv, settle });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/unresolved intent|reconcile/);
     expect(counter.n).toBe(0);
   });
@@ -677,6 +677,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const settle: SessionDeps["settle"] = async (req) => {
       submits += 1;
       durableRailOutcome = {
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xdurable-paid",
         chainId: "eip155:84532",
@@ -704,17 +705,17 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         jobId: "other",
         kind: "transaction",
       }),
-    ).toEqual({ ok: false, boundTo: "job-1" });
+    ).toEqual({ ok: false, boundTo: "02DAV3KGGXZ2N81SBRJDRAKPRV" });
 
     // Resume invokes the explicit #52 recovery seam, adopts the durable result,
     // completes the outcome checkpoint, and never calls the submit seam again.
     const resumed = await makeDeps(store, { kv, settle, resumeSettlement });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(submits).toBe(1);
     expect(recoveries).toBe(1);
-    const loaded = await store.load("job-1");
+    const loaded = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(
       loaded.status === "ok" &&
         loaded.record.checkpoints.some(
@@ -766,11 +767,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).resolves.toMatchObject({ outcome: "failed" });
     expect(freshSubmits).toBe(0);
     expect(recoveries).toBe(1);
-    const loaded = await store.load("job-1");
+    const loaded = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(
       loaded.status === "ok" &&
         loaded.record.checkpoints.some(
@@ -799,6 +800,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       entered();
       await hold;
       return {
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xpaid",
         chainId: "c",
@@ -809,10 +811,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const a = await makeDeps(store, { kv, settle });
     const b = await makeDeps(store, { kv, settle });
 
-    const firstRun = runSessionCore(a.listingRef, terms, a.deps, "job-1");
+    const firstRun = runSessionCore(a.listingRef, terms, a.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV");
     await inSettle; // A has persisted intent and is paused inside the payment.
     await expect(
-      runSessionCore(b.listingRef, terms, b.deps, "job-1"),
+      runSessionCore(b.listingRef, terms, b.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/unresolved intent|reconcile/);
     expect(counter.n).toBe(1);
 
@@ -836,11 +838,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       runSessionCore(interrupted.listingRef, terms, interrupted.deps),
     ).rejects.toThrow(/lost rail response/);
 
-    const before = await store.load("job-1");
+    const before = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(before.status).toBe("ok");
     if (before.status !== "ok") throw new Error("missing fixture session");
     const legacyWrite = await store.transition({
-      jobId: "job-1",
+      jobId: "02DAV3KGGXZ2N81SBRJDRAKPRV",
       expectedRevision: before.record.revision,
       checkpoint: {
         key: "settle:0",
@@ -870,6 +872,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         recoveries += 1;
         recoveredPhase = req.phase;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xlegacy-paid",
           chainId: "eip155:84532",
@@ -879,12 +882,12 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(submits).toBe(1);
     expect(recoveries).toBe(1);
     expect(recoveredPhase).toBe("pay-x402");
-    const migrated = await store.load("job-1");
+    const migrated = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(
       migrated.status === "ok" &&
         migrated.record.checkpoints.some(
@@ -925,9 +928,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       }),
     });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/request-bound destination/);
-    const after = await store.load("job-1");
+    const after = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(
       after.status === "ok" &&
         after.record.checkpoints.filter((checkpoint) => checkpoint.stage === "outcome")
@@ -951,7 +954,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     await expect(
       runSessionCore(first.listingRef, terms, first.deps),
     ).rejects.toThrow(/remains indeterminate/);
-    let mid = await store.load("job-1");
+    let mid = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(
       mid.status === "ok"
         ? mid.record.checkpoints.filter(
@@ -973,7 +976,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         jobId: "other",
         kind: "transaction",
       }),
-    ).resolves.toEqual({ ok: false, boundTo: "job-1" });
+    ).resolves.toEqual({ ok: false, boundTo: "02DAV3KGGXZ2N81SBRJDRAKPRV" });
 
     const stillUnknown = await makeDeps(store, {
       kv,
@@ -986,9 +989,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       }),
     });
     await expect(
-      runSessionCore(stillUnknown.listingRef, terms, stillUnknown.deps, "job-1"),
+      runSessionCore(stillUnknown.listingRef, terms, stillUnknown.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/remains indeterminate/);
-    mid = await store.load("job-1");
+    mid = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(
       mid.status === "ok" &&
         mid.record.checkpoints.filter(
@@ -999,6 +1002,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const resolved = await makeDeps(store, {
       kv,
       resumeSettlement: async (req) => ({
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xambiguous",
         chainId: "eip155:84532",
@@ -1007,7 +1011,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       }),
     });
     await expect(
-      runSessionCore(resolved.listingRef, terms, resolved.deps, "job-1"),
+      runSessionCore(resolved.listingRef, terms, resolved.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).resolves.toMatchObject({ outcome: "completed" });
   });
 
@@ -1043,7 +1047,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(
-      runSessionCore(second.listingRef, terms, second.deps, "job-1"),
+      runSessionCore(second.listingRef, terms, second.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/0xnew-attempt.*remains indeterminate/);
     expect(secondHistory).toEqual([
       {
@@ -1053,7 +1057,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     ]);
 
-    const recorded = await store.load("job-1");
+    const recorded = await store.load("02DAV3KGGXZ2N81SBRJDRAKPRV");
     expect(
       recorded.status === "ok"
         ? recorded.record.checkpoints
@@ -1068,6 +1072,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       resumeSettlement: async (req) => {
         thirdHistory = req.priorAttempts;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xsafe-success",
           chainId: "eip155:84532",
@@ -1077,7 +1082,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(
-      runSessionCore(third.listingRef, terms, third.deps, "job-1"),
+      runSessionCore(third.listingRef, terms, third.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(thirdHistory).toEqual([
       { txHash: "0xold-attempt", chainId: "eip155:84532", ok: false },
@@ -1094,6 +1099,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       settle: async (req) => {
         submits += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xprior-paid",
           chainId: "eip155:84532",
@@ -1102,7 +1108,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         };
       },
       anchor: async (name, value) => {
-        if (name === sessionAnchorName.evidence("job-1")) {
+        if (name === sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")) {
           throw new Error("stop after durable outcome");
         }
         kv.set(`stor:${name}`, value as Record<string, unknown>);
@@ -1128,7 +1134,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     };
     const resumed = await makeDeps(wrongPayeeStore, { kv });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/not bound to the requested.*destination/i);
     expect(submits).toBe(1);
     expect(resumed.settleCalls.n).toBe(0);
@@ -1143,6 +1149,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       settle: async (req) => {
         submits += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xphase-bound-payment",
           chainId: "eip155:84532",
@@ -1151,7 +1158,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         };
       },
       anchor: async (name, value) => {
-        if (name === sessionAnchorName.evidence("job-1")) {
+        if (name === sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")) {
           throw new Error("stop after phase-bound outcome");
         }
         kv.set(`stor:${name}`, value as Record<string, unknown>);
@@ -1177,7 +1184,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     };
     const resumed = await makeDeps(wrongPhaseStore, { kv });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/not bound.*phase/i);
     expect(submits).toBe(1);
     expect(resumed.settleCalls.n).toBe(0);
@@ -1192,6 +1199,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       settle: async (req) => {
         submits += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xlatest-paid",
           chainId: "eip155:84532",
@@ -1200,7 +1208,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         };
       },
       anchor: async (name, value) => {
-        if (name === sessionAnchorName.evidence("job-1")) {
+        if (name === sessionAnchorName.evidence("02DAV3KGGXZ2N81SBRJDRAKPRV")) {
           throw new Error("stop after durable outcome");
         }
         kv.set(`stor:${name}`, value as Record<string, unknown>);
@@ -1231,7 +1239,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     };
     const resumed = await makeDeps(conflictingHistoryStore, { kv });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, terms, resumed.deps, "02DAV3KGGXZ2N81SBRJDRAKPRV"),
     ).rejects.toThrow(/conflicting entries/);
     expect(submits).toBe(1);
     expect(resumed.settleCalls.n).toBe(0);
@@ -1319,7 +1327,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       original.listingRef,
       terms,
       original.deps,
-      "job-evidence-migration",
+      "0EPW32ZEN2PXDF4KWKR4M3WFT6",
     );
     expect(original.settleCalls.n).toBe(1);
 
@@ -1330,12 +1338,12 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         migration.listingRef,
         terms,
         migration.deps,
-        "job-evidence-migration",
+        "0EPW32ZEN2PXDF4KWKR4M3WFT6",
       ),
     ).resolves.toEqual(completed);
     expect(migration.settleCalls.n).toBe(0);
 
-    const loaded = await store.load("job-evidence-migration");
+    const loaded = await store.load("0EPW32ZEN2PXDF4KWKR4M3WFT6");
     expect(loaded.status).toBe("ok");
     if (loaded.status !== "ok") throw new Error("missing migrated session");
     const evidenceOutcome = loaded.record.checkpoints.find(
@@ -1358,7 +1366,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         jobId: "different-job",
         kind: "transaction",
       }),
-    ).resolves.toEqual({ ok: false, boundTo: "job-evidence-migration" });
+    ).resolves.toEqual({ ok: false, boundTo: "0EPW32ZEN2PXDF4KWKR4M3WFT6" });
 
     const wrongEvidencePhaseStore: NonNullable<SessionDeps["sessionStore"]> = {
       ...store,
@@ -1381,7 +1389,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         wrongEvidencePhase.listingRef,
         terms,
         wrongEvidencePhase.deps,
-        "job-evidence-migration",
+        "0EPW32ZEN2PXDF4KWKR4M3WFT6",
       ),
     ).rejects.toThrow(/conflicts with the durable evidence outcome/);
     expect(wrongEvidencePhase.settleCalls.n).toBe(0);
@@ -1393,7 +1401,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         afterDeletion.listingRef,
         terms,
         afterDeletion.deps,
-        "job-evidence-migration",
+        "0EPW32ZEN2PXDF4KWKR4M3WFT6",
       ),
     ).rejects.toThrow(/evidence is no longer present|refusing to rebuild/i);
     expect(afterDeletion.settleCalls.n).toBe(0);
@@ -1402,7 +1410,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
   test.each(FAILED_CHECKPOINT_FINALITY_FIELDS)(
     "restart rejects failed authenticated-evidence state carrying a finality $name",
     async ({ fields }) => {
-      const jobId = "job-failed-evidence-finality";
+      const jobId = "0P0C6G3Z0GYKN0HEK6Q9KV8HJQ";
       const kv = new Map<string, Record<string, unknown>>();
       const original = await makeDeps(undefined, {
         kv,
@@ -1474,7 +1482,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       original.listingRef,
       terms,
       original.deps,
-      "job-failure-evidence-migration",
+      "0DQG33BN9AA6HW0XYKYCMG65RN",
     );
     expect(failed.outcome).toBe("failed");
 
@@ -1485,7 +1493,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         migration.listingRef,
         terms,
         migration.deps,
-        "job-failure-evidence-migration",
+        "0DQG33BN9AA6HW0XYKYCMG65RN",
       ),
     ).resolves.toEqual(failed);
     expect(migration.settleCalls.n).toBe(0);
@@ -1496,7 +1504,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         restarted.listingRef,
         terms,
         restarted.deps,
-        "job-failure-evidence-migration",
+        "0DQG33BN9AA6HW0XYKYCMG65RN",
       ),
     ).resolves.toEqual(failed);
     expect(restarted.settleCalls.n).toBe(0);
@@ -1504,12 +1512,12 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 
   test("an NFD preseed cannot alias an NFC session namespace", async () => {
     const store = createInMemorySessionStore();
-    const nfdJobId = "job-e\u0301";
+    const nfdJobId = "0DNCWYK8QY4EMHT3KGFW25T04R\u0301";
     await store.create({ jobId: nfdJobId, phase: "created", now: 1 });
     const { deps, listingRef, settleCalls } = await makeDeps(store);
     await expect(
       runSessionCore(listingRef, terms, deps, nfdJobId),
-    ).rejects.toThrow(/canonical protocol string/);
+    ).rejects.toThrow(/canonical uppercase ULID/);
     expect(settleCalls.n).toBe(0);
     await expect(store.load(nfdJobId)).resolves.toMatchObject({ status: "ok" });
     await expect(store.load("job-é")).resolves.toEqual({ status: "missing" });

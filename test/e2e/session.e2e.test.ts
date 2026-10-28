@@ -531,7 +531,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
           },
         };
       },
-      newJobId: () => "job-e2e",
+      newJobId: () => "01JZ0000000000000000000360",
       now: () => "2026-01-01T00:00:00Z",
       nowMs: () => 1780000000000,
       // #41 — REAL listing verification end to end: recompute the signature over
@@ -560,8 +560,8 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     const { sub, listingRef, result } = await runFlow();
 
     expect(result.outcome).toBe("completed");
-    expect(result.agreementRef).toBe("stor:dacs3:agreement:job-e2e");
-    expect(result.settlementRef).toBe("stor:dacs4:evidence:job-e2e");
+    expect(result.agreementRef).toBe("stor:dacs3:agreement:01JZ0000000000000000000360");
+    expect(result.settlementRef).toBe("stor:dacs4:evidence:01JZ0000000000000000000360");
 
     // The verifier below did not participate in production. Artifacts whose
     // normative schema uses ComponentSignature must authenticate independently.

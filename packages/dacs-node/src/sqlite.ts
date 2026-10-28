@@ -91,8 +91,8 @@ import {
 
 export { createSqliteRatingPublicationEffectStore } from "./sqliteRatingPublication.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 8 as const;
-export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
+import { DACS_NODE_SQLITE_SCHEMA_VERSION, DACS_NODE_SQLITE_APPLICATION_ID } from "./sqliteMetadata.js";
+export { DACS_NODE_SQLITE_SCHEMA_VERSION, DACS_NODE_SQLITE_APPLICATION_ID } from "./sqliteMetadata.js";
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
 

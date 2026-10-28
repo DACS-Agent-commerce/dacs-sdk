@@ -1,3 +1,6 @@
+import { currentBundleFixture } from "../helpers/currentBundleFixture.js";
+import { currentSettlementVector, currentVectorPublicKey } from "../helpers/currentSettlementVector.js";
+
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,11 +60,12 @@ import {
   type ListingValidationDeps,
 } from "../../src/agent/listingValidation.js";
 import {
+  inspectHistoricalSettlementEvidence,
   validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type AuthenticatedEvidenceContext,
 } from "../../src/agent/verifySettlementEvidence.js";
-import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";
+import { resolveSettlementEventIdentities } from "../../src/agent/settlementIdentity.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
 import {
@@ -220,14 +224,14 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     return byDid;
   };
 
-  /** Run verifyBundleCore over an in-memory bundle with golden-seed keys. */
+  /** Run verifyBundleCore over a freshly signed current in-memory fixture. */
   const runBundle = (
     bundle: Record<string, unknown>,
     seeds: Record<string, string>,
   ) => {
     const keys = keysFromSeeds(seeds);
     return verifyBundleCore("ref", {
-      readArtifact: async () => bundle,
+      readArtifact: async () => currentBundleFixture(bundle, seeds),
       resolvePublicKey: async (did) => keys[did] ?? null,
       verify: verifySig,
     });
@@ -313,7 +317,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     evidence: unknown,
     context: Parameters<typeof validateSettlementEvidenceStructure>[1] = {},
   ) => {
-    const result = await validateSettlementEvidenceStructure(evidence, context);
+    // Shape mutations exercise current admission with a canonical ID. The
+    // unmodified historical signatures use the explicit replay API below.
+    const currentEvidence = { ...(evidence as Record<string, unknown>), jobId: "01JZ0000000000000000000360" };
+    const result = await validateSettlementEvidenceStructure(currentEvidence, context);
     return {
       decision: result.decision === "valid"
         ? "pass" as const
@@ -325,15 +332,29 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       reasons: result.reasons,
     };
   };
-  const authenticatedPaymentContext = (): AuthenticatedEvidenceContext => {
-    const fx = read(
-      "conformance/fixtures/settlement-evidence-payment-success.json",
+  // The shipped fixtures predate JID-1 (their jobId is not a canonical ULID).
+  // Current admission needs a canonical ID, so rewrite it and rebuild the
+  // attestation reference that is bound to it: the PC-2 locator and the
+  // signed-scope hash. The signature is injected by each vector's verifier.
+  const CURRENT_JOB_ID = "01JZ0000000000000000000360";
+  const currentPaymentFixture = () => {
+    const fx = structuredClone(
+      read("conformance/fixtures/settlement-evidence-payment-success.json"),
     ) as any;
+    const evidence = { ...fx.evidence, jobId: CURRENT_JOB_ID };
+    const attestationRef = structuredClone(fx.result.attestationRef);
+    attestationRef.anchor.locator =
+      `dacs4:payment:${CURRENT_JOB_ID}:${fx.paymentInput.rail.railId}:0`;
+    attestationRef.contentHash = contentHash(stripSignature(evidence));
+    return { fx, evidence, attestationRef };
+  };
+  const authenticatedPaymentContext = (): AuthenticatedEvidenceContext => {
+    const { fx, attestationRef } = currentPaymentFixture();
     const price = fx.paymentInput.agreement.terms.price;
     const rail = fx.paymentInput.rail;
     return {
       orchestrator: "did:demos:orchestrator",
-      attestationRef: fx.result.attestationRef,
+      attestationRef,
       result: { ok: fx.result.ok, txRefs: fx.result.txRefs },
       agreement: { amount: price.amount, currency: price.currency },
       rail: {
@@ -1548,7 +1569,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "bundle-malformed-key-error": async (want) => {
       const keys = keysFromSeeds(golden.bundle.seeds);
       const res = await verifyBundleCore("ref", {
-        readArtifact: async () => read(golden.bundle.fixture),
+        readArtifact: async () => currentBundleFixture(read(golden.bundle.fixture), golden.bundle.seeds),
         resolvePublicKey: async (did) =>
           did === "did:demos:seller" ? new Uint8Array(16) : (keys[did] ?? null),
         verify: verifySig,
@@ -1556,14 +1577,14 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(bundleDecision(res)).toBe(want);
     },
 
-    // settlement — §14.4 / §9.7, via verifySettlementEvidence over the two
+    // settlement — §14.4 / §9.7 historical signature replay over the two
     // shipped success fixtures (context assembled from each fixture's own
     // result envelope + the golden orchestrator key).
     "settlement-payment-pass": async (want) => {
       const fx = read("conformance/fixtures/settlement-evidence-payment-success.json") as any;
       const price = fx.paymentInput.agreement.terms.price;
       const rail = fx.paymentInput.rail;
-      const r = await verifySettlementEvidence(
+      const r = await inspectHistoricalSettlementEvidence(
         fx.evidence,
         {
           orchestrator: "did:demos:orchestrator",
@@ -1585,8 +1606,8 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         settlementDeps(golden.settlement.publicKeys),
       );
-      expect(r.reasons).toEqual([]);
-      expect(r.decision).toBe(want);
+      expect(r.reasons).toEqual([expect.stringContaining("no current DACS semantic conformance")]);
+      expect(r.decision).toBe(want === "pass" ? "valid" : "invalid");
     },
     "settlement-x402-pass": async (want) => {
       const document = read(
@@ -1596,68 +1617,66 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         (entry: { name?: string }) => entry.name === "current-x402-event",
       );
       expect(vector).toBeDefined();
-      const evidence = structuredClone(vector.settlementEvidence);
+      const currentVector = currentSettlementVector(vector, hex(document.publicKey));
+      const evidence = currentVector.settlementEvidence;
       const signer = evidence.signature.signer as string;
-      const publicKey = hex(document.publicKey);
+      const publicKey = currentVectorPublicKey;
       const deps = {
         resolvePublicKey: async (candidate: string) =>
           candidate === signer ? publicKey : null,
         verify: verifySig,
       };
-      const semantic = await verifySettlementEvidence(
+      const semantic = await inspectHistoricalSettlementEvidence(
         evidence,
         {
           orchestrator: signer,
           attestationRef: {
             anchor: {
               kind: "storage-program",
-              locator: vector.anchorAddress,
+              locator: currentVector.anchorAddress,
             },
             contentHash: contentHash(stripSignature(evidence)),
           },
-          result: { ok: true, txRefs: vector.settlementEvidence.paymentTxRefs },
-          agreement: vector.verificationContext.amount,
+          result: { ok: true, txRefs: currentVector.settlementEvidence.paymentTxRefs },
+          agreement: currentVector.verificationContext.amount,
           rail: {
-            railId: vector.verificationContext.railId,
+            railId: currentVector.verificationContext.railId,
             railType: "x402",
-            asset: vector.verificationContext.amount.currency,
-            network: `eip155:${vector.verificationContext.x402Receipt.chainId}`,
+            asset: currentVector.verificationContext.amount.currency,
+            network: `eip155:${currentVector.verificationContext.x402Receipt.chainId}`,
             handler: "pay-x402",
           },
           paymentAddress: {
-            railId: vector.verificationContext.railId,
-            phaseIndex: vector.phaseIndex,
+            railId: currentVector.verificationContext.railId,
+            phaseIndex: currentVector.phaseIndex,
           },
         },
         deps,
       );
       expect(semantic.reasons).toEqual([]);
-      expect(semantic.decision).toBe(want);
+      expect(semantic.decision).toBe(want === "pass" ? "valid" : "invalid");
 
-      const identity = await resolveSettlementEventIdentity(
-        evidence,
-        {
-          anchorAddress: vector.anchorAddress,
-          phaseIndex: vector.phaseIndex,
-          railId: vector.verificationContext.railId,
-          asset: vector.verificationContext.asset,
-          payer: vector.verificationContext.payer,
-          payee: vector.verificationContext.payee,
-          amount: vector.verificationContext.amount,
-          x402Receipt: vector.verificationContext.x402Receipt,
-          ledgerEvents: vector.ledgerEvents,
-          priorClaims: vector.priorClaims,
-        },
-        deps,
-      );
+      const identitySet = await resolveSettlementEventIdentities([{ evidence, context: {
+          anchorAddress: currentVector.anchorAddress,
+          phaseIndex: currentVector.phaseIndex,
+          railId: currentVector.verificationContext.railId,
+          asset: currentVector.verificationContext.asset,
+          payer: currentVector.verificationContext.payer,
+          payee: currentVector.verificationContext.payee,
+          amount: currentVector.verificationContext.amount,
+          x402Receipt: currentVector.verificationContext.x402Receipt,
+          ledgerEvents: currentVector.ledgerEvents,
+          priorClaims: currentVector.priorClaims,
+        } }], deps);
+      const identity = identitySet.records[0]!;
       expect(identity.decision).toBe(want);
       expect(identity).toMatchObject({
-        settlementId: vector.expectedSettlementTxId,
+        settlementId: currentVector.expectedSettlementTxId,
       });
     },
     "settlement-delivery-pass": async (want) => {
       const fx = read("conformance/fixtures/settlement-evidence-delivery-success.json") as any;
-      const r = await verifySettlementEvidence(
+      const r = await inspectHistoricalSettlementEvidence(
         fx.evidence,
         {
           orchestrator: "did:demos:orchestrator",
@@ -1668,8 +1687,8 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         settlementDeps(golden.settlement.publicKeys),
       );
-      expect(r.reasons).toEqual([]);
-      expect(r.decision).toBe(want);
+      expect(r.reasons).toEqual([expect.stringContaining("no current DACS semantic conformance")]);
+      expect(r.decision).toBe(want === "pass" ? "valid" : "invalid");
     },
     "settlement-currency-mismatch-not-rejected-fail": async (want) => {
       const evidence = paymentEvidence();
@@ -1715,17 +1734,25 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       ).toBe(want);
     },
     "settlement-wrong-anchor-fail": async (want) => {
-      const fx = read(
-        "conformance/fixtures/settlement-evidence-payment-success.json",
-      ) as any;
-      const wrongRef = structuredClone(fx.result.attestationRef);
+      const { fx, evidence, attestationRef } = currentPaymentFixture();
+      const context = (ref: typeof attestationRef) => ({
+        attestationRef: ref,
+        rail: { railId: fx.paymentInput.rail.railId },
+        paymentAddress: { railId: fx.paymentInput.rail.railId, phaseIndex: 0 },
+      });
+      // Control: the exact PC-2 address for this evidence is accepted, so the
+      // vector's only defect is the wrong phase index in the locator.
+      expect(await verifyEvidence(evidence, context(attestationRef))).toEqual({
+        decision: "pass", reasons: [],
+      });
+      const wrongRef = structuredClone(attestationRef);
       wrongRef.anchor.locator =
-        `dacs4:payment:${fx.evidence.jobId}:polygon-amoy-usdc:1`;
-      expect((await verifyEvidence(fx.evidence, {
-        attestationRef: wrongRef,
-        rail: { railId: "polygon-amoy-usdc" },
-        paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
-      })).decision).toBe(want);
+        `dacs4:payment:${CURRENT_JOB_ID}:${fx.paymentInput.rail.railId}:1`;
+      const result = await verifyEvidence(evidence, context(wrongRef));
+      expect(result.decision).toBe(want);
+      expect(result.reasons).toEqual([
+        "attestationRef locator does not match the complete authenticated PC-2 payment address",
+      ]);
     },
     "settlement-txrefs-mismatch-fail": async (want) => {
       const fx = read(
@@ -1756,19 +1783,24 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
     "settlement-wrong-signer-key-fail": async (want) => {
-      const result = await verifySettlementEvidence(
-        paymentEvidence(),
+      const { evidence } = currentPaymentFixture();
+      const withVerifier = (verify: () => boolean) => verifySettlementEvidence(
+        evidence,
         authenticatedPaymentContext(),
-        {
-        resolvePublicKey: async () => new Uint8Array(32),
-        verify: () => false,
-        },
+        { resolvePublicKey: async () => new Uint8Array(32), verify },
       );
+      // Control: the same evidence and context pass when the verifier accepts
+      // the signature, so the vector fails on the signature alone.
+      expect(await withVerifier(() => true)).toMatchObject({ decision: "pass", reasons: [] });
+      const result = await withVerifier(() => false);
       expect(result.decision).toBe(want);
+      expect(result.reasons).toHaveLength(1);
+      expect(result.reasons[0]).toMatch(/signature/i);
     },
     "settlement-malformed-key-error": async (want) => {
+      const { evidence } = currentPaymentFixture();
       const result = await verifySettlementEvidence(
-        paymentEvidence(),
+        evidence,
         authenticatedPaymentContext(),
         {
         resolvePublicKey: async () => new Uint8Array(10),
@@ -1776,10 +1808,13 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
       );
       expect(result.decision).toBe(want);
+      expect(result.reasons).toHaveLength(1);
+      expect(result.reasons[0]).toMatch(/malformed/);
     },
     "settlement-unresolvable-key-indeterminate": async (want) => {
+      const { evidence } = currentPaymentFixture();
       const result = await verifySettlementEvidence(
-        paymentEvidence(),
+        evidence,
         authenticatedPaymentContext(),
         {
         resolvePublicKey: async () => null,
@@ -1787,6 +1822,8 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
       );
       expect(result.decision).toBe(want);
+      expect(result.reasons).toHaveLength(1);
+      expect(result.reasons[0]).toMatch(/unresolvable/);
     },
     "settlement-phase-rail-mismatch-fail": async (want) => {
       const evidence = paymentEvidence();

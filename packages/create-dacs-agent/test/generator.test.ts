@@ -316,6 +316,14 @@ describe("create-dacs-agent", () => {
     expect(environmentExample).toContain("DACS_WALLET_MAX_CONCURRENT_EFFECTS=1");
     expect(environmentExample).toContain("DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT=100");
     expect(environmentExample).toContain("DACS_PAY_DEM_WALLET_MINIMUM_RESERVE=5");
+    const generatedDoctor = await readFile(join(target, "src/doctor.ts"), "utf8");
+    expect(generatedDoctor).toContain("inspectDacsDemosNodeCompatibilityV1(infos[1]).reasonCode");
+    expect(generatedDoctor).not.toContain("blocked(compatibility.reasonCode)");
+    const generatedReadme = await readFile(join(target, "README.md"), "utf8");
+    expect(generatedReadme).not.toContain("this or an earlier SDK release");
+    expect(generatedReadme).toContain("Restore requires the exact creating");
+    expect(generatedReadme).toContain("Cross-release actor-data migration is unsupported.");
+    expect(generatedReadme).toContain("exact lockfile");
     const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(generatedConfig).toContain("write confirmation must not be persisted in .env");
     expect(generatedConfig).toContain("dacs4:registry:v0.1");

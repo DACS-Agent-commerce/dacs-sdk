@@ -8,6 +8,19 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 > package commands in this repository build and verify release candidates; use a
 > source checkout until the first release is published.
 
+Current-profile host admission: CORE §11.1.2(3) requires verifier- or
+orchestrator-owned authenticated context binding the exact session and every
+participant identity to one exact Standard profile pin and complete module
+tuple, before producing, signing, resolving, comparing or acting on artifacts.
+Hosts integrating the core orchestration APIs must supply that admission gate
+outside caller-controlled artifacts and phase inputs. Missing, duplicate,
+unauthenticated, mismatched or differently pinned participants must refuse the
+session before calling these APIs. A profile object, successful artifact
+signature or version string alone supplies no admission authority.
+The pinned `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20` Standard's PROFILE.md
+still labels JID-1 an unreleased corrective candidate: these primitives do not
+establish released live-profile conformance or implement participant admission.
+
 ## What this is
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
@@ -161,9 +174,34 @@ comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never
 an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
 operation and requires the authenticated agreement, pinned rail, phase
 orchestrator, evidence reference, phase result, PC-2 address (for payment),
-expected deliverable locator (for delivery), plus key resolution and signature
+expected deliverable locator (for successful delivery), plus key resolution and signature
 verification. Missing trust inputs fail as configuration errors rather than
-being silently skipped.
+being silently skipped. Both current evidence entry points require a canonical
+26-character uppercase ULID before deriving addresses or resolving keys. Native
+DEM uses BFT finality, and the other payment phases must use their own finality
+models. Failed delivery evidence may omit output fields; any supplied fields
+are still validated.
+
+Custom `runSessionCore` settlement adapters must report `finality` on successful
+non-AP2 payments before evidence can be signed (DACS-4 PC-6). Only `pay-ap2`
+can default to `provider-receipt`. A missing finality value leaves any durable
+payment outcome retained for reconciliation and never authorizes a second payment.
+
+`verifyBundleCore()` also requires a canonical job ID, including on legacy-MVP
+bundle shapes. A non-canonical ID returns a specific CORE JID-1 diagnostic;
+current bundle verification does not admit pre-JID-1 bundles.
+
+For retained historical records, explicitly call
+`inspectHistoricalSettlementEvidence(record, context, cryptoDeps)`. It checks
+the original signature and returns the non-authorizing
+`valid|invalid|incomplete|error` vocabulary, allowing the original legacy job ID
+without granting current settlement authority. Legacy IDs are classified before
+Unicode normalization. For those records, inspection checks only structure,
+content hash and signature, ignores current agreement/rail/orchestrator/phase
+comparisons, and reports that no current semantic conformance was evaluated.
+Canonical IDs retain the contextual historical checks. `isSettlementEvidence()` remains
+a wire-shape predicate, including historical shapes; it is not an admission or
+signature-verification API.
 
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives

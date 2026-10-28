@@ -1,8 +1,10 @@
+import { currentSettlementVector, currentVectorPublicKey } from "../helpers/currentSettlementVector.js";
+
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   canonicalize,
@@ -11,11 +13,21 @@ import {
   rawPublicKey,
   ed25519Verify,
   publicKeyFromRaw,
-  resolveSettlementEventIdentity,
+  resolveSettlementEventIdentities,
+  resolveSettlementEventIdentity as inspectPointIdentity,
+  type SettlementEventIdentityDeps,
   sha256Hex,
   type AuthenticatedSettlementLedgerEvent,
   type SettlementEventIdentityContext,
 } from "../../src/index.js";
+
+// Complete-set SB-2 admission supersedes the frozen v0.6 first-claim decision.
+const resolveSettlementEventIdentity = async (
+  evidence: unknown, context: SettlementEventIdentityContext, deps: SettlementEventIdentityDeps,
+) => {
+  try { return (await resolveSettlementEventIdentities([{ evidence, context }], deps)).records[0]!; }
+  catch { return inspectPointIdentity(evidence, context, deps); }
+};
 
 const VECTOR_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -56,7 +68,9 @@ describe.skipIf(!haveVector)(
       publicKey: string;
       vectors: SettlementEventVector[];
     };
-    const publicKey = Uint8Array.from(Buffer.from(document.publicKey, "hex"));
+    const originalPublicKey = Uint8Array.from(Buffer.from(document.publicKey, "hex"));
+    const publicKey = currentVectorPublicKey;
+    const current = (vector: SettlementEventVector) => currentSettlementVector(vector, originalPublicKey);
     const deps = {
       resolvePublicKey: () => publicKey,
       verify: (
@@ -95,14 +109,16 @@ describe.skipIf(!haveVector)(
     });
 
     it("replays every current and legacy event-identity decision", async () => {
-      for (const vector of document.vectors) {
+      for (const original of document.vectors) {
+        expect((await resolveSettlementEventIdentity(original.settlementEvidence, contextFor(original), deps)).decision).toBe("error");
+        const vector = current(original);
         const result = await resolveSettlementEventIdentity(
           vector.settlementEvidence,
           contextFor(vector),
           deps,
         );
         expect(result.decision, `${vector.name}: ${JSON.stringify(result)}`)
-          .toBe(vector.expected);
+          .toBe(vector.name === "same-event-second-job-rejected" ? "indeterminate" : vector.expected);
         if (vector.expected === "pass") {
           expect(result, vector.name).toMatchObject({
             settlementId: vector.expectedSettlementTxId,
@@ -111,8 +127,20 @@ describe.skipIf(!haveVector)(
       }
     });
 
+    it("requires the original JID-1 bytes before signature resolution or SB-1 projection", async () => {
+      const vector = current(document.vectors.find(({ expected }) => expected === "pass")!);
+      expect((await resolveSettlementEventIdentity(vector.settlementEvidence, contextFor(vector), deps)).decision).toBe("pass");
+      for (const jobId of ["job-legacy", "01JZ000000000000000000036\u212a", "01jz0000000000000000000360"]) {
+        const resolver = vi.fn(deps.resolvePublicKey);
+        expect((await resolveSettlementEventIdentity({
+          ...(vector.settlementEvidence as object), jobId,
+        }, contextFor(vector), { ...deps, resolvePublicKey: resolver })).decision).toBe("error");
+        expect(resolver).not.toHaveBeenCalled();
+      }
+    });
+
     it("admits depth-128 signed evidence and refuses depth 129 before signature work", async () => {
-      const vector = document.vectors.find(({ expected }) => expected === "pass")!;
+      const vector = current(document.vectors.find(({ expected }) => expected === "pass")!);
       const evidence = structuredClone(vector.settlementEvidence) as Record<string, unknown>;
       let nested: unknown = null;
       for (let index = 0; index < 127; index += 1) nested = [nested];
@@ -138,7 +166,7 @@ describe.skipIf(!haveVector)(
     });
 
     it("fails closed without invoking evidence or context accessors", async () => {
-      const vector = document.vectors.find(({ expected }) => expected === "pass")!;
+      const vector = current(document.vectors.find(({ expected }) => expected === "pass")!);
       const evidence = Object.defineProperties(
         {},
         Object.getOwnPropertyDescriptors(vector.settlementEvidence as object),

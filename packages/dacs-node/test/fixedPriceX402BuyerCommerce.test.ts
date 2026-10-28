@@ -46,14 +46,17 @@ function receivedFixture(
     authorization: "eip-3009",
     finalityBlocks: 2,
   },
+  seller = SELLER,
 ) {
   const payload = { result: "authenticated delivery" };
   const deliverableHash = contentHash(payload);
   const evidence = {
+    evidenceVersion: "1",
+    observedAt: 1_786_000_000_000,
     jobId: JOB_ID,
     phase: "deliver-storage-program",
     outcome: "success",
-    signature: { signer: SELLER },
+    signature: { signer: seller },
     deliverableAnchor: {
       kind: "storage-program",
       locator: DELIVERABLE_ADDRESS,
@@ -72,7 +75,7 @@ function receivedFixture(
   const context = {
     role: "buyer",
     authority: BUYER,
-    peerAuthority: SELLER,
+    peerAuthority: seller,
     evm: { role: "buyer" },
     commerceStores: {
       role: "buyer",
@@ -82,7 +85,7 @@ function receivedFixture(
       createLiveCoordinatorStore: () => ({
         load: async () => ({
           status: "ok",
-          record: { buyer: BUYER, seller: SELLER },
+          record: { buyer: BUYER, seller },
         }),
       }),
     },
@@ -98,7 +101,7 @@ function receivedFixture(
           nativeAddress: string;
           contentHash: string;
         }) => ({
-          writer: SELLER,
+          writer: seller,
           logicalAddress: input.logicalAddress,
           nativeAddress: input.nativeAddress,
           contentHash: input.contentHash,
@@ -132,7 +135,7 @@ function receivedFixture(
     response: { contentType: "application/json; charset=utf-8" },
     body: new TextEncoder().encode(JSON.stringify(body)),
   } as never);
-  return { payload, evidence, authorize };
+  return { payload, evidence, authorize, artifacts };
 }
 
 describe("fixed-price x402 buyer commerce", () => {
@@ -165,6 +168,20 @@ describe("fixed-price x402 buyer commerce", () => {
 
     await expect(authorize(unanchored)).resolves.toBe(false);
     expect(dependencies.verifySettlementEvidence).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects seller-named delivery evidence signed with another party's key", async () => {
+    const f = receivedFixture(undefined, EVIDENCE_SELLER);
+    const { signature: _signature, ...unsigned } = f.evidence;
+    const forged = signEvidence(unsigned, EVIDENCE_SELLER, EVIDENCE_BUYER_SEED);
+    f.artifacts.set(EVIDENCE_ADDRESS, forged);
+    dependencies.verifySettlementEvidence.mockImplementation(
+      dependencies.realVerifySettlementEvidence,
+    );
+    await expect(f.authorize(f.payload)).resolves.toBe(false);
+    await expect(onlyVerifierOutcome()).resolves.toEqual({
+      decision: "fail", reasons: ["evidence signature does not verify under the signer's key"],
+    });
   });
 });
 

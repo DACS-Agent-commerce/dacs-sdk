@@ -6,6 +6,7 @@ import {
   ARTIFACT_SEPARATORS,
   FINALITY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
+  bundleAddress,
   fixedPriceAgreementLogicalAddress,
   isSettlementEvidence,
   prepareCompletedSellerBundleCounterSignatureRequest,
@@ -56,6 +57,7 @@ const mocks = vi.hoisted(() => ({
   nativeSessionFacts: vi.fn(),
   observeX402Transfer: vi.fn(),
   provenance: vi.fn(),
+  publication: vi.fn(),
   sessionFacts: vi.fn(),
 }));
 
@@ -88,6 +90,16 @@ vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => 
   loadDacsBuyerSessionAgreementFactsForOrderV1: mocks.sessionFacts,
   loadDacsPayDemBuyerSessionAgreementFactsForOrderV1: mocks.nativeSessionFacts,
 }));
+
+vi.mock("../src/demosBundlePublication.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/demosBundlePublication.js")>();
+  return {
+    ...original,
+    createDacsDemosBundlePublicationV1: (...args: Parameters<
+      typeof original.createDacsDemosBundlePublicationV1
+    >) => mocks.publication(...args) ?? original.createDacsDemosBundlePublicationV1(...args),
+  };
+});
 
 vi.mock("../src/x402SellerEvm.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/x402SellerEvm.js")>()),
@@ -796,11 +808,268 @@ function requestWithFinality(
   return { ...f.preliminaryRequest, signedScope };
 }
 
+async function payDemAuditHarness() {
+  const f = await payDemFixture();
+  const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
+  roots.push(root);
+  const database = await openDacsNodeSqliteDatabase({
+    databasePath: join(root, "buyer.sqlite"),
+    mode: "live-demos",
+    profile: DACS_NODE_LIVE_PROFILE,
+    role: "buyer",
+    authority: BUYER,
+  });
+  databases.push(database);
+  const pair = createDacsFixedPricePayDemOrderPairV1({
+    jobId: JOB_ID,
+    buyer: BUYER,
+    seller: SELLER,
+    protocol: payDemProtocol(),
+  });
+  await database.createPayDemCoordinatorStore("buyer").create({
+    role: "buyer",
+    order: pair.buyer,
+    bindingHash: fixedPricePayDemOrderBindingHash(pair.buyer),
+    localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
+  });
+  expect(putDacsLiveOrderInputV1({
+    database,
+    order: pair.buyer,
+    application: f.application,
+  }).status).toBe("created");
+  mocks.provenance.mockReturnValue({
+    registryVersion: 7,
+    indexContentHash: "a".repeat(64),
+    definitionContentHash: "b".repeat(64),
+  });
+  mocks.nativeSessionFacts.mockReturnValue({
+    factsVersion: "1",
+    role: "buyer",
+    jobId: JOB_ID,
+    localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
+    buyerIdentity: f.buyerIdentity,
+    sellerIdentity: f.sellerIdentity,
+    buyerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
+    buyerVetRecord: f.buyerVet,
+    buyerVetRef: f.buyerVetRef,
+    buyerVetReceipt: f.receipts.get(f.buyerVetNative),
+    sellerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
+    sellerVetRecord: f.sellerVet,
+    sellerVetRef: f.sellerVetRef,
+    sellerVetReceipt: f.receipts.get(f.sellerVetNative),
+  });
+  mocks.nativeAgreementPublication.mockReturnValue({
+    publicationVersion: "1",
+    jobId: JOB_ID,
+    localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
+    writer: BUYER,
+    logicalAddress: f.agreementLogicalAddress,
+    agreementHash: f.agreementHash,
+    artifact: f.agreement,
+  });
+  const observation = {
+    status: "included" as const,
+    txHash: f.event.txHash,
+    blockNumber: f.event.blockNumber,
+    payer: Buffer.from(BUYER_KEY).toString("hex"),
+    payee: Buffer.from(SELLER_KEY).toString("hex"),
+    amountOs: "1000000000",
+    includedAt: NOW - 3_000,
+  };
+  const observeDemosTransfer = vi.fn(async () => observation);
+  const adapter = {
+    resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
+      const address = f.names.get(logicalAddress);
+      return address === undefined
+        ? { status: "absent" as const }
+        : { status: "present" as const, address };
+    }),
+    readAnchor: vi.fn(async (address: string) =>
+      structuredClone(f.artifacts.get(address) ?? null)),
+    resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
+      structuredClone(f.receipts.get(input.nativeAddress) ?? null)),
+    verifyDemosAnchorReceipt: vi.fn(async () => true),
+    anchorWriteOnce: vi.fn(),
+    sign: vi.fn(),
+  };
+  const context = {
+    role: "buyer",
+    authority: BUYER,
+    peerAuthority: SELLER,
+    database,
+    demos: { publicKey: BUYER_KEY, adapter,
+      signComponent: vi.fn(async () => Uint8Array.from(Buffer.alloc(64, 4))) },
+  } as unknown as DacsLiveRoleOperationContextV1;
+  const audit = createDacsFixedPricePayDemBuyerAuditV1({
+    context,
+    rail: f.rail as never,
+    observeDemosTransfer,
+    recipeRegistryVersion: 1,
+  });
+  const authenticated = {
+    envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
+  } as never;
+  return { audit, authenticated, f, observation, pair, observeDemosTransfer };
+}
+
 describe("fixed-price x402 buyer audit reconstruction", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.publication.mockReset();
+  });
   afterEach(() => {
     for (const database of databases.splice(0).reverse()) database.close();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    "valid", "logical-address", "job-id", "native-address", "content-hash",
+    "bundle-bytes", "absent", "receipt-invalid", "receipt-indeterminate",
+  ])("authorizes buyer completion only for the exact verified publication: %s", async (variant) => {
+    const { audit, pair } = await x402AuditHarness();
+    const buyerBundle = { jobId: JOB_ID, anchoredByRole: "buyer", outcome: "completed" };
+    const anchored = {
+      nativeAddress: "stor-buyer",
+      bundle: buyerBundle,
+      anchorReceipt: { contentHash: contentHash(buyerBundle) },
+    };
+    const publication = {
+      resolveRoleBundle: vi.fn(async () => variant === "absent" ? null : anchored),
+      verifyBundleAnchorReceipt: vi.fn(async () => variant === "receipt-invalid"
+        ? "invalid" : variant === "receipt-indeterminate" ? "indeterminate" : "valid"),
+    };
+    mocks.publication.mockReturnValue(publication);
+    const result = {
+      logicalAddress: bundleAddress(JOB_ID, "buyer"),
+      nativeAddress: variant === "native-address" ? "stor-other" : anchored.nativeAddress,
+      bundleContentHash: variant === "content-hash" ? "0".repeat(64)
+        : anchored.anchorReceipt.contentHash,
+      buyerBundle: variant === "job-id" ? { ...buyerBundle, jobId: "other" }
+        : variant === "bundle-bytes" ? { ...buyerBundle, outcome: "failed" } : buyerBundle,
+    };
+    if (variant === "logical-address") result.logicalAddress += ":other";
+    await expect(audit.audit.authorizeFinalized!({
+      operation: { order: pair.buyer }, result,
+    } as never)).resolves.toBe(variant === "valid");
+    if (variant === "valid") {
+      expect(publication.resolveRoleBundle).toHaveBeenCalledWith("buyer");
+      expect(publication.verifyBundleAnchorReceipt).toHaveBeenCalledWith(anchored);
+    }
+  });
+
+  it.each([
+    "present", "missing-order", "buyer-mismatch", "seller-mismatch", "bundle-absent",
+    "binding-absent", "binding-indeterminate", "unavailable",
+  ])("resolves seller finalization without guessing through %s", async (variant) => {
+    const { audit } = await x402AuditHarness();
+    const sellerBundle = { jobId: JOB_ID, anchoredByRole: "seller" };
+    const anchored = { nativeAddress: "stor-seller", bundle: sellerBundle,
+      anchorReceipt: { contentHash: contentHash(sellerBundle) } };
+    const binding = { bindingVersion: "1", jobId: JOB_ID };
+    const publication = {
+      resolveRoleBundle: vi.fn(async () => {
+        if (variant === "unavailable") throw new Error("read unavailable");
+        return variant === "bundle-absent" ? null : anchored;
+      }),
+      resolveBundleBinding: vi.fn(async () => variant === "binding-absent"
+        ? { disposition: "absent" } : variant === "binding-indeterminate"
+          ? { disposition: "indeterminate", reason: "binding-unanswered" }
+          : { disposition: "present", binding }),
+    };
+    mocks.publication.mockReturnValue(publication);
+    const resolved = await audit.bundleTransport.resolveSellerFinalization!({
+      identity: {
+        jobId: variant === "missing-order" ? "01J8N4YV7YVYQ4DB7M8T4C7W0A" : JOB_ID,
+        buyer: variant === "buyer-mismatch" ? SELLER : BUYER,
+        seller: variant === "seller-mismatch" ? BUYER : SELLER,
+      },
+    } as never);
+    if (variant === "present") {
+      expect(resolved).toMatchObject({ disposition: "present", value: {
+        state: "finalised", logicalAddress: bundleAddress(JOB_ID, "seller"),
+        nativeAddress: anchored.nativeAddress, sellerBundle,
+        buyerBundle: { ...sellerBundle, anchoredByRole: "buyer" }, binding,
+        bundleContentHash: anchored.anchorReceipt.contentHash,
+      } });
+      expect(publication.resolveBundleBinding).toHaveBeenCalledWith(
+        bundleAddress(JOB_ID, "seller"), SELLER,
+      );
+    } else if (variant.endsWith("mismatch") || variant === "missing-order") {
+      expect(resolved).toEqual({ disposition: "rejected",
+        reason: "seller-finalization-identity-invalid" });
+      expect(publication.resolveRoleBundle).not.toHaveBeenCalled();
+    } else if (variant === "bundle-absent" || variant === "binding-absent") {
+      expect(resolved).toMatchObject({ disposition: "absent" });
+    } else {
+      expect(resolved).toMatchObject({ disposition: "indeterminate" });
+    }
+  });
+
+  it.each([
+    ["chain", { chainId: 1 }],
+    ["transaction", { txHash: `0x${"0".repeat(64)}` }],
+    ["event", { logIndex: 1 }],
+    ["inclusion after observation", { includedAt: NOW }],
+    ["inclusion before commitment", { includedAt: NOW - 60_000 }],
+    ["payer", { payer: SELLER_EVM }],
+    ["payee", { payee: BUYER_EVM }],
+    ["amount", { amountBaseUnits: "1000001" }],
+    ["asset", { asset: { contract: BUYER_EVM, symbol: "USDC", decimals: 6 } }],
+    ["depth", { confirmations: 1 }],
+    ["finality time", { finalityObservedAt: NOW - 4_000 }],
+    ["SB-3 nonce", { sessionBinding: { kind: "eip3009", nonce: `0x${"0".repeat(64)}` } }],
+  ])("revalidates the x402 %s at recovery", async (_field, change) => {
+    const { audit, authenticated, f, pair, observation } = await x402AuditHarness();
+    mocks.bundleRequest.mockResolvedValue(f.preliminaryRequest);
+    const material = await audit.audit.resolveMaterial({
+      operation: { order: pair.buyer }, retained: { application: f.application },
+    } as never);
+    const revalidate = material.durability.settlementVerification!.revalidateSettlement;
+    await expect(revalidate({} as never)).resolves.toMatchObject({ disposition: "pass" });
+    mocks.observeX402Transfer.mockResolvedValueOnce({ ...observation, ...change });
+    await expect(revalidate({} as never)).resolves.toMatchObject({ disposition: "fail",
+      reason: "buyer-audit-native-settlement-conflict" });
+    mocks.observeX402Transfer.mockResolvedValueOnce({ ...observation, ...change });
+    await expect(audit.bundleTransport.resolveVerification({
+      authenticated, request: f.preliminaryRequest,
+    })).rejects.toMatchObject({ reasonCode: _field === "payee"
+      ? "buyer-audit-payment-terms-invalid" : "buyer-audit-native-finality-invalid" });
+  });
+
+  it.each([
+    ["transaction", { txHash: "0".repeat(64) }],
+    ["block", { blockNumber: 124 }],
+    ["time", { includedAt: NOW - 2_999 }],
+    ["payer", { payer: "0".repeat(64) }],
+    ["payee", { payee: "0".repeat(64) }],
+    ["amount", { amountOs: "1000000001" }],
+  ])("revalidates the native DEM %s at recovery", async (_field, change) => {
+    const { audit, f, pair, observation, observeDemosTransfer } = await payDemAuditHarness();
+    mocks.bundleRequest.mockResolvedValue(f.preliminaryRequest);
+    const material = await audit.audit.resolveMaterial({
+      operation: { order: pair.buyer }, retained: { application: f.application },
+    } as never);
+    const revalidate = material.durability.settlementVerification!.revalidateSettlement;
+    await expect(revalidate({} as never)).resolves.toMatchObject({ disposition: "pass" });
+    observeDemosTransfer.mockResolvedValueOnce({ ...observation, ...change });
+    await expect(revalidate({} as never)).resolves.toMatchObject({ disposition: "fail",
+      reason: "buyer-audit-native-settlement-conflict" });
+  });
+
+  it.each(["x402", "pay-dem"])("keeps %s unavailable observations indeterminate", async (rail) => {
+    const harness = rail === "x402" ? await x402AuditHarness() : await payDemAuditHarness();
+    const { audit, f, pair } = harness;
+    mocks.bundleRequest.mockResolvedValue(f.preliminaryRequest);
+    const material = await audit.audit.resolveMaterial({
+      operation: { order: pair.buyer }, retained: { application: f.application },
+    } as never);
+    const observe = "observeDemosTransfer" in harness
+      ? harness.observeDemosTransfer : mocks.observeX402Transfer;
+    const revalidate = material.durability.settlementVerification!.revalidateSettlement;
+    observe.mockResolvedValueOnce({ status: "pending" } as never);
+    await expect(revalidate({} as never)).resolves.toMatchObject({ disposition: "indeterminate" });
+    observe.mockResolvedValueOnce({ status: "failed" } as never);
+    await expect(revalidate({} as never)).resolves.toMatchObject({ disposition: "fail" });
   });
 
   it("independently reconstructs and verifies the exact seller review request", async () => {
@@ -897,106 +1166,8 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
   });
 
   it("independently re-observes native DEM before accepting the audit request", async () => {
-    const f = await payDemFixture();
-    const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
-    roots.push(root);
-    const database = await openDacsNodeSqliteDatabase({
-      databasePath: join(root, "buyer.sqlite"),
-      mode: "live-demos",
-      profile: DACS_NODE_LIVE_PROFILE,
-      role: "buyer",
-      authority: BUYER,
-    });
-    databases.push(database);
-    const pair = createDacsFixedPricePayDemOrderPairV1({
-      jobId: JOB_ID,
-      buyer: BUYER,
-      seller: SELLER,
-      protocol: payDemProtocol(),
-    });
-    await database.createPayDemCoordinatorStore("buyer").create({
-      role: "buyer",
-      order: pair.buyer,
-      bindingHash: fixedPricePayDemOrderBindingHash(pair.buyer),
-      localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
-    });
-    expect(putDacsLiveOrderInputV1({
-      database,
-      order: pair.buyer,
-      application: f.application,
-    }).status).toBe("created");
-    mocks.provenance.mockReturnValue({
-      registryVersion: 7,
-      indexContentHash: "a".repeat(64),
-      definitionContentHash: "b".repeat(64),
-    });
-    mocks.nativeSessionFacts.mockReturnValue({
-      factsVersion: "1",
-      role: "buyer",
-      jobId: JOB_ID,
-      localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
-      buyerIdentity: f.buyerIdentity,
-      sellerIdentity: f.sellerIdentity,
-      buyerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
-      buyerVetRecord: f.buyerVet,
-      buyerVetRef: f.buyerVetRef,
-      buyerVetReceipt: f.receipts.get(f.buyerVetNative),
-      sellerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
-      sellerVetRecord: f.sellerVet,
-      sellerVetRef: f.sellerVetRef,
-      sellerVetReceipt: f.receipts.get(f.sellerVetNative),
-    });
-    mocks.nativeAgreementPublication.mockReturnValue({
-      publicationVersion: "1",
-      jobId: JOB_ID,
-      localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
-      writer: BUYER,
-      logicalAddress: f.agreementLogicalAddress,
-      agreementHash: f.agreementHash,
-      artifact: f.agreement,
-    });
-    const observation = {
-      status: "included" as const,
-      txHash: f.event.txHash,
-      blockNumber: f.event.blockNumber,
-      payer: Buffer.from(BUYER_KEY).toString("hex"),
-      payee: Buffer.from(SELLER_KEY).toString("hex"),
-      amountOs: "1000000000",
-      includedAt: NOW - 3_000,
-    };
-    const observeDemosTransfer = vi.fn(async () => observation);
-    const adapter = {
-      resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
-        const address = f.names.get(logicalAddress);
-        return address === undefined
-          ? { status: "absent" as const }
-          : { status: "present" as const, address };
-      }),
-      readAnchor: vi.fn(async (address: string) =>
-        structuredClone(f.artifacts.get(address) ?? null)),
-      resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
-        structuredClone(f.receipts.get(input.nativeAddress) ?? null)),
-      verifyDemosAnchorReceipt: vi.fn(async () => true),
-      anchorWriteOnce: vi.fn(),
-      sign: vi.fn(),
-    };
-    const context = {
-      role: "buyer",
-      authority: BUYER,
-      peerAuthority: SELLER,
-      database,
-      demos: { publicKey: BUYER_KEY, adapter,
-        signComponent: vi.fn(async () => Uint8Array.from(Buffer.alloc(64, 4))) },
-    } as unknown as DacsLiveRoleOperationContextV1;
-    const audit = createDacsFixedPricePayDemBuyerAuditV1({
-      context,
-      rail: f.rail as never,
-      observeDemosTransfer,
-      recipeRegistryVersion: 1,
-    });
-    const authenticated = {
-      envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
-    } as never;
+    const { audit, authenticated, f, observation, observeDemosTransfer } =
+      await payDemAuditHarness();
     const preliminary = await audit.bundleTransport.resolveVerification({
       authenticated,
       request: f.preliminaryRequest as never,
