@@ -108,6 +108,9 @@ test('two provider instances that both see an unattempted nonce converge on the 
  for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
  assert.equal(runs[0].sellerVet.recordRef.contentHash,runs[1].sellerVet.recordRef.contentHash);assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);f.base.close();
 });
+test('an anchor that only relays the write never closes the buyer Vet',async()=>{
+ const f=productionFixture();f.controls.relayOnly=true;await assert.rejects(f.run());assert.equal(f.local.writes.length,0);f.base.close();
+});
 test('a purchase already closed starts no seller challenge',async()=>{
  const f=productionFixture(),p=await f.provider(),input=f.input();
  const issue=f.counterparty.issueChallenge;let issued=0;
