@@ -99,6 +99,7 @@ test('read-only commitment authentication with no retained CREATE never signs or
 function agentHttp(agent,request,store,options={}){return createSellerHttpHandler(agent,{...options,authentication:{seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>request,validate(){},responseHeader:async()=> 'TEST-header'}});}
 function commitmentRequest(agent,agreementHash,jobId=JOB){return{method:'POST',path:'/dacs/v1/commitments',jobId,seller:seller.claim,buyer:buyer.claim,listingPin:agent.listingPin,agreementHash};}
 function uncertainStore(){const reconciles=[];return{reconciles,reserve:()=>({disposition:'uncertain',effectKey:'TEST-effect',owner:'TEST-owner'}),reconcile(...args){reconciles.push(args);}};}
+function performStore(){const finishes=[];return{finishes,reserve:()=>({disposition:'perform',effectKey:'TEST-effect',owner:'TEST-owner'}),finish(...args){finishes.push(args);}};}
 
 for(const restart of[false,true])test(`uncertain commitment ${restart?'after restart':'replay'} completes from the retained finalized receipt`,async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');
@@ -123,4 +124,19 @@ test('uncertain commitment with proven unsigned absence runs the authenticated r
  const request=commitmentRequest(agent,core.contentHash(f.controls.agreement.artifact)),rawBody=Buffer.from(JSON.stringify({jobId:JOB}));
  const answer=await agent.reconcileTransport({request,body:{jobId:JOB},rawBody});
  assert.equal(answer.disposition,'present');assert.equal(answer.value.status,'committed');assert.equal(f.local.writes.length,1);
+});
+
+test('malformed early Agreement is a definite refusal before any effect',async t=>{
+ const f=await commitmentFixture(t,{early:true}),{agent}=await f.prepare();let failure;
+ try{await agent.commitOnSignature({jobId:JOB,agreement:{},signedProjection:{}});}catch(error){failure=error;}
+ assert.equal(failure?.code,'signature_agreement_invalid');assert.equal(failure?.status,422);assert.equal(f.local.writes.length,0);
+});
+
+test('signature_agreement_invalid is a definite no-effect HTTP refusal',async()=>{
+ const {SellerAgentError}=await import('../src/dacs/seller-agent.mjs'),store=performStore();
+ const agent={claim:'TEST-seller',listingPin:{TEST:'pin'},commitOnSignature:async()=>{throw new SellerAgentError('signature_agreement_invalid','TEST malformed early Agreement',422);}};
+ const authentication={seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>({jobId:JOB}),validate(){},responseHeader:async()=> 'TEST-header'};
+ const res=await exchange(createSellerHttpHandler(agent,{authentication,commitOnSignature:true}),{url:'/dacs/v1/commitments/signature',text:JSON.stringify({jobId:JOB,agreement:{},signedProjection:{}})});
+ assert.equal(res.status,422);assert.equal(JSON.parse(res.text).error,'signature_agreement_invalid');
+ assert.equal(store.finishes.length,1);assert.equal(store.finishes[0][3].noEffect,true);
 });
