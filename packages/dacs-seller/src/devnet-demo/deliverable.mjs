@@ -13,11 +13,15 @@ const reportFitsOneCreate = report => {
   try { return Buffer.byteLength(canonicalize(report), 'utf8') <= MAX_STORAGE_ARTIFACT_BYTES; } catch { return false; }
 };
 
+/** Canonical kind string carried by a devnet purchased report. */
 export const DEVNET_PURCHASED_REPORT_KIND='dacs-chatgpt-plugin/devnet-purchased-report';
 
 // A genuine application producer: the supplied service function creates the
 // purchased bytes from the bound purchase facts. No fixture report, success
 // Boolean, or seller HTTP response can substitute for these returned bytes.
+// Public contract: returns the canonical purchased-report object for one bound
+// purchase, or throws TypeError before producing when the Listing is not the
+// Agreement's pin, the producer is asynchronous, or the bytes are unbounded.
 export function createDevnetPurchasedReportProducer({producer,produce}) {
   if(typeof producer!=='string' || !/^did:demos:agent:[0-9a-f]{64}$/.test(producer) || typeof produce!=='function') throw new TypeError('a seller identity and purchased-content producer are required');
   return ({agreement,listing,settlementId})=>{
@@ -31,7 +35,10 @@ export function createDevnetPurchasedReportProducer({producer,produce}) {
     const pinned=agreement.listingRef;
     if(!pinned||pin.listingId!==pinned.listingId||pin.version!==pinned.version||pin.contentHash!==pinned.contentHash) throw new TypeError('the supplied Listing is not the Listing pinned by the Agreement');
     const result=produce(structuredClone({agreement,listing,settlementId}));
-    if(result && typeof result.then==='function') throw new TypeError('the durable seller producer must return deterministic bytes synchronously');
+    // Own the rejection before refusing the asynchronous result: otherwise the
+    // producer's Promise would terminate the process even though the caller
+    // caught this synchronous contract error.
+    if(result && typeof result.then==='function'){Promise.resolve(result).catch(()=>null);throw new TypeError('the durable seller producer must return deterministic bytes synchronously');}
     const text=typeof result==='string' ? result : result?.mediaType==='text/plain; charset=utf-8' && typeof result.text==='string' ? result.text : null;
     if(!reportTextValid(text)) throw new TypeError('the purchased report must be bounded UTF-8 text');
     const report=JSON.parse(canonicalize({reportVersion:'1',kind:DEVNET_PURCHASED_REPORT_KIND,jobId:agreement.jobId,
@@ -42,6 +49,8 @@ export function createDevnetPurchasedReportProducer({producer,produce}) {
   };
 }
 
+// True only for a complete, bounded purchased report; optional jobId,
+// agreementHash and producer arguments pin those fields. Never throws.
 export function isDevnetPurchasedReport(value,{jobId,agreementHash,producer}={}) {
   return value?.reportVersion==='1' && value.kind===DEVNET_PURCHASED_REPORT_KIND
     && value!==null && typeof value==='object' && !Array.isArray(value)
