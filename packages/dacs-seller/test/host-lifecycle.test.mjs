@@ -4,9 +4,11 @@ import {chmodSync} from 'node:fs';
 import {mkdtemp,rm,chmod,access} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
-import {seller,buyer,NOW} from './helpers/protocol-fixture.mjs';
+import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
+import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
 import {createSellerTransportClientAuth} from '../src/dacs/seller-transport-auth.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
@@ -19,6 +21,10 @@ async function fixture(t,{wrap=agent=>agent}={}){
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
  const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW})});
  return{...f,start,options,dataDirectory,client};
+}
+async function anchorAgreement(f,request,answer){
+ const agreement=await core.finalizeFixedPriceAgreementContributions(request.proposal.plan,[request.proposal.buyerContribution,answer.contribution],contributionVerifier);
+ f.controls.agreement=fixtureRecord(core.fixedPriceAgreementLogicalAddress(agreement.jobId),agreement,buyer);
 }
 test('host refuses non-loopback before opening state',async t=>{
  const f=await fixture(t);for(const host of ['0.0.0.0','localhost','192.0.2.1'])await assert.rejects(f.start({host}),/literal loopback/);
@@ -58,4 +64,25 @@ test('a frozen startup failure is kept as the aggregate cause when cleanup also 
    return true;
   });
  }finally{await chmod(directory,0o700);}
+});
+
+test('close aborts and drains an accepted native artifact readback before releasing state',async t=>{
+ const entered=defer(),releaseRead=defer();let block=true;
+ const f=await fixture(t),native=f.native;
+ const artifactAnchor=Object.freeze({...native,readRetained:async input=>{
+  if(block&&input.artifactKind==='FinalityCommitmentRecord'){entered.resolve();await releaseRead.promise;}
+  return native.readRetained(input);
+ }});
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);
+ assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ const pending=client.commit(request.transportIdentity.jobId).then(()=>'answered',error=>error.code??error.name);
+ await entered.promise;
+ try{
+  const closed=await Promise.race([host.close().then(()=>'closed'),new Promise(resolve=>setTimeout(()=>resolve('stuck'),8000))]);
+  assert.equal(closed,'closed','close aborts the accepted native readback instead of waiting for it');
+  const reopened=await f.start();await reopened.close();
+ }finally{block=false;releaseRead.resolve();}
+ await pending;
 });

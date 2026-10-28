@@ -37,6 +37,51 @@ const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
 
+// A native artifact readback is an operator capability. One that never
+// settles must not keep close(), and with it the state lock, open: every
+// accepted read gets the host's shutdown signal and the request deadline, and
+// answers with an uncertain result when either fires. The capability's own
+// work cannot be cancelled here and has no durable effect, so its late
+// settlement is ignored; `drain` waits for the accepted reads themselves.
+function boundedArtifactReads(anchor, { signal, timeoutMs }) {
+  const pending = new Set();
+  const read = (uncertain, name, method) => (input, options) => {
+    const entry = {};
+    let done = false;
+    let timer;
+    pending.add(entry);
+    const promise = new Promise((resolve, reject) => {
+      const finish = (settle, value) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        pending.delete(entry);
+        settle(value);
+      };
+      const cause = (reason) => (typeof uncertain === 'function' ? uncertain(reason) : uncertain);
+      const onAbort = () => finish(resolve, cause('the seller host stopped while the readback was in flight'));
+      timer = setTimeout(() => finish(resolve, cause(`the ${name} readback exceeded its ${timeoutMs} ms deadline`)), timeoutMs);
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve().then(() => method(input, options)).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    });
+    entry.promise = promise;
+    return promise;
+  };
+  // Keep the capability's own shape (including prototype methods and
+  // non-enumerable members) and replace only the two readback operations.
+  const view = Object.create(anchor);
+  Object.defineProperties(view, {
+    readRetained: { value: read((reason) => ({ status: 'indeterminate', reason }), 'native artifact', anchor.readRetained), enumerable: true },
+    verifyReceipt: { value: read('indeterminate', 'native artifact receipt', anchor.verifyReceipt), enumerable: true },
+  });
+  return {
+    anchor: Object.freeze(view),
+    drain: () => Promise.allSettled([...pending].map((entry) => entry.promise)),
+  };
+}
+
 function privateDirectory(path) {
   let stat;
   try { stat = lstatSync(path); } catch { stat = null; }
@@ -76,9 +121,11 @@ export async function startSellerHost(options) {
     for(const close of opened.splice(0).reverse())try{await close();}catch(error){errors.push(error);}
     if(errors.length)throw new AggregateError(errors,'seller host cleanup failed',{cause:errors[0]});
   };
+  const shutdown = new AbortController();
   try {
+    const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
+      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
     opened.push(() => agent.close());
     const transport = join(dataDirectory, 'transport');
     mkdirSync(transport, { recursive: true, mode: 0o700 });
@@ -104,9 +151,14 @@ export async function startSellerHost(options) {
     // journal and the agent state they write to and releases the state lock.
     const close = () => closing ??= (async () => {
       stopping = true;
+      // Aborting the native readback signal turns every accepted readback into
+      // its uncertain result, so a request waiting on one drains instead of
+      // holding the journal, agent and lock below open.
+      shutdown.abort();
       const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
       await Promise.allSettled([...active]);
+      await artifact.drain();
       await socketsClosed;
       await release();
     })();
