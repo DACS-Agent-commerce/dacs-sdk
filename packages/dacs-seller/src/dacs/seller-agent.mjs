@@ -582,10 +582,13 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (early && signatureBuyer !== null && session.buyerBundle.presentedBy !== signatureBuyer) throw new SellerAgentError('signature_buyer_not_admitted', 'buyer is not admitted to early commitment');
     // An early request for an already committed job only reads back.
     const attempt = early && !session.commitment;
-    // Repeated early requests stay readback-only. The ordinary path keeps
-    // main's fence, the publisher's durable intent before any send, until the
-    // early commitment has been seen present; after that it only reads back.
-    readbackOnly ||= early ? !attempt || Boolean(session.signatureCommitmentAttempt) : Boolean(session.signatureCommitmentHeld);
+    // Repeated early requests stay readback-only once an early commitment is
+    // held, and the ordinary path keeps main's fence, the publisher's durable
+    // intent before any send, until the early commitment has been seen present;
+    // after that it only reads back. A persisted early attempt is not a held
+    // commitment: when nothing was signed the retry signs its one record, and
+    // the publisher's own proof gate refuses a second CREATE otherwise.
+    readbackOnly ||= early ? !attempt || Boolean(session.signatureCommitmentHeld) : Boolean(session.signatureCommitmentHeld);
     const readbackRequired = () => { throw new SellerAgentError('commitment_readback_required', 'only the retained commitment may be read back here', 503); };
     if(readbackOnly&&!session.commitment&&!session.signatureCommitmentAttempt&&!adopt)readbackRequired();
     // Once a native commitment has been finalized, every later entry through
