@@ -88,3 +88,10 @@ test('validated contribution is retained before the final proposal snapshot and 
  f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(cut&&payload.body.session.proposal?.proposalHash){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};
  const agent=await f.open(),request=await f.proposal(agent);await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);assert.equal(kept.proposal,null);agent.close();assert.deepEqual((await (await f.open()).receiveProposal(request)).contribution,kept.sellerContribution);assert.equal(signatures,1);
 });
+
+test('retained proposal authenticates the context references actually stored by this phase',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+ const first=await agent.receiveProposal(request);assert.equal(first.disposition,'complete');agent.close();
+ const resumed=await f.open(),answer=await resumed.receiveProposal(request);assert.equal(answer.disposition,'complete');
+ assert.deepEqual(answer.contribution,first.contribution);
+});
