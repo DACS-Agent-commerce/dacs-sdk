@@ -6,7 +6,9 @@ export const COMMAND_TIMEOUT_SECONDS = 900;
 export const DOCKER_PULL_TIMEOUT_SECONDS = 180;
 export const COMMAND_MAX_ATTEMPTS = 3;
 const COMMAND_KILL_GRACE_MS = 250;
-const TERMINATION_SIGNALS = { SIGINT: 130, SIGTERM: 143 };
+// Signals whose default action ends the wrapper; each must reap the detached
+// command group first, including SIGHUP from a disconnected session.
+const TERMINATION_SIGNALS = { SIGHUP: 129, SIGINT: 130, SIGQUIT: 131, SIGTERM: 143 };
 
 /** Runs attempts within one total deadline, kills the process group on timeout or
  * termination, and returns its exit code. Injectable process/timer/signal operations
@@ -20,7 +22,7 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
   if (!Number.isInteger(seconds) || seconds <= 0 || !Number.isInteger(attempts) || attempts < 1 || attempts > COMMAND_MAX_ATTEMPTS) {
     throw new Error("invalid command deadline or retry budget");
   }
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     let child, attempt = 0, expired = false, finished = false;
     const signalHandlers = new Map();
     const removeSignalHandlers = () => {
@@ -28,6 +30,13 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
       signalHandlers.clear();
     };
     const finish = code => { if (!finished) { finished = true; cancel(deadline); removeSignalHandlers(); resolve(code); } };
+    const fail = error => {
+      if (finished) return;
+      finished = true;
+      cancel(deadline);
+      removeSignalHandlers();
+      reject(error);
+    };
     const terminate = (code, message) => {
       if (expired || finished) return;
       expired = true;
@@ -64,10 +73,13 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
           child = undefined;
           terminate(124, "ETIMEDOUT command deadline: " + command);
         } else if (code === 0 || attempt >= attempts) finish(code ?? 1);
-        else next();
+        else attemptNext();
       });
     };
-    next();
+    // A synchronous start failure (for example an invalid command type) must
+    // release the deadline timer and signal handlers before rejecting.
+    const attemptNext = () => { try { next(); } catch (error) { fail(error); } };
+    attemptNext();
   });
 }
 
