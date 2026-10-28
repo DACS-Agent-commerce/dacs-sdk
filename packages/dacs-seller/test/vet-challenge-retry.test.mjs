@@ -8,10 +8,7 @@ for(const outcome of ['unattempted','present','indeterminate','absent','issuer',
  f.config.now=()=>at;
  const sign=f.config.wallet.signBytes,issue=f.counterparty.issueChallenge,read=f.counterparty.readRecord;
  f.config.wallet.signBytes=bytes=>{if(interrupt){interrupt=false;throw new Error('TEST interrupted signer');}return sign(bytes);};
- f.counterparty.issueChallenge=async input=>({...await issue(input),expiresAt:at+60000,sessionNonce:(++issued).toString(16).padStart(32,'0')});
- // The fixture ledger records exactly the challenge the wrapper returns.
- const originalIssue=f.counterparty.issueChallenge;
- f.counterparty.issueChallenge=async input=>{const challenge=await originalIssue(input);f.issued.set(challenge.sessionNonce,input.jobId);return challenge;};
+ f.counterparty.issueChallenge=async input=>({...await issue(input),expiresAt:at+60000,...(++issued&&{})});
  await assert.rejects(f.run(),/TEST interrupted signer/);at+=60001;
  f.counterparty.readRecord=async input=>{const out=await read(input);if(outcome==='unattempted')return out;if(['issuer','jobId','bundleHash','requirementHash'].includes(outcome))return{...out,[outcome]:'TEST wrong'};return{status:outcome};};
  const effects=f.controls.signs;
