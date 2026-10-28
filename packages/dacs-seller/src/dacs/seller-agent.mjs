@@ -318,7 +318,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // Keep that tuple before the primitive's provisional election, including a loser.
   const receiptStore = {
     claim: async candidate => { bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate)); return rawReceiptStore.claim(candidate); },
-
+    consumePermit: async (id,handoff) => {
+      const permit=await rawReceiptStore.inspectPermit(id);
+      if(permit.claim && !hasSettlementCredit(permit.claim.settlementId,permit.claim.jobId))return {status:'invalid'};
+      return rawReceiptStore.consumePermit(id,handoff);
+    },
+    inspectPermit: (...args) => rawReceiptStore.inspectPermit(...args),
   };
   // A retained session may be exposed only once the exact attempt that admitted
   // it is proven from this seller's own authenticated ledger (CORE SN-3/SN-4: a
