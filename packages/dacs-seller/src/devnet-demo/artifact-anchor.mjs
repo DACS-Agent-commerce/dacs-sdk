@@ -58,6 +58,7 @@ const NONCE_READ_LIMITS=Object.freeze({maxBytes:4096,timeoutMs:10_000});
 // plus its fixed CREATE fields and bindings; a caller's projection larger than
 // this is refused before it is hashed.
 const SIGNED_CREATE_MAX_BYTES=4*MAX_STORAGE_ARTIFACT_BYTES;
+const SIGNED_PROJECTION_MAX_BYTES=SIGNED_CREATE_MAX_BYTES+1024; // Authentication envelope above the signed-content budget.
 
 // The caller authenticates expectedSigner: the Vet verifier or commitment
 // orchestrator, which may differ from the native storage owner.
@@ -444,6 +445,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     try { return JSON.stringify(boundedResolutionValue(content,{maxBytes:SIGNED_CREATE_MAX_BYTES,maxValues:8192,maxDepth:32,maxListEntries:4096})); } catch { return null; }
   };
   const projectionAuthentic=(projection,receipt)=>{
+    try { boundedResolutionValue(projection,{maxBytes:SIGNED_PROJECTION_MAX_BYTES,maxValues:8192,maxDepth:34,maxListEntries:4096}); } catch { return false; }
     const text=HASH.test(projection?.hash ?? '') ? projectionContentText(projection.content) : null;
     return text!==null && sha256Hex(text)===projection.hash
       && projection.signature?.type==='ed25519' && verifyDemosSignature({address:owner,message:projection.hash,signature:projection.signature.data})
