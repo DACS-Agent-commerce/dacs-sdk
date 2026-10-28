@@ -2,7 +2,7 @@
 const http = require("node:http");
 const https = require("node:https");
 const { PassThrough } = require("node:stream");
-const { brotliDecompressSync, gunzipSync, inflateSync } = require("node:zlib");
+const { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } = require("node:zlib");
 const { syncBuiltinESMExports } = require("node:module");
 // Full npm metadata can exceed 40 MiB when serialized by a registry proxy.
 const NPM_METADATA_MAX_BYTES = 64 * 1024 * 1024;
@@ -55,6 +55,18 @@ function decodeBounded(bytes, decode, maximum) {
   catch (error) { if (error.code === "ERR_BUFFER_TOO_LARGE") throw limitError(); throw error; }
 }
 
+// npm's reader accepts both zlib-wrapped and raw deflate under `deflate`, and
+// proxies also emit the x-deflate alias. A wrapped expansion that overflows is
+// rejected outright; only a header mismatch falls through to the raw form.
+function inflateEither(bytes, options) {
+  try { return inflateSync(bytes, options); }
+  catch (wrapped) {
+    if (wrapped.code === "ERR_BUFFER_TOO_LARGE") throw wrapped;
+    try { return inflateRawSync(bytes, options); }
+    catch (raw) { throw raw.code === "ERR_BUFFER_TOO_LARGE" ? raw : wrapped; }
+  }
+}
+
 /** Buffers bounded encoded bytes, then bounded decompression; throws ELIMIT before downstream decoding. */
 async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum) {
   if (Number(response.headers["content-length"]) > maximum) throw limitError();
@@ -67,7 +79,7 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   }
   let bytes = Buffer.concat(chunks, length);
   const encoding = response.headers["content-encoding"]?.toLowerCase();
-  const decoders = { gzip: gunzipSync, "x-gzip": gunzipSync, deflate: inflateSync, br: brotliDecompressSync };
+  const decoders = { gzip: gunzipSync, "x-gzip": gunzipSync, deflate: inflateEither, "x-deflate": inflateEither, br: brotliDecompressSync };
   const decode = Object.hasOwn(decoders, encoding) ? decoders[encoding] : undefined;
   if (encoding && encoding !== "identity" && !decode) throw new Error("unsupported npm HTTP content encoding");
   if (decode) bytes = decodeBounded(bytes, decode, maximum);

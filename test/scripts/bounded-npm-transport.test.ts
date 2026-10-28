@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
-import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
+import { brotliCompressSync, deflateRawSync, deflateSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 const { installBoundedNpmHttp, readBoundedResponse, responseBudget, NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_JSON_MAX_ENTRIES } = require("../../scripts/bounded-npm-http.cjs");
@@ -38,6 +38,15 @@ describe("inert bounded npm HTTP admission", () => {
   it("decodes the x-gzip alias npm's fetch accepts", async () => {
     const body = gzipSync(Buffer.from("{}"));
     expect((await readBoundedResponse(response([body], { "content-encoding": "x-gzip" }), 1024)).toString()).toBe("{}");
+  });
+  it.each(["deflate", "x-deflate"])("decodes wrapped and raw %s forms npm's reader accepts", async encoding => {
+    const body = Buffer.from("{}");
+    expect((await readBoundedResponse(response([deflateSync(body)], { "content-encoding": encoding }), 1024)).toString()).toBe("{}");
+    expect((await readBoundedResponse(response([deflateRawSync(body)], { "content-encoding": encoding }), 1024)).toString()).toBe("{}");
+  });
+  it.each(["deflate", "x-deflate"])("bounds %s expansion in wrapped and raw forms", async encoding => {
+    await expect(readBoundedResponse(response([deflateSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
+    await expect(readBoundedResponse(response([deflateRawSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
   });
   it.each([
     ["a HEAD request", 200, "HEAD"],
