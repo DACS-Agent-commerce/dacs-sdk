@@ -34,8 +34,10 @@ for (const method of ['assertSellerWallet', 'sellerNotice']) {
     const custodyJob = createOperatorBuyerAccess({ custodyBuyer: buyer.claim, buyerForJob: () => buyer.address });
     assert.doesNotThrow(() => custodyJob[method](buyer.address, JOB));
     if (method === 'sellerNotice') assert.equal(custodyJob.sellerNotice(buyer.address, JOB), null);
+    // Open mode admits any wallet for new buyer requests, never for a job that
+    // has no retained buyer: the seller-side join still has to succeed.
     const open = createOperatorBuyerAccess({ openBuyerAccess: true });
-    assert.doesNotThrow(() => open[method](seller.address, JOB));
+    assert.throws(() => open[method](seller.address, JOB), { code: 'buyer_access_closed' });
     assert.throws(() => open[method]('malformed', JOB), { code: 'buyer_access_closed' });
   });
 }
@@ -60,4 +62,37 @@ test('open access still requires a well-formed Demos wallet', () => {
     assert.throws(() => open.assertRelayWallet(wallet), { code: 'buyer_access_closed' });
   }
   assert.equal(open.allowsWallet(seller.address), true);
+});
+
+// Open mode widens who may start a new purchase, but a seller operation on a
+// named job is still that job's retained buyer's operation. No wallet, paid or
+// not, may act for another buyer's job.
+test('open access joins the retained buyer for job-specific seller operations', () => {
+  for (const [label, options] of [
+    ['another wallet', { openBuyerAccess: true, buyerForJob: () => buyer.address }],
+    ['no retained buyer', { openBuyerAccess: true, buyerForJob: () => null }],
+    ['lookup unavailable', { openBuyerAccess: true, buyerForJob: () => buyer.address, buyerLookupReady: () => false }],
+  ]) for (const method of ['assertSellerWallet', 'sellerNotice']) {
+    const access = createOperatorBuyerAccess(options);
+    assert.throws(() => access[method](seller.address, JOB), { code: 'buyer_access_closed' }, label);
+  }
+  const open = createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: () => buyer.address });
+  assert.doesNotThrow(() => open.assertSellerWallet(buyer.address, JOB));
+  assert.equal(open.sellerNotice(buyer.address, JOB), null);
+});
+
+test('open access requires the retained job lookup before admitting a seller job', () => {
+  for (const [label, options] of [
+    ['no retained buyer', { openBuyerAccess: true, buyerForJob: () => null }],
+    ['lookup unavailable', { openBuyerAccess: true, buyerForJob: () => buyer.address, buyerLookupReady: () => false }],
+  ]) assert.throws(() => createOperatorBuyerAccess(options).assertSellerJob(JOB), { code: 'buyer_access_closed' }, label);
+  assert.doesNotThrow(() => createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: () => buyer.address }).assertSellerJob(JOB));
+});
+
+test('a configured custody seller must be the seller claim so the relay exclusion stays armed', () => {
+  for (const bad of [seller.address, 'malformed', 'did:demos:agent:' + 'A'.repeat(64)]) {
+    assert.throws(() => createOperatorBuyerAccess({ openBuyerAccess: true, custodySeller: bad }), /custodySeller/);
+  }
+  assert.throws(() => createOperatorBuyerAccess({ custodyBuyer: buyer.claim, custodySeller: seller.claim }).assertRelayWallet(seller.address),
+    { code: 'seller_wallet_in_process' });
 });
