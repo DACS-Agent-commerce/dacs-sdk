@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
-import { JOB, buyer, seller } from './helpers/protocol-fixture.mjs';
+import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 
 test('staged Vet factory refuses before any signer, anchor or row operation',()=>{
@@ -29,6 +29,24 @@ test('inherited core verifier refusal of qualified CVR signer stays closed',asyn
 });
 for(const state of ['accepted','included'])test(`merely ${state} receipts never close staged Vet`,async()=>{
  const f=productionFixture();f.controls.receiptState=state;f.controls.receiptVerdict='valid';await assert.rejects(f.run());f.base.close();
+});
+test('a challenge that expires during the durable write is never signed',async()=>{
+ const f=productionFixture();let at=NOW;
+ f.config.now=()=>at;
+ const issue=f.counterparty.issueChallenge;
+ f.counterparty.issueChallenge=async request=>({...await issue(request),expiresAt:at+1});
+ const update=f.store.update;
+ f.config.store={...f.store,update:async(key,change)=>update(key,(old,rows)=>{
+  const next=change(old,rows);
+  // markWrite is the durable update that starts this purchase's first write.
+  if(next?.writeStarted&&!old?.writeStarted)at+=2;
+  return next;
+ })};
+ await assert.rejects(f.run(),e=>e.code==='seller_challenge_expired');
+ assert.equal(f.controls.signs,0);
+ const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');
+ assert.equal(f.local.writes.length,2);assert.equal(f.controls.signs,2);
+ f.base.close();
 });
 test('counterparty raw-byte and decoded budgets refuse oversized replies before signatures',async()=>{
  const f=productionFixture(),issue=f.counterparty.issueChallenge;f.counterparty.issueChallenge=async args=>({...await issue(args),extra:'x'.repeat(65537)});

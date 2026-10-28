@@ -282,6 +282,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(!kept.bundle.presentation){
       if(kept.challenge.expiresAt<=now()) fail('seller_challenge_expired','seller challenge expired before presentation');
       guard(job,'seller presentation');await markWrite(job);guard(job,'seller presentation');
+      // The challenge may expire during that durable write. A presentation
+      // signed under it would be refused by a conforming buyer (CORE SN-4), so
+      // fail here: the row stays unsigned and the next attempt rotates the
+      // unused challenge.
+      if(kept.challenge.expiresAt<=now()) fail('seller_challenge_expired','seller challenge expired before presentation');
       const raw=await wallet.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(kept.bundle)}`));
       const signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
       const bundle={...kept.bundle,presentation:{kind:'per-claim',signatures:[{ref:wallet.claim,signature}]}};
