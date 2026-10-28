@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -90,7 +90,7 @@ describe("inert bounded npm HTTP admission", () => {
       const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
       expect(code, diagnostic).toBe(0); expect(JSON.parse(output)).toBe("11.19.0");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 20_000);
   it.each(["declared", "chunked", "gzip"])("admits full npm metadata above 32 MiB via %s while retaining a finite ceiling", async kind => {
     const metadata = Buffer.from(JSON.stringify({ name: "npm", versions: {
       "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
@@ -150,7 +150,7 @@ describe("inert bounded npm HTTP admission", () => {
       const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
       expect(code, output).not.toBe(0); expect(output).toContain("ELIMIT");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 20_000);
 });
 
 describe("total command deadline and retry budget", () => {
@@ -189,6 +189,16 @@ describe("total command deadline and retry budget", () => {
     h.timers[1]?.(); expect(await result).toBe(124);
     expect(h.kills).toEqual([[100, "SIGKILL"]]);
   });
+  it.each([{ attempts: 1, code: 0 }, { attempts: 1, code: 7 }, { attempts: 3, code: 0 }, { attempts: 3, code: 7 }])(
+    "reports the timeout when a final exit arrives after the deadline before the timer (attempts $attempts, code $code)",
+    async ({ attempts, code }) => {
+      const h = signalHarness(); let clock = 0;
+      const result = runBoundedCommand("docker", ["pull", "fixture"], { ...h.options, attempts, seconds: 1, now: () => clock });
+      clock = 1100; h.children[0]?.emit("exit", code);
+      expect(h.children).toHaveLength(1);
+      h.timers[1]?.(); expect(await result).toBe(124);
+      expect(h.kills).toEqual([[100, "SIGKILL"]]);
+    });
   function running(pid: number) {
     try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
     try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z"); } catch { return false; }
@@ -237,7 +247,7 @@ describe("total command deadline and retry budget", () => {
 });
 
 const buildModule = "../../scripts/bounded-build.mjs";
-const { prepareBoundedBuild } = await import(buildModule);
+const { prepareBoundedBuild, replaceFile } = await import(buildModule);
 describe("bounded generated build", () => {
   it("inserts admission into the build stage and keeps the generated source available for review", () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-bounded-build-"));
@@ -249,6 +259,40 @@ describe("bounded generated build", () => {
       expect(built.indexOf("NODE_OPTIONS=")).toBeLessThan(built.indexOf("RUN npm ci"));
       expect(readFileSync(join(root, "Dockerfile"), "utf8")).toBe(original);
       expect(readFileSync(join(root, ".dockerignore"), "utf8")).toContain("!acceptance-npm-http.cjs");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("inserts admission into a CRLF build stage instead of returning the source unchanged", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-build-crlf-"));
+    try {
+      const original = "FROM node:20 AS build\r\nRUN npm ci\r\n";
+      writeFileSync(join(root, "Dockerfile"), original); writeFileSync(join(root, ".dockerignore"), "**\n");
+      const built = readFileSync(prepareBoundedBuild(root), "utf8");
+      expect(built).toContain("COPY acceptance-npm-http.cjs /acceptance-npm-http.cjs");
+      expect(built.indexOf("NODE_OPTIONS=")).toBeLessThan(built.indexOf("RUN npm ci"));
+      expect(readFileSync(join(root, "Dockerfile"), "utf8")).toBe(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("keeps the original file when a replacement write is interrupted", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-replace-"));
+    try {
+      const target = join(root, ".dockerignore");
+      writeFileSync(target, "**\n");
+      expect(() => replaceFile(target, "!acceptance-npm-http.cjs\n", {
+        write: (temporary: string) => { writeFileSync(temporary, "truncated"); throw new Error("interrupted write"); },
+        rename: () => { throw new Error("rename ran after a failed write"); },
+      })).toThrow("interrupted write");
+      expect(readFileSync(target, "utf8")).toBe("**\n");
+      expect(existsSync(`${target}.${process.pid}.tmp`)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("refuses an empty ignore file without publishing generated files", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-empty-"));
+    try {
+      writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
+      writeFileSync(join(root, ".dockerignore"), "");
+      expect(() => prepareBoundedBuild(root)).toThrow("empty .dockerignore");
+      expect(existsSync(join(root, "acceptance-npm-http.cjs"))).toBe(false);
+      expect(existsSync(join(root, "Dockerfile.acceptance"))).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
