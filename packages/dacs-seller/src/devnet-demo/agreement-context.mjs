@@ -209,6 +209,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // Capabilities must bound wire bytes before decoding. Independently bound
   // their returned representation and deadline, including a stalled callback.
   const callCounterparty = async(method,input)=>{
+    if(!counterpartyReady())fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
     const controller=new AbortController(),maxBytes=65536,timeoutMs=10000;
     let timer;
     try{

@@ -131,3 +131,12 @@ for(const [status,code] of [['rejected','seller_vet_receipt_invalid'],['indeterm
  f.anchor.publish=async options=>options.logicalAddress===sellerAddress?{status,reason:`TEST ${status}`}:publish(options);
  await assert.rejects(f.run(),e=>e.code===code&&e.cause?.status===status&&String(e.message).includes(`TEST ${status}`));f.base.close();
 });
+test('a resumed signed presentation without a buyer verifier is refused before any callback',async()=>{
+ const f=productionFixture(),read=f.counterparty.readRecord;let fail=true;
+ f.counterparty.readRecord=async request=>{if(fail){fail=false;throw Object.assign(new Error('TEST ledger unavailable'),{code:'ECONNREFUSED'});}return read(request);};
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable');
+ f.config.counterparty=null;
+ const provider=await f.provider(),input=f.input();
+ await assert.rejects(provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_required'&&e.cause===undefined);
+ f.base.close();
+});
