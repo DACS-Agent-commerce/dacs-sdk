@@ -1,6 +1,6 @@
 import { createPrivateKey, randomBytes, sign } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { lstat, mkdir, readFile, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rmdir, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { publishFileExclusive, syncDirectory } from './durable-file.mjs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
@@ -11,13 +11,75 @@ import { OPERATOR_CLOSING } from './operator-approval.mjs';
 const FORMAT='dacs-node2-test-wallet/v1';
 const SECRET_FORMAT='dacs-node2-operator-secret/v1';
 const FILES=Object.freeze({buyer:'buyer-wallet.json',seller:'seller-wallet.json'});
+const MAX_CUSTODY_RECORD_BYTES=64*1024;
 const checkRole=(role)=>{if(!Object.hasOwn(FILES,role))throw new TypeError('wallet role must be buyer or seller');return role;};
 
-async function privateDirectory(path){
-  path=resolve(path);await mkdir(path,{recursive:true,mode:0o700});
-  path=await realpath(path);const info=await lstat(path);if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid()))throw new Error('operator custody directory must be a private real mode-0700 directory owned by this process user');return path;
+const DIRECTORY_SYNC_MARKER='.directory-sync-pending';
+// Paths at or below the first ancestor that already exists, deepest first.
+async function missingDirectories(path){
+  const missing=[];
+  for(let current=path;;){
+    try{await lstat(current);return missing;}
+    catch(error){if(error?.code!=='ENOENT')throw error;}
+    missing.push(current);
+    const parent=dirname(current);if(parent===current)return missing;
+    current=parent;
+  }
 }
-async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');}
+const ancestorOrSelf=(ancestor,path)=>ancestor===path||path.startsWith(ancestor.endsWith('/')?ancestor:`${ancestor}/`);
+// The marker records the directories one attempt created but could not yet
+// name durably, so a retry syncs those names again. It outlives the attempt
+// only while a parent sync is failing; only this directory and its ancestors
+// are ever synced from it.
+async function readDirectorySyncMarker(directory){
+  let text;
+  try{text=await readFile(join(directory,DIRECTORY_SYNC_MARKER),'utf8');}
+  catch(error){if(error?.code==='ENOENT')return null;throw error;}
+  let entries;
+  try{entries=JSON.parse(text);}catch(cause){throw new Error('custody directory sync marker is malformed',{cause});}
+  if(!Array.isArray(entries)||entries.length===0||entries.some((entry)=>typeof entry!=='string'||resolve(entry)!==entry||!ancestorOrSelf(entry,directory)))
+    throw new Error('custody directory sync marker is malformed');
+  return entries;
+}
+// A directory's name is durable only once the entry is synced in its parent.
+// Sync the parent of every directory this attempt created, and of those an
+// interrupted attempt recorded in the marker. Never open an ancestor that was
+// already there: it belongs to something else and may not be readable.
+async function syncCreatedDirectoryNames(directory,created){
+  const marker=join(directory,DIRECTORY_SYNC_MARKER);
+  if(created.length){
+    try{await publishFileExclusive(marker,`${JSON.stringify(created)}\n`);}
+    catch(error){
+      // A marker that was not published leaves nothing behind that tells a
+      // retry these names are unsynced. Nothing has been written inside the
+      // created directories yet, so remove the empty ones: the retry then
+      // recreates them and syncs their names instead of trusting them.
+      for(const entry of created){try{await rmdir(entry);}catch{}}
+      throw error;
+    }
+  }
+  const pending=await readDirectorySyncMarker(directory);
+  if(pending===null)return;
+  for(const entry of pending){
+    try{await lstat(entry);}catch(error){if(error?.code==='ENOENT')continue;throw error;}
+    await syncDirectory(dirname(entry));
+  }
+  await unlink(marker).catch((error)=>{if(error?.code!=='ENOENT')throw error;});
+}
+async function privateDirectory(path){
+  path=resolve(path);
+  const missing=await missingDirectories(path);
+  await mkdir(path,{recursive:true,mode:0o700});
+  path=await realpath(path);const info=await lstat(path);if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid()))throw new Error('operator custody directory must be a private real mode-0700 directory owned by this process user');
+  const created=[];
+  for(const entry of missing){
+    let real;try{real=await realpath(entry);}catch(error){if(error?.code==='ENOENT')continue;throw error;}
+    if(ancestorOrSelf(real,path)&&!created.includes(real))created.push(real);
+  }
+  await syncCreatedDirectoryNames(path,created);
+  return path;
+}
+async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');return info;}
 
 async function runtime(publicOrigin){
   globalThis.window??=globalThis;
@@ -70,7 +132,11 @@ export function createOperatorApprovalAttempt(approve){
 // the file is not private or does not retain a valid phrase for this role's address.
 async function readWalletRecord(path,role,{Demos,validateMnemonic}){
   let text;
-  try{await exactPrivateFile(path);text=await readFile(path,'utf8');}
+  try{
+    const info=await exactPrivateFile(path);
+    if(info.size>MAX_CUSTODY_RECORD_BYTES)throw new Error(`the ${role} custody record is larger than ${MAX_CUSTODY_RECORD_BYTES} bytes`);
+    text=await readFile(path,'utf8');
+  }
   catch(error){if(error?.code==='ENOENT')return null;throw error;}
   let record;
   try{record=JSON.parse(text);}catch(cause){throw new Error(`the ${role} custody record is malformed`,{cause});}
@@ -97,7 +163,13 @@ async function removeEmptyFile(path){
   try{
     // Every deleter holds this lock and rechecks: no stale empty observation can
     // unlink a whole record published since it was made. Live contention refuses.
-    if(await isEmptyFile(path))await unlink(path);
+    if(!await isEmptyFile(path))return;
+    // Privacy and ownership are checked while the lock is held, and the file
+    // must still be the zero-byte one observed above, before it is removed.
+    let info;
+    try{info=await exactPrivateFile(path);}catch(error){if(error?.code==='ENOENT')return;throw error;}
+    if(info.size!==0)return;
+    await unlink(path);
   }finally{lock.release();}
 }
 async function generateWallet(Demos,role){

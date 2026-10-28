@@ -41,7 +41,9 @@
 //    sha-256 hash. It is read once, and only for a requirement that names a
 //    presence-only claim; without it, or with another answer, such a
 //    requirement is refused.
-//    A requirement with verified claims replays only through the optional
+//    A requirement with verified claims must pin each claim's `recipeVersion`
+//    (there is no registry version lookup to prove an implicit version is the
+//    latest) and replays only through the optional
 //    `vetEvidence = { resolveContent, resolveRecipe, isRecipeSignerAuthorized,
 //    isVerifyResultSignerAuthorized, verifyAuthorityAttestation }`, read with the
 //    admission readers' limits (see vetRecordProblem).
@@ -163,19 +165,25 @@ function boundedRevocationValue(value) {
 const ADMISSION_MAX_LIST_ITEMS=256;
 const REGISTRY_PIN_PATTERN = /^[0-9a-f]{64}$/;
 // Admission capabilities cap wire bytes before decoding and honor this signal.
-// Returned representations also receive independent byte/value/list bounds.
-export async function readAdmissionCapability(admission,method,input){
-  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer;
+// Returned representations also receive independent byte/value/list bounds. An
+// optional `parentSignal` (the caller's shared deadline) aborts an active read
+// too, so a read that ignores its own per-read deadline cannot outlive it.
+export async function readAdmissionCapability(admission,method,input,parentSignal){
+  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer,rejectAborted;
+  const forwardAbort=()=>controller.abort();
+  if(parentSignal){if(parentSignal.aborted)controller.abort();else parentSignal.addEventListener('abort',forwardAbort,{once:true});}
   const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('admission deadline expired','TimeoutError'));},options.timeoutMs);});
+  const aborted=parentSignal?new Promise((_,reject)=>{rejectAborted=()=>reject(new DOMException('admission read aborted','AbortError'));if(parentSignal.aborted)rejectAborted();else parentSignal.addEventListener('abort',rejectAborted,{once:true});}):null;
   try{
-    return await Promise.race([Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
+    const work=Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
       if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
       if(value===undefined)throw new TypeError('admission capability returned no value');
       const result=boundedRevocationValue(value),pending=[result];let values=0;
       while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
       return result;
-    }),deadline]);
-  }finally{clearTimeout(timer);controller.abort();}
+    });
+    return await Promise.race(aborted?[work,deadline,aborted]:[work,deadline]);
+  }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}
 }
 
 // The recipe registry snapshot hash the operator pinned for the job (CRQ-1), or
@@ -255,30 +263,69 @@ const VET_EVIDENCE_REPLAY_TIMEOUT_MS = 30_000;
 // Without `vetEvidence` nothing resolves, so a requirement whose decision needs
 // a result body is unresolved and refused.
 const NO_EVIDENCE_DEPS = Object.freeze({ resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
-  verifyAuthorityAttestation: () => 'unresolved' });
+  verifyAuthorityAttestation: () => 'unresolved', verifyRequirementParameters: (input) => requirementParametersMatch(input) });
+const vetEvidenceTimeout = () => new DOMException('the Vet evidence deadline expired', 'TimeoutError');
+
+// DACS-2 §7.5.2: a ClaimRequirement's exact parameters are re-derived from the
+// authenticated result. `verificationMethod` is the result's method; every
+// other parameter must occur, canonically equal, in the result's `data`.
+function requirementParametersMatch({ result, expected }) {
+  for (const [key, expectedValue] of Object.entries(expected.requirement.parameters ?? {})) {
+    if (key === 'verificationMethod') { if (result.method !== expectedValue) return false; }
+    else if (!object(result.data) || !Object.prototype.hasOwnProperty.call(result.data, key) || !same(result.data[key], expectedValue)) return false;
+  }
+  return true;
+}
+
+// DACS-2 §7.4.3: a ClaimRequirement without `recipeVersion` selects the latest
+// live version in the authenticated session registry snapshot. This seller's
+// evidence contract carries no such snapshot, so an implicit version cannot be
+// proven to be the latest family version; accepting the result's own version
+// would let an old signed recipe replay. Refuse rather than guess.
+function unpinnedVerifiedResult(results) {
+  return Array.isArray(results) && results.some((entry) => object(entry?.requirement)
+    && entry.requirement.verificationRequired !== false && entry.requirement.recipeVersion === undefined);
+}
 
 // The evidence reads of one replay, each bounded by readAdmissionCapability
-// and all by one deadline. The first failure is kept so the caller sees the
-// real cause (timeout, oversize, throw), not the verifier's "unresolved".
+// and all by one deadline. The deadline also aborts the read in flight, so a
+// reader that ignores its own per-read limit cannot hold the replay past 30 s.
+// The first failure is kept (even a rejection with `undefined`) so the caller
+// sees the real cause (timeout, oversize, throw), not the verifier's
+// "unresolved".
 function vetEvidenceReads(evidence, scope) {
-  let expired = false, failure;
-  const timer = setTimeout(() => { expired = true; }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
+  const controller = new AbortController();
+  let expired = false, failed = false, failure, timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { expired = true; controller.abort(); reject(vetEvidenceTimeout()); }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
+  });
+  // A deadline that fires between reads has no racer; keep its rejection handled.
+  deadline.catch(() => {});
   const read = async (method, input, decode = (reply) => reply) => {
     try {
-      if (expired) throw new DOMException('the Vet evidence deadline expired', 'TimeoutError');
-      return decode(await readAdmissionCapability(evidence, method, { ...scope, ...input }));
-    } catch (error) { failure ??= error; throw error; }
+      if (expired) throw vetEvidenceTimeout();
+      const reply = await Promise.race([readAdmissionCapability(evidence, method, { ...scope, ...input }, controller.signal), deadline]);
+      if (expired) throw vetEvidenceTimeout();
+      return decode(reply);
+    } catch (error) { const cause = expired ? vetEvidenceTimeout() : error; if (!failed) { failed = true; failure = cause; } throw cause; }
   };
-  return { read, failure: () => failure, close: () => clearTimeout(timer) };
+  return { read, failure: () => (failed ? failure : undefined), hasFailure: () => failed, close: () => { clearTimeout(timer); controller.abort(); } };
 }
 
 // The content shape the core verifier takes from an operator reply: null
-// (absent), canonical JSON, or base64url bytes. Anything else is malformed.
-function vetEvidenceContent(reply) {
+// (absent), canonical JSON, or base64url bytes. A VerifyResult returned as
+// bytes is decoded to the canonical JSON object the core re-hashes; an
+// authority proof stays bytes so its byte hash is preserved.
+function vetEvidenceContent(reply, resultContent = false) {
   if (reply === null) return null;
   if (exactKeys(reply, ['encoding', 'value'])) {
     if (reply.encoding === 'canonical-json' && object(reply.value)) return reply;
-    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) return { encoding: 'bytes', value: Uint8Array.from(Buffer.from(reply.value, 'base64url')) };
+    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) {
+      const value = Uint8Array.from(Buffer.from(reply.value, 'base64url'));
+      if (!resultContent) return { encoding: 'bytes', value };
+      const decoded = admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+      if (object(decoded)) return { encoding: 'canonical-json', value: decoded };
+    }
   }
   throw new TypeError('the Vet evidence content reply is malformed');
 }
@@ -289,7 +336,7 @@ function vetEvidenceContent(reply) {
 // authority proof holds. Only an explicit `true` authorizes a signer, and only
 // `valid` or `unresolved` is a usable attestation verdict.
 const vetEvidenceDeps = (read) => ({
-  resolve: (ref) => read('resolveContent', { anchor: ref.anchor, contentHash: ref.contentHash }, vetEvidenceContent),
+  resolve: (ref) => read('resolveContent', { anchor: ref.anchor, contentHash: ref.contentHash }, (reply) => vetEvidenceContent(reply, ref.recipeVersion !== undefined)),
   resolveRecipe: (selector) => read('resolveRecipe', selector),
   isRecipeSignerAuthorized: async (recipe, signature) => (await read('isRecipeSignerAuthorized', { recipe, signature })) === true,
   isVerifyResultSignerAuthorized: async (result, signature, expected) => (await read('isVerifyResultSignerAuthorized', { result, signature, expected })) === true,
@@ -297,6 +344,7 @@ const vetEvidenceDeps = (read) => ({
     const verdict = await read('verifyAuthorityAttestation', input);
     return verdict === 'valid' || verdict === 'unresolved' ? verdict : 'invalid';
   },
+  verifyRequirementParameters: (input) => requirementParametersMatch(input),
 });
 
 // The core verifier's expectation for each invocation result: the retained
@@ -329,6 +377,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   const presenceOnly = hasPresenceOnlyClaim(invocation.requirement);
   const registryPin = presence?.registryPin;
   if (presenceOnly && !REGISTRY_PIN_PATTERN.test(registryPin)) return 'the Vet requirement names a presence-only claim and no pinned registry authority was supplied';
+  if (unpinnedVerifiedResult(invocation.freshness) || unpinnedVerifiedResult(invocation.dealSpecific)) return 'the Vet requirement does not pin a recipe version for a verified claim';
   const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
   // The verifier checks every signature itself with the signer's own key; the
   // operator's policy decides which signers other than the verifier may sign.
@@ -342,7 +391,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
         isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
         verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash) });
   } catch (error) { thrown = error; } finally { reads?.close(); }
-  if (reads?.failure() !== undefined) throw reads.failure();
+  if (reads?.hasFailure()) throw reads.failure();
   if (thrown) return `the Vet record does not verify against its requirement: ${String(thrown?.message ?? thrown).slice(0, 120)}`;
   if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;
   return null;
