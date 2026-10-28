@@ -397,18 +397,19 @@ stage=image-checks
 # Fresh containers check the accepted image. Its code is read-only; all writable
 # data is private, owned by its runtime user, and never used as host evidence.
 image_check_args=(--read-only --network none --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges
-  --tmpfs /tmp:mode=1777 --tmpfs /app/data:uid=10001,gid=10001,mode=0700 --env DACS_DEPLOYMENT=local --entrypoint node)
+  --tmpfs /tmp:mode=1777 --tmpfs /app/data:uid=10001,gid=10001,mode=0700 --env DACS_DEPLOYMENT=local --entrypoint sh)
+image_check_start=(-ceu 'umask 077; mkdir -p -m 0700 /app/data/buyer /app/data/seller; exec node "$@"' image-check)
 consumer_phases="$consumer_phases tests doctor"
 tests_status=0
 run_bounded docker run --rm --name "$consumer_container-tests" --init "${image_check_args[@]}" \
-  "$runtime_image" --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js \
+  "$runtime_image" "${image_check_start[@]}" --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js \
   >> "$artifact_stage/generation.log" 2>&1 || tests_status=$?
 printf '%s\n' "$tests_status" > "$execute_out/generated-tests.exit-code"
 test "$tests_status" -eq 0 || exit "$tests_status"
 doctor_status=0
 run_bounded docker run --rm --name "$consumer_container-doctor" --init "${image_check_args[@]}" \
   --env DACS_SELLER_PUBLIC_BASE_URL=https://seller.example/engage \
-  "$runtime_image" --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor --json \
+  "$runtime_image" "${image_check_start[@]}" --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor --json \
   > "$execute_out/doctor.json" 2> "$execute_out/doctor.log" || doctor_status=$?
 printf '%s\n' "$doctor_status" > "$execute_out/doctor.exit-code"
 test "$doctor_status" -eq 5 || exit "$((doctor_status ? doctor_status : 1))"
