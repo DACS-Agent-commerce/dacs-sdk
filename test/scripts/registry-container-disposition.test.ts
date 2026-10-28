@@ -13,7 +13,7 @@ import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings, classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines, registryDependencyViolations, runtimeImageInventoryFindings, RELEASE_VERSION, unlistedPolicyFindings } = await import(dispositionModulePath);
+const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings, classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines, registryDependencyViolations, runtimeImageInventoryFindings, RELEASE_VERSION } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const archiveModulePath = "../../scripts/installation-closure.mjs";
@@ -2084,24 +2084,35 @@ describe("runtime-image package inventory", () => {
       writeFileSync(join(evidence, name === "engine-strict.log.txt" ? "engine-strict.log" : name),
         readFileSync(join(b7b180f, name)));
     }
-    writeFileSync(join(evidence, "runtime-image-inventory.json"), add("node_modules/vitest", "vitest", "3.2.4"));
+    // A synthetic observation for this assembly test, independent of the lock.
+    writeFileSync(join(evidence, "runtime-image-inventory.json"), JSON.stringify({
+      schema: "dacs-runtime-image-inventory/v1", packages: [
+        { location: "node_modules/vitest", name: "vitest", version: "3.2.4" },
+      ],
+    }));
     writeFileSync(join(evidence, "docker-build.log"), "not a fixture\n");
     const result = runBash(["-e", "-c", workflowStepScript("Assemble disposition fixtures")], {
       cwd: checkout, env: { GITHUB_SHA: "0123456789abcdef", PATH: stubBin(checkout) },
     });
     expect(result.status).toBe(0);
     const fixtures = join(checkout, "registry-container-fixtures/registry-container-0123456");
-    expect(readdirSync(fixtures).sort()).toEqual([...readdirSync(b7b180f), "runtime-image-inventory.json"].sort());
+    expect(readdirSync(fixtures).sort()).toEqual([
+      "acceptance-summary.json", "consumer-lock-sbom.err", "consumer-lock-sbom.exit-code",
+      "consumer-physical-sbom.err", "consumer-physical-sbom.exit-code", "dependency-policy.json",
+      "engine-strict.exit-code", "engine-strict.log.txt", "engine-versions.json", "generated-package-lock.json",
+      "runtime-image-inventory.json", "runtime-image-policy.json",
+    ]);
     const read = (name: string) => {
       const file = join(fixtures, name === "engine-strict.log" ? "engine-strict.log.txt" : name);
       return existsSync(file) ? readFileSync(file, "utf8") : undefined;
     };
-    const summary = JSON.parse(read("acceptance-summary.json")!);
+    const summary = JSON.parse(readFileSync(join(fixtures, "acceptance-summary.json"), "utf8"));
     summary.securityGate.findings = extractPolicyFindings(read);
     expect(summary.securityGate.findings.productionImageDependencies)
       .toContainEqual({ name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null });
     // This offline replay supplies the historical run's absent completion and directness metadata.
-    expect(historicalDisposition({ ...summary, complete: true, audit: { ...summary.audit, directAdvisories: [] } }))
+    expect(registryContainerDisposition({ ...summary, complete: true, audit: { ...summary.audit, directAdvisories: [] } },
+      undefined, { packageVersion: summary.packageVersion }))
       .toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
     expect(workflowStepCondition("Assemble disposition fixtures")).toBe("always()");
     expect(workflowStepCondition("Upload disposition fixtures")).toBe("always()");
