@@ -2,10 +2,12 @@
 import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { requireDirectory } from "./acceptance-directory.mjs";
 
 /** Creates an acceptance Dockerfile with bounded npm transport in its build stage.
  * Returns its path; throws if the generated Dockerfile lacks a build stage. */
 export function prepareBoundedBuild(project) {
+  requireDirectory(project);
   const source = readFileSync(join(project, "Dockerfile"), "utf8");
   if (!/^FROM .+ AS build$/m.test(source)) throw new Error("generated Dockerfile has no build stage");
   const supportName = "acceptance-npm-http.cjs";
