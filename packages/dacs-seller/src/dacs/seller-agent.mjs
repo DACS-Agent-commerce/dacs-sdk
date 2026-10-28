@@ -339,11 +339,13 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       // resolved: the responder's own checkpoints can outlast the plain clock
       // window or the admitted route's absolute deadline. Recheck the retained
       // decision on the current clock here; signOnce's completed record alone
-      // replays a signature already made.
-      const retainedAdmission = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
-      if (retainedAdmission && durable?.signature(`signature:${sha256Hex(bytes)}`).disposition !== 'present') {
-        const lateProblem = proposalTimeProblem({ generatedAt: retainedAdmission.generatedAt, observedAt: now(),
-          deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit, admitted: retainedAdmission.admitted });
+      // replays a signature already made. A session retained by an earlier
+      // build carries no generatedAt and keeps the context-time decision.
+      const retainedDecision = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
+      if (retainedDecision && Number.isSafeInteger(retainedDecision.generatedAt) &&
+          durable?.signature(`signature:${sha256Hex(bytes)}`).disposition !== 'present') {
+        const lateProblem = proposalTimeProblem({ generatedAt: retainedDecision.generatedAt, observedAt: now(),
+          deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit, admitted: retainedDecision.admitted });
         if (lateProblem) throw new SellerAgentError('proposal_expired', lateProblem, 409);
       }
       // The key is only a pointer. An intent or a thrown signer never makes
