@@ -163,11 +163,14 @@ test('the final wallet identity closes only its conflict and retains working and
   result = check(); assert.equal(result.status, 0, result.text);
   const bytes = readFileSync(join(dir, path));
   writeFileSync(join(dir, path), Buffer.concat([bytes, Buffer.from('\n// TEST unrecorded wallet edit\n')]));
+  node(prefix + 'scripts/delta-map.mjs');
   result = check(); assert.deepEqual(result.failures, [`${path}: current blob differs from enumerated deltas`], result.text);
   unlinkSync(join(dir, path));
+  node(prefix + 'scripts/delta-map.mjs');
   result = check(); assert.deepEqual(result.failures, [`${path}: current blob differs from enumerated deltas`], result.text);
   writeFileSync(join(dir, path), Buffer.concat([bytes, Buffer.from('\n// TEST staged wallet edit\n')]));
   git('add', '--', path); writeFileSync(join(dir, path), bytes);
+  node(prefix + 'scripts/delta-map.mjs');
   result = check();
   assert.deepEqual(result.failures, [`${path}: index differs from HEAD for moved source/test`, `${path}: current blob differs from enumerated deltas`], result.text);
 });
