@@ -622,7 +622,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     // Older retained attempts have no publication marker. Their CREATE may
     // already have been asked for, so require the same proof as a new send.
     if (nativeArtifactAnchor) session.commitmentPublishAsked ??= session.commitCreatedAt !== undefined;
-    session.commitCreatedAt ??= now();
+    // A retained commitment keeps the time it finalized at. A new publication,
+    // including a retry that signed no CREATE, is provisionally time-stamped
+    // now: the SDK checks notBefore/notAfter against the current clock.
+    if (!session.commitment) session.commitCreatedAt = now();
     if (attempt) {
       if (!session.signatureCommitmentAttempt) {
         try { durable.reserveSignatureCommitment(session.buyerBundle.presentedBy, jobId); }

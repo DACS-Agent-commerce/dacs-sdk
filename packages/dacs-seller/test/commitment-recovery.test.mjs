@@ -71,6 +71,19 @@ test('an early commitment whose first publish signed nothing signs once on the a
  const fresh=await f.open(),retried=await fresh.commitOnSignature(request);
  assert.equal(retried.status,'commitment-held');assert.equal(publishes,2,'the proven-unsigned retry publishes exactly once');assert.equal(f.local.writes.length,1);
 });
+// DACS-3 §8.5.2: the pre-anchor notAfter check uses the current clock. A retry
+// that signed no CREATE is a new publication and cannot inherit a provisional
+// time from an attempt made while the Listing was still live.
+test('a retry that signed no commitment CREATE cannot publish after the Listing expired',async t=>{
+ const f=await commitmentFixture(t),{agent}=await f.prepare(),absent=f.native.readRetained,publish=f.native.publish;
+ f.native.readRetained=async input=>{const out=await absent(input);return out.status==='absent'?provenUnsignedAbsence('TEST no seller-signed intent'):out;};
+ f.native.publish=async()=>{throw new Error('TEST wallet refused');};
+ await assert.rejects(agent.commit({jobId:JOB}),e=>e.code==='commitment_failed');assert.equal(f.local.writes.length,0);agent.close();
+ f.native.publish=publish;f.advance(f.listing.validity.notAfter-NOW+1);
+ const fresh=await f.open();
+ await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='commitment_failed'&&/provisional time checks/.test(e.message));
+ assert.equal(f.local.writes.length,0,'a commitment CREATE is never requested after the Listing expired');
+});
 async function fixtureProfile(t,inspect=false){
  const create=inspect?(await (await import('./helpers/private-module.mjs')).privateModule(new URL('../src/dacs/seller-agent.mjs',import.meta.url),[],source=>source.replace('  return api;','  return {...api,TESTsessions:sessions};'))).createSellerAgent:createSellerAgent;
  const listing=fixtureListing(seller,{now:NOW}),bundle=fixtureIdentityBundle(buyer,NOW),input=agreementInput({jobId:JOB,listing,buyerBundle:bundle,generatedAt:NOW}),plan=core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(input)),contribution=await core.createFixedPriceAgreementSignatureContribution(plan,'buyer',{party:buyer.claim,algorithm:'ed25519',sign:buyer.signBytes});const material={proposalVersion:'1',plan,buyerContribution:contribution},proposal={...material,proposalHash:core.sha256Hex(core.canonicalize(material))},transportIdentity={jobId:JOB,planHash:plan.planHash,agreementHash:plan.agreementHash,buyer:buyer.claim,seller:seller.claim,proposalHash:proposal.proposalHash};
