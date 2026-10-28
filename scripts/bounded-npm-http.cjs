@@ -2,7 +2,7 @@
 const http = require("node:http");
 const https = require("node:https");
 const { PassThrough } = require("node:stream");
-const { brotliDecompressSync, gunzipSync, inflateSync } = require("node:zlib");
+const { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } = require("node:zlib");
 const { syncBuiltinESMExports } = require("node:module");
 // Full npm metadata can exceed 40 MiB when serialized by a registry proxy.
 const NPM_METADATA_MAX_BYTES = 64 * 1024 * 1024;
@@ -35,9 +35,22 @@ function responseBudget(path, statusCode = 200) {
     ? NPM_TARBALL_MAX_BYTES : NPM_METADATA_MAX_BYTES;
 }
 
+const isJsonShaped = bytes => {
+  const first = bytes.find(byte => ![0x20, 0x09, 0x0a, 0x0d].includes(byte));
+  return first === 0x7b || first === 0x5b;
+};
+
 function validateJsonLists(bytes) {
   let value;
-  try { value = JSON.parse(bytes.toString("utf8")); } catch { return; } // npm preserves malformed-body diagnostics.
+  try { value = JSON.parse(bytes.toString("utf8")); }
+  catch {
+    // npm's streaming reader accepts a sequence of concatenated values. A
+    // JSON-shaped body that is not one value must fail closed: an appended
+    // root could otherwise carry lists and depth past these limits. Non-JSON
+    // replies still pass through so npm keeps its malformed-body diagnostics.
+    if (isJsonShaped(bytes)) throw limitError();
+    return;
+  }
   const pending = [[value, 0]];
   let entries = 0;
   while (pending.length) {
@@ -55,6 +68,18 @@ function decodeBounded(bytes, decode, maximum) {
   catch (error) { if (error.code === "ERR_BUFFER_TOO_LARGE") throw limitError(); throw error; }
 }
 
+// npm's reader accepts both zlib-wrapped and raw deflate under `deflate`, and
+// proxies also emit the x-deflate alias. A wrapped expansion that overflows is
+// rejected outright; only a header mismatch falls through to the raw form.
+function inflateEither(bytes, options) {
+  try { return inflateSync(bytes, options); }
+  catch (wrapped) {
+    if (wrapped.code === "ERR_BUFFER_TOO_LARGE") throw wrapped;
+    try { return inflateRawSync(bytes, options); }
+    catch (raw) { throw raw.code === "ERR_BUFFER_TOO_LARGE" ? raw : wrapped; }
+  }
+}
+
 /** Buffers bounded encoded bytes, then bounded decompression; throws ELIMIT before downstream decoding. */
 async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum) {
   if (Number(response.headers["content-length"]) > maximum) throw limitError();
@@ -67,10 +92,12 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   }
   let bytes = Buffer.concat(chunks, length);
   const encoding = response.headers["content-encoding"]?.toLowerCase();
-  const decoders = { gzip: gunzipSync, "x-gzip": gunzipSync, deflate: inflateSync, br: brotliDecompressSync };
+  const decoders = { gzip: gunzipSync, "x-gzip": gunzipSync, deflate: inflateEither, "x-deflate": inflateEither, br: brotliDecompressSync };
   const decode = Object.hasOwn(decoders, encoding) ? decoders[encoding] : undefined;
   if (encoding && encoding !== "identity" && !decode) throw new Error("unsupported npm HTTP content encoding");
-  if (decode) bytes = decodeBounded(bytes, decode, maximum);
+  // An empty reply can still carry a compression header (redirects and global
+  // compression middleware); npm accepts it, so do not decode nothing.
+  if (decode && bytes.length > 0) bytes = decodeBounded(bytes, decode, maximum);
   if (bytes.length > maximum) throw limitError();
   // Registry tarballs carry their own gzip layer, independent of HTTP encoding.
   // Validate expansion without changing the exact archive bytes npm hashes.
@@ -81,11 +108,11 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
       try {
         decodeBounded(bytes, gunzipSync, maximum);
       } catch (error) {
-        // A registry may redirect an archive to a suffixless download URL, so
-        // the path alone cannot deny the archive budget. Admit an over-budget
-        // gzip body only when its payload is a tar stream npm's reader can
-        // consume; JSON responses stay limited to their own path budget.
-        if (error.code !== "ELIMIT" || maximum >= archiveMaximum) throw error;
+        // A direct suffixless download URL may still serve an archive npm's
+        // reader consumes, so the metadata budget admits an over-budget gzip
+        // body when its payload is a tar stream. Every other route, including
+        // the audit budget, keeps its own decoded ceiling.
+        if (error.code !== "ELIMIT" || maximum !== NPM_METADATA_MAX_BYTES) throw error;
         if (!isTarArchive(decodeBounded(bytes, gunzipSync, archiveMaximum))) throw limitError();
       }
     }
@@ -94,8 +121,7 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   if (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
     throw new Error("unsupported npm archive compression: zstd");
   }
-  const first = bytes.find(byte => ![0x20, 0x09, 0x0a, 0x0d].includes(byte));
-  if (json || first === 0x7b || first === 0x5b) validateJsonLists(bytes);
+  if (json || isJsonShaped(bytes)) validateJsonLists(bytes);
   return bytes;
 }
 
