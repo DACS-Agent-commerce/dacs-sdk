@@ -113,7 +113,8 @@ describe("inert bounded npm HTTP admission", () => {
   it("carries archive intent through a redirect chain to its suffixless target", async () => {
     // The target keeps the archive budget even when the payload has no tar
     // signature, matching the archive the registry redirected.
-    const paths = ["/fixture/-/fixture-1.0.0.tgz", "/download/hop", "/download/signed-token-intent"];
+    const targetPath = "/download/signed-token-intent";
+    const paths = ["/fixture/-/fixture-1.0.0.tgz", "/download/hop", targetPath];
     const body = gzipSync(Buffer.alloc(65 * 1024 * 1024));
     let issued = 0;
     const transport = { request: () => Object.assign(new EventEmitter(), { path: paths[issued++], destroy: () => {} }) };
@@ -127,7 +128,7 @@ describe("inert bounded npm HTTP admission", () => {
       await admitted;
     };
     await redirect("/download/hop");
-    await redirect(paths[2]);
+    await redirect(targetPath);
     const target = transport.request();
     const admitted = new Promise<Buffer>((resolve, reject) => {
       target.once("error", reject);
