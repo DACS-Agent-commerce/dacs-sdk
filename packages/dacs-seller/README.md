@@ -197,21 +197,27 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an error, or a CREATE it signed that is not on the chain) holds the
   delivery and never submits again: a landed CREATE would be made twice. A
   `read` that never returns the proof strands a paid order after one failed
-  submission. The package's devnet artifact anchor returns it from `read` for an
-  address with no stored intent (`readRetained` reports plain absence there),
-  and from both readers for a stored intent that carries no hash and no signed
-  transaction when neither the source nor the seller's wallet retains a signed CREATE for the address: one a
-  shutdown cut before it was signed (`closing`), one the wallet answered
-  without signing (`unsigned`), and one the process died on while the wallet
-  was asked (`intent`; the wallet journals a signature before it sends
-  anything, so a signature it made but did not journal was never sent).
+  submission. An operator-supplied `artifactAnchor` must return it from `read`
+  for an address with no stored intent (`readRetained` reports plain absence
+  there), and from both readers for a stored intent that carries no hash and
+  no signed transaction when neither the source nor the seller's wallet
+  retains a signed CREATE for the address: one a shutdown cut before it was
+  signed (`closing`), one the wallet answered without signing (`unsigned`),
+  and one the process died on while the wallet was asked (`intent`; the wallet
+  journals a signature before it sends anything, so a signature it made but
+  did not journal was never sent).
   Publishing such an intent again replaces it under the address's lock and
   asks the wallet once more. An operator's refusal (`denied`), a broadcast
   rejection, or any row with a hash or a signed CREATE is only read back. The
   proof rests on the artifact journal and the wallet journal being the ones
   that recorded the attempt: a journal lost, or restored from an older copy,
   after a Deliverable landed reads as never asked, and the order is submitted
-  again (an operator-induced limit).
+  again (an operator-induced limit). The package's reference implementation,
+  `createDevnetDemoArtifactAnchor` (`src/devnet-demo/artifact-anchor.mjs`),
+  cannot be constructed in this snapshot: its constructor requires the opaque
+  devnet-demo source capability, and `isDevnetDemoTransport` always returns
+  `false` (`src/dacs/devnet-source.mjs`), so it refuses every input. Supply an
+  anchor that enforces the contract.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
   `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
   required `reconcilePaymentEvidence`. The agent, whether the host composes
