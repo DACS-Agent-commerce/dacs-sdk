@@ -131,14 +131,14 @@ test('release fences a late context completion before durable retention',async()
  w.anchor.readRetained=async input=>{if(wait&&input.fresh){wait=false;entered.resolve();await resume.promise;}return read(input);};
  const slow=p.resolveBuyer(a);await entered.promise;await p.resolveBuyer(b);p.release({jobId:a.scope.jobId,generatedAt:b.scope.generatedAt});resume.resolve();
  await assert.rejects(slow,e=>e.code==='context_released');const row=(await w.store.entries()).find(([key])=>key.startsWith('party-vet/'))[1];
- assert.deepEqual(row.seller.generatedAts,[b.scope.generatedAt]);assert.equal(p.contexts.size,1);assert.equal((await p.resolveSeller(request(w,a))).disposition,'rejected');w.store.close();
+ assert.deepEqual(row.lifecycle.times,[b.scope.generatedAt]);assert.equal(p.contexts.size,1);assert.equal((await p.resolveSeller(request(w,a))).disposition,'rejected');w.store.close();
 });
 // The release selection and a sweep's deletion are kept in the job's row, so they hold in every provider on the
 // store and after a restart, not only in the provider that made them.
 const releasedB=async()=>{
  const w=fixture(),p=w.provider(),a=w.input(),b=structuredClone(a);b.scope.generatedAt++;
  await p.resolveBuyer(a);await p.resolveBuyer(b);p.release({jobId:a.scope.jobId,generatedAt:b.scope.generatedAt});
- return{w,p,a,b,times:async()=>(await w.store.entries()).find(([key])=>key.startsWith('party-vet/'))[1].seller.generatedAts};
+ return{w,p,a,b,times:async()=>(await w.store.entries()).find(([key])=>key.startsWith('party-vet/'))[1].lifecycle.times};
 };
 test('after a restart, buyer resolution refuses a request time the release did not select',async t=>{
  const{w,a,b,times}=await releasedB();t.after(()=>w.store.close());
@@ -158,7 +158,7 @@ test('a cached context is refused once another provider on the store selected an
 test('a cached context is refused once another provider on the store swept its ended job',async t=>{
  const w=fixture(),p=w.provider(),input=w.input();t.after(()=>w.store.close());
  await p.resolveBuyer(input);assert.equal((await w.provider().sweep(()=>true)).deleted,1);
- assert.equal((await p.resolveSeller(request(w,input))).disposition,'rejected');
+ assert.equal((await p.resolveSeller(request(w,input))).disposition,'indeterminate');
 });
 test('sweep evicts contexts and Vet jobs and cannot resurrect an ended job',async()=>{
  const w=fixture(),p=w.provider(),input=w.input();await p.resolveBuyer(input);assert.equal((await p.sweep(()=>true)).deleted,1);assert.equal(p.contexts.size,0);assert.equal(w.store.usage().jobs,0);
