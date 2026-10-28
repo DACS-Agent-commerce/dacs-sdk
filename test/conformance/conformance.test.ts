@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, test } from "vitest";
 
 import {
   assertPositiveAmount,
@@ -61,6 +61,7 @@ import {
   verifySettlementEvidence,
   type AuthenticatedEvidenceContext,
 } from "../../src/agent/verifySettlementEvidence.js";
+import { createCrossChainHtlcIntent, type CrossChainHtlcAuthority } from "../../src/rails/crossChainHtlc.js";
 import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
@@ -410,10 +411,23 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   const htlcEvidence = () => {
     const evidence = paymentEvidence();
     evidence.phase = "pay-cross-chain-htlc";
+    // The DACS-4 §9.5.4 success set: source lock, destination reveal, source claim.
     evidence.paymentTxRefs = [
       {
-        kind: "htlc-claim",
+        kind: "htlc-lock",
+        chainId: 84532,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        lockTxHash: "0xlock",
+      },
+      {
+        kind: "htlc-reveal",
         chainId: 80002,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        revealTxHash: "0xreveal",
+      },
+      {
+        kind: "htlc-claim",
+        chainId: 84532,
         contractAddress: "0x0000000000000000000000000000000000000001",
         claimTxHash: "0xclaim",
       },
@@ -424,6 +438,48 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     };
     return evidence;
   };
+
+  // Replay all four §9.14 pinned rail parameters through the same intent
+  // admission the runtime uses, in addition to the evidence's absolute margin.
+  const htlcVectorParameters = {
+    timelockSourceSec: 10_000, timelockDestSec: 5_000, sourceFinalitySec: 120, safetyWindowSec: 600,
+  };
+  const htlcVectorIntent = (parameters: Partial<typeof htlcVectorParameters>) => {
+    const rail = {
+      railId: "conformance-htlc", railType: "cross-chain-htlc" as const,
+      asset: { kind: "stablecoin-cross-chain" as const, canonicalSymbol: "USDC", routes: [{
+        sourceChainId: 84532, destChainId: 80002,
+        htlcContracts: { source: "source-contract", dest: "destination-contract" },
+      }] },
+      network: { kind: "cross-chain" as const, mechanism: "htlc" as const }, parameters,
+    };
+    const route = rail.asset.routes[0]!;
+    const authority: CrossChainHtlcAuthority = {
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F", phaseIndex: 0, railId: rail.railId,
+      railDescriptorHash: contentHash(rail), agreementHash: "a".repeat(64),
+      assetKind: rail.asset.kind, networkKind: rail.network.kind, mechanism: rail.network.mechanism,
+      sourceChainId: route.sourceChainId, destinationChainId: route.destChainId,
+      sourceAsset: rail.asset.canonicalSymbol, destinationAsset: rail.asset.canonicalSymbol,
+      sourceTokenId: "source-token", destinationTokenId: "destination-token",
+      sourceTokenDecimals: 6, destinationTokenDecimals: 6, amount: "5", currency: "USDC",
+      payerSourceAddress: "payer-source", payerDestinationAddress: "payer-destination",
+      payeeSourceAddress: "payee-source", payeeDestinationAddress: "payee-destination",
+      sourceContractAddress: route.htlcContracts.source, destinationContractAddress: route.htlcContracts.dest,
+      sourceFinalitySec: parameters.sourceFinalitySec!, destinationFinalitySec: 15,
+      safetyWindowSec: parameters.safetyWindowSec!, sourceTimelockSec: parameters.timelockSourceSec!,
+      destinationTimelockSec: parameters.timelockDestSec!,
+    };
+    return createCrossChainHtlcIntent(authority, new Uint8Array(16).fill(1), {
+      deriveHashlock: ({ chainId, preimage }) => `${chainId}:${Buffer.from(preimage).toString("hex")}`,
+    }).intent;
+  };
+  test.each(["timelockSourceSec", "timelockDestSec"] as const)(
+    "the HTLC four-parameter vector refuses a missing %s", (name) => {
+      const parameters = { ...htlcVectorParameters };
+      delete (parameters as Partial<typeof parameters>)[name];
+      expect(() => htlcVectorIntent(parameters)).toThrow(/TimelockSec must be a positive safe integer/);
+    },
+  );
 
   // Mirrors the pinned generator's deterministic VerifyResult resolver and
   // wrapper freshness gate. A structurally-complete verifiedBy is not enough:
@@ -1901,15 +1957,19 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       })).decision).toBe(want);
     },
     "settlement-htlc-finality-params-pass": async (want) => {
+      const intent = htlcVectorIntent(htlcVectorParameters);
+      expect(intent).toMatchObject({
+        sourceTimelockSec: 10_000, destinationTimelockSec: 5_000, sourceFinalitySec: 120, safetyWindowSec: 600,
+      });
       expect(
         (
           await verifyEvidence(htlcEvidence(), {
             rail: {
               railType: "cross-chain-htlc",
-              sourceFinalitySec: 120,
-              safetyWindowSec: 600,
+              sourceFinalitySec: intent.sourceFinalitySec,
+              safetyWindowSec: intent.safetyWindowSec,
             },
-            htlcExpiry: { source: 10_000, dest: 5_000 },
+            htlcExpiry: { source: intent.sourceTimelockSec, dest: intent.destinationTimelockSec },
           })
         ).decision,
       ).toBe(want);
