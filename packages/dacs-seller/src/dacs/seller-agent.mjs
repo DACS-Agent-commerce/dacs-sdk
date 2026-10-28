@@ -237,6 +237,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     return fn(input);
   }).catch((error) => {
     if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
+    // The store's fence rejects a non-canonical job before the operation's own
+    // validation runs. It is the same definite no-effect refusal the operation
+    // would have raised, not an uncertain outcome.
+    if (error.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     throw error;
   }) : fn;
 
