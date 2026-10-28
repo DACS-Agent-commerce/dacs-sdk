@@ -1444,8 +1444,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
     if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash||canonicalize(read.artifact)!==canonicalize(evidence)
       ||await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:read.receipt,signedProjection:read.signedProjection})!=='valid')return held('delivery evidence readback differs');
+    const retained=session.deliveryEvidenceWork.receipt;
+    if(retained&&(!sameNativeDeliveryReceipt(retained,read.receipt)||await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:retained,signedProjection:read.signedProjection})!=='valid'))return held('retained delivery evidence receipt differs');
+    session.deliveryEvidenceWork.receipt??=structuredClone(read.receipt);
     session.stage='delivered';persist(session);
-    return nativeEvidenceResponse(work,{...pointer,status:'delivered',evidencePublication:'native-read-back',evidenceRef:signedFixtureRef(address,ready.evidenceHash),evidenceReceipt:read.receipt});
+    return nativeEvidenceResponse(work,{...pointer,status:'delivered',evidencePublication:'native-read-back',evidenceRef:signedFixtureRef(address,ready.evidenceHash),evidenceReceipt:session.deliveryEvidenceWork.receipt});
   }
 
   // Everything before the durable work checkpoint is free of external effects:

@@ -157,7 +157,7 @@ function demosNode() {
     if (land) rebroadcast(hash);
     return clone(signed);
   };
-  const reader = createDemosSr2Adapter({ rpcUrl: RPC, journal: createInMemoryDemosSr2Journal(), fetchImpl });
+  const reader = createDemosSr2Adapter({ rpcUrl: RPC, journal: createInMemoryDemosSr2Journal(), fetchImpl, now:()=>faults.observedAt??Date.now() });
   // A transfer's block and inclusion time (ms), as the pay-dem observer reads them.
   const inclusion = (hash) => { const { blockNumber } = txs.get(hash); return { blockNumber, includedAt: blocks[blockNumber].content.timestamp * 1000 }; };
   // The wallet's chain reads: its account nonce, and whether a transaction was
@@ -306,7 +306,8 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       if (fault === 'unknown') return { status: 'indeterminate', reason: 'TEST uncertain retained CREATE' };
       if (fault === 'absent') return { status: 'absent', reason: 'TEST lagging name index' };
       if (fault === 'unbranded') return { ...provenUnsignedAbsence('TEST serialized proof is not authoritative') };
-      const read = await readBack(logicalAddress, artifactKind);
+      let read = await readBack(logicalAddress, artifactKind);
+      if(artifactKind==='SettlementEvidence'&&read.status==='present'&&faults.evidenceRead)read=faults.evidenceRead(clone(read));
       return read.status === 'absent' && !signedCreates.has(logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
     },
     verifyReceipt: async ({ logicalAddress, artifact, artifactKind, receipt, signedProjection }) =>
@@ -1495,4 +1496,23 @@ for(const size of [16385,131072])test(`an exact ${size}-byte producer result abo
  const w=await world(t,{deliverableProducer:producer,deliverableExtension:{expectedSizeBytes:size}}),p=await w.purchase(),tx=p.pay();
  assert.equal((await p.claim(tx)).delivery?.status,'held');assert.equal(w.effects.deliverySubmit.length,0);
  const kept=await w.retainedSession(p.jobId);assert.equal(kept.deliverySentReport,undefined);await w.restart();assert.equal((await p.claim(tx)).delivery?.status,'held');assert.equal(w.effects.deliverySubmit.length,0);
+});
+
+for(const failure of ['unavailable','changed'])test(`cached delivered claims reauthenticate ${failure} delivery evidence across restart`,async t=>{
+ const w=await world(t,{deliveryEvidenceEnabled:true}),p=await w.purchase(),tx=p.pay(),signed=await w.signedClaim(p,tx),address=evidenceAddress(p);
+ const post=async()=>{const res=await fetch(`${w.host().url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});assert.equal(res.status,200);return res.json();};
+ assert.equal((await post()).delivery?.status,'delivered');await w.restart();
+ if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
+ else w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
+ const held=await post();assert.notEqual(held.delivery?.status,'delivered');assert.equal(held.delivery?.evidencePublication,'held-readback-only',shown(held));
+ w.node.faults.transactionDown=()=>false;w.faults.evidenceRead=null;assert.equal((await post()).delivery?.status,'delivered');assert.equal(w.createsAt(address),1);
+});
+test('delivery evidence returns its first authenticated receipt across later observations and restart',async t=>{
+ const w=await world(t,{deliveryEvidenceEnabled:true}),p=await w.purchase(),tx=p.pay(),signed=await w.signedClaim(p,tx),address=evidenceAddress(p);
+ const post=async()=>{const res=await fetch(`${w.host().url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});assert.equal(res.status,200);return res.json();};
+ const first=await post();assert.equal(first.delivery?.status,'delivered');const receipt=first.delivery.evidenceReceipt;
+ w.node.faults.observedAt=receipt.observedAt+1;
+ assert.deepEqual((await p.claim(tx)).delivery?.evidenceReceipt,receipt);await w.restart();
+ assert.deepEqual((await post()).delivery?.evidenceReceipt,receipt);
+ const saved=await w.retainedSession(p.jobId);assert.deepEqual(saved.deliveryEvidenceWork.receipt,receipt);assert.equal(w.createsAt(address),1);
 });
