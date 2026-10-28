@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "a5d0e4627dbff368287bf32843c488fed4430c71"
+        "blob": "6edb6ee930ffb1c3e1209fb2b214b1005f502083"
       },
       "DELTA-LEDGER.json": {
-        "blob": "55716c661b26db9b1a7c2441398c7f95208373fe"
+        "blob": "0294d8e68b7b7b93560b45828b4bd304aa47b1c2"
       },
       "DELTA-MAP.md": {
-        "blob": "f5640fd35cbae15e281f298f60be4387f6d12597"
+        "blob": "2556a7ca4eaf2b7d2ecbbc7272c31e0f3854cc37"
       },
       "DELTA-NOTES.md": {
         "blob": "807c7f000f85b2d92b92008c939092c5403d53e3"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7f5793d088e200d04f0f25eaffa93fd2aad189e6"
+        "blob": "1655f9c25a78156162a8ea4f2485f3d04497322b"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1283,7 +1283,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "4a71f3ca8b5f158ed9dff530dc4a3c8a4c127e87"
+        "blob": "b6179e3b5fb7afbdf0324c48e3c5711ff4b42922"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
@@ -1679,7 +1679,7 @@
         "blob": "e89f5fc167efeb889e0397f22ceb4db6891fe7c3"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "5a4caa3a87c7a5e41f890a318b6b17486e53d1df"
+        "blob": "7625214c9a495c96091e4a2df02d05ed17983f85"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
