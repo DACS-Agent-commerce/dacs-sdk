@@ -725,6 +725,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // early commitment has been seen present; after that it only reads back.
     readbackOnly ||= early ? !attempt || Boolean(session.signatureCommitmentAttempt) : Boolean(session.signatureCommitmentHeld);
     const readbackRequired = () => { throw new SellerAgentError('commitment_readback_required', 'only the retained commitment may be read back here', 503); };
+    if(readbackOnly&&!session.commitment&&!session.signatureCommitmentAttempt)readbackRequired();
     // Once a native commitment has been finalized, every later entry through
     // the public commit path is reconciliation. An absent fresh observation is
     // not authority to publish another CREATE for the same logical address.
@@ -782,7 +783,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           verifiedListing: { disposition: 'verified', listing, pin },
           session: commitmentSession(agreement),
           createdAt: session.commitCreatedAt,
-          commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => { if (readbackOnly && (early || session.signatureCommitmentAttempt || session.commitment)) readbackRequired(); return sign(bytes); } },
+          commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => { if (readbackOnly) readbackRequired(); return sign(bytes); } },
         },
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
@@ -1992,6 +1993,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     receiveProposal: recoveryCall(receiveProposal),
     agreementState,
     commit: recoveryCall(commit),
+    // Reauthenticates cached transport answers without authorizing a new CREATE.
+    readCommitment: recoveryCall(({jobId,signedProjection,signatureAgreement}) => commit({jobId,signedProjection}, {readbackOnly:true,signatureAgreement})),
     commitOnSignature: recoveryCall((input) => {
       if (!input || canonicalize(Object.keys(input).sort()) !== canonicalize(['agreement', 'jobId', 'signedProjection']) || !input.agreement || typeof input.agreement !== 'object') throw new SellerAgentError('signature_agreement_invalid', 'expected exactly jobId, Agreement and signedProjection');
       return commit({ jobId: input.jobId, signedProjection: input.signedProjection }, { signatureAgreement: input.agreement });
