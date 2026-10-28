@@ -867,8 +867,9 @@ export async function policyRefusal(request,policy,limits,{held=false}={}){
   const row=writeKind(c,artifact);
   if(row?.kind!==c.kind)return 'request-shape';
   if(!createMatches(row,c,artifact,policy)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/STORAGE_CHUNK_BYTES)))*OS_PER_DEM)return 'create-bytes';
-  if(artifact.jobId!==c.jobId||!row.artifact(artifact,c,policy))return 'artifact';
+  if(artifact.jobId!==c.jobId)return 'artifact';
   if(!await artifactStructureValid(c.artifactKind,artifact))return 'artifact-structure';
+  if(!row.artifact(artifact,c,policy))return 'artifact';
   if(c.logicalAddress!==row.address(c,artifact,policy))return 'logical-address';
   return purchaseRefusal(row,c,artifact,policy,held===true);
 }

@@ -20,9 +20,16 @@ export class Demos {
     if (state.failGenerationAt === state.generated) throw new Error('TEST key generation failed');
     return \`TEST mnemonic \${state.generated}\`;
   }
-  async connectWallet(mnemonic) { this.mnemonic = mnemonic; }
+  async connectWallet(mnemonic) {
+    if (state.failConnect) throw state.failConnect;
+    this.mnemonic = mnemonic; this.keypair = { privateKey: new Uint8Array(32) };
+  }
   getAddress() { return \`addr-\${this.mnemonic.replace(/\\W/g, '')}\`; }
-  disconnect() {}
+  disconnect() { state.disconnected += 1; }
+}
+export function validateMnemonic(mnemonic) {
+  if (state.failValidation) throw state.failValidation;
+  return /^TEST mnemonic \\w+$/.test(mnemonic);
 }`;
 const sdkProviderStub = 'export const createSdkWalletSession = () => null; export const createDevnetAgreementWalletTransport = () => null;';
 const demosSignatureStub = 'export const claimForAddress = (address) => ({ claimFor: address });';
@@ -36,7 +43,11 @@ export async function open(path, ...rest) {
   record('open', path, rest[0]);
   const handle = await real.open(path, ...rest);
   return new Proxy(handle, { get(target, property) {
-    if (property === 'sync') return async () => { record('sync', path); return target.sync(); };
+    if (property === 'sync') return async () => {
+      record('sync', path);
+      if (state.failSync?.(path)) throw new Error('TEST sync failed');
+      return target.sync();
+    };
     if (property === 'close') return async () => { record('close', path); return target.close(); };
     if (property === 'writeFile') return async (data, ...more) => {
       record('write', path);
@@ -48,7 +59,12 @@ export async function open(path, ...rest) {
   } });
 }
 export async function link(temporary, path) { record('link', temporary, path); await state.beforePublish?.(path); return real.link(temporary, path); }
-export async function unlink(path) { record('unlink', path); return real.unlink(path); }
+export async function lstat(path, ...rest) {
+  const info = await real.lstat(path, ...rest);
+  await state.afterLstat?.(path, info);
+  return info;
+}
+export async function unlink(path) { record('unlink', path); await state.beforeUnlink?.(path); return real.unlink(path); }
 export async function writeFile(path, data, ...rest) {
   record('writeFile', path);
   await state.beforePublish?.(path);
@@ -60,13 +76,14 @@ export async function writeFile(path, data, ...rest) {
 /**
  * Loads the real custody source with stubbed imports.
  * Returns the custody exports, the load's `state` (record of file operations in
- * `events`, and the hooks `failWrite(path)`, `beforePublish(path)` and the key
- * generation counter `failGenerationAt`) and `normalized(directory)`, which
+ * `events`, hooks `failWrite(path)`, `failSync(path)`, `afterLstat(path, info)`, `beforeUnlink(path)`,
+ * `beforePublish(path)`, validation/connection errors and key-generation counters)
+ * and `normalized(directory)`, which
  * returns the events with the directory and the temporary-file suffix masked.
  */
 export async function loadCustody() {
   const key = `TEST_CUSTODY_FIXTURE_${(loads += 1)}`;
-  const state = { events: [], generated: 0, failGenerationAt: null, failWrite: null, beforePublish: null };
+  const state = { events: [], generated: 0, disconnected: 0, failGenerationAt: null, failWrite: null, beforePublish: null, beforeUnlink: null, afterLstat: null, failSync: null };
   globalThis[key] = state;
   const fileSystem = dataUrl(filesystemStub(key));
   const swap = (source, replacements) => replacements.reduce((text, [from, to]) => text.split(from).join(to), source);
