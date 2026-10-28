@@ -42,7 +42,8 @@ export function prepareBoundedBuild(project) {
   // that consumes them, so a concurrent build sees either the old state or a
   // complete new one.
   replaceFile(join(project, supportName), readFileSync(new URL("./bounded-npm-http.cjs", import.meta.url)));
-  replaceFile(ignorePath, ignore + `\n!${supportName}\n`);
+  // Repeating preparation must not stack identical ignore exceptions.
+  if (!ignore.split(/\r?\n/).includes(`!${supportName}`)) replaceFile(ignorePath, ignore + `\n!${supportName}\n`);
   const path = join(project, "Dockerfile.acceptance");
   replaceFile(path, dockerfile);
   return path;

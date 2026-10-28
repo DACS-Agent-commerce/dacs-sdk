@@ -355,6 +355,18 @@ describe("bounded generated build", () => {
       expect(existsSync(`${target}.${process.pid}.tmp`)).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  it("does not duplicate the ignore exception when preparation repeats", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-repeat-"));
+    try {
+      writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
+      writeFileSync(join(root, ".dockerignore"), "**\n");
+      prepareBoundedBuild(root);
+      const once = readFileSync(join(root, ".dockerignore"), "utf8");
+      prepareBoundedBuild(root);
+      expect(readFileSync(join(root, ".dockerignore"), "utf8")).toBe(once);
+      expect(once.match(/^!acceptance-npm-http\.cjs$/gm)).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("refuses an empty ignore file without publishing generated files", () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-bounded-empty-"));
     try {
