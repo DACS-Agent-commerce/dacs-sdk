@@ -178,11 +178,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   };
   // The pinned observer reads transaction and block facts concurrently.
   // Serialize their actual connection fences; this creates no write permit.
-  const observe = async (path,body) => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>fenced(async()=>{
-    await binder.bind();
+  const observe = async (path,body,{signal}={}) => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>fenced(async()=>{
+    signal?.throwIfAborted();
+    await makeBinder(false,signal).bind();
     if(path !== '/' && !/^\/storage-program\/stor-[0-9a-f]{40}$/.test(path)) fail('readonly_only','only bounded native storage reads are supported');
     if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
-    return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,maxBytes:4*1024*1024,expectedOrigin:new URL(pinned.endpoint).origin});
+    return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,signal,maxBytes:4*1024*1024,expectedOrigin:new URL(pinned.endpoint).origin});
   }));
   const node = async (message, data, options) => {
     const answer = await raw({ method:'nodeCall', params:[{ message, data }] }, {}, options);
@@ -1052,11 +1053,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       // An expired lease with no running confirm/broadcast can issue nothing (claimLease); fenced() frees it.
       isWalletIdle:(address)=>{ const l=byAddress.get(address); return ADDRESS.test(address??'') && !closed && (!l || (l.expiresAt<=now() && l.busy===0)) && inFlight.size===0; },
       observeBinding:()=>tracked(()=>journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>binder.bind()))),
-      readRpc:(path,body)=>tracked(()=>observe(path,body)),
+      readRpc:(path,body,options)=>tracked(()=>observe(path,body,options)),
       chainReader:()=>{
-        const reader=createDemosChainReader({rpcUrl:pinned.endpoint,network:pinned.network,pinnedIdentity:pinned.chainIdentity,fetchImpl:async(url,options={})=>new Response(JSON.stringify(await capability.readRpc(new URL(url).pathname,options.body?JSON.parse(options.body):undefined)),{status:200,headers:{'content-type':'application/json'}})});
-        async function observeTransfer(hash,purchase=false){
-          const result=await reader.observeTransfer(hash);
+        const reader=createDemosChainReader({rpcUrl:pinned.endpoint,network:pinned.network,pinnedIdentity:pinned.chainIdentity,fetchImpl:async(url,options={})=>new Response(JSON.stringify(await capability.readRpc(new URL(url).pathname,options.body?JSON.parse(options.body):undefined,{signal:options.signal})),{status:200,headers:{'content-type':'application/json'}})});
+        async function observeTransfer(hash,purchase=false,options){
+          const result=await reader.observeTransfer(hash,options);
+          options?.signal?.throwIfAborted();
           if(result.status==='included'){
             const issued=await journal.get(intent(hash));
             if(issued?.signedTransaction?.content?.type==='native'){
@@ -1069,7 +1071,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         }
         // Only buyer verification may inspect a failed execution's included slot;
         // it carries the source verdict so a later body read cannot outrank it.
-        return {...reader,observeTransfer:hash=>observeTransfer(hash),observePurchaseTransfer:hash=>observeTransfer(hash,true),observePassiveTransfer};
+        return {...reader,observeTransfer:(hash,options)=>observeTransfer(hash,false,options),observePurchaseTransfer:(hash,options)=>observeTransfer(hash,true,options),observePassiveTransfer};
       }}:{}),
     onPurchaseStep(listener) { if(typeof listener!=='function')throw new TypeError('timeline listener required');stepListeners.add(listener);return()=>stepListeners.delete(listener); },
     profile:implementation.profile,

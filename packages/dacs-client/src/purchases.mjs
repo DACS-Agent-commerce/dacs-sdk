@@ -50,6 +50,30 @@ export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
 const MAX_TRANSFER_OBSERVATION_BYTES = 64 * 1024;
+// Diagnostic reads run host-supplied readers that may never settle, so the
+// deadline is raced: it aborts the reader's signal and rejects without waiting
+// for the reader. (The transport's own passive read honours its signal and
+// settles; util/http.mjs observeWithDeadline waits for it and races nothing.)
+async function raceWithDeadline(read, { timeoutMs, signal } = {}) {
+  const controller = new AbortController();
+  const cancellation = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+  let timer, abort;
+  try {
+    return await Promise.race([
+      new Promise((_, reject) => {
+        abort = () => reject(cancellation.reason);
+        cancellation.addEventListener('abort', abort, { once: true });
+        timer = setTimeout(() => controller.abort(new OutboundError('timeout', 'host chain read timed out')), timeoutMs);
+        if (cancellation.aborted) abort();
+      }),
+      Promise.resolve().then(() => { cancellation.throwIfAborted(); return read({ signal: cancellation }); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    cancellation.removeEventListener('abort', abort);
+    controller.abort();
+  }
+}
 // Domain separator of the purchase commitment (approval-bound, not on chain).
 export const COMMITMENT_DOMAIN = 'dacs-chatgpt-plugin/fixed-price-dem-purchase-commitment/v1';
 // Recorded with every payment observation so no reader mistakes it for more.
@@ -172,7 +196,7 @@ export function approvalBinding(operation) {
 // Installed hosts have no qualified settlement authority in this candidate.
 // CORE §11.1.2(3): profile admission remains held. Host diagnostics are not
 // artifact verification or the archival path described in §11.1.2(4).
-// Chain readback remains held until the passive reader integration above this part.
+// verifyDeal accepts an optional signal to cancel its passive chain reads.
 export function createPublicPurchaseService(options) {
   return createPurchaseService(options, true);
 }
@@ -183,9 +207,12 @@ export function createPublicPurchaseService(options) {
 // APPROVE_PURCHASE wallet-challenge purpose. Both are checked before any
 // statement is prepared. Every action that prepares, approves, hands off or
 // signs refuses first while purchase actions are held.
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }, diagnosticOnly = false) {
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000 }, diagnosticOnly = false) {
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
+  if (!Number.isSafeInteger(chainReadTimeoutMs) || chainReadTimeoutMs < 1 || chainReadTimeoutMs > 60000) {
+    throw new OperationError('invalid_configuration', 'chainReadTimeoutMs must be an integer from 1 to 60000');
+  }
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
   if (!db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'handoff_expires_at')) {
     throw new OperationError('schema_migration_required', 'Migrate operations to include handoff_expires_at and provision explicit portal lifetimes before constructing the purchase service.');
@@ -274,10 +301,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // (no real chain identity), or a chain reporting the source-pinned genesis
   // identity. Unpinned or mismatched chains are refused; an unreachable RPC
   // propagates as unavailable.
-  async function currentDomain() {
+  async function currentDomain(options) {
     let observed;
     try {
-      observed = await chain.networkIdentity();
+      observed = await chain.networkIdentity(options);
     } catch (error) {
       if (error instanceof OutboundError && error.kind === 'invalid') {
         throw new OperationError('network_identity_unverified', 'the configured Demos RPC did not report a chain identity; nothing was prepared, signed or sent');
@@ -295,8 +322,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   // The configured RPC must still be the domain this purchase was bound to.
-  async function assertBoundDomain(operation) {
-    const current = await currentDomain();
+  async function assertBoundDomain(operation, options) {
+    const current = await currentDomain(options);
     if (!sameDomain(operation.terms.domain, current)) {
       throw new OperationError('network_identity_mismatch', 'the configured Demos RPC is not the network this purchase is bound to; nothing was signed or sent', { bound: operation.terms.domain ?? null, current });
     }
@@ -979,7 +1006,50 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return value;
   }
 
+  async function diagnosticReadback(operation, rawHash, signal) {
+    operation = projectExpiry(operation);
+    const hash = coordinates.get(operation.id)?.reportedTxHash;
+    if (rawHash != null && canonicalHash(rawHash) !== hash) throw new OperationError('invalid_state', 'diagnostic readback only accepts the recorded transaction hash');
+    let observation = null;
+    if (hash) {
+      try {
+        observation = await raceWithDeadline(async options => {
+          await assertBoundDomain(operation, options);
+          options.signal.throwIfAborted();
+          const observe = chain.observePassiveTransfer ?? (usesNativeAgreementPayment(operation) ? null : chain.observeTransfer);
+          if (typeof observe !== 'function') throw new OperationError('passive_reader_unavailable', 'native diagnostics require a passive chain reader');
+          const value = await observe.call(chain, hash, options);
+          options.signal.throwIfAborted();
+          // Retain only bounded primitive contract fields. Never traverse or
+          // serialize arbitrary host extension objects or collections.
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return checkedTransferObservation(value, hash);
+          const projected = {};
+          for (const key of transferDiagnosticFields) {
+            const field = value[key];
+            if (field === undefined) continue;
+            if ((!['string', 'number', 'boolean'].includes(typeof field) && field !== null)
+              || (typeof field === 'string' && field.length > (key === 'reason' ? 240 : 1024))) {
+              return { status: 'malformed', reason: 'host observation field exceeds its bounded primitive contract' };
+            }
+            projected[key] = field;
+          }
+          return checkedTransferObservation(projected, hash);
+        }, { timeoutMs: chainReadTimeoutMs, signal });
+      } catch (error) {
+        observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240),
+          ...(typeof error?.kind === 'string' && error.kind.length <= 64 ? { kind: error.kind } : {}),
+          ...(typeof error?.code === 'string' && error.code.length <= 64 ? { code: error.code } : {}) };
+      }
+    }
+    return projectDiagnostic({ operation: projectDiagnosticOperation(operation), verification: { outcome: 'readback_only', authority: 'unqualified_host',
+      observation, termsMatch: observation?.status === 'included'
+        && (!Object.hasOwn(observation, 'sourceDisposition') || observation.sourceDisposition === 'included')
+        ? same(observation.payer, operation.terms.buyer.wallet) && same(observation.payee, operation.terms.seller.payee) && observation.amountOs === operation.terms.price.amountOs
+        : null, ...OBSERVATION_LIMITS } });
+  }
+
   async function verifySettlement(operation) {
+    if (diagnosticOnly) return diagnosticReadback(operation);
     // Unverified readback cannot undo a nonce-proven cancellation.
     const moveUnverified = (toStatus, data) => operation.status === 'cancelled' ? ops.get(operation.accountId, operation.id) : move(operation, toStatus, data);
     // An unverified re-read replaces the stored observation but keeps the
@@ -1223,14 +1293,14 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // verify_deal: owner-scoped independent re-check; an optional hash is a pointer.
   // attachOnly: see attachHashAndVerify. Replacing a recorded pointer stays
   // the explicit verify_deal correction.
-  async function verifyDeal({ accountId, operationId, token, txHash, attachOnly = false }) {
+  async function verifyDeal({ accountId, operationId, token, txHash, attachOnly = false, signal }) {
     const found = ownedPurchase(accountId, operationId, token);
-    if (diagnosticOnly) assertPurchaseActionsAdmitted();
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);}
     catch(error){
       if(error?.code!=='buyer_access_closed'||error?.details?.buyerAccessMissing)throw error;
       const coords=coordinates.get(found.id);
       if(!coords?.reportedTxHash||(txHash&&canonicalHash(txHash)!==coords.reportedTxHash))throw error;
+      if(diagnosticOnly)return diagnosticReadback(found,txHash,signal);
       const native=await protocol?.readIssuedPayment?.(found,coords.reportedTxHash);
       if(native)return {operation:found,verification:{outcome:'readback_only',...native,...OBSERVATION_LIMITS}};
       if(usesNativeAgreementPayment(found))throw error;
@@ -1240,6 +1310,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       observation=checkedTransferObservation(observation,coords.reportedTxHash);
       return {operation:found,verification:{outcome:'readback_only',observation,...OBSERVATION_LIMITS}};
     }
+    if (diagnosticOnly) return diagnosticReadback(found, txHash, signal);
     const operation = expireIfNeeded(found);
     if (txHash) {
       assertAgreementPaymentHeld(operation);
