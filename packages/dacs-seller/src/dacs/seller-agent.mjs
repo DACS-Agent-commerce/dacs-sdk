@@ -31,7 +31,7 @@ import { randomBytes } from 'node:crypto';
 import { MAX_STORAGE_ARTIFACT_BYTES } from './wallet-transactions.mjs';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
-import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
+import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
@@ -68,11 +68,6 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 export const SELLER_NO_EFFECT_ERRORS = new Set(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', ...SELLER_PRE_EFFECT_REFUSALS]);
 
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
-// Payment-evidence anchor outcomes after which no attempt can land: it never
-// reached the wallet (the agent's own record), or the wallet's journal
-// answered that nothing it signed for the address can be included. No wallet
-// answer to the anchor itself is one: any answer is 'sent'.
-const UNSENT_ANCHOR_OUTCOMES = Object.freeze(['not-sent', 'unsigned']);
 // Readback failures of retained native evidence work (the commitment and
 // Agreement readback): a retry answers them as held, with the cause.
 const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
@@ -232,6 +227,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const assertSessionAdmission = () => {
     if (nativeProfile && !admission) throw new SellerAgentError('session_admission_required', 'the native seller profile opens a session only under the seller\'s session admission (profile, challenge, revocation and Vet records)', 503);
   };
+  const nativeUnavailable=()=>{throw new SellerAgentError('settlement_profile_unavailable','native payment handling is not assembled',503);};
   const assertSettlementChain = () => {
     if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile commits and takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
   };
@@ -253,8 +249,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   let closed=false;
   const requireOpen=()=>{if(closed)throw new SellerAgentError('seller_closed','the seller agent is closed',503);};
   try {
-  const assertNativePaymentHandler=()=>{if(typeof submitNativePaymentEvidence!=='function')throw new SellerAgentError('settlement_profile_unavailable','native payment handling is not assembled',503);};
-
   const sign = (bytes) => new Uint8Array(durable ? durable.signOnce(`signature:${sha256Hex(bytes)}`, Buffer.from(bytes)) : signer.sign(Buffer.from(bytes)));
   const rawReceiptStore = durable?.receiptStore ?? createInMemorySellerReceiptStore();
   const retainedAdmission = durable?.context();
@@ -938,11 +932,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       canonicalize(left.transactionRef)===canonicalize(right.transactionRef) && canonicalize(left.blockRef)===canonicalize(right.blockRef);
   }
 
-  // A fresh process may observe the same reviewed block with a normalized
-  // wall-clock timestamp. The immutable block identity is its hash and height;
-  // preserve the already-authenticated original receipt rather than replacing
-  // it with that later observation. Every other receipt/transaction binding
-  // remains exact, and both timestamps must still be well-formed source facts.
+  // Commitment replay requires the exact authenticated block identity and
+  // timestamp. Keep the original receipt after the fresh comparison succeeds.
   function sameNativeCommitmentReceipt(left, right) {
     if (!left || !right || !Number.isSafeInteger(left.blockRef?.timestamp) || !Number.isSafeInteger(right.blockRef?.timestamp)) return false;
     const stable = ['receiptVersion','substrate','finalityProfile','logicalAddress','nativeAddress','contentHash','writer','nonce','state','observationDisposition'];
@@ -952,7 +943,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   const pinnedRail = (jobId) => {
-    if (!nativeProfile) return { disposition: 'verified', rail: structuredClone(DEM_RAIL_DEFINITION), railRegistryVersion: RAIL_REGISTRY_VERSION };
     const railPin = sessions.get(jobId)?.railPin;
     const verdict = rail.evaluate(railPin, 'in-flight');
     if (verdict.decision !== 'pass') return { disposition: verdict.decision === 'fail' ? 'rejected' : 'indeterminate', reason: `pinned rail ${verdict.decision} (${verdict.reason})` };
@@ -979,18 +969,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (railed.disposition !== 'verified') return railed;
       return ref?.railId === railed.rail.railId && railRegistryVersion === railed.railRegistryVersion ? railed : { disposition: 'rejected', reason: 'unknown rail' };
     },
-    resolveIdentityBundle: async (bundleHash) => {
-      if (bundleHash === identityBundleHash(sellerBundle)) return { disposition: 'verified', bundle: structuredClone(sellerBundle) };
-      for (const session of sessions.values()) {
-        const presented=session.demDeliveryContext?.input?.seller?.identityBundle;
-        if(presented && identityBundleHash(presented)===bundleHash)return {disposition:'verified',bundle:structuredClone(presented)};
-      }
-      for (const session of sessions.values()) if (session.buyerBundleHash === bundleHash) return { disposition: 'verified', bundle: structuredClone(session.buyerBundle) };
-      return { disposition: 'rejected', reason: 'unknown identity bundle' };
+    resolveIdentityBundle:async hash=>{
+      const current=sessions.get(paymentJobId);
+      for(const bundle of [sellerBundle,current?.demDeliveryContext?.input?.seller?.identityBundle,current?.buyerBundle].filter(Boolean))if(identityBundleHash(bundle)===hash)return {disposition:'verified',bundle:structuredClone(bundle)};
+      return {disposition:'rejected',reason:'unknown identity bundle'};
     },
     resolvePayerAddress: async () => ({ disposition: 'rejected', reason: 'x402 is not supported by this agent' }),
     resolvePayeeDestination: async () => ({ disposition: 'error', reason: 'x402 is not supported by this agent', tier: 2 }),
-    observeDemosTransfer: (txHash) => readAdmissionCapability({read:()=>observeDemosTransfer(txHash)},'read',{}),
+    observeDemosTransfer: nativeEvidence?.observeDemosTransfer,
     observeX402Transfer: async () => ({ status: 'unavailable', reason: 'x402 is not supported by this agent' }),
     verifyX402ReceiptExtensions: () => ({ disposition: 'fail', reason: 'x402 is not supported by this agent' }),
     classifyX402SettlementChain: () => ({ disposition: 'unsupported', reason: 'x402 is not supported by this agent' }),
@@ -1004,7 +990,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return { ref: fixtureRef(logicalAddress, contentHash(artifact)), receipt };
   }
 
-  const signEvidence = (unsigned) => signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) });
 
   function signedFixtureRef(logicalAddress, hash) {
     return { ...fixtureRef(logicalAddress, hash), signer: claim };
@@ -1097,25 +1082,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       payloadHash:sha256Hex(canonicalize(deliveryReport(session,work.intake.settlementId))) };
   }
 
-  function sameNativeDeliveryReceipt(left, right) {
-    if (!left || !right) return false;
-    const stable = ['receiptVersion','substrate','finalityProfile','logicalAddress','nativeAddress','contentHash','writer','nonce','state','observationDisposition'];
-    return stable.every((key)=>canonicalize(left[key]??null)===canonicalize(right[key]??null)) &&
-      canonicalize(left.transactionRef)===canonicalize(right.transactionRef) && canonicalize(left.blockRef)===canonicalize(right.blockRef);
-  }
 
-  // A fresh process may observe the same reviewed block with a normalized
-  // wall-clock timestamp. The immutable block identity is its hash and height;
-  // preserve the already-authenticated original receipt rather than replacing
-  // it with that later observation. Every other receipt/transaction binding
-  // remains exact, and both timestamps must still be well-formed source facts.
-  function sameNativeCommitmentReceipt(left, right) {
-    if (!left || !right || !Number.isSafeInteger(left.blockRef?.timestamp) || !Number.isSafeInteger(right.blockRef?.timestamp)) return false;
-    const stable = ['receiptVersion','substrate','finalityProfile','logicalAddress','nativeAddress','contentHash','writer','nonce','state','observationDisposition'];
-    return stable.every((key)=>canonicalize(left[key]??null)===canonicalize(right[key]??null)) &&
-      canonicalize(left.transactionRef)===canonicalize(right.transactionRef) &&
-      canonicalize(left.blockRef)===canonicalize(right.blockRef);
-  }
+
+
 
   // A lost response after the native Deliverable CREATE has applied leaves the
   // SDK's durable delivery WAL at an intent. Before re-entering that runner,
@@ -1384,7 +1353,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     assertRailPin(session.railPin,'in-flight');
     if(requestedEvidence!=null&&requestedEvidence!==NATIVE_PAYMENT_EVIDENCE)throw new SellerAgentError('native_evidence_selector_invalid','unknown native payment selector',409);
-    if(requestedEvidence===NATIVE_PAYMENT_EVIDENCE||session.nativePaymentWork){if(!nativeProfile)throw new SellerAgentError('settlement_profile_unavailable','native payment is unavailable in the fixture profile',503);return settlementOperations.payment({session,jobId,txHash,payerPayingKey,requestedEvidence});}
+    if(requestedEvidence===NATIVE_PAYMENT_EVIDENCE||session.nativeEvidenceWork)return nativeProfile?settlementOperations.payment({session,jobId,txHash,payerPayingKey,requestedEvidence}):nativeUnavailable();
     if(nativeProfile)throw new SellerAgentError('native_evidence_required','the native seller profile takes payment only as native payment evidence',409);
     return settlementOperations.payment({jobId,txHash,payerPayingKey});
   }
@@ -1409,10 +1378,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   // Reduce a retained native-evidence checkpoint only from independently
-  // authenticated, read-only authorities. In particular, this reduction never
-  // calls anchorEvidence (only submitNativePaymentEvidence sends it again,
-  // after an attempt that cannot have written it) and neither an old HTTP response nor the signed seller
-  // snapshot is treated as a receipt/public projection.
+  // authenticated, read-only authorities. This reduction never dispatches a
+  // CREATE; the owning journal alone prepares or reuses its exact bytes.
+  // An old HTTP response or seller snapshot is no receipt/public projection.
   async function reduceNativeEvidenceWork(session, work, { jobId, txHash, payerPayingKey }) {
     const terms = agreementTerms(session.agreement), hash = paymentTxHash(txHash), intake = work?.intake;
     const held = (reason, disposition = 'indeterminate') => ({ disposition, reason });
@@ -1428,8 +1396,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (check.decision !== 'pass') return held('seller_native_evidence_artifact_mismatch', 'rejected');
     const { disposition, fulfilment, reason, permitId, ...authorization } = intake;
     let permit;
-    try { permit = await receiptStore.inspectPermit(permitId); }
-    catch { return held('seller_native_evidence_permit_unavailable'); }
+    try { permit = await rawReceiptStore.inspectPermit(permitId); }
+    catch(error) { return {disposition:'indeterminate',reason:`seller_native_evidence_permit_unavailable: ${String(error.message).slice(0,160)}`,code:String(error.code??'unknown').slice(0,64)}; }
     if (!['available', 'already-consumed'].includes(permit.status) || permit.claim?.jobId !== jobId ||
         canonicalize(permit.claim?.authorization) !== canonicalize(authorization)) return held('seller_native_evidence_permit_mismatch', 'rejected');
     // demosEvidence.signedTransaction is canonical proof text, not a lossless
@@ -1442,7 +1410,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let projection = retainedProjection;
     if (!projection && typeof work.publicSignedProjectionJson !== 'string' && walletJournal) {
       try { projection = await walletJournal.readSignedProjection({ logicalAddress: work.address }); }
-      catch { projection = null; }
+      catch(error) { return {disposition:'indeterminate',reason:`seller_native_evidence_projection_unavailable: ${String(error.message).slice(0,160)}`,code:String(error.code??'unknown').slice(0,64)}; }
     }
     const read = await nativeEvidence.readEvidence({ agreement: session.agreement, writer: claim, txHash: hash,
       blockNumber: intake.settlementIdentity.blockNumber, committedAt: session.commitment.committedAt, retainedReceipt:work.nativeReceipt,
@@ -1460,8 +1428,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const authenticatedReceipt = work.nativeReceipt ? structuredClone(work.nativeReceipt) : structuredClone(read.receipt);
     const authenticatedProjection = retainedProjection ? structuredClone(retainedProjection) : structuredClone(read.signedProjection);
     work.nativeReceipt ??= structuredClone(authenticatedReceipt);
-    work.publicSignedProjection ??= structuredClone(authenticatedProjection);
     work.publicSignedProjectionJson ??= JSON.stringify(authenticatedProjection);
+    delete work.publicSignedProjection;
     session.stage = session.deliveryReady ? session.stage : 'native-payment-evidenced';
     persist(session);
     return { ...read, receipt: authenticatedReceipt, signedProjection: authenticatedProjection };
@@ -1608,111 +1576,41 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       step = 'work-checkpoint';
       const work = session.nativeEvidenceWork = { txHash: hash, payerPayingKey, agreementHash: contentHash(session.agreement), commitmentHash: contentHash(session.commitment.record),
         listingPin: pin, intake: JSON.parse(JSON.stringify(intake)), evidence, address: paymentEvidenceAddress(jobId, terms.rail, terms.paymentPhaseIndex),
-        anchorAttempt: 'readback-first-retry', anchorAttempts: 0, anchorOutcome: 'not-sent' };
+        walletJournal:walletJournal.journalId,journalVersion:1, anchorAttempts:0, anchorOutcome:'not-sent' };
       session.stage = 'native-payment-evidence-held'; persist(session);
       return { work };
     } catch (error) {
       if (durable.loadSession(jobId)?.nativeEvidenceWork) throw error;
       delete session.nativeEvidenceWork;
-      const cause = typeof error?.code === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(error.code) ? error.code : 'unclassified';
+      const cause = typeof error?.code === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(error.code) ? error.code : step==='evidence-signing'?'evidence-signing-failed':'unclassified';
       return { answer: { status: paymentVerified || step === 'commitment-readback' || error?.status === 503 ? 'indeterminate' : 'rejected', reason: 'seller_native_evidence_not_started', step, cause } };
     }
   }
 
-  // One call of the wallet journal's anchor with the exact retained evidence,
-  // under the job lock and settlement credit, its attempt kept before the call
-  // as `anchorOutcome: 'unknown'`. Any answer makes it 'sent' (no answer of the
-  // anchor proves that nothing was signed: only the journal's reconciliation
-  // can). A caught throw with no projection in that journal is a proven
-  // pre-signing failure; a crash or an unreadable journal stays 'unknown'.
-  async function anchorNativePaymentEvidence(session, work) {
+  async function ensureNativePaymentEvidence(session,work) {
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
-    work.anchorAttempts = (work.anchorAttempts ?? 1) + 1;
-    work.anchorOutcome = 'unknown';
-    // The journal this attempt goes through: only it may later answer for it.
-    // An earlier attempt's answer is not this one's.
-    work.walletJournal = walletJournal.journalId;
-    delete work.anchorAnswer;
-    persist(session);
+    // Bind only an older checkpoint that demonstrably predates its first call.
+    if(!work.walletJournal&&work.anchorOutcome==='not-sent'&&!work.anchorAttempts&&!work.anchorAnswer){work.walletJournal=walletJournal.journalId;persist(session);}
+    if(work.walletJournal!==walletJournal.journalId)throw new SellerAgentError('wallet_journal_changed','restore the original evidence journal',503);
+    const terms=agreementTerms(session.agreement);
+    const current=await verifySellerPaymentIntake({jobId:session.jobId,phaseIndex:terms.paymentPhaseIndex,railId:terms.rail,payerPayingKey:work.payerPayingKey,receipt:{kind:'pay-dem',txHash:work.txHash}},intakeDepsFor(session.jobId));
+    if(current.disposition!=='verified'||!['claim','already-claimed'].includes(current.fulfilment)||current.settlementId!==work.intake.settlementId||current.permitId!==work.intake.permitId||current.evidenceHash!==work.intake.evidenceHash
+      ||canonicalize(current.evidenceInput)!==canonicalize(work.intake.evidenceInput))throw new SellerAgentError('payment_readback_required',current.reason??'payment is not freshly authenticated',503);
+    durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
+    work.anchorAttempts=(work.anchorAttempts??0)+1;persist(session);
     try {
-      const answer = await nativeEvidence.anchorEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId: session.jobId, receiptContentHash: work.intake.evidenceHash });
-      work.anchorAnswer = walletAnswer(answer);
-      work.anchorOutcome = 'sent';
-      delete work.anchorError;
-    } catch (error) {
-      work.anchorError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) };
-      // This exact journal keeps every CREATE before broadcast. A caught
-      // failure with explicitly no retained projection reached no send.
-      try { if (await walletJournal.readSignedProjection({ logicalAddress: work.address }) === null) work.anchorOutcome = 'failed-before-signing'; } catch { /* unknown stays fenced */ }
-    }
+      const answer=await walletJournal.ensureEvidence({expectedJournalId:work.walletJournal,authorize:()=>{assertSettlementCredit(session.jobId);return heldFor(session.jobId)();},logicalAddress:work.address,artifact:structuredClone(work.evidence),writer:claim,artifactKind:'SettlementEvidence',jobId:session.jobId,
+        receiptContentHash:work.intake.evidenceHash,...(work.journalVersion===1?{}:{attempt:{outcome:work.anchorOutcome,answer:structuredClone(work.anchorAnswer??null)}})});
+      work.journalVersion=1;work.anchorAnswer=walletAnswer(answer);work.anchorOutcome='sent';delete work.anchorError;
+    } catch(error) {work.anchorError={code:String(error?.code??'unknown').slice(0,64),message:String(error?.message??error).slice(0,240)};}
     persist(session);
   }
 
-  // DACS-4 PC-7(b): the anchor retry is idempotent on the payment address. An
-  // attempt that was sent or whose outcome is unknown (or a retained 'refused'
-  // of an earlier version), and that does not read back, is resolved only by
-  // the wallet that holds its signed transaction: `reconcilePaymentEvidence`
-  // answers from the wallet's own journal for this exact evidence (the agent
-  // takes it only from one createPaymentEvidenceWalletJournal, with that
-  // journal's anchor). Only { status: 'unsigned' } (it holds no transaction it
-  // signed for this address that is or can still be included) lets the same
-  // bytes be sent again; { status: 'rebroadcast' | 'pending', txHash } (the one signed
-  // transaction was sent again, or is still pending) keeps the readback
-  // waiting. Any other answer or a throw keeps the claim held, with its cause.
-  async function reconcileNativePaymentEvidence(session, work) {
-    durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
-    // A lost or replaced journal file is another journal: it keeps nothing of
-    // this attempt, so its `unsigned` would sign a second CREATE. Not asked.
-    if (typeof work.walletJournal !== 'string' || work.walletJournal.length===0 || work.walletJournal !== walletJournal.journalId) {
-      work.reconcileError = { code: 'wallet_journal_changed', message: 'the wallet journal that kept this anchor attempt is not the configured one; restore its file to resolve the attempt' };
-      persist(session);
-      return;
-    }
-    let answer;
-    try {
-      answer = await reconcilePaymentEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId: session.jobId,
-        receiptContentHash: work.intake.evidenceHash, attempt: { outcome: work.anchorOutcome, answer: structuredClone(work.anchorAnswer ?? null) } });
-    } catch (error) {
-      work.reconcileError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) };
-      persist(session);
-      return;
-    }
-    work.reconcileAnswer = walletAnswer(answer);
-    delete work.reconcileError;
-    // 'unsigned' about a sent attempt names the transaction it superseded:
-    // the one the anchor answered. Any other is not about this attempt.
-    const sent = work.anchorAnswer?.txHash;
-    if (answer?.status === 'unsigned' && sent !== undefined && answer.txHash !== sent) {
-      work.reconcileError = { code: 'wallet_journal_answer_mismatch', message: 'the wallet journal answered unsigned for a transaction other than the one this attempt sent' };
-    } else if (answer?.status === 'unsigned') work.anchorOutcome = 'unsigned';
-    persist(session);
-  }
-
-  // Separate from the historical fixture receipt/delivery publisher. Genuine
-  // SDK SettlementEvidence is preserved byte-for-byte; no artifactType is
-  // invented to satisfy a wallet bridge. Retain an issued attempt BEFORE the
-  // wallet boundary. Every later call or restart reads back first. DACS-4
-  // PC-7(b), write-once: the anchor is sent again with the same bytes only
-  // when no attempt can have written it, that is when the last attempt never
-  // ran (a crash after the checkpoint, 'not-sent') or the wallet's journal
-  // answered that nothing it signed can land ('unsigned'), and the readback
-  // finds nothing; at most once per
-  // call and never in the call of the first attempt. A name-index miss is no
-  // proof of absence (CORE §5.1): after an attempt that was sent or whose
-  // outcome is unknown (a throw, a crash during the call), nothing is sent
-  // again unless reconcilePaymentEvidence answers 'unsigned'; otherwise the
-  // readback is waited for, so a write that landed but is not indexed yet is
-  // never created twice. An unknown readback sends nothing and asks nothing.
-  // Once a readback authenticated it (work.nativeReceipt), it is never sent again.
-  // Once the work is retained, it alone decides what a retry may send, so a
-  // readback that fails (a node or index outage) answers held with its cause
-  // instead of throwing: the claim stays a retry, never an uncertain effect
-  // with no way on (seller-http.mjs). A settlement collision still refuses.
   async function submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence }) {
     if (!nativeEvidence || requestedEvidence !== NATIVE_PAYMENT_EVIDENCE) throw new SellerAgentError('native_evidence_held', 'the explicit native evidence capability/terms are absent');
     if (!session.commitment || !session.agreementAnchor) throw new SellerAgentError('not_committed', 'native Agreement and seller commitment must be retained');
     const hash = paymentTxHash(txHash);
-    let work = session.nativeEvidenceWork, retry = false;
+    let work = session.nativeEvidenceWork;
     if (work) {
       if (work.txHash !== hash || work.payerPayingKey !== payerPayingKey || work.agreementHash !== contentHash(session.agreement)
           || work.commitmentHash !== contentHash(session.commitment.record)) throw new SellerAgentError('seller_native_evidence_conflict', 'the retained exact payment/Agreement/commitment cannot change', 409);
@@ -1722,30 +1620,22 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         return heldNativeEvidence(work, { disposition: 'indeterminate', reason: `seller-commitment-readback-unavailable: ${String(error?.message ?? error).slice(0, 200)}`,
           code: typeof error?.code === 'string' ? error.code : 'unclassified' });
       }
-      retry = !work.nativeReceipt;
     } else {
       const started = await startNativePaymentEvidence({ session, jobId, hash, payerPayingKey });
       if (!started.work) return started.answer;
       work = started.work;
-      await anchorNativePaymentEvidence(session, work);
     }
     // A retained delivery is not a shortcut: the payment evidence it rests on is
     // authenticated again below, and advanceAuthenticatedNativeDelivery then
     // reads the Deliverable back.
     let read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
-    // A complete miss only permits asking the owning journal; it grants no send.
-    const noReadback=()=>read.disposition==='absent'||(read.disposition==='indeterminate'&&['name-index-miss','native-address-miss'].includes(read.nativeObservation));
-    if(retry&&noReadback()&&work.anchorOutcome!=='not-sent'&&work.walletJournal!==walletJournal.journalId){await reconcileNativePaymentEvidence(session,work);return heldNativeEvidence(work,{disposition:'indeterminate',reason:'wallet_journal_changed'});}
-    if (retry && noReadback() && reconcilePaymentEvidence && !UNSENT_ANCHOR_OUTCOMES.includes(work.anchorOutcome)) await reconcileNativePaymentEvidence(session, work);
-    if (retry && noReadback() && UNSENT_ANCHOR_OUTCOMES.includes(work.anchorOutcome)) {
-      await anchorNativePaymentEvidence(session, work);
-      read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
+    const missing=read.disposition==='absent'||read.disposition==='indeterminate'&&['name-index-miss','native-address-miss'].includes(read.nativeObservation);
+    if(missing&&!work.nativeReceipt) {
+      try {await ensureNativePaymentEvidence(session,work);}
+      catch(error){work.anchorError={code:String(error?.code??'unknown').slice(0,64),message:String(error?.message??error).slice(0,240)};persist(session);}
+      read=await reduceNativeEvidenceWork(session,work,{jobId,txHash:hash,payerPayingKey});
     }
-    // An anchor that may have been written and is not read back yet is
-    // pending, not absent: the index has not shown it.
-    if (read.disposition === 'absent' && !UNSENT_ANCHOR_OUTCOMES.includes(work.anchorOutcome)) {
-      read = { ...read, disposition: 'indeterminate', reason: `native-payment-evidence-anchor-${work.anchorOutcome === 'sent' ? 'sent' : 'outcome-unknown'}-not-read-back` };
-    }
+    if(read.disposition==='absent')read={...read,disposition:'indeterminate',reason:'native-payment-evidence-not-read-back'};
     if (read.disposition === 'present') return advanceAuthenticatedNativeDelivery(session, work, read);
     return heldNativeEvidence(work, read);
   }
@@ -1888,7 +1778,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (!work) refuse();
       const intake = work.intake;
       const { disposition, fulfilment, reason, permitId, ...authorization } = intake;
-      const permit = await receiptStore.inspectPermit(permitId); // read-only pinned SDK authority
+      const permit = await rawReceiptStore.inspectPermit(permitId); // read-only pinned SDK authority
       if (disposition !== 'verified' || !['claim', 'already-claimed'].includes(fulfilment) ||
           permit.status !== 'available' || !same(permit.claim.authorization, authorization) ||
           permit.claim.jobId !== request.jobId || durable.settlementJob(intake.settlementId) !== request.jobId) refuse();
@@ -1957,7 +1847,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             // so a corrected claim reaches payment intake.
             // Either run can sign and send: never under an expired delegation.
             if (readOnly) return held('peer_delegation_expired: a payment claim runs again only under a live session delegation');
-            assertNativePaymentHandler();
+            assertSettlementChain();
             const answer = work
               ? await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence })
               : await submitPayment({ jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, nativePaymentEvidence: body.nativePaymentEvidence });
