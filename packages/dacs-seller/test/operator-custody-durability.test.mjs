@@ -99,6 +99,18 @@ test('an empty role file left by the earlier bootstrap is replaced', async (t) =
   assert.equal((await stat(join(directory, '.wallet-repair'))).mode & 0o777, 0o700);
 });
 
+test('a new custody directory is synced in every parent this bootstrap creates', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-parent-'));
+  const custody = await loadCustody();
+  t.after(async () => { custody.release(); await rm(root, { recursive: true, force: true }); });
+  const one = join(root, 'one'), two = join(one, 'two'), directory = join(two, 'wallets');
+  await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+  const events = custody.state.events;
+  for (const parent of [root, one, two]) {
+    assert.ok(events.includes(`sync ${parent}`), `the new directory's name must be synced in ${parent}`);
+  }
+});
+
 test('bootstrap syncs each file before publishing it and the directory after', async (t) => {
   const { bootstrap, directory, normalized } = await fixture(t);
   await bootstrap();
