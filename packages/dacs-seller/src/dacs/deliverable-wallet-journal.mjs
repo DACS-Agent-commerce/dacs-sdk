@@ -1,10 +1,11 @@
-// The seller wallet's journal for the Deliverable CREATE (DACS-4 PC-7(b),
-// write-once): the payment-evidence journal's rules (payment-evidence-wallet-journal.mjs
-// describes them) for the paid order's Deliverable. The exact signed CREATE is
-// kept durably, with its nonce, before it is broadcast; an address has at most
-// one live signed CREATE; the kept bytes are broadcast again while they can
-// still be executed and are superseded only once they provably cannot, and only
-// then is the address signed anew. A name-index miss is none of that proof.
+// The seller wallet's journal for the Deliverable CREATE: the retry rule the
+// payment-evidence journal applies (DACS-4 PC-7(b), described in
+// payment-evidence-wallet-journal.mjs), applied to the paid order's Deliverable.
+// A name-index or native-address miss is no proof of absence (CORE §5.1). The
+// exact signed CREATE is kept durably, with its nonce, before it is broadcast;
+// an address has at most one live signed CREATE; the kept bytes are broadcast
+// again while they can still be executed and are superseded only once they
+// provably cannot, and only then is the address signed anew.
 //
 // createDeliverableWalletJournal({ path, signCreate, broadcast, readAccountNonce,
 //   readTransactionState, now, readTimeoutMs }) takes the wallet primitives of
@@ -28,7 +29,7 @@
 // deliveryBinding }, where receiptContentHash is the SHA-256 of the canonical
 // report; anything else is refused (TypeError) before the wallet is asked.
 // startSellerHost and createSellerAgent take the pair only from one journal
-// (isDeliverableWalletJournalPair) with the capability whose submit it is.
+// (deliverableJournalFor) with the capability whose submit it is.
 import { canonicalize, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { nativeDemDeliverySubmitOf } from './native-dem-delivery-consumer.mjs';
 import { createSignedCreateJournal } from './payment-evidence-wallet-journal.mjs';

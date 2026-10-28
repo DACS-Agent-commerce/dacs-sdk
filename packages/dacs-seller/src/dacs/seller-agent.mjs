@@ -184,7 +184,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (reconcilePaymentEvidence !== null && (typeof reconcilePaymentEvidence !== 'function' || !nativeEvidence)) throw new TypeError('reconcilePaymentEvidence must be the seller wallet\'s journal question for the native evidence anchor, or null');
   if (deliveryContext && (!nativeEvidence || !durableDirectory)) throw new TypeError('DEM delivery context requires the durable native evidence profile');
   if (nativeDelivery && !deliveryContext) throw new TypeError('native DEM delivery requires the authenticated DEM delivery context');
-  // DACS-4 PC-7(b): the question that lets a plain absence of a submitted
+  // CORE §5.1: the question that lets a plain absence of a submitted
   // Deliverable send its kept CREATE again (and answers `unsigned` for a new
   // signature) comes only from the createDeliverableWalletJournal whose submit
   // is the capability's, so that every signed Deliverable CREATE is kept.

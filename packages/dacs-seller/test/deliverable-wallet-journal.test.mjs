@@ -1,5 +1,6 @@
 // The seller wallet's Deliverable journal on its own: what the agent relies on
-// from `submit` and `reconcile` (DACS-4 PC-7(b), write-once): the exact signed
+// from `submit` and `reconcile` (the payment-evidence journal's retry rule,
+// DACS-4 PC-7(b), applied to the Deliverable; CORE §5.1): the exact signed
 // CREATE is kept before it is broadcast, sent again as the same bytes while it
 // can still land, and only an address with no live CREATE is signed anew.
 import test from 'node:test';

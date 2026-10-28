@@ -1210,7 +1210,8 @@ test('a Deliverable a capability without a wallet journal signed but lost is hel
   assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is asked for once');
 });
 
-// DACS-4 PC-7(b): with the Deliverable wallet journal the signed CREATE is kept
+// CORE §5.1 (and the retry rule of DACS-4 PC-7(b) applied to the Deliverable):
+// with the Deliverable wallet journal the signed CREATE is kept
 // before it is broadcast, so a plain absence of a submitted Deliverable is
 // answered by sending the same bytes again, never by a second signature. When
 // the call that signed it fails ('throw'), the next claim sends it again; when

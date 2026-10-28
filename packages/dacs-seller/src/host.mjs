@@ -72,7 +72,7 @@ export async function startSellerHost(options) {
   if (!isPaymentEvidenceWalletJournalPair(nativePaymentEvidence?.anchorEvidence, reconcilePaymentEvidence)) {
     throw new TypeError('the seller host takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
   }
-  // PC-7(b): the Deliverable question, when there is one, comes only from the journal whose submit the capability is.
+  // CORE §5.1: the Deliverable question, when there is one, comes only from the journal whose submit the capability is.
   deliverableJournalFor(nativeDemDelivery, reconcileDeliverableCreate);
   // One live process owns the state for its lifetime (this one too, for a
   // second start); taken before anything is opened, released after all of it.
