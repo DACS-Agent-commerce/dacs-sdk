@@ -68,6 +68,12 @@ test('a frozen startup failure is kept as the aggregate cause when cleanup also 
  }finally{await chmod(directory,0o700);}
 });
 
+test('the host still refuses a native artifact capability without its readbacks',async t=>{
+ const f=await fixture(t);const {readRetained:_removed,...anchor}=f.native;
+ await assert.rejects(f.start({artifactAnchor:anchor}),/native demo artifact capability is incomplete/);
+ const host=await f.start();await host.close();
+});
+
 test('close aborts and drains an accepted native artifact readback before releasing state',async t=>{
  const entered=defer(),releaseRead=defer();let block=true;
  const f=await fixture(t),native=f.native;

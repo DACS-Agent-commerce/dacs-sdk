@@ -71,12 +71,12 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
     return promise;
   };
   // Keep the capability's own shape (including prototype methods and
-  // non-enumerable members) and replace only the two readback operations.
+  // non-enumerable members) and replace only the readback operations it
+  // actually has: a missing one still reaches the agent's own capability
+  // validation instead of becoming a wrapper function.
   const view = Object.create(anchor);
-  Object.defineProperties(view, {
-    readRetained: { value: read((reason) => ({ status: 'indeterminate', reason }), 'native artifact', anchor.readRetained), enumerable: true },
-    verifyReceipt: { value: read('indeterminate', 'native artifact receipt', anchor.verifyReceipt), enumerable: true },
-  });
+  if (typeof anchor.readRetained === 'function') Object.defineProperty(view, 'readRetained', { value: read((reason) => ({ status: 'indeterminate', reason }), 'native artifact', anchor.readRetained), enumerable: true });
+  if (typeof anchor.verifyReceipt === 'function') Object.defineProperty(view, 'verifyReceipt', { value: read('indeterminate', 'native artifact receipt', anchor.verifyReceipt), enumerable: true });
   return {
     anchor: Object.freeze(view),
     drain: () => Promise.allSettled([...pending].map((entry) => entry.promise)),
