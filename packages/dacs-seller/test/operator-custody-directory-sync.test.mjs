@@ -163,3 +163,51 @@ test('an accepted ancestor alias syncs the canonical parents of the new custody 
   assertParentsSynced(custody.state.events, join(target, 'new', 'wallets'), root);
   assert.equal(custody.state.events.some(event => event.startsWith(`sync ${alias}`)), false);
 });
+
+// Both calls observe the same missing path, so the marker and the created
+// entries they sync are shared. A barrier at the first mkdir (no sleeps) makes
+// that overlap certain rather than timing-dependent.
+for (const [name, initialize] of initializers) {
+  test(`${name} completes two simultaneous calls that create one nested path`, async (t) => {
+    const { root, custody } = await fixture(t);
+    const directory = join(root, 'new', 'wallets');
+    let arrivals = 0, release;
+    const barrier = new Promise((resolve) => { release = resolve; });
+    custody.state.beforeMkdir = async (path) => {
+      if (path !== directory) return;
+      arrivals += 1;
+      if (arrivals === 2) release();
+      await barrier;
+    };
+    const [first, second] = await Promise.all([initialize(custody, directory), initialize(custody, directory)]);
+    assert.deepEqual(second, first);
+    assertParentsSynced(custody.state.events, directory, root);
+    assert.equal((await readdir(directory)).includes('.directory-sync-pending'), false);
+  });
+}
+
+// The creation marker syncs a deeper parent before it stats the next one. A
+// stat error there must propagate before any credential is read, and the retry
+// must resync the whole chain without a marker.
+for (const [name, initialize] of initializers) {
+  test(`${name} refuses a parent stat failure after a deeper parent sync and retries`, async (t) => {
+    const { root, custody } = await fixture(t);
+    const directory = join(root, 'new', 'wallets');
+    const parent = dirname(directory);
+    const failure = Object.assign(new Error('TEST parent stat refused'), { code: 'EIO' });
+    let observed = 0;
+    custody.state.afterLstat = (path) => {
+      if (path !== parent) return;
+      observed += 1;
+      if (observed === 2) throw failure;
+    };
+    await assert.rejects(initialize(custody, directory), error => error === failure);
+    assert.ok(custody.state.events.includes(`sync ${parent}`), 'the deeper parent was already synced');
+    assert.equal(custody.state.events.some(event => event.startsWith('readFile ') && !markerEvent(event)), false);
+    assert.deepEqual((await readdir(directory)).filter(entry => entry !== '.directory-sync-pending'), []);
+    custody.state.afterLstat = null;
+    custody.state.events.length = 0;
+    await initialize(custody, directory);
+    assertParentsSynced(custody.state.events, directory, root);
+  });
+}
