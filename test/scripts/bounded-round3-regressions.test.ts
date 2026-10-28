@@ -21,6 +21,17 @@ describe("request-driven npm JSON limits", () => {
       for (const body of [Array(NPM_JSON_MAX_ENTRIES + 1).fill(0), deep]) await expect(readBoundedResponse(response(body, header), maximum)).rejects.toThrow("ELIMIT");
     }
   });
+  it("refuses a JSON-shaped body whose appended root would skip the list limits", async () => {
+    // npm's streaming reader accepts several concatenated JSON roots, so a
+    // failed single-value parse must not silently skip admission.
+    let deep: unknown = {}; for (let i = 0; i < 130; i++) deep = { child: deep };
+    const bytes = Buffer.from(JSON.stringify({ name: "fixture" }) + "\n" + JSON.stringify(deep));
+    await expect(readBoundedResponse(Object.assign(Readable.from([bytes]), { headers: { "content-type": "application/json" } }), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
+  });
+  it("still forwards a malformed non-JSON reply for npm's own diagnostics", async () => {
+    const bytes = Buffer.from("<html>bad gateway</html>");
+    expect(await readBoundedResponse(Object.assign(Readable.from([bytes]), { headers: { "content-type": "text/html" } }), 1024)).toEqual(bytes);
+  });
   it.each([undefined, "text/plain"])("delivers a successful large generator packument with Content-Type %s", async header => {
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-success-"));
     const server = createServer((_request, reply) => {
