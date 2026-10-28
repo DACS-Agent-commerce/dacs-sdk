@@ -433,7 +433,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   other admission readers, and one replay has a 30 s total deadline that also
   aborts the read in flight; a reader
   that throws, stalls, rejects with `undefined` or answers too much makes the
-  proposal `indeterminate` with that cause. Without `vetEvidence`, a
+  proposal `indeterminate` with that cause, while a malformed content reply
+  rejects the Vet record with its cause. Without `vetEvidence`, a
   requirement with a required claim
   is refused. Otherwise the Agreement is not signed, before any
   payment. A session

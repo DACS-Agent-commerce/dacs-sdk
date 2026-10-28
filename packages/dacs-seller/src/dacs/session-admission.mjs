@@ -280,6 +280,12 @@ async function latestSessionRecipeProblem(read, entry, pins) {
   return null;
 }
 
+// A malformed operator reply is a deterministic record problem, not an
+// unavailable read: it keeps its own marker so the caller can reject the
+// record instead of reporting the evidence source as down.
+const VET_EVIDENCE_MALFORMED = Symbol('Vet evidence malformed');
+const malformedEvidence = (message) => Object.assign(new TypeError(message), { [VET_EVIDENCE_MALFORMED]: true });
+
 // The evidence reads of one replay, each bounded by readAdmissionCapability
 // and all by one deadline. The deadline also aborts the read in flight, so a
 // reader that ignores its own per-read limit cannot hold the replay past 30 s.
@@ -288,7 +294,7 @@ async function latestSessionRecipeProblem(read, entry, pins) {
 // "unresolved".
 function vetEvidenceReads(evidence, scope) {
   const controller = new AbortController();
-  let expired = false, failed = false, failure, timer;
+  let expired = false, failed = false, failure, malformed, timer;
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => { expired = true; controller.abort(); reject(vetEvidenceTimeout()); }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
   });
@@ -300,9 +306,13 @@ function vetEvidenceReads(evidence, scope) {
       const reply = await Promise.race([readAdmissionCapability(evidence, method, { ...scope, ...input }, controller.signal), deadline]);
       if (expired) throw vetEvidenceTimeout();
       return decode(reply);
-    } catch (error) { const cause = expired ? vetEvidenceTimeout() : error; if (!failed) { failed = true; failure = cause; } throw cause; }
+    } catch (error) {
+      if (error?.[VET_EVIDENCE_MALFORMED]) { malformed ??= error.message; throw error; }
+      const cause = expired ? vetEvidenceTimeout() : error; if (!failed) { failed = true; failure = cause; } throw cause;
+    }
   };
-  return { read, failure: () => (failed ? failure : undefined), hasFailure: () => failed, close: () => { clearTimeout(timer); controller.abort(); } };
+  return { read, failure: () => (failed ? failure : undefined), hasFailure: () => failed, malformed: () => malformed,
+    close: () => { clearTimeout(timer); controller.abort(); } };
 }
 
 // The content shape the core verifier takes from an operator reply: null
@@ -320,7 +330,7 @@ function vetEvidenceContent(reply, resultContent = false) {
       if (object(decoded)) return { encoding: 'canonical-json', value: decoded };
     }
   }
-  throw new TypeError('the Vet evidence content reply is malformed');
+  throw malformedEvidence('the Vet evidence content reply is malformed');
 }
 
 // The core verifier's resolvers over the operator's readers. Content is
@@ -356,7 +366,7 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // it a requirement whose decision needs a result body is unresolved and
 // refused. Throws the first failure of an evidence reader (timeout, oversize,
 // a throw): that is unavailable evidence, not a record that fails its
-// requirement.
+// requirement. A malformed content reply is a record problem, not a throw.
 export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
@@ -381,6 +391,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific) },
       { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }) });
   } catch (error) { thrown = error; } finally { reads?.close(); }
+  if (reads?.malformed()) return reads.malformed();
   if (reads?.hasFailure()) throw reads.failure();
   if (problem) return problem;
   if (thrown) return `the Vet record does not verify against its requirement: ${String(thrown?.message ?? thrown).slice(0, 120)}`;

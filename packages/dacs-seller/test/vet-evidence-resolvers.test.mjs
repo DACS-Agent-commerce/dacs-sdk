@@ -121,9 +121,9 @@ test('missing VerifyResult content is refused', async () => {
   assert.match(await fixture.replay({ evidence: { resolveContent: async () => null } }), /does not verify against its requirement/);
 });
 
-test('a malformed content reply is refused with its cause', async () => {
+test('a malformed content reply is refused as a record problem with its cause', async () => {
   const fixture = await verifiedClaimFixture();
-  await assert.rejects(fixture.replay({ evidence: { resolveContent: async () => ({ encoding: 'text', value: 'x' }) } }), { name: 'TypeError', message: /content reply is malformed/ });
+  assert.match(await fixture.replay({ evidence: { resolveContent: async () => ({ encoding: 'text', value: 'x' }) } }), /content reply is malformed/);
 });
 
 test('a throwing evidence reader keeps its cause', async () => {
