@@ -46,3 +46,16 @@ test('startup failure remains the original cause when cleanup also fails',async 
  try{await assert.rejects(f.start(),error=>error===original&&error.cleanupError?.errors.some(e=>e.code==='EACCES'));}
  finally{await chmod(directory,0o700);}
 });
+
+test('a frozen startup failure is kept as the aggregate cause when cleanup also fails',async t=>{
+ let directory;const original=Object.freeze(new Error('TEST frozen startup cause'));
+ const f=await fixture(t,{wrap:()=>{chmodSync(directory,0o500);throw original;}});directory=f.dataDirectory;
+ try{
+  await assert.rejects(f.start(),error=>{
+   assert.ok(error instanceof AggregateError,'the frozen cause is carried by an aggregate error');
+   assert.equal(error.cause,original,'the original startup error stays the cause');
+   assert.ok(error.errors.some(e=>e.errors?.some(n=>n.code==='EACCES')),'the cleanup failure is reported');
+   return true;
+  });
+ }finally{await chmod(directory,0o700);}
+});

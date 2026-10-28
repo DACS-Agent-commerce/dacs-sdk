@@ -121,7 +121,17 @@ export async function startSellerHost(options) {
       close,
     });
   } catch (error) {
-    try{await release();}catch(cleanupError){Object.defineProperty(error,'cleanupError',{value:cleanupError});}
+    try { await release(); }
+    catch (cleanupError) {
+      // Attach the cleanup failure only where the startup error can carry it;
+      // otherwise the original cause must survive as an AggregateError cause.
+      if (error !== null && (typeof error === 'object' || typeof error === 'function')) {
+        try { Object.defineProperty(error, 'cleanupError', { value: cleanupError }); }
+        catch { throw new AggregateError([cleanupError], 'seller host startup failed', { cause: error }); }
+      } else {
+        throw new AggregateError([cleanupError], 'seller host startup failed', { cause: error });
+      }
+    }
     throw error;
   }
 }
