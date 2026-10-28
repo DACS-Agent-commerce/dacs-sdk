@@ -11,6 +11,8 @@ const resultSigner = testWallet(31), recipeSteward = testWallet(32);
 const requirement = { requirementVersion: '1', required: [{ scheme: 'domain', verificationRequired: true, recipeVersion: 1 }] };
 const AUTHORITY_LOCATOR = 'https://authority.example/evidence-1';
 const RESULT_LOCATOR = `dacs2:${JOB}:domain:alice.example:v1`;
+const SESSION_REGISTRY_PIN = 'ab'.repeat(32);
+const unpinnedRequirement = { requirementVersion: '1', required: [{ scheme: 'domain', verificationRequired: true }] };
 const sign = (unsigned, separator, wallet) => core.signComponentArtifact(unsigned, separator, { algorithm: 'ed25519', signer: wallet.claim, sign: wallet.signBytes });
 
 // A counterparty-signed record of `buyer` (verified by `seller`) whose requirement names one verified claim,
@@ -39,6 +41,7 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
   const evidence = {
     resolveContent: async (input) => { calls.push(['resolveContent', input]); return contents.has(input.anchor.locator) ? structuredClone(contents.get(input.anchor.locator)) : null; },
     resolveRecipe: async (input) => { calls.push(['resolveRecipe', input]); return structuredClone(recipe); },
+    resolveLatestRecipe: async (input) => { calls.push(['resolveLatestRecipe', input]); return { sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: recipe.recipeVersion }; },
     isRecipeSignerAuthorized: async ({ signature }) => signature.signer === recipeSteward.claim,
     isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === resultSigner.claim,
     verifyAuthorityAttestation: async ({ content }) => (content.encoding === 'bytes' ? Buffer.from(content.value).toString() === '{"active":true}' : content.value.active === true) ? 'valid' : 'invalid',
@@ -208,16 +211,47 @@ test('a parameterized required claim passes only when its exact parameters match
   assert.match(await mismatched.replay(), /requirement-parameters/);
 });
 
-test('a verified claim whose requirement leaves the recipe version unpinned is refused', async () => {
-  const fixture = await verifiedClaimFixture({ bundleRequirement: { requirementVersion: '1', required: [{ scheme: 'domain', verificationRequired: true }] } });
-  assert.match(await fixture.replay(), /does not pin a recipe version/);
+test('a verified claim whose requirement leaves the recipe version unpinned passes at the session registry latest', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  assert.equal(await fixture.replay(), null);
+  assert.ok(fixture.calls.some(([name, input]) => name === 'resolveLatestRecipe'
+    && input.scheme === 'domain' && input.method === 'consensus-backed-proxy' && input.required === true));
+});
+
+test('an unpinned verified claim whose result is not the session registry latest is refused', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2 }) } });
+  assert.match(problem, /not the latest live recipe version/);
+});
+
+test('an unpinned verified claim without a session registry lookup stays refused', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  const { resolveLatestRecipe: _missing, ...withoutLatest } = fixture.evidence;
+  assert.match(await fixture.replay({ input: { evidence: withoutLatest } }), /does not pin a recipe version/);
+});
+
+test('an unpinned session registry lookup with a malformed pin is refused', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  const problem = await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: 'not-a-hash', recipeVersion: 1 }) } });
+  assert.match(problem, /session registry pin is malformed/);
+});
+
+test('one replay resolves every unpinned claim against one session registry snapshot', async () => {
+  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
+  const invocation = { ...fixture.invocation, dealSpecific: [fixture.invocation.dealSpecific[0], fixture.invocation.dealSpecific[0]] };
+  let calls = 0;
+  const problem = await fixture.replay({ input: { invocation },
+    evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: (calls++ === 0 ? 'ab' : 'cd').repeat(32), recipeVersion: 1 }) } });
+  assert.match(problem, /another session registry snapshot/);
 });
 
 test('vetEvidence must expose every reader', () => {
   const admission = Object.fromEntries(['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].map((name) => [name, async () => null]));
-  const complete = Object.fromEntries(['resolveContent', 'resolveRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'].map((name) => [name, async () => null]));
+  const complete = Object.fromEntries(['resolveContent', 'resolveRecipe', 'resolveLatestRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'].map((name) => [name, async () => null]));
   assert.equal(sessionAdmissionConfig({ ...admission, vetEvidence: complete }).vetEvidence, complete);
   assert.equal(sessionAdmissionConfig(admission).vetEvidence, undefined);
   const { resolveRecipe: _missing, ...partial } = complete;
   assert.throws(() => sessionAdmissionConfig({ ...admission, vetEvidence: partial }), /vetEvidence must expose/);
+  const { resolveLatestRecipe: _optional, ...withoutLatest } = complete;
+  assert.equal(sessionAdmissionConfig({ ...admission, vetEvidence: withoutLatest }).vetEvidence, withoutLatest);
 });

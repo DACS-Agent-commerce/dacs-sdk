@@ -34,13 +34,15 @@
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
-//    `requirementHash` and replayed aggregation are checked here. A requirement
-//    with verified claims must pin each claim's `recipeVersion` (the seller has
-//    no authenticated registry snapshot to prove an implicit version is the
-//    latest) and replays only through the optional
-//    `vetEvidence = { resolveContent, resolveRecipe, isRecipeSignerAuthorized,
-//    isVerifyResultSignerAuthorized, verifyAuthorityAttestation }`, read with the
-//    admission readers' limits (see vetRecordProblem).
+//    `requirementHash` and replayed aggregation are checked here. A required
+//    claim without `recipeVersion` selects the latest live family version in
+//    the authenticated session registry snapshot (DACS-2 §7.4.3), answered by
+//    the optional `resolveLatestRecipe` reader; without that reader such a
+//    claim is refused. Replay uses the optional
+//    `vetEvidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
+//    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
+//    verifyAuthorityAttestation }`, read with the admission readers' limits
+//    (see vetRecordProblem).
 //  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
@@ -104,7 +106,8 @@ export function sessionAdmissionConfig(value) {
     throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker');
   }
   const evidence = value.vetEvidence;
-  if (evidence !== undefined && (!object(evidence) || VET_EVIDENCE_READERS.some((name) => typeof evidence[name] !== 'function'))) {
+  if (evidence !== undefined && (!object(evidence) || VET_EVIDENCE_READERS.some((name) => typeof evidence[name] !== 'function')
+      || (evidence.resolveLatestRecipe !== undefined && typeof evidence.resolveLatestRecipe !== 'function'))) {
     throw new TypeError(`sessionAdmission.vetEvidence must expose ${VET_EVIDENCE_READERS.join(', ')}`);
   }
   return value;
@@ -226,8 +229,10 @@ export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
 }
 
 // The readers of `sessionAdmission.vetEvidence`, the operator's authenticated
-// evidence for a record whose requirement names verified claims.
+// evidence for a record whose requirement names verified claims. The optional
+// `resolveLatestRecipe` answers DACS-2 §7.4.3 for an unpinned claim.
 const VET_EVIDENCE_READERS = ['resolveContent', 'resolveRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'];
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 // One strict replay reads its evidence within this time in total, on top of
 // each read's own byte, value and deadline limits.
 const VET_EVIDENCE_REPLAY_TIMEOUT_MS = 30_000;
@@ -249,13 +254,30 @@ function requirementParametersMatch({ result, expected }) {
 }
 
 // DACS-2 §7.4.3: a ClaimRequirement without `recipeVersion` selects the latest
-// live version in the authenticated session registry snapshot. This seller's
-// evidence contract carries no such snapshot, so an implicit version cannot be
-// proven to be the latest family version; accepting the result's own version
-// would let an old signed recipe replay. Refuse rather than guess.
-function unpinnedVerifiedResult(results) {
-  return Array.isArray(results) && results.some((entry) => object(entry?.requirement)
-    && entry.requirement.verificationRequired !== false && entry.requirement.recipeVersion === undefined);
+// live version in the authenticated session registry snapshot. The operator
+// answers that selection (and its snapshot pin) through the optional
+// `resolveLatestRecipe`; the seller compares it with the result's own pinned
+// version. Without that reader the implicit version cannot be proven to be the
+// latest, so the record is refused rather than guessed.
+function unpinnedVerifiedResults(...lists) {
+  return lists.flatMap((results) => (Array.isArray(results) ? results : []))
+    .filter((entry) => object(entry?.requirement)
+      && entry.requirement.verificationRequired !== false && entry.requirement.recipeVersion === undefined);
+}
+
+// The result version an unpinned claim must match: the family version the
+// operator's authenticated session registry snapshot selects as latest. One
+// replay must resolve every such claim against one snapshot pin.
+async function latestSessionRecipeProblem(read, entry, pins) {
+  const selection = await read('resolveLatestRecipe', { scheme: entry.scheme, method: entry.method, required: true });
+  if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion'])) return 'the Vet session registry selection is malformed';
+  const pin = selection.sessionRecipeRegistrySnapshotHash;
+  if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) return 'the Vet session registry pin is malformed';
+  if (pins.length > 0 && pins[0] !== pin) return 'the Vet session registry resolved another session registry snapshot';
+  if (!Number.isSafeInteger(selection.recipeVersion) || selection.recipeVersion < 1) return 'the Vet session registry recipe version is malformed';
+  if (selection.recipeVersion !== entry.ref.recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
+  pins.push(pin);
+  return null;
 }
 
 // The evidence reads of one replay, each bounded by readAdmissionCapability
@@ -329,10 +351,12 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // decision must replay from the invocation's expected results under the core
 // strict verifier. The VerifyResults, recipes and authority proofs that replay
 // needs come from the operator's `evidence` (`sessionAdmission.vetEvidence`),
-// read for this `role`'s record. Without it a requirement whose decision needs
-// a result body is unresolved and refused. Throws the first failure of an
-// evidence reader (timeout, oversize, a throw): that is unavailable evidence,
-// not a record that fails its requirement.
+// read for this `role`'s record. A claim without `recipeVersion` is compared
+// with the operator's authenticated latest-session-recipe selection. Without
+// it a requirement whose decision needs a result body is unresolved and
+// refused. Throws the first failure of an evidence reader (timeout, oversize,
+// a throw): that is unavailable evidence, not a record that fails its
+// requirement.
 export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
@@ -341,18 +365,24 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
-  if (unpinnedVerifiedResult(invocation.freshness) || unpinnedVerifiedResult(invocation.dealSpecific)) return 'the Vet requirement does not pin a recipe version for a verified claim';
+  const unpinned = unpinnedVerifiedResults(invocation.freshness, invocation.dealSpecific);
   const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
   // The verifier checks every signature itself with the signer's own key; the
   // operator's policy decides which signers other than the verifier may sign.
   const resolvePublicKey = (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : reads && signature.algorithm === 'ed25519' ? signature.signer : null);
-  let strict, thrown;
+  const pins = [];
+  let strict, thrown, problem;
   try {
-    strict = await verifyCompositeVerificationRecord(record,
+    if (unpinned.length > 0) {
+      if (!reads || typeof evidence.resolveLatestRecipe !== 'function') problem = 'the Vet requirement does not pin a recipe version for a verified claim';
+      else for (const entry of unpinned) { problem = await latestSessionRecipeProblem(reads.read, entry, pins); if (problem) break; }
+    }
+    if (!problem) strict = await verifyCompositeVerificationRecord(record,
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific) },
       { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }) });
   } catch (error) { thrown = error; } finally { reads?.close(); }
   if (reads?.hasFailure()) throw reads.failure();
+  if (problem) return problem;
   if (thrown) return `the Vet record does not verify against its requirement: ${String(thrown?.message ?? thrown).slice(0, 120)}`;
   if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;
   return null;
