@@ -920,6 +920,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (!session || request.buyer !== session.buyerBundle.presentedBy || request.agreementHash !== session.agreementHash) return held('no retained session for this authenticated commitment request');
     const early = request.path === '/dacs/v1/commitments/signature';
     if (early && !commitOnSignature) return held('early commitment is disabled');
+    // The signature route's required Agreement is checked before recovery can
+    // fall through to the ordinary commitment path: a body without one was
+    // never a signature commitment request.
+    if (early && (!body.agreement || typeof body.agreement !== 'object' || Array.isArray(body.agreement))) return held('the signature commitment request has no Agreement');
     const input = { jobId: request.jobId, signedProjection: body.signedProjection };
     const options = { readbackOnly: true, adopt: !early, ...(early ? { signatureAgreement: body.agreement } : {}) };
     let answer;

@@ -170,6 +170,15 @@ test('uncertain commitment with proven unsigned absence runs the authenticated r
  assert.equal(answer.disposition,'present');assert.equal(answer.value.status,'committed');assert.equal(f.local.writes.length,1);
 });
 
+test('an uncertain signature commitment without an Agreement never takes the ordinary path',async t=>{
+ const f=await commitmentFixture(t,{early:true}),{agent}=await f.prepare(),read=f.native.readRetained;
+ f.native.readRetained=async input=>{const out=await read(input);return out.status==='absent'?provenUnsignedAbsence('TEST no seller-signed intent'):out;};
+ const request={...commitmentRequest(agent,core.contentHash(f.controls.agreement.artifact)),path:'/dacs/v1/commitments/signature'},writes=f.local.writes.length;
+ const answer=await agent.reconcileTransport({request,body:{jobId:JOB},rawBody:Buffer.from(JSON.stringify({jobId:JOB}))});
+ assert.equal(answer.disposition,'indeterminate');
+ assert.equal(f.local.writes.length,writes,'a signature request without an Agreement never publishes an ordinary commitment');
+});
+
 test('malformed early Agreement is a definite refusal before any effect',async t=>{
  const f=await commitmentFixture(t,{early:true}),{agent}=await f.prepare();let failure;
  try{await agent.commitOnSignature({jobId:JOB,agreement:{},signedProjection:{}});}catch(error){failure=error;}
