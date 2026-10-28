@@ -162,6 +162,28 @@ test('a replay is bounded by its total deadline across reads', async (t) => {
   await assert.rejects(fixture.replay({ evidence: slowEvidence }), { name: 'TimeoutError', message: /Vet evidence deadline expired/ });
 });
 
+test('the total deadline aborts the read in flight instead of waiting for its per-read limit', async (t) => {
+  const fixture = await verifiedClaimFixture();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  const slow = (reader) => async (...args) => { t.mock.timers.tick(5900); return reader(...args); };
+  const evidence = {
+    ...Object.fromEntries(Object.entries(fixture.evidence).map(([name, reader]) => [name, slow(reader)])),
+    resolveContent: async (input, options) => {
+      if (input.anchor.locator === AUTHORITY_LOCATOR) { signal = options.signal; return new Promise(() => {}); }
+      t.mock.timers.tick(5900);
+      return fixture.evidence.resolveContent(input);
+    },
+  };
+  const pending = fixture.replay({ evidence });
+  const settled = assert.rejects(pending, { name: 'TimeoutError', message: /Vet evidence deadline expired/ });
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(7000);
+  await settled;
+  assert.ok(signal);
+  assert.equal(signal.aborted, true);
+});
+
 test('vetEvidence must expose every reader', () => {
   const admission = Object.fromEntries(['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].map((name) => [name, async () => null]));
   const complete = Object.fromEntries(['resolveContent', 'resolveRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'].map((name) => [name, async () => null]));

@@ -148,19 +148,25 @@ function boundedRevocationValue(value) {
 
 const ADMISSION_MAX_LIST_ITEMS=256;
 // Admission capabilities cap wire bytes before decoding and honor this signal.
-// Returned representations also receive independent byte/value/list bounds.
-export async function readAdmissionCapability(admission,method,input){
-  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer;
+// Returned representations also receive independent byte/value/list bounds. An
+// optional `parentSignal` (the caller's shared deadline) aborts an active read
+// too, so a read that ignores its own per-read deadline cannot outlive it.
+export async function readAdmissionCapability(admission,method,input,parentSignal){
+  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer,rejectAborted;
+  const forwardAbort=()=>controller.abort();
+  if(parentSignal){if(parentSignal.aborted)controller.abort();else parentSignal.addEventListener('abort',forwardAbort,{once:true});}
   const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('admission deadline expired','TimeoutError'));},options.timeoutMs);});
+  const aborted=parentSignal?new Promise((_,reject)=>{rejectAborted=()=>reject(new DOMException('admission read aborted','AbortError'));if(parentSignal.aborted)rejectAborted();else parentSignal.addEventListener('abort',rejectAborted,{once:true});}):null;
   try{
-    return await Promise.race([Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
+    const work=Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
       if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
       if(value===undefined)throw new TypeError('admission capability returned no value');
       const result=boundedRevocationValue(value),pending=[result];let values=0;
       while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
       return result;
-    }),deadline]);
-  }finally{clearTimeout(timer);controller.abort();}
+    });
+    return await Promise.race(aborted?[work,deadline,aborted]:[work,deadline]);
+  }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}
 }
 
 export async function listingRevocationProblem(admission, input) {
@@ -227,20 +233,30 @@ const VET_EVIDENCE_REPLAY_TIMEOUT_MS = 30_000;
 // a result body is unresolved and refused.
 const NO_EVIDENCE_DEPS = Object.freeze({ resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
   verifyAuthorityAttestation: () => 'unresolved' });
+const vetEvidenceTimeout = () => new DOMException('the Vet evidence deadline expired', 'TimeoutError');
 
 // The evidence reads of one replay, each bounded by readAdmissionCapability
-// and all by one deadline. The first failure is kept so the caller sees the
-// real cause (timeout, oversize, throw), not the verifier's "unresolved".
+// and all by one deadline. The deadline also aborts the read in flight, so a
+// reader that ignores its own per-read limit cannot hold the replay past 30 s.
+// The first failure is kept so the caller sees the real cause (timeout,
+// oversize, throw), not the verifier's "unresolved".
 function vetEvidenceReads(evidence, scope) {
-  let expired = false, failure;
-  const timer = setTimeout(() => { expired = true; }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
+  const controller = new AbortController();
+  let expired = false, failure, timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { expired = true; controller.abort(); reject(vetEvidenceTimeout()); }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
+  });
+  // A deadline that fires between reads has no racer; keep its rejection handled.
+  deadline.catch(() => {});
   const read = async (method, input, decode = (reply) => reply) => {
     try {
-      if (expired) throw new DOMException('the Vet evidence deadline expired', 'TimeoutError');
-      return decode(await readAdmissionCapability(evidence, method, { ...scope, ...input }));
+      if (expired) throw vetEvidenceTimeout();
+      const reply = await Promise.race([readAdmissionCapability(evidence, method, { ...scope, ...input }, controller.signal), deadline]);
+      if (expired) throw vetEvidenceTimeout();
+      return decode(reply);
     } catch (error) { failure ??= error; throw error; }
   };
-  return { read, failure: () => failure, close: () => clearTimeout(timer) };
+  return { read, failure: () => failure, close: () => { clearTimeout(timer); controller.abort(); } };
 }
 
 // The content shape the core verifier takes from an operator reply: null
