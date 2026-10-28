@@ -29,6 +29,18 @@ export class SellerAgentError extends Error {
 // What the native profile reads and writes instead of a fixture substrate.
 const fixtureDisabled = async () => { throw new SellerAgentError('fixture_substrate_disabled', 'the native seller profile has no fixture substrate', 503); };
 const NATIVE_PROFILE_FIXTURE = Object.freeze({ read: fixtureDisabled, write: fixtureDisabled });
+// The seller agent's profile gates, each thrown only before any read, write,
+// signature or send of its operation. They are definite refusals that keep no
+// effect in the journal, so a request refused while the operator's
+// configuration was incomplete runs once it is complete. A new gate goes here.
+export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required', 'session_admission_required', 'settlement_profile_unavailable', 'rail_unavailable', 'native_evidence_required', 'bundle_finalization_unavailable']);
+// These seller-agent errors occur before an external effect. Any other error
+// may follow an effect and stays uncertain; in particular, commitment_failed
+// is deliberately absent: a write may have happened. A session the seller's
+// admission did not admit (or could not answer for) kept nothing either.
+// A payment claim other than the one whose work the agent retains
+// (seller_native_evidence_conflict) is refused before anything of it runs.
+export const SELLER_NO_EFFECT_ERRORS = new Set(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', ...SELLER_PRE_EFFECT_REFUSALS]);
 
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
 // Payment-evidence anchor outcomes after which no attempt can land: it never
@@ -325,7 +337,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
   for (const session of durable?.sessions() ?? []) restore(session);
-  const recoveryCall = (fn) => durable ? (input) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
+  const recoveryCall = (fn) => durable ? (input, { assertTransportOwner } = {}) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
+    assertTransportOwner?.();
     const jobId = input?.transportIdentity?.jobId ?? input?.jobId;
     sessions.delete(jobId);
     restore(session);
@@ -1579,14 +1592,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           return contentHash(agreement) === request.agreementHash ? { disposition: 'present', value: { disposition: 'complete', contribution: session.sellerContribution } } : held('seller_proposal_state_incomplete');
         } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate', error); }
       }
+      const unsigned = () => { const retained=durable?.loadSession(request.jobId)??sessions.get(request.jobId);return !retained?.agreementSignatureKey&&!retained?.sellerContribution&&!retained?.commitment; };
       try {
         const answer = await receiveProposal(body);
         if(answer.disposition==='complete')return{disposition:'present',value:answer};
         if(['waiting','indeterminate'].includes(answer.disposition))return{disposition:'retry',value:answer};
-        const retained=durable?.loadSession(request.jobId)??sessions.get(request.jobId);
-        if(answer.disposition==='rejected'&&!retained?.agreementSignatureKey&&!retained?.sellerContribution&&!retained?.commitment)return{disposition:'no-effect',value:answer};
+        if(answer.disposition==='rejected'&&unsigned())return{disposition:'no-effect',value:answer};
         return held('seller_proposal_work_retained');
-      } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate',error); }
+      } catch (error) {
+        if(error instanceof SellerAgentError && SELLER_NO_EFFECT_ERRORS.has(error.code) && unsigned())return{disposition:'no-effect',value:{disposition:'rejected',reason:error.code,message:error.message}};
+        return held(error.code ?? 'seller_proposal_indeterminate',error);
+      }
     }
     if (!session?.transportIdentity || request.method !== 'POST' || request.jobId !== (body.transportIdentity?.jobId ?? body.jobId) ||
         request.seller !== claim || request.buyer !== session.buyerBundle.presentedBy || !same(request.listingPin, pin) ||
@@ -1729,9 +1745,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             if (!work && !session.nativeEvidenceWork && ['rejected', 'indeterminate'].includes(answer?.status)) return { disposition: 'no-effect', value: answer };
             return !work || ['held', 'payment-evidenced'].includes(answer?.status) ? { disposition: 'retry', value: answer } : held(answer?.reason ?? 'seller_native_evidence_readback_required');
           }
-          if (!session.paymentWork || session.paymentWork.txHash !== paymentTxHash(body.txHash) || body.payerPayingKey !== request.buyer ||
-              session.paymentWork.payerPayingKey !== request.buyer) return held('seller_payment_context_mismatch');
-          return present(await payment());
+          if (body.payerPayingKey !== request.buyer || (session.paymentWork &&
+              (session.paymentWork.txHash !== paymentTxHash(body.txHash) || session.paymentWork.payerPayingKey !== request.buyer))) return held('seller_payment_context_mismatch');
+          if (readOnly) return session.paymentWork ? present(await payment()) : held('seller_payment_context_mismatch');
+          const answer = await submitPayment(body);
+          if (['delivered','delivery-ready'].includes(answer?.status)) return present(answer);
+          return { disposition: !session.paymentWork && ['rejected','indeterminate'].includes(answer?.status) ? 'no-effect' : 'retry', value: answer };
         }
         case '/dacs/v1/bundles/request':
         case '/dacs/v1/bundles/countersignature':
@@ -1823,7 +1842,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       }
       return durable.withJob(input.request?.jobId, async (session) => {
       sessions.delete(input.request.jobId); restore(session);
-      return reconcileTransport(input);
+      const proof = await reconcileTransport(input);
+      input.settle?.(proof);
+      return proof;
     });} : undefined,
     close: () => {if(!closed){durable?.close();closed=true;}},
     // Test/ops visibility only: never a signing capability.
