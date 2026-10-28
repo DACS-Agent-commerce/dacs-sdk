@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {proposalAdmissionFixture,proposalForInput} from './helpers/proposal-admission-fixture.mjs';
 import {JOB,NOW} from './helpers/protocol-fixture.mjs';
+import {canonicalize} from '@kynesyslabs/dacs';
+
+const MINIMUM_REPORT_SIZE=Buffer.byteLength(canonicalize({jobId:'0'.repeat(26),agreementHash:'0'.repeat(64),settlementId:`demos:${'0'.repeat(64)}`}));
+const REFUSED_REPORT_SIZES=[null,MINIMUM_REPORT_SIZE-1,...[1,2,3,4].map(offset=>MINIMUM_REPORT_SIZE+offset)];
 
 test('completed proposal survives reject-different-proposal and exact replay after restart',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),a=await f.proposal(agent),complete=await agent.receiveProposal(a);assert.equal(complete.disposition,'complete');
@@ -46,6 +50,19 @@ test('an exact retry reuses the retained context admission after the callback is
  f.advance(590000);const complete=await agent.receiveProposal(request);assert.equal(complete.disposition,'complete');agent.close();
  f.config.contextRequest=()=>false;
  const replay=await (await f.open()).receiveProposal(request);assert.equal(replay.disposition,'complete');assert.deepEqual(replay.contribution,complete.contribution);
+});
+
+for(const expectedSizeBytes of REFUSED_REPORT_SIZES)test(`an unproducible inline delivery size (${expectedSizeBytes}) is refused before any Agreement signature`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true,expectedSizeBytes}),agent=await f.open(),request=await f.proposal(agent);
+ const answer=await agent.receiveProposal(request);assert.equal(answer.disposition,'rejected');assert.equal(answer.stage,'context');assert.match(answer.reason,/inline storage delivery requires expectedSizeBytes/);
+ assert.equal(agent.durableSessionOf(JOB),null);assert.ok(!f.signed.some(text=>text.startsWith('dacs-payee-bound-agreement:v1:')),'the seller signed no Agreement');
+});
+for(const expectedSizeBytes of [MINIMUM_REPORT_SIZE,MINIMUM_REPORT_SIZE+5,131072])test(`a producible inline delivery size (${expectedSizeBytes}) completes the contribution`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true,expectedSizeBytes}),agent=await f.open(),request=await f.proposal(agent);
+ assert.equal((await agent.receiveProposal(request)).disposition,'complete');assert.ok(agent.durableSessionOf(JOB).sellerContribution);
+});
+test('an inline delivery Listing above the profile bound is refused at construction',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true,expectedSizeBytes:131073});await assert.rejects(f.open(),/at most 131072/);
 });
 
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{

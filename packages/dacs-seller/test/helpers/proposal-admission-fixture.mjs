@@ -13,10 +13,12 @@ import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
-export async function proposalAdmissionFixture(t,{assembled=false,maxJobs}={}){
+export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=NOW;const signed=[];const contexts=new Map();
  const unreachable=()=>{throw new Error('TEST external effect');};
- const {signature,...listingDraft}=fixtureListing(seller,{now:NOW});listingDraft.offering.deliverable.expectedSizeBytes=1024;
+ const {signature,...listingDraft}=fixtureListing(seller,{now:NOW});
+ if(expectedSizeBytes===null)delete listingDraft.offering.deliverable.expectedSizeBytes;
+ else listingDraft.offering.deliverable.expectedSizeBytes=expectedSizeBytes;
  const listing=await core.signComponentArtifact(listingDraft,core.ARTIFACT_SEPARATORS.Listing,{signer:seller.claim,algorithm:'ed25519',sign:seller.signBytes}),admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
  const config={maxJobs,signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
