@@ -3,11 +3,10 @@ import { projectTemplates } from "../../packages/create-dacs-agent/src/templates
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
 import { auditLock, auditReport } from "./npm-audit-fixtures.js";
@@ -161,15 +160,10 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-step-"));
   scratch.push(directory);
   const checkout = join(directory, "checkout");
-  mkdirSync(join(checkout, "scripts"), { recursive: true });
-  for (const name of ["registry-container-disposition.mjs", "runtime-image-inventory.mjs", "acceptance-evidence-io.mjs",
-    "check-npm-advisories.mjs"]) {
-    writeFileSync(join(checkout, "scripts", name), readFileSync(join(repoRoot, "scripts", name)));
-  }
+  // Keep static imports, transitive imports, workers and baseline data together.
+  cpSync(join(repoRoot, "scripts"), join(checkout, "scripts"), { recursive: true });
   // The disposition reads the release version from the checkout's manifest.
   writeFileSync(join(checkout, "package.json"), readFileSync(join(repoRoot, "package.json")));
-  writeFileSync(join(checkout, "scripts/registry-container-audit-baseline.json"),
-    readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json")));
   const write = summary === undefined ? "" : [
     "mkdir -p registry-container-artifacts",
     `cat > registry-container-artifacts/acceptance-summary.json <<'JSON'\n${JSON.stringify(summary)}\nJSON`,
@@ -188,6 +182,13 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
 }
 const runDriftStep = (summary?: unknown, strictAudit = false) =>
   runWorkflowStep(0, summary, strictAudit, "Check advisory-ID drift");
+
+function dependencyPolicyFailureSummary() {
+  const summary = baselineOnlySummary();
+  summary.securityGate.findings.gitDependencies = [{ name: "unrecorded", location: "node_modules/unrecorded",
+    version: "1.0.0", integrity: null, field: "dependencies.git", value: "github:owner/repo" }];
+  return summary;
+}
 
 describe("registry/container acceptance disposition", () => {
   it("passes only when both the rehearsal and the release security gate pass", () => {
@@ -306,10 +307,7 @@ describe("registry/container pull_request job", () => {
     ["an unexpected schema", { ...baselineOnlySummary(), schema: "other/v1" }],
     ["a functional failure", { ...baselineOnlySummary(), functionalPassed: false }],
     ["failed generated tests", { ...baselineOnlySummary(), generatedTestsPassed: false }],
-    ["a dependency policy violation", {
-      ...baselineOnlySummary(),
-      securityGate: { ...baselineOnlySummary().securityGate, registryDependencyPolicyPassed: false },
-    }],
+    ["a dependency policy violation", dependencyPolicyFailureSummary()],
   ])("fails exit 4 when the summary records %s", (_label, summary) => {
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(4);
@@ -1782,10 +1780,9 @@ describe("advisory-ID baseline", () => {
     expect(record("ignore").status).not.toBe(4);
   });
   it("lets a pull request pass an unlisted ID only when nothing else is blocked", () => {
-    const summary = baselineOnlySummary();
+    const summary = dependencyPolicyFailureSummary();
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
-    summary.securityGate.registryDependencyPolicyPassed = false;
     expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" })).toMatchObject({ exitCode: 3,
       checks: { audit: "unlisted", registryDependency: "blocked" } });
     expect(runWorkflowStep(4, summary).status).toBe(4);
@@ -1863,10 +1860,11 @@ describe("advisory-ID baseline", () => {
   });
   it("reports drift even when a non-audit failure fails the acceptance step", () => {
     // P3-4: a blocked dependency policy (exit 3) must not mask the drift result.
-    const summary = baselineOnlySummary();
+    const summary = dependencyPolicyFailureSummary();
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
-    summary.securityGate.registryDependencyPolicyPassed = false;
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3,
+      checks: { registryDependency: "blocked" } });
     expect(runWorkflowStep(3, summary, true).status).toBe(3);
     const drift = runDriftStep(summary, true);
     expect(drift.status).toBe(3);
@@ -3443,10 +3441,16 @@ describe("acceptance failure class", () => {
     writeFileSync(join(stage, "npm-audit.json"), npmOutput("npm-audit-endpoint-errors", "503.json"));
     const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
       "audit-policy", "1"], { cwd: repoRoot, encoding: "utf8" });
-    expect(result.stdout).toContain("::error title=Registry/container acceptance network failure::stopped at stage " +
-      "audit-policy with exit 1; npm-audit.json: audit endpoint error: 503 Service Unavailable - POST ");
+    expect(result.status, result.stderr).toBe(0);
     const summary = JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"));
-    expect(summary).toMatchObject({ complete: false, failedStage: "audit-policy", failureClass: "network" });
+    expect(summary).toMatchObject({ complete: false, failedStage: "audit-policy", failureClass: "network",
+      failureEvidence: [expect.any(String)] });
+    const evidence = summary.failureEvidence[0];
+    expect(JSON.parse(evidence)).toMatchObject({
+      statusCode: 503, message: expect.stringContaining("503 Service Unavailable - POST "),
+    });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance network failure::stopped at stage " +
+      `audit-policy with exit 1; ${evidence}`);
     const drift = runDriftStep(summary, true);
     expect(drift.status).toBe(1);
     expect(drift.stdout).toContain("::warning title=Registry audit advisory drift::Advisory-ID drift was not evaluated: " +
