@@ -89,3 +89,10 @@ test('a retained proposal stage session restores with only its challenge binding
  const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
 });
 
+test('a closed agent refuses proposal admission before it consumes the challenge',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);agent.close();
+ await assert.rejects(agent.stagedProposal(input),error=>error.code==='seller_closed');
+ const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),staged);
+ assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);
+});
+

@@ -322,6 +322,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
 
   // ---- DACS-3: proposal -> seller contribution ----
   async function receiveProposal({ transportIdentity, buyerIdentityBundle }) {
+    requireOpen();
     const jobId = transportIdentity?.jobId;
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     assertVetContext();
