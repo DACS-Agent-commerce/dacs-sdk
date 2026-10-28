@@ -64,6 +64,35 @@ describe("publish environment evidence validation", () => {
     expect(publishEnvironmentProblems(env, policies())).toEqual([]);
   });
 
+  // GitHub does not offer the job's creator as an approver, so a sole matching
+  // user reviewer leaves the deployment waiting with no eligible approver.
+  it("rejects the dispatch requester as the only eligible reviewer", () => {
+    expect(publishEnvironmentProblems(environment(), policies(), "maintainer")).not.toEqual([]);
+    expect(publishEnvironmentProblems(environment(), policies(), "MAINTAINER")).not.toEqual([]);
+    expect(publishEnvironmentProblems(environment(), policies(), "another-maintainer")).toEqual([]);
+    const env = environment();
+    env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } },
+        { type: "User", reviewer: { login: "release" } }] }];
+    expect(publishEnvironmentProblems(env, policies(), "maintainer")).toEqual([]);
+    // Team membership is not in this evidence; a team may contain another approver.
+    env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "Team", reviewer: { slug: "release" } }] }];
+    expect(publishEnvironmentProblems(env, policies(), "maintainer")).toEqual([]);
+  });
+
+  it("reads the dispatch actor from the Actions environment in the CLI", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-publish-actor-")); const input = join(root, "environment.json"); const policy = join(root, "policies.json");
+    try {
+      writeFileSync(input, JSON.stringify(environment()));
+      writeFileSync(policy, JSON.stringify(policies()));
+      const result = spawnSync(process.execPath, ["scripts/check-publish-environment.mjs", input, policy],
+        { encoding: "utf8", env: { ...process.env, GITHUB_ACTOR: "maintainer", GITHUB_TRIGGERING_ACTOR: "" } });
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain("cannot approve");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   // Duplicate entries are not the single unambiguous policy the runbook sets.
   it("rejects duplicate deployment policies even when each names the release pattern", () => {
     const duplicated = { total_count: 2,

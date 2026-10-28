@@ -93,7 +93,11 @@ repository or the organization still give it.
    environment). Add the maintainers as required reviewers, turn on "Prevent
    self-review", disable "Allow administrators to bypass configured protection
    rules", and limit its deployment branches and tags to the tag pattern
-   `v*`.
+   `v*`. The guard rejects a configuration whose only reviewer is the user who
+   dispatched the run, because GitHub will not let that user approve the job.
+   When a team is the reviewer, the API does not expose its members: make sure
+   the dispatching maintainer is not the only member who could approve, or the
+   deployment waits for another eligible approver.
 2. If the first release still needs a token, create the `NPM_TOKEN` secret in
    the `npm-prerelease-gated` environment only, with the minimum permission from
    the previous section. Prefer a newly created token to copying the old value.
