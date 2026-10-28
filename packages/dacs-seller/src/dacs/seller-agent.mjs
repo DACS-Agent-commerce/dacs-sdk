@@ -1474,10 +1474,23 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       }
     }catch(error){return held(String(error.message).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
-    if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash||canonicalize(read.artifact)!==canonicalize(evidence)
-      ||await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:read.receipt,signedProjection:read.signedProjection})!=='valid')return held('delivery evidence readback differs');
+    if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash||canonicalize(read.artifact)!==canonicalize(evidence))return held('delivery evidence readback differs');
+    const cause=(error)=>`delivery evidence verifier unavailable: ${String(error?.message??error).slice(0,200)}`;
+    // A verifier that throws or cannot answer is an unavailable readback, not a
+    // failed effect: the paid claim stays a retry, never a thrown 503.
+    let verdict;
+    try{verdict=await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:read.receipt,signedProjection:read.signedProjection});}
+    catch(error){return held(cause(error));}
+    if(verdict==='indeterminate')return held('delivery evidence readback is unavailable');
+    if(verdict!=='valid')return held('delivery evidence readback differs');
     const retained=session.deliveryEvidenceWork.receipt;
-    if(retained&&(!sameNativeDeliveryReceipt(retained,read.receipt)||await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:retained,signedProjection:read.signedProjection})!=='valid'))return held('retained delivery evidence receipt differs');
+    if(retained){
+      if(!sameNativeDeliveryReceipt(retained,read.receipt))return held('retained delivery evidence receipt differs');
+      try{verdict=await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:retained,signedProjection:read.signedProjection});}
+      catch(error){return held(cause(error));}
+      if(verdict==='indeterminate')return held('retained delivery evidence receipt is unavailable');
+      if(verdict!=='valid')return held('retained delivery evidence receipt differs');
+    }
     session.deliveryEvidenceWork.receipt??=structuredClone(read.receipt);
     session.stage='delivered';persist(session);
     return nativeEvidenceResponse(work,{...pointer,status:'delivered',evidencePublication:'native-read-back',evidenceRef:signedFixtureRef(address,ready.evidenceHash),evidenceReceipt:session.deliveryEvidenceWork.receipt});
