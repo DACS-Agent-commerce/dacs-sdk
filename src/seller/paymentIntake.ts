@@ -18,6 +18,8 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { finalityCommitmentAddress } from "../negotiate/commitment.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
@@ -92,7 +94,11 @@ export type SellerPaymentFinality =
   | { model: "bft-final"; finalityObservedAt: number }
   | {
       model: "block-depth";
-      finalityBlocks: number;
+      /**
+       * DACS-4 §9.7 optional self-describing echo of the rail depth. The depth
+       * itself is enforced from the authenticated rail policy, never from here.
+       */
+      finalityBlocks?: number;
       finalityObservedAt: number;
     };
 
@@ -978,6 +984,9 @@ function snapshotPaymentIntakeInput(value: unknown): SellerPaymentIntakeInput | 
   } catch {
     return null;
   }
+  // CORE JID-3: the jobId keys the committed-agreement resolver query, so it
+  // must pass JID-1 before any lookup. Malformed input is an error, not a
+  // binding mismatch (JID-4).
   if (!isRecord(snapshot) || !hasExactKeys(snapshot, [
     "jobId",
     "phaseIndex",
@@ -985,8 +994,7 @@ function snapshotPaymentIntakeInput(value: unknown): SellerPaymentIntakeInput | 
     "payerPayingKey",
     "receipt",
   ]) ||
-      typeof snapshot.jobId !== "string" || snapshot.jobId.length === 0 ||
-      snapshot.jobId.includes(":") ||
+      !isCanonicalJobId(snapshot.jobId) ||
       !isSafeUint(snapshot.phaseIndex) ||
       typeof snapshot.railId !== "string" || snapshot.railId.length === 0 ||
       typeof snapshot.payerPayingKey !== "string" || snapshot.payerPayingKey.length === 0 ||
@@ -1149,8 +1157,9 @@ function isValidPaymentEvidenceInput(value: unknown): value is SellerPaymentEvid
       "finalityObservedAt",
     ]) ||
     value.settlementFinality.model !== "block-depth" ||
-    !isSafeUint(value.settlementFinality.finalityBlocks) ||
-    value.settlementFinality.finalityBlocks === 0 ||
+    (value.settlementFinality.finalityBlocks !== undefined &&
+      (!isSafeUint(value.settlementFinality.finalityBlocks) ||
+        value.settlementFinality.finalityBlocks === 0)) ||
       !isSafeUint(value.settlementFinality.finalityObservedAt)
     ) return false;
   }
@@ -1447,6 +1456,61 @@ function isX402SettlementChainClassificationValue(
     value.disposition === "indeterminate" || value.disposition === "error") &&
     hasExactKeys(value, ["disposition", "reason"]) &&
     typeof value.reason === "string" && value.reason.length > 0;
+}
+
+/** The authenticated rail members the pay-x402 finality policy is read from. */
+export interface X402FinalityPolicyRail {
+  asset: { chainId: number };
+  parameters: Record<string, unknown> & { finalityBlocks?: unknown };
+}
+
+export type X402FinalityPolicyResolution =
+  | { disposition: "resolved"; finalityBlocks: number }
+  | { disposition: "rejected" | "indeterminate" | "error"; reason: string };
+
+/**
+ * pay-x402 block depth from the authenticated rail policy: the optional
+ * `rail.parameters.finalityBlocks`, else 12 on Ethereum mainnet, else 1 on a
+ * chain the classifier admits as an L2. DACS-4 states these defaults for
+ * pay-evm-erc20 (§9.5.2 step 6); pay-x402 settles the same ERC-20 transfer, so
+ * they apply by analogy (its §9.14 row names no depth). One resolver serves seller
+ * intake and the buyer's evidence and audit checks, so they cannot disagree
+ * about what an absent parameter means.
+ */
+export async function resolveX402FinalityBlocks<R extends X402FinalityPolicyRail>(
+  rail: Readonly<R>,
+  classify: (input: { chainId: number; rail: Readonly<R> }) =>
+    | Promise<X402SettlementChainClassification>
+    | X402SettlementChainClassification,
+): Promise<X402FinalityPolicyResolution> {
+  const configured = rail.parameters.finalityBlocks;
+  if (configured !== undefined) {
+    return Number.isSafeInteger(configured) && (configured as number) > 0
+      ? { disposition: "resolved", finalityBlocks: configured as number }
+      : { disposition: "rejected", reason: "x402-finality-policy-invalid" };
+  }
+  if (rail.asset.chainId === 1) return { disposition: "resolved", finalityBlocks: 12 };
+  const classificationCall = await callSecurityBoundaryWithInput({
+    chainId: rail.asset.chainId,
+    rail: structuredClone(rail),
+  }, classify);
+  if (classificationCall.status === "threw") {
+    return { disposition: "indeterminate", reason: "x402-chain-classification-unavailable" };
+  }
+  if (classificationCall.status !== "ok" ||
+      !isX402SettlementChainClassificationValue(classificationCall.value)) {
+    return { disposition: "error", reason: "x402-chain-classifier-invalid-result" };
+  }
+  const classification = classificationCall.value;
+  if (classification.disposition === "l2") {
+    return { disposition: "resolved", finalityBlocks: 1 };
+  }
+  return {
+    disposition: classification.disposition === "unsupported"
+      ? "rejected"
+      : classification.disposition,
+    reason: `x402-chain-${classification.reason}`,
+  };
 }
 
 function isSellerReceiptClaimResultValue(
@@ -1821,7 +1885,12 @@ export function canonicalSellerSettlementId(input:
   return `evm:${input.chainId}:${txHash}:${input.logIndex}`;
 }
 
-/** DACS-4 §9.5.8 byte-exact EIP-3009 SB-3 nonce. */
+/**
+ * DACS-4 §9.5.8 byte-exact EIP-3009 SB-3 nonce derivation unit. It reproduces
+ * the published preimage recipe, including historical derivation-only
+ * fixtures, and does not validate JID-1 itself: every operational caller
+ * (seller intake and the x402 paywall) admits only a canonical jobId at entry.
+ */
 export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
   if (
     typeof jobId !== "string" ||
@@ -2270,6 +2339,7 @@ export async function verifySellerPaymentIntake(
   if (!request) {
     return verifierError("invalid-intake-input");
   }
+  if (request.receipt.kind === "pay-x402") requireJid1LiveProfile();
 
   // Capture each callback once before the first await. Runtime JavaScript can
   // otherwise swap a method on the dependency object between security gates.
@@ -2678,42 +2748,16 @@ export async function verifySellerPaymentIntake(
   const claimedTxHash = canonicalTxHash(request.receipt.settlementTxHash);
   if (!claimedTxHash) return verifierError("malformed-settlement-identity");
 
-  let finalityBlocks: number;
-  if (rail.parameters.finalityBlocks !== undefined) {
-    if (!Number.isSafeInteger(rail.parameters.finalityBlocks) ||
-        rail.parameters.finalityBlocks <= 0) {
-      return reject("x402-finality-policy-invalid");
-    }
-    finalityBlocks = rail.parameters.finalityBlocks;
-  } else if (rail.asset.chainId === 1) {
-    finalityBlocks = 12;
-  } else {
-    const classificationCall = await callSecurityBoundaryWithInput({
-        chainId: rail.asset.chainId,
-        rail: structuredClone(rail),
-      }, (classificationInput) =>
-        classifyX402SettlementChain.call(deps, classificationInput));
-    if (classificationCall.status === "threw") {
-      return indeterminate("x402-chain-classification-unavailable");
-    }
-    if (classificationCall.status !== "ok") {
-      return verifierError("x402-chain-classifier-invalid-result");
-    }
-    const classification = classificationCall.value;
-    if (!isX402SettlementChainClassificationValue(classification)) {
-      return verifierError("x402-chain-classifier-invalid-result");
-    }
-    if (classification.disposition === "unsupported") {
-      return reject(`x402-chain-${classification.reason}`);
-    }
-    if (classification.disposition === "indeterminate") {
-      return indeterminate(`x402-chain-${classification.reason}`);
-    }
-    if (classification.disposition === "error") {
-      return verifierError(`x402-chain-${classification.reason}`);
-    }
-    finalityBlocks = 1;
+  const finality = await resolveX402FinalityBlocks(rail, (classificationInput) =>
+    classifyX402SettlementChain.call(deps, classificationInput));
+  if (finality.disposition !== "resolved") {
+    return finality.disposition === "rejected"
+      ? reject(finality.reason)
+      : finality.disposition === "indeterminate"
+        ? indeterminate(finality.reason)
+        : verifierError(finality.reason);
   }
+  const finalityBlocks = finality.finalityBlocks;
 
   const [payerCall, destinationCall] = await Promise.all([
     callSecurityBoundaryWithInput({

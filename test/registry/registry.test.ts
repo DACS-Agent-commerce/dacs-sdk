@@ -5,6 +5,7 @@ import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
+import { UnsupportedCapabilityError } from "../../src/errors.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -1683,14 +1684,17 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
     recipientEvm: "0x1111111111111111111111111111111111111111",
   };
 
-  test("x402 dispatches only from an authenticated normative definition", async () => {
+  test("x402 refuses the unreleased live profile even with an authenticated normative definition", async () => {
     const descriptor = await authenticatedRail(x402Definition());
-    const settle = await settleFromRail(descriptor, {
+    const dispatch = settleFromRail(descriptor, {
       evmPrivateKey: TEST_EVM_KEY,
       paywall,
       rpcUrl: "https://sepolia.base.org",
     });
-    expect(typeof settle).toBe("function");
+    await expect(dispatch).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(dispatch).rejects.toThrow(
+      "Live JID-1 actions are unavailable: the pinned Standard has no coordinated corrective release",
+    );
   });
 
   test("rejects an unbranded structural copy before constructing a rail", async () => {

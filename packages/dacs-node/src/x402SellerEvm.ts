@@ -5,8 +5,11 @@ import {
   ERC20_TRANSFER_TOPIC,
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
+  resolveX402FinalityBlocks,
   type AuthenticatedRailDefinition,
   type SellerPaymentIntakeDeps,
+  type X402FinalityPolicyRail,
+  type X402FinalityPolicyResolution,
   type X402PaywallSettlementIntent,
   type X402PaywallSettlementReconciliation,
   type X402PaywallSettlementResult,
@@ -19,6 +22,15 @@ const QUANTITY_RE = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
 const AUTHORIZATION_STATE_SELECTOR = "0xe94a0102";
 const DEFAULT_LOG_PAGE_SIZE = 2_000;
+// Reviewed chain definitions in viem 2.55.19, chains/definitions/{base,
+// baseSepolia,optimism,optimismSepolia,arbitrum,arbitrumSepolia}.ts.
+// This local registry is deliberately closed: additional chains need an
+// explicit authenticated rail depth until their L2 membership is reviewed.
+const X402_L2_CHAIN_IDS_V1: ReadonlySet<number> = new Set([
+  8453, 84532, // Base and Base Sepolia
+  10, 11155420, // OP Mainnet and OP Sepolia
+  42161, 421614, // Arbitrum One and Arbitrum Sepolia
+]);
 
 type ObserveX402Transfer = SellerPaymentIntakeDeps["observeX402Transfer"];
 type VerifyReceiptExtensions = SellerPaymentIntakeDeps["verifyX402ReceiptExtensions"];
@@ -243,10 +255,62 @@ function authorizationFromIntent(intent: Readonly<X402PaywallSettlementIntent>):
 }
 
 /**
- * Authenticate seller-side x402 settlement directly from canonical EVM data.
- * The observer never treats a facilitator response or transaction hash alone
- * as finality: it requires the exact AuthorizationUsed and ERC-20 Transfer in
- * one successful canonical receipt beneath the configured finality head.
+ * Admit the authenticated rail's exact chain as an L2 only when it appears
+ * in the versioned local registry. Other EVM chains require an explicit rail
+ * depth; rail equality alone does not establish L2 membership.
+ */
+export function classifyDacsAuthenticatedX402ChainV1(
+  rail: Readonly<AuthenticatedRailDefinition>,
+): ClassifySettlementChain {
+  const chainId = rail.asset.kind === "erc20" ? rail.asset.chainId : undefined;
+  return ({ chainId: candidateChain, rail: candidateRail }) => {
+    try {
+      return chainId !== undefined && X402_L2_CHAIN_IDS_V1.has(chainId) &&
+          candidateChain === chainId &&
+          canonicalize(candidateRail) === canonicalize(rail)
+        ? { disposition: "l2" as const }
+        : { disposition: "unsupported" as const,
+          reason: "settlement-chain-unregistered" };
+    } catch {
+      return { disposition: "unsupported" as const,
+        reason: "settlement-chain-unregistered" };
+    }
+  };
+}
+
+/**
+ * The pay-x402 block depth of an authenticated rail, by the same resolver the
+ * SDK's seller payment intake uses. `finalityBlocks` is optional in the rail
+ * parameters; its 12/1 defaults follow DACS-4 §9.5.2 step 6 (pay-evm-erc20),
+ * applied to pay-x402 by analogy, and exist only for Ethereum mainnet and
+ * registered L2 chains.
+ */
+export function resolveDacsX402FinalityBlocksV1(
+  rail: Readonly<AuthenticatedRailDefinition>,
+): Promise<X402FinalityPolicyResolution> {
+  if (rail.railType !== "x402" || rail.asset.kind !== "erc20") {
+    return Promise.resolve({ disposition: "error", reason: "x402-finality-rail-invalid" });
+  }
+  const classify = classifyDacsAuthenticatedX402ChainV1(rail);
+  return resolveX402FinalityBlocks(
+    rail as Readonly<AuthenticatedRailDefinition & X402FinalityPolicyRail>,
+    (input) => classify(input as unknown as Parameters<ClassifySettlementChain>[0]),
+  );
+}
+
+/** True when an explicit `finalityBlocks` parameter is present but not a positive integer. */
+export function hasInvalidDacsX402FinalityParameterV1(
+  rail: Readonly<AuthenticatedRailDefinition>,
+): boolean {
+  const configured = record(rail.parameters) ? rail.parameters.finalityBlocks : undefined;
+  return configured !== undefined &&
+    (!Number.isSafeInteger(configured) || Number(configured) <= 0);
+}
+
+/**
+ * Authenticate x402 settlement from the exact AuthorizationUsed and ERC-20
+ * Transfer in a successful canonical receipt beneath the configured head and
+ * at the shared authenticated rail depth.
  */
 export function createDacsX402SellerEvmObserverV1(
   options: Readonly<DacsX402SellerEvmObserverOptionsV1>,
@@ -278,10 +342,9 @@ export function createDacsX402SellerEvmObserverV1(
   const chainId = railAsset.chainId;
   const network = `eip155:${chainId}` as const;
   const asset = railAsset.contract.toLowerCase();
-  const minimumConfirmations = record(rail.parameters) &&
-      Number.isSafeInteger(rail.parameters.finalityBlocks) &&
-      Number(rail.parameters.finalityBlocks) > 0
-    ? Number(rail.parameters.finalityBlocks) : 1;
+  // Share the buyer/intake policy, including refusal of unregistered defaults
+  // and malformed explicit depths. No chain observation can override it.
+  const finalityPolicy = resolveDacsX402FinalityBlocksV1(rail);
   const finalityTag = options.finalityTag ?? "finalized";
   let requestId = 0;
 
@@ -328,6 +391,11 @@ export function createDacsX402SellerEvmObserverV1(
       return { status: "failed", reason: "settlement-transaction-binding-invalid" };
     }
     try {
+      const finality = await finalityPolicy;
+      if (finality.disposition !== "resolved") {
+        return { status: "unavailable", reason: finality.reason };
+      }
+      const minimumConfirmations = finality.finalityBlocks;
       const [transaction, finalityHead] = await Promise.all([
         receipt(txHash.toLowerCase()),
         head(),
@@ -464,6 +532,10 @@ export function createDacsX402SellerEvmObserverV1(
           requirements.amount !== authorization.value) {
         return { status: "indeterminate", reason: "settlement-intent-invalid" };
       }
+      const finality = await finalityPolicy;
+      if (finality.disposition !== "resolved") {
+        return { status: "indeterminate", reason: finality.reason };
+      }
       const finalityHead = await head();
       const logs = await authorizationLogs(
         intent.payer,
@@ -535,21 +607,7 @@ export function createDacsX402SellerEvmObserverV1(
       : { disposition: "fail" as const, reason: "x402-receipt-extension-invalid" };
   };
 
-  const classifyX402SettlementChain: ClassifySettlementChain = ({
-    chainId: candidateChain,
-    rail: candidateRail,
-  }) => {
-    try {
-      return candidateChain === chainId &&
-          canonicalize(candidateRail) === canonicalize(rail)
-        ? { disposition: "l2" as const }
-        : { disposition: "unsupported" as const,
-          reason: "settlement-chain-unregistered" };
-    } catch {
-      return { disposition: "unsupported" as const,
-        reason: "settlement-chain-unregistered" };
-    }
-  };
+  const classifyX402SettlementChain = classifyDacsAuthenticatedX402ChainV1(rail);
 
   return Object.freeze({
     network,

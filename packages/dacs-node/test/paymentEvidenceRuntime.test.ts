@@ -746,5 +746,52 @@ describe("live payment-evidence runtime", () => {
       authorization: paymentAuthorization as never,
     });
     expect(replayProof).toEqual(firstProof);
+
+    // A retained depth echo is a floor the fresh observation must still meet,
+    // even when the observer itself reports the event finalized.
+    observedConfirmations = 2;
+    await expect(resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: paymentAuthorization as never,
+    })).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "authenticated x402 native proof unavailable",
+    });
+    // Exactly the echoed depth meets the floor.
+    observedConfirmations = 3;
+    await expect(resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: paymentAuthorization as never,
+    })).resolves.toEqual(firstProof);
+
+    // DACS-4 §9.7: evidence without the optional echo yields a proof with no
+    // depth member at all (never an undefined one), stable across replays.
+    const echoLess = {
+      ...paymentAuthorization,
+      evidenceInput: {
+        ...paymentAuthorization.evidenceInput,
+        settlementFinality: { model: "block-depth", finalityObservedAt: 7_000 },
+      },
+    } as const;
+    const echoLessProof = await resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: echoLess as never,
+    });
+    expect(echoLessProof).toMatchObject({
+      disposition: "authenticated",
+      binding: {
+        settlementFinality: { model: "block-depth", finalityObservedAt: 7_000 },
+      },
+      proof: { artifact: { finalityObservedAt: 7_000 } },
+    });
+    if (echoLessProof.disposition !== "authenticated") return;
+    expect(echoLessProof.binding.settlementFinality).not.toHaveProperty("finalityBlocks");
+    expect(echoLessProof.proof.encoding).toBe("jcs");
+    const artifact = echoLessProof.proof.encoding === "jcs"
+      ? echoLessProof.proof.artifact : {};
+    expect(artifact).not.toHaveProperty("confirmations");
+    expect(Object.values(artifact)).not.toContain(undefined);
+    observedConfirmations = 9;
+    observedFinalityAt = 12_000;
+    await expect(resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: echoLess as never,
+    })).resolves.toEqual(echoLessProof);
   });
 });

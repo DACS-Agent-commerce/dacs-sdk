@@ -718,11 +718,19 @@ export type PublishResult =
 export interface DemosBackedAdapter extends SubstrateAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly raw: any;
-  /** Re-authenticate a portable Demos proof through this adapter's RPC. */
+  /**
+   * Re-authenticate a portable Demos proof through this adapter's RPC.
+   * `false` means the node contradicted it; an unanswered read rejects with
+   * SubstrateError.
+   */
   verifyDemosWriteEvidence(
     evidence: Readonly<DemosWriteEvidence>,
   ): Promise<boolean>;
-  /** Re-authenticate a compact portable Demos AnchorReceipt without its index. */
+  /**
+   * Re-authenticate a compact portable Demos AnchorReceipt without its index.
+   * `false` means the node contradicted it; a Demos not-found, RPC error or
+   * transport failure rejects with SubstrateError (CORE §5.1 `indeterminate`).
+   */
   verifyDemosAnchorReceipt(
     receipt: Readonly<ProtocolAnchorReceipt>,
   ): Promise<boolean>;

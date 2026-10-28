@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
   AnchorReceipt,
@@ -224,7 +224,7 @@ interface Harness {
   ): X402PaywallFulfilmentContext<X402SellerPaymentPermitAuthorization>;
   resolvedScope: X402SellerCommittedSessionScope;
   installAuthorization(authorization: SellerPaymentAuthorization): void;
-  retainSettlement(sessionAuthorization: unknown): void;
+  retainSettlement(sessionAuthorization: unknown, intentVersion?: string): void;
   runThroughPaywallCore(): Promise<unknown>;
   setObservation(observation: X402TransferObservation): void;
   resumeFinalisation(authorization: X402SellerPaymentPermitAuthorization): Promise<unknown>;
@@ -907,9 +907,9 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
     installAuthorization(value) {
       activeAuthorization = structuredClone(value);
     },
-    retainSettlement(sessionAuthorization) {
+    retainSettlement(sessionAuthorization, intentVersion = "2") {
       const intentCore = {
-        intentVersion: "2" as const,
+        intentVersion: intentVersion as "2",
         settlementKey: x402PaywallSettlementKey({
           jobId: JOB_ID,
           phaseIndex: PAYMENT_PHASE_INDEX,
@@ -1064,6 +1064,53 @@ describe("createX402SellerSpine", () => {
     expect(harness.counts.delivery).toBe(0);
   });
 
+  // Only the version differs: the retained binding hash is recomputed over it.
+  it("does not recover a permit from a retained intent of another intentVersion", async () => {
+    const harness = makeHarness();
+    const pre = await harness.spine.authorizeSettlement(harness.preContext);
+    if (pre.disposition !== "authorized") throw new Error(pre.reason);
+    harness.retainSettlement(pre.authorization, "3");
+
+    await expect(harness.spine.recoverPaymentAuthorization({
+      jobId: JOB_ID,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    })).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "seller-settlement-store-invalid",
+    });
+    expect(harness.counts.delivery).toBe(0);
+  });
+
+  it.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}I`,
+    `${JOB_ID.slice(0, -1)}U`,
+    "seller-spine-job",
+  ])("refuses a non-JID-1 jobId %j before the session resolver or a settlement key", async (jobId) => {
+    const harness = makeHarness();
+    const pre = await harness.spine.authorizeSettlement(harness.preContext);
+    if (pre.disposition !== "authorized") throw new Error(pre.reason);
+    harness.retainSettlement(pre.authorization);
+
+    // "request-invalid" is decided before resolveCommittedSession runs; a
+    // malformed jobId that reached the resolver would be a scope mismatch.
+    await expect(harness.spine.authorizeSettlement({
+      ...harness.preContext,
+      jobId,
+    })).resolves.toEqual({
+      disposition: "rejected",
+      reason: "seller-session-request-invalid",
+    });
+    await expect(harness.spine.recoverPaymentAuthorization({
+      jobId,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    })).resolves.toEqual({
+      disposition: "rejected",
+      reason: "seller-recovery-scope-invalid",
+    });
+    expect(harness.counts.delivery).toBe(0);
+  });
+
   it("runs real #119 and generation-fenced #120/#121 with one irreversible delivery", async () => {
     const harness = makeHarness();
     const authorization = await authorize(harness);
@@ -1093,6 +1140,104 @@ describe("createX402SellerSpine", () => {
     await expect(harness.spine.authorizeSettlement(harness.preContext)).resolves.toEqual({
       disposition: "rejected",
       reason: "seller-session-scope-mismatch",
+    });
+    expect(harness.counts.delivery).toBe(0);
+  });
+
+  // DACS-4 SB-1 (payee, asset, exact amount) and the x402-event httpResource:
+  // the committed session scope must agree with the verified payment terms in
+  // every member before settlement. One member differs per row.
+  it.each<[string, (scope: X402SellerCommittedSessionScope) => void]>([
+    ["payTo", (scope) => { scope.expected.payTo = `0x${"55".repeat(20)}`; }],
+    ["asset", (scope) => { scope.expected.asset = `0x${"66".repeat(20)}`; }],
+    ["network", (scope) => { scope.expected.network = "eip155:8453"; }],
+    ["EIP-712 name", (scope) => { scope.expected.eip712.name = "USDC"; }],
+    ["EIP-712 version", (scope) => { scope.expected.eip712.version = "1"; }],
+    ["amount", (scope) => { scope.expected.amount = "1"; }],
+    ["httpResource", (scope) => { scope.httpResource = `${scope.httpResource}/other`; }],
+    ["payment phase", (scope) => { scope.paymentPhaseIndex += 1; }],
+    // CORE JID-4: another canonical job's scope is not this session's.
+    ["jobId", (scope) => { scope.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7F"; }],
+    ["scopeVersion", (scope) => { (scope as { scopeVersion: string }).scopeVersion = "2"; }],
+  ])("rejects a committed session scope with another %s before settlement", async (
+    _member,
+    mutate,
+  ) => {
+    const harness = makeHarness();
+    mutate(harness.resolvedScope);
+    const result = await harness.spine.authorizeSettlement(harness.preContext);
+    expect(result.disposition).not.toBe("authorized");
+    expect(harness.counts.delivery).toBe(0);
+  });
+
+  // The verified requirements themselves must name the committed terms.
+  it.each<[string, (requirements: Record<string, any>) => void]>([
+    ["scheme", (requirements) => { requirements.scheme = "upto"; }],
+    ["payTo", (requirements) => { requirements.payTo = `0x${"55".repeat(20)}`; }],
+    ["asset", (requirements) => { requirements.asset = `0x${"66".repeat(20)}`; }],
+    ["network", (requirements) => { requirements.network = "eip155:8453"; }],
+    ["EIP-712 name", (requirements) => { requirements.extra.name = "USDC"; }],
+    ["EIP-712 version", (requirements) => { requirements.extra.version = "1"; }],
+  ])("rejects verified requirements with another %s before settlement", async (
+    _member,
+    mutate,
+  ) => {
+    const harness = makeHarness();
+    const paymentPayload = structuredClone(harness.preContext.paymentPayload) as {
+      accepted: Record<string, any>;
+    };
+    const paymentRequirements = structuredClone(
+      harness.preContext.paymentRequirements,
+    ) as Record<string, any>;
+    mutate(paymentRequirements);
+    mutate(paymentPayload.accepted);
+    const result = await harness.spine.authorizeSettlement({
+      ...harness.preContext,
+      paymentPayload: paymentPayload as never,
+      paymentRequirements: paymentRequirements as never,
+    });
+    expect(result.disposition).not.toBe("authorized");
+    expect(harness.counts.delivery).toBe(0);
+  });
+
+  // X402-1/X402-3 and the x402-event arm: the settled claim must carry the
+  // committed protocol version, resource, chain and settlement network.
+  it.each<[string, (context: X402PaywallAuthorizationContext) => void]>([
+    ["protocol version", (context) => {
+      (context.paymentClaim as { protocolVersion: string }).protocolVersion = "1";
+    }],
+    ["httpResource", (context) => {
+      (context.paymentClaim as { httpResource: string }).httpResource =
+        `${context.paymentClaim.httpResource}/other`;
+    }],
+    ["chainId", (context) => {
+      (context.paymentClaim as { chainId?: number }).chainId = 8453;
+    }],
+    ["settlement network", (context) => {
+      (context.settlement as { network: string }).network = "eip155:8453";
+    }],
+    ["settlement payer", (context) => {
+      (context.settlement as { payer?: string }).payer = `0x${"77".repeat(20)}`;
+    }],
+    ["settlement amount", (context) => {
+      (context.settlement as { amount?: string }).amount = "1";
+    }],
+    ["settled requirements payTo", (context) => {
+      (context.settlement as unknown as { requirements: { payTo: string } }).requirements
+        .payTo = `0x${"55".repeat(20)}`;
+    }],
+  ])("does not authorize delivery for a settlement with another %s", async (
+    _member,
+    mutate,
+  ) => {
+    const harness = makeHarness();
+    const pre = await harness.spine.authorizeSettlement(harness.preContext);
+    if (pre.disposition !== "authorized") throw new Error(pre.reason);
+    const context = harness.authorizationContext(pre.authorization);
+    mutate(context);
+    await expect(harness.spine.authorizePayment(context)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "seller-settlement-session-mismatch",
     });
     expect(harness.counts.delivery).toBe(0);
   });
@@ -1146,6 +1291,18 @@ describe("createX402SellerSpine", () => {
     expect(harness.counts.delivery).toBe(0);
     expect(harness.counts.evidence).toBe(0);
     expect(harness.counts.render).toBe(0);
+  });
+
+  it("does not deliver under a permit of an unsupported authorization version", async () => {
+    const harness = makeHarness();
+    const authorization = await authorize(harness);
+    const unsupported = structuredClone(authorization);
+    (unsupported as { authorizationVersion: string }).authorizationVersion = "2";
+
+    await expect(harness.spine.fulfil(
+      harness.fulfilmentContext(unsupported),
+    )).resolves.not.toMatchObject({ disposition: "fulfilled" });
+    expect(harness.counts.delivery).toBe(0);
   });
 
   it("does not trust a mixed response header under the retained receipt hash", async () => {
@@ -1225,3 +1382,7 @@ describe("createX402SellerSpine", () => {
     expect(harness.counts.render).toBe(0);
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

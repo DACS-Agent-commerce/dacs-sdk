@@ -6,6 +6,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type { AttestationRef } from "../artifacts/types.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -80,15 +81,12 @@ export function deriveAp2IdempotencyKey(
   jobId: string,
   phaseIndex: number,
 ): string {
-  if (typeof jobId !== "string" || jobId.length === 0) {
-    throw new DacsError("pay-ap2: jobId must be a non-empty string");
-  }
+  // AP2-6: JID-1 before hashing or provider action; never repair a spelling.
+  requireCanonicalJobId(jobId, "pay-ap2 jobId");
   if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0) {
     throw new DacsError("pay-ap2: phaseIndex must be a non-negative safe integer");
   }
-  return sha256Hex(
-    `dacs-ap2-idem:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
-  );
+  return sha256Hex(`dacs-ap2-idem:v1:${jobId}:${phaseIndex}`);
 }
 
 /**
@@ -475,7 +473,7 @@ function intentFrom(input: {
   const unsigned = {
     intentVersion: "1" as const,
     transactionId: requireString(input.verifiedPayment.transactionId, "transactionId"),
-    jobId: requireString(input.jobId, "jobId").normalize("NFC"),
+    jobId: requireCanonicalJobId(input.jobId, "pay-ap2 jobId"),
     phaseIndex: input.phaseIndex,
     agreementHash: input.agreementHash,
     idempotencyKey: deriveAp2IdempotencyKey(input.jobId, input.phaseIndex),
@@ -568,6 +566,8 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
       "leaseDurationMs",
     );
     owner = requireString(input.owner, "owner");
+    // AP2-6 / CORE JID-3: no mandate, store or provider work for a malformed jobId.
+    requireCanonicalJobId(input.jobId, "pay-ap2 jobId");
   } catch (error) {
     return {
       status: "failed",

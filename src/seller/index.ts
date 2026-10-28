@@ -126,6 +126,9 @@ export {
   type X402SettlementChainClassification,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeResult,
+  resolveX402FinalityBlocks,
+  type X402FinalityPolicyRail,
+  type X402FinalityPolicyResolution,
 } from "./paymentIntake.js";
 export {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,

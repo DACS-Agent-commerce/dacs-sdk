@@ -8,6 +8,7 @@ import {
 } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 
 /**
  * Settlement idempotency (issue #43).
@@ -613,14 +614,19 @@ export function createInMemorySettlementLog(): SettlementLog {
   };
 }
 
-/** Deterministic settlement idempotency key: `railId:jobId:phaseIndex`. */
+/**
+ * Deterministic settlement idempotency key: `railId:jobId:phaseIndex`.
+ *
+ * The jobId must already be a CORE JID-1 canonical ULID: JID-3 forbids keying a
+ * protocol effect on any other spelling, so a lower-case or aliased jobId is an
+ * error here rather than a second, distinct payment key.
+ */
 export function settlementKey(railId: string, jobId: string, phaseIndex: number): string {
   if (typeof railId !== "string" || railId.length === 0 || railId.normalize("NFC") !== railId ||
-      typeof jobId !== "string" || jobId.length === 0 || jobId.normalize("NFC") !== jobId ||
-      jobId.includes(":") || !Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
+      !isCanonicalJobId(jobId) || !Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
       Object.is(phaseIndex, -0)) {
     throw new DacsError(
-      "settlement key requires exact NFC rail/job identifiers, a colon-free job id, and a non-negative phase index",
+      "settlement key requires an exact NFC rail identifier, a canonical JID-1 job id, and a non-negative phase index",
     );
   }
   return `${railId}:${jobId}:${phaseIndex}`;

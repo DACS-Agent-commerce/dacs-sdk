@@ -5,6 +5,7 @@ import type {
   AnchorReceipt,
   ComponentSignatureAlgorithm,
   SettlementEvidence,
+  SettlementFinality,
 } from "../../src/artifacts/types.js";
 import {
   canonicalize,
@@ -60,7 +61,7 @@ const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
 const NOW = 1_777_000_000_000;
 const TX_HASH = "e".repeat(64);
 
-function authorization(jobId = "job-publication-1"): SellerPaymentAuthorization {
+function authorization(jobId = "01JZ0000000000000000000360"): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1" as const,
     jobId,
@@ -479,8 +480,110 @@ describe("publishSellerSessionSettlement", () => {
     expect(verified.disposition).toBe("verified");
   });
 
+  // DACS-4 §9.7: the finality depth echo is optional. A record without it is
+  // published and verified against the authenticated rail depth.
+  it("publishes and verifies an x402 record that omits the optional depth echo", async () => {
+    const value = authorization("01JZ0000000000000000000361");
+    value.evidenceInput.settlementFinality = {
+      model: "block-depth",
+      finalityObservedAt: NOW,
+    };
+    value.evidenceHash = sha256Hex(canonicalize(value.evidenceInput));
+    const artifact = {
+      ...proof(value),
+      finalityObservedAt: NOW,
+    };
+    const h = harness(value);
+    h.nativeProofRef = {
+      ...h.nativeProofRef,
+      contentHash: sha256Hex(canonicalize(artifact)),
+    };
+    h.resolveProof.mockImplementation(async () => proofAuthentication(value, artifact));
+    const result = await publishSellerSessionSettlement(request(h), h.deps);
+    expect(result).toMatchObject({ disposition: "published" });
+    if (result.disposition !== "published") return;
+    expect(result.settlement.evidence.settlementFinality).toEqual({
+      model: "block-depth",
+      finalityObservedAt: NOW,
+    });
+    // The native re-observation reports the depth it applied (the rail pin of
+    // 12); a copy of the echo-less signed shape attests no depth.
+    const verify = (observedFinality: SettlementFinality) =>
+      verifyFinalizedSessionSettlement(
+        context(value),
+        result.settlement,
+        {
+          authenticateContext: () => ({ disposition: "pass" }),
+          verifyEvidenceAnchor: () => ({ disposition: "pass" }),
+          resolveNativeProof: () => ({ disposition: "present", artifact }),
+          revalidateSettlement: (input) => ({
+            disposition: "pass",
+            outcome: "success",
+            binding: {
+              jobId: input.context.jobId,
+              railId: input.context.rail.railId,
+              phaseIndex: input.context.paymentPhaseIndex,
+              settlementId: value.settlementId,
+            },
+            nativeObservation: {
+              observationVersion: "1",
+              kind: "authenticated-x402-event",
+              observedAt: NOW + 2,
+              finality: structuredClone(observedFinality),
+              sessionBinding: {
+                disposition: "established",
+                kind: "eip3009",
+                bindingHash: "8".repeat(64),
+              },
+              details: { chainId: 8453, logIndex: 2 },
+            },
+          }),
+          evidence: h.deps.evidence,
+        },
+      );
+    await expect(verify({
+      model: "block-depth",
+      finalityBlocks: 12,
+      finalityObservedAt: NOW,
+    })).resolves.toMatchObject({ disposition: "verified" });
+    for (const observed of [
+      structuredClone(value.evidenceInput.settlementFinality),
+      { model: "block-depth", finalityBlocks: 11, finalityObservedAt: NOW },
+    ] as SettlementFinality[]) {
+      await expect(verify(observed), JSON.stringify(observed)).resolves.toEqual({
+        disposition: "rejected",
+        reason: "native settlement observation finality differs from the signed evidence",
+      });
+    }
+
+    // A present echo still has to be a positive depth, and the proof may not
+    // carry an undefined member in place of the omitted one.
+    for (const [finality, proofArtifact] of [
+      [{ model: "block-depth", finalityBlocks: 0, finalityObservedAt: NOW }, artifact],
+      [value.evidenceInput.settlementFinality, { ...artifact, confirmations: undefined }],
+    ] as const) {
+      const malformed = harness(value);
+      malformed.resolveProof.mockImplementation(async () => {
+        const authenticated = proofAuthentication(value, proofArtifact);
+        if (authenticated.disposition === "authenticated") {
+          authenticated.binding.settlementFinality = structuredClone(finality);
+          if (authenticated.proof.encoding === "jcs") {
+            authenticated.proof.artifact = proofArtifact;
+          }
+        }
+        return authenticated;
+      });
+      await expect(publishSellerSessionSettlement(request(malformed), malformed.deps))
+        .resolves.toEqual({
+          disposition: "error",
+          reason: "authenticated native proof resolution is malformed",
+        });
+      expect(malformed.sign).not.toHaveBeenCalled();
+    }
+  });
+
   it("keeps one effect identity as authenticated proof observations advance", async () => {
-    const value = authorization("job-publication-proof-replay");
+    const value = authorization("01JZ0000000000000000000362");
     const first = harness(value);
     const replay = harness(value);
     replay.resolveProof.mockResolvedValue(proofAuthentication(value, {
@@ -609,7 +712,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(available.anchor).not.toHaveBeenCalled();
 
     const substituted = harness();
-    const other = authorization("job-substituted");
+    const other = authorization("01JZ0000000000000000000363");
     substituted.deps.receiptStore.inspectPermit = async () => ({
       status: "already-consumed",
       claim: claim(other),
@@ -650,6 +753,33 @@ describe("publishSellerSessionSettlement", () => {
     expect(await publishSellerSessionSettlement(request(pending), pending.deps))
       .toMatchObject({ disposition: "indeterminate", reason: expect.stringContaining("unavailable") });
     expect(pending.sign).not.toHaveBeenCalled();
+  });
+
+  // CORE JID-1/JID-3: no settlement evidence is signed or addressed for a
+  // non-canonical jobId; the request is refused before any inspection.
+  it("refuses an authorization with a non-canonical jobId before any effect", async () => {
+    const JOB = "01JZ0000000000000000000360";
+    for (const jobId of [
+      JOB.toLowerCase(),
+      `${JOB.slice(0, 25)}O`,
+      `${JOB} `,
+      JOB.slice(1),
+      `8${JOB.slice(1)}`,
+      "job-publication-1",
+    ]) {
+      const h = harness();
+      // A self-consistent authorization (claim, evidence input and hash) for
+      // the malformed spelling.
+      const aliased = { ...request(h), authorization: authorization(jobId) };
+      await expect(publishSellerSessionSettlement(aliased, h.deps), jobId)
+        .resolves.toEqual({
+          disposition: "error",
+          reason: "settlement publication request is not exact canonical data",
+        });
+      expect(h.inspect).not.toHaveBeenCalled();
+      expect(h.resolveProof).not.toHaveBeenCalled();
+      expect(h.sign).not.toHaveBeenCalled();
+    }
   });
 
   it("rejects malformed or input-mutating native-proof resolvers", async () => {

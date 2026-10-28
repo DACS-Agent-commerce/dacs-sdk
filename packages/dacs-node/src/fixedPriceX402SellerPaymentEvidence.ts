@@ -429,7 +429,10 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
                   payment.settlementIdentity.txHash.toLowerCase() ||
                 observed.logIndex !== payment.settlementIdentity.logIndex ||
                 observed.includedAt !== payment.settlementIdentity.includedAt ||
-                observed.confirmations < retainedFinality.finalityBlocks ||
+                // The observer's "finalized" already applies the rail depth;
+                // an echo in the retained evidence may only raise it.
+                (retainedFinality.finalityBlocks !== undefined &&
+                  observed.confirmations < retainedFinality.finalityBlocks) ||
                 observed.finalityObservedAt < retainedFinality.finalityObservedAt ||
                 !sameEvmAddress(observed.payer, session.payer) ||
                 !sameEvmAddress(observed.payee, session.expected.payTo) ||
@@ -459,8 +462,10 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
               // Retain the authorization's exact authenticated finality floor.
               // A later observer may report a higher block depth or a newer
               // observation time, but those monotonic facts must not change the
-              // publication effect identity on replay.
-              confirmations: retainedFinality.finalityBlocks,
+              // publication effect identity on replay. Evidence without the
+              // optional depth echo (DACS-4 §9.7) carries no depth member here.
+              ...(retainedFinality.finalityBlocks === undefined
+                ? {} : { confirmations: retainedFinality.finalityBlocks }),
               finalityObservedAt: retainedFinality.finalityObservedAt,
               sessionBinding: copy(observed.sessionBinding),
             };

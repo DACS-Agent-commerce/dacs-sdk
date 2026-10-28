@@ -115,7 +115,7 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
     buyerVetReceipt: {
       receiptVersion: "1",
       substrate: "demos",
-      finalityProfile: "demos-bft-confirmed-native-read",
+      finalityProfile: "demos-bft-final",
       logicalAddress: "dacs2:vector:buyer-vet",
       nativeAddress: `stor-${"f".repeat(40)}`,
       contentHash: "e".repeat(64),

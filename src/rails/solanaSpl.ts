@@ -5,6 +5,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const DEFAULT_LEASE_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -357,7 +358,7 @@ export function solanaSplSettlementKey(input: {
     throw new DacsError("pay-solana-spl: phaseIndex must be a non-negative safe integer");
   }
   return sha256Hex(`dacs-solana-spl-settlement:v1:${canonicalize({
-    jobId: requireString(input.jobId, "jobId").normalize("NFC"),
+    jobId: requireCanonicalJobId(input.jobId, "pay-solana-spl jobId"),
     phaseIndex: input.phaseIndex,
     railId: requireString(input.railId, "railId").normalize("NFC"),
   })}`);
@@ -391,7 +392,7 @@ export function createSolanaSplSettlementIntent(
   const unsigned = {
     intentVersion: "1" as const,
     settlementKey: solanaSplSettlementKey(authority),
-    jobId: requireString(authority.jobId, "jobId").normalize("NFC"),
+    jobId: requireCanonicalJobId(authority.jobId, "pay-solana-spl jobId"),
     phaseIndex: authority.phaseIndex,
     railId: requireString(authority.railId, "railId"),
     railDescriptorHash: authority.railDescriptorHash,

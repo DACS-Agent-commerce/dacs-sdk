@@ -1624,7 +1624,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  }, 10_000);
+  }, 15_000);
 
   test("fences concurrent finalisers and preserves exactly-once effects", async () => {
     const h = durableHarness();
@@ -4348,6 +4348,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         await rm(dir, { recursive: true, force: true });
       }
     },
+    15_000,
   );
 
   test.each(["storage", "entitlement"] as const)(

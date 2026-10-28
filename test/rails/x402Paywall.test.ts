@@ -27,7 +27,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAY_TO = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX_HASH = `0x${"ab".repeat(32)}`;
-const JOB_ID = "seller-paywall-job";
+const JOB_ID = "01JA9X402SE11ERPAYWA11J0B0";
 const PHASE_INDEX = 2;
 const AMOUNT = "250000";
 
@@ -256,6 +256,71 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     });
   });
 
+  it.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}I`,
+    `${JOB_ID.slice(0, -1)}U`,
+    `${JOB_ID} `,
+    JOB_ID.slice(0, -1),
+    "seller-paywall-job",
+  ])("rejects non-JID-1 jobId %j before the protocol server, settlement or fulfilment", async (jobId) => {
+    // The payment is otherwise exact and carries the SB-3 nonce of this very
+    // jobId, so only the JID-1 entry check can stop settlement and release.
+    const { payload, requirements } = await paymentFixture(
+      x402Eip3009Nonce(jobId, PHASE_INDEX),
+    );
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+      settlement: successfulSettlement(requirements),
+    });
+    const source = paidRequest(payload);
+    const fulfil = vi.fn(async () => ({ disposition: "fulfilled" as const }));
+    const result = await x402PaywallCore(
+      {
+        jobId,
+        phaseIndex: PHASE_INDEX,
+        request: {
+          ...source,
+          getPath: () => `/deliver/${encodeURIComponent(jobId)}`,
+          getUrl: () => `https://seller.example/deliver/${encodeURIComponent(jobId)}`,
+        },
+      },
+      coreDeps(server, { fulfil }),
+    );
+    expect(result).toMatchObject({
+      disposition: "rejected",
+      settled: false,
+      reason: "invalid-jobId",
+    });
+    expect(server.processHTTPRequest).not.toHaveBeenCalled();
+    expect(server.processSettlement).not.toHaveBeenCalled();
+    expect(fulfil).not.toHaveBeenCalled();
+  });
+
+  it("derives fulfilment and settlement keys only from a JID-1 jobId", () => {
+    expect(x402PaywallFulfilmentKey({ jobId: JOB_ID, phaseIndex: PHASE_INDEX }))
+      .toMatch(/^dacs:x402-fulfil:[0-9a-f]{64}$/);
+    expect(x402PaywallSettlementKey({ jobId: JOB_ID, phaseIndex: PHASE_INDEX }))
+      .toMatch(/^dacs:x402-settlement:[0-9a-f]{64}$/);
+    for (const jobId of [
+      JOB_ID.toLowerCase(),
+      `${JOB_ID.slice(0, -1)}O`,
+      `\t${JOB_ID}`,
+      `${JOB_ID}0`,
+      "seller-paywall-job",
+    ]) {
+      expect(() => x402PaywallFulfilmentKey({ jobId, phaseIndex: PHASE_INDEX }), jobId)
+        .toThrow("x402 paywall fulfilment key requires a canonical jobId and phaseIndex");
+      expect(() => x402PaywallSettlementKey({ jobId, phaseIndex: PHASE_INDEX }), jobId)
+        .toThrow("x402 paywall settlement key requires a canonical jobId and phaseIndex");
+    }
+  });
+
   it("returns the 402 challenge without invoking fulfilment or settlement", async () => {
     const server = mockServer({
       process: {
@@ -320,6 +385,74 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     });
     expect(fulfil).not.toHaveBeenCalled();
     expect(server.processSettlement).not.toHaveBeenCalled();
+  });
+
+  // DACS-4 SB-1 (payee PB-1, asset, exact amount), X402-1 and the EIP-712
+  // domain: a facilitator-verified payment whose terms differ from the
+  // configured ones in one member is refused before settlement or work.
+  it.each<[string, (fixture: {
+    requirements: Record<string, any>;
+    payload: Record<string, any>;
+  }) => void]>([
+    ["payTo (requirements and accepted)", ({ requirements, payload }) => {
+      requirements.payTo = payload.accepted.payTo = `0x${"55".repeat(20)}`;
+    }],
+    ["authorization recipient", ({ payload }) => {
+      payload.payload.authorization.to = `0x${"55".repeat(20)}`;
+    }],
+    ["authorization value", ({ payload }) => {
+      payload.payload.authorization.value = "250001";
+    }],
+    ["asset", ({ requirements, payload }) => {
+      requirements.asset = payload.accepted.asset = `0x${"66".repeat(20)}`;
+    }],
+    ["network", ({ requirements, payload }) => {
+      requirements.network = payload.accepted.network = "eip155:8453";
+    }],
+    ["scheme", ({ requirements, payload }) => {
+      requirements.scheme = payload.accepted.scheme = "upto";
+    }],
+    ["EIP-712 name", ({ requirements, payload }) => {
+      requirements.extra.name = payload.accepted.extra.name = "USD Coin";
+    }],
+    ["EIP-712 version", ({ requirements, payload }) => {
+      requirements.extra.version = payload.accepted.extra.version = "1";
+    }],
+    ["x402Version", ({ payload }) => { payload.x402Version = 1; }],
+    ["accepted terms that disagree with the verified requirements", ({ payload }) => {
+      payload.accepted.maxTimeoutSeconds = 600;
+    }],
+  ])("refuses a verified payment with another %s before settlement", async (
+    _member,
+    mutate,
+  ) => {
+    const fixture = await paymentFixture() as unknown as {
+      requirements: Record<string, any>;
+      payload: Record<string, any>;
+    };
+    mutate(fixture);
+    const payload = fixture.payload as unknown as X402PaywallPaymentPayload;
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: fixture.requirements as X402PaywallPaymentRequirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+    });
+    const authorizeSettlement = vi.fn();
+    const fulfil = vi.fn();
+    const result = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, { authorizeSettlement, fulfil }),
+    );
+    expect(result).toMatchObject({
+      disposition: "rejected",
+      reason: "payment-session-or-terms-mismatch",
+    });
+    expect(authorizeSettlement).not.toHaveBeenCalled();
+    expect(server.processSettlement).not.toHaveBeenCalled();
+    expect(fulfil).not.toHaveBeenCalled();
   });
 
   it("never invokes fulfilment when the post-settlement payment gate rejects", async () => {
@@ -1214,3 +1347,7 @@ describe("createX402Paywall", () => {
     expect(fulfil).toHaveBeenCalledTimes(1);
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

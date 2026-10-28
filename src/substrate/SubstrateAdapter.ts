@@ -286,7 +286,12 @@ export interface SubstrateAdapter {
     expectedOwner: string,
   ): Promise<AnchorResolution>;
 
-  /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
+  /**
+   * SR-2 — read an anchored value by its storage address. Return null only for
+   * authoritative absence under the binding's declared policy. Unanswered
+   * reads (including unqualified not-found replies) throw SubstrateError and
+   * remain indeterminate; Demos currently has no authoritative absence policy.
+   */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 
   /** SR-3 — consensus-backed proxy fetch of a public HTTPS endpoint (DAHR). */

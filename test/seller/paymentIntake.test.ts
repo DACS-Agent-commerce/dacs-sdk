@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Offline protocol simulations. The real boundary is pinned by
+// test/rails/jid1LiveAdmission.test.ts, including the allowed pay-dem arm.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
@@ -10,6 +14,7 @@ import {
   createInMemorySellerReceiptStore,
   isValidSellerReceiptClaim,
   isSellerFulfilmentHandoff,
+  resolveX402FinalityBlocks,
   sellerFulfilmentCandidateHash,
   sellerFulfilmentAuditSourceHash,
   verifySellerPaymentIntake,
@@ -2357,11 +2362,38 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
+  it.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}L`,
+    `${JOB_ID.slice(0, -1)}U`,
+    `${JOB_ID}\n`,
+    JOB_ID.slice(1),
+    `9${JOB_ID.slice(1)}`,
+    "another-job",
+  ])("refuses non-JID-1 jobId %j as an error before resolving the agreement", async (jobId) => {
+    // CORE JID-3: no resolver query with a malformed jobId; JID-4: a malformed
+    // operand is an error, not a binding mismatch.
+    const ctx = makeContext("pay-x402");
+    let resolutions = 0;
+    ctx.deps.resolveCommittedAgreement = async () => {
+      resolutions += 1;
+      return ctx.committed;
+    };
+    ctx.input.jobId = jobId;
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toEqual({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "invalid-intake-input",
+    });
+    expect(resolutions).toBe(0);
+  });
+
   const mismatchCases: Array<{
     name: string;
     mutate: (ctx: Context) => void;
   }> = [
-    { name: "job", mutate: (ctx) => { ctx.input.jobId = "wrong-job"; } },
+    { name: "job", mutate: (ctx) => { ctx.input.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7E"; } },
     { name: "phase", mutate: (ctx) => {
       ctx.input.phaseIndex = PAYMENT_PHASE_INDEX + 1;
     } },
@@ -2425,4 +2457,338 @@ describe("verifySellerPaymentIntake", () => {
       reason: "receipt-rail-kind-mismatch",
     });
   });
+});
+
+// Each case differs from the accepted fixture in exactly one well-formed value,
+// so the guard under test is the only thing between it and fulfilment.
+describe("verifySellerPaymentIntake near misses (DACS-4 SB-1, CORE SR2-8)", () => {
+  it("pay-dem: rejects a transfer one OS short of the agreed price", async () => {
+    const ctx = makeContext("pay-dem");
+    if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+    ctx.demosObservation.amountOs = (BigInt(ctx.demosObservation.amountOs) - 1n).toString();
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", fulfilment: "none", reason: "payment-amount-mismatch",
+    });
+  });
+
+  it.each(["payer", "payee", "txHash"] as const)(
+    "pay-dem: rejects a well-formed but different observed %s",
+    async (field) => {
+      const ctx = makeContext("pay-dem");
+      if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+      ctx.demosObservation[field] = field === "txHash" ? "ee".repeat(32) : "cd".repeat(32);
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "rejected", reason: "demos-transfer-party-or-identity-mismatch",
+      });
+    },
+  );
+
+  it("pay-dem: rejects a transfer included before the finalized commitment", async () => {
+    const ctx = makeContext("pay-dem");
+    if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+    ctx.demosObservation.includedAt = ctx.committed.commitment.committedAt - 1;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "payment-before-finalized-commitment",
+    });
+  });
+
+  it("pay-dem: rejects a transfer included after the agreed deadline", async () => {
+    const ctx = makeContext("pay-dem");
+    if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+    ctx.demosObservation.includedAt = (ctx.agreement.terms as { deadline: number }).deadline + 1;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "payment-after-deadline",
+    });
+  });
+
+  it("x402: rejects a receipt chain that is not the rail's chain", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.rail.railType !== "x402") throw new Error("fixture");
+    ctx.rail.asset.chainId = 8453;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "x402-chain-mismatch",
+    });
+  });
+
+  it("x402: rejects a transfer from another well-formed payer", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+    ctx.x402Observation.payer = `0x${"7a".repeat(20)}`;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "x402-transfer-party-or-identity-mismatch",
+    });
+  });
+
+  it("x402: rejects a token with other decimals", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+    ctx.x402Observation.asset.decimals = 18;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "x402-asset-mismatch",
+    });
+  });
+
+  it("x402: rejects finality observed after the agreed deadline", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+    ctx.x402Observation.finalityObservedAt =
+      (ctx.agreement.terms as { deadline: number }).deadline + 1;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "payment-after-deadline",
+    });
+  });
+
+  it("refuses a commitment that is not finalized (SR2-8)", async () => {
+    const ctx = makeContext("pay-dem");
+    (ctx.committed.commitment as { finality: string }).finality = "included";
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+    expect(result.disposition).not.toBe("verified");
+    expect(result.fulfilment).toBe("none");
+  });
+
+  it("refuses a resolved rail whose railId is not the requested rail (SB-1 tuple)", async () => {
+    const ctx = makeContext("pay-dem");
+    const other = structuredClone(ctx.rail) as typeof ctx.rail & { railId: string };
+    other.railId = "demos-native:OTHER";
+    ctx.deps.resolveRail = async ({ railRegistryVersion }) => ({
+      disposition: "verified", rail: other, railRegistryVersion,
+    });
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "unsupported-or-mismatched-rail",
+    });
+  });
+
+  it("refuses a resolved rail whose phase handler is not the receipt's", async () => {
+    const ctx = makeContext("pay-x402");
+    // A well-formed native-DEM definition served under the requested railId.
+    const demos = { ...makeContext("pay-dem").rail, railId: ctx.rail.railId };
+    ctx.deps.resolveRail = async ({ railRegistryVersion }) => ({
+      disposition: "verified", rail: demos, railRegistryVersion,
+    });
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "receipt-rail-kind-mismatch",
+    });
+  });
+
+  it("refuses a price currency that is not the rail asset symbol", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.rail.railType !== "x402") throw new Error("fixture");
+    ctx.rail.asset.symbol = "USDT";
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "payment-asset-mismatch",
+    });
+  });
+
+  // F11: unsupported versions of every artifact the intake binds.
+  it("refuses a resolved rail of another railVersion than the agreement's", async () => {
+    const ctx = makeContext("pay-x402");
+    ctx.rail.railVersion = 2;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "unsupported-or-mismatched-rail",
+    });
+  });
+
+  it("refuses an agreement of an unsupported payeeBoundAgreementVersion", async () => {
+    const ctx = makeContext("pay-dem");
+    (ctx.agreement as { payeeBoundAgreementVersion: string }).payeeBoundAgreementVersion = "2";
+    refreshCommitment(ctx);
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "unsupported-or-malformed-agreement",
+    });
+  });
+
+  it("refuses retained artifacts of an unsupported version", () => {
+    const claim = receiptClaim();
+    const evidence = structuredClone(claim);
+    (evidence.authorization.evidenceInput as { evidenceVersion: string }).evidenceVersion = "2";
+    evidence.authorization.evidenceHash =
+      sha256Hex(canonicalize(evidence.authorization.evidenceInput));
+    evidence.evidenceHash = evidence.authorization.evidenceHash;
+    expect(isValidSellerReceiptClaim(claim)).toBe(true);
+    expect(isValidSellerReceiptClaim(evidence)).toBe(false);
+
+    const handoff = fulfilmentHandoff();
+    expect(isSellerFulfilmentHandoff(handoff)).toBe(true);
+    expect(isSellerFulfilmentHandoff({ ...handoff, handoffVersion: "3" })).toBe(false);
+    const commitment = structuredClone(handoff);
+    (commitment.auditSourceCommitment as { commitmentVersion: string })
+      .commitmentVersion = "2";
+    expect(isSellerFulfilmentHandoff(commitment)).toBe(false);
+  });
+
+  it.each(["buyer", "seller"] as const)(
+    "refuses a verified %s identity bundle that is not the agreement's",
+    async (role) => {
+      const ctx = makeContext("pay-dem");
+      const swapped = role === "buyer" ? ctx.sellerBundle : ctx.buyerBundle;
+      const agreed = identityBundleHash(role === "buyer" ? ctx.buyerBundle : ctx.sellerBundle);
+      const resolve = ctx.deps.resolveIdentityBundle;
+      ctx.deps.resolveIdentityBundle = async (hash) => hash === agreed
+        ? { disposition: "verified", bundle: swapped }
+        : resolve(hash);
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "rejected", reason: "party-bundle-agreement-mismatch",
+      });
+    },
+  );
+});
+
+// DACS-4 §9.5.x and the phase card: rail.parameters.finalityBlocks is optional
+// (default 1 on an L2, 12 on Ethereum mainnet). The buyer's commerce and audit
+// checks use this same resolver.
+describe("resolveX402FinalityBlocks", () => {
+  const rail = (chainId: number, parameters: Record<string, unknown> = {}) => ({
+    asset: { chainId },
+    parameters,
+  });
+  const l2 = () => ({ disposition: "l2" as const });
+
+  it.each([
+    ["an explicit depth", rail(84532, { finalityBlocks: 3 }), { disposition: "resolved", finalityBlocks: 3 }],
+    ["Ethereum mainnet without one", rail(1), { disposition: "resolved", finalityBlocks: 12 }],
+    ["an admitted L2 without one", rail(84532), { disposition: "resolved", finalityBlocks: 1 }],
+    ["a zero depth", rail(84532, { finalityBlocks: 0 }),
+      { disposition: "rejected", reason: "x402-finality-policy-invalid" }],
+    ["a fractional depth", rail(84532, { finalityBlocks: 1.5 }),
+      { disposition: "rejected", reason: "x402-finality-policy-invalid" }],
+    ["a string depth", rail(84532, { finalityBlocks: "2" }),
+      { disposition: "rejected", reason: "x402-finality-policy-invalid" }],
+  ] as const)("resolves %s", async (_label, candidate, expected) => {
+    await expect(resolveX402FinalityBlocks(candidate, l2)).resolves.toEqual(expected);
+  });
+
+  it("consults the classifier only for a non-mainnet rail without a depth", async () => {
+    const classify = vi.fn(l2);
+    await resolveX402FinalityBlocks(rail(1), classify);
+    await resolveX402FinalityBlocks(rail(84532, { finalityBlocks: 4 }), classify);
+    expect(classify).not.toHaveBeenCalled();
+    await resolveX402FinalityBlocks(rail(84532), classify);
+    expect(classify).toHaveBeenCalledWith({ chainId: 84532, rail: rail(84532) });
+  });
+
+  it.each([
+    ["unsupported", () => ({ disposition: "unsupported" as const, reason: "not-configured" }),
+      { disposition: "rejected", reason: "x402-chain-not-configured" }],
+    ["indeterminate", () => ({ disposition: "indeterminate" as const, reason: "rpc-down" }),
+      { disposition: "indeterminate", reason: "x402-chain-rpc-down" }],
+    ["error", () => ({ disposition: "error" as const, reason: "bad-config" }),
+      { disposition: "error", reason: "x402-chain-bad-config" }],
+    ["a throw", () => { throw new Error("offline"); },
+      { disposition: "indeterminate", reason: "x402-chain-classification-unavailable" }],
+    ["a malformed result", () => ({ disposition: "l2", extra: true }) as never,
+      { disposition: "error", reason: "x402-chain-classifier-invalid-result" }],
+  ] as const)("maps a classifier %s without defaulting the depth", async (
+    _label,
+    classify,
+    expected,
+  ) => {
+    await expect(resolveX402FinalityBlocks(rail(84532), classify)).resolves.toEqual(expected);
+  });
+
+  it("accepts retained x402 evidence that omits the optional depth echo", () => {
+    const claim = receiptClaim({ settlementId: `evm:84532:${"ab".repeat(32)}:0` });
+    const rehash = (finality: Record<string, unknown>) => {
+      const copy = structuredClone(claim);
+      (copy.authorization.evidenceInput as { settlementFinality: unknown })
+        .settlementFinality = finality;
+      copy.authorization.evidenceHash =
+        sha256Hex(canonicalize(copy.authorization.evidenceInput));
+      copy.evidenceHash = copy.authorization.evidenceHash;
+      return copy;
+    };
+    expect(isValidSellerReceiptClaim(claim)).toBe(true);
+    expect(isValidSellerReceiptClaim(rehash({
+      model: "block-depth", finalityObservedAt: claim.observedAt,
+    }))).toBe(true);
+    for (const finalityBlocks of [0, 1.5, "1"]) {
+      expect(isValidSellerReceiptClaim(rehash({
+        model: "block-depth", finalityBlocks, finalityObservedAt: claim.observedAt,
+      }))).toBe(false);
+    }
+  });
+});
+
+// CORE §5.1: a classifier outage or misconfiguration leaves the payment
+// unanswered (retryable), never a rejection of a paid settlement.
+describe("verifySellerPaymentIntake x402 finality resolution dispositions", () => {
+  it.each([
+    ["indeterminate",
+      async () => ({ disposition: "indeterminate" as const, reason: "rpc-down" }),
+      { disposition: "indeterminate", reason: "x402-chain-rpc-down" }],
+    ["error",
+      async () => ({ disposition: "error" as const, reason: "bad-config" }),
+      { disposition: "error", reason: "x402-chain-bad-config" }],
+    ["a throw",
+      async () => { throw new Error("offline"); },
+      { disposition: "indeterminate", reason: "x402-chain-classification-unavailable" }],
+  ] as const)("keeps a classifier %s distinct from a rejection", async (
+    _label,
+    classify,
+    expected,
+  ) => {
+    const unknown = makeContext("pay-x402");
+    if (unknown.rail.railType !== "x402" ||
+        unknown.input.receipt.kind !== "pay-x402" ||
+        unknown.x402Observation.status !== "finalized") throw new Error("fixture");
+    delete unknown.rail.parameters.finalityBlocks;
+    unknown.rail.asset.chainId = 999;
+    unknown.input.receipt.chainId = 999;
+    unknown.x402Observation.chainId = 999;
+    mutateX402Receipt(unknown, (receipt) => { receipt.network = "eip155:999"; });
+    unknown.deps.classifyX402SettlementChain = classify as never;
+    await expect(verifySellerPaymentIntake(unknown.input, unknown.deps))
+      .resolves.toMatchObject({ ...expected, fulfilment: "none" });
+  });
+});
+
+// SB-1 near misses each guard must refuse on its own.
+describe("verifySellerPaymentIntake SB-1 payer, asset and party-bundle bindings", () => {
+  it("x402: rejects a Transfer of another token contract with the same symbol and decimals", async () => {
+    const ctx = makeContext("pay-x402");
+    if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+    ctx.x402Observation.asset.contract = `0x${"44".repeat(20)}`;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "x402-asset-mismatch", fulfilment: "none",
+    });
+  });
+
+  it("x402: rejects a receipt that names another payer than the chain event", async () => {
+    const ctx = makeContext("pay-x402");
+    mutateX402Receipt(ctx, (receipt) => { receipt.payer = `0x${"7a".repeat(20)}`; });
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "x402-transfer-party-or-identity-mismatch",
+      fulfilment: "none",
+    });
+  });
+
+  // The agreement binding check refuses a payee-bound agreement that does not
+  // cover each Listing pay phase exactly once, before the intake's own
+  // payout-binding filter (a second layer) is reached.
+  it("rejects an agreement whose only payout binding is for another phase", async () => {
+    const ctx = makeContext("pay-dem");
+    const terms = ctx.agreement.terms as { payoutBindings: Array<{ phaseIndex: number }> };
+    terms.payoutBindings[0]!.phaseIndex += 1;
+    refreshCommitment(ctx);
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "agreement-listing-conformance-failed", fulfilment: "none",
+    });
+  });
+
+  it.each(["buyer", "seller"] as const)(
+    "rejects a resolved %s bundle of the right presenter but another hash",
+    async (role) => {
+      const ctx = makeContext("pay-dem");
+      const agreedBundle = role === "buyer" ? ctx.buyerBundle : ctx.sellerBundle;
+      const other = { ...structuredClone(agreedBundle), presentedAt: agreedBundle.presentedAt + 1 };
+      const agreed = identityBundleHash(agreedBundle);
+      const resolve = ctx.deps.resolveIdentityBundle;
+      ctx.deps.resolveIdentityBundle = async (hash) => hash === agreed
+        ? { disposition: "verified", bundle: other }
+        : resolve(hash);
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "rejected", reason: "party-bundle-agreement-mismatch", fulfilment: "none",
+      });
+    },
+  );
 });

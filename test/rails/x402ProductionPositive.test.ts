@@ -33,8 +33,9 @@ const peers = vi.hoisted(() => ({
   signTypedData: vi.fn(async () => `0x${"44".repeat(65)}`),
 }));
 
-// No wallet or RPC: only the signing/read boundaries are replaced. Both SDK
-// finality verifiers and the production outbound policy execute normally.
+// Offline protocol simulation: signing/read boundaries and the unreleased
+// profile boundary are replaced. Both SDK finality verifiers and the production
+// outbound policy execute normally.
 vi.mock("viem/accounts", () => ({
   privateKeyToAccount: vi.fn(() => ({
     address: `0x${"11".repeat(20)}`,
@@ -52,7 +53,7 @@ vi.mock("node:https", () => ({
   request: vi.fn(() => { throw new Error("unexpected real HTTPS request"); }),
 }));
 
-const JOB_ID = "job-x402-production-positive";
+const JOB_ID = "01JA9X402PR0DVCT10NP0S1T1V";
 const PHASE_INDEX = 2;
 const CHAIN_ID = 84532;
 const NETWORK = `eip155:${CHAIN_ID}` as const;
@@ -65,6 +66,21 @@ const BLOCK_HASH = `0x${"bb".repeat(32)}`;
 const HEAD_HASH = `0x${"cc".repeat(32)}`;
 const RESOURCE = `https://seller.example/deliver/${JOB_ID}`;
 const NONCE = `0x${sha256Hex(`dacs-sb3:v1:${JOB_ID}:${PHASE_INDEX}`)}`;
+// CORE JID-1 near misses: lower case, the Crockford aliases I/L/O, the excluded
+// U, whitespace, 25 and 27 characters, a leading 8 and a free-form session name.
+const NON_CANONICAL_JOB_IDS = [
+  JOB_ID.toLowerCase(),
+  `${JOB_ID.slice(0, -1)}I`,
+  `${JOB_ID.slice(0, -1)}L`,
+  `${JOB_ID.slice(0, -1)}O`,
+  `${JOB_ID.slice(0, -1)}U`,
+  ` ${JOB_ID}`,
+  `${JOB_ID}\n`,
+  JOB_ID.slice(0, -1),
+  `${JOB_ID}0`,
+  `8${JOB_ID.slice(1)}`,
+  "job-x402-production-positive",
+];
 const NOW = 1_700_000_000_000;
 const POLICY = {
   mode: "production",
@@ -473,4 +489,56 @@ describe("x402 production transport positive flow", () => {
       ]);
     },
   );
+
+  test.each(NON_CANONICAL_JOB_IDS)(
+    "refuses non-JID-1 jobId %j before DNS, HTTPS or signing",
+    async (jobId) => {
+      const https = publicHttps();
+      const sign = vi.fn();
+      const client: X402BuyerChallengeClient = {
+        getPaymentRequiredResponse: (_getHeader, body) => body,
+        async createPaymentPayload(value) {
+          sign(value);
+          throw new Error("a malformed jobId must never reach the signer");
+        },
+        encodePaymentSignatureHeader: () => ({}),
+      };
+      await expect(prepareX402BuyerSettlement({
+        authority: { ...authority(), jobId },
+        challengeHeaders: { accept: "application/json" },
+      }, {
+        client,
+        transportPolicy: POLICY,
+        publicHttpsDependencies: https.dependencies,
+      })).resolves.toEqual({
+        disposition: "rejected",
+        reason: "x402-settlement-authority-invalid",
+      });
+
+      railReader(true);
+      const rail = await createX402Rail({
+        evmPrivateKey: "offline-mocked-signer",
+        requireSessionBinding: true,
+        rpcUrl: "https://rpc.example",
+        finalityBlocks: 2,
+        transportPolicy: POLICY,
+        publicHttpsDependencies: https.dependencies,
+      });
+      await expect(rail.settle({
+        paywallUrl: RESOURCE, network: NETWORK, recipientEvm: PAYEE,
+        amount: AMOUNT, asset: ASSET, jobId, phaseIndex: PHASE_INDEX,
+        requestInit: { headers: { accept: "application/json" } },
+      })).rejects.toThrow("pay-x402 jobId must be a canonical uppercase ULID");
+
+      expect(https.resolveHost).not.toHaveBeenCalled();
+      expect(https.request).not.toHaveBeenCalled();
+      expect(sign).not.toHaveBeenCalled();
+      expect(peers.signTypedData).not.toHaveBeenCalled();
+      expect(peers.createPublicClient).not.toHaveBeenCalled();
+    },
+  );
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

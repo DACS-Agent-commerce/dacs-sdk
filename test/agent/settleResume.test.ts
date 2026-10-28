@@ -49,6 +49,8 @@ const terms = {
   deliveryFormat: "application/json",
 };
 
+const JOB_ID = "01JA9REV1EWJ1DCAN0N1CAXYZ0";
+
 /**
  * Build deps over an in-memory store. `store` (durable idempotency) survives the
  * simulated crash; `failEvidenceAnchorOnce` throws the FIRST time the evidence is
@@ -59,7 +61,7 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
   const listingRef = "stor:listing";
   kv.set(listingRef, (await buildSignedArtifact(listing, ARTIFACT_SEPARATORS.Listing, sign)) as Record<string, unknown>);
 
-  const evidenceName = sessionAnchorName.evidence("job-1");
+  const evidenceName = sessionAnchorName.evidence(JOB_ID);
   const deps: SessionDeps = {
     buyerId: buyerDid,
     buyerIdentityBundle: buyerIdentity,
@@ -114,7 +116,7 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
         },
       );
     },
-    newJobId: () => "job-1",
+    newJobId: () => JOB_ID,
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
     // These fixtures exercise settle→anchor RESUME, not listing verification —
@@ -138,7 +140,7 @@ describe("runSession resume is at-most-once across a settle→anchor crash (#43)
     expect(counter.n).toBe(1); // paid once
 
     // Run 2: resume the SAME jobId with the SAME idempotency store.
-    const res = await runSessionCore(listingRef, terms, deps, "job-1");
+    const res = await runSessionCore(listingRef, terms, deps, JOB_ID);
     expect(res.outcome).toBe("completed");
     expect(counter.n).toBe(1); // NOT re-paid — the store reconciled the prior settlement
   });

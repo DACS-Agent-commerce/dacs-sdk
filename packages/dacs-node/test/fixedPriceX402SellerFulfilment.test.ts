@@ -229,7 +229,7 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
     const receipt = (logicalAddress: string, nativeAddress: string, hash: string) => ({
       receiptVersion: "1" as const,
       substrate: "demos",
-      finalityProfile: "demos-bft-confirmed-native-read",
+      finalityProfile: "demos-bft-final",
       logicalAddress,
       nativeAddress,
       contentHash: hash,

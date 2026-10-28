@@ -72,4 +72,14 @@ describe("fixed-price multirail live factories", () => {
     } as never)).rejects.toThrow(/actor-incompatible/);
     expect(factories.x402Buyer).not.toHaveBeenCalled();
   });
+
+  it("propagates unexpected x402 construction errors", async () => {
+    const context = {};
+    const failure = new Error("x402 configuration invalid");
+    factories.x402Buyer.mockRejectedValueOnce(failure);
+    await expect(createDacsFixedPriceMultirailBuyerLiveV1({
+      x402: { context, workerId: "worker" },
+      payDem: { context, workerId: "worker" },
+    } as never)).rejects.toBe(failure);
+  });
 });

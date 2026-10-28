@@ -33,7 +33,7 @@ function receipt(
   return {
     receiptVersion: "1",
     substrate: "demos",
-    finalityProfile: "demos-bft-confirmed-native-read",
+    finalityProfile: "demos-bft-final",
     logicalAddress,
     nativeAddress: ref.anchor.locator,
     contentHash: ref.contentHash,

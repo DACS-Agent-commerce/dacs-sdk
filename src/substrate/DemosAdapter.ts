@@ -392,6 +392,43 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && !Array.isArray(value);
 }
 
+/**
+ * demosdk's nodeCall resolves only the node's `response` member: a record for
+ * an object the node found, the string `"error"` for a not-found or failed
+ * lookup (the node's numeric result is dropped), and `{ result: 500,
+ * response: <transport error> }` when the request itself failed. Only a
+ * record is an answer.
+ */
+function demosNodeRecord(result: unknown): Record<string, unknown> | undefined {
+  const observed = isRecord(result) && "response" in result
+    ? result.response
+    : result;
+  return isJsonObject(observed) && !(observed instanceof Error)
+    ? observed
+    : undefined;
+}
+
+/** Native write provenance recovered from the owner's Storage Program history. */
+interface DemosHistoryProvenance {
+  /** The latest owner mutation of the native address. */
+  latest: string;
+  /** The single create of the native address, when history shows exactly one. */
+  created: string | undefined;
+}
+
+/**
+ * The provenance member DEMOS-MAPPING §A.2 binds a write of this operation to
+ * (`createdByTx` for a create, `lastModifiedByTx` for an update), or
+ * `undefined` when the read does not serve it.
+ */
+function demosOperationProvenance(
+  native: Readonly<Record<string, unknown>>,
+  operation: DemosWriteEvidence["operation"],
+): unknown {
+  const served = operation === "create" ? native.createdByTx : native.lastModifiedByTx;
+  return served === null ? undefined : served;
+}
+
 function httpStatus(error: unknown): number | undefined {
   if (!isRecord(error)) return undefined;
   if (typeof error.status === "number") return error.status;
@@ -1091,12 +1128,13 @@ export class DemosAdapter implements SubstrateAdapter {
     return this.#demos.getAddress();
   }
 
-  private demosEvidenceMatchesObservations(
+  private async demosEvidenceMatchesObservations(
     evidence: Readonly<DemosWriteEvidence>,
     transactionResult: unknown,
     blockResult: unknown,
     nativeResult: unknown,
-  ): boolean {
+    historyProvenance: () => Promise<Readonly<DemosHistoryProvenance>>,
+  ): Promise<boolean> {
     const transaction = isRecord(transactionResult) &&
         isRecord(transactionResult.response)
       ? transactionResult.response
@@ -1155,18 +1193,87 @@ export class DemosAdapter implements SubstrateAdapter {
     if (metadataHash === null || metadataHash !== evidence.nativeRead.metadataHash) {
       return false;
     }
-    const provenance = evidence.operation === "create"
-      ? nativeResult.createdByTx
-      : nativeResult.lastModifiedByTx;
-    const interactions = Array.isArray(nativeResult.interactionTxs)
-      ? nativeResult.interactionTxs
-      : [];
-    return provenance === evidence.transactionRef ||
-      interactions.includes(evidence.transactionRef) ||
-      (provenance === undefined && interactions.length === 0);
+    // DEMOS-MAPPING §A.2 binds the read to this operation's createdByTx or
+    // lastModifiedByTx. A served member is authoritative: `interactionTxs`
+    // only lists writes that touched the address, so it never overrides one.
+    const provenance = demosOperationProvenance(nativeResult, evidence.operation);
+    if (provenance !== undefined) return provenance === evidence.transactionRef;
+    // A node that does not serve it (kynesyslabs/node GET /storage-program)
+    // leaves only the owner's authenticated write history to bind it; when
+    // that is unavailable the read cannot be attributed to this write and the
+    // history read rejects (indeterminate). It is read last, so a proof the
+    // other observations contradict is `false` without it.
+    const history = await historyProvenance();
+    return (evidence.operation === "create"
+      ? history.created
+      : history.latest) === evidence.transactionRef;
   }
 
-  /** Re-authenticate full adapter-produced Demos evidence against this node. */
+  /**
+   * Recover provenance from the owner's history on demand, at most once. Any
+   * failure leaves the proof unanswered (CORE §5.1 `indeterminate`).
+   */
+  private demosHistoryProvenanceFor(
+    nativeAddress: string,
+    native: Readonly<Record<string, unknown>>,
+  ): () => Promise<Readonly<DemosHistoryProvenance>> {
+    let pending: Promise<Readonly<DemosHistoryProvenance>> | undefined;
+    return () => {
+      pending ??= this.resolveDemosProvenanceFromHistory(nativeAddress, native)
+        .catch((error: unknown) => {
+          if (error instanceof SubstrateError) throw error;
+          throw new SubstrateError("Demos native provenance history is unavailable", {
+            cause: error,
+          });
+        });
+      return pending;
+    };
+  }
+
+  /**
+   * Read the transaction, block and Storage Program a Demos write proof is
+   * checked against. CORE §5.1 and DEMOS-MAPPING §A.2: an ordinary not-found,
+   * an RPC error or a transport failure leaves the read unanswered, so it
+   * throws SubstrateError instead of handing the comparison a missing
+   * observation that would read as an invalid proof.
+   */
+  private async observeDemosWrite(
+    transactionRef: string,
+    blockNumber: number,
+    nativeAddress: string,
+  ): Promise<{
+    transaction: Record<string, unknown>;
+    block: Record<string, unknown>;
+    native: Record<string, unknown>;
+  }> {
+    let observations: unknown[];
+    try {
+      observations = await Promise.all([
+        this.#demos.getTxByHash(transactionRef),
+        this.#demos.getBlockByNumber(blockNumber),
+        this.#demos.storagePrograms.read(nativeAddress),
+      ]) as unknown[];
+    } catch (error) {
+      // demosdk's Storage Program read throws on any non-2xx, including 404.
+      throw new SubstrateError("Demos write proof read failed", { cause: error });
+    }
+    const transaction = demosNodeRecord(observations[0]);
+    const block = demosNodeRecord(observations[1]);
+    const native = observations[2];
+    if (!transaction || !block || block.validation_data === undefined ||
+        !isJsonObject(native) || native.success !== true) {
+      throw new SubstrateError(
+        "Demos write proof observations are unavailable from this node",
+      );
+    }
+    return { transaction, block, native };
+  }
+
+  /**
+   * Re-authenticate full adapter-produced Demos evidence against this node.
+   * Resolves `false` only when the node's records contradict the evidence; an
+   * unanswered read rejects with SubstrateError (CORE §5.1 `indeterminate`).
+   */
   async verifyDemosWriteEvidence(
     evidence: Readonly<DemosWriteEvidence>,
   ): Promise<boolean> {
@@ -1176,20 +1283,26 @@ export class DemosAdapter implements SubstrateAdapter {
     assertDemosWriteEvidence(evidence);
     if (await this.resolveChainIdentity() !== evidence.chainIdentity) return false;
 
-    const observations = await Promise.all([
-      this.#demos.getTxByHash(evidence.transactionRef),
-      this.#demos.getBlockByNumber(evidence.blockNumber),
-      this.#demos.storagePrograms.read(evidence.nativeAddress),
-    ]) as unknown[];
+    const { transaction, block, native } = await this.observeDemosWrite(
+      evidence.transactionRef,
+      evidence.blockNumber,
+      evidence.nativeAddress,
+    );
     return this.demosEvidenceMatchesObservations(
       evidence,
-      observations[0],
-      observations[1],
-      observations[2],
+      transaction,
+      block,
+      native,
+      this.demosHistoryProvenanceFor(evidence.nativeAddress, native),
     );
   }
 
-  /** Re-authenticate a compact portable CORE AnchorReceipt without name-index IO. */
+  /**
+   * Re-authenticate a compact portable CORE AnchorReceipt without name-index
+   * IO. Resolves `false` only when the node's records contradict the receipt;
+   * a Demos not-found, RPC error or transport failure rejects with
+   * SubstrateError, because CORE §5.1 makes such a read `indeterminate`.
+   */
   async verifyDemosAnchorReceipt(
     receipt: Readonly<ProtocolAnchorReceipt>,
   ): Promise<boolean> {
@@ -1200,24 +1313,11 @@ export class DemosAdapter implements SubstrateAdapter {
     if (await this.resolveChainIdentity() !== proof.chainIdentity) return false;
     const nonce = Number(receipt.nonce);
     const blockNumber = Number(receipt.blockRef!.height);
-    const observations = await Promise.all([
-      this.#demos.getTxByHash(receipt.transactionRef.value),
-      this.#demos.getBlockByNumber(blockNumber),
-      this.#demos.storagePrograms.read(receipt.nativeAddress),
-    ]) as unknown[];
-    const transactionResult = observations[0];
-    const blockResult = observations[1];
-    const transaction = isRecord(transactionResult) &&
-        isRecord(transactionResult.response)
-      ? transactionResult.response
-      : transactionResult;
-    const block = isRecord(blockResult) && isRecord(blockResult.response)
-      ? blockResult.response
-      : blockResult;
-    if (!isRecord(transaction) || !isRecord(block) ||
-        block.validation_data === undefined) {
-      return false;
-    }
+    const { transaction, block, native } = await this.observeDemosWrite(
+      receipt.transactionRef.value,
+      blockNumber,
+      receipt.nativeAddress,
+    );
     const evidence: DemosWriteEvidence = {
       evidenceVersion: "1",
       chainIdentity: proof.chainIdentity,
@@ -1252,9 +1352,10 @@ export class DemosAdapter implements SubstrateAdapter {
     )) return false;
     return this.demosEvidenceMatchesObservations(
       evidence,
-      observations[0],
-      observations[1],
-      observations[2],
+      transaction,
+      block,
+      native,
+      this.demosHistoryProvenanceFor(receipt.nativeAddress, native),
     );
   }
 
@@ -1286,18 +1387,12 @@ export class DemosAdapter implements SubstrateAdapter {
     try {
       nativeObservation = await this.#demos.storagePrograms.read(input.nativeAddress);
     } catch (error) {
-      if (httpStatus(error) === 404) return null;
       throw new SubstrateError("Demos receipt native read failed", { cause: error });
     }
     if (!isRecord(nativeObservation)) {
       throw new SubstrateError("Demos receipt native read is malformed");
     }
-    const nativeMarker =
-      `${nativeObservation.errorCode ?? ""} ${nativeObservation.error ?? ""}`.toLowerCase();
     if (nativeObservation.success !== true) {
-      if (nativeMarker.includes("not_found") || nativeMarker.includes("not found")) {
-        return null;
-      }
       throw new SubstrateError("Demos receipt native read is indeterminate");
     }
     if (nativeObservation.storageAddress !== input.nativeAddress ||
@@ -1318,11 +1413,12 @@ export class DemosAdapter implements SubstrateAdapter {
         latestProvenance.length > 0
       ? [latestProvenance]
       : [];
+    const historyProvenance = this.demosHistoryProvenanceFor(
+      input.nativeAddress,
+      nativeObservation,
+    );
     if (provenanceCandidates.length === 0) {
-      provenanceCandidates = await this.resolveDemosProvenanceFromHistory(
-        input.nativeAddress,
-        nativeObservation,
-      );
+      provenanceCandidates = [(await historyProvenance()).latest];
     }
 
     let lastFailure: unknown;
@@ -1397,11 +1493,12 @@ export class DemosAdapter implements SubstrateAdapter {
           },
         };
         assertDemosWriteEvidence(evidence);
-        if (!this.demosEvidenceMatchesObservations(
+        if (!await this.demosEvidenceMatchesObservations(
           evidence,
           transaction,
           block,
           nativeObservation,
+          historyProvenance,
         )) {
           throw new SubstrateError("Demos receipt observations are inconsistent");
         }
@@ -1422,75 +1519,77 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * Older public nodes omit `createdByTx`/`lastModifiedByTx` from otherwise
-   * complete Storage Program reads. Recover the latest owner mutation from a
-   * stable, exhaustively paged owner history; any malformed row, moving head,
-   * unsupported latest operation or post-scan native change fails closed.
+   * complete Storage Program reads. Recover every writer's latest mutation
+   * and the owner's one create from stable, exhaustively paged native-address
+   * history. Both complete scans and native readback must share a canonical
+   * block snapshot. Transaction timestamps do not define execution order.
    */
   private async resolveDemosProvenanceFromHistory(
     nativeAddress: string,
     nativeObservation: Readonly<Record<string, unknown>>,
-  ): Promise<string[]> {
+  ): Promise<Readonly<DemosHistoryProvenance>> {
     const owner = normalizedDemosAddress(nativeObservation.owner);
     if (owner === undefined) {
       throw new SubstrateError("Demos receipt native owner is invalid");
     }
-    const ownerAddress = `0x${owner}`;
-    const rows: unknown[] = [];
-    let firstHash: string | undefined;
-    for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
-      const start = page * RECEIPT_HISTORY_PAGE_SIZE;
-      const raw = await this.#demos.getTransactionHistory(
-        ownerAddress,
-        "storageProgram",
-        { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
-      ) as unknown;
-      if (!Array.isArray(raw) || raw.length > RECEIPT_HISTORY_PAGE_SIZE) {
-        throw new SubstrateError("Demos receipt history page is malformed");
+    const snapshot = async (pinnedHeight?: number): Promise<string> => {
+      const height = pinnedHeight ?? demosNonNegativeInteger(
+        await this.#demos.getLastBlockNumber(),
+      );
+      if (height === undefined) {
+        throw new SubstrateError("Demos receipt history snapshot is unavailable");
       }
-      if (page === 0 && raw.length > 0) {
-        const head = raw[0];
-        if (!isRecord(head) || typeof head.hash !== "string" || head.hash.length === 0) {
-          throw new SubstrateError("Demos receipt history head is malformed");
-        }
-        firstHash = head.hash;
+      const block = demosNodeRecord(await this.#demos.getBlockByNumber(height));
+      if (!block || block.status !== "confirmed" || block.number !== height ||
+          typeof block.hash !== "string" || block.hash.length === 0 ||
+          block.validation_data === undefined) {
+        throw new SubstrateError("Demos receipt history snapshot is not canonical");
       }
-      rows.push(...raw);
-      if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
-        const lookahead = await this.#demos.getTransactionHistory(
-          ownerAddress,
-          "storageProgram",
-          { start: start + raw.length, limit: 1 },
+      return `${height}:${block.hash}`;
+    };
+    const initialSnapshot = await snapshot();
+    const snapshotHeight = Number(initialSnapshot.split(":", 1)[0]);
+    const scan = async (): Promise<unknown[]> => {
+      const rows: unknown[] = [];
+      for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
+        const start = page * RECEIPT_HISTORY_PAGE_SIZE;
+        const raw = await this.#demos.getTransactionHistory(
+          nativeAddress, "storageProgram", { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
         ) as unknown;
-        if (!Array.isArray(lookahead) || lookahead.length !== 0) {
-          throw new SubstrateError("Demos receipt history page is incomplete");
+        if (!Array.isArray(raw) || raw.length > RECEIPT_HISTORY_PAGE_SIZE) {
+          throw new SubstrateError("Demos receipt history page is malformed");
         }
-        break;
+        rows.push(...raw);
+        if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
+          const lookahead = await this.#demos.getTransactionHistory(
+            nativeAddress, "storageProgram", { start: start + raw.length, limit: 1 },
+          ) as unknown;
+          if (!Array.isArray(lookahead) || lookahead.length !== 0) {
+            throw new SubstrateError("Demos receipt history page is incomplete");
+          }
+          return rows;
+        }
       }
-      if (page === RECEIPT_HISTORY_MAX_PAGES - 1) {
-        throw new SubstrateError("Demos receipt history exceeds the verification cap");
-      }
-    }
-    if (firstHash === undefined) {
+      throw new SubstrateError("Demos receipt history exceeds the verification cap");
+    };
+    const rows = await scan();
+    if (rows.length === 0) {
       throw new SubstrateError("Demos receipt native provenance is unavailable");
     }
-    const headCheck = await this.#demos.getTransactionHistory(
-      ownerAddress,
-      "storageProgram",
-      { start: 0, limit: 1 },
-    ) as unknown;
-    if (!Array.isArray(headCheck) || headCheck.length !== 1 ||
-        !isRecord(headCheck[0]) || headCheck[0].hash !== firstHash) {
-      throw new SubstrateError("Demos receipt history changed during verification");
-    }
+    // Capture complete rows before further IO; comparing only the first hash
+    // misses a later block whose signed timestamp sorts behind the old head.
+    const scannedHistory = canonicalize(rows);
 
     const mutations: Array<Readonly<{
       hash: string;
       blockNumber: number;
-      nonce: number;
+      transactionIndex: number;
       operation: string;
       data: unknown;
       metadata: unknown;
     }>> = [];
+    const blocks = new Map<number, readonly string[]>();
+    const seen = new Set<string>();
     for (const [index, raw] of rows.entries()) {
       if (!isRecord(raw) || typeof raw.hash !== "string" || raw.hash.length === 0 ||
           typeof raw.status !== "string") {
@@ -1501,12 +1600,17 @@ export class DemosAdapter implements SubstrateAdapter {
           raw.content.type !== "storageProgram") {
         throw new SubstrateError(`Demos receipt history row ${index} is not canonical`);
       }
-      if (normalizedDemosAddress(raw.content.from) !== owner) continue;
+      const sender = normalizedDemosAddress(raw.content.from);
+      if (sender === undefined) {
+        throw new SubstrateError("Demos receipt history sender is malformed");
+      }
       const tuple = Array.isArray(raw.content.data) ? raw.content.data : [];
       const payload = isRecord(tuple[1]) ? tuple[1] : undefined;
       const touchesNative = raw.content.to === nativeAddress ||
         payload?.storageAddress === nativeAddress;
-      if (!touchesNative) continue;
+      if (!touchesNative) {
+        throw new SubstrateError("Demos receipt history is not scoped to the native address");
+      }
       if (tuple[0] !== "storageProgram" || payload === undefined ||
           raw.content.to !== nativeAddress || payload.storageAddress !== nativeAddress ||
           typeof payload.operation !== "string") {
@@ -1514,30 +1618,63 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       const blockNumber = demosNonNegativeInteger(raw.blockNumber);
       const nonce = demosNonNegativeInteger(raw.content.nonce);
-      if (blockNumber === undefined || nonce === undefined) {
+      if (blockNumber === undefined || blockNumber > snapshotHeight || nonce === undefined) {
         throw new SubstrateError("Demos receipt history mutation lacks ordering evidence");
+      }
+      if (seen.has(raw.hash) ||
+          (payload.operation === "CREATE_STORAGE_PROGRAM" && sender !== owner)) {
+        throw new SubstrateError("Demos receipt history has inconsistent create or duplicate provenance");
+      }
+      seen.add(raw.hash);
+      let ordered = blocks.get(blockNumber);
+      if (ordered === undefined) {
+        const observation = await this.#demos.getBlockByNumber(blockNumber) as unknown;
+        const block = isRecord(observation) && isRecord(observation.response)
+          ? observation.response : observation;
+        const content = isRecord(block) && isRecord(block.content) ? block.content : undefined;
+        const transactions = content?.ordered_transactions;
+        if (!isRecord(block) || block.status !== "confirmed" || block.number !== blockNumber ||
+            typeof block.hash !== "string" || block.hash.length === 0 ||
+            block.validation_data === undefined || !Array.isArray(transactions) ||
+            transactions.some((hash) => typeof hash !== "string" || hash.length === 0) ||
+            new Set(transactions).size !== transactions.length) {
+          throw new SubstrateError("Demos receipt history lacks canonical block ordering");
+        }
+        ordered = transactions as string[];
+        blocks.set(blockNumber, ordered);
+      }
+      const transactionIndex = ordered.indexOf(raw.hash);
+      if (transactionIndex < 0) {
+        throw new SubstrateError("Demos receipt history mutation is absent from its canonical block");
       }
       mutations.push({
         hash: raw.hash,
         blockNumber,
-        nonce,
+        transactionIndex,
         operation: payload.operation,
         data: payload.data,
         metadata: payload.metadata,
       });
     }
     mutations.sort((left, right) =>
-      right.blockNumber - left.blockNumber || right.nonce - left.nonce);
+      right.blockNumber - left.blockNumber || right.transactionIndex - left.transactionIndex);
+    // `latest` is the history's lastModifiedByTx: kynesyslabs/node sets that
+    // on every permitted operation, an ACL change included, so a later ACL change
+    // supersedes an update proof exactly as a served member does. An ACL
+    // change leaves the value alone; the value must come from the newest
+    // other mutation, and only a whole-value write can bind it.
     const latest = mutations[0];
-    if (latest === undefined ||
-        (latest.operation !== "CREATE_STORAGE_PROGRAM" &&
-          latest.operation !== "WRITE_STORAGE")) {
+    const valueWrite = mutations.find((mutation) =>
+      mutation.operation !== "UPDATE_ACCESS_CONTROL");
+    if (latest === undefined || valueWrite === undefined ||
+        (valueWrite.operation !== "CREATE_STORAGE_PROGRAM" &&
+          valueWrite.operation !== "WRITE_STORAGE")) {
       throw new SubstrateError("Demos receipt latest native mutation is unsupported");
     }
     const observedMetadata = nativeObservation.metadata ?? undefined;
-    if (!isJsonObject(latest.data) ||
-        canonicalize(latest.data) !== canonicalize(nativeObservation.data) ||
-        !sameOptionalJsonObject(latest.metadata ?? undefined, observedMetadata)) {
+    if (!isJsonObject(valueWrite.data) ||
+        canonicalize(valueWrite.data) !== canonicalize(nativeObservation.data) ||
+        !sameOptionalJsonObject(valueWrite.metadata ?? undefined, observedMetadata)) {
       throw new SubstrateError("Demos receipt history does not bind the native value");
     }
     const fresh = await this.#demos.storagePrograms.read(nativeAddress) as unknown;
@@ -1550,7 +1687,18 @@ export class DemosAdapter implements SubstrateAdapter {
         !sameOptionalJsonObject(fresh.metadata ?? undefined, observedMetadata)) {
       throw new SubstrateError("Demos receipt native value changed during verification");
     }
-    return [latest.hash];
+    // New blocks may advance the tip while this unchanged program is read.
+    // Recheck the pinned block itself so a reorg still invalidates the scan.
+    if (canonicalize(await scan()) !== scannedHistory ||
+        await snapshot(snapshotHeight) !== initialSnapshot) {
+      throw new SubstrateError("Demos receipt history changed during verification");
+    }
+    const creates = mutations.filter((mutation) =>
+      mutation.operation === "CREATE_STORAGE_PROGRAM");
+    return {
+      latest: latest.hash,
+      created: creates.length === 1 ? creates[0]!.hash : undefined,
+    };
   }
 
   async sign(bytes: Uint8Array): Promise<Uint8Array> {
@@ -3908,18 +4056,12 @@ export class DemosAdapter implements SubstrateAdapter {
         errorCode?: string;
       };
       if (res?.success && res.data != null) return res.data;
-      const marker =
-        `${res?.errorCode ?? ""} ${res?.error ?? ""}`.toLowerCase();
-      if (marker.includes("not_found") || marker.includes("not found")) {
-        return null;
-      }
       throw new SubstrateError(
         `read anchor ${address} returned an indeterminate response`,
       );
     } catch (error) {
-      // demosdk/Axios throws on a genuine 404. Every other failure remains
-      // indeterminate so callers never turn a transient RPC fault into absence.
-      if (httpStatus(error) === 404) return null;
+      // The binding defines no authoritative absence response; even a 404
+      // remains indeterminate and retryable.
       if (error instanceof SubstrateError) throw error;
       throw new SubstrateError(`read anchor ${address} failed`, {
         cause: error,
