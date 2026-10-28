@@ -20,7 +20,7 @@
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
 // profile and the Vet records the Agreement references. It does not mount the
 // context route itself.
-import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
@@ -136,6 +136,16 @@ function privateDirectory(path) {
   }
 }
 
+// Make the entries a directory names durable. SQLite's FULL synchronous mode
+// syncs the database file itself, not the directory entry that names it, so a
+// host that creates seller/ or transport/ and answers an order before the
+// parents are synced can come back, after power loss, to a directory it
+// believes was never created and start again with empty state.
+function syncDirectory(path) {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
 // Resolves once the host listens: { url, listingPin, seller, timeouts,
 // issueSessionChallenge({ jobId, buyer }), close() }.
 // Rejects with a TypeError before opening anything when an option is missing,
@@ -181,6 +191,11 @@ export async function startSellerHost(options) {
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), maxJobs, now });
     opened.push(() => store.close());
+    // Both child directories and the new transport database entry are durable
+    // before listen permits an answer: seller/ was created by the durable state
+    // and transport/ here, and neither parent entry has been synced yet.
+    syncDirectory(transport);
+    syncDirectory(dataDirectory);
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
     const handler = createSellerHttpHandler(agent, { authentication });
     const active = new Set();

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chmodSync} from 'node:fs';
+import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
+import {syncBuiltinESMExports} from 'node:module';
 import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -173,6 +174,18 @@ test('host reports both literal loopback URLs',async t=>{
  const f=await fixture(t);
  const v4=await f.start();assert.match(v4.url,/^http:\/\/127\.0\.0\.1:\d+$/);await v4.close();
  const v6=await f.start({host:'::1'});assert.match(v6.url,/^http:\/\/\[::1\]:\d+$/);await v6.close();
+});
+
+test('host makes newly created seller and transport directories durable before listening',async t=>{
+ const f=await fixture(t),original=fs.fsyncSync,synced=[];
+ try{
+  fs.fsyncSync=descriptor=>{try{synced.push(fs.realpathSync(`/proc/self/fd/${descriptor}`));}catch{}return original(descriptor);};
+  syncBuiltinESMExports();
+  const host=await f.start();
+  assert.ok(synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
+  assert.ok(synced.includes(f.dataDirectory),'the new seller and transport directory entries are synced in dataDirectory');
+  await host.close();
+ }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
 });
 
 test('host refuses malformed options before opening any state',async t=>{
