@@ -515,3 +515,9 @@ describe("role-owned Demos runtime", () => {
     });
   });
 });
+
+// Local connected-runtime unit doubles exercise the wiring below the profile gate.
+vi.mock("../../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
+});

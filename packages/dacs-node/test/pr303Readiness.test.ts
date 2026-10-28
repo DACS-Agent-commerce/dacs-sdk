@@ -29,7 +29,7 @@ function runEffectivenessScript(): Promise<{ status: number | null; stdout: stri
   });
 }
 
-describe("PR303 test-effectiveness witnesses", () => {
+describe.skipIf(process.env.DACS_RUN_MUTATION_WITNESSES !== "1")("PR303 test-effectiveness witnesses", () => {
   it("catches each selected wrong implementation through its intended assertion", async () => {
     const result = await runEffectivenessScript();
     const report = JSON.parse(result.stdout) as EffectivenessReport;

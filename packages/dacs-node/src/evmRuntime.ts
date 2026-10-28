@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "@kynesyslabs/dacs";
 import {
   createDacsX402BuyerEvmChallengeClient,
   createViemX402BuyerEvmReadClient,
@@ -145,6 +146,7 @@ export async function deriveDacsEvmRoleIdentityV1(rawOptions: Readonly<{
 export async function createDacsX402BuyerEvmRuntimeV1(
   rawOptions: Readonly<DacsX402BuyerEvmRuntimeOptionsV1>,
 ): Promise<Readonly<DacsX402BuyerEvmRuntimeV1>> {
+  requireAdmissibleProfile({});
   if (!plainObject(rawOptions) || rawOptions.evmPrivateKey === null ||
       typeof rawOptions.evmPrivateKey !== "object" ||
       typeof rawOptions.evmPrivateKey.text !== "function" ||

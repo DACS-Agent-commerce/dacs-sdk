@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -555,7 +556,9 @@ function settlementMatchesIntent(
  */
 export async function advanceAp2Settlement<TCheckout, TPayment>(
   input: AdvanceAp2SettlementInput<TCheckout, TPayment>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<Ap2SettlementProgress> {
+  requireAdmissibleProfile(policy);
   const provider = input.provider;
   const verifier = input.verifier;
   const store = input.store;

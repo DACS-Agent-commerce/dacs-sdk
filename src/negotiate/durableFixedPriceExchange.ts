@@ -1720,7 +1720,7 @@ class DurableFixedPriceAgreementCoordinator {
       seller.role !== "seller" ||
       seller.party !== this.#seller ||
       seller.planHash !== this.#plan.planHash ||
-      contentHash(agreement as unknown as DataRecord) !== this.#plan.agreementHash
+      contentHash(agreement as unknown as DataRecord, "signatures") !== this.#plan.agreementHash
     ) {
       throw new ProgressSignal(
         "rejected",

@@ -5,6 +5,7 @@ import {
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
   type AnchoredFinalityCommitment,
+  type ProfileExecutionPolicy,
   type AuthenticatedRailDefinition,
   type CommitmentSignatureVerifier,
   type FinalityCommitmentProvider,
@@ -31,6 +32,7 @@ import {
   identityBundleHash,
 } from "@kynesyslabs/dacs/identity";
 
+import { restoreDacsHistoricalListingAdmissionV1 } from "./historicalListingAdmission.js";
 import {
   captureDacsFixedPriceX402ApplicationV1,
   type DacsFixedPriceX402ApplicationV1,
@@ -56,7 +58,7 @@ type NativeSellerIntakeAuthorityV1 = Pick<
   | "resolveIdentityBundle"
 >;
 
-export interface DacsFixedPricePayDemSellerAuthorityOptionsV1 {
+export interface DacsFixedPricePayDemSellerAuthorityOptionsV1 extends ProfileExecutionPolicy {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   rail: Readonly<AuthenticatedRailDefinition>;
 }
@@ -354,20 +356,18 @@ async function authenticateState(
       "pay-dem-authority-deliverable-unconfigured",
     );
   }
-  const agreementHash = contentHash(agreement as unknown as Record<string, unknown>);
+  const agreementHash = contentHash(agreement as unknown as Record<string, unknown>, "signatures");
   const commitmentContentHash = contentHash(
     result.commitment.record as unknown as Record<string, unknown>,
   );
-  const listingResolution: SellerListingAtCommitResolution = {
-    rawListing: copy(application.listing as unknown as Record<string, unknown>),
-    validation: {
-      disposition: "verified",
-      step: 9,
-      reason: "seller-session-admission-verified",
-      listing: copy(application.listing),
-      listingContentHash: application.listingContentHash,
-    },
-  };
+  const listingResolution = await restoreDacsHistoricalListingAdmissionV1({
+    admission: admission.listingAdmission,
+    listing: application.listing,
+    admittedAt: admission.admittedAt,
+    seller: context.authority,
+    rail,
+    executionMode: options.executionMode,
+  });
   const fulfilmentAgreement: SellerFulfilmentAgreement = {
     artifactKind: "payee-bound",
     ref: fixedPriceAgreementLogicalAddress(order.jobId),
@@ -490,7 +490,7 @@ export function createDacsFixedPricePayDemSellerAuthorityV1(
           "pay-dem-listing-at-commit-unavailable",
         );
       }
-      return copy(found);
+      return found;
     },
     async resolveRail({ ref, railRegistryVersion }: Parameters<
       SellerPaymentIntakeDeps["resolveRail"]

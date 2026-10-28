@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import {
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
@@ -106,7 +107,7 @@ export type DacsPreparedLivePurchaseV1 =
   | DacsPreparedX402PurchaseV1
   | DacsPreparedPayDemPurchaseV1;
 
-export interface DacsPurchaseQueueExecutorOptionsV1 {
+export interface DacsPurchaseQueueExecutorOptionsV1 extends ProfileExecutionPolicy {
   prepared: Readonly<DacsPreparedLivePurchaseV1>;
   database: DacsNodeSqliteDatabase;
   workerId: string;
@@ -399,6 +400,9 @@ export function prepareDacsPayDemPurchaseV1(
 export function createDacsPurchaseQueueExecutorV1(
   options: Readonly<DacsPurchaseQueueExecutorOptionsV1>,
 ): DacsGuardedExecutorV1 {
+  // These resources own live transport/storage authority; labels cannot release it.
+  requireAdmissibleProfile({});
+  const executionMode = options.executionMode;
   if (options === null || typeof options !== "object" ||
       options.database === null || typeof options.database !== "object" ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
@@ -431,11 +435,13 @@ export function createDacsPurchaseQueueExecutorV1(
       await fence.assertCurrent();
       const coordinator = payDem
         ? createFixedPricePayDemBuyerCoordinator({
+            executionMode,
             store: options.database.createPayDemCoordinatorStore("buyer"),
             workerId: options.workerId,
             operations: {},
           })
         : createFixedPriceX402BuyerCoordinator({
+            executionMode,
             store: options.database.createLiveCoordinatorStore("buyer"),
             workerId: options.workerId,
             operations: {},

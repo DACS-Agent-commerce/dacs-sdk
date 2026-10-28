@@ -1204,6 +1204,27 @@
           "after": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 preserve Listing admission errors at the corrective profile gate",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/verification.mjs",
+          "before": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5",
+          "after": "d1c19925caa67106e837be7a6b3d3ddf8b72d292"
+        },
+        {
+          "path": "packages/dacs-client/test/ingress-admission.test.mjs",
+          "before": "bc5df5a139d39697b81a2363c3e2554c0220551e",
+          "after": "049f2c4639602e72e349361da1d24c828cbdb365"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6",
+          "after": "42b77ee928db87007ecdba9f71e2a6facf85f077"
+        }
+      ]
     }
   ]
 }

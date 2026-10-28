@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import {
   captureFixedPricePayDemProtocolBinding,
   type AuthenticatedRailDefinition,
@@ -15,6 +16,10 @@ import {
   sameCanonicalClaimIdentity,
 } from "@kynesyslabs/dacs/identity";
 
+import {
+  captureDacsHistoricalListingAdmissionV1,
+  type DacsHistoricalListingAdmissionV1,
+} from "./historicalListingAdmission.js";
 import type { DacsSellerAgreementTransportRuntimeOptionsV1 } from
   "./agreementTransportRuntime.js";
 import type { DacsAgreementSellerVetProductionV1 } from
@@ -66,11 +71,13 @@ export interface DacsFixedPricePayDemSellerAdmissionRecordV1 {
   jobId: string;
   localBindingHash: string;
   admittedAt: number;
+  listingAdmission?: Readonly<DacsHistoricalListingAdmissionV1>;
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
   protocol: Readonly<FixedPricePayDemOrderInput["protocol"]>;
 }
 
-export interface DacsFixedPricePayDemSellerSessionPolicyOptionsV1 {
+export interface DacsFixedPricePayDemSellerSessionPolicyOptionsV1 extends ProfileExecutionPolicy {
+  readAnchorBytes?(locator: string): Promise<Uint8Array | null>;
   context: Readonly<DacsLiveRoleOperationContextV1>;
   rail: Readonly<AuthenticatedRailDefinition>;
   sellerPublicEndpoint: string;
@@ -163,12 +170,21 @@ function admissionId(jobId: string): string {
 function captureAdmission(
   value: unknown,
 ): Readonly<DacsFixedPricePayDemSellerAdmissionRecordV1> {
-  if (!plainObject(value) || Object.keys(value).length !== 6 ||
+  if (!plainObject(value) ||
+      !Object.keys(value).every((key) => ["admissionVersion", "jobId", "localBindingHash",
+        "admittedAt", "application", "protocol", "listingAdmission"].includes(key)) ||
+      (Object.keys(value).length !== 6 && Object.keys(value).length !== 7) ||
       value.admissionVersion !== ADMISSION_VERSION || typeof value.jobId !== "string" ||
       typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash) ||
       !Number.isSafeInteger(value.admittedAt) || Number(value.admittedAt) < 0 ||
       !plainObject(value.protocol)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-pay-dem-admission-corrupt");
+  }
+  if (value.listingAdmission !== undefined &&
+      (!plainObject(value.listingAdmission) || Object.keys(value.listingAdmission).length !== 2 ||
+       value.listingAdmission.revocation !== "absent" ||
+       typeof value.listingAdmission.receivedJsonBase64 !== "string")) {
+    throw new DacsFixedPriceX402ProfileError("historical-listing-admission-corrupt");
   }
   let protocol: FixedPricePayDemOrderInput["protocol"];
   try {
@@ -181,6 +197,12 @@ function captureAdmission(
     jobId: value.jobId,
     localBindingHash: value.localBindingHash,
     admittedAt: Number(value.admittedAt),
+    ...(value.listingAdmission === undefined ? {} : {
+      listingAdmission: {
+        receivedJsonBase64: value.listingAdmission.receivedJsonBase64 as string,
+        revocation: "absent",
+      },
+    }),
     application: captureDacsFixedPriceX402ApplicationV1(value.application),
     protocol,
   }));
@@ -191,6 +213,7 @@ function retainAdmission(
   order: Readonly<FixedPricePayDemOrderInput>,
   application: Readonly<DacsFixedPriceX402ApplicationV1>,
   admittedAt: number,
+  listingAdmission: Readonly<DacsHistoricalListingAdmissionV1>,
 ): Readonly<DacsFixedPricePayDemSellerAdmissionRecordV1> {
   const id = admissionId(order.jobId);
   const record: DacsFixedPricePayDemSellerAdmissionRecordV1 = {
@@ -198,6 +221,7 @@ function retainAdmission(
     jobId: order.jobId,
     localBindingHash: fixedPricePayDemOrderLocalBindingHash(order),
     admittedAt,
+    listingAdmission,
     application,
     protocol: order.protocol,
   };
@@ -247,6 +271,7 @@ export function loadDacsFixedPricePayDemSellerAdmissionV1(
 export function createDacsFixedPricePayDemSellerSessionPolicyV1(
   options: Readonly<DacsFixedPricePayDemSellerSessionPolicyOptionsV1>,
 ): Readonly<DacsFixedPricePayDemSellerSessionPolicyV1> {
+  requireAdmissibleProfile(options);
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || typeof options.sellerPublicEndpoint !== "string" ||
       typeof options.sellerPayee !== "string" ||
@@ -278,6 +303,8 @@ export function createDacsFixedPricePayDemSellerSessionPolicyV1(
       }
       const admittedAt = options.now?.() ?? context.database.readTime();
       const resolved = await resolveDacsPayDemExistingListingV1({
+        executionMode: options.executionMode,
+        readAnchorBytes: options.readAnchorBytes,
         listingRef: application.listingRef,
         sellerAuthority: context.authority,
         sellerPublicKey,
@@ -310,6 +337,10 @@ export function createDacsFixedPricePayDemSellerSessionPolicyV1(
           "fixed-price-pay-dem-session-listing-not-admitted",
         );
       }
+      const listingAdmission = captureDacsHistoricalListingAdmissionV1(
+        application.listing,
+        resolved.admission.validation,
+      );
       const order = createDacsFixedPricePayDemRoleOrderV1({
         role: "seller",
         jobId: payload.order.jobId,
@@ -325,7 +356,8 @@ export function createDacsFixedPricePayDemSellerSessionPolicyV1(
         maximumPerWriteFeeDem: application.demosWriteFeeCeilings.seller,
         maximumAllowedPerWriteFeeDem: context.config.limits.maxDemosNetworkFeeDem,
       });
-      retainAdmission(context, order, application, admittedAt);
+      retainAdmission(context, order, application, admittedAt,
+        listingAdmission);
       return Object.freeze({ order, application });
     };
   const admitProposal: DacsSellerAgreementTransportRuntimeOptionsV1<

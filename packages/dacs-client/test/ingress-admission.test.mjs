@@ -51,7 +51,7 @@ test('duplicate signed Listing members cannot yield a verified/transactable resu
    return jsonResponse(text);
   };
   const verifier=createListingVerifier({directory:createDirectoryClient({origin:'https://read.invalid',fetchImpl}),chain:createDemosChainReader({rpcUrl:'https://read.invalid',network:'read',fetchImpl}),now:()=>Date.parse(f.capturedAt)});
-  try {const r=await verifier.verify({listingId:listing.listingId,version:listing.listingVersion,seller:listing.seller.identity.presentedBy});assert.equal(r.transactable,false);assert.ok(r.checks.some(c=>!c.ok));}
-  catch(e){assert.equal(e.code,'DUPLICATE-MEMBER');}
+  await assert.rejects(verifier.verify({listingId:listing.listingId,version:listing.listingVersion,seller:listing.seller.identity.presentedBy}),
+   {code:'DUPLICATE-MEMBER',stage:'profile'});
  }
 });

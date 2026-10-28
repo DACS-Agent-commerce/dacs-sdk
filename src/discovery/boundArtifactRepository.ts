@@ -1,6 +1,5 @@
 import {
   canonicalize,
-  contentHash,
   logicalToStorageProgramName,
   sha256Hex,
 } from "../canonical/index.js";
@@ -41,6 +40,15 @@ export interface BoundArtifactRepositoryDeps {
    * acknowledgement is checked against `index` before write returns success.
    */
   publisher: BindingPublisher;
+  /**
+   * Trusted artifact contract, shared by publication and reads. Select this in
+   * application context, never by inspecting additive fields on a record.
+   * For Listings/ratings use contentHash; for Agreements/ChannelTranscripts
+   * use (record) => contentHash(record, "signatures"); for identity/terminal
+   * bundles use identityBundleHash/attestationBundleHash respectively.
+   * Schema, version and signer authorization remain the reader verifier's job.
+   */
+  contentHashOf: VerifiedReadDeps["contentHashOf"];
 }
 
 export interface BoundArtifactWriteOptions {
@@ -232,6 +240,11 @@ async function writeResult(
 export function createBoundArtifactRepository(
   deps: BoundArtifactRepositoryDeps,
 ): BoundArtifactRepository {
+  // Pin the caller-selected contract before any asynchronous adapter work.
+  const contentHashOf = deps.contentHashOf;
+  if (typeof contentHashOf !== "function") {
+    throw new TypeError("repository requires an explicit artifact contentHashOf contract");
+  }
   return {
     async write(logicalAddress, artifact, options) {
       const canonicalLogicalAddress = logicalAddress.trim().normalize("NFC");
@@ -270,7 +283,7 @@ export function createBoundArtifactRepository(
           cause: error,
         });
       }
-      const artifactContentHash = contentHash(pinnedArtifact);
+      const pinnedContentHash = contentHashOf(pinnedArtifact);
       const envelopeHash = sha256Hex(canonicalize(pinnedArtifact));
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
@@ -278,7 +291,7 @@ export function createBoundArtifactRepository(
         anchorOptionsWithLogicalAddress(
           logicalAddress,
           options?.anchor,
-          artifactContentHash,
+          pinnedContentHash,
           envelopeHash,
         ),
       );
@@ -290,7 +303,7 @@ export function createBoundArtifactRepository(
         logicalAddress,
         nativeAddress: anchor.address,
         owner,
-        contentHash: artifactContentHash,
+        contentHash: pinnedContentHash,
         ...(options?.version === undefined
           ? {}
           : { version: options.version }),
@@ -313,7 +326,7 @@ export function createBoundArtifactRepository(
     async read(logicalAddress, expectedOwner, verifySignature) {
       return resolveAndRead(deps.index, logicalAddress, expectedOwner, {
         read: (nativeAddress) => deps.adapter.readAnchor(nativeAddress),
-        contentHashOf: contentHash,
+        contentHashOf,
         ...(verifySignature === undefined ? {} : { verifySignature }),
       });
     },

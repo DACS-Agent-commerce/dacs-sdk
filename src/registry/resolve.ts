@@ -860,6 +860,8 @@ function isRailDefinition(
   e: Record<string, unknown>,
 ): e is Record<string, unknown> & RailDefinition {
   if (
+    // Signed top-level extensions are additive; known nested fields stay exact.
+    !isJsonWireValue(e) ||
     !hasExactWireKeys(e, [
       "railVersion",
       "railId",
@@ -871,7 +873,7 @@ function isRailDefinition(
       "availability",
       "governance",
       "signature",
-    ]) ||
+    ], Object.keys(e)) ||
     !isPositiveSafeInt(e.railVersion) ||
     typeof e.railId !== "string" ||
     // §9.4.1 says lowercase, but its normative v0.1 registry identifiers use
@@ -906,7 +908,7 @@ function isRailDefinition(
   );
 }
 
-/** Strict current RailDefinition wire validator used after full-scope authentication. */
+/** RailDefinition wire validator with additive top-level fields, after authentication. */
 export function isRailDefinitionWire(value: unknown): value is RailDefinition {
   return isRecord(value) && isRailDefinition(value);
 }

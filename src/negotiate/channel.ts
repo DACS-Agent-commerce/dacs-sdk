@@ -2,7 +2,10 @@ import { types as nodeTypes } from "node:util";
 
 import type { VerificationDecision } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonReceived,
+} from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 
 /** DACS-3 §8.3.3 v0.x closed channel-message type set. */
@@ -302,7 +305,9 @@ export async function admitChannelMessage<
   let message: ChannelMessage<TBody, TSignature>;
   let context: ChannelAdmissionContext;
   try {
-    message = snapshotCanonicalJson(
+    // The peer's message is received data: CORE §B.2 admits negative zero and
+    // serialises it as `0`. The admission context is local state and stays strict.
+    message = snapshotCanonicalJsonReceived(
       candidate,
       "channel message",
     ) as ChannelMessage<TBody, TSignature>;

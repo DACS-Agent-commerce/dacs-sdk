@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 import {
+  requireAdmissibleProfile,
   createFsFencedSessionStore,
   createFsSellerReceiptStore,
   createFsX402BuyerSettlementStore,
@@ -251,6 +252,8 @@ function nonEmpty(value: unknown): value is string {
 export async function createDacsLiveRoleRuntimeV1(
   rawOptions: Readonly<DacsLiveRoleRuntimeOptionsV1>,
 ): Promise<Readonly<DacsLiveRoleRuntimeV1>> {
+  // Preserve the actionable release refusal before inspecting config or opening authority.
+  requireAdmissibleProfile({});
   if (!plainObject(rawOptions)) {
     throw new TypeError("live role runtime options are invalid");
   }

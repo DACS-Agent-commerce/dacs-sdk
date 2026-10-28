@@ -284,7 +284,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
     ]);
 
-    const res = await x402SettleCore(params, coreDeps(client, fetchImpl));
+    const res = await x402SettleCore(params, coreDeps(client, fetchImpl), undefined, { executionMode: "simulation" });
 
     expect(paidHeader).toBe("signed");
     expect(res).toEqual(expect.objectContaining({
@@ -324,7 +324,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
           fenceChecks += 1;
           throw new Error("stale effect generation");
         },
-      },
+      }, { executionMode: "simulation" },
     )).rejects.toThrow(/stale effect generation/);
     expect(fenceChecks).toBe(1);
     expect(paidRequests).toBe(0);
@@ -351,7 +351,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
     ]);
 
-    await expect(x402SettleCore(params, coreDeps(client, fetchImpl)))
+    await expect(x402SettleCore(params, coreDeps(client, fetchImpl), undefined, { executionMode: "simulation" }))
       .rejects.toThrow("x402-redirect-refused");
     expect(calls).toBe(2);
     expect(paidInit?.redirect).toBe("error");
@@ -381,7 +381,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
           return new Response("must not connect");
         },
       },
-    })).rejects.toThrow("x402-outbound-address-unsafe");
+    }, undefined, { executionMode: "simulation" })).rejects.toThrow("x402-outbound-address-unsafe");
     expect(signs).toBe(0);
     expect(requests).toBe(0);
   });
@@ -396,7 +396,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       authenticateTransfer: async () => {
         throw new Error("must not authenticate");
       },
-    })).rejects.toThrow("x402-fetch-override-requires-insecure-mode");
+    }, undefined, { executionMode: "simulation" })).rejects.toThrow("x402-fetch-override-requires-insecure-mode");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -413,7 +413,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         payer: PAYER,
         amount: "1000000",
       },
-    })));
+    })), undefined, { executionMode: "simulation" });
     expect(result.txHash).toBe(TX_HASH);
     expect(result.txRef).toMatchObject({
       kind: "x402-event",
@@ -445,7 +445,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         eventCalls += 1;
         throw new Error("must not authenticate event");
       },
-    })).rejects.toThrow(/wrong RPC chain/);
+    }, undefined, { executionMode: "simulation" })).rejects.toThrow(/wrong RPC chain/);
     expect(fetchCalls).toBe(0);
     expect(authorizationCalls).toBe(0);
     expect(eventCalls).toBe(0);
@@ -497,7 +497,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
           requestInit: { headers: { accept: "application/replacement+json" } },
         });
       },
-    });
+    }, undefined, { executionMode: "simulation" });
 
     expect(requests).toEqual([
       { url: params.paywallUrl, policy: "application/original+json" },
@@ -550,7 +550,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       throw new Error("substituted dependency must not run");
     });
     const fence: X402PaidEffectFence = { assertCurrent: originalFence };
-    const pending = x402SettleCore(params, deps, fence);
+    const pending = x402SettleCore(params, deps, fence, { executionMode: "simulation" });
     originalClient.getPaymentRequiredResponse = substituted;
     originalClient.createPaymentPayload = substituted as never;
     originalClient.encodePaymentSignatureHeader = substituted;
@@ -577,7 +577,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     const fetchImpl = vi.fn(fakeFetch());
     await expect(x402SettleCore(params, {
       ...coreDeps(accessorClient as unknown as X402ClientLike, fetchImpl as typeof fetch),
-    })).rejects.toThrow(/stable (?:data|method)/);
+    }, undefined, { executionMode: "simulation" })).rejects.toThrow(/stable (?:data|method)/);
     expect(reads).toBe(0);
     expect(fetchImpl).not.toHaveBeenCalled();
 
@@ -597,7 +597,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     };
     await expect(x402SettleCore(
       params,
-      coreDeps(unsafeHeaderClient, fakeFetch()),
+      coreDeps(unsafeHeaderClient, fakeFetch()), undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/unsafe headers/);
     expect(reads).toBe(0);
   });
@@ -613,12 +613,12 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       },
     });
     const deps = coreDeps(fakeClient([]), fakeFetch());
-    await expect(x402SettleCore({ ...params, requestInit: accessor }, deps))
+    await expect(x402SettleCore({ ...params, requestInit: accessor }, deps, undefined, { executionMode: "simulation" }))
       .rejects.toThrow(/credential-free GET/);
     await expect(x402SettleCore({
       ...params,
       requestInit: new Proxy({ headers: { accept: "application/json" } }, {}),
-    }, deps)).rejects.toThrow(/credential-free GET/);
+    }, deps, undefined, { executionMode: "simulation" })).rejects.toThrow(/credential-free GET/);
     expect(reads).toBe(0);
   });
 
@@ -627,7 +627,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: "eip155:8453", payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
     ]);
-    const res = await x402SettleCore(params, coreDeps(client, fakeFetch()));
+    const res = await x402SettleCore(params, coreDeps(client, fakeFetch()), undefined, { executionMode: "simulation" });
     expect(res.ok).toBe(true);
   });
 
@@ -636,7 +636,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: NETWORK, payTo: RECIPIENT, amount: "9999999", asset: TOKEN },
     ]);
     await expect(
-      x402SettleCore(params, coreDeps(client, fakeFetch())),
+      x402SettleCore(params, coreDeps(client, fakeFetch()), undefined, { executionMode: "simulation" }),
     ).rejects.toThrow(/does not match negotiated agreement/);
   });
 
@@ -646,14 +646,14 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "0x1111111111111111111111111111111111111111" },
     ]);
     await expect(
-      x402SettleCore(params, coreDeps(client, fakeFetch())),
+      x402SettleCore(params, coreDeps(client, fakeFetch()), undefined, { executionMode: "simulation" }),
     ).rejects.toThrow(/asset mismatch/);
   });
 
   test("aborts when the 402 omits the asset (can't confirm the token)", async () => {
     const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1000000" }]);
     await expect(
-      x402SettleCore(params, coreDeps(client, fakeFetch())),
+      x402SettleCore(params, coreDeps(client, fakeFetch()), undefined, { executionMode: "simulation" }),
     ).rejects.toThrow(/asset mismatch/);
   });
 
@@ -676,7 +676,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         amount: "1000000",
         ...change,
       },
-    })))).rejects.toThrow(/x402:/);
+    })), undefined, { executionMode: "simulation" })).rejects.toThrow(/x402:/);
   });
 
   test("rejects success with no raw PAYMENT-RESPONSE", async () => {
@@ -685,7 +685,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     ]);
     await expect(x402SettleCore(
       params,
-      coreDeps(client, fakeFetch({ omitReceipt: true })),
+      coreDeps(client, fakeFetch({ omitReceipt: true })), undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/PAYMENT-RESPONSE/);
   });
 
@@ -695,13 +695,13 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     ]);
     await expect(x402SettleCore(
       params,
-      coreDeps(client, fakeFetch({ rawReceipt: "not-base64" })),
+      coreDeps(client, fakeFetch({ rawReceipt: "not-base64" })), undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/not conforming/);
     await expect(x402SettleCore(
       params,
       coreDeps(client, fakeFetch(), async () => {
         throw new Error("not final");
-      }),
+      }), undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/not final/);
   });
 
@@ -716,7 +716,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         payerAddress: PAYER,
         assertFinalityContext: async () => {},
         authenticateTransfer: async () => { throw new Error("unused"); },
-      }),
+      }, undefined, { executionMode: "simulation" }),
     ).rejects.toThrow(/expected HTTP 402/);
   });
 
@@ -729,7 +729,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         payerAddress: PAYER,
         assertFinalityContext: async () => {},
         authenticateTransfer: async () => { throw new Error("unused"); },
-      }),
+      }, undefined, { executionMode: "simulation" }),
     ).rejects.toThrow(/no .accepts. payment requirements/);
   });
 });
@@ -750,7 +750,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       network: NETWORK,
       recipientEvm: RECIPIENT,
       asset: "0xtoken",
-    });
+    }, { executionMode: "simulation" });
     expect(() =>
       settle({
         rail: "pay-x402",
@@ -788,7 +788,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       recipientEvm: RECIPIENT,
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // resolved token id
       phaseIndex: 3,
-    });
+    }, { executionMode: "simulation" });
 
     // runSession passes the human Price.asset symbol; the bridge must NOT use it
     // for the guard — it uses the rail-configured on-chain token id.
@@ -836,7 +836,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       // no phaseIndex on the paywall — the old wiring omitted it to the rail,
       // which (with requireSessionBinding) threw on every settle.
-    });
+    }, { executionMode: "simulation" });
 
     await settle({
       rail: "pay-x402",
@@ -874,10 +874,17 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       network: NETWORK,
       recipientEvm: RECIPIENT,
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    });
+    }, { executionMode: "simulation" });
 
     await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "j1" });
 
     expect(captured?.phaseIndex).toBe(0);
   });
+});
+
+// Test the dormant connected wiring with local wallet/transport doubles.
+// Real profile refusal is covered in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

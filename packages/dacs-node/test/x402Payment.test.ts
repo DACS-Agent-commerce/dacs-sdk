@@ -23,6 +23,7 @@ import {
   type X402BuyerAuthorizationReconciliation,
   type X402BuyerCapturedSettlement,
   type X402BuyerEffectFence,
+  type X402BuyerEvmDisclosureRecovery,
   type X402BuyerEvmLog,
   type X402BuyerEvmReadClient,
   type X402BuyerEvmTransactionReceipt,
@@ -593,6 +594,7 @@ describe("coordinator x402 buyer payment track", () => {
       asset: ASSET.toLowerCase(),
     });
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       finalityBlocks: 1,
       database: opened,
@@ -700,6 +702,7 @@ describe("coordinator x402 buyer payment track", () => {
         },
       };
       const track = createDacsX402BuyerPaymentTrackV1({
+        executionMode: "simulation",
         walletSpendAuthority,
         finalityBlocks: 1,
         database: opened,
@@ -743,6 +746,7 @@ describe("coordinator x402 buyer payment track", () => {
       { disposition: "settled-same", settlement: captured(retained) },
     ]);
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       finalityBlocks: 1,
       database: opened,
@@ -795,6 +799,7 @@ describe("coordinator x402 buyer payment track", () => {
       recordOutcome,
     };
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       finalityBlocks: 1,
       database: opened,
@@ -859,6 +864,7 @@ describe("coordinator x402 buyer payment track", () => {
       disclosure: disclosure(),
     }));
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       finalityBlocks: 1,
       database: opened,
@@ -897,6 +903,7 @@ describe("coordinator x402 buyer payment track", () => {
     );
     const authenticateRecovery =
       createDacsX402WalletSpendRecoveryAuthenticatorV1({
+        executionMode: "simulation",
         settlementStore,
         owner: "x402-wallet-recovery-test",
         chainId: 84532,
@@ -932,6 +939,7 @@ describe("coordinator x402 buyer payment track", () => {
     }, exact)).resolves.toBe(false);
 
     const absent = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      executionMode: "simulation",
       settlementStore: createInMemoryX402BuyerSettlementStore(),
       owner: "x402-wallet-recovery-test",
       chainId: 84532,
@@ -951,6 +959,7 @@ describe("coordinator x402 buyer payment track", () => {
       leaseDurationMs: 10_000,
     })).resolves.toMatchObject({ status: "acquired" });
     const active = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      executionMode: "simulation",
       settlementStore: activeStore,
       owner: "x402-wallet-recovery-test",
       chainId: 84532,
@@ -963,6 +972,7 @@ describe("coordinator x402 buyer payment track", () => {
     await expect(active(reservation, exact)).resolves.toBe(false);
 
     const unavailable = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      executionMode: "simulation",
       settlementStore,
       owner: "x402-wallet-recovery-test",
       chainId: 84532,
@@ -973,6 +983,50 @@ describe("coordinator x402 buyer payment track", () => {
       confirmUnused: safeUnused,
     });
     await expect(unavailable(reservation, exact)).resolves.toBe(false);
+  });
+
+  it("uses only an injected local recovery capability when the disclosure is missing", async () => {
+    const retained = intent();
+    const settlementStore = createInMemoryX402BuyerSettlementStore();
+    await retainRecoveryIntent(settlementStore, retained);
+    const exact = {
+      disposition: "settled" as const,
+      evidenceHash: captured(retained).authenticationHash,
+      debits: [{ asset: retained.asset.toLowerCase(), purpose: "service" as const,
+        amount: retained.amount }],
+    };
+    const recoverDisclosure = vi.fn(function (
+      this: unknown,
+      input: Parameters<X402BuyerEvmDisclosureRecovery>[0],
+    ) {
+      expect(this).toBe(options);
+      expect(input.intent).toEqual(retained);
+      expect(input.transactionHash).toBe(TX);
+      return Promise.resolve(disclosure());
+    });
+    const options = {
+      executionMode: "simulation" as "simulation" | "live",
+      settlementStore,
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client: recoveryReader(),
+      verifySignature: validSignature,
+      recoverDisclosure,
+    };
+    const { recoverDisclosure: _localRecovery, ...withoutRecovery } = options;
+    const retainedOnly = createDacsX402WalletSpendRecoveryAuthenticatorV1(withoutRecovery);
+    await expect(retainedOnly(recoveryReservation(retained), exact)).resolves.toBe(false);
+    expect(recoverDisclosure).not.toHaveBeenCalled();
+
+    const authenticateRecovery = createDacsX402WalletSpendRecoveryAuthenticatorV1(options);
+    options.executionMode = "live";
+    const replacement = vi.fn(async () => undefined);
+    Object.assign(options, { recoverDisclosure: replacement });
+    await expect(authenticateRecovery(recoveryReservation(retained), exact)).resolves.toBe(true);
+    expect(recoverDisclosure).toHaveBeenCalledOnce();
+    expect(replacement).not.toHaveBeenCalled();
   });
 
   it("captures recovery capabilities once with their original receivers", async () => {
@@ -1024,6 +1078,7 @@ describe("coordinator x402 buyer payment track", () => {
       },
     };
     const options = {
+      executionMode: "simulation" as "simulation" | "live",
       settlementStore: store,
       owner: "x402-wallet-recovery-test",
       chainId: 84532,
@@ -1055,6 +1110,7 @@ describe("coordinator x402 buyer payment track", () => {
       confirmBlockAncestor: vi.fn(async () => { throw new Error("swapped"); }),
     });
     Object.assign(options, {
+      executionMode: "live",
       verifySignature: vi.fn(async () => ({ disposition: "invalid" as const })),
     });
 
@@ -1075,6 +1131,7 @@ describe("coordinator x402 buyer payment track", () => {
   it("rejects accessors, proxies, and non-literal current-fence results", async () => {
     const getter = vi.fn(() => createInMemoryX402BuyerSettlementStore());
     const accessorOptions = {
+      executionMode: "simulation",
       owner: "x402-wallet-recovery-test",
       chainId: 84532,
       minimumConfirmations: 5,
@@ -1095,7 +1152,7 @@ describe("coordinator x402 buyer payment track", () => {
       new Proxy(accessorOptions, {}) as unknown as Parameters<
         typeof createDacsX402WalletSpendRecoveryAuthenticatorV1
       >[0],
-    )).toThrow(/options are invalid/);
+    )).toThrow(/stable data/);
 
     const retained = intent();
     const innerStore = createInMemoryX402BuyerSettlementStore();
@@ -1115,6 +1172,7 @@ describe("coordinator x402 buyer payment track", () => {
     };
     const authenticateRecovery =
       createDacsX402WalletSpendRecoveryAuthenticatorV1({
+        executionMode: "simulation",
         settlementStore: malformedFenceStore,
         owner: "x402-wallet-recovery-test",
         chainId: 84532,
@@ -1154,6 +1212,7 @@ describe("coordinator x402 buyer payment track", () => {
       }
       const authenticateRecovery =
         createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          executionMode: "simulation",
           settlementStore,
           owner: "x402-wallet-recovery-test",
           chainId: 84532,
@@ -1185,6 +1244,7 @@ describe("coordinator x402 buyer payment track", () => {
         disclosure: disclosure(),
       }));
       const track = createDacsX402BuyerPaymentTrackV1({
+        executionMode: "simulation",
         database: opened,
         workerId: "buyer-payment-worker",
         settlementStore,
@@ -1256,6 +1316,7 @@ describe("coordinator x402 buyer payment track", () => {
     );
     const authenticateRecovery =
       createDacsX402WalletSpendRecoveryAuthenticatorV1({
+        executionMode: "simulation",
         settlementStore,
         owner: "x402-wallet-recovery-test",
         chainId: 84532,
@@ -1284,6 +1345,7 @@ describe("coordinator x402 buyer payment track", () => {
       disclosure: disclosure(),
     }));
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -1392,6 +1454,7 @@ describe("coordinator x402 buyer payment track", () => {
       expect(proof.disposition).toBe(terminalDisposition);
       const authenticateRecovery =
         createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          executionMode: "simulation",
           settlementStore,
           owner: "x402-wallet-recovery-test",
           chainId: 84532,
@@ -1419,6 +1482,7 @@ describe("coordinator x402 buyer payment track", () => {
         disclosure: disclosure(),
       }));
       const track = createDacsX402BuyerPaymentTrackV1({
+        executionMode: "simulation",
         database: opened,
         workerId: "buyer-payment-worker",
         settlementStore,
@@ -1474,6 +1538,7 @@ describe("coordinator x402 buyer payment track", () => {
       const client = terminalRecoveryReader(terminalDisposition);
       const authenticateRecovery =
         createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          executionMode: "simulation",
           settlementStore,
           owner,
           chainId: 84532,
@@ -1485,6 +1550,7 @@ describe("coordinator x402 buyer payment track", () => {
         });
       const authenticateLiveUnused =
         createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          executionMode: "simulation",
           settlementStore,
           owner,
           chainId: 84532,

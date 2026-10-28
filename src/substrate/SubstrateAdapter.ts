@@ -286,8 +286,19 @@ export interface SubstrateAdapter {
     expectedOwner: string,
   ): Promise<AnchorResolution>;
 
-  /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
+  /**
+   * SR-2 — read a previously anchored value by its storage address, or null if absent.
+   * Return plain, writable JSON data: `Agent` passes this read to the session
+   * start, whose strict received snapshot refuses frozen or read-only objects.
+   * The value is already parsed, so it carries no CF-5 raw-byte admission.
+   */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
+  /**
+   * Exact original artifact JSON bytes for CF-5 admission. Do not reconstruct
+   * these by stringifying readAnchor's parsed object or a JSONB response.
+   * Missing support makes normative Listing discovery/session admission unavailable.
+   */
+  readAnchorBytes?(address: string): Promise<Uint8Array | null>;
 
   /** SR-3 — consensus-backed proxy fetch of a public HTTPS endpoint (DAHR). */
   proxyFetch(req: ProxyFetchRequest): Promise<ProxyFetchResult>;

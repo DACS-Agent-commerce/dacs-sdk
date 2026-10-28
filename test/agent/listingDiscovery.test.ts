@@ -1,3 +1,4 @@
+import { fixtureListingRead } from "../fixtures/receivedListing.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -11,6 +12,7 @@ import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { ListingDraft } from "../../src/artifacts/types.js";
 import {
+  admitRawJson,
   contentHash,
   listingAddress,
   stripSignature,
@@ -108,6 +110,8 @@ async function normativeListingFixture(options: {
   signer?: typeof SELLER.privateKey;
   primaryClaim?: string;
   additionalClaimRef?: string;
+  railParameters?: Record<string, unknown>;
+  extensions?: Record<string, unknown>;
 } = {}): Promise<Fixture> {
   const listingId = options.listingId ?? "normative-market-data";
   const version = options.version ?? 1;
@@ -162,9 +166,13 @@ async function normativeListingFixture(options: {
       { kind: "deliver-attested-payload" },
     ],
     pricing: { kind: "fixed", price: { amount: "1", currency: "USDC" } },
-    acceptedRails: [{ railId: "x402:default" }],
+    acceptedRails: [{
+      railId: "x402:default",
+      ...(options.railParameters ? { parameters: options.railParameters } : {}),
+    }],
     terms: { deadlineSecAfterCommit: 3_600 },
     validity: { notBefore: 1_700_000_000_000 },
+    ...options.extensions,
   };
   const record = await signComponentArtifact(
     draft,
@@ -202,10 +210,11 @@ function depsFor(
     fixtures.map((fixture) => [fixture.nativeAddress, fixture.record]),
   );
   return {
+    executionMode: "simulation",
     index: createInMemoryBindingIndex(
       fixtures.map((fixture) => fixture.binding),
     ),
-    readAnchor: async (nativeAddress) => records.get(nativeAddress) ?? null,
+    readAnchor: async (nativeAddress) => fixtureListingRead(records.get(nativeAddress) ?? null),
     verify,
     ...over,
   };
@@ -215,6 +224,7 @@ function normativeValidationDeps(
   primaryClaim = SELLER.did,
 ): ListingValidationDeps {
   return {
+    executionMode: "simulation",
     nowMs: () => 1_780_000_000_000,
     verifyListingSignature: ({ signedBytes, signature }) =>
       signature.signer === primaryClaim &&
@@ -253,6 +263,50 @@ function normativeValidationDeps(
 }
 
 describe("readListingByLogicalAddress (#54)", () => {
+  test("authenticates admitted negative-zero rail parameters and retains unknown signed fields", async () => {
+    const fixture = await normativeListingFixture({
+      railParameters: { floor: 0 },
+      extensions: { futureOptionalMetadata: { floor: 0, label: "retained" } },
+    });
+    const zero = fixture.record;
+    const text = JSON.stringify(zero).replaceAll('"floor":0', '"floor":-0.0');
+    expect(text).toContain('"floor":-0.0');
+    const admitted = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    fixture.record = admitted;
+    const rails = admitted.acceptedRails as Array<{ parameters: { floor: number } }>;
+    expect(Object.is(rails[0]!.parameters.floor, -0)).toBe(true);
+    const result = await readListingByLogicalAddress(fixture.logicalAddress, depsFor([fixture], {
+      listingValidationDeps: normativeValidationDeps(),
+    }));
+    expect(result).toMatchObject({
+      status: "verified",
+      contentHash: contentHash(zero),
+      listingPin: { contentHash: contentHash(zero) },
+      listing: {
+        acceptedRails: [{ parameters: { floor: 0 } }],
+        futureOptionalMetadata: { floor: 0, label: "retained" },
+      },
+    });
+    if (result.status !== "verified") throw new Error("expected verified Listing");
+    expect(Object.is(result.listing.acceptedRails![0]!.parameters!.floor, 0)).toBe(true);
+    expect(Object.is(rails[0]!.parameters.floor, -0)).toBe(true);
+
+    const tampered = structuredClone(admitted);
+    (tampered.futureOptionalMetadata as { floor: number }).floor = 1;
+    const changed = { ...fixture, record: tampered };
+    await expect(readListingByLogicalAddress(changed.logicalAddress, depsFor([changed], {
+      listingValidationDeps: normativeValidationDeps(),
+    }))).resolves.toMatchObject({ status: "rejected", code: "content-hash-mismatch" });
+    changed.binding = { ...changed.binding, contentHash: contentHash(tampered) };
+    await expect(readListingByLogicalAddress(changed.logicalAddress, depsFor([changed], {
+      listingValidationDeps: normativeValidationDeps(),
+    }))).resolves.toMatchObject({
+      status: "rejected",
+      code: "listing-validation-failed",
+      validation: { disposition: "rejected", step: 4 },
+    });
+  });
+
   test("authenticates a normative component-signed Listing", async () => {
     const fixture = await normativeListingFixture();
     await expect(
@@ -362,6 +416,36 @@ describe("readListingByLogicalAddress (#54)", () => {
       code: "unsupported-listing-shape",
       reason: expect.stringContaining("non-canonical CORE B.1 CF-2"),
     });
+  });
+
+  // CORE CF-1: verifiers apply values-only NFC before hashing, and the CF-2
+  // shape checks read that same owned snapshot, so an NFD spelling of a
+  // canonical ClaimReference reads exactly like its NFC spelling.
+  test("checks ClaimReferences on the NFC-normalised anchored snapshot", async () => {
+    const nfc = "cci-ud:café";
+    const nfd = nfc.normalize("NFD");
+    expect(nfd).not.toBe(nfc);
+    const fixture = await normativeListingFixture({ additionalClaimRef: nfc });
+    const deps = (record: Record<string, unknown>) =>
+      depsFor([{ ...fixture, record }], {
+        listingValidationDeps: normativeValidationDeps(),
+      });
+    const expected = await readListingByLogicalAddress(
+      fixture.logicalAddress,
+      deps(fixture.record),
+    );
+    expect(expected).toMatchObject({
+      status: "verified",
+      contentHash: fixture.binding.contentHash,
+    });
+
+    const text = JSON.stringify(fixture.record);
+    const decomposed = JSON.parse(text.replaceAll(nfc, nfd)) as Record<string, unknown>;
+    expect(JSON.stringify(decomposed).split(nfd)).toHaveLength(3);
+    expect(contentHash(decomposed)).toBe(fixture.binding.contentHash);
+    await expect(
+      readListingByLogicalAddress(fixture.logicalAddress, deps(decomposed)),
+    ).resolves.toEqual(expected);
   });
 
   test("fails indeterminate when normative ordered-validation policy is absent", async () => {

@@ -129,6 +129,7 @@ describe("native DEM payment crash fixture", () => {
       },
     };
     const bootstrap = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-bootstrap",
       operations: { agreement: success },
@@ -143,6 +144,7 @@ describe("native DEM payment crash fixture", () => {
     }
 
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database,
       workerId: "buyer-payment-before-kill",
@@ -154,6 +156,7 @@ describe("native DEM payment crash fixture", () => {
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-before-kill",
       operations: { payment },

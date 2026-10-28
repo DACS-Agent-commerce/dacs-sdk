@@ -255,6 +255,7 @@ describe("fixed-price offline coordinator", () => {
       operations: { agreement: offlineOperation },
     });
     const live = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 2_000 }),
       workerId: "live-worker",
       operations: { agreement: liveOperation },
@@ -365,6 +366,7 @@ describe("fixed-price offline coordinator", () => {
     expect(fixedPriceX402OrderViolation(record)).toMatch(/x402 protocol/);
 
     const liveOverOffline = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: offlineStore as unknown as FixedPriceX402CoordinatorStore,
       workerId: "unsafe-live-worker",
       operations: {},

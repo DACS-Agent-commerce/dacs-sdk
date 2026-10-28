@@ -1,3 +1,4 @@
+import { discoverFixtureListings as discoverListings } from "../fixtures/receivedListing.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5,9 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  authenticateReadableListingArtifact,
-  discoverListings,
-  verifyReadableListingArtifact,
+  authenticateReadableListingArtifact as authenticateBytes,
+  verifyReadableListingArtifact as verifyBytes,
 } from "../../src/agent/discover.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -23,6 +23,7 @@ import {
   readListingArtifact,
 } from "../../src/artifacts/validators.js";
 import {
+  admitRawJson,
   canonicalize,
   contentHash,
   sha256Hex,
@@ -54,6 +55,11 @@ const VECTOR = JSON.parse(readFileSync(VECTOR_PATH, "utf8")) as {
   };
 };
 
+const localBytes = (value: Record<string, unknown> | Uint8Array) =>
+  value instanceof Uint8Array ? value : Buffer.from(JSON.stringify(value));
+const verifyReadableListingArtifact: typeof verifyBytes = (raw, deps) => verifyBytes(localBytes(raw), deps);
+const authenticateReadableListingArtifact: typeof authenticateBytes = (raw, deps) => authenticateBytes(localBytes(raw), deps);
+
 const fixture = (): Listing =>
   structuredClone(VECTOR.fixtures["listing-with-inert-extension"].listing);
 
@@ -67,8 +73,10 @@ const verifiedAdmissionFor = (listing: Listing) => {
   }
   return {
     disposition: "verified" as const,
+    executionMode: "simulation" as const,
     step: 9 as const,
     reason: "verified",
+    receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
     listing,
     listingContentHash: contentHash(
       listing as unknown as Record<string, unknown>,
@@ -90,6 +98,18 @@ const verify = (bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) =>
   ed25519Verify(bytes, signature, publicKeyFromRaw(key));
 
 describe("normative DACS-1 §6.3.4 Listing", () => {
+  it.each([
+    "commit-identity-bound-agreement",
+    "commit-identity-bound-payee-agreement",
+  ])("refuses the unsupported Standard phase %s", (kind) => {
+    const listing = fixture();
+    listing.pipeline[0] = { kind } as never;
+    expect(isListing(listing)).toBe(false);
+    expect(isListingDraft(listing)).toBe(false);
+    // The reader envelope preserves the discriminator for ordered step-7 refusal.
+    expect(isListingEnvelope(listing)).toBe(true);
+  });
+
   it("accepts and verifies the pinned Standard SIG-5 Listing vector", async () => {
     const listing = fixture();
     const signer = listing.signature.signer;
@@ -124,7 +144,7 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
 
     const found = await discoverListings(
       ["stor:listing"],
-      async () => listing as unknown as Record<string, unknown>,
+      async () => Buffer.from(JSON.stringify(listing)),
       {
         verify: async (bytes, signature, key) => {
           const valid = verify(bytes, signature, key);
@@ -271,6 +291,72 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     ).resolves.toMatchObject({ compatibility: "normative" });
   });
 
+  it("verifies a received Listing whose admitted bytes spell signed zeros as negative zero", async () => {
+    const signerSeed = Uint8Array.from(Buffer.alloc(32, 44));
+    const signerKey = rawPublicKey(publicKeyFromSeed(signerSeed));
+    const signer = `did:demos:agent:${Buffer.from(signerKey).toString("hex")}`;
+    const draft = stripSignature(
+      fixture() as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft & {
+      futureOptionalMetadata: Record<string, unknown>;
+    };
+    draft.seller.identity = {
+      bundleVersion: "1",
+      presentedBy: signer,
+      presentedAt: draft.seller.identity.presentedAt,
+      claims: [{ ref: signer }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: signer, signature: "signer-presentation" }],
+      },
+    };
+    draft.validity.notBefore = 0;
+    draft.futureOptionalMetadata["weights"] = [0, { floor: 0 }];
+    draft.acceptedRails = [{ railId: "x402:default", parameters: { zero: 0, nested: [0] } }];
+    const signed = await signComponentArtifact(
+      draft,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        algorithm: "ed25519",
+        signer,
+        sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(signerSeed)),
+      },
+    );
+    expect(isListing(signed)).toBe(true);
+
+    // CORE §B.2 / CF-5: -0 is in-profile and serialises as 0, so these are
+    // the same signed bytes on the wire as far as JCS is concerned.
+    const text = JSON.stringify(signed)
+      .replace(/"notBefore":0(?=[,}])/, '"notBefore":-0.0')
+      .replace('"weights":[0,{"floor":0}]', '"weights":[-0,{"floor":-0e2}]')
+      .replace('"zero":0', '"zero":-0.0');
+    const received = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    expect(
+      Object.is((received["validity"] as { notBefore: number }).notBefore, -0),
+    ).toBe(true);
+    expect(text).toContain('"weights":[-0,{"floor":-0e2}]');
+    expect(canonicalize(received)).toBe(canonicalize(signed));
+    expect(contentHash(received)).toBe(
+      contentHash(signed as unknown as Record<string, unknown>),
+    );
+    expect(readListingArtifact(received)).toMatchObject({
+      compatibility: "normative",
+    });
+
+    expect(isListing(received)).toBe(true);
+    const verified = await verifyBytes(Buffer.from(text), {
+      verify,
+      nowMs: () => 1_790_000_000_000,
+      resolvePublicKey: (claim) => (claim === signer ? signerKey : null),
+    });
+    expect(verified).toMatchObject({ compatibility: "normative" });
+    if (verified?.compatibility !== "normative") {
+      throw new Error("expected normative Listing");
+    }
+    expect(Object.is(verified.listing.validity.notBefore, 0)).toBe(true);
+    expect(verified.listing).toEqual(signed);
+  });
+
   it("preserves an inert unknown field in the signed scope", async () => {
     const listing = fixture() as Listing & {
       futureOptionalMetadata: { displayTier: string };
@@ -293,6 +379,39 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
         },
       ),
     ).resolves.toBeNull(); // mutation breaks the original signature.
+  });
+
+  it("binds a top-level signatures extension to the Listing signature", async () => {
+    const listing = fixture();
+    const amended = {
+      ...listing,
+      signatures: [{ appended: true }],
+    } as unknown as Record<string, unknown>;
+    expect(contentHash(amended)).not.toBe(
+      VECTOR.fixtures["listing-with-inert-extension"].artifactHash,
+    );
+    expect(isListingEnvelope(amended)).toBe(true);
+    expect(isListing(amended)).toBe(true);
+    expect(readListingArtifact(amended)).toMatchObject({ compatibility: "normative" });
+    await expect(
+      verifyReadableListingArtifact(amended, {
+        verify,
+        nowMs: () => 1_790_000_000_000,
+        resolvePublicKey: (claim) => {
+          const encoded = VECTOR.publicKeys[claim];
+          return encoded
+            ? Uint8Array.from(Buffer.from(encoded, "base64url"))
+            : null;
+        },
+      }),
+    ).resolves.toBeNull();
+
+    const { signature: _signature, ...draft } = listing;
+    expect(isListingDraft(draft)).toBe(true);
+    expect(isListingDraft({ ...draft, signatures: [] })).toBe(true);
+    // A signed Listing is not a draft, and a draft names a supported version.
+    expect(isListingDraft(listing)).toBe(false);
+    expect(isListingDraft({ ...draft, dacsVersion: "2" })).toBe(false);
   });
 
   it("fails closed on the Standard vector with an unknown phase kind", () => {
@@ -474,6 +593,30 @@ describe("explicit legacy Listing read compatibility", () => {
     expect(
       readListingArtifact({ ...legacy, signature: "legacy-hex-signature" }),
     ).toMatchObject({ compatibility: "legacy-mvp", listing: legacy });
+  });
+
+  it("reads a received legacy artifact carrying negative zero instead of throwing", () => {
+    const signedText = JSON.stringify({ ...legacy, signature: "legacy-hex-signature" });
+    const zero = signedText.replace(/}$/, ',"metadata":{"floor":0,"weights":[0]}}');
+    const negativeZero = signedText.replace(
+      /}$/,
+      ',"metadata":{"floor":-0.0,"weights":[-0]}}',
+    );
+    const received = admitRawJson(Buffer.from(negativeZero, "utf8"));
+
+    const read = readListingArtifact(received);
+    expect(read).toEqual(
+      readListingArtifact(admitRawJson(Buffer.from(zero, "utf8"))),
+    );
+    expect(read).toMatchObject({
+      compatibility: "legacy-mvp",
+      listing: { ...legacy, metadata: { floor: 0, weights: [0] } },
+    });
+    const metadata = (read!.listing as unknown as {
+      metadata: { floor: number; weights: number[] };
+    }).metadata;
+    expect(Object.is(metadata.floor, 0)).toBe(true);
+    expect(Object.is(metadata.weights[0], 0)).toBe(true);
   });
 
   it("rejects the legacy shape as a new Listing draft", () => {

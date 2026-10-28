@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "8c3a5501cd269cf48231440ff2dd89c55ba1e418"
+        "blob": "c6b6cae12ee720b2c0c6367b39fbfdcc8a61a77b"
       },
       "DELTA-LEDGER.json": {
-        "blob": "b8370ecd6df33d067afad1a854e537f44bdd11c2"
+        "blob": "354f3f9f71dcce498b29545d6527b84cd3d9d05a"
       },
       "DELTA-MAP.md": {
-        "blob": "8928aef89739b6f329b3389b0fc82f3ef1e5aa9e"
+        "blob": "acde59d7693822e94aed44adb6b609263b4c316f"
       },
       "DELTA-NOTES.md": {
-        "blob": "52a6675c64fe0e74bdc38dc153e4fbef49415cf5"
+        "blob": "edcbfd510608bbaa8f4074f1a3ee26c20e9538c8"
       },
       "HOLD.json": {
         "control": "record"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "1e57521dcb491945b1d493153091614e1ddc7427"
+        "blob": "6ebb6c7fa809b9d49d78164c18aabb9046231ffa"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1172,7 +1172,7 @@
         "blob": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
       },
       "src/dacs/verification.mjs": {
-        "blob": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5"
+        "blob": "d1c19925caa67106e837be7a6b3d3ddf8b72d292"
       },
       "src/dacs/wallet-transactions.mjs": {
         "blob": "85118d1b56e0695da13499e8878abe27af8254bb"
@@ -1562,7 +1562,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/ingress-admission.test.mjs": {
-        "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
+        "blob": "049f2c4639602e72e349361da1d24c828cbdb365"
       },
       "test/native-adapter-auth.test.mjs": {
         "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
@@ -1595,7 +1595,7 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/sweep-contracts.test.mjs": {
-        "blob": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
+        "blob": "42b77ee928db87007ecdba9f71e2a6facf85f077"
       }
     },
     "plannedRepins": {

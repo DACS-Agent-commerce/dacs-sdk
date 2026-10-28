@@ -34,9 +34,9 @@ const load = (rel: string) => JSON.parse(readFileSync(join(VENDOR, rel), "utf8")
 
 /** §10.4.1 signed scope: canonical form omitting signatures + anchoredByRole. */
 function bundleHash(fixture: Record<string, unknown>): string {
-  const scope = { ...stripSignature(fixture) };
+  const scope = { ...stripSignature(fixture, "signatures") };
   delete (scope as Record<string, unknown>)["anchoredByRole"];
-  return contentHash(scope);
+  return contentHash(scope, "signatures");
 }
 
 const verify = (b: Uint8Array, s: Uint8Array, p: Uint8Array) =>

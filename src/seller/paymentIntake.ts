@@ -1,4 +1,6 @@
+import { types as nodeTypes } from "node:util";
 import { randomBytes } from "node:crypto";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import type {
   ComponentSignatureAlgorithm,
@@ -26,6 +28,8 @@ import {
 } from "../rails/payDem.js";
 import {
   isVerifiedListingAdmission,
+  getListingReaderProvenance,
+  sameListingReaderResult,
   type ListingValidationResult,
 } from "../agent/listingValidation.js";
 import {
@@ -184,6 +188,9 @@ export interface SellerPayloadVerificationProducerAdmission {
  */
 export interface SellerListingAtCommitResolution {
   rawListing: Record<string, unknown>;
+  /** Original ordered-reader result object. Restored checkpoints must re-admit
+   * their original bytes using trusted historical validation dependencies; a
+   * serialized copy or base64 rendering alone does not retain provenance. */
   validation: ListingValidationResult;
   payloadVerificationProducerAdmission?: SellerPayloadVerificationProducerAdmission;
 }
@@ -528,7 +535,7 @@ export type X402SettlementChainClassification =
  * snapshot. Security-bearing outputs MUST be cloneable plain data; the SDK
  * snapshots them before reading a discriminator or field.
  */
-export interface SellerPaymentIntakeDeps {
+export interface SellerPaymentIntakeDeps extends ProfileExecutionPolicy {
   /**
    * Trusted CA-7 boundary. A `verified` result MUST mean that the finalized
    * commitment and both Agreement party signatures have been cryptographically
@@ -2264,6 +2271,7 @@ export async function verifySellerPaymentIntake(
   input: SellerPaymentIntakeInput,
   deps: SellerPaymentIntakeDeps,
 ): Promise<SellerPaymentIntakeResult> {
+  requireAdmissibleProfile(deps);
   // Own the complete public request before its first property read. The caller
   // may retain and mutate its object while any dependency below is awaited.
   const request = snapshotPaymentIntakeInput(input);
@@ -2325,7 +2333,7 @@ export async function verifySellerPaymentIntake(
   const agreementArtifact = committed.agreement;
   const agreement = parseAgreement(committed.agreement);
   if (!agreement) return reject("unsupported-or-malformed-agreement");
-  const computedAgreementHash = contentHash(committed.agreement);
+  const computedAgreementHash = contentHash(committed.agreement, "signatures");
   if (
     agreement.jobId !== request.jobId ||
     committed.agreementHash !== computedAgreementHash ||
@@ -2342,9 +2350,18 @@ export async function verifySellerPaymentIntake(
     committed.commitment.committedAt > agreement.terms.deadline
   ) return reject("commitment-agreement-mismatch");
 
+  let listingProvenance: ListingValidationResult | null = null;
   const listingCall = await callSecurityBoundaryWithInput(
     agreement.listingRef,
-    (listingRef) => resolveListingAtCommit.call(deps, listingRef),
+    async (listingRef) => {
+      const resolved = await resolveListingAtCommit.call(deps, listingRef);
+      // Inspect only a data descriptor: hostile resolver views must not run code.
+      const descriptor = resolved && typeof resolved === "object" && !nodeTypes.isProxy(resolved)
+        ? Object.getOwnPropertyDescriptor(resolved, "validation") : undefined;
+      listingProvenance = descriptor && "value" in descriptor
+        ? getListingReaderProvenance(descriptor.value) : null;
+      return resolved;
+    },
   );
   if (listingCall.status === "threw") {
     return indeterminate("listing-resolution-unavailable");
@@ -2371,7 +2388,8 @@ export async function verifySellerPaymentIntake(
       ? indeterminate(`listing-${listingResult.reason}`)
       : reject(`listing-${listingResult.reason}`);
   }
-  if (!isVerifiedListingAdmission(listingAtCommit.rawListing, listingResult) ||
+  if (listingProvenance === null || !sameListingReaderResult(listingResult, listingProvenance) ||
+      !isVerifiedListingAdmission(listingAtCommit.rawListing, listingResult) ||
       listingResult.listingContentHash !== agreement.listingRef.contentHash) {
     return reject("listing-at-commit-admission-mismatch");
   }

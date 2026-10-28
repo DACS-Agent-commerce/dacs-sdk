@@ -1,7 +1,10 @@
-import { describe, expect, test } from "vitest";
+import { runFixtureSessionCore as runSessionCore } from "../fixtures/receivedListing.js";
+import { fixtureListingRead } from "../fixtures/receivedListing.js";
+import { describe, expect, test, vi } from "vitest";
+
+import { sizedListing } from "../fixtures/sizedListing.js";
 
 import {
-  runSessionCore,
   type SessionDeps,
   type SessionTerms,
 } from "../../src/agent/runSessionCore.js";
@@ -14,6 +17,7 @@ import type {
   VerificationDecision,
 } from "../../src/artifacts/types.js";
 import {
+  admitRawJson,
   canonicalize,
   contentHash,
   encodeAddressSegment,
@@ -149,7 +153,7 @@ const authenticateClaimedVetFinality: NonNullable<
 > = async ({ claimed }) => claimed ? structuredClone(claimed) : null;
 
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
-  return {
+  const deps: SessionDeps = {
     buyerId: BUYER_ID,
     buyerIdentityBundle: BUYER_IDENTITY,
     authenticateBuyerIdentityBundle: () => true,
@@ -175,6 +179,9 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     validateListing: (raw) => verifiedAdmissionFor(raw as unknown as Listing),
     ...overrides,
   };
+  const read = deps.readListing;
+  deps.readListing = async (ref) => fixtureListingRead(await read(ref));
+  return deps;
 }
 
 function normativeDpaListing(): Listing {
@@ -243,8 +250,10 @@ function verifiedAdmissionFor(listing: Listing) {
   }
   return {
     disposition: "verified" as const,
+    executionMode: "simulation" as const,
     step: 9 as const,
     reason: "verified",
+    receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
     listing,
     listingContentHash: contentHash(
       listing as unknown as Record<string, unknown>,
@@ -583,6 +592,76 @@ describe("runSession orchestration (T4)", () => {
     // The reduced Agreement is anchored first; the invalid component signature
     // is rejected before SettlementEvidence or bundle publication.
     expect(anchors).toBe(1);
+  });
+
+  test("starts from a stored Listing whose admitted bytes spell zero as negative zero", async () => {
+    const normative = {
+      ...normativeDpaListing(),
+      futureOptionalMetadata: { floor: 0, weights: [0] },
+    } as Listing;
+    const text = JSON.stringify(normative).replace(
+      '"futureOptionalMetadata":{"floor":0,"weights":[0]}',
+      '"futureOptionalMetadata":{"floor":-0.0,"weights":[-0]}',
+    );
+    expect(text).toContain('"floor":-0.0');
+    const stored = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    expect(
+      Object.is((stored.futureOptionalMetadata as { floor: number }).floor, -0),
+    ).toBe(true);
+    const res = await runSessionCore(
+      "stor-normative-v7",
+      {
+        ...TERMS,
+        price: { ...TERMS.price, rail: "x402:default" },
+      },
+      makeDeps({
+        readListing: async () => stored,
+        validateListing: () => verifiedAdmissionFor(normative),
+        settle: async () => ({
+          ok: true,
+          txHash: "0xabc",
+          chainId: "eip155:8453",
+          payer: "0xbob",
+          payee: "0xalice",
+        }),
+      }),
+    );
+    expect(res).toMatchObject({ outcome: "completed" });
+    expect(res.listingPin).toEqual({
+      listingId: "market-data-vendor",
+      version: 7,
+      contentHash: contentHash(normative as unknown as Record<string, unknown>),
+    });
+  });
+
+  test.each([16_384, 16_385])("gates new sessions at %i canonical Listing bytes before effects", async (bytes) => {
+    const listing = sizedListing(normativeDpaListing(), bytes);
+    expect(Buffer.byteLength(canonicalize(listing), "utf8")).toBe(bytes);
+    const deps = makeDeps({ readListing: async () => listing });
+    const sign = vi.fn(deps.sign);
+    const anchor = vi.fn(deps.anchor);
+    const settle = vi.fn(deps.settle);
+    const newJobId = vi.fn(deps.newJobId);
+    const validateListing = vi.fn(deps.validateListing);
+    const session = runSessionCore("stor-sized-listing", {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    }, { ...deps, sign, anchor, settle, newJobId, validateListing });
+    if (bytes === 16_384) {
+      await expect(session).resolves.toMatchObject({
+        outcome: "completed",
+        listingPin: { contentHash: contentHash(listing as unknown as Record<string, unknown>) },
+      });
+      expect(validateListing).toHaveBeenCalledOnce();
+      expect(settle).toHaveBeenCalledOnce();
+    } else {
+      await expect(session).rejects.toThrow("listing not found or invalid at stor-sized-listing");
+      expect(validateListing).not.toHaveBeenCalled();
+      expect(sign).not.toHaveBeenCalled();
+      expect(anchor).not.toHaveBeenCalled();
+      expect(settle).not.toHaveBeenCalled();
+      expect(newJobId).not.toHaveBeenCalled();
+    }
   });
 
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {

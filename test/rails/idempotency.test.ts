@@ -696,14 +696,14 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
   test("direct EVM bridge rejects a destination mismatch before transfer", async () => {
     const rail = countingRail();
     expect(() =>
-      evmErc20Settle(rail, cfg)({ ...req, expectedPayee: "0xother" }),
+      evmErc20Settle(rail, cfg, { executionMode: "simulation" })({ ...req, expectedPayee: "0xother" }),
     ).toThrow(/destination mismatch/);
     expect(rail.transferCalls).toBe(0);
   });
 
   test("SAFE BY DEFAULT: twice with the same request → one transfer (no opt-in store needed)", async () => {
     const rail = countingRail();
-    const settle = evmErc20Settle(rail, cfg); // no store supplied — default is safe
+    const settle = evmErc20Settle(rail, cfg, { executionMode: "simulation" }); // no store supplied — default is safe
     const a = await settle(req);
     const b = await settle(req);
     expect(rail.transferCalls).toBe(1); // the bug (2 transfers) is gone by default
@@ -714,8 +714,8 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     const rail = countingRail();
     const store = createIdempotencyStore(createInMemorySettlementLog());
     // Two SEPARATE bridge instances sharing one durable store (a fresh-process resume).
-    await evmErc20Settle(rail, cfg, { store })(req);
-    const b = await evmErc20Settle(rail, cfg, { store })(req);
+    await evmErc20Settle(rail, cfg, { executionMode: "simulation", store })(req);
+    const b = await evmErc20Settle(rail, cfg, { executionMode: "simulation", store })(req);
     expect(rail.transferCalls).toBe(1);
     expect(b.txHash).toBe("0x1");
   });

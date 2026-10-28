@@ -139,7 +139,6 @@ function isExactJsonValue(
   if (typeof value === "string") return isSafeJsonString(value);
   if (typeof value === "number") {
     return Number.isFinite(value) &&
-      !Object.is(value, -0) &&
       Math.abs(value) <= Number.MAX_SAFE_INTEGER;
   }
   if (
@@ -185,7 +184,7 @@ function isExactJsonValue(
   }
 }
 
-/** Exact canonical JSON object tree used by signed generic data/parameter fields. */
+/** Exact JSON data tree in the received CF-5 number domain; JCS maps -0 to 0. */
 export function isExactJsonRecord(
   value: unknown,
 ): value is Record<string, unknown> {
@@ -219,7 +218,6 @@ const isIdentityBundleHash = (v: unknown): v is string =>
 const hasValidOptionalComponentSignature = (
   v: Record<string, unknown>,
 ): boolean =>
-  !Object.prototype.hasOwnProperty.call(v, "signatures") &&
   (!Object.prototype.hasOwnProperty.call(v, "signature") ||
     isComponentSignature(v.signature));
 
@@ -242,6 +240,8 @@ const BUNDLE_PHASE_ERROR_CLASSES = [
   "substrate",
   "settlement-atomicity",
 ] as const;
+// SDK-supported subset of DACS-1 §6.3. In particular, the two identity-bound
+// commitment kinds must remain unsupported until their semantics are implemented.
 const PHASE_TYPES = [
   "vet-credentials",
   "negotiate-fixed-price",
@@ -920,7 +920,11 @@ function isListingBody(
 
 /** Unsigned DACS-1 §6.3.4 publication input; legacy shapes are refused. */
 export function isListingDraft(v: unknown): v is ListingDraft {
-  return isObj(v) && !("signature" in v) && isListingBody(v, true, true);
+  return (
+    isObj(v) &&
+    !("signature" in v) &&
+    isListingBody(v, true, true)
+  );
 }
 
 /**
@@ -1531,7 +1535,6 @@ export function isReadableFinalityCommitmentRecord(
     isObj(v) &&
     v.finalityCommitmentVersion === "1" &&
     !Object.prototype.hasOwnProperty.call(v, "dacsVersion") &&
-    !Object.prototype.hasOwnProperty.call(v, "signatures") &&
     hasCommitmentCommon(v) &&
     isSafeUint(v.createdAt) &&
     isComponentSignature(v.signature) &&
@@ -1879,7 +1882,6 @@ export function faultedPartyIsPermitted(bundle: Record<string, unknown>): boolea
 
 export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
   if (!isObj(v)) return false;
-  if (Object.prototype.hasOwnProperty.call(v, "signatures")) return false;
   // CORE §B.7 SIG-5: unknown artifact-level fields are retained in the signed
   // scope and do not alone invalidate a known version. Variant-owned fields
   // below are still checked conditionally and nested oneOf shapes stay exact.

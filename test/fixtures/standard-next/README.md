@@ -48,7 +48,19 @@ update this provenance note.
 
 `raw-json-profile-v0.1.json` is copied byte-for-byte from
 DACS-Standard `b80919cd7b114499ffc3d9b5c2f3f91ca7fab3f6`, path
-`conformance/vectors/security/raw-json-profile-v0.1.json`.
-`test/canonical/rawJson.test.ts` checks its 59 admission results, error stages
-and codes, and canonical bytes. This targeted candidate corpus does not update
-the SDK-wide Standard pin or establish current-profile adoption.
+`conformance/vectors/security/raw-json-profile-v0.1.json`, file SHA-256
+`acb6b5e374adc827bf855b20e638a5c6e2f12ab87cba2bef5b574bb34bf45ccb`.
+`test/canonical/rawJson.test.ts` pins that digest and the corpus `hash`, and
+checks its 59 admission results, error stages and codes, and canonical bytes.
+This targeted candidate corpus does not update the SDK-wide Standard pin or
+establish current-profile adoption.
+
+## Canonical JSON candidate
+
+`canonical-json-v0.1.json` is copied byte-for-byte from DACS-Standard
+`4df6294b8d1cfc047af456d3d5ce84cd9b3b9983`, path
+`conformance/vectors/security/canonical-json-v0.1.json`, file SHA-256
+`1e355678b6feddc5dc54611eb0f61e12b9707a1506a3da9e4f679ab9f796c941`.
+`test/canonical/canonicalJsonVectors.test.ts` pins that digest and checks its
+25 outcomes; `test/canonical/negativeZero.test.ts` also reads its
+`negative-zero` vector.

@@ -1,3 +1,4 @@
+import { validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +25,8 @@ import {
   SIGNATURE_DOMAIN_SEPARATORS,
   dacsXSeparator,
   ed25519Verify,
+  ed25519Sign,
+  privateKeyFromSeed,
   isRegisteredSeparator,
   publicKeyFromRaw,
   publicKeyFromSeed,
@@ -53,7 +56,6 @@ import {
   vetPhaseFailureClass,
 } from "../../src/agent/vetSemantics.js";
 import {
-  validateListingArtifact,
   type ListingValidationDeps,
 } from "../../src/agent/listingValidation.js";
 import {
@@ -2290,10 +2292,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         signatures: [{
           party: "did:demos:seller",
           algorithm: "ed25519",
-          value: Buffer.from(signArtifact(
-            "dacs-bundle:v1:",
-            scope,
-            hex(golden.verify.seeds.seller!),
+          value: Buffer.from(ed25519Sign(
+            signedBytes("dacs-bundle:v1:", attestationBundleHash(original as unknown as AnyAttestationBundle)),
+            privateKeyFromSeed(hex(golden.verify.seeds.seller!)),
           )).toString("base64url"),
         }],
       };

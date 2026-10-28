@@ -1,3 +1,4 @@
+import { captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
@@ -70,11 +71,12 @@ export type X402BuyerSettlementPreparation =
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
 export interface X402BuyerPaidRequestTransportOptions {
-  /** Explicit trusted custom/test capability. Production callers should omit. */
+  /** Injected local simulation transport; requires insecure-test policy. */
   fetchImpl?: typeof fetch;
   /** Captured once; payment and legacy payment headers are forbidden. */
   headers?: X402BuyerHeaderInit;
   transportPolicy?: Readonly<X402OutboundTransportPolicy>;
+  /** Complete injected local alternative to fetchImpl for simulations. */
   publicHttpsDependencies?: Readonly<DacsPublicHttpsDependenciesV1>;
 }
 
@@ -342,7 +344,9 @@ function challengeBody(bytes: Uint8Array): unknown {
 export async function prepareX402BuyerSettlement(
   input: Readonly<PrepareX402BuyerSettlementInput>,
   deps: Readonly<PrepareX402BuyerSettlementDeps>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<X402BuyerSettlementPreparation> {
+  requireAdmissibleProfile(policy);
   let rawAuthority: unknown;
   let rawChallengeHeaders: unknown;
   try {
@@ -509,11 +513,15 @@ export async function prepareX402BuyerSettlement(
  * only the retained bearer credential plus an optional caller `Accept` header
  * and the safe transport's own representation/user-agent headers. It refuses
  * redirects and treats the response header as a candidate until the independent
- * authorization provider authenticates the chain event.
+ * authorization provider authenticates the chain event. Simulation requires
+ * an injected local transport and never selects the SDK's production defaults.
  */
 export function createX402BuyerPaidRequestTransport(
   options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
+  policy: ProfileExecutionPolicy = {},
 ): X402BuyerPaidRequestTransport {
+  const executionMode = captureExecutionMode(policy);
+  requireAdmissibleProfile({ executionMode });
   const fetchImpl = stableDataProperty(
     options,
     "fetchImpl",
@@ -548,6 +556,12 @@ export function createX402BuyerPaidRequestTransport(
     "headers",
     "x402 buyer paid transport headers",
   ).value as X402BuyerHeaderInit | undefined);
+  if (executionMode === "simulation" &&
+      fetchImpl === undefined && publicHttpsDependencies === undefined) {
+    throw new TypeError(
+      "x402 buyer simulation requires an injected local transport",
+    );
+  }
   const transport: X402BuyerPaidRequestTransport = {
     async submitRetained(
       intent: Readonly<X402BuyerSettlementIntent>,
@@ -623,8 +637,11 @@ export function createX402BuyerPaidRequestTransport(
  */
 export function createX402BuyerRetainedDisclosureRecovery(
   options: Readonly<X402BuyerPaidRequestTransportOptions>,
+  policy: ProfileExecutionPolicy = {},
 ): X402BuyerEvmDisclosureRecovery {
-  const transport = createX402BuyerPaidRequestTransport(options);
+  requireAdmissibleProfile(policy);
+  const executionMode = captureExecutionMode(policy);
+  const transport = createX402BuyerPaidRequestTransport(options, { executionMode });
   return async ({ intent, fence }) => {
     const result = await transport.submitRetained(intent, fence);
     return result.disposition === "response" ? result.disclosure : undefined;

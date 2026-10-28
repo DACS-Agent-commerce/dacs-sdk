@@ -4,11 +4,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildAgent,
   buildUnsafeManualAgent,
-  createAgent,
+  createUnsafeManualAgent,
+  type AgentConfig,
 } from "../../src/agent/Agent.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
 import type { AuthenticateDemosCciInput } from "../../src/identity/demosCci.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
+
+// Only the fully mocked connected-construction fixtures model a released profile.
+// The real factories' unconditional refusal is covered in profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/profile.js")>(),
+  requireAdmissibleProfile: vi.fn(),
+}));
+
+async function createConnectedFixture(config: AgentConfig) {
+  const { adapter: _manualAuthority, ...agent } = await createUnsafeManualAgent(config);
+  return agent;
+}
 
 const SENTINEL = "wallet-secret-sentinel-never-expose";
 const PRIMARY =
@@ -101,16 +114,16 @@ describe("Agent wallet-authority boundary", () => {
     vi.restoreAllMocks();
   });
 
-  it("does not expose a wallet supplied to the default connected factory", async () => {
+  it("retains wallet isolation in the mocked connected construction seam", async () => {
     vi.spyOn(Demos.prototype, "connect").mockResolvedValue(undefined as never);
     const connectWallet = vi.spyOn(Demos.prototype, "connectWallet")
       .mockResolvedValue("0xwriter" as never);
     const config = {
-      demosRpc: "https://rpc.example",
+      executionMode: "simulation" as const, demosRpc: "https://rpc.example",
       wallet: SENTINEL,
     };
 
-    const pending = createAgent(config);
+    const pending = createConnectedFixture(config);
     config.wallet = "mutated-after-start";
     const agent = await pending;
     const inspected = inspectOwnGraph(agent);
@@ -129,8 +142,8 @@ describe("Agent wallet-authority boundary", () => {
       bundle: structuredClone(BUYER_IDENTITY),
       verifyPresentation: vi.fn(() => true),
     };
-    const pending = createAgent({
-      demosRpc: "https://rpc.example",
+    const pending = createConnectedFixture({
+      executionMode: "simulation" as const, demosRpc: "https://rpc.example",
       identity,
     });
 
@@ -144,7 +157,7 @@ describe("Agent wallet-authority boundary", () => {
   it("does not reflectively expose the adapter, raw client, or wallet sentinel", () => {
     const adapter = authorityBearingAdapter();
     const agent = buildAgent(adapter, {
-      demosRpc: "https://rpc.example",
+      executionMode: "simulation" as const, demosRpc: "https://rpc.example",
       wallet: SENTINEL,
     });
 
@@ -162,7 +175,7 @@ describe("Agent wallet-authority boundary", () => {
     const adapter = authorityBearingAdapter();
     let walletReads = 0;
     let bindingReads = 0;
-    const walletConfig = { demosRpc: "mem" } as Record<string, unknown>;
+    const walletConfig = { executionMode: "simulation" as const, demosRpc: "mem" } as Record<string, unknown>;
     Object.defineProperty(walletConfig, "wallet", {
       enumerable: true,
       get() {
@@ -175,7 +188,7 @@ describe("Agent wallet-authority boundary", () => {
     );
     expect(walletReads).toBe(0);
 
-    const bindingConfig = { demosRpc: "mem" } as Record<string, unknown>;
+    const bindingConfig = { executionMode: "simulation" as const, demosRpc: "mem" } as Record<string, unknown>;
     Object.defineProperty(bindingConfig, "bindings", {
       enumerable: true,
       get() {
@@ -192,13 +205,13 @@ describe("Agent wallet-authority boundary", () => {
   it("keeps direct authority only on the explicitly unsafe/manual builder", () => {
     const adapter = authorityBearingAdapter();
     const manual = buildUnsafeManualAgent(adapter, {
-      demosRpc: "https://rpc.example",
+      executionMode: "simulation" as const, demosRpc: "https://rpc.example",
       wallet: SENTINEL,
     });
 
     expect(Object.isFrozen(manual)).toBe(true);
     expect(manual.adapter).toBe(adapter);
-    expect(Reflect.get(buildAgent(adapter, { demosRpc: "mem" }), "adapter"))
+    expect(Reflect.get(buildAgent(adapter, { executionMode: "simulation" as const, demosRpc: "mem" }), "adapter"))
       .toBeUndefined();
   });
 
@@ -240,7 +253,7 @@ describe("Agent wallet-authority boundary", () => {
     };
     const demosCci = { authenticateResolution };
     const agent = buildAgent(adapter, {
-      demosRpc: "https://rpc.example",
+      executionMode: "simulation" as const, demosRpc: "https://rpc.example",
       demosCci,
     });
     // Even a post-construction mutation of the caller-owned dependency carrier

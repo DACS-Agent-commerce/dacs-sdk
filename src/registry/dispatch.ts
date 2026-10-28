@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import { DacsError } from "../errors.js";
@@ -586,6 +587,7 @@ export async function settleFromRail(
   descriptor: AuthenticatedRailDefinition,
   opts: RailDispatchOptions,
 ): Promise<(req: SettleRequest) => Promise<SettleResult>> {
+  requireAdmissibleProfile({});
   if (!isAuthenticatedRailDefinition(descriptor)) {
     throw new DacsError(
       "settlement dispatch requires a rail returned by resolveRail (RAV-R5)",

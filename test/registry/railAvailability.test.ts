@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { contentHash } from "../../src/canonical/index.js";
+import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey, signedBytes } from "../../src/crypto/index.js";
 
 import {
   evaluateRailAvailabilitySelection,
@@ -36,6 +38,24 @@ const authority = (ctx: Record<string, unknown>): RailAvailabilityAuthority => (
 });
 
 describe("DACS-4 RAV-R1..RAV-R5 rail availability", () => {
+  it("accepts a correctly signed signatures extension and refuses its mutation", () => {
+    const vector = fixture.vectors.find((item) => item.name === "live-signed-pinned")!;
+    const seed = new Uint8Array(32).fill(43);
+    const key = rawPublicKey(publicKeyFromSeed(seed));
+    const claim = `did:demos:agent:${Buffer.from(key).toString("hex")}`;
+    const rail = structuredClone(vector.rail) as Record<string, any>;
+    rail.signatures = [{ note: "authenticated extension" }];
+    rail.signature.signer = claim;
+    const digest = contentHash(rail);
+    rail.signature.value = Buffer.from(ed25519Sign(signedBytes("dacs-rail:v1:", digest), privateKeyFromSeed(seed))).toString("base64url");
+    const trusted = { ...authority(vector.ctx), stewardClaim: claim,
+      stewardPublicKey: Buffer.from(key).toString("base64url"), pinnedRailDigest: digest };
+    expect(evaluateRailAvailabilitySelection(rail, trusted).decision).toBe("pass");
+    for (const signatures of [[], [{ note: "changed" }]]) {
+      expect(evaluateRailAvailabilitySelection({ ...rail, signatures }, trusted).decision).toBe("fail");
+    }
+  });
+
   it("replays every adopted Standard security vector", () => {
     expect(fixture.count).toBe(28);
     expect(fixture.vectors).toHaveLength(28);
@@ -57,6 +77,7 @@ describe("DACS-4 RAV-R1..RAV-R5 rail availability", () => {
       (rail: Record<string, any>) => { rail.parameters.authorization = "permit2"; },
       (rail: Record<string, any>) => { rail.governance.acceptedAt = 999; },
       (rail: Record<string, any>) => { rail.futureSignedMember = "preserved-by-SIG-5"; },
+      (rail: Record<string, any>) => { rail.signatures = [{ appended: true }]; },
     ]) {
       const rail = structuredClone(vector.rail);
       mutate(rail);
@@ -64,6 +85,11 @@ describe("DACS-4 RAV-R1..RAV-R5 rail availability", () => {
         evaluateRailAvailabilitySelection(rail, authority(vector.ctx)).decision,
       ).toBe("fail");
     }
+    const appended = structuredClone(vector.rail);
+    appended.signatures = [{ appended: true }];
+    expect(
+      evaluateRailAvailabilitySelection(appended, authority(vector.ctx)),
+    ).toMatchObject({ decision: "fail", reason: "signature-invalid" });
   });
 
   it("does not let discovery or counterparty hints alter authenticated selection", () => {

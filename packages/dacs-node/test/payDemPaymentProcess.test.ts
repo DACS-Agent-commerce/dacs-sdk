@@ -246,6 +246,7 @@ describe("native DEM process recovery", () => {
     });
     const publishNotice = vi.fn();
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database,
       workerId: "buyer-payment-after-kill",
@@ -259,6 +260,7 @@ describe("native DEM process recovery", () => {
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-kill",
       operations: { payment },

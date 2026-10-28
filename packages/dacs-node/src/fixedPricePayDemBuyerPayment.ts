@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "@kynesyslabs/dacs";
 import {
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
@@ -80,6 +81,7 @@ function loadPlan(
 export function createDacsFixedPricePayDemBuyerPaymentV1(
   options: Readonly<DacsFixedPricePayDemBuyerPaymentOptionsV1>,
 ): Readonly<DacsFixedPricePayDemBuyerPaymentV1> {
+  requireAdmissibleProfile({});
   const context = options?.context;
   const rail = options?.rail;
   const provenance = getAuthenticatedRailProvenance(rail);
@@ -167,7 +169,7 @@ export function createDacsFixedPricePayDemBuyerPaymentV1(
             artifact.jobId !== operation.order.jobId ||
             artifact.terms.price.currency !== "DEM" ||
             agreement.agreementHash !== contentHash(
-              artifact as unknown as Record<string, unknown>,
+              artifact as unknown as Record<string, unknown>, "signatures",
             ) || commitment.agreementHash !== agreement.agreementHash ||
             context.database.readTime() > artifact.terms.deadline ||
             plan.listingRef !== application.listingRef ||

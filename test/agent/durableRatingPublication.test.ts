@@ -218,6 +218,7 @@ function repository(state = backend()): {
   return {
     state,
     repository: createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: adapter(BUYER_OWNER, state),
       index: bindings,
       publisher: bindings,

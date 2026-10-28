@@ -1,3 +1,4 @@
+import { admitFixtureListing } from "../fixtures/receivedListing.js";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -356,7 +357,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   const sellerVetRef = structuredClone(
     (agreement.parties as Array<{ vetRecordRef: AttestationRef }>)[1]!.vetRecordRef,
   );
-  const agreementHash = contentHash(agreement);
+  const agreementHash = contentHash(agreement, "signatures");
   const commitmentRef = `dacs3:commit:${JOB_ID}`;
   const commitmentContentHash = "cd".repeat(32);
   const committed: Extract<CommittedAgreementResolution, { disposition: "verified" }> = {
@@ -417,6 +418,8 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
       disposition: "verified",
       step: 9,
       reason: "verified",
+      receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
+      executionMode: "simulation",
       listing,
       listingContentHash: listingRef.contentHash,
       revocation: "absent",
@@ -425,8 +428,9 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   };
   const receiptStore = createInMemorySellerReceiptStore();
   const paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore"> = {
+    executionMode: "simulation",
     resolveCommittedAgreement: async () => committed,
-    resolveListingAtCommit: async () => listingResolution,
+    resolveListingAtCommit: async () => ({ ...listingResolution, validation: await admitFixtureListing(listing) }),
     resolveRail: async ({ railRegistryVersion }) => ({
       disposition: "verified",
       rail,
@@ -961,7 +965,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
         },
         expected: structuredClone(expected),
         ...spine,
-      });
+      }, { executionMode: "simulation" });
     },
     setObservation(value) {
       observation = structuredClone(value);

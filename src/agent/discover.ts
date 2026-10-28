@@ -1,4 +1,6 @@
 import { types as nodeTypes } from "node:util";
+import { admitRawJson, copyRawJsonBytes } from "../canonical/rawJson.js";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
@@ -22,6 +24,7 @@ import { readableListingClaimReferencesAreCanonical } from "./listingClaimRefere
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
 import {
   isVerifiedListingAdmission,
+  snapshotListingValidationResult,
   type ListingValidationResult,
 } from "./listingValidation.js";
 
@@ -50,7 +53,7 @@ import {
  * the fail-open trap this exists to close.
  */
 
-export interface DiscoverDeps {
+export interface DiscoverDeps extends ProfileExecutionPolicy {
   /** Verify a signature over raw bytes for a public key. */
   verify?: Verifier;
   /**
@@ -72,6 +75,7 @@ export interface DiscoverDeps {
    */
   validateListing?: (
     raw: Record<string, unknown>,
+    receivedBytes?: Uint8Array,
   ) => Promise<ListingValidationResult> | ListingValidationResult;
 }
 
@@ -162,6 +166,22 @@ function snapshotListingArtifact(
       !Array.isArray(snapshot)
       ? (snapshot as Record<string, unknown>)
       : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Original bytes are mandatory for normative public verification. */
+function snapshotReceivedListingArtifact(
+  input: Record<string, unknown> | Uint8Array,
+): Record<string, unknown> | null {
+  try {
+    if (nodeTypes.isUint8Array(input)) {
+      return snapshotListingArtifact(admitRawJson(copyRawJsonBytes(input)) as Record<string, unknown>);
+    }
+    const snapshot = snapshotListingArtifact(input as Record<string, unknown>);
+    return snapshot && !Object.prototype.hasOwnProperty.call(snapshot, "dacsVersion")
+      ? snapshot : null;
   } catch {
     return null;
   }
@@ -266,11 +286,11 @@ async function authenticateListingSnapshot(
 }
 
 export async function authenticateReadableListingArtifact(
-  raw: Record<string, unknown>,
+  raw: Record<string, unknown> | Uint8Array,
   deps: DiscoverDeps,
 ): Promise<ReadableListing | null> {
   const capturedDeps = captureDiscoverDeps(deps);
-  const snapshot = snapshotListingArtifact(raw);
+  const snapshot = snapshotReceivedListingArtifact(raw);
   return snapshot
     ? authenticateListingSnapshot(snapshot, capturedDeps)
     : null;
@@ -282,7 +302,7 @@ export async function authenticateReadableListingArtifact(
  * artifact before returning it.
  */
 export async function verifyReadableListingArtifact(
-  raw: Record<string, unknown>,
+  raw: Record<string, unknown> | Uint8Array,
   deps: DiscoverDeps,
 ): Promise<ReadableListing | null> {
   const capturedDeps = captureDiscoverDeps(deps);
@@ -291,7 +311,7 @@ export async function verifyReadableListingArtifact(
       "Listing verification requires deps.verify or explicit trustListings: true",
     );
   }
-  const snapshot = snapshotListingArtifact(raw);
+  const snapshot = snapshotReceivedListingArtifact(raw);
   if (!snapshot) return null;
   const readable = readListingArtifact(snapshot);
   if (!readable) return null;
@@ -313,9 +333,10 @@ export async function verifyReadableListingArtifact(
 
 export async function discoverListings(
   listingRefs: string[],
-  readAnchor: (ref: string) => Promise<Record<string, unknown> | null>,
+  readAnchor: (ref: string) => Promise<Record<string, unknown> | Uint8Array | null>,
   deps: DiscoverDeps = {},
 ): Promise<DiscoveredListing[]> {
+  requireAdmissibleProfile(deps);
   const capturedDeps = captureDiscoverDeps(deps);
   if (!capturedDeps.verify && !capturedDeps.trustListings) {
     throw new DacsError(
@@ -342,11 +363,23 @@ export async function discoverListings(
   }
   const found: DiscoveredListing[] = [];
   for (const ref of refs) {
-    const raw = await capturedReadAnchor(ref);
+    let raw = await capturedReadAnchor(ref);
     if (!raw) continue;
+    let receivedBytes: Uint8Array | undefined;
+    if (nodeTypes.isUint8Array(raw)) {
+      try {
+        receivedBytes = copyRawJsonBytes(raw);
+        raw = admitRawJson(receivedBytes) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+    }
     const snapshot = snapshotListingArtifact(raw);
     if (!snapshot) continue;
-    const readable = await verifyReadableListingArtifact(snapshot, capturedDeps);
+    if (!receivedBytes && Object.prototype.hasOwnProperty.call(snapshot, "dacsVersion")) {
+      continue;
+    }
+    const readable = await verifyReadableListingArtifact(receivedBytes ?? snapshot, capturedDeps);
     if (!readable) continue;
     if (readable.compatibility === "normative") {
       if (!capturedDeps.validateListing) {
@@ -357,11 +390,11 @@ export async function discoverListings(
       }
       let validation: ListingValidationResult;
       try {
-        const capturedValidation = snapshotCanonicalJsonRead(
+        const capturedValidation = snapshotListingValidationResult(
           await capturedDeps.validateListing(
             snapshotCanonicalJson(snapshot, "Listing validator input"),
+            receivedBytes && copyRawJsonBytes(receivedBytes),
           ),
-          "Listing validation result",
         );
         if (
           capturedValidation === null ||

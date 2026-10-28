@@ -1,3 +1,4 @@
+import { captureExecutionMode, requireAdmissibleProfile } from "../profile.js";
 import { isDeepStrictEqual } from "node:util";
 
 import type { ListingRef } from "../artifacts/types.js";
@@ -420,6 +421,7 @@ function capturePaymentDeps(
   receiptStore: SellerFulfilmentReceiptStore,
 ): SellerPaymentIntakeDeps {
   return Object.freeze({
+    executionMode: captureExecutionMode(source),
     resolveCommittedAgreement: bind(source.resolveCommittedAgreement, source),
     resolveListingAtCommit: bind(source.resolveListingAtCommit, source),
     resolveRail: bind(source.resolveRail, source),
@@ -930,6 +932,7 @@ export function createX402SellerSpine<T = unknown>(
   const authorizeSettlement = async (
     context: Readonly<X402PaywallPreSettlementContext>,
   ): Promise<X402PaywallPreSettlementAuthorization> => {
+    requireAdmissibleProfile(paymentIntakeDeps);
     if (!isRecord(context)) {
       return { disposition: "rejected", reason: "seller-session-request-invalid" };
     }
@@ -994,6 +997,7 @@ export function createX402SellerSpine<T = unknown>(
   const authorizePayment = async (
     context: Readonly<X402PaywallAuthorizationContext>,
   ) => {
+    requireAdmissibleProfile(paymentIntakeDeps);
     if (!isRecord(context)) {
       return {
         disposition: "indeterminate" as const,

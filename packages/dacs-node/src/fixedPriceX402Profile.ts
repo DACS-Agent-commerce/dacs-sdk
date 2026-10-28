@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import {
   baseUnits,
   captureFixedPriceX402ProtocolBinding,
@@ -61,6 +62,10 @@ import {
   sameCanonicalClaimIdentity,
 } from "@kynesyslabs/dacs/identity";
 
+import {
+  captureDacsHistoricalListingAdmissionV1,
+  type DacsHistoricalListingAdmissionV1,
+} from "./historicalListingAdmission.js";
 import type { DacsSellerAgreementTransportRuntimeOptionsV1 } from
   "./agreementTransportRuntime.js";
 import type {
@@ -173,11 +178,13 @@ export interface DacsFixedPriceX402SellerAdmissionRecordV1 {
   jobId: string;
   localBindingHash: string;
   admittedAt: number;
+  listingAdmission?: Readonly<DacsHistoricalListingAdmissionV1>;
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
   protocol: Readonly<FixedPriceX402OrderInput["protocol"]>;
 }
 
-export interface DacsFixedPriceX402SellerSessionPolicyOptionsV1 {
+export interface DacsFixedPriceX402SellerSessionPolicyOptionsV1 extends ProfileExecutionPolicy {
+  readAnchorBytes?(locator: string): Promise<Uint8Array | null>;
   context: Readonly<DacsLiveRoleOperationContextV1>;
   rail: Readonly<AuthenticatedRailDefinition>;
   sellerPublicEndpoint: string;
@@ -373,12 +380,18 @@ function admissionId(jobId: string): string {
 function captureAdmission(value: unknown): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
   if (!plainObject(value) || !exactKeys(value, [
     "admissionVersion", "jobId", "localBindingHash", "admittedAt", "application",
-    "protocol",
+    "protocol", ...(value.listingAdmission === undefined ? [] : ["listingAdmission"]),
   ]) || value.admissionVersion !== ADMISSION_VERSION ||
       typeof value.jobId !== "string" || typeof value.localBindingHash !== "string" ||
       !HASH_RE.test(value.localBindingHash) || !Number.isSafeInteger(value.admittedAt) ||
       Number(value.admittedAt) < 0 || !plainObject(value.protocol)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-corrupt");
+  }
+  if (value.listingAdmission !== undefined &&
+      (!plainObject(value.listingAdmission) || Object.keys(value.listingAdmission).length !== 2 ||
+       value.listingAdmission.revocation !== "absent" ||
+       typeof value.listingAdmission.receivedJsonBase64 !== "string")) {
+    throw new DacsFixedPriceX402ProfileError("historical-listing-admission-corrupt");
   }
   const application = captureDacsFixedPriceX402ApplicationV1(value.application);
   let protocol: FixedPriceX402OrderInput["protocol"];
@@ -392,6 +405,12 @@ function captureAdmission(value: unknown): Readonly<DacsFixedPriceX402SellerAdmi
     jobId: value.jobId,
     localBindingHash: value.localBindingHash,
     admittedAt: Number(value.admittedAt),
+    ...(value.listingAdmission === undefined ? {} : {
+      listingAdmission: {
+        receivedJsonBase64: value.listingAdmission.receivedJsonBase64 as string,
+        revocation: "absent",
+      },
+    }),
     application,
     protocol,
   }));
@@ -402,6 +421,7 @@ function retainAdmission(
   order: Readonly<FixedPriceX402OrderInput>,
   application: Readonly<DacsFixedPriceX402ApplicationV1>,
   admittedAt: number,
+  listingAdmission: Readonly<DacsHistoricalListingAdmissionV1>,
 ): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
   const id = admissionId(order.jobId);
   const record: DacsFixedPriceX402SellerAdmissionRecordV1 = {
@@ -409,6 +429,7 @@ function retainAdmission(
     jobId: order.jobId,
     localBindingHash: fixedPriceX402OrderLocalBindingHash(order),
     admittedAt,
+    listingAdmission,
     application,
     protocol: order.protocol,
   };
@@ -418,7 +439,8 @@ function retainAdmission(
     if (captured.jobId !== record.jobId ||
         captured.localBindingHash !== record.localBindingHash ||
         canonicalize(captured.application) !== canonicalize(record.application) ||
-        canonicalize(captured.protocol) !== canonicalize(record.protocol)) {
+        canonicalize(captured.protocol) !== canonicalize(record.protocol) ||
+        canonicalize(captured.listingAdmission ?? null) !== canonicalize(record.listingAdmission)) {
       throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-conflict");
     }
     return captured;
@@ -460,6 +482,7 @@ export function loadDacsFixedPriceX402SellerAdmissionV1(
 export function createDacsFixedPriceX402SellerSessionPolicyV1(
   options: Readonly<DacsFixedPriceX402SellerSessionPolicyOptionsV1>,
 ): Readonly<DacsFixedPriceX402SellerSessionPolicyV1> {
+  requireAdmissibleProfile(options);
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || typeof options.sellerPublicEndpoint !== "string" ||
       typeof options.sellerPayee !== "string" ||
@@ -488,6 +511,8 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
       }
       const admittedAt = options.now?.() ?? context.database.readTime();
       const resolved = await resolveDacsX402ExistingListingV1({
+        executionMode: options.executionMode,
+        readAnchorBytes: options.readAnchorBytes,
         listingRef: application.listingRef,
         sellerAuthority: context.authority,
         sellerPublicKey,
@@ -519,6 +544,10 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
             canonicalize(payload.order.protocol)) {
         throw new DacsFixedPriceX402ProfileError("fixed-price-session-listing-not-admitted");
       }
+      const listingAdmission = captureDacsHistoricalListingAdmissionV1(
+        application.listing,
+        resolved.admission.validation,
+      );
       const order = createDacsFixedPriceX402RoleOrderV1({
         role: "seller",
         jobId: payload.order.jobId,
@@ -539,6 +568,7 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
         order,
         application,
         admittedAt,
+        listingAdmission,
       );
       return Object.freeze({ order, application });
     };
@@ -786,7 +816,7 @@ function captureAgreementPublication(
       !HASH_RE.test(value.agreementHash) || !isAgreementArtifact(value.artifact) ||
       value.artifact.jobId !== value.jobId ||
       fixedPriceAgreementLogicalAddress(value.jobId) !== value.logicalAddress ||
-      contentHash(value.artifact as unknown as Record<string, unknown>) !==
+      contentHash(value.artifact as unknown as Record<string, unknown>, "signatures") !==
         value.agreementHash) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-publication-corrupt");
   }
@@ -865,7 +895,7 @@ function createAgreementAnchorProvider(
         if (!isAgreementArtifact(input.artifact) ||
             input.artifact.jobId.length === 0 ||
             fixedPriceAgreementLogicalAddress(input.artifact.jobId) !== input.logicalAddress ||
-            contentHash(input.artifact as unknown as Record<string, unknown>) !==
+            contentHash(input.artifact as unknown as Record<string, unknown>, "signatures") !==
               input.agreementHash) {
           return { disposition: "rejected" as const,
             reason: "agreement publication is malformed" };
@@ -958,7 +988,7 @@ function createAgreementAnchorProvider(
         const readback = await context.demos.adapter.readAnchor(receipt.nativeAddress);
         if (readback === null || !isAgreementArtifact(readback) ||
             canonicalize(readback) !== canonicalize(record.artifact) ||
-            contentHash(readback) !== record.agreementHash) {
+            contentHash(readback, "signatures") !== record.agreementHash) {
           return { disposition: "indeterminate" as const,
             reason: "agreement native readback is unavailable" };
         }
@@ -1053,7 +1083,7 @@ export function createDacsFixedPriceX402BuyerAgreementPolicyV1(
         operation.order.localBindingHash === retained.localBindingHash &&
         result.agreement.jobId === retained.jobId &&
         result.agreementHash === contentHash(
-          result.agreement as unknown as Record<string, unknown>,
+          result.agreement as unknown as Record<string, unknown>, "signatures",
         ) &&
         result.agreementRef.anchor.kind === "storage-program" &&
         result.agreementRef.anchor.locator === fixedPriceAgreementLogicalAddress(retained.jobId) &&
@@ -1456,7 +1486,7 @@ function paymentPreparation(
       payout[0]!.payeeAddress.toLowerCase() !==
         selected.payeeAddress.toLowerCase() ||
       agreement.agreementHash !== contentHash(
-        artifact as unknown as Record<string, unknown>,
+        artifact as unknown as Record<string, unknown>, "signatures",
       ) || commitment.agreementHash !== agreement.agreementHash ||
       commitment.commitment.record.agreementHash !== agreement.agreementHash ||
       canonicalize(commitment.commitment.record.listingRef) !==
@@ -1986,7 +2016,7 @@ function captureCommitmentResult(
   if (value.agreement.jobId !== value.jobId || commitment.recordKind !== "finality" ||
       commitment.record.jobId !== value.jobId ||
       commitment.agreementHash !== contentHash(
-        value.agreement as unknown as Record<string, unknown>,
+        value.agreement as unknown as Record<string, unknown>, "signatures",
       ) || commitment.anchorReceipt.logicalAddress !== commitment.logicalAddress ||
       commitment.anchorReceipt.nativeAddress !== commitment.nativeAddress) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-commitment-result-corrupt");
@@ -2135,7 +2165,7 @@ export function createDacsFixedPriceX402SellerAgreementPolicyV1(
           agreementVerifier(context.peerAuthority, context.authority),
         );
         if (agreement.jobId !== retained.jobId ||
-            contentHash(agreement as unknown as Record<string, unknown>) !==
+            contentHash(agreement as unknown as Record<string, unknown>, "signatures") !==
               result.transportIdentity.agreementHash) return false;
         const buyer = agreement.parties.find((party) => party.role === "buyer");
         const seller = agreement.parties.find((party) => party.role === "seller");

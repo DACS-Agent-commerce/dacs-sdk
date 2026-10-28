@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import type {
@@ -1801,7 +1802,7 @@ export async function verifyPriorPaymentReplacement(
   }
   try {
     if (
-      contentHash(priorAgreement as unknown as Record<string, unknown>) !==
+      contentHash(priorAgreement as unknown as Record<string, unknown>, "signatures") !==
         disposition.priorAgreementRef.contentHash
     ) {
       return decision("fail", "prior-disposition-binding");
@@ -2045,7 +2046,7 @@ export async function verifyAlternativePaymentAudit(
     }
     const expectedAgreementRef = {
       contentHash: contentHash(
-        projection.agreement as unknown as Record<string, unknown>,
+        projection.agreement as unknown as Record<string, unknown>, "signatures",
       ),
     };
     if (
@@ -2176,7 +2177,9 @@ export async function authorizeAlternativePayment<TResult>(
     phaseIndex: number;
     handler: PaymentPhaseType;
   }>) => Promise<TResult> | TResult,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<TResult> {
+  requireAdmissibleProfile(policy);
   const { projection } = authenticatedAuthorizationPair(input);
   return authorize(
     deepFreeze({

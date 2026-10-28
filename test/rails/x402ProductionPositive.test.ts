@@ -212,7 +212,7 @@ async function prepare(https: ReturnType<typeof publicHttps>) {
     client: buyerClient(),
     transportPolicy: POLICY,
     publicHttpsDependencies: https.dependencies,
-  });
+  }, { executionMode: "simulation" });
   if (result.disposition !== "prepared") throw new Error(result.reason);
   expect(https.request).toHaveBeenCalledOnce();
   expect(result.intent.authorizationNonce).toBe(NONCE);
@@ -337,7 +337,7 @@ describe("x402 production transport positive flow", () => {
       headers: { accept: "application/json" },
       transportPolicy: POLICY,
       publicHttpsDependencies: https.dependencies,
-    });
+    }, { executionMode: "simulation" });
     await expect(transport.submitRetained(intent, fence)).resolves.toEqual({
       disposition: "response", disclosure: DISCLOSURE,
     });
@@ -373,13 +373,13 @@ describe("x402 production transport positive flow", () => {
         headers: { accept: "application/json" },
         transportPolicy: POLICY,
         publicHttpsDependencies: https.dependencies,
-      });
+      }, { executionMode: "simulation" });
       const submit = vi.fn(transport.submitRetained);
       const result = await advanceX402BuyerSettlement({
         intent, store, owner: "buyer-worker",
         authorizationProvider: { ...provider, authenticate },
         transport: { submitRetained: submit }, now: () => NOW,
-      });
+      }, { executionMode: "simulation" });
       expectRequests(https, intent.paymentHeader.value);
       expect(submit).toHaveBeenCalledOnce();
       expect(await submit.mock.results[0]!.value).toEqual({
@@ -473,4 +473,11 @@ describe("x402 production transport positive flow", () => {
       ]);
     },
   );
+});
+
+// Test the dormant connected wiring with local wallet/transport doubles.
+// Real profile refusal is covered in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

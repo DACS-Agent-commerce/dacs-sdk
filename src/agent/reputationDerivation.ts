@@ -115,9 +115,9 @@ export interface ReputationWindow {
 
 /** §10.4.1 signed-scope content hash of a bundle (omit signatures + anchoredByRole). */
 function bundleContentHash(bundle: AnyAttestationBundle): string {
-  const scope = { ...stripSignature(bundle as unknown as Record<string, unknown>) };
+  const scope = { ...stripSignature(bundle as unknown as Record<string, unknown>, "signatures") };
   delete (scope as Record<string, unknown>)["anchoredByRole"];
-  return contentHash(scope);
+  return contentHash(scope, "signatures");
 }
 
 export interface DeriveReputationDeps {

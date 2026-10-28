@@ -534,6 +534,7 @@ describe("native DEM buyer payment track", () => {
       events,
     );
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-worker",
@@ -550,6 +551,7 @@ describe("native DEM buyer payment track", () => {
       },
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator",
       operations: {
@@ -616,6 +618,7 @@ describe("native DEM buyer payment track", () => {
       },
     });
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-missing-fee",
@@ -625,6 +628,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-missing-fee",
       operations: { agreement: success, payment },
@@ -693,6 +697,7 @@ describe("native DEM buyer payment track", () => {
       events,
     );
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-generated-composition",
@@ -702,6 +707,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice: () => { events.push("notice-queued"); },
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-generated-composition",
       operations: { agreement: success, payment },
@@ -816,6 +822,7 @@ describe("native DEM buyer payment track", () => {
             inspect: () => authority.inspect(),
           });
       const payment = createDacsPayDemBuyerPaymentTrackV1({
+        executionMode: "simulation",
         walletSpendAuthority,
         database,
         workerId: "buyer-dem-stale-after-intent",
@@ -825,6 +832,7 @@ describe("native DEM buyer payment track", () => {
         publishNotice,
       });
       const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
         store: database.createPayDemCoordinatorStore("buyer"),
         workerId: "buyer-coordinator-stale-after-intent",
         operations: { agreement: success, payment },
@@ -891,6 +899,7 @@ describe("native DEM buyer payment track", () => {
     expect(blocker.status).toBe("reserved");
     const walletSpendAuthority = observeWalletEffectBegin(authority, events);
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-generated-denial",
@@ -900,6 +909,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice: vi.fn(),
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-generated-denial",
       operations: { agreement: success, payment },
@@ -991,6 +1001,7 @@ describe("native DEM buyer payment track", () => {
       },
     });
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-begin-ack-unknown",
@@ -1004,6 +1015,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice: vi.fn(),
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-begin-ack-unknown",
       operations: { agreement: success, payment },
@@ -1111,6 +1123,7 @@ describe("native DEM buyer payment track", () => {
       ? markDacsSdkPreparedPayDemRailV1(rawRail)
       : rawRail;
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-preparation-failure",
@@ -1125,6 +1138,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-preparation-failure",
       operations: { agreement: success, payment },
@@ -1169,6 +1183,7 @@ describe("native DEM buyer payment track", () => {
       events,
     );
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-missing-pre-broadcast-fence",
@@ -1193,6 +1208,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-missing-pre-broadcast-fence",
       operations: { agreement: success, payment },
@@ -1243,6 +1259,7 @@ describe("native DEM buyer payment track", () => {
       },
     };
     const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database: first,
       workerId: "buyer-dem-before-restart",
@@ -1255,6 +1272,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const initial = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: first.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-before-restart",
       operations: { agreement: success, payment: firstPayment },
@@ -1289,6 +1307,7 @@ describe("native DEM buyer payment track", () => {
     }));
     const publishNotice = vi.fn();
     const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database: restarted,
       workerId: "buyer-dem-after-restart",
@@ -1299,6 +1318,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const resumed = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: restarted.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-restart",
       operations: { payment: resumedPayment },
@@ -1366,6 +1386,7 @@ describe("native DEM buyer payment track", () => {
     const walletSpendAuthority = recoveryWalletAuthority(authenticateRecovery, walletNow);
     let transfers = 0;
     const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database: first,
       workerId: "buyer-before-actor-restore",
@@ -1397,6 +1418,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const initial = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: first.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-before-actor-restore",
       operations: { agreement: success, payment: firstPayment },
@@ -1418,6 +1440,7 @@ describe("native DEM buyer payment track", () => {
       throw new Error("restored actor must not rebroadcast");
     });
     const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       database: first,
       workerId: "buyer-after-actor-restore",
@@ -1431,6 +1454,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const resumed = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: first.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-actor-restore",
       operations: { payment: resumedPayment },
@@ -1654,4 +1678,10 @@ describe("native DEM buyer payment track", () => {
       stage: "effect-pending",
     });
   });
+});
+
+// Local connected-runtime unit doubles exercise the wiring below the profile gate.
+vi.mock("../../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

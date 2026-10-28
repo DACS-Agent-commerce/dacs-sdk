@@ -182,3 +182,10 @@ describe("fixed-price seller settlement composition", () => {
     expect(factories.observer).not.toHaveBeenCalled();
   });
 });
+
+// Test the dormant connected wiring with local wallet/transport doubles.
+// Real profile refusal is covered in rails/profileAdmission.test.ts.
+vi.mock("../../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
+});

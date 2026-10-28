@@ -284,7 +284,7 @@ function snapshotRecord(
   // into a valid-looking signed record.
   if (!isExactJsonRecord(value)) return null;
   try {
-    const captured = deepFreezeSnapshot(structuredClone(value));
+    const captured = deepFreezeSnapshot(snapshotCanonicalJsonRead(value, "bundle dependency"));
     return isExactJsonRecord(captured) ? captured : null;
   } catch {
     return null;
@@ -636,11 +636,12 @@ function checkArtifact(
   expectedHash: string,
   validateScope: (v: Record<string, unknown>) => boolean,
   resolved: Record<string, unknown> | null,
+  signatureField: "signature" | "signatures" = "signature",
 ): RefCheck {
   if (!resolved) return { kind, id, verdict: "missing" };
-  const scope = stripSignature(resolved) as Record<string, unknown>;
+  const scope = stripSignature(resolved, signatureField) as Record<string, unknown>;
   if (!validateScope(scope)) return { kind, id, verdict: "invalid-shape" };
-  if (contentHash(scope) !== expectedHash)
+  if (contentHash(scope, signatureField) !== expectedHash)
     return { kind, id, verdict: "hash-mismatch" };
   return { kind, id, verdict: "ok" };
 }
@@ -901,7 +902,7 @@ async function authenticateAgreementReference(
   artifact: Record<string, unknown>,
   deps: VerifyBundleDeps,
 ): Promise<RefSignatureCheck> {
-  const scope = stripSignature(artifact) as Record<string, unknown>;
+  const scope = stripSignature(artifact, "signatures") as Record<string, unknown>;
   const claims = agreementRoleClaims(scope);
   if (!claims || !isAgreementScope(scope)) {
     return { verdict: "malformed", reason: "invalid-agreement-scope" };
@@ -958,7 +959,7 @@ async function authenticateAgreementReference(
   )
     ? ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument
     : ARTIFACT_SEPARATORS.AgreementDocument;
-  const message = signedBytes(separator, contentHash(scope));
+  const message = signedBytes(separator, contentHash(scope, "signatures"));
   for (const signature of signatures) {
     if (signature.algorithm !== "ed25519") {
       return {
@@ -1410,7 +1411,7 @@ export async function verifyBundleCore(
       : isFaultBundle(bundle as unknown as Record<string, unknown>)
         ? ARTIFACT_SEPARATORS.FaultAttestationBundle
         : ARTIFACT_SEPARATORS.AttestationBundle,
-    contentHash(scope),
+    contentHash(scope, "signatures"),
   );
 
   const sigs = Array.isArray(raw["signatures"])
@@ -1563,6 +1564,7 @@ export async function verifyBundleCore(
       ref.contentHash,
       validateScope,
       value,
+      artifactKind === "dacs-3-agreement" && !isLegacyMvpAttestationRef(ref) ? "signatures" : "signature",
     );
     return {
       check:

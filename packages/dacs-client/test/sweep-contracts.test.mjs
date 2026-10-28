@@ -67,6 +67,8 @@ for(const availability of [undefined,'disabled','failed','mocked','live'])test(`
  const authority={availability};
  assert.equal(purchaseSupport(listing,{railAuthority:authority}).supported,false);assert.equal(DEM_RAIL_DEFINITION.availability,'disabled');
  const directory={findSummary:async()=>capture.summary,getListingDetail:async()=>listing},chain={readStorageProgram:async()=>({status:'found',...capture.storageProgram})};
- const r=await createListingVerifier({directory,chain,railAuthority:authority,now:()=>Date.parse(capture.capturedAt)}).verify({listingId:listing.listingId,version:listing.listingVersion,seller:listing.seller.identity.presentedBy});
- assert.equal(r.transactable,false);
+ // The SDK refuses this unreleased live profile before the ordered reader can
+ // return a disposition. No caller-supplied rail status can bypass that gate.
+ await assert.rejects(createListingVerifier({directory,chain,railAuthority:authority,now:()=>Date.parse(capture.capturedAt)}).verify({listingId:listing.listingId,version:listing.listingVersion,seller:listing.seller.identity.presentedBy}),
+  {name:'UnsupportedCapabilityError',message:/the pinned JID-1 corrective profile is unreleased; live protocol action is unavailable/});
 });

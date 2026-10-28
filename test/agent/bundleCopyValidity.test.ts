@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import { bundleConsistency } from "../../src/agent/bundleConsistency.js";
 import { verifyBundleCopy, type BundleCopyDeps } from "../../src/agent/bundleCopyValidity.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
-import { contentHash, sha256Hex } from "../../src/canonical/index.js";
+import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -94,6 +94,47 @@ function sign(
     ...bodyObj,
     anchoredByRole,
     signatures: signers.map((s) => ({
+      party: s.did,
+      algorithm: "ed25519",
+      value: Buffer.from(ed25519Sign(message, s.priv)).toString("base64url"),
+    })),
+  };
+}
+
+const TERMINAL_BUNDLE_KINDS = [
+  "AttestationBundle",
+  "FaultAttestationBundle",
+  "EvidenceBoundFaultAttestationBundle",
+] as const;
+type TerminalBundleKind = (typeof TERMINAL_BUNDLE_KINDS)[number];
+
+function terminalBody(kind: TerminalBundleKind, over: Record<string, unknown> = {}) {
+  if (kind === "AttestationBundle") return body(over);
+  return body({
+    bundleVersion: undefined,
+    [kind === "FaultAttestationBundle" ? "faultBundleVersion" : "evidenceBoundFaultBundleVersion"]: "1",
+    faultedParty: "none",
+    ...over,
+  });
+}
+
+/**
+ * Sign the §10.4.1 scope hashed here, independently of `contentHash`'s
+ * omission set: only `signatures` and `anchoredByRole` leave the scope.
+ */
+function signFullScope(
+  bodyObj: Record<string, unknown>,
+  kind: TerminalBundleKind,
+  anchoredByRole: string,
+): Record<string, unknown> {
+  const scope = { ...bodyObj };
+  delete scope["signatures"];
+  delete scope["anchoredByRole"];
+  const message = signedBytes(ARTIFACT_SEPARATORS[kind], sha256Hex(canonicalize(scope)));
+  return {
+    ...bodyObj,
+    anchoredByRole,
+    signatures: [BUYER, SELLER].map((s) => ({
       party: s.did,
       algorithm: "ed25519",
       value: Buffer.from(ed25519Sign(message, s.priv)).toString("base64url"),
@@ -322,6 +363,61 @@ describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
     expect(r.valid).toBe(false);
     if (!r.valid) expect(r.reason).toMatch(/anchoredByRole/);
   });
+
+  test.each(TERMINAL_BUNDLE_KINDS)(
+    "binds a singular signature extension in the %s copy scope (§10.4.1)",
+    async (kind) => {
+      const extension = { algorithm: "ed25519", signer: BUYER.did, value: "future-extension" };
+      const sebInputs: Array<Record<string, unknown>> = [];
+      const copyDeps: BundleCopyDeps = {
+        ...deps,
+        ...(kind === "EvidenceBoundFaultAttestationBundle"
+          ? {
+              verifyEvidenceBound: async (bundle) => {
+                sebInputs.push(structuredClone(bundle) as Record<string, unknown>);
+                return { decision: "verified", reasonCode: "ok", reason: "test SEB authority" };
+              },
+            }
+          : {}),
+      };
+      const copy = signFullScope(terminalBody(kind, { signature: extension }), kind, "buyer");
+      const scope = { ...copy };
+      delete scope["signatures"];
+      delete scope["anchoredByRole"];
+      // The fixture separates the terminal contract from a singular-field default.
+      expect(contentHash(scope, "signatures")).toBe(sha256Hex(canonicalize(scope)));
+      expect(contentHash(scope)).not.toBe(sha256Hex(canonicalize(scope)));
+
+      const accepted = await verifyBundleCopy(copy, "buyer", copyDeps);
+      expect(accepted).toMatchObject({ valid: true, fullySigned: true });
+      if (kind === "EvidenceBoundFaultAttestationBundle") {
+        expect(sebInputs).toHaveLength(1);
+        expect(sebInputs[0]!["signature"]).toEqual(extension);
+      }
+
+      const changed = { ...copy, signature: { ...extension, value: "other-extension" } };
+      const removed: Record<string, unknown> = { ...copy };
+      delete removed["signature"];
+      const appended = {
+        ...signFullScope(terminalBody(kind), kind, "buyer"),
+        signature: extension,
+      };
+      for (const [label, candidate] of [
+        ["changed", changed],
+        ["removed", removed],
+        ["appended", appended],
+      ] as const) {
+        const result = await verifyBundleCopy(candidate, "buyer", copyDeps);
+        expect(result.valid, label).toBe(false);
+        if (!result.valid) expect(result.reason, label).toMatch(/failed verification/);
+      }
+      expect((await verifyBundleCopy(
+        signFullScope(terminalBody(kind), kind, "buyer"),
+        "buyer",
+        copyDeps,
+      )).valid).toBe(true);
+    },
+  );
 
   test("an INVALID SIGNATURE taints the copy", async () => {
     const copy = sign(body(), [BUYER, SELLER], "buyer");

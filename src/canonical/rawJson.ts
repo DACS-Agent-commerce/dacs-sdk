@@ -55,6 +55,19 @@ function scalarString(value: string): boolean {
   return true;
 }
 
+/** Own a bounded byte view using intrinsic slots, before any artifact callback. */
+export function copyRawJsonBytes(input: Uint8Array, maxBytes = DEFAULT_MAX_BYTES): Uint8Array {
+  if (!nodeTypes.isUint8Array(input)) reject("parse", "BYTE-INPUT-REQUIRED");
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_MAX_BYTES) {
+    throw new TypeError("raw JSON admission byte bound is invalid");
+  }
+  const length = intrinsicByteLength(input);
+  if (length > maxBytes) reject("parse", "BYTE-LIMIT-EXCEEDED");
+  const bytes = new Uint8ArrayIntrinsic(length);
+  Reflect.apply(typedArraySet, bytes, [input]);
+  return bytes;
+}
+
 /** Compare the exact decimal token, before binary64 rounding, with 2^53-1. */
 function numberProfileError(token: string): string | undefined {
   const unsigned = token.replace(/^-/, "");
@@ -107,12 +120,9 @@ export function admitRawJson(
   // Read the internal view length rather than an overridable property. A small
   // Buffer/subarray must not inherit its backing allocation, while a subclass
   // cannot shadow byteLength to evade the budget.
-  const byteLength = intrinsicByteLength(input);
-  if (byteLength > maxBytes) reject("parse", "BYTE-LIMIT-EXCEEDED");
   // Own the exact view using typed-array internal slots. Uint8Array.from would
   // consume an overridable iterator and could copy more bytes than were charged.
-  const bytes = new Uint8ArrayIntrinsic(byteLength);
-  Reflect.apply(typedArraySet, bytes, [input]);
+  const bytes = copyRawJsonBytes(input, maxBytes);
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) reject("parse", "BOM");
   let text: string;
   try {

@@ -311,7 +311,7 @@ async function fixture() {
   const { listing, agreement, evidence } = artifacts();
   const agreementRef: AttestationRef = {
     anchor: { kind: "storage-program", locator: "agreement-j1" },
-    contentHash: contentHash(agreement),
+    contentHash: contentHash(agreement, "signatures"),
   };
   const evidenceRef: AttestationRef = {
     anchor: { kind: "storage-program", locator: "settlement-j1" },
@@ -360,6 +360,7 @@ async function fixture() {
       : `${role}:${track}`,
   });
   const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
     store,
     workerId: "buyer-worker",
     operations: Object.fromEntries([
@@ -371,6 +372,7 @@ async function fixture() {
     ].map((track) => [track, operation("buyer", track)])),
   });
   const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
     store,
     workerId: "seller-worker",
     operations: Object.fromEntries([

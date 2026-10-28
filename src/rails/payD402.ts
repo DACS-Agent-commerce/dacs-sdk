@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { CounterpartyError, DacsError } from "../errors.js";
 
@@ -153,7 +154,9 @@ export interface PayD402SettleCoreDeps {
 export async function payD402SettleCore(
   params: PayD402SettleParams,
   deps: PayD402SettleCoreDeps,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<SettleResult> {
+  requireAdmissibleProfile(policy);
   const { client, fetchImpl, payerAddress } = deps;
 
   // 1. Initial request — expect a 402 with a payment requirement.
@@ -236,6 +239,7 @@ export interface PayD402Rail {
  * demosdk so the SDK core stays importable without the chain deps installed.
  */
 export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD402Rail> {
+  requireAdmissibleProfile({});
   if (!config?.acknowledgeExperimental) {
     throw new DacsError(
       "pay-d402 is EXPERIMENTAL and not node-enabled (§9.4.4 non-`live`): it cannot settle live. " +
@@ -276,6 +280,9 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
 }
 
 /**
+ * The unreleased profile permits only explicit `executionMode: "simulation"`
+ * options with locally injected rails; connected wallet rails are refused.
+ *
  * Bridge a PayD402Rail to the runSession `settle` seam: the rail carries the
  * static D402 paywall coordinates (resolved from the listing) while runSession
  * supplies the per-session amount.
@@ -283,7 +290,9 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
 export function payD402Settle(
   rail: PayD402Rail,
   paywall: { url: string; recipient: string; network?: string },
+  opts: ProfileExecutionPolicy = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
+  requireAdmissibleProfile(opts);
   const paywallUrl = paywall.url;
   const recipient = paywall.recipient;
   const network = paywall.network ?? "demos";

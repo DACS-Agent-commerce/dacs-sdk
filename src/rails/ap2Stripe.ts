@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import { baseUnits, canonicalizeDecimal, sha256Hex } from "../canonical/index.js";
@@ -216,6 +217,7 @@ export function assertStripeAp2CredentialsAreSplit(input: {
 export function createStripeAp2Integration(
   rawOptions: StripeAp2IntegrationOptions,
 ): Readonly<{ provider: Ap2ProviderAdapter }> {
+  requireAdmissibleProfile({});
   const createCredential = option<string>(
     rawOptions, "createCredential", "Stripe AP2 createCredential",
   )!;

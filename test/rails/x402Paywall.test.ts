@@ -235,7 +235,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     });
     await expect(x402PaywallCore(
       undefined as unknown as Parameters<typeof x402PaywallCore>[0],
-      coreDeps(challengeServer),
+      coreDeps(challengeServer), { executionMode: "simulation" },
     )).resolves.toMatchObject({
       disposition: "rejected",
       reason: "invalid-http-adapter",
@@ -249,7 +249,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     const providerServer = mockServer({ process: throwingResult });
     await expect(x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      coreDeps(providerServer),
+      coreDeps(providerServer), { executionMode: "simulation" },
     )).resolves.toMatchObject({
       disposition: "indeterminate",
       reason: "invalid-payment-protocol-response",
@@ -267,7 +267,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      coreDeps(server, { fulfil }),
+      coreDeps(server, { fulfil }), { executionMode: "simulation" },
     );
 
     expect(result.disposition).toBe("payment-required");
@@ -280,7 +280,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     const fulfil = vi.fn();
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: request() },
-      coreDeps(server, { fulfil }),
+      coreDeps(server, { fulfil }), { executionMode: "simulation" },
     );
     expect(result).toMatchObject({
       disposition: "rejected",
@@ -306,7 +306,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      coreDeps(server, { fulfil }),
+      coreDeps(server, { fulfil }), { executionMode: "simulation" },
     );
 
     expect(result).toMatchObject({
@@ -345,7 +345,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
           reason: "agreement-not-finalized",
         }),
         fulfil,
-      }),
+      }), { executionMode: "simulation" },
     );
 
     expect(result).toMatchObject({
@@ -380,7 +380,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      coreDeps(server, { fulfil }),
+      coreDeps(server, { fulfil }), { executionMode: "simulation" },
     );
 
     expect(result).toMatchObject({
@@ -434,7 +434,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
           settlement: failedSettlement,
         }),
         fulfil,
-      }),
+      }), { executionMode: "simulation" },
     );
 
     expect(result).toMatchObject({
@@ -504,7 +504,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
             body: { deliverable: "released-only-after-settlement" },
           };
         },
-      }),
+      }), { executionMode: "simulation" },
     );
 
     expect(order).toEqual([
@@ -620,7 +620,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
           expect(context.settlement).not.toBe(authorizationSettlement);
           return { disposition: "fulfilled", body };
         },
-      }),
+      }), { executionMode: "simulation" },
     );
     expect(result).toMatchObject({
       disposition: "settled",
@@ -659,7 +659,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const first = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(first).toMatchObject({
       disposition: "authorization-indeterminate",
@@ -676,7 +676,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     });
     const retried = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: differentlyEncoded },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(retried).toMatchObject({
       disposition: "indeterminate",
@@ -708,7 +708,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     const fulfil = vi.fn();
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      coreDeps(server, { authorizePayment, fulfil }),
+      coreDeps(server, { authorizePayment, fulfil }), { executionMode: "simulation" },
     );
     expect(result).toMatchObject({
       disposition: "settlement-evidence-indeterminate",
@@ -750,7 +750,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const result = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      coreDeps(server, { authorizePayment, fulfil }),
+      coreDeps(server, { authorizePayment, fulfil }), { executionMode: "simulation" },
     );
     expect(result).toMatchObject({
       disposition: "settlement-evidence-indeterminate",
@@ -783,7 +783,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
         phaseIndex: PHASE_INDEX,
         request: { ...adapter, getUrl },
       },
-      coreDeps(server),
+      coreDeps(server), { executionMode: "simulation" },
     );
     expect(getUrl).toHaveBeenCalledTimes(1);
 
@@ -794,7 +794,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
         phaseIndex: PHASE_INDEX,
         request: { ...request(), getMethod: () => "POST" },
       },
-      coreDeps(postServer),
+      coreDeps(postServer), { executionMode: "simulation" },
     );
     expect(post).toMatchObject({
       disposition: "rejected",
@@ -813,7 +813,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
           getUrl: () => "https://seller.example/different-resource",
         },
       },
-      coreDeps(mismatchedServer),
+      coreDeps(mismatchedServer), { executionMode: "simulation" },
     );
     expect(mismatched).toMatchObject({
       disposition: "rejected",
@@ -858,7 +858,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const first = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(first).toMatchObject({
       disposition: "indeterminate",
@@ -868,7 +868,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const resumed = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(resumed).toMatchObject({ disposition: "settled", settled: true });
     expect(settle).toHaveBeenCalledTimes(1);
@@ -915,12 +915,12 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const firstPromise = x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     await started;
     const concurrent = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(concurrent).toMatchObject({
       disposition: "indeterminate",
@@ -980,12 +980,12 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const first = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(first).toMatchObject({ disposition: "indeterminate", settled: "unknown" });
     const resumed = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(resumed).toMatchObject({
       disposition: "settlement-failed",
@@ -1032,7 +1032,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
 
     const first = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(first).toMatchObject({
       disposition: "settlement-state-indeterminate",
@@ -1043,7 +1043,7 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     );
     const resumed = await x402PaywallCore(
       { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
-      deps,
+      deps, { executionMode: "simulation" },
     );
     expect(resumed).toMatchObject({ disposition: "settled", settled: true });
     expect(server.processSettlement).toHaveBeenCalledTimes(1);
@@ -1213,4 +1213,11 @@ describe("createX402Paywall", () => {
     });
     expect(fulfil).toHaveBeenCalledTimes(1);
   });
+});
+
+// Test the dormant connected wiring with local wallet/transport doubles.
+// Real profile refusal is covered in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

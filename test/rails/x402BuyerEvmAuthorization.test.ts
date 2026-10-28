@@ -391,7 +391,7 @@ describe("x402 buyer EVM authorization provider", () => {
         },
       },
       now: () => 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(result.status).toBe("captured");
   });
 
@@ -414,7 +414,7 @@ describe("x402 buyer EVM authorization provider", () => {
       },
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     expect(first).toEqual({
       status: "indeterminate",
       reason: "eip3009-settlement-not-finalized",
@@ -438,7 +438,7 @@ describe("x402 buyer EVM authorization provider", () => {
       },
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     expect(recovered.status).toBe("captured");
     expect(submits).toBe(1);
   });
@@ -612,7 +612,7 @@ describe("x402 buyer EVM authorization provider", () => {
         },
       },
       now: () => 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(result).toMatchObject({
       status: "failed",
       outcome: {

@@ -1828,6 +1828,7 @@ describe("DACS Node SQLite durability foundation", () => {
     };
     const first = await open(databasePath, liveOptions);
     const initialCoordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: first.createLiveCoordinatorStore("buyer"),
       workerId: "buyer-worker-before-restart",
       operations: {
@@ -1848,6 +1849,7 @@ describe("DACS Node SQLite durability foundation", () => {
 
     const restarted = await open(databasePath, liveOptions);
     const resumedCoordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: restarted.createLiveCoordinatorStore("buyer"),
       workerId: "buyer-worker-after-restart",
       operations: {

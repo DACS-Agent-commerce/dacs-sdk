@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "@kynesyslabs/dacs";
 import {
   createX402BuyerEvmAuthorizationProvider,
   createX402BuyerPaidRequestTransport,
@@ -189,6 +190,7 @@ function amountWithinConsentedMaximum(amount: string, maximum: string): boolean 
 export function createDacsX402BuyerRuntimePaymentTrackV1(
   options: Readonly<DacsX402BuyerRuntimePaymentTrackOptionsV1>,
 ): FixedPriceX402TrackOperation {
+  requireAdmissibleProfile({});
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "buyer" || options.context.evm?.role !== "buyer" ||
       options.context.commerceStores.role !== "buyer" ||

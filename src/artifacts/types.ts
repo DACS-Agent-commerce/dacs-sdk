@@ -882,7 +882,11 @@ export type DeliveryPhaseType =
   | "deliver-entitlement"
   | "deliver-attested-payload";
 
-/** DACS-1 §6.3 PhaseType — the closed v0.x pipeline set. */
+/**
+ * DACS-1 §6.3 phase types supported by this SDK. The Standard additionally
+ * defines commit-identity-bound-agreement and commit-identity-bound-payee-agreement;
+ * both are refused until their semantics are implemented here.
+ */
 export type PhaseType =
   | "vet-credentials"
   | "negotiate-fixed-price"

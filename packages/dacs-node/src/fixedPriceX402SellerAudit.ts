@@ -21,7 +21,7 @@ import {
   type ComponentSignature,
 } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
-import { ed25519Verify, publicKeyFromRaw, signedBytes } from
+import { ed25519Verify, publicKeyFromRaw, signedBytes, verifyArtifact } from
   "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, identityBundleHash } from
   "@kynesyslabs/dacs/identity";
@@ -212,7 +212,7 @@ function publicKey(claim: string): Uint8Array | null {
 }
 
 function verifySignature(
-  separator: Parameters<typeof signedBytes>[0],
+  separator: Parameters<typeof verifyArtifact>[0],
   artifact: Readonly<Record<string, unknown>>,
   signature: Readonly<ComponentSignature>,
   expectedSigner: string,
@@ -224,8 +224,9 @@ function verifySignature(
   const bytes = Buffer.from(encoded, "base64url");
   if (bytes.byteLength !== 64 || bytes.toString("base64url") !== encoded) return false;
   try {
-    return ed25519Verify(
-      signedBytes(separator, contentHash(artifact)),
+    return verifyArtifact(
+      separator,
+      artifact,
       Uint8Array.from(bytes),
       publicKeyFromRaw(key),
     );
@@ -264,6 +265,7 @@ async function resolveActorAnchor(
   logicalAddress: string,
   writer: string,
   expectedHash: string,
+  signatureField: "signature" | "signatures" = "signature",
 ): Promise<Readonly<AuthenticatedArtifactV1>> {
   const resolved = await context.demos.adapter.resolveAnchorByName(
     logicalAddress,
@@ -276,7 +278,7 @@ async function resolveActorAnchor(
   if (artifact === null) {
     throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-unavailable");
   }
-  if (contentHash(artifact) !== expectedHash) {
+  if (contentHash(artifact, signatureField) !== expectedHash) {
     throw new DacsFixedPriceX402SellerAuditError("seller-audit-anchor-invalid");
   }
   const receipt = await authenticatedReceipt(context, {
@@ -427,7 +429,7 @@ export function createDacsFixedPriceSellerAuditV1(
       }));
 
       const agreementHash = contentHash(
-        commitment.agreement as unknown as Record<string, unknown>,
+        commitment.agreement as unknown as Record<string, unknown>, "signatures",
       );
       const commitmentHash = contentHash(
         commitment.commitment.record as unknown as Record<string, unknown>,
@@ -458,7 +460,7 @@ export function createDacsFixedPriceSellerAuditV1(
           return Object.freeze({ artifact: copy(artifact), receipt, writer: order.seller });
         })(),
         resolveActorAnchor(context, agreementRef,
-          order.buyer, agreementHash),
+          order.buyer, agreementHash, "signatures"),
         resolveActorAnchor(context, paymentRef.anchor.locator, order.buyer,
           paymentRef.contentHash),
       ]);
@@ -677,7 +679,7 @@ export function createDacsFixedPriceSellerAuditV1(
         verifyDependencyBinding({ dependency: candidate, requirement, artifact }) {
           const known = byNative.get(candidate.anchorReceipt.nativeAddress);
           if (known === undefined || !plainObject(artifact) ||
-              requirement.contentHash !== contentHash(artifact) ||
+              requirement.contentHash !== contentHash(artifact, known === agreementAnchor ? "signatures" : "signature") ||
               canonicalize(artifact) !== canonicalize(known.artifact)) return "invalid";
           return verifyKnown(known) ? "valid" : "invalid";
         },

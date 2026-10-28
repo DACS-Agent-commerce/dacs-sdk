@@ -85,7 +85,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           sent = args;
           return TX_HASH;
         },
-      }),
+      }), undefined, { executionMode: "simulation" },
     );
     expect(sent).toEqual({ token: TOKEN, to: RECIPIENT, amount: 1000000n });
     expect(res).toEqual({
@@ -120,7 +120,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
         settlementKey: "evm:job:0",
         bindingHash: "a".repeat(64),
         assertCurrent,
-      },
+      }, { executionMode: "simulation" },
     )).rejects.toThrow(/stale effect generation/);
     expect(assertCurrent).toHaveBeenCalledOnce();
     expect(transfer).not.toHaveBeenCalled();
@@ -138,7 +138,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
             status: "reverted",
           }),
         }),
-      }),
+      }), undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/reverted/);
   });
 
@@ -152,7 +152,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           throw new Error("must not transfer");
         },
         finalityClient: finalityClient({ getChainId: async () => 8453 }),
-      }),
+      }), undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/chain id/);
     expect(transfers).toBe(0);
   });
@@ -166,7 +166,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
       finalityClient: finalityClient({
         getTransactionReceipt: async () => ({ ...receipt, logs: [] }),
       }),
-    }))).rejects.toThrow(/event is missing/);
+    }), undefined, { executionMode: "simulation" })).rejects.toThrow(/event is missing/);
     await expect(evmErc20SettleCore(params, client({
       finalityClient: finalityClient({
         getTransactionReceipt: async () => ({
@@ -174,7 +174,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           logs: [receipt.logs[0], { ...(receipt.logs[0] as object), logIndex: 8 }],
         }),
       }),
-    }))).rejects.toThrow(/event is ambiguous/);
+    }), undefined, { executionMode: "simulation" })).rejects.toThrow(/event is ambiguous/);
   });
 
   test("fails transiently when receipt and block views never converge", async () => {
@@ -189,7 +189,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
             timestamp: 1_700_000_011n,
           }),
         }),
-      }));
+      }), undefined, { executionMode: "simulation" });
       const rejection = expect(outcome).rejects.toMatchObject({
         name: "TransientError",
         category: "transient",
@@ -221,7 +221,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           return base.getBlock(input);
         },
       }),
-    }));
+    }), undefined, { executionMode: "simulation" });
 
     expect(result.txRef).toMatchObject({ kind: "evm-event" });
     // One receipt failure and one block failure each restart the whole snapshot.
@@ -239,7 +239,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
             throw new Error("block not found");
           },
         }),
-      }));
+      }), undefined, { executionMode: "simulation" });
       const rejection = expect(outcome).rejects.toMatchObject({
         name: "TransientError",
         category: "transient",
@@ -268,7 +268,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           };
         },
       }),
-    }));
+    }), undefined, { executionMode: "simulation" });
     expect(result.txRef).toMatchObject({ kind: "evm-event" });
     expect(inclusionReads).toBe(4);
   });
@@ -282,7 +282,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           return finalityClient().getTransactionReceipt({ hash: input.hash });
         },
       }),
-    }));
+    }), undefined, { executionMode: "simulation" });
     expect(confirmations).toBe(2);
     expect(res.finalityObservedAt).toBe(1_700_000_011_000);
   });
@@ -309,7 +309,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           return finalityClient().getTransactionReceipt({ hash: input.hash });
         },
       }),
-    }));
+    }), undefined, { executionMode: "simulation" });
 
     expect(sent).toEqual({ token: TOKEN, to: RECIPIENT, amount: 1000000n });
     expect(waited).toBe(2);
@@ -364,7 +364,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
   test("canonicalizes a valid upper-case submitted transaction hash", async () => {
     const res = await evmErc20SettleCore(params, client({
       transfer: async () => `0x${"A".repeat(64)}`,
-    }));
+    }), undefined, { executionMode: "simulation" });
     expect(res.txHash).toBe(TX_HASH);
   });
 
@@ -378,7 +378,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           timestamp: blockNumber === 100n ? 1_700_000_011n : 1_700_000_000n,
         }),
       }),
-    }))).rejects.toThrow(/predates its parent/);
+    }), undefined, { executionMode: "simulation" })).rejects.toThrow(/predates its parent/);
   });
 
   test("rejects stable blocks from unrelated forks", async () => {
@@ -391,7 +391,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           timestamp: blockNumber === 100n ? 1_700_000_000n : 1_700_000_011n,
         }),
       }),
-    }))).rejects.toThrow(/does not descend/);
+    }), undefined, { executionMode: "simulation" })).rejects.toThrow(/does not descend/);
   });
 
   test("rejects a non-positive amount before sending", async () => {
@@ -404,7 +404,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
             called = true;
             return "0x";
           },
-        }),
+        }), undefined, { executionMode: "simulation" },
       ),
     ).rejects.toThrow(/> 0/);
     expect(called).toBe(false);
@@ -412,7 +412,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
 
   test("rejects a non-numeric amount", async () => {
     await expect(
-      evmErc20SettleCore({ ...params, amount: "abc" }, client()),
+      evmErc20SettleCore({ ...params, amount: "abc" }, client(), undefined, { executionMode: "simulation" }),
     ).rejects.toThrow(/invalid base-unit amount/);
   });
 });

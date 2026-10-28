@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import {
   assertPositiveAmount,
   baseUnits,
@@ -640,7 +641,9 @@ function settlementFrom(
 
 export async function advanceSolanaSplSettlement(
   input: Readonly<AdvanceSolanaSplSettlementInput>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<SolanaSplProgress> {
+  requireAdmissibleProfile(policy);
   let intent: Readonly<SolanaSplSettlementIntent>;
   try {
     intent = createSolanaSplSettlementIntent({ ...input.authority });

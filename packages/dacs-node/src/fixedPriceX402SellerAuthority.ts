@@ -6,6 +6,7 @@ import {
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
   type AnchoredFinalityCommitment,
+  type ProfileExecutionPolicy,
   type AuthenticatedRailDefinition,
   type CommitmentSignatureVerifier,
   type FinalityCommitmentProvider,
@@ -33,6 +34,7 @@ import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, identityBundleHash } from
   "@kynesyslabs/dacs/identity";
 
+import { restoreDacsHistoricalListingAdmissionV1 } from "./historicalListingAdmission.js";
 import {
   captureDacsFixedPriceX402ApplicationV1,
   dacsFixedPriceX402DeliveryResourceV1,
@@ -64,7 +66,7 @@ type SellerIntakeAuthorityV1 = Pick<
   | "resolvePayeeDestination"
 >;
 
-export interface DacsFixedPriceX402SellerAuthorityOptionsV1 {
+export interface DacsFixedPriceX402SellerAuthorityOptionsV1 extends ProfileExecutionPolicy {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   rail: Readonly<AuthenticatedRailDefinition>;
   tokenDomain: Readonly<{ name: string; version: string }>;
@@ -457,16 +459,14 @@ async function authenticateState(
       "seller-authority-deliverable-unconfigured",
     );
   }
-  const listingResolution: SellerListingAtCommitResolution = {
-    rawListing: copy(application.listing as unknown as Record<string, unknown>),
-    validation: {
-      disposition: "verified",
-      step: 9,
-      reason: "seller-session-admission-verified",
-      listing: copy(application.listing),
-      listingContentHash: application.listingContentHash,
-    },
-  };
+  const listingResolution = await restoreDacsHistoricalListingAdmissionV1({
+    admission: admission.listingAdmission,
+    listing: application.listing,
+    admittedAt: admission.admittedAt,
+    seller: context.authority,
+    rail,
+    executionMode: options.executionMode,
+  });
   const scope: X402SellerCommittedSessionScope = {
     scopeVersion: "1",
     jobId: order.jobId,
@@ -478,7 +478,7 @@ async function authenticateState(
     railId: rail.railId,
     railRegistryVersion: provenance.registryVersion,
     agreementRef: fixedPriceAgreementLogicalAddress(order.jobId),
-    agreementHash: contentHash(agreement as unknown as Record<string, unknown>),
+    agreementHash: contentHash(agreement as unknown as Record<string, unknown>, "signatures"),
     listingRef,
     commitmentRef: result.commitment.logicalAddress,
     commitmentContentHash: contentHash(
@@ -738,7 +738,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
           "listing-at-commit-authority-unavailable",
         );
       }
-      return copy(found);
+      return found;
     },
     async resolveRail({ ref, railRegistryVersion }) {
       const provenance = getAuthenticatedRailProvenance(rail);

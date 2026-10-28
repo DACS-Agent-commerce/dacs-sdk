@@ -416,7 +416,7 @@ function buildAuditSource(input: Readonly<{
     );
   }
   const agreementHash = contentHash(
-    commitment.agreement as unknown as Record<string, unknown>,
+    commitment.agreement as unknown as Record<string, unknown>, "signatures",
   );
   const negotiationDelta = {
     "negotiate-fixed-price": {

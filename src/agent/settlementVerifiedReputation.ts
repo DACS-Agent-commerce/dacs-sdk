@@ -320,10 +320,10 @@ function captureDeps(value: unknown): SettlementVerifiedReputationDeps | null {
 
 function bundleContentHash(bundle: AnyAttestationBundle): string {
   const scope = {
-    ...stripSignature(bundle as unknown as Record<string, unknown>),
+    ...stripSignature(bundle as unknown as Record<string, unknown>, "signatures"),
   };
   delete scope["anchoredByRole"];
-  return contentHash(scope);
+  return contentHash(scope, "signatures");
 }
 
 function exactRefMultiset(refs: readonly unknown[]): string[] | null {
@@ -505,7 +505,7 @@ function captureAgreementAuth(
     !isAgreementArtifact(captured.agreement)) return null;
   const agreement = captured.agreement;
   if (agreement.jobId !== jobId ||
-    contentHash(stripSignature(agreement as unknown as Record<string, unknown>)) !==
+    contentHash(agreement as unknown as Record<string, unknown>, "signatures") !==
       ref.contentHash) return null;
   try {
     if (canonicalizeDecimal(agreement.terms.price.amount) !==

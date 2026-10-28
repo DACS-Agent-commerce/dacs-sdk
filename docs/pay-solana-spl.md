@@ -53,8 +53,15 @@ const result = await advanceSolanaSplSettlement({
   owner: workerId,
   adapter: solanaAdapter satisfies SolanaSplAdapter,
   store: durableStore satisfies SolanaSplSettlementStore,
-});
+}, { executionMode: "simulation" });
 ```
+
+The final argument is trusted local execution policy, separate from `input`.
+The pinned Standard profile is unreleased, so the core refuses live execution
+before it calls the adapter or store. Pass `{ executionMode: "simulation" }`
+only for non-live runs with injected local dependencies such as test doubles;
+omitting the policy refuses. No policy value admits a live wallet or RPC
+connection at this pin. See [admission boundaries](./raw-json-admission.md).
 
 `waiting` and `indeterminate` never authorize a fresh payment. Resume the same
 authority after the lease expires. A production store must atomically retain

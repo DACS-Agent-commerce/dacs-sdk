@@ -152,6 +152,8 @@ describe("Agent logical Listing discovery (#54)", () => {
     const adapter = {
       readAnchor: async (address: string) =>
         address === nativeAddress ? record : null,
+      readAnchorBytes: async (address: string) =>
+        address === nativeAddress ? Buffer.from(JSON.stringify(record)) : null,
       createAnchorHistoryPageFetcher: (expectedOwner: string) => {
         expect(expectedOwner).toBe(owner);
         return async () => ({
@@ -171,7 +173,7 @@ describe("Agent logical Listing discovery (#54)", () => {
       getAddress: () => owner,
     } as unknown as DemosAdapter;
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       ...publicationCapabilities,
       listingValidationDeps,
       bindings: { index },
@@ -211,7 +213,7 @@ describe("Agent logical Listing discovery (#54)", () => {
       readAnchor,
       createAnchorHistoryPageFetcher: vi.fn(),
     } as unknown as DemosAdapter;
-    const agent = buildAgent(adapter, { demosRpc: "mem" });
+    const agent = buildAgent(adapter, { executionMode: "simulation", demosRpc: "mem" });
 
     await expect(agent.readListing(logicalAddress)).rejects.toThrow(
       /bindings\.index/,
@@ -238,7 +240,7 @@ describe("Agent logical Listing discovery (#54)", () => {
       getAddress,
     } as unknown as DemosAdapter;
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       identity: { agentId: sellerId },
       ...publicationCapabilities,
       bindings: { index, publisher: { publish } },
@@ -263,7 +265,7 @@ describe("Agent logical Listing discovery (#54)", () => {
     const adapter = {} as DemosAdapter;
     expect(() =>
       buildAgent(adapter, {
-        demosRpc: "mem",
+        executionMode: "simulation", demosRpc: "mem",
         bindings: {
           index: createInMemoryBindingIndex([]),
           publisher: null as never,
@@ -272,7 +274,7 @@ describe("Agent logical Listing discovery (#54)", () => {
     ).toThrow(/valid publisher/);
     expect(() =>
       buildAgent(adapter, {
-        demosRpc: "mem",
+        executionMode: "simulation", demosRpc: "mem",
         bindings: null as never,
       }),
     ).toThrow(/index resolver/);

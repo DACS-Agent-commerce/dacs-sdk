@@ -38,7 +38,7 @@ import {
   type SettlementEvidence,
 } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
-import { ed25519Verify, publicKeyFromRaw, signedBytes } from
+import { ed25519Verify, publicKeyFromRaw, signedBytes, verifyArtifact } from
   "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, identityBundleHash } from
   "@kynesyslabs/dacs/identity";
@@ -224,7 +224,7 @@ function publicKey(claim: string): Uint8Array | null {
 }
 
 function verifySignature(
-  separator: Parameters<typeof signedBytes>[0],
+  separator: Parameters<typeof verifyArtifact>[0],
   artifact: Readonly<Record<string, unknown>>,
   signature: Readonly<ComponentSignature>,
   expectedSigner: string,
@@ -235,8 +235,9 @@ function verifySignature(
   const raw = Buffer.from(signature.value, "base64url");
   if (raw.byteLength !== 64 || raw.toString("base64url") !== signature.value) return false;
   try {
-    return ed25519Verify(
-      signedBytes(separator, contentHash(artifact)),
+    return verifyArtifact(
+      separator,
+      artifact,
       Uint8Array.from(raw),
       publicKeyFromRaw(key),
     );
@@ -267,6 +268,7 @@ async function resolveActorAnchor(
   logicalAddress: string,
   writer: string,
   expectedHash: string,
+  signatureField: "signature" | "signatures" = "signature",
 ): Promise<Readonly<AuthenticatedArtifactV1>> {
   const resolved = await context.demos.adapter.resolveAnchorByName(
     logicalAddress,
@@ -285,7 +287,7 @@ async function resolveActorAnchor(
   if (artifact === null || receipt === null) {
     throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-anchor-unavailable");
   }
-  if (contentHash(artifact) !== expectedHash ||
+  if (contentHash(artifact, signatureField) !== expectedHash ||
       receipt.writer !== writer || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== resolved.address || receipt.contentHash !== expectedHash ||
       receipt.state !== "finalized" || receipt.observationDisposition !== "established" ||
@@ -518,6 +520,7 @@ export function createDacsFixedPriceBuyerAuditV1(
       agreementPublication.logicalAddress,
       order.buyer,
       agreementPublication.agreementHash,
+      "signatures",
     );
     const commitmentAnchor = await resolveActorAnchor(
       context,
@@ -1230,7 +1233,7 @@ export function createDacsFixedPriceBuyerAuditV1(
         { dependency: Dependency; requirement: { contentHash: string }; artifact: unknown }) {
         const known = byNative.get(candidate.anchorReceipt.nativeAddress);
         return known !== undefined && plainObject(artifact) &&
-            requirement.contentHash === contentHash(artifact) &&
+            requirement.contentHash === contentHash(artifact, known === agreementAnchor ? "signatures" : "signature") &&
             canonicalize(artifact) === canonicalize(known.artifact) && verifyKnown(known)
           ? "valid" as const : "invalid" as const;
       },

@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -82,7 +83,7 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
-    });
+    }, { executionMode: "simulation" });
     expect(res.ok).toBe(true);
     expect(res.txHash).toBe("0xdemhash");
     expect(res.payer).toBe(PAYER);
@@ -99,7 +100,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: "demos1attacker", amount: "1500000000", resourceId: "res-1" }),
         payerAddress: PAYER,
-      }),
+      }, { executionMode: "simulation" }),
     ).rejects.toThrow(/does not match negotiated agreement/);
     expect(created).toBe(0); // never signed
   });
@@ -111,7 +112,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "999", resourceId: "res-1" }),
         payerAddress: PAYER,
-      }),
+      }, { executionMode: "simulation" }),
     ).rejects.toThrow(/amount mismatch/);
   });
 
@@ -122,7 +123,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({}, 200),
         payerAddress: PAYER,
-      }),
+      }, { executionMode: "simulation" }),
     ).rejects.toThrow(/expected HTTP 402/);
   });
 
@@ -133,7 +134,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000" }),
         payerAddress: PAYER,
-      }),
+      }, { executionMode: "simulation" }),
     ).rejects.toThrow(/resourceId/);
   });
 
@@ -143,7 +144,7 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
-    });
+    }, { executionMode: "simulation" });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("");
   });
@@ -154,7 +155,7 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
-    });
+    }, { executionMode: "simulation" });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("0xtried");
   });
@@ -167,7 +168,7 @@ describe("payD402SettleCore", () => {
         // 402 advertises `amount: 2` (pre-fork DEM) instead of OS base units.
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: 2, resourceId: "res-1" }),
         payerAddress: PAYER,
-      }),
+      }, { executionMode: "simulation" }),
     ).rejects.toThrow(/bare number|OS base units/);
   });
 });
@@ -198,7 +199,7 @@ describe("payD402Settle bridge destination binding", () => {
       url: URL,
       recipient: RECIPIENT,
       network: "demos:testnet",
-    });
+    }, { executionMode: "simulation" });
     expect(() =>
       settle({
         rail: "pay-d402",
@@ -212,4 +213,11 @@ describe("payD402Settle bridge destination binding", () => {
     ).toThrow(/destination mismatch/);
     expect(calls).toBe(0);
   });
+});
+
+// Test the dormant connected wiring with local wallet/transport doubles.
+// Real profile refusal is covered in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

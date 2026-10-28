@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
@@ -22,11 +23,27 @@ interface Vector {
   canonicalUtf8Hex?: string;
 }
 // Byte-exact upstream corpus, Standard b80919cd7b114499ffc3d9b5c2f3f91ca7fab3f6.
-const corpus = JSON.parse(readFileSync(new URL(
+const corpusBytes = readFileSync(new URL(
   "../fixtures/standard-next/raw-json-profile-v0.1.json", import.meta.url,
-), "utf8")) as { count: number; vectors: Vector[] };
+));
+const corpus = JSON.parse(corpusBytes.toString("utf8")) as {
+  count: number;
+  vectors: Vector[];
+};
 
 describe("CORE CF-5 exact-byte admission", () => {
+  it("pins the exact upstream corpus", () => {
+    expect(createHash("sha256").update(corpusBytes).digest("hex"))
+      .toBe("acb6b5e374adc827bf855b20e638a5c6e2f12ab87cba2bef5b574bb34bf45ccb");
+    expect(corpus).toMatchObject({
+      set: "raw-json-profile-v0.1",
+      tier: "candidate",
+      count: 59,
+      hash: "a0cb44a3e2bd604086f3b15b731dd3fd912bdbc927019fb80c9b2b33b43fdbb1",
+    });
+    expect(corpus.vectors).toHaveLength(corpus.count);
+  });
+
   it("exports the same admission function on both surfaces", () => {
     const rootOptions: RootAdmissionOptions = { maxBytes: 3 };
     const canonicalOptions: CanonicalAdmissionOptions = rootOptions;

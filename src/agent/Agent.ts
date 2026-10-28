@@ -1,4 +1,5 @@
 import { types as nodeTypes } from "node:util";
+import { captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import type {
   AgreementArtifact,
   AnyAttestationBundle,
@@ -458,7 +459,7 @@ export interface RunSessionOptions {
  */
 export type SessionListingInput = string | AuthenticatedListing;
 
-export interface AgentConfig {
+export interface AgentConfig extends ProfileExecutionPolicy {
   /** Demos node RPC URL. */
   demosRpc: string;
   /**
@@ -905,6 +906,7 @@ function captureAgentRuntimeConfig(
   demosCci: AgentDemosCciConfig | undefined,
 ): AgentConfig {
   const runtimeConfig: AgentConfig = {
+    executionMode: captureExecutionMode(config),
     demosRpc: String(capturedCreateConfigValue(config, "demosRpc") ?? ""),
     ...(hasWallet ? { wallet: "connected-signer" } : {}),
   };
@@ -950,6 +952,7 @@ function captureAgentRuntimeConfig(
 }
 
 async function connectAgentAdapter(config: AgentConfig): Promise<ConnectedAgentInput> {
+  requireAdmissibleProfile({});
   if (config === null || typeof config !== "object" || nodeTypes.isProxy(config)) {
     throw new DacsError("AgentConfig must be stable data");
   }
@@ -996,6 +999,8 @@ async function connectAgentAdapter(config: AgentConfig): Promise<ConnectedAgentI
 export async function createAgent(
   config: AgentConfig,
 ): Promise<Agent> {
+  // This factory owns a real Demos transport; a simulation label cannot enable it.
+  requireAdmissibleProfile({});
   const connected = await connectAgentAdapter(config);
   return buildAgent(connected.adapter, connected.runtimeConfig);
 }
@@ -1045,6 +1050,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   adapter: TAdapter,
   config: AgentConfig,
 ): Agent {
+  const executionMode = captureExecutionMode(config);
   if (adapter === null || typeof adapter !== "object" || nodeTypes.isProxy(adapter)) {
     throw new DacsError("SubstrateAdapter must be stable data");
   }
@@ -1064,6 +1070,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   const readAnchorMethod = captureBoundAdapterMethod<
     SubstrateAdapter["readAnchor"]
   >(adapter, "readAnchor");
+  const readAnchorBytesMethod = captureBoundAdapterMethod<
+    NonNullable<SubstrateAdapter["readAnchorBytes"]>
+  >(adapter, "readAnchorBytes");
   const resolveAnchorByNameMethod = captureBoundAdapterMethod<
     SubstrateAdapter["resolveAnchorByName"]
   >(adapter, "resolveAnchorByName");
@@ -1091,6 +1100,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       getAddressMethod?.() ?? missingAdapterCapability("getAddress"),
     readAnchor: (address: string) =>
       readAnchorMethod?.(address) ?? missingAdapterCapability("readAnchor"),
+    readListing: (address: string) => readAnchorBytesMethod
+      ? readAnchorBytesMethod(address)
+      : readAnchorMethod?.(address) ?? missingAdapterCapability("readAnchor"),
     resolveAnchorByName: (name: string, owner: string) =>
       resolveAnchorByNameMethod?.(name, owner) ??
         missingAdapterCapability("resolveAnchorByName"),
@@ -1111,8 +1123,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     getAddress: publicReads.getAddress,
     getPublicKey: () =>
       getPublicKeyMethod?.() ?? missingAdapterCapability("getPublicKey"),
-    sign: (bytes: Uint8Array) =>
-      signMethod?.(bytes) ?? missingAdapterCapability("sign"),
+    sign: (bytes: Uint8Array) => {
+      requireAdmissibleProfile({ executionMode });
+      return signMethod?.(bytes) ?? missingAdapterCapability("sign");
+    },
   });
   const anchoring = Object.freeze({
     getAddress: publicReads.getAddress,
@@ -1121,14 +1135,18 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       name: string,
       value: object,
       options?: Parameters<SubstrateAdapter["anchorWriteOnce"]>[2],
-    ) => anchorWriteOnceMethod?.(name, value, options) ??
-      missingAdapterCapability("anchorWriteOnce"),
+    ) => {
+      requireAdmissibleProfile({ executionMode });
+      return anchorWriteOnceMethod?.(name, value, options) ?? missingAdapterCapability("anchorWriteOnce");
+    },
     anchorAndWait: (
       name: string,
       value: object,
       options?: Parameters<SubstrateAdapter["anchorAndWait"]>[2],
-    ) => anchorAndWaitMethod?.(name, value, options) ??
-      missingAdapterCapability("anchorAndWait"),
+    ) => {
+      requireAdmissibleProfile({ executionMode });
+      return anchorAndWaitMethod?.(name, value, options) ?? missingAdapterCapability("anchorAndWait");
+    },
   });
   const loadListingRailResolution = stableAgentMethod<
     AgentConfig["loadListingRailResolution"]
@@ -1290,7 +1308,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   const sign: Signer = (bytes) => signing.sign(bytes);
   const listingValidator = (deps: ListingValidationDeps | undefined) =>
     deps
-      ? (raw: Record<string, unknown>) => validateListingArtifact(raw, deps)
+      ? (raw: Record<string, unknown>, receivedBytes?: Uint8Array) =>
+          validateListingArtifact(receivedBytes ?? raw, { ...deps, executionMode })
       : undefined;
   // Capture policy at construction time. Callers cannot swap the verifier on
   // a live Agent between verifyBundle() and getReputation().
@@ -1692,7 +1711,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   const artifactRepository = bindingPublisher === undefined || bindingIndex === null
     ? null
     : createBoundArtifactRepository({
-          adapter: anchoring,
+        contentHashOf: contentHash,
+        adapter: anchoring,
         index: bindingIndex,
         publisher: bindingPublisher,
       });
@@ -1735,6 +1755,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     },
 
     async publishListing(listingInput: ListingDraft): Promise<PublishResult> {
+      requireAdmissibleProfile({ executionMode });
       if (artifactRepository === null) {
         throw new DacsError(
           "publishListing requires AgentConfig.bindings.publisher so the logical-to-native binding is published",
@@ -1927,7 +1948,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           "readListing requires AgentConfig.bindings.index for logical resolution",
         );
       }
+      requireAdmissibleProfile({ executionMode });
       return readListingByLogicalAddress(logicalAddress, {
+        executionMode,
         index: bindingIndex,
         readAnchor: (nativeAddress, anchorKind) => {
           if (anchorKind !== undefined && anchorKind !== "storage-program") {
@@ -1935,11 +1958,11 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
               `configured Demos adapter cannot dereference ${anchorKind} catalog anchors`,
             );
           }
-          return publicReads.readAnchor(nativeAddress);
+          return publicReads.readListing(nativeAddress);
         },
         verify: ed25519RawVerify,
         ...(configuredListingValidationDeps
-          ? { listingValidationDeps: configuredListingValidationDeps }
+          ? { listingValidationDeps: { ...configuredListingValidationDeps, executionMode } }
           : {}),
       });
     },
@@ -1953,9 +1976,11 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           "enumerateListings requires AgentConfig.bindings.index for logical resolution",
         );
       }
+      requireAdmissibleProfile({ executionMode });
       return enumerateListingsForSeller(
         sellerId,
         {
+          executionMode,
           index: bindingIndex,
           readAnchor: (nativeAddress, anchorKind) => {
             if (anchorKind !== undefined && anchorKind !== "storage-program") {
@@ -1963,11 +1988,11 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
                 `configured Demos adapter cannot dereference ${anchorKind} catalog anchors`,
               );
             }
-            return publicReads.readAnchor(nativeAddress);
+            return publicReads.readListing(nativeAddress);
           },
           verify: ed25519RawVerify,
           ...(configuredListingValidationDeps
-            ? { listingValidationDeps: configuredListingValidationDeps }
+            ? { listingValidationDeps: { ...configuredListingValidationDeps, executionMode } }
             : {}),
           ...(typeof historyPageFetcherFactory === "function"
             ? {
@@ -1994,7 +2019,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     ): Promise<DiscoveredListing[]> {
       // DACS-1 §6.3.4: verify the structured signer through seller.identity;
       // historical string signatures remain in the explicit legacy read arm.
-      return discoverListings(listingRefs, (r) => publicReads.readAnchor(r), {
+      requireAdmissibleProfile({ executionMode });
+      return discoverListings(listingRefs, (r) => publicReads.readListing(r), {
+        executionMode,
         verify: ed25519RawVerify,
         resolvePublicKey: resolveCanonicalSigningKeyForRead,
         validateListing: listingValidator(configuredListingValidationDeps),
@@ -2005,6 +2032,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       listingInput: SessionListingInput,
       opts: RunSessionOptions,
     ): Promise<SessionResult> {
+      requireAdmissibleProfile({ executionMode });
       if (!hasWallet) {
         throw new Error("runSession requires createAgent({ wallet })");
       }
@@ -2252,11 +2280,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         listingRef,
         options.terms,
         {
+          executionMode,
           buyerId,
           buyerIdentityBundle,
           authenticateBuyerIdentityBundle: ({ bundle, signedBytes: bytes }) =>
             buyerIdentityPresentationVerifier({ bundle, signedBytes: bytes }),
-          readListing: (ref) => publicReads.readAnchor(ref),
+          readListing: (ref) => publicReads.readListing(ref),
           // Temporary reduced-MVP agreement writer. DACS-3 AgreementSignature[]
           // migration is owned by #98; it is deliberately not coerced into a
           // ComponentSignature envelope here.
@@ -2292,7 +2321,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           // #41 — verify the listing against the key in its own agentId before
           // vetting or settlement. Without this the money path would run on an
           // unverified listing (and the gate below would throw).
-          verifyListing: async (raw, sellerClaim) => {
+          verifyListing: async (raw, sellerClaim, receivedBytes) => {
             if (expectedContentHash !== null) {
               try {
                 if (contentHash(raw) !== expectedContentHash) return false;
@@ -2305,7 +2334,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             // fresh sessions must be in-window, while an expired recovery must
             // first prove an exact signed Agreement and authenticated successful
             // SettlementEvidence before this callback is reached.
-            const verified = await authenticateReadableListingArtifact(raw, {
+            const verified = await authenticateReadableListingArtifact(receivedBytes ?? raw, {
               verify: ed25519RawVerify,
               resolvePublicKey: resolveCanonicalSigningKeyForRead,
             });

@@ -1,3 +1,4 @@
+import { admitFixtureListing } from "../../../test/fixtures/receivedListing.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -159,6 +160,8 @@ function fixture(receiptStore: SellerReceiptStore) {
       disposition: "verified",
       step: 9,
       reason: "verified",
+      receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
+      executionMode: "simulation",
       listing,
       listingContentHash: listingRef.contentHash,
       revocation: "absent",
@@ -227,10 +230,11 @@ function fixture(receiptStore: SellerReceiptStore) {
       { party: SELLER, algorithm: "ed25519", value: AGREEMENT_SIGNATURE },
     ],
   };
-  const agreementHash = contentHash(agreement);
+  const agreementHash = contentHash(agreement, "signatures");
   return {
     agreementHash,
     intakeDeps: {
+      executionMode: "simulation" as const,
       resolveCommittedAgreement: async () => ({
         disposition: "verified" as const,
         agreement,
@@ -247,7 +251,7 @@ function fixture(receiptStore: SellerReceiptStore) {
         },
         railRegistryVersion: 7,
       }),
-      resolveListingAtCommit: async () => listingAtCommit,
+      resolveListingAtCommit: async () => ({ ...listingAtCommit, validation: await admitFixtureListing(listing) }),
       resolveRail: async ({ railRegistryVersion }: { railRegistryVersion: number }) => ({
         disposition: "verified" as const,
         rail: {
@@ -389,6 +393,7 @@ describe("native DEM seller payment track", () => {
     const firstFixture = fixture(ambiguousReceipts);
     const store = first.createPayDemCoordinatorStore("seller");
     const created = await createFixedPricePayDemSellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-coordinator-before-restart",
       operations: { agreement: success() },
@@ -412,6 +417,7 @@ describe("native DEM seller payment track", () => {
       retryDelayMs: 1,
     });
     const beforeRestart = createFixedPricePayDemSellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-coordinator-payment-before-restart",
       operations: { agreement: success(), payment: firstPayment },
@@ -438,6 +444,7 @@ describe("native DEM seller payment track", () => {
       retryDelayMs: 1,
     });
     const resumed = createFixedPricePayDemSellerCoordinator({
+      executionMode: "simulation",
       store: restarted.createPayDemCoordinatorStore("seller"),
       workerId: "seller-coordinator-after-restart",
       operations: { payment: resumedPayment },
@@ -513,6 +520,7 @@ describe("native DEM seller payment track", () => {
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemSellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-coordinator-forged-binding",
       operations: { agreement: success(), payment },
