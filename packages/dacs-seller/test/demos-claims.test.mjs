@@ -3,7 +3,9 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/d
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import vm from 'node:vm';
+import {fileURLToPath} from 'node:url';
 import { privateKeyFromSeed, publicKeyFromSeed } from '@kynesyslabs/dacs';
 import { addressForClaim, claimForAddress, decodeSignature, normalizeDemosAddress, verifyDemosSignature, isCanonicalEd25519Signature, DemosClaimFormatError } from '../src/dacs/demos-claims.mjs';
 
@@ -208,7 +210,22 @@ for (const [label, make] of [
 });
 
 // The seller runner enables the VM isolation API (anchor-isolated-fixture.mjs) on both supported Node versions.
-test('CI runs the seller Node regression files', () => {
+test('CI runs every seller Node regression file with VM isolation and serial execution', async () => {
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /run: node --experimental-vm-modules --test --test-concurrency=1 packages\/dacs-seller\/test\/\*\.test\.mjs/);
+  assert.match(workflow, /run: npm run seller:test(?:\s|$)/);
+  const manifest=JSON.parse(readFileSync(new URL('../../../package.json',import.meta.url),'utf8'));
+  assert.equal(manifest.scripts['seller:test'],'node scripts/run-seller-tests.mjs');
+  const runnerUrl=new URL('../../../scripts/run-seller-tests.mjs',import.meta.url);
+  const context=vm.createContext({URL,process:{argv:[],execPath:process.execPath,exitCode:null}});
+  let invoked;
+  const imports={'node:fs':{readdirSync},'node:url':{fileURLToPath},'node:child_process':{spawnSync:(...args)=>{invoked=args;return{status:0};}}};
+  const runner=new vm.SourceTextModule(readFileSync(runnerUrl,'utf8'),{context,initializeImportMeta:meta=>{meta.url=runnerUrl.href;}});
+  await runner.link(specifier=>{const values=imports[specifier];assert.ok(values,`expected runner import ${specifier}`);return new vm.SyntheticModule(Object.keys(values),function(){for(const [name,value]of Object.entries(values))this.setExport(name,value);},{context});});
+  await runner.evaluate();
+  assert.equal(invoked[0],process.execPath);
+  const args=Array.from(invoked[1]);
+  for(const flag of ['--experimental-vm-modules','--test','--test-concurrency=1'])assert.ok(args.includes(flag),flag);
+  const files=readdirSync(new URL('./',import.meta.url)).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>'packages/dacs-seller/test/'+name);
+  assert.deepEqual(args.filter(arg=>arg.endsWith('.test.mjs')),files);
+  assert.equal(invoked[2].cwd,fileURLToPath(new URL('../../../',import.meta.url)));
 });

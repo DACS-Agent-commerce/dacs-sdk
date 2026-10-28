@@ -437,6 +437,11 @@ const sameJcs = (left: unknown, right: unknown): boolean => {
  * coverage of every required/oneOf member, this job's deal-specific results
  * and each result's address. The fulfilment core runs it over the audit
  * source at delivery.
+ *
+ * A presence-only member (`verificationRequired: false`) needs no result and
+ * may have none: DACS-2 forbids a synthetic VerifyResult for it. Its presence
+ * is counted by the strict replay of the Vet record over the authenticated
+ * bundle, which this structural check does not repeat.
  */
 export function isSellerFulfilmentVetInvocationMismatch(
   invocation: unknown,
@@ -467,14 +472,12 @@ export function isSellerFulfilmentVetInvocationMismatch(
         : undefined;
     const expectedCompositeAddress =
       `dacs2:composite:${context.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
-    const uncoveredRequired = invocation.requirement.required.some(
-      (required) => !expectedResults.some((result) =>
-        result.scheme === required.scheme && sameJcs(result.requirement, required)),
-    );
+    const isCovered = (claim: ClaimRequirement): boolean =>
+      !claim.verificationRequired || expectedResults.some((result) =>
+        result.scheme === claim.scheme && sameJcs(result.requirement, claim));
+    const uncoveredRequired = !invocation.requirement.required.every(isCovered);
     const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
-      (group) => group.length === 0 || !group.some((alternative) =>
-        expectedResults.some((result) =>
-          result.scheme === alternative.scheme && sameJcs(result.requirement, alternative))),
+      (group) => group.length === 0 || !group.some(isCovered),
     );
     return !binding || expectedVerifier === undefined ||
       invocation.evaluatedParty !== binding.primaryClaim ||
@@ -495,7 +498,8 @@ export function isSellerFulfilmentVetInvocationMismatch(
           seenResultHashes.has(result.ref.contentHash);
         seenResultRefs.add(refKey);
         seenResultHashes.add(result.ref.contentHash);
-        return duplicate || result.scheme !== result.requirement.scheme ||
+        return duplicate || !result.requirement.verificationRequired ||
+          result.scheme !== result.requirement.scheme ||
           result.ref.anchor.kind !== "storage-program" ||
           result.ref.anchor.locator !== expectedResultAddress ||
           !requirementCandidates.some((candidate) => sameJcs(candidate, result.requirement)) ||

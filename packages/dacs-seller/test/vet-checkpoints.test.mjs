@@ -10,10 +10,10 @@ import { seller, JOB, NOW } from './helpers/protocol-fixture.mjs';
 const api=await privateModule(new URL('../src/devnet-demo/agreement-context.mjs',import.meta.url),['partyVetState','durableOperationStore','freshOps']);
 const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 const request=(execute,changes={})=>({operationKey:'TEST-vet',operationHash:'a'.repeat(64),inputHash:'b'.repeat(64),step:'composite-anchor',execute,...changes});
-async function fixture(raw=createInMemoryPartyVetStore(),initialize=true){
+async function fixture(raw=createInMemoryPartyVetStore(),initialize=true,role='seller'){
  const state=api.partyVetState(raw,seller.claim),job={jobId:JOB,binding:{TEST:'exact binding'}},clock={step:null};
  if(initialize)await state.update(JOB,()=>({binding:job.binding,ops:api.freshOps()}));
- const durable=api.durableOperationStore(state,job,'seller',{now:()=>NOW,clock});
+ const durable=api.durableOperationStore(state,job,role,{now:()=>NOW,clock});
  return{raw,state,job,clock,durable,store:durable.operationStore};
 }
 
@@ -78,11 +78,11 @@ test('state metadata and canonical job boundaries reject foreign records',async(
  const f=await fixture();assert.deepEqual(await f.state.jobs(),[JOB]);await assert.rejects(f.state.read('bad:job'),e=>e.code==='job_invalid');
  const [key,row]=(await f.raw.entries())[0];await f.raw.update(key,()=>({...row,writer:'TEST other writer'}));await assert.rejects(f.state.read(JOB),e=>e.code==='indeterminate');f.raw.close();
 });
-test('interrupted signature save retains a terminal failure across restart without signing twice',async()=>{
+for(const role of ['buyer','seller'])test(`interrupted ${role} composite signature save retains a terminal failure across restart without signing twice`,async()=>{
  const raw=createInMemoryPartyVetStore();let interrupt=true,signs=0,active;
- const flaky={...raw,update:(key,change)=>raw.update(key,(current,rows)=>{const next=change(current,rows);if(interrupt&&Object.values(next?.ops?.seller?.signing??{}).some(row=>row.signature!==undefined)){interrupt=false;throw new Error('TEST signature save interrupted');}return next;})};
- active=await fixture(flaky);const input=request(async()=>{const bytes=Buffer.from('TEST durable signature');const prior=await active.durable.writeAhead(bytes);const signature=prior??(++signs,seller.signBytes(bytes).toString('base64url'));await active.durable.recordSignature(bytes,signature);return{signature};},{step:'composite'});
- await assert.rejects(active.store.runOnce(input),/signature save interrupted/);active=await fixture(raw,false);await assert.rejects(active.store.runOnce(input),/signature save interrupted/);assert.equal(signs,1);raw.close();
+ const flaky={...raw,update:(key,change)=>raw.update(key,(current,rows)=>{const next=change(current,rows);if(interrupt&&Object.values(next?.ops?.[role]?.signing??{}).some(row=>row.signature!==undefined)){interrupt=false;throw new Error('TEST signature save interrupted');}return next;})};
+ active=await fixture(flaky,true,role);const input=request(async()=>{const bytes=Buffer.from('TEST durable signature');const prior=await active.durable.writeAhead(bytes);const signature=prior??(++signs,seller.signBytes(bytes).toString('base64url'));await active.durable.recordSignature(bytes,signature);return{signature};},{step:'composite'});
+ await assert.rejects(active.store.runOnce(input),/signature save interrupted/);active=await fixture(raw,false,role);await assert.rejects(active.store.runOnce(input),/signature save interrupted/);assert.equal(signs,1);raw.close();
 });
 test('legacy successful results replay but an unfinished legacy signing step remains held',async()=>{
  const f=await fixture();let effects=0;const input=request(async()=>{effects++;return{};},{step:'composite'}),key=canonicalize({operationKey:input.operationKey,step:input.step});
