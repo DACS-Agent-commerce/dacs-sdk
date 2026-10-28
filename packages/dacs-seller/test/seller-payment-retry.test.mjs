@@ -197,18 +197,28 @@ test('an uncertain payment claim reconciles read only once its session delegatio
   assert.equal(w.calls.length, 1, 'and the claim never runs again');
 });
 
-test('a completed delivery answer is replayed, not republished, once its session delegation expired', async (t) => {
-  const deferred = { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'deferred-to-explicit-sdk-finaliser' } };
-  const publication = { enabled: false, calls: [] };
-  const w = await delegatedWorld(t, [deferred, DELIVERED], publication);
-  assert.deepEqual(await w.pay(), deferred, 'the order completes with publication off');
-  assert.equal(w.calls.length, 1);
+// The saved answer alone does not authenticate current payment, Deliverable or
+// delivery evidence, and re-running the claim under an expired delegation could
+// publish a new evidence CREATE. Neither is allowed: the transport holds.
+const DEFERRED = { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'deferred-to-explicit-sdk-finaliser' } };
+for (const [label, answers, enabled] of [
+  ['delivery-ready', [DEFERRED, DELIVERED], false],
+  ['delivered', [DELIVERED], true],
+]) test(`a completed ${label} answer is held, never replayed unauthenticated, once its session delegation expired`, async (t) => {
+  const publication = { enabled, calls: [] };
+  const w = await delegatedWorld(t, answers, publication);
+  const first = await w.pay();
+  assert.equal(first.delivery?.status, label === 'delivered' ? 'delivered' : 'delivery-ready', 'the order completes');
+  const agentCalls = w.calls.length, publications = publication.calls.length;
   w.expire();
   publication.enabled = true; // the operator switches publication on for the restarted seller
-  assert.deepEqual(await w.pay(), deferred, 'the journaled delivery answer is read back');
-  assert.deepEqual(await w.pay(), deferred);
-  assert.equal(w.calls.length, 1, 'the claim never runs again under the expired delegation');
-  assert.deepEqual(publication.calls, [], 'no delivery evidence CREATE is asked for after expiry');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const held = await w.pay();
+    assert.equal(held.status, 'held', 'a cached completion is not reported as success under an expired delegation');
+    assert.match(held.reason ?? '', /delegation_expired/);
+  }
+  assert.equal(w.calls.length, agentCalls, 'the claim never runs again under the expired delegation');
+  assert.equal(publication.calls.length, publications, 'no delivery evidence CREATE is asked for after expiry');
 });
 
 test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
