@@ -28,7 +28,7 @@ test('issued challenge survives authenticated database reopen with every bound f
  const f=fixture(t),agent=await f.open(),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
  const reopened=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});try{const prior=reopened.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});assert.deepEqual(prior,{kind:'session-challenge',...issued,attempt:null});}finally{reopened.close();}
 });
-for(const durable of [true,false])test(`${durable?'durable':'memory'} challenges enforce total capacity and reclaim expired unused nonces`,async t=>{
+for(const durable of [true,false])test(`${durable?'durable':'memory'} challenges enforce total capacity and stop counting expired unused nonces`,async t=>{
  const f=fixture(t),options={maxJobs:1,...durable?{}:{durableDirectory:undefined}},agent=await f.open(options);let current=agent;
  t.after(()=>current.close());const first=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});assert.throws(()=>agent.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
  if(durable){agent.close();current=await f.open(options);assert.throws(()=>current.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');}
@@ -46,8 +46,20 @@ test('per-job challenge capacity applies before the global bound',async t=>{
  const f=fixture(t),agent=await f.open({maxJobs:32});t.after(()=>agent.close());for(let i=0;i<16;i++)agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});
  assert.throws(()=>agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');assert.ok(agent.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}));
 });
-test('expired accepted challenges remain retained rather than authorizing another issue at capacity',async t=>{
+test('an expired unused challenge is retained across restart and does not consume live capacity',async t=>{
  const f=fixture(t),agent=await f.open({maxJobs:1}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));state.close();
- f.advance(issued.expiresAt-NOW+1);const fresh=await f.open({maxJobs:1});try{assert.throws(()=>fresh.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');}finally{fresh.close();}
+ f.advance(issued.expiresAt-NOW+1);
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
+ try{assert.deepEqual(state.challenge(issued.sessionNonce),{kind:'session-challenge',...issued,attempt:null},'CORE SN-4 retains the unused issuance record');}finally{state.close();}
+ const fresh=await f.open({maxJobs:1});try{assert.ok(fresh.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}));}finally{fresh.close();}
+});
+test('an attempted, admitted challenge stays retained but does not consume live capacity after expiry',async t=>{
+ const otherJob='01J8N4YV7YVYQ4DB7M8T4C7W0B';
+ const f=fixture(t),agent=await f.open({maxJobs:1}),issued=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
+ try{state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));}finally{state.close();}
+ f.advance(issued.expiresAt-NOW+1);
+ const fresh=await f.open({maxJobs:1});try{assert.ok(fresh.issueSessionChallenge({jobId:otherJob,buyer:buyer.claim}),'a consumed challenge is a retained tombstone, not a live slot');}finally{fresh.close();}
+ const reopened=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
+ try{assert.deepEqual(reopened.challenge(issued.sessionNonce).attempt,{presentationHash:'a'.repeat(64),admitted:true});}finally{reopened.close();}
 });
