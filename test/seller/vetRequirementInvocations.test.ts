@@ -250,6 +250,55 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     expect(check([entry, valid[1]], requirement)).toBeNull();
   });
 
+  // DACS-2 v0.6 forbids a synthetic VerifyResult for a presence-only claim: the
+  // strict replay counts it in the authenticated bundle, so the invocation
+  // carries no result for it.
+  describe("presence-only claims", () => {
+    const presenceClaim: ClaimRequirement = { scheme: "key", verificationRequired: false };
+    const otherPresenceClaim: ClaimRequirement = { scheme: "did", verificationRequired: false };
+
+    test("accepts a presence-only required claim that no result covers", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement)).toBeNull();
+    });
+
+    test("accepts a oneOf group whose alternative is presence-only", () => {
+      const requirement = { ...buyerRequirement, oneOf: [[presenceClaim, otherPresenceClaim]] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement)).toBeNull();
+      const mixed = { ...buyerRequirement, oneOf: [[requiredClaim, presenceClaim]] };
+      expect(check([invocation(buyer, sellerClaim, mixed), valid[1]], mixed)).toBeNull();
+    });
+
+    test("accepts a presence-only claim next to a verified claim that its result covers", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim, requiredClaim] };
+      const entry = invocation(buyer, sellerClaim, requirement);
+      entry.freshness = [expectedResult(requiredClaim)];
+      expect(check([entry, valid[1]], requirement)).toBeNull();
+    });
+
+    test("still refuses an uncovered verified required claim next to a presence-only claim", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim, requiredClaim] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement))
+        .toMatch(/differs from its party/);
+    });
+
+    test("still refuses a oneOf group of only uncovered verified alternatives", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim], oneOf: [[requiredClaim]] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement))
+        .toMatch(/differs from its party/);
+    });
+
+    test("refuses a synthetic result bound to a presence-only claim", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim] };
+      const entry = invocation(buyer, sellerClaim, requirement);
+      entry.freshness = [expectedResult(presenceClaim)];
+      expect(check([entry, valid[1]], requirement)).toMatch(/differs from its party/);
+      entry.freshness = [];
+      entry.dealSpecific = [expectedResult(presenceClaim)];
+      expect(check([entry, valid[1]], requirement)).toMatch(/differs from its party/);
+    });
+  });
+
   test("binds the evaluated party to its authenticated claim even with a consistent locator", () => {
     const otherClaim = `did:demos:agent:${"a2".repeat(32)}`;
     const movedBuyer = { ...buyer, vetRecordRef: recordRef(otherClaim, sellerClaim) };
