@@ -5,7 +5,7 @@ import { productionFixture } from './helpers/vet-production-fixture.mjs';
 import { JOB, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 
-test('staged Vet factory refuses before any signer, anchor or row operation',()=>{
+test('Vet factory validates ownership before any signer, anchor or row operation',()=>{
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
  assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{claim:seller.claim,signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled|Vet producer and native anchor/);assert.equal(effects,0);
 });
