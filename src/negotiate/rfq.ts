@@ -106,6 +106,10 @@ export interface RfqSessionState {
   maxTurns: number;
   timeoutMs: number;
   startedAt: number;
+  /**
+   * Trusted receipt time the current wait began: the last proposal while
+   * open, the acceptance once accepted (the agreement exchange's deadline).
+   */
   awaitingSince: number;
   expectedSender: string;
   lastSequence: number;
@@ -1024,6 +1028,7 @@ export async function advanceRfqSession<TSignature = unknown>(
           lastSequence: message.sequence,
           lastMessageHash: admitted.envelopeHash,
           turnCount,
+          awaitingSince: receivedAt,
           status: "accepted",
           terminalReason: "standing RFQ proposal accepted",
         }),
