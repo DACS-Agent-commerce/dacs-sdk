@@ -1098,6 +1098,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const report = deliveryReport(session, work.intake.settlementId);
     const binding = nativeDeliveryBinding(session, work, result.fulfilmentId);
     if (session.deliveryAdapter && (session.deliveryAdapter.fulfilmentId !== result.fulfilmentId ||
+        !session.deliveryAdapter.deliveryBinding ||
         canonicalize(session.deliveryAdapter.deliveryBinding) !== canonicalize(binding))) {
       return { status: 'held', reason: 'retained native delivery recovery binding differs from the SDK fulfilment intent' };
     }
@@ -1109,9 +1110,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       return { status: 'held', reason: `native delivery reconciliation readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` };
     }
     if (isProvenUnsignedAbsence(read)) return { status: 'askable' };
-    if (read.status !== 'present') return { status: 'held', reason: read.reason ?? 'original native Deliverable CREATE is not authenticated on fresh readback' };
+    if (read?.status !== 'present') return { status: 'held', reason: read?.reason ?? 'original native Deliverable CREATE is not authenticated on fresh readback' };
+    const reconciliationId = read.receipt?.transactionRef?.value;
+    if (typeof reconciliationId !== 'string' || !reconciliationId) {
+      return { status: 'held', reason: 'a present native Deliverable readback has no authenticated transaction reference' };
+    }
     session.deliveryAdapter = { fulfilmentId: result.fulfilmentId, deliveryBinding: binding,
-      reconciliationId: read.receipt.transactionRef.value, substrate: 'source-native-delivery-recovered-readonly' };
+      reconciliationId, substrate: 'source-native-delivery-recovered-readonly' };
     persist(session);
     return { status: 'present' };
   }
