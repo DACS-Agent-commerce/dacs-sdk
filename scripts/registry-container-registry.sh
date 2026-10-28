@@ -108,6 +108,12 @@ start_registry() {
   case "$host_port" in
     ''|*[!0-9]*) echo "Verdaccio host port is invalid" >&2; exit 1 ;;
   esac
+  # Bound the digit count before arithmetic; 10# also accepts leading zeros.
+  if [ "${#host_port}" -gt 5 ]; then echo "Verdaccio host port is invalid" >&2; exit 1; fi
+  host_port=$((10#$host_port))
+  if [ "$host_port" -lt 1 ] || [ "$host_port" -gt 65535 ]; then
+    echo "Verdaccio host port is invalid" >&2; exit 1
+  fi
   host_registry="http://127.0.0.1:$host_port"
   # Resolve the policy-approved alias to Verdaccio inside this run's bridge,
   # including the dedicated builder, rather than to the machine's gateway.

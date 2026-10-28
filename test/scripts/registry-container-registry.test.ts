@@ -79,6 +79,19 @@ start_registry`, { registry_network: "fixture", registry_container: "fixture", r
   });
 });
 
+describe("registry host port", () => {
+  it.each(["0", "65536"])("rejects unusable host port %s before exporting a registry URL", port => {
+    const result = runStages(`
+pull_bounded() { :; }
+docker() { if [ "$1" = inspect ]; then printf '%s\\n' "$host_port_fixture"; fi; }
+start_registry
+echo started`, { host_port_fixture: port, registry_network: "fixture", registry_container: "fixture",
+      registry_log: "/dev/null", registry_config: "/fixture/config" });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("started");
+  });
+});
+
 function verdaccioConfig() {
   const path = join(scratch(), "verdaccio.yaml");
   const result = runStages("write_registry_config", { registry_config: path });
