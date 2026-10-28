@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openSellerIssuanceJournals } from '../src/devnet-demo/seller-issuance.mjs';
 import { parsePolicyLedger,SELLER_LEDGER_HEADER_FORMAT } from '../src/devnet-demo/operator-approval.mjs';
+import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
 import { T0 } from './helpers/d5-policy-fixtures.mjs';
 
 // An in-memory durable wallet journal opener with the opener contract
@@ -53,6 +54,23 @@ for(const [label,existing] of [
  assert.equal((await firstLine(directory)).format,SELLER_LEDGER_HEADER_FORMAT);assert.equal(text.split('\n')[1],legacyRow);assert(text.endsWith('\n'));
  assert.doesNotThrow(()=>parsePolicyLedger(text));
  assert.equal((await start(directory,openJournal)).length,3);
+});
+
+// Every ledger write a start makes waits for the ledger's writer lock: while another process holds it
+// mid-transaction, the start refuses and the ledger keeps its exact bytes (no line appended meanwhile is lost).
+for(const [label,existing] of [
+ ['a headerless ledger it would rewrite',async()=>`${legacyRow}\n`],
+ ['a bound ledger with a torn header it would rewrite',async(directory,openJournal)=>{await start(directory,openJournal);return `${legacyRow}\n${(await readFile(ledgerPath(directory),'utf8')).slice(0,60)}`;}],
+ ['a bound ledger whose header lacks the newline it would append',async(directory,openJournal)=>{await start(directory,openJournal);return (await readFile(ledgerPath(directory),'utf8')).trimEnd();}],
+])test(`a start refuses ${label} while another writer holds the ledger lock`,async t=>{
+ const directory=await stateDirectory(t),openJournal=journalOpener(),ledger=await existing(directory,openJournal);
+ await mkdir(join(directory,'evidence'),{recursive:true,mode:0o700});await writeFile(ledgerPath(directory),ledger,{mode:0o600});
+ await mkdir(`${ledgerPath(directory)}.policy-lock`,{recursive:true,mode:0o700});
+ const writer=await acquireSellerStateLock(`${ledgerPath(directory)}.policy-lock`,{now:()=>T0});
+ await assert.rejects(start(directory,openJournal),{code:'seller_state_locked'});
+ assert.equal(await readFile(ledgerPath(directory),'utf8'),ledger);
+ writer.release();assert.equal((await start(directory,openJournal)).length,3);
+ assert.equal(parsePolicyLedger(await readFile(ledgerPath(directory),'utf8')).header.format,SELLER_LEDGER_HEADER_FORMAT);
 });
 
 test('a torn header cut from a bound ledger is written whole before its rows and starts again',async t=>{
