@@ -18,11 +18,13 @@ async function privateDirectory(path){
   path=resolve(path);
   await mkdir(path,{recursive:true,mode:0o700});
   path=await realpath(path);const info=await lstat(path);if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid()))throw new Error('operator custody directory must be a private real mode-0700 directory owned by this process user');
-  // A directory's name is durable only once the entry is synced in its parent.
-  // mkdir may have created several ancestors, and a retry cannot tell which
-  // earlier attempt synced, so sync every parent on every successful return.
-  for(let current=path;;){const parent=dirname(current);if(parent===current)break;await syncDirectory(parent);current=parent;}
   return path;
+}
+// A directory's name is durable only once the entry is synced in its parent.
+// mkdir may have created several ancestors, and a retry cannot tell which
+// earlier attempt synced, so writers sync every parent on every return.
+async function syncDirectoryChain(path){
+  for(let current=path;;){const parent=dirname(current);if(parent===current)break;await syncDirectory(parent);current=parent;}
 }
 async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');return info;}
 
@@ -145,7 +147,7 @@ async function ensureWallet({directory,role,walletRuntime}){
  * the process lock; retry after that repair has finished.
  */
 export async function bootstrapTestWalletCustody({directory,publicOrigin}){
-  directory=await privateDirectory(directory);const walletRuntime=await runtime(publicOrigin);const wallets=[];
+  directory=await privateDirectory(directory);await syncDirectoryChain(directory);const walletRuntime=await runtime(publicOrigin);const wallets=[];
   for(const role of ['buyer','seller'])wallets.push(await ensureWallet({directory,role,walletRuntime}));
   await syncDirectory(directory);
   return Object.freeze({directory,wallets,note:'Recovery phrases remain only in the named mode-0600 files and were not returned.'});
@@ -221,6 +223,6 @@ export async function ensureOperatorSecret({directory}){
     stored=await publishFileExclusive(path,`${JSON.stringify(value)}\n`)?value.cookieKey:await readOperatorSecret(path);
     if(stored===null)throw new Error('operator secret disappeared during initialization');
   }
-  await syncDirectory(directory);
+  await syncDirectoryChain(directory);await syncDirectory(directory);
   return stored;
 }
