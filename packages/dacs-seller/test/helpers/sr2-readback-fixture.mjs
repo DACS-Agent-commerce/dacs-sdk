@@ -4,12 +4,14 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../sr
 import { seller, NOW, JOB } from './protocol-fixture.mjs';
 
 export function readbackFixture(options = {}) {
-  const logicalAddress = `dacs4:deliverable:${JOB}`, artifact = { report: 'TEST storage readback' };
+  const logicalAddress = options.logicalAddress ?? `dacs4:deliverable:${JOB}`, artifact = options.artifact ?? { report: 'TEST storage readback' };
   const programName = logicalToStorageProgramName(logicalAddress);
   const nativeAddress = deriveStorageAddress(seller.address, programName, 1);
   const signed = buildStorageProgramCreatePayload({ from: seller.address, storageAddress: nativeAddress, programName, logicalAddress, signedListing: artifact, nonce: 1, timestamp: NOW });
   signed.content.from_ed25519_address = seller.address;
   signed.content.data[1].metadata = { logicalAddress, artifactKind: 'Deliverable', contentHash: contentHash(artifact), envelopeHash: sha256Hex(canonicalize(artifact)) };
+  Object.assign(signed.content.data[1].metadata, options.metadata);
+  if (signed.content.data[1].metadata.artifactKind === undefined) delete signed.content.data[1].metadata.artifactKind;
   signed.hash = sha256Hex(JSON.stringify(signed.content));
   signed.signature = { type: 'ed25519', data: `0x${seller.signBytes(Buffer.from(signed.hash)).toString('hex')}` };
   const tx = { ...structuredClone(signed), status: 'confirmed', blockNumber: 1 };
@@ -31,5 +33,5 @@ export function readbackFixture(options = {}) {
   };
   const journal = options.journal ?? createInMemoryDemosSr2Journal();
   const adapter = createDemosSr2Adapter({ rpcUrl: 'http://127.0.0.1:9922/', journal, fetchImpl, now: () => NOW, ...options.adapter });
-  return { ...state, state, adapter, journal, logicalAddress, artifact, expectedWriter: seller.claim };
+  return { ...state, state, adapter, journal, fetchImpl, logicalAddress, artifact, expectedWriter: seller.claim };
 }

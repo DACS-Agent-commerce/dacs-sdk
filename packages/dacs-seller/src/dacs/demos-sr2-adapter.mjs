@@ -33,6 +33,8 @@ const labelReceipt = (receipt, labels) => ({ ...receipt, substrate: labels.subst
 const hasReceiptLabels = (receipt, labels) => receipt.substrate === labels.substrate && receipt.finalityProfile === labels.finalityProfile
   && receipt.state === labels.state && receipt.evidence.kind === labels.evidenceKind;
 export const DEMOS_SR2_FIXTURE_CHAIN_IDENTITY = sha256Hex('dacs-chatgpt-plugin/demos-sr2-sdk-wire-fixture/v1');
+/** Byte cap on one node reply; callers also bound their own inputs by it. */
+export const DEMOS_SR2_REPLY_BYTES = 1024 * 1024;
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
 const MAX_NATIVE_CANDIDATES = 32;
 const HASH = /^[0-9a-f]{64}$/;
@@ -114,6 +116,11 @@ export function createInMemoryDemosSr2Journal(initial = []) {
   };
 }
 
+/** Transaction reference for an authenticated receipt: its native address and CREATE hash. */
+export function demosSr2TxRef(receipt) {
+  return { kind: 'storage-program', address: receipt.nativeAddress, writeTxHash: receipt.transactionRef.value };
+}
+
 export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null }) {
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
   const endpoint = new URL(rpcUrl);
@@ -144,9 +151,9 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   async function call(path, body) {
     try {
       const signal = readBudget.getStore(); signal?.throwIfAborted();
-      if(sourceCapability) return await sourceCapability.readRpc(path,body,{signal,maxBytes:1024*1024,timeoutMs});
+      if(sourceCapability) return await sourceCapability.readRpc(path,body,{signal,maxBytes:DEMOS_SR2_REPLY_BYTES,timeoutMs});
       return await fetchBoundedJson(`${base}${path}`, {
-        method: body === undefined ? 'GET' : 'POST', body, timeoutMs, maxBytes: 1024 * 1024, expectedOrigin: base,
+        method: body === undefined ? 'GET' : 'POST', body, timeoutMs, maxBytes: DEMOS_SR2_REPLY_BYTES, expectedOrigin: base,
         fetchImpl: async (url, options) => {
           const signal = readBudget.getStore(); signal?.throwIfAborted();
           const response = await fetchImpl(url, { ...options, signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal });
@@ -318,22 +325,59 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
 
   const read = (logicalAddress, options) => boundedRead(() => readCurrent(logicalAddress, options));
 
+  // A receipt is decoded only after it carries this adapter's labels; the
+  // proof codec reads Demos labels, so it gets a relabelled copy.
+  function receiptProof(receipt, expectedWriter, signedProjection) {
+    if (!isAnchorReceipt(receipt) || !expectedWriter || receipt.writer !== expectedWriter) reject('invalid', 'an exact writer-bound receipt is required');
+    if (!hasReceiptLabels(receipt, receiptLabels)) reject('invalid', `receipt does not carry the ${mode} labels`);
+    const proof = decodeDemosAnchorReceiptProof(labelReceipt(receipt, DEMOS_FINALITY_RECEIPT));
+    if (proof.chainIdentity !== expectedIdentity || (signedProjection !== undefined && signedProjection?.hash !== receipt.transactionRef.value)) reject('invalid', 'receipt binds another chain or projection');
+    return proof;
+  }
+
   // Reauthenticate current inclusion and native state, then compare every
-  // receipt field while retaining the original observation timestamp.
+  // labelled receipt field while retaining the original observation timestamp.
+  // Returns the fresh authenticated read.
+  async function reauthenticate(receipt, { expectedWriter, signedProjection, ...readOptions }) {
+    const fresh = await read(receipt.logicalAddress, { ...readOptions, expectedWriter, signedProjection, nativeAddress: receipt.nativeAddress });
+    fresh.demosEvidence.nativeRead.observedAt = receipt.observedAt;
+    if (!demosWriteEvidenceBindsReceiptContent(fresh.demosEvidence, receipt.logicalAddress, receipt.contentHash)) reject('invalid', 'receipt content hash differs');
+    const expected = labelReceipt(demosWriteEvidenceToAnchorReceipt({ logicalAddress: receipt.logicalAddress, contentHash: receipt.contentHash, writer: expectedWriter, evidence: fresh.demosEvidence }), receiptLabels);
+    if (canonicalize(expected) !== canonicalize(receipt)) reject('invalid', 'receipt differs from current authenticated evidence');
+    return fresh;
+  }
+
   async function recheck(receipt, { expectedWriter, signedProjection } = {}) {
     return boundedRead(async () => {
-      if (!isAnchorReceipt(receipt) || !expectedWriter || receipt.writer !== expectedWriter) reject('invalid', 'an exact writer-bound receipt is required');
-      if (!hasReceiptLabels(receipt, receiptLabels)) reject('invalid', `receipt does not carry the ${mode} labels`);
-      const proof = decodeDemosAnchorReceiptProof(labelReceipt(receipt, DEMOS_FINALITY_RECEIPT));
-      if (proof.chainIdentity !== expectedIdentity || (signedProjection !== undefined && signedProjection?.hash !== receipt.transactionRef.value)) reject('invalid', 'receipt binds another chain or projection');
-      const fresh = await read(receipt.logicalAddress, { expectedWriter, signedProjection, nativeAddress: receipt.nativeAddress });
-      fresh.demosEvidence.nativeRead.observedAt = receipt.observedAt;
-      if (!demosWriteEvidenceBindsReceiptContent(fresh.demosEvidence, receipt.logicalAddress, receipt.contentHash)) reject('invalid', 'receipt content hash differs');
-      const expected = labelReceipt(demosWriteEvidenceToAnchorReceipt({ logicalAddress: receipt.logicalAddress, contentHash: receipt.contentHash, writer: expectedWriter, evidence: fresh.demosEvidence }), receiptLabels);
-      if (canonicalize(expected) !== canonicalize(receipt)) reject('invalid', 'receipt differs from current authenticated evidence');
+      receiptProof(receipt, expectedWriter, signedProjection);
+      await reauthenticate(receipt, { expectedWriter, signedProjection });
       return { status: 'present', evidenceMode: mode };
     });
   }
 
-  return { read, recheck };
+  /**
+   * Check that `receipt` anchors exactly `artifact` for `expectedWriter`, through
+   * the same reauthentication as `recheck`. The artifact's content hash uses
+   * its kind's signed scope unless `receiptContentHash` is given. Returns
+   * 'valid', 'invalid', or 'indeterminate' when the chain could not be observed;
+   * never throws.
+   */
+  async function verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind, deliveryBinding, receiptContentHash, signedProjection }) {
+    try {
+      return await boundedRead(async () => {
+        const hash = receiptContentHash === undefined ? artifactContentHash(artifact, artifactKind) : receiptContentHash;
+        if (!isAnchorReceipt(receipt) || receipt.logicalAddress !== logicalAddress || receipt.contentHash !== hash
+          || hash !== artifactContentHash(artifact, artifactKind)) return 'invalid';
+        const proof = receiptProof(receipt, expectedWriter, signedProjection);
+        const derived = deriveStorageAddress(addressForClaim(expectedWriter), logicalToStorageProgramName(logicalAddress), Number(receipt.nonce), '');
+        if (derived !== receipt.nativeAddress || proof.nativeRead.valueHash !== exactHash(artifact)) return 'invalid';
+        const fresh = await reauthenticate(receipt, { expectedWriter, signedProjection, expectedArtifactKind: artifactKind, expectedDeliveryBinding: deliveryBinding });
+        return exactHash(fresh.artifact) === exactHash(artifact) ? 'valid' : 'invalid';
+      });
+    } catch (error) {
+      return error?.code === 'indeterminate' ? 'indeterminate' : 'invalid';
+    }
+  }
+
+  return { read, recheck, verifyReceipt };
 }
