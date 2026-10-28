@@ -2,11 +2,11 @@ import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
-import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
+import { brotliCompressSync, deflateRawSync, deflateSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 const { installBoundedNpmHttp, readBoundedResponse, responseBudget, NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_JSON_MAX_ENTRIES } = require("../../scripts/bounded-npm-http.cjs");
@@ -38,6 +38,19 @@ describe("inert bounded npm HTTP admission", () => {
   it("decodes the x-gzip alias npm's fetch accepts", async () => {
     const body = gzipSync(Buffer.from("{}"));
     expect((await readBoundedResponse(response([body], { "content-encoding": "x-gzip" }), 1024)).toString()).toBe("{}");
+  });
+  it.each(["deflate", "x-deflate"])("decodes wrapped and raw %s forms npm's reader accepts", async encoding => {
+    const body = Buffer.from("{}");
+    expect((await readBoundedResponse(response([deflateSync(body)], { "content-encoding": encoding }), 1024)).toString()).toBe("{}");
+    expect((await readBoundedResponse(response([deflateRawSync(body)], { "content-encoding": encoding }), 1024)).toString()).toBe("{}");
+  });
+  it.each(["deflate", "x-deflate"])("bounds %s expansion in wrapped and raw forms", async encoding => {
+    await expect(readBoundedResponse(response([deflateSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
+    await expect(readBoundedResponse(response([deflateRawSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
+  });
+  it.each(["gzip", "x-gzip", "deflate", "x-deflate", "br"])("forwards an empty %s body without a decompression failure", async encoding => {
+    // A redirect or empty reply may keep a compression header; npm accepts it.
+    expect(await readBoundedResponse(response([], { "content-encoding": encoding }), 1024)).toHaveLength(0);
   });
   it.each([
     ["a HEAD request", 200, "HEAD"],
@@ -149,6 +162,18 @@ describe("inert bounded npm HTTP admission", () => {
     installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
     const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
     transport.request().emit("response", response([gzipSync(Buffer.alloc(65 * 1024 * 1024))]));
+    expect(await rejected).toMatchObject({ code: "ELIMIT" });
+  });
+  it("keeps the audit budget even when a gzip body would expand into a tar", async () => {
+    // The tar promotion belongs to archive-capable metadata requests; an audit
+    // reply stays at its own decoded ceiling.
+    const tar = Buffer.alloc(512 + 17 * 1024 * 1024);
+    tar.write("ustar", 257, "latin1");
+    const pending = Object.assign(new EventEmitter(), { path: "/-/npm/v1/security/audits/quick", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
+    transport.request().emit("response", response([gzipSync(tar)]));
     expect(await rejected).toMatchObject({ code: "ELIMIT" });
   });
   it("keeps separate finite wire and unpacked archive bounds", async () => {
@@ -386,6 +411,20 @@ describe("bounded generated build", () => {
       expect(existsSync(`${target}.${process.pid}.tmp`)).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  it("flushes a replacement to durable storage before publishing it", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-flush-"));
+    try {
+      const target = join(root, ".dockerignore");
+      writeFileSync(target, "**\n");
+      let writeOptions: unknown;
+      replaceFile(target, "!acceptance-npm-http.cjs\n", {
+        write: (temporary: string, contents: string, options: unknown) => { writeFileSync(temporary, contents); writeOptions = options; },
+        rename: (temporary: string, path: string) => renameSync(temporary, path),
+      });
+      expect(writeOptions).toEqual({ flush: true });
+      expect(readFileSync(target, "utf8")).toBe("!acceptance-npm-http.cjs\n");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("does not duplicate an existing ignore exception and refuses repeated output creation", () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-bounded-repeat-"));
     try {
@@ -414,4 +453,16 @@ it("sources transport budgets without executing the command CLI and preserves fa
   const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", "source scripts/bounded-transport.sh; run_bounded node -e 'console.log(process.env.DACS_BOUNDED_NPM_HTTP, process.env.npm_config_fetch_retries); process.exit(17)'"],
     { encoding: "utf8", env: { PATH: process.env.PATH } });
   expect(result.status, result.stderr).toBe(17); expect(result.stdout).toBe("1 2\n");
+});
+it("scopes npm admission to the bounded wrappers instead of the whole shell", () => {
+  // A non-npm Node process the rehearsal runs later must not inherit npm's
+  // budgets, decoders and deadlines through a global NODE_OPTIONS.
+  const script = "source scripts/bounded-transport.sh; " +
+    "printf 'shell:%s:%s\\n' \"${NODE_OPTIONS-}\" \"${DACS_BOUNDED_NPM_HTTP-}\"; " +
+    "run_bounded node -e 'console.log(\"child:\" + process.env.DACS_BOUNDED_NPM_HTTP + \":\" + (process.env.NODE_OPTIONS || \"\"))'";
+  const result = spawnSync("bash", ["--norc", "--noprofile", "-euc", script], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  expect(result.status, result.stderr).toBe(0);
+  const lines = result.stdout.trim().split("\n");
+  expect(lines[0]).toBe("shell::");
+  expect(lines[1]).toMatch(/^child:1:.*--require=.*bounded-npm-http\.cjs/);
 });
