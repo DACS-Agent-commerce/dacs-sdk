@@ -111,6 +111,14 @@ test('a new custody directory is synced in every parent this bootstrap creates',
   }
 });
 
+test('an oversized role file is refused before it is parsed', async (t) => {
+  const { bootstrap, directory } = await fixture(t);
+  const content = 'x'.repeat(64 * 1024 + 1);
+  await writeFile(join(directory, BUYER), content, { mode: 0o600 });
+  await assert.rejects(bootstrap(), /buyer custody record is larger than 65536 bytes/);
+  assert.equal(await read(directory, BUYER), content);
+});
+
 test('bootstrap syncs each file before publishing it and the directory after', async (t) => {
   const { bootstrap, directory, normalized } = await fixture(t);
   await bootstrap();
