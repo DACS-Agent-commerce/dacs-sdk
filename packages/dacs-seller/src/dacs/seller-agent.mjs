@@ -1428,10 +1428,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   async function advanceAuthenticatedNativeDelivery(session, work, read) {
     if (!deliveryContext) return nativeEvidenceResponse(work, 'held-missing-consumed-v2-fulfilment-and-Vet-audit');
     if (nativeDelivery && session.deliveryReady) return readPersistedNativeDelivery(session, work);
-    if (session.deliveryHold?.result?.code === 'delivery-submission-ambiguous') {
-      const recovered = await recoverNativeSdkDelivery(session, work);
-      if (recovered) return recovered;
-    }
     const recovery = await recoverNativeDeliveryBinding(session, work);
     if (recovery.status === 'held') {
       session.deliveryHold = { reason: recovery.reason, ...(session.deliveryHold?.result ? { result: session.deliveryHold.result } : {}) };
@@ -1459,33 +1455,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       contentHash: deliveredHash, anchorReceipt: result.anchorReceipt, evidenceHash: result.evidenceHash,
       ...(nativeDelivery ? { deliveryBinding: nativeDeliveryBinding(session, work, result.fulfilmentId) } : {}),
       substrate: nativeDelivery ? nativeDeliverySubstrate : 'mixed-test-native-payment-plus-loopback-sr2-delivery', evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
-  }
-
-  async function recoverNativeSdkDelivery(session, work) {
-    const recovery = await recoverNativeDeliveryBinding(session, work);
-    if (recovery.status === 'not-needed') return null;
-    if (recovery.status === 'held') {
-      session.deliveryHold = { reason: recovery.reason, ...(session.deliveryHold?.result ? { result: session.deliveryHold.result } : {}) };
-      persist(session);
-      return nativeEvidenceResponse(work, { status: 'held', reason: recovery.reason });
-    }
-    const delivery = await runSdkDeliveryReady(session, work, { receipt: work.nativeReceipt });
-    if (delivery.status !== 'delivery-ready') {
-      session.deliveryHold = { reason: delivery.reason, ...(delivery.result ? { result: structuredClone(delivery.result) } : {}) };
-      persist(session);
-      return nativeEvidenceResponse(work, { status: 'held', reason: delivery.reason });
-    }
-    const result = delivery.ready.result, deliveredHash = sha256Hex(canonicalize(result.artifact.anchoredValue));
-    const binding = nativeDeliveryBinding(session, work, result.fulfilmentId);
-    session.deliveryReady = { fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress, contentHash: deliveredHash,
-      anchorReceipt: structuredClone(result.anchorReceipt), evidenceHash: result.evidenceHash, ...(deliveryEvidenceEnabled?{evidence:structuredClone(result.evidence)}:{}), paymentPermitId: work.intake.permitId,
-      finalisation: structuredClone(delivery.ready.finalisation), auditSource: structuredClone(delivery.auditSource),
-      deliveryBinding: binding, substrate: 'source-native-one-node-delivery' };
-    session.stage = 'delivery-ready';
-    persist(session);
-    return finishDeliveryEvidence(session, work, { status: 'delivery-ready', fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress,
-      contentHash: deliveredHash, anchorReceipt: result.anchorReceipt, evidenceHash: result.evidenceHash, deliveryBinding: binding,
-      substrate: nativeDeliverySubstrate, evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
   }
 
   async function readPersistedNativeDelivery(session, work) {
