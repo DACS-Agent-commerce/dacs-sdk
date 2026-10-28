@@ -1,0 +1,273 @@
+[
+  {
+    "tree": "bare-core",
+    "lock_sha256": "cc78ef8359cce3fad66d094e9fedf70edd993176a0f6d2c0006b5a9b6164dc79",
+    "audit_package_counts": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "physical_components": 16,
+    "primary_sbom_exit": 0,
+    "install_exit": 0,
+    "package_rows": 0,
+    "package_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "package_reachability": {},
+    "source_range_rows": 0,
+    "source_range_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "source_range_reachability": {}
+  },
+  {
+    "tree": "bare-node",
+    "lock_sha256": "c358ca8de20ed88ca06529df109714fd1156672fd7529a4586a961c9b5b331a9",
+    "audit_package_counts": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "physical_components": 55,
+    "primary_sbom_exit": 0,
+    "install_exit": 0,
+    "package_rows": 0,
+    "package_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "package_reachability": {},
+    "source_range_rows": 0,
+    "source_range_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "source_range_reachability": {}
+  },
+  {
+    "tree": "bare-generator",
+    "lock_sha256": "41646aa4d9b2d831b06ed49fe26fc28f6e4112c58c075ca037d99efd4044ee34",
+    "audit_package_counts": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "physical_components": 1,
+    "primary_sbom_exit": 0,
+    "install_exit": 0,
+    "package_rows": 0,
+    "package_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "package_reachability": {},
+    "source_range_rows": 0,
+    "source_range_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "source_range_reachability": {}
+  },
+  {
+    "tree": "live-buyer",
+    "lock_sha256": "1ca37a5300bcc6ae04a7bdcd8d7c075c8e351e37baf35deac1d2bb48a98c700d",
+    "audit_package_counts": {
+      "info": 0,
+      "low": 31,
+      "moderate": 44,
+      "high": 65,
+      "critical": 5,
+      "total": 145
+    },
+    "physical_components": 959,
+    "primary_sbom_exit": 1,
+    "install_exit": 0,
+    "audit_omit_optional_counts": {
+      "info": 0,
+      "low": 21,
+      "moderate": 14,
+      "high": 37,
+      "critical": 3,
+      "total": 75
+    },
+    "package_rows": 145,
+    "package_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 75,
+      "not reachable": 70,
+      "needs an upstream repair (U-03)": 0
+    },
+    "package_reachability": {
+      "not installed": 70,
+      "no static import path found; affected operation not established": 67,
+      "conditional Demos feature; inherited finding": 2,
+      "module import path present; affected operation not established": 6
+    },
+    "source_range_rows": 195,
+    "source_range_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 104,
+      "not reachable": 91,
+      "needs an upstream repair (U-03)": 0
+    },
+    "source_range_reachability": {
+      "not installed": 91,
+      "no static import path found; affected operation not established": 96,
+      "conditional Demos feature; inherited finding": 2,
+      "module import path present; affected operation not established": 6
+    },
+    "engines": {
+      "advertised": "^20.19.0 || >=22.12.0",
+      "outside_advertised": 17,
+      "rejects_advertised_floor": 16,
+      "catalog": "release-checks.json"
+    }
+  },
+  {
+    "tree": "live-seller",
+    "lock_sha256": "7ea79eb16063513d16843b0903ad56f0284f6c26913cc466c7e6f2b27afce6d0",
+    "audit_package_counts": {
+      "info": 0,
+      "low": 31,
+      "moderate": 44,
+      "high": 65,
+      "critical": 5,
+      "total": 145
+    },
+    "physical_components": 959,
+    "primary_sbom_exit": 1,
+    "install_exit": 0,
+    "audit_omit_optional_counts": {
+      "info": 0,
+      "low": 21,
+      "moderate": 14,
+      "high": 37,
+      "critical": 3,
+      "total": 75
+    },
+    "package_rows": 145,
+    "package_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 75,
+      "not reachable": 70,
+      "needs an upstream repair (U-03)": 0
+    },
+    "package_reachability": {
+      "not installed": 70,
+      "no static import path found; affected operation not established": 67,
+      "conditional Demos feature; inherited finding": 2,
+      "module import path present; affected operation not established": 6
+    },
+    "source_range_rows": 195,
+    "source_range_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 104,
+      "not reachable": 91,
+      "needs an upstream repair (U-03)": 0
+    },
+    "source_range_reachability": {
+      "not installed": 91,
+      "no static import path found; affected operation not established": 96,
+      "conditional Demos feature; inherited finding": 2,
+      "module import path present; affected operation not established": 6
+    },
+    "engines": {
+      "advertised": "^20.19.0 || >=22.12.0",
+      "outside_advertised": 17,
+      "rejects_advertised_floor": 16,
+      "catalog": "release-checks.json"
+    }
+  },
+  {
+    "tree": "native-alpha2",
+    "lock_sha256": "71eb7603b3194de1f8b6a353b5444cd49007bc1a550f42b4135aec4dd67f799b",
+    "audit_package_counts": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "physical_components": 4,
+    "primary_sbom_exit": 0,
+    "install_exit": 0,
+    "package_rows": 0,
+    "package_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "package_reachability": {},
+    "source_range_rows": 0,
+    "source_range_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "source_range_reachability": {}
+  },
+  {
+    "tree": "native-candidate",
+    "lock_sha256": "b0ee22d97a8a370a249faa86b352208fb7554a55216e00a02bd41b32fc05fdbe",
+    "audit_package_counts": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "physical_components": 80,
+    "primary_sbom_exit": 0,
+    "install_exit": 0,
+    "package_rows": 0,
+    "package_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "package_reachability": {},
+    "source_range_rows": 0,
+    "source_range_dispositions": {
+      "upgrade available and safe": 0,
+      "narrow entry point": 0,
+      "not reachable": 0,
+      "needs an upstream repair (U-03)": 0
+    },
+    "source_range_reachability": {},
+    "engines": {
+      "advertised": "^20.19.0 || >=22.12.0",
+      "outside_advertised": 1,
+      "rejects_advertised_floor": 0,
+      "catalog": "release-checks.json"
+    }
+  }
+]

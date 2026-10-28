@@ -1,0 +1,911 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:4abb8bdc-fb16-44cb-9a0d-2a88d7c31f7e",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-16T14:51:37.840Z",
+    "lifecycles": [
+      {
+        "phase": "build"
+      }
+    ],
+    "tools": [
+      {
+        "vendor": "npm",
+        "name": "cli",
+        "version": "10.9.9"
+      },
+      {
+        "vendor": "S-55 assessment",
+        "name": "physical-instance-export",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "bom-ref": "npm:root",
+      "type": "library",
+      "name": "bare-core",
+      "version": "1.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/bare-core@1.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": ""
+        },
+        {
+          "name": "cdx:npm:package:private",
+          "value": "true"
+        }
+      ],
+      "externalReferences": []
+    },
+    "properties": [
+      {
+        "name": "s55:range-conflicts",
+        "value": "[]"
+      },
+      {
+        "name": "s55:scope",
+        "value": "Installed production instances; dev omitted; original range conflicts retained. This is a supplementary export, not a successful npm sbom CLI run."
+      }
+    ]
+  },
+  "components": [
+    {
+      "bom-ref": "npm:node_modules/@kynesyslabs/dacs",
+      "type": "library",
+      "name": "@kynesyslabs/dacs",
+      "version": "0.1.0-alpha.0",
+      "scope": "required",
+      "description": "TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents \u2014 the reusable runtime for the Identify \u2192 Vet \u2192 Negotiate \u2192 Settle \u2192 Verify lifecycle.",
+      "purl": "pkg:npm/%40kynesyslabs/dacs@0.1.0-alpha.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@kynesyslabs/dacs"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "file:tarballs/kynesyslabs-dacs-0.1.0-alpha.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "be6252b573eb818ba99aa96523efb9d74cd1261acd5e8b8a882f8a098dba64316cd1877a7ceab74df0b22cdd5f4e54ee68fa4d8530a98ecbd3614053019e084b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@swaggerexpert/jsonpath",
+      "type": "library",
+      "name": "@swaggerexpert/jsonpath",
+      "version": "4.0.4",
+      "scope": "required",
+      "author": "Vladim\u00edr Gorej",
+      "description": "RFC 9535 implementation of JSONPath",
+      "purl": "pkg:npm/%40swaggerexpert/jsonpath@4.0.4",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@swaggerexpert/jsonpath"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@swaggerexpert/jsonpath/-/jsonpath-4.0.4.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/swaggerexpert/jsonpath.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/swaggerexpert/jsonpath#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/swaggerexpert/jsonpath/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8cc51e69dfcfdd7152cbe5f39489319709cf5f9f4c8a4ad5f7db7e5b346bdeb9e6ac3b92e5576c4db18961d09df73b47dfb5a994310f3fed7af8ef9e5499ab93"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@xmldom/xmldom",
+      "type": "library",
+      "name": "@xmldom/xmldom",
+      "version": "0.9.12",
+      "scope": "required",
+      "description": "A pure JavaScript W3C standard-based (XML DOM Level 2 Core) DOMParser and XMLSerializer module.",
+      "purl": "pkg:npm/%40xmldom/xmldom@0.9.12",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@xmldom/xmldom"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@xmldom/xmldom/-/xmldom-0.9.12.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/xmldom/xmldom.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/xmldom/xmldom"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/xmldom/xmldom/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e405e3adc302953af23def4b819af2829075963eecd12f44d3e5be0076952805721da9da7caf3a88f4af1b9c47552a7f8c2f951f5517bb44c0126636efdc47ec"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/apg-lite",
+      "type": "library",
+      "name": "apg-lite",
+      "version": "1.0.5",
+      "scope": "required",
+      "author": "Lowell D. Thomas",
+      "description": "lightweight JavaScript APG parser",
+      "purl": "pkg:npm/apg-lite@1.0.5",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/apg-lite"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/apg-lite/-/apg-lite-1.0.5.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/ldthomas/apg-lite.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/ldthomas/apg-lite#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/ldthomas/apg-lite/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4a523e9cb3100f30997d2dfd8a1ce31a9dc934141f257c8c8ba720f6d90b3823d512b805b1420011d3bd21ecd1ee46cfe57774a3370f3500647fd4cee5c1e05b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/boolbase",
+      "type": "library",
+      "name": "boolbase",
+      "version": "2.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "two functions: One that returns true, one that returns false",
+      "purl": "pkg:npm/boolbase@2.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/boolbase"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/boolbase/-/boolbase-2.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/boolbase.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/boolbase"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/boolbase/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "0e455a6901f2991869604628f71d68a3b43b07463a28952c8e6ddcf5e4f21436f2e0c1cb053c19e990d605e979ceb6318f55ac6600b9a0ba62cfef77325b9778"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/css-select",
+      "type": "library",
+      "name": "css-select",
+      "version": "7.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "a CSS selector compiler/engine",
+      "purl": "pkg:npm/css-select@7.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/css-select"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/css-select/-/css-select-7.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/css-select.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/css-select#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/css-select/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b279a31155f2fb52e7c17771858bd3323d5df6d3a1e07c64035626a1ac9505e7b24760b5e0fba6edf7312489b84acc18b29572f3ae9e60dc251fac42dff547e6"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/css-what",
+      "type": "library",
+      "name": "css-what",
+      "version": "8.0.0",
+      "scope": "required",
+      "author": "Felix B\u00f6hm",
+      "description": "a CSS selector parser",
+      "purl": "pkg:npm/css-what@8.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/css-what"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/css-what/-/css-what-8.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/css-what.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/css-what#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/css-what/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "0c7d01aaadc3369e6d74e45eb8dc8003e12fe18d864b914c6d9a5e4cb3fa0b80838b48799cbd019943c2857c37a3fa9b1cb0d61e5e3db1b36a41563b6cc48377"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/dom-serializer",
+      "type": "library",
+      "name": "dom-serializer",
+      "version": "3.1.1",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "render domhandler DOM nodes to a string",
+      "purl": "pkg:npm/dom-serializer@3.1.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/dom-serializer"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/dom-serializer/-/dom-serializer-3.1.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/cheeriojs/dom-serializer.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/cheeriojs/dom-serializer#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/cheeriojs/dom-serializer/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e0c11adfcfd07b10686fa805370bbe106756be127538ab8dc1d618dd8dcdc9e58341f9c67836105037c84735aee41e60b2fd37b28d94c5ddbc602eb3aecc772f"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/domelementtype",
+      "type": "library",
+      "name": "domelementtype",
+      "version": "3.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "all the types of nodes in htmlparser2's dom",
+      "purl": "pkg:npm/domelementtype@3.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/domelementtype"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/domelementtype/-/domelementtype-3.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/domelementtype.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/domelementtype#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/domelementtype/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "ba609089dde329b0e6563c7c8c6696eee532926e031147b2576d613f134ca369d5f79e438544e1c2ac8e203b6b79ea4fdf5865f385fb1b953d65fb16bc80773e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/domhandler",
+      "type": "library",
+      "name": "domhandler",
+      "version": "6.0.1",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Handler for htmlparser2 that turns pages into a dom",
+      "purl": "pkg:npm/domhandler@6.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/domhandler"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/domhandler/-/domhandler-6.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/domhandler.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/domhandler#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/domhandler/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "818cefb4cef666dc503b44f4e3c91de875926db18234e5307277d0d3572a209e17d8860a1451d9e662afad01137055f1b1139b66e94368a9b2fff47b4cfb6c06"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/domutils",
+      "type": "library",
+      "name": "domutils",
+      "version": "4.0.2",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Utilities for working with htmlparser2's dom",
+      "purl": "pkg:npm/domutils@4.0.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/domutils"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/domutils/-/domutils-4.0.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/domutils.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/domutils#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/domutils/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "a88e092d12a74b3a85aabee10254b9c500eeb010a3292106e2de3eeda36b21030705cb02d9318486ec8004975892049ec0be7b3cd2d812289b63688f2a12a968"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/entities",
+      "type": "library",
+      "name": "entities",
+      "version": "8.1.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Encode & decode XML and HTML entities with ease & speed",
+      "purl": "pkg:npm/entities@8.1.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/entities"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/entities/-/entities-8.1.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/entities.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/entities#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/entities/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "9312fb9ac21f7d2ba1f5a68500c0fbaf1008b9344c00731e06d8075b6c94756c3bdf664d87831e86417681d8efb5d9a29246883fd6c50c324e3e5b2f9bb6afac"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/htmlparser2",
+      "type": "library",
+      "name": "htmlparser2",
+      "version": "12.0.0",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Fast & forgiving HTML/XML parser",
+      "purl": "pkg:npm/htmlparser2@12.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/htmlparser2"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/htmlparser2/-/htmlparser2-12.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/fb55/htmlparser2.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/htmlparser2#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/htmlparser2/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4f3eeed62f79fe0db1da3cfcd7ec741415610616396914ef0f7b575dd15a963b8d7730cb27c506351ad3723d9c810bc0837896fe1efb173d799cb5b42f40ab67"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/nth-check",
+      "type": "library",
+      "name": "nth-check",
+      "version": "3.0.1",
+      "scope": "required",
+      "author": "Felix Boehm",
+      "description": "Parses and compiles CSS nth-checks to highly optimized functions.",
+      "purl": "pkg:npm/nth-check@3.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/nth-check"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/nth-check/-/nth-check-3.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/fb55/nth-check.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/fb55/nth-check"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/fb55/nth-check/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "197d20b1d6c65428274606de19ab9b7e3a415f261158e38255e621d3c6d242f0d9ab1cf99dd5ecd4e4df02dfe1dfa1b5c6f23de1822ca6c234b1516a015f7e45"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/re2-wasm",
+      "type": "library",
+      "name": "re2-wasm",
+      "version": "1.0.2",
+      "scope": "required",
+      "description": "Google's RE2 library distributed as a WASM module",
+      "purl": "pkg:npm/re2-wasm@1.0.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/re2-wasm"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/re2-wasm/-/re2-wasm-1.0.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/google/re2-wasm.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/google/re2-wasm"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/google/re2-wasm/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "55751d812894ac4fd66579fa814215548b20d3e1e9e953d93ce68709acbe3ae14acbabbff24b6678d11ff94e6a480f23cc6185b20f23ac336ed41787a73da924"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/xpath",
+      "type": "library",
+      "name": "xpath",
+      "version": "0.0.34",
+      "scope": "required",
+      "author": "Cameron McCormack",
+      "description": "DOM 3 XPath implemention and helper for node.js and the web",
+      "purl": "pkg:npm/xpath@0.0.34",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/xpath"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/xpath/-/xpath-0.0.34.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/goto100/xpath.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/goto100/xpath#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/goto100/xpath/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "17117afab92bd6b35242b854358ac0149a515cdce50e8331797379a88f38f77f72944bf7aaa3c529af393b1afab436892aac16e8a2b2a36bf6e934afde4e8b78"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "npm:root",
+      "dependsOn": [
+        "npm:node_modules/@kynesyslabs/dacs"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@kynesyslabs/dacs",
+      "dependsOn": [
+        "npm:node_modules/@swaggerexpert/jsonpath",
+        "npm:node_modules/@xmldom/xmldom",
+        "npm:node_modules/css-select",
+        "npm:node_modules/htmlparser2",
+        "npm:node_modules/re2-wasm",
+        "npm:node_modules/xpath"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@swaggerexpert/jsonpath",
+      "dependsOn": [
+        "npm:node_modules/apg-lite"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@xmldom/xmldom",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/apg-lite",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/boolbase",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/css-select",
+      "dependsOn": [
+        "npm:node_modules/boolbase",
+        "npm:node_modules/css-what",
+        "npm:node_modules/domhandler",
+        "npm:node_modules/domutils",
+        "npm:node_modules/nth-check"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/css-what",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/dom-serializer",
+      "dependsOn": [
+        "npm:node_modules/domelementtype",
+        "npm:node_modules/domhandler",
+        "npm:node_modules/entities"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/domelementtype",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/domhandler",
+      "dependsOn": [
+        "npm:node_modules/domelementtype"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/domutils",
+      "dependsOn": [
+        "npm:node_modules/dom-serializer",
+        "npm:node_modules/domelementtype",
+        "npm:node_modules/domhandler"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/entities",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/htmlparser2",
+      "dependsOn": [
+        "npm:node_modules/domelementtype",
+        "npm:node_modules/domhandler",
+        "npm:node_modules/domutils",
+        "npm:node_modules/entities"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/nth-check",
+      "dependsOn": [
+        "npm:node_modules/boolbase"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/re2-wasm",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/xpath",
+      "dependsOn": []
+    }
+  ]
+}

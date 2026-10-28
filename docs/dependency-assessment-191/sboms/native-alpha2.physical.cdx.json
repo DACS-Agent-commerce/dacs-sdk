@@ -1,0 +1,274 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:ce172063-955b-43a5-8073-a0f1b8fbff06",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-16T14:55:48.982Z",
+    "lifecycles": [
+      {
+        "phase": "build"
+      }
+    ],
+    "tools": [
+      {
+        "vendor": "npm",
+        "name": "cli",
+        "version": "10.9.9"
+      },
+      {
+        "vendor": "S-55 assessment",
+        "name": "physical-instance-export",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "bom-ref": "npm:root",
+      "type": "library",
+      "name": "native-alpha2",
+      "version": "1.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/native-alpha2@1.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": ""
+        },
+        {
+          "name": "cdx:npm:package:private",
+          "value": "true"
+        }
+      ],
+      "externalReferences": []
+    },
+    "properties": [
+      {
+        "name": "s55:range-conflicts",
+        "value": "[]"
+      },
+      {
+        "name": "s55:scope",
+        "value": "Installed production instances; dev omitted; original range conflicts retained. This is a supplementary export, not a successful npm sbom CLI run."
+      }
+    ]
+  },
+  "components": [
+    {
+      "bom-ref": "npm:node_modules/@demosnetwork/demos-native",
+      "type": "library",
+      "name": "@demosnetwork/demos-native",
+      "version": "0.1.0-alpha.2",
+      "scope": "required",
+      "description": "Dependency-minimal Demos native, messaging, Storage Program, identity-read and DAHR client",
+      "purl": "pkg:npm/%40demosnetwork/demos-native@0.1.0-alpha.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@demosnetwork/demos-native"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "file:tarballs/demosnetwork-demos-native-0.1.0-alpha.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/kynesyslabs/sdks.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/kynesyslabs/sdks#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/kynesyslabs/sdks/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "685794c8426524bbd3d51412de3ca804ab56b4bd99cee07efcd404942e4eb3967170222ed5635cb282a30d14cdcfd7b961671198f0d68b2727b0b61c3f68a4b2"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@noble/hashes",
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "2.4.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
+      "purl": "pkg:npm/%40noble/hashes@2.4.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@noble/hashes"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.4.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-hashes.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/noble-hashes/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "5f95da5566480424fb1c76469b923b6505c3c0b1be6c65ee4ab310016fbb66f97cee1d6499cd5907555244972951fa14ac6429e05928c66e6467e32cf9a5be78"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/@scure/bip39",
+      "type": "library",
+      "name": "@scure/bip39",
+      "version": "2.4.0",
+      "scope": "required",
+      "author": "Paul Miller",
+      "description": "Secure, audited & minimal implementation of BIP39 mnemonic phrases",
+      "purl": "pkg:npm/%40scure/bip39@2.4.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@scure/bip39"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@scure/bip39/-/bip39-2.4.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/scure-bip39.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/#scure"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/paulmillr/scure-bip39/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f3677115b65461ba3239fd005e2c9db10ac543943887d997f8ed94904f7544e626b1cd0128c1992f00e6cbde89a5adbebebb68c689a3521cb544f2201ffaf69c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "npm:node_modules/ws",
+      "type": "library",
+      "name": "ws",
+      "version": "8.22.0",
+      "scope": "required",
+      "author": "Einar Otto Stangvik",
+      "description": "Simple to use, blazing fast and thoroughly tested websocket client and server for Node.js",
+      "purl": "pkg:npm/ws@8.22.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/ws"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/websockets/ws.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/websockets/ws"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/websockets/ws/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "61d82073df3bf913b40275ad67fed6abd16d36f72b2f56ff44ed2e77d9968d43e00ebb00030412179d6c9b6866d57a1f6d4ff88e4a4612c2c5b1967153ed433a"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "npm:root",
+      "dependsOn": [
+        "npm:node_modules/@demosnetwork/demos-native"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@demosnetwork/demos-native",
+      "dependsOn": [
+        "npm:node_modules/@scure/bip39",
+        "npm:node_modules/ws"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/@noble/hashes",
+      "dependsOn": []
+    },
+    {
+      "ref": "npm:node_modules/@scure/bip39",
+      "dependsOn": [
+        "npm:node_modules/@noble/hashes"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/ws",
+      "dependsOn": []
+    }
+  ]
+}

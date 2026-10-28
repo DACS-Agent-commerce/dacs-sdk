@@ -1,0 +1,5010 @@
+[
+  {
+    "tree": "live-buyer",
+    "physical_instances": 959,
+    "lock_only_omit_optional_components": 460,
+    "only_physical": [
+      {
+        "location": "node_modules/@adraffy/ens-normalize",
+        "package": "@adraffy/ens-normalize",
+        "version": "1.11.1"
+      },
+      {
+        "location": "node_modules/@babel/runtime",
+        "package": "@babel/runtime",
+        "version": "7.29.10"
+      },
+      {
+        "location": "node_modules/@bitcoinerlab/secp256k1",
+        "package": "@bitcoinerlab/secp256k1",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/rlp",
+        "package": "@ethereumjs/rlp",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util",
+        "package": "@ethereumjs/util",
+        "version": "8.1.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/@ethersproject/abi",
+        "package": "@ethersproject/abi",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/abstract-provider",
+        "package": "@ethersproject/abstract-provider",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/abstract-signer",
+        "package": "@ethersproject/abstract-signer",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/address",
+        "package": "@ethersproject/address",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/base64",
+        "package": "@ethersproject/base64",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/basex",
+        "package": "@ethersproject/basex",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/bignumber",
+        "package": "@ethersproject/bignumber",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/bytes",
+        "package": "@ethersproject/bytes",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/constants",
+        "package": "@ethersproject/constants",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/contracts",
+        "package": "@ethersproject/contracts",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/hash",
+        "package": "@ethersproject/hash",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/hdnode",
+        "package": "@ethersproject/hdnode",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/json-wallets",
+        "package": "@ethersproject/json-wallets",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/keccak256",
+        "package": "@ethersproject/keccak256",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/keccak256/node_modules/js-sha3",
+        "package": "js-sha3",
+        "version": "0.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/logger",
+        "package": "@ethersproject/logger",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/networks",
+        "package": "@ethersproject/networks",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/pbkdf2",
+        "package": "@ethersproject/pbkdf2",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/properties",
+        "package": "@ethersproject/properties",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/providers",
+        "package": "@ethersproject/providers",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/providers/node_modules/ws",
+        "package": "ws",
+        "version": "8.18.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/random",
+        "package": "@ethersproject/random",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/rlp",
+        "package": "@ethersproject/rlp",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/sha2",
+        "package": "@ethersproject/sha2",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/signing-key",
+        "package": "@ethersproject/signing-key",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/strings",
+        "package": "@ethersproject/strings",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/transactions",
+        "package": "@ethersproject/transactions",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/wallet",
+        "package": "@ethersproject/wallet",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/web",
+        "package": "@ethersproject/web",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/wordlists",
+        "package": "@ethersproject/wordlists",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@inquirer/external-editor",
+        "package": "@inquirer/external-editor",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/beet",
+        "package": "@metaplex-foundation/beet",
+        "version": "0.7.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/beet-solana",
+        "package": "@metaplex-foundation/beet-solana",
+        "version": "0.3.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/cusper",
+        "package": "@metaplex-foundation/cusper",
+        "version": "0.0.2"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-auction-house",
+        "package": "@metaplex-foundation/mpl-auction-house",
+        "version": "2.5.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-auction-house/node_modules/@metaplex-foundation/beet",
+        "package": "@metaplex-foundation/beet",
+        "version": "0.6.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-token-metadata",
+        "package": "@metaplex-foundation/mpl-token-metadata",
+        "version": "2.13.0"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-token-metadata/node_modules/@metaplex-foundation/beet-solana",
+        "package": "@metaplex-foundation/beet-solana",
+        "version": "0.4.1"
+      },
+      {
+        "location": "node_modules/@multiversx/sdk-bls-wasm",
+        "package": "@multiversx/sdk-bls-wasm",
+        "version": "0.3.5"
+      },
+      {
+        "location": "node_modules/@multiversx/sdk-core/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/@noble/ciphers",
+        "package": "@noble/ciphers",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.9.4"
+      },
+      {
+        "location": "node_modules/@noble/ed25519",
+        "package": "@noble/ed25519",
+        "version": "1.7.5"
+      },
+      {
+        "location": "node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.8.0"
+      },
+      {
+        "location": "node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.2.6"
+      },
+      {
+        "location": "node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.7.0"
+      },
+      {
+        "location": "node_modules/@sindresorhus/is",
+        "package": "@sindresorhus/is",
+        "version": "4.6.0"
+      },
+      {
+        "location": "node_modules/@solana/buffer-layout",
+        "package": "@solana/buffer-layout",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/@solana/buffer-layout-utils",
+        "package": "@solana/buffer-layout-utils",
+        "version": "0.2.0"
+      },
+      {
+        "location": "node_modules/@solana/codecs",
+        "package": "@solana/codecs",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-core",
+        "package": "@solana/codecs-core",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-data-structures",
+        "package": "@solana/codecs-data-structures",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-numbers",
+        "package": "@solana/codecs-numbers",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-strings",
+        "package": "@solana/codecs-strings",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/errors",
+        "package": "@solana/errors",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/options",
+        "package": "@solana/options",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/spl-token",
+        "package": "@solana/spl-token",
+        "version": "0.3.11"
+      },
+      {
+        "location": "node_modules/@solana/spl-token-metadata",
+        "package": "@solana/spl-token-metadata",
+        "version": "0.1.6"
+      },
+      {
+        "location": "node_modules/@solana/web3.js",
+        "package": "@solana/web3.js",
+        "version": "1.98.0"
+      },
+      {
+        "location": "node_modules/@solana/web3.js/node_modules/base-x",
+        "package": "base-x",
+        "version": "3.0.11"
+      },
+      {
+        "location": "node_modules/@solana/web3.js/node_modules/bs58",
+        "package": "bs58",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/@solana/web3.js/node_modules/superstruct",
+        "package": "superstruct",
+        "version": "2.0.2"
+      },
+      {
+        "location": "node_modules/@swc/helpers",
+        "package": "@swc/helpers",
+        "version": "0.5.23"
+      },
+      {
+        "location": "node_modules/@szmarczak/http-timer",
+        "package": "@szmarczak/http-timer",
+        "version": "4.0.6"
+      },
+      {
+        "location": "node_modules/@ton/core",
+        "package": "@ton/core",
+        "version": "0.63.1"
+      },
+      {
+        "location": "node_modules/@ton/crypto",
+        "package": "@ton/crypto",
+        "version": "3.3.0"
+      },
+      {
+        "location": "node_modules/@ton/crypto-primitives",
+        "package": "@ton/crypto-primitives",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/@types/cacheable-request",
+        "package": "@types/cacheable-request",
+        "version": "6.0.3"
+      },
+      {
+        "location": "node_modules/@types/connect",
+        "package": "@types/connect",
+        "version": "3.4.38"
+      },
+      {
+        "location": "node_modules/@types/http-cache-semantics",
+        "package": "@types/http-cache-semantics",
+        "version": "4.2.0"
+      },
+      {
+        "location": "node_modules/@types/keyv",
+        "package": "@types/keyv",
+        "version": "3.1.4"
+      },
+      {
+        "location": "node_modules/@types/responselike",
+        "package": "@types/responselike",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/@types/uuid",
+        "package": "@types/uuid",
+        "version": "10.0.0"
+      },
+      {
+        "location": "node_modules/@types/ws",
+        "package": "@types/ws",
+        "version": "7.4.7"
+      },
+      {
+        "location": "node_modules/aes-js",
+        "package": "aes-js",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/agent-base",
+        "package": "agent-base",
+        "version": "6.0.2"
+      },
+      {
+        "location": "node_modules/agentkeepalive",
+        "package": "agentkeepalive",
+        "version": "4.6.0"
+      },
+      {
+        "location": "node_modules/algo-msgpack-with-bigint",
+        "package": "algo-msgpack-with-bigint",
+        "version": "2.1.1"
+      },
+      {
+        "location": "node_modules/algosdk",
+        "package": "algosdk",
+        "version": "1.24.1"
+      },
+      {
+        "location": "node_modules/algosdk/node_modules/js-sha256",
+        "package": "js-sha256",
+        "version": "0.9.0"
+      },
+      {
+        "location": "node_modules/algosdk/node_modules/js-sha3",
+        "package": "js-sha3",
+        "version": "0.8.0"
+      },
+      {
+        "location": "node_modules/ansi-escapes",
+        "package": "ansi-escapes",
+        "version": "4.3.2"
+      },
+      {
+        "location": "node_modules/ansi-regex",
+        "package": "ansi-regex",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/ansi-styles",
+        "package": "ansi-styles",
+        "version": "4.3.0"
+      },
+      {
+        "location": "node_modules/ansicolors",
+        "package": "ansicolors",
+        "version": "0.3.2"
+      },
+      {
+        "location": "node_modules/asn1.js",
+        "package": "asn1.js",
+        "version": "5.4.1"
+      },
+      {
+        "location": "node_modules/asn1.js/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.12.5"
+      },
+      {
+        "location": "node_modules/async-retry",
+        "package": "async-retry",
+        "version": "1.3.3"
+      },
+      {
+        "location": "node_modules/asynckit",
+        "package": "asynckit",
+        "version": "0.4.0"
+      },
+      {
+        "location": "node_modules/available-typed-arrays",
+        "package": "available-typed-arrays",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/axios",
+        "package": "axios",
+        "version": "1.20.0"
+      },
+      {
+        "location": "node_modules/base-x",
+        "package": "base-x",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/base64-js",
+        "package": "base64-js",
+        "version": "1.5.1"
+      },
+      {
+        "location": "node_modules/base64url",
+        "package": "base64url",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/bech32",
+        "package": "bech32",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/better-sqlite3",
+        "package": "better-sqlite3",
+        "version": "12.6.2"
+      },
+      {
+        "location": "node_modules/bigint-buffer",
+        "package": "bigint-buffer",
+        "version": "1.1.5"
+      },
+      {
+        "location": "node_modules/bignumber.js",
+        "package": "bignumber.js",
+        "version": "9.3.1"
+      },
+      {
+        "location": "node_modules/bindings",
+        "package": "bindings",
+        "version": "1.5.0"
+      },
+      {
+        "location": "node_modules/bip174",
+        "package": "bip174",
+        "version": "2.1.1"
+      },
+      {
+        "location": "node_modules/bip39",
+        "package": "bip39",
+        "version": "3.1.2"
+      },
+      {
+        "location": "node_modules/bip39-light",
+        "package": "bip39-light",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/bip66",
+        "package": "bip66",
+        "version": "1.1.5"
+      },
+      {
+        "location": "node_modules/bitcoinjs-lib",
+        "package": "bitcoinjs-lib",
+        "version": "6.1.9"
+      },
+      {
+        "location": "node_modules/bitcoinjs-lib/node_modules/bech32",
+        "package": "bech32",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/bl",
+        "package": "bl",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/bl/node_modules/buffer",
+        "package": "buffer",
+        "version": "5.7.1"
+      },
+      {
+        "location": "node_modules/bluebird",
+        "package": "bluebird",
+        "version": "3.7.2"
+      },
+      {
+        "location": "node_modules/bn.js",
+        "package": "bn.js",
+        "version": "5.2.5"
+      },
+      {
+        "location": "node_modules/borsh",
+        "package": "borsh",
+        "version": "0.7.0"
+      },
+      {
+        "location": "node_modules/borsh/node_modules/base-x",
+        "package": "base-x",
+        "version": "3.0.11"
+      },
+      {
+        "location": "node_modules/borsh/node_modules/bs58",
+        "package": "bs58",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/brorand",
+        "package": "brorand",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/browserify-aes",
+        "package": "browserify-aes",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/bs58",
+        "package": "bs58",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/bs58check",
+        "package": "bs58check",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/buffer",
+        "package": "buffer",
+        "version": "6.0.3"
+      },
+      {
+        "location": "node_modules/buffer-xor",
+        "package": "buffer-xor",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/cacheable-lookup",
+        "package": "cacheable-lookup",
+        "version": "5.0.4"
+      },
+      {
+        "location": "node_modules/cacheable-request",
+        "package": "cacheable-request",
+        "version": "7.0.4"
+      },
+      {
+        "location": "node_modules/call-bind",
+        "package": "call-bind",
+        "version": "1.0.9"
+      },
+      {
+        "location": "node_modules/call-bind-apply-helpers",
+        "package": "call-bind-apply-helpers",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/call-bound",
+        "package": "call-bound",
+        "version": "1.0.4"
+      },
+      {
+        "location": "node_modules/chalk",
+        "package": "chalk",
+        "version": "5.6.2"
+      },
+      {
+        "location": "node_modules/chardet",
+        "package": "chardet",
+        "version": "2.2.0"
+      },
+      {
+        "location": "node_modules/chownr",
+        "package": "chownr",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/cipher-base",
+        "package": "cipher-base",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/cli-cursor",
+        "package": "cli-cursor",
+        "version": "3.1.0"
+      },
+      {
+        "location": "node_modules/cli-spinners",
+        "package": "cli-spinners",
+        "version": "2.9.2"
+      },
+      {
+        "location": "node_modules/cli-width",
+        "package": "cli-width",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/clone",
+        "package": "clone",
+        "version": "1.0.4"
+      },
+      {
+        "location": "node_modules/clone-response",
+        "package": "clone-response",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/color-convert",
+        "package": "color-convert",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/color-name",
+        "package": "color-name",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/combined-stream",
+        "package": "combined-stream",
+        "version": "1.0.8"
+      },
+      {
+        "location": "node_modules/commander",
+        "package": "commander",
+        "version": "12.1.0"
+      },
+      {
+        "location": "node_modules/core-util-is",
+        "package": "core-util-is",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/crc-32",
+        "package": "crc-32",
+        "version": "1.2.2"
+      },
+      {
+        "location": "node_modules/create-hash",
+        "package": "create-hash",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/create-hmac",
+        "package": "create-hmac",
+        "version": "1.1.7"
+      },
+      {
+        "location": "node_modules/cross-fetch",
+        "package": "cross-fetch",
+        "version": "3.2.0"
+      },
+      {
+        "location": "node_modules/dataloader",
+        "package": "dataloader",
+        "version": "2.2.3"
+      },
+      {
+        "location": "node_modules/debug",
+        "package": "debug",
+        "version": "4.4.3"
+      },
+      {
+        "location": "node_modules/decompress-response",
+        "package": "decompress-response",
+        "version": "6.0.0"
+      },
+      {
+        "location": "node_modules/decompress-response/node_modules/mimic-response",
+        "package": "mimic-response",
+        "version": "3.1.0"
+      },
+      {
+        "location": "node_modules/deep-extend",
+        "package": "deep-extend",
+        "version": "0.6.0"
+      },
+      {
+        "location": "node_modules/defaults",
+        "package": "defaults",
+        "version": "1.0.4"
+      },
+      {
+        "location": "node_modules/defer-to-connect",
+        "package": "defer-to-connect",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/define-data-property",
+        "package": "define-data-property",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/define-properties",
+        "package": "define-properties",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/delay",
+        "package": "delay",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/delayed-stream",
+        "package": "delayed-stream",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/depd",
+        "package": "depd",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/detect-libc",
+        "package": "detect-libc",
+        "version": "2.1.2"
+      },
+      {
+        "location": "node_modules/dotenv",
+        "package": "dotenv",
+        "version": "16.6.1"
+      },
+      {
+        "location": "node_modules/dunder-proto",
+        "package": "dunder-proto",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/elliptic",
+        "package": "elliptic",
+        "version": "6.6.1"
+      },
+      {
+        "location": "node_modules/elliptic/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.12.5"
+      },
+      {
+        "location": "node_modules/emoji-regex",
+        "package": "emoji-regex",
+        "version": "8.0.0"
+      },
+      {
+        "location": "node_modules/end-of-stream",
+        "package": "end-of-stream",
+        "version": "1.4.5"
+      },
+      {
+        "location": "node_modules/es-define-property",
+        "package": "es-define-property",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/es-errors",
+        "package": "es-errors",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/es-object-atoms",
+        "package": "es-object-atoms",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/es-set-tostringtag",
+        "package": "es-set-tostringtag",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/es6-promise",
+        "package": "es6-promise",
+        "version": "4.2.8"
+      },
+      {
+        "location": "node_modules/es6-promisify",
+        "package": "es6-promisify",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/escape-string-regexp",
+        "package": "escape-string-regexp",
+        "version": "1.0.5"
+      },
+      {
+        "location": "node_modules/ethereum-bloom-filters",
+        "package": "ethereum-bloom-filters",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/ethers",
+        "package": "ethers",
+        "version": "6.17.0"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.3.2"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/@types/node",
+        "package": "@types/node",
+        "version": "22.7.5"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/aes-js",
+        "package": "aes-js",
+        "version": "4.0.0-beta.5"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/tslib",
+        "package": "tslib",
+        "version": "2.7.0"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/undici-types",
+        "package": "undici-types",
+        "version": "6.19.8"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/ws",
+        "package": "ws",
+        "version": "8.21.0"
+      },
+      {
+        "location": "node_modules/ethjs-unit",
+        "package": "ethjs-unit",
+        "version": "0.1.6"
+      },
+      {
+        "location": "node_modules/ethjs-unit/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.11.6"
+      },
+      {
+        "location": "node_modules/eventemitter3",
+        "package": "eventemitter3",
+        "version": "5.0.4"
+      },
+      {
+        "location": "node_modules/evp_bytestokey",
+        "package": "evp_bytestokey",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/expand-template",
+        "package": "expand-template",
+        "version": "2.0.3"
+      },
+      {
+        "location": "node_modules/eyes",
+        "package": "eyes",
+        "version": "0.1.8"
+      },
+      {
+        "location": "node_modules/fast-stable-stringify",
+        "package": "fast-stable-stringify",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/fastestsmallesttextencoderdecoder",
+        "package": "fastestsmallesttextencoderdecoder",
+        "version": "1.0.22"
+      },
+      {
+        "location": "node_modules/figures",
+        "package": "figures",
+        "version": "3.2.0"
+      },
+      {
+        "location": "node_modules/file-uri-to-path",
+        "package": "file-uri-to-path",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/follow-redirects",
+        "package": "follow-redirects",
+        "version": "1.16.1"
+      },
+      {
+        "location": "node_modules/for-each",
+        "package": "for-each",
+        "version": "0.3.5"
+      },
+      {
+        "location": "node_modules/form-data",
+        "package": "form-data",
+        "version": "4.0.6"
+      },
+      {
+        "location": "node_modules/fs-constants",
+        "package": "fs-constants",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/function-bind",
+        "package": "function-bind",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/generator-function",
+        "package": "generator-function",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/get-intrinsic",
+        "package": "get-intrinsic",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/get-proto",
+        "package": "get-proto",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/get-stream",
+        "package": "get-stream",
+        "version": "5.2.0"
+      },
+      {
+        "location": "node_modules/github-from-package",
+        "package": "github-from-package",
+        "version": "0.0.0"
+      },
+      {
+        "location": "node_modules/google-protobuf",
+        "package": "google-protobuf",
+        "version": "3.21.4"
+      },
+      {
+        "location": "node_modules/gopd",
+        "package": "gopd",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/got",
+        "package": "got",
+        "version": "11.8.6"
+      },
+      {
+        "location": "node_modules/has-flag",
+        "package": "has-flag",
+        "version": "4.0.0"
+      },
+      {
+        "location": "node_modules/has-property-descriptors",
+        "package": "has-property-descriptors",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/has-symbols",
+        "package": "has-symbols",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/has-tostringtag",
+        "package": "has-tostringtag",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/hash-base",
+        "package": "hash-base",
+        "version": "3.1.2"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/isarray",
+        "package": "isarray",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/readable-stream",
+        "package": "readable-stream",
+        "version": "2.3.8"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/readable-stream/node_modules/safe-buffer",
+        "package": "safe-buffer",
+        "version": "5.1.2"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/string_decoder",
+        "package": "string_decoder",
+        "version": "1.1.1"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/string_decoder/node_modules/safe-buffer",
+        "package": "safe-buffer",
+        "version": "5.1.2"
+      },
+      {
+        "location": "node_modules/hash.js",
+        "package": "hash.js",
+        "version": "1.1.7"
+      },
+      {
+        "location": "node_modules/hasown",
+        "package": "hasown",
+        "version": "2.0.4"
+      },
+      {
+        "location": "node_modules/hi-base32",
+        "package": "hi-base32",
+        "version": "0.5.1"
+      },
+      {
+        "location": "node_modules/hmac-drbg",
+        "package": "hmac-drbg",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/http-cache-semantics",
+        "package": "http-cache-semantics",
+        "version": "4.3.0"
+      },
+      {
+        "location": "node_modules/http-errors",
+        "package": "http-errors",
+        "version": "1.8.1"
+      },
+      {
+        "location": "node_modules/http-errors/node_modules/depd",
+        "package": "depd",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/http2-wrapper",
+        "package": "http2-wrapper",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/https-proxy-agent",
+        "package": "https-proxy-agent",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/humanize-ms",
+        "package": "humanize-ms",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/iconv-lite",
+        "package": "iconv-lite",
+        "version": "0.7.3"
+      },
+      {
+        "location": "node_modules/ieee754",
+        "package": "ieee754",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/inherits",
+        "package": "inherits",
+        "version": "2.0.4"
+      },
+      {
+        "location": "node_modules/ini",
+        "package": "ini",
+        "version": "1.3.8"
+      },
+      {
+        "location": "node_modules/inquirer",
+        "package": "inquirer",
+        "version": "8.2.7"
+      },
+      {
+        "location": "node_modules/inquirer/node_modules/chalk",
+        "package": "chalk",
+        "version": "4.1.2"
+      },
+      {
+        "location": "node_modules/is-arguments",
+        "package": "is-arguments",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/is-callable",
+        "package": "is-callable",
+        "version": "1.2.7"
+      },
+      {
+        "location": "node_modules/is-fullwidth-code-point",
+        "package": "is-fullwidth-code-point",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/is-generator-function",
+        "package": "is-generator-function",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/is-hex-prefixed",
+        "package": "is-hex-prefixed",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/is-interactive",
+        "package": "is-interactive",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/is-regex",
+        "package": "is-regex",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/is-typed-array",
+        "package": "is-typed-array",
+        "version": "1.1.15"
+      },
+      {
+        "location": "node_modules/is-unicode-supported",
+        "package": "is-unicode-supported",
+        "version": "0.1.0"
+      },
+      {
+        "location": "node_modules/isarray",
+        "package": "isarray",
+        "version": "2.0.5"
+      },
+      {
+        "location": "node_modules/isomorphic-ws",
+        "package": "isomorphic-ws",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/isows",
+        "package": "isows",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/jayson",
+        "package": "jayson",
+        "version": "4.3.0"
+      },
+      {
+        "location": "node_modules/jayson/node_modules/@types/node",
+        "package": "@types/node",
+        "version": "12.20.55"
+      },
+      {
+        "location": "node_modules/jayson/node_modules/commander",
+        "package": "commander",
+        "version": "2.20.3"
+      },
+      {
+        "location": "node_modules/js-base64",
+        "package": "js-base64",
+        "version": "3.9.4"
+      },
+      {
+        "location": "node_modules/js-sha512",
+        "package": "js-sha512",
+        "version": "0.8.0"
+      },
+      {
+        "location": "node_modules/json-bigint",
+        "package": "json-bigint",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/json-buffer",
+        "package": "json-buffer",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/json-stringify-safe",
+        "package": "json-stringify-safe",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/jssha",
+        "package": "jssha",
+        "version": "3.2.0"
+      },
+      {
+        "location": "node_modules/keccak",
+        "package": "keccak",
+        "version": "3.0.2"
+      },
+      {
+        "location": "node_modules/keyv",
+        "package": "keyv",
+        "version": "4.5.4"
+      },
+      {
+        "location": "node_modules/lodash",
+        "package": "lodash",
+        "version": "4.18.1"
+      },
+      {
+        "location": "node_modules/lodash.clonedeep",
+        "package": "lodash.clonedeep",
+        "version": "4.5.0"
+      },
+      {
+        "location": "node_modules/log-symbols",
+        "package": "log-symbols",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/log-symbols/node_modules/chalk",
+        "package": "chalk",
+        "version": "4.1.2"
+      },
+      {
+        "location": "node_modules/lowercase-keys",
+        "package": "lowercase-keys",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/math-intrinsics",
+        "package": "math-intrinsics",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/md5.js",
+        "package": "md5.js",
+        "version": "1.3.5"
+      },
+      {
+        "location": "node_modules/micro-ftch",
+        "package": "micro-ftch",
+        "version": "0.3.1"
+      },
+      {
+        "location": "node_modules/mime",
+        "package": "mime",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/mime-db",
+        "package": "mime-db",
+        "version": "1.52.0"
+      },
+      {
+        "location": "node_modules/mime-types",
+        "package": "mime-types",
+        "version": "2.1.35"
+      },
+      {
+        "location": "node_modules/mimic-fn",
+        "package": "mimic-fn",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/mimic-response",
+        "package": "mimic-response",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/minimalistic-assert",
+        "package": "minimalistic-assert",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/minimalistic-crypto-utils",
+        "package": "minimalistic-crypto-utils",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/minimist",
+        "package": "minimist",
+        "version": "1.2.8"
+      },
+      {
+        "location": "node_modules/mkdirp-classic",
+        "package": "mkdirp-classic",
+        "version": "0.5.3"
+      },
+      {
+        "location": "node_modules/ms",
+        "package": "ms",
+        "version": "2.1.3"
+      },
+      {
+        "location": "node_modules/mustache",
+        "package": "mustache",
+        "version": "4.2.0"
+      },
+      {
+        "location": "node_modules/mute-stream",
+        "package": "mute-stream",
+        "version": "0.0.8"
+      },
+      {
+        "location": "node_modules/nan",
+        "package": "nan",
+        "version": "2.29.0"
+      },
+      {
+        "location": "node_modules/napi-build-utils",
+        "package": "napi-build-utils",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/near-api-js/node_modules/node-fetch",
+        "package": "node-fetch",
+        "version": "2.6.7"
+      },
+      {
+        "location": "node_modules/near-hd-key",
+        "package": "near-hd-key",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/near-hd-key/node_modules/@types/node",
+        "package": "@types/node",
+        "version": "11.11.6"
+      },
+      {
+        "location": "node_modules/near-hd-key/node_modules/bip39",
+        "package": "bip39",
+        "version": "3.0.2"
+      },
+      {
+        "location": "node_modules/near-seed-phrase",
+        "package": "near-seed-phrase",
+        "version": "0.2.1"
+      },
+      {
+        "location": "node_modules/near-seed-phrase/node_modules/base-x",
+        "package": "base-x",
+        "version": "3.0.11"
+      },
+      {
+        "location": "node_modules/near-seed-phrase/node_modules/bs58",
+        "package": "bs58",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/node-abi",
+        "package": "node-abi",
+        "version": "3.99.0"
+      },
+      {
+        "location": "node_modules/node-addon-api",
+        "package": "node-addon-api",
+        "version": "2.0.2"
+      },
+      {
+        "location": "node_modules/node-fetch",
+        "package": "node-fetch",
+        "version": "2.7.0"
+      },
+      {
+        "location": "node_modules/node-gyp-build",
+        "package": "node-gyp-build",
+        "version": "4.8.4"
+      },
+      {
+        "location": "node_modules/normalize-url",
+        "package": "normalize-url",
+        "version": "6.1.0"
+      },
+      {
+        "location": "node_modules/number-to-bn",
+        "package": "number-to-bn",
+        "version": "1.7.0"
+      },
+      {
+        "location": "node_modules/number-to-bn/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.11.6"
+      },
+      {
+        "location": "node_modules/object-keys",
+        "package": "object-keys",
+        "version": "1.1.1"
+      },
+      {
+        "location": "node_modules/once",
+        "package": "once",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/onetime",
+        "package": "onetime",
+        "version": "5.1.2"
+      },
+      {
+        "location": "node_modules/ora",
+        "package": "ora",
+        "version": "5.4.1"
+      },
+      {
+        "location": "node_modules/ora/node_modules/chalk",
+        "package": "chalk",
+        "version": "4.1.2"
+      },
+      {
+        "location": "node_modules/p-cancelable",
+        "package": "p-cancelable",
+        "version": "2.1.1"
+      },
+      {
+        "location": "node_modules/pbkdf2",
+        "package": "pbkdf2",
+        "version": "3.1.7"
+      },
+      {
+        "location": "node_modules/possible-typed-array-names",
+        "package": "possible-typed-array-names",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/prebuild-install",
+        "package": "prebuild-install",
+        "version": "7.1.3"
+      },
+      {
+        "location": "node_modules/process-nextick-args",
+        "package": "process-nextick-args",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/proxy-from-env",
+        "package": "proxy-from-env",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/pump",
+        "package": "pump",
+        "version": "3.0.4"
+      },
+      {
+        "location": "node_modules/quick-lru",
+        "package": "quick-lru",
+        "version": "5.1.1"
+      },
+      {
+        "location": "node_modules/randombytes",
+        "package": "randombytes",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/rc",
+        "package": "rc",
+        "version": "1.2.8"
+      },
+      {
+        "location": "node_modules/readable-stream",
+        "package": "readable-stream",
+        "version": "3.6.2"
+      },
+      {
+        "location": "node_modules/resolve-alpn",
+        "package": "resolve-alpn",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/responselike",
+        "package": "responselike",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/restore-cursor",
+        "package": "restore-cursor",
+        "version": "3.1.0"
+      },
+      {
+        "location": "node_modules/retry",
+        "package": "retry",
+        "version": "0.13.1"
+      },
+      {
+        "location": "node_modules/ripemd160",
+        "package": "ripemd160",
+        "version": "2.0.3"
+      },
+      {
+        "location": "node_modules/rpc-websockets",
+        "package": "rpc-websockets",
+        "version": "9.3.9"
+      },
+      {
+        "location": "node_modules/rpc-websockets/node_modules/@types/ws",
+        "package": "@types/ws",
+        "version": "8.18.2"
+      },
+      {
+        "location": "node_modules/rpc-websockets/node_modules/uuid",
+        "package": "uuid",
+        "version": "14.0.3"
+      },
+      {
+        "location": "node_modules/rpc-websockets/node_modules/ws",
+        "package": "ws",
+        "version": "8.22.0"
+      },
+      {
+        "location": "node_modules/run-async",
+        "package": "run-async",
+        "version": "2.4.1"
+      },
+      {
+        "location": "node_modules/rxjs",
+        "package": "rxjs",
+        "version": "7.8.2"
+      },
+      {
+        "location": "node_modules/safe-buffer",
+        "package": "safe-buffer",
+        "version": "5.2.1"
+      },
+      {
+        "location": "node_modules/safe-regex-test",
+        "package": "safe-regex-test",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/safer-buffer",
+        "package": "safer-buffer",
+        "version": "2.1.2"
+      },
+      {
+        "location": "node_modules/scrypt-js",
+        "package": "scrypt-js",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/semver",
+        "package": "semver",
+        "version": "7.8.5"
+      },
+      {
+        "location": "node_modules/set-function-length",
+        "package": "set-function-length",
+        "version": "1.2.2"
+      },
+      {
+        "location": "node_modules/setimmediate",
+        "package": "setimmediate",
+        "version": "1.0.5"
+      },
+      {
+        "location": "node_modules/setprototypeof",
+        "package": "setprototypeof",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/sha.js",
+        "package": "sha.js",
+        "version": "2.4.12"
+      },
+      {
+        "location": "node_modules/signal-exit",
+        "package": "signal-exit",
+        "version": "3.0.7"
+      },
+      {
+        "location": "node_modules/simple-concat",
+        "package": "simple-concat",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/simple-get",
+        "package": "simple-get",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/statuses",
+        "package": "statuses",
+        "version": "1.5.0"
+      },
+      {
+        "location": "node_modules/stream-chain",
+        "package": "stream-chain",
+        "version": "2.2.5"
+      },
+      {
+        "location": "node_modules/stream-json",
+        "package": "stream-json",
+        "version": "1.9.1"
+      },
+      {
+        "location": "node_modules/string-width",
+        "package": "string-width",
+        "version": "4.2.3"
+      },
+      {
+        "location": "node_modules/string_decoder",
+        "package": "string_decoder",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/strip-ansi",
+        "package": "strip-ansi",
+        "version": "6.0.1"
+      },
+      {
+        "location": "node_modules/strip-hex-prefix",
+        "package": "strip-hex-prefix",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/strip-json-comments",
+        "package": "strip-json-comments",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/supports-color",
+        "package": "supports-color",
+        "version": "7.2.0"
+      },
+      {
+        "location": "node_modules/tar-fs",
+        "package": "tar-fs",
+        "version": "2.1.5"
+      },
+      {
+        "location": "node_modules/tar-stream",
+        "package": "tar-stream",
+        "version": "2.2.0"
+      },
+      {
+        "location": "node_modules/text-encoding-utf-8",
+        "package": "text-encoding-utf-8",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/through",
+        "package": "through",
+        "version": "2.3.8"
+      },
+      {
+        "location": "node_modules/to-buffer",
+        "package": "to-buffer",
+        "version": "1.2.2"
+      },
+      {
+        "location": "node_modules/toidentifier",
+        "package": "toidentifier",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/tr46",
+        "package": "tr46",
+        "version": "0.0.3"
+      },
+      {
+        "location": "node_modules/tronweb",
+        "package": "tronweb",
+        "version": "6.5.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/axios",
+        "package": "axios",
+        "version": "1.18.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/bignumber.js",
+        "package": "bignumber.js",
+        "version": "9.1.2"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/eventemitter3",
+        "package": "eventemitter3",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/semver",
+        "package": "semver",
+        "version": "7.7.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/tslib",
+        "package": "tslib",
+        "version": "2.7.0"
+      },
+      {
+        "location": "node_modules/tslib",
+        "package": "tslib",
+        "version": "2.8.1"
+      },
+      {
+        "location": "node_modules/tunnel-agent",
+        "package": "tunnel-agent",
+        "version": "0.6.0"
+      },
+      {
+        "location": "node_modules/tweetnacl",
+        "package": "tweetnacl",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/type-fest",
+        "package": "type-fest",
+        "version": "0.21.3"
+      },
+      {
+        "location": "node_modules/typed-array-buffer",
+        "package": "typed-array-buffer",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/typeforce",
+        "package": "typeforce",
+        "version": "1.18.0"
+      },
+      {
+        "location": "node_modules/utf8",
+        "package": "utf8",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/util",
+        "package": "util",
+        "version": "0.12.5"
+      },
+      {
+        "location": "node_modules/util-deprecate",
+        "package": "util-deprecate",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/uuid",
+        "package": "uuid",
+        "version": "8.3.2"
+      },
+      {
+        "location": "node_modules/valibot",
+        "package": "valibot",
+        "version": "1.5.0"
+      },
+      {
+        "location": "node_modules/validator",
+        "package": "validator",
+        "version": "13.15.23"
+      },
+      {
+        "location": "node_modules/varuint-bitcoin",
+        "package": "varuint-bitcoin",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/vlq",
+        "package": "vlq",
+        "version": "2.0.4"
+      },
+      {
+        "location": "node_modules/wcwidth",
+        "package": "wcwidth",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/web3-core",
+        "package": "web3-core",
+        "version": "4.7.1"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-errors",
+        "package": "web3-errors",
+        "version": "1.3.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi",
+        "package": "web3-eth-abi",
+        "version": "4.4.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/abitype",
+        "package": "abitype",
+        "version": "0.7.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts",
+        "package": "web3-eth-accounts",
+        "version": "4.3.1"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-contract",
+        "package": "web3-eth-contract",
+        "version": "4.7.2"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@ethereumjs/rlp",
+        "package": "@ethereumjs/rlp",
+        "version": "5.0.2"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/web3-eth",
+        "package": "web3-eth",
+        "version": "4.11.1"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-ens",
+        "package": "web3-eth-ens",
+        "version": "4.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/web3-eth",
+        "package": "web3-eth",
+        "version": "4.11.1"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-iban",
+        "package": "web3-eth-iban",
+        "version": "4.0.7"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-personal",
+        "package": "web3-eth-personal",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/web3-eth",
+        "package": "web3-eth",
+        "version": "4.11.1"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-net",
+        "package": "web3-net",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-providers-http",
+        "package": "web3-providers-http",
+        "version": "4.2.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/cross-fetch",
+        "package": "cross-fetch",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-providers-ws",
+        "package": "web3-providers-ws",
+        "version": "4.0.8"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@types/ws",
+        "package": "@types/ws",
+        "version": "8.5.3"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/isomorphic-ws",
+        "package": "isomorphic-ws",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/ws",
+        "package": "ws",
+        "version": "8.22.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-methods",
+        "package": "web3-rpc-methods",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers",
+        "package": "web3-rpc-providers",
+        "version": "1.0.0-rc.4"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-types",
+        "package": "web3-types",
+        "version": "1.10.0"
+      },
+      {
+        "location": "node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "1.10.4"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-validator",
+        "package": "web3-validator",
+        "version": "2.0.6"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/whatwg-url",
+        "package": "whatwg-url",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/whatwg-url/node_modules/webidl-conversions",
+        "package": "webidl-conversions",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/which-typed-array",
+        "package": "which-typed-array",
+        "version": "1.1.24"
+      },
+      {
+        "location": "node_modules/wrap-ansi",
+        "package": "wrap-ansi",
+        "version": "6.2.0"
+      },
+      {
+        "location": "node_modules/wrappy",
+        "package": "wrappy",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/ws",
+        "package": "ws",
+        "version": "7.5.13"
+      },
+      {
+        "location": "node_modules/xtend",
+        "package": "xtend",
+        "version": "4.0.2"
+      },
+      {
+        "location": "node_modules/zod",
+        "package": "zod",
+        "version": "3.25.76"
+      }
+    ],
+    "only_lock": [],
+    "interpretation": "Lock-only omission is not a complete installed-tree SBOM; physical instance export retains the original range conflicts."
+  },
+  {
+    "tree": "live-seller",
+    "physical_instances": 959,
+    "lock_only_omit_optional_components": 460,
+    "only_physical": [
+      {
+        "location": "node_modules/@adraffy/ens-normalize",
+        "package": "@adraffy/ens-normalize",
+        "version": "1.11.1"
+      },
+      {
+        "location": "node_modules/@babel/runtime",
+        "package": "@babel/runtime",
+        "version": "7.29.10"
+      },
+      {
+        "location": "node_modules/@bitcoinerlab/secp256k1",
+        "package": "@bitcoinerlab/secp256k1",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/rlp",
+        "package": "@ethereumjs/rlp",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util",
+        "package": "@ethereumjs/util",
+        "version": "8.1.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/@ethereumjs/util/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/@ethersproject/abi",
+        "package": "@ethersproject/abi",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/abstract-provider",
+        "package": "@ethersproject/abstract-provider",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/abstract-signer",
+        "package": "@ethersproject/abstract-signer",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/address",
+        "package": "@ethersproject/address",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/base64",
+        "package": "@ethersproject/base64",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/basex",
+        "package": "@ethersproject/basex",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/bignumber",
+        "package": "@ethersproject/bignumber",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/bytes",
+        "package": "@ethersproject/bytes",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/constants",
+        "package": "@ethersproject/constants",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/contracts",
+        "package": "@ethersproject/contracts",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/hash",
+        "package": "@ethersproject/hash",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/hdnode",
+        "package": "@ethersproject/hdnode",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/json-wallets",
+        "package": "@ethersproject/json-wallets",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/keccak256",
+        "package": "@ethersproject/keccak256",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/keccak256/node_modules/js-sha3",
+        "package": "js-sha3",
+        "version": "0.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/logger",
+        "package": "@ethersproject/logger",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/networks",
+        "package": "@ethersproject/networks",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/pbkdf2",
+        "package": "@ethersproject/pbkdf2",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/properties",
+        "package": "@ethersproject/properties",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/providers",
+        "package": "@ethersproject/providers",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/providers/node_modules/ws",
+        "package": "ws",
+        "version": "8.18.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/random",
+        "package": "@ethersproject/random",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/rlp",
+        "package": "@ethersproject/rlp",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/sha2",
+        "package": "@ethersproject/sha2",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/signing-key",
+        "package": "@ethersproject/signing-key",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/strings",
+        "package": "@ethersproject/strings",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/transactions",
+        "package": "@ethersproject/transactions",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/wallet",
+        "package": "@ethersproject/wallet",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/web",
+        "package": "@ethersproject/web",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@ethersproject/wordlists",
+        "package": "@ethersproject/wordlists",
+        "version": "5.8.0"
+      },
+      {
+        "location": "node_modules/@inquirer/external-editor",
+        "package": "@inquirer/external-editor",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/beet",
+        "package": "@metaplex-foundation/beet",
+        "version": "0.7.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/beet-solana",
+        "package": "@metaplex-foundation/beet-solana",
+        "version": "0.3.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/cusper",
+        "package": "@metaplex-foundation/cusper",
+        "version": "0.0.2"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-auction-house",
+        "package": "@metaplex-foundation/mpl-auction-house",
+        "version": "2.5.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-auction-house/node_modules/@metaplex-foundation/beet",
+        "package": "@metaplex-foundation/beet",
+        "version": "0.6.1"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-token-metadata",
+        "package": "@metaplex-foundation/mpl-token-metadata",
+        "version": "2.13.0"
+      },
+      {
+        "location": "node_modules/@metaplex-foundation/mpl-token-metadata/node_modules/@metaplex-foundation/beet-solana",
+        "package": "@metaplex-foundation/beet-solana",
+        "version": "0.4.1"
+      },
+      {
+        "location": "node_modules/@multiversx/sdk-bls-wasm",
+        "package": "@multiversx/sdk-bls-wasm",
+        "version": "0.3.5"
+      },
+      {
+        "location": "node_modules/@multiversx/sdk-core/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/@noble/ciphers",
+        "package": "@noble/ciphers",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.9.4"
+      },
+      {
+        "location": "node_modules/@noble/ed25519",
+        "package": "@noble/ed25519",
+        "version": "1.7.5"
+      },
+      {
+        "location": "node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.8.0"
+      },
+      {
+        "location": "node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.2.6"
+      },
+      {
+        "location": "node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.7.0"
+      },
+      {
+        "location": "node_modules/@sindresorhus/is",
+        "package": "@sindresorhus/is",
+        "version": "4.6.0"
+      },
+      {
+        "location": "node_modules/@solana/buffer-layout",
+        "package": "@solana/buffer-layout",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/@solana/buffer-layout-utils",
+        "package": "@solana/buffer-layout-utils",
+        "version": "0.2.0"
+      },
+      {
+        "location": "node_modules/@solana/codecs",
+        "package": "@solana/codecs",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-core",
+        "package": "@solana/codecs-core",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-data-structures",
+        "package": "@solana/codecs-data-structures",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-numbers",
+        "package": "@solana/codecs-numbers",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/codecs-strings",
+        "package": "@solana/codecs-strings",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/errors",
+        "package": "@solana/errors",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/options",
+        "package": "@solana/options",
+        "version": "2.0.0-rc.1"
+      },
+      {
+        "location": "node_modules/@solana/spl-token",
+        "package": "@solana/spl-token",
+        "version": "0.3.11"
+      },
+      {
+        "location": "node_modules/@solana/spl-token-metadata",
+        "package": "@solana/spl-token-metadata",
+        "version": "0.1.6"
+      },
+      {
+        "location": "node_modules/@solana/web3.js",
+        "package": "@solana/web3.js",
+        "version": "1.98.0"
+      },
+      {
+        "location": "node_modules/@solana/web3.js/node_modules/base-x",
+        "package": "base-x",
+        "version": "3.0.11"
+      },
+      {
+        "location": "node_modules/@solana/web3.js/node_modules/bs58",
+        "package": "bs58",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/@solana/web3.js/node_modules/superstruct",
+        "package": "superstruct",
+        "version": "2.0.2"
+      },
+      {
+        "location": "node_modules/@swc/helpers",
+        "package": "@swc/helpers",
+        "version": "0.5.23"
+      },
+      {
+        "location": "node_modules/@szmarczak/http-timer",
+        "package": "@szmarczak/http-timer",
+        "version": "4.0.6"
+      },
+      {
+        "location": "node_modules/@ton/core",
+        "package": "@ton/core",
+        "version": "0.63.1"
+      },
+      {
+        "location": "node_modules/@ton/crypto",
+        "package": "@ton/crypto",
+        "version": "3.3.0"
+      },
+      {
+        "location": "node_modules/@ton/crypto-primitives",
+        "package": "@ton/crypto-primitives",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/@types/cacheable-request",
+        "package": "@types/cacheable-request",
+        "version": "6.0.3"
+      },
+      {
+        "location": "node_modules/@types/connect",
+        "package": "@types/connect",
+        "version": "3.4.38"
+      },
+      {
+        "location": "node_modules/@types/http-cache-semantics",
+        "package": "@types/http-cache-semantics",
+        "version": "4.2.0"
+      },
+      {
+        "location": "node_modules/@types/keyv",
+        "package": "@types/keyv",
+        "version": "3.1.4"
+      },
+      {
+        "location": "node_modules/@types/responselike",
+        "package": "@types/responselike",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/@types/uuid",
+        "package": "@types/uuid",
+        "version": "10.0.0"
+      },
+      {
+        "location": "node_modules/@types/ws",
+        "package": "@types/ws",
+        "version": "7.4.7"
+      },
+      {
+        "location": "node_modules/aes-js",
+        "package": "aes-js",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/agent-base",
+        "package": "agent-base",
+        "version": "6.0.2"
+      },
+      {
+        "location": "node_modules/agentkeepalive",
+        "package": "agentkeepalive",
+        "version": "4.6.0"
+      },
+      {
+        "location": "node_modules/algo-msgpack-with-bigint",
+        "package": "algo-msgpack-with-bigint",
+        "version": "2.1.1"
+      },
+      {
+        "location": "node_modules/algosdk",
+        "package": "algosdk",
+        "version": "1.24.1"
+      },
+      {
+        "location": "node_modules/algosdk/node_modules/js-sha256",
+        "package": "js-sha256",
+        "version": "0.9.0"
+      },
+      {
+        "location": "node_modules/algosdk/node_modules/js-sha3",
+        "package": "js-sha3",
+        "version": "0.8.0"
+      },
+      {
+        "location": "node_modules/ansi-escapes",
+        "package": "ansi-escapes",
+        "version": "4.3.2"
+      },
+      {
+        "location": "node_modules/ansi-regex",
+        "package": "ansi-regex",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/ansi-styles",
+        "package": "ansi-styles",
+        "version": "4.3.0"
+      },
+      {
+        "location": "node_modules/ansicolors",
+        "package": "ansicolors",
+        "version": "0.3.2"
+      },
+      {
+        "location": "node_modules/asn1.js",
+        "package": "asn1.js",
+        "version": "5.4.1"
+      },
+      {
+        "location": "node_modules/asn1.js/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.12.5"
+      },
+      {
+        "location": "node_modules/async-retry",
+        "package": "async-retry",
+        "version": "1.3.3"
+      },
+      {
+        "location": "node_modules/asynckit",
+        "package": "asynckit",
+        "version": "0.4.0"
+      },
+      {
+        "location": "node_modules/available-typed-arrays",
+        "package": "available-typed-arrays",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/axios",
+        "package": "axios",
+        "version": "1.20.0"
+      },
+      {
+        "location": "node_modules/base-x",
+        "package": "base-x",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/base64-js",
+        "package": "base64-js",
+        "version": "1.5.1"
+      },
+      {
+        "location": "node_modules/base64url",
+        "package": "base64url",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/bech32",
+        "package": "bech32",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/better-sqlite3",
+        "package": "better-sqlite3",
+        "version": "12.6.2"
+      },
+      {
+        "location": "node_modules/bigint-buffer",
+        "package": "bigint-buffer",
+        "version": "1.1.5"
+      },
+      {
+        "location": "node_modules/bignumber.js",
+        "package": "bignumber.js",
+        "version": "9.3.1"
+      },
+      {
+        "location": "node_modules/bindings",
+        "package": "bindings",
+        "version": "1.5.0"
+      },
+      {
+        "location": "node_modules/bip174",
+        "package": "bip174",
+        "version": "2.1.1"
+      },
+      {
+        "location": "node_modules/bip39",
+        "package": "bip39",
+        "version": "3.1.2"
+      },
+      {
+        "location": "node_modules/bip39-light",
+        "package": "bip39-light",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/bip66",
+        "package": "bip66",
+        "version": "1.1.5"
+      },
+      {
+        "location": "node_modules/bitcoinjs-lib",
+        "package": "bitcoinjs-lib",
+        "version": "6.1.9"
+      },
+      {
+        "location": "node_modules/bitcoinjs-lib/node_modules/bech32",
+        "package": "bech32",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/bl",
+        "package": "bl",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/bl/node_modules/buffer",
+        "package": "buffer",
+        "version": "5.7.1"
+      },
+      {
+        "location": "node_modules/bluebird",
+        "package": "bluebird",
+        "version": "3.7.2"
+      },
+      {
+        "location": "node_modules/bn.js",
+        "package": "bn.js",
+        "version": "5.2.5"
+      },
+      {
+        "location": "node_modules/borsh",
+        "package": "borsh",
+        "version": "0.7.0"
+      },
+      {
+        "location": "node_modules/borsh/node_modules/base-x",
+        "package": "base-x",
+        "version": "3.0.11"
+      },
+      {
+        "location": "node_modules/borsh/node_modules/bs58",
+        "package": "bs58",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/brorand",
+        "package": "brorand",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/browserify-aes",
+        "package": "browserify-aes",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/bs58",
+        "package": "bs58",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/bs58check",
+        "package": "bs58check",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/buffer",
+        "package": "buffer",
+        "version": "6.0.3"
+      },
+      {
+        "location": "node_modules/buffer-xor",
+        "package": "buffer-xor",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/cacheable-lookup",
+        "package": "cacheable-lookup",
+        "version": "5.0.4"
+      },
+      {
+        "location": "node_modules/cacheable-request",
+        "package": "cacheable-request",
+        "version": "7.0.4"
+      },
+      {
+        "location": "node_modules/call-bind",
+        "package": "call-bind",
+        "version": "1.0.9"
+      },
+      {
+        "location": "node_modules/call-bind-apply-helpers",
+        "package": "call-bind-apply-helpers",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/call-bound",
+        "package": "call-bound",
+        "version": "1.0.4"
+      },
+      {
+        "location": "node_modules/chalk",
+        "package": "chalk",
+        "version": "5.6.2"
+      },
+      {
+        "location": "node_modules/chardet",
+        "package": "chardet",
+        "version": "2.2.0"
+      },
+      {
+        "location": "node_modules/chownr",
+        "package": "chownr",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/cipher-base",
+        "package": "cipher-base",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/cli-cursor",
+        "package": "cli-cursor",
+        "version": "3.1.0"
+      },
+      {
+        "location": "node_modules/cli-spinners",
+        "package": "cli-spinners",
+        "version": "2.9.2"
+      },
+      {
+        "location": "node_modules/cli-width",
+        "package": "cli-width",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/clone",
+        "package": "clone",
+        "version": "1.0.4"
+      },
+      {
+        "location": "node_modules/clone-response",
+        "package": "clone-response",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/color-convert",
+        "package": "color-convert",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/color-name",
+        "package": "color-name",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/combined-stream",
+        "package": "combined-stream",
+        "version": "1.0.8"
+      },
+      {
+        "location": "node_modules/commander",
+        "package": "commander",
+        "version": "12.1.0"
+      },
+      {
+        "location": "node_modules/core-util-is",
+        "package": "core-util-is",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/crc-32",
+        "package": "crc-32",
+        "version": "1.2.2"
+      },
+      {
+        "location": "node_modules/create-hash",
+        "package": "create-hash",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/create-hmac",
+        "package": "create-hmac",
+        "version": "1.1.7"
+      },
+      {
+        "location": "node_modules/cross-fetch",
+        "package": "cross-fetch",
+        "version": "3.2.0"
+      },
+      {
+        "location": "node_modules/dataloader",
+        "package": "dataloader",
+        "version": "2.2.3"
+      },
+      {
+        "location": "node_modules/debug",
+        "package": "debug",
+        "version": "4.4.3"
+      },
+      {
+        "location": "node_modules/decompress-response",
+        "package": "decompress-response",
+        "version": "6.0.0"
+      },
+      {
+        "location": "node_modules/decompress-response/node_modules/mimic-response",
+        "package": "mimic-response",
+        "version": "3.1.0"
+      },
+      {
+        "location": "node_modules/deep-extend",
+        "package": "deep-extend",
+        "version": "0.6.0"
+      },
+      {
+        "location": "node_modules/defaults",
+        "package": "defaults",
+        "version": "1.0.4"
+      },
+      {
+        "location": "node_modules/defer-to-connect",
+        "package": "defer-to-connect",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/define-data-property",
+        "package": "define-data-property",
+        "version": "1.1.4"
+      },
+      {
+        "location": "node_modules/define-properties",
+        "package": "define-properties",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/delay",
+        "package": "delay",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/delayed-stream",
+        "package": "delayed-stream",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/depd",
+        "package": "depd",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/detect-libc",
+        "package": "detect-libc",
+        "version": "2.1.2"
+      },
+      {
+        "location": "node_modules/dotenv",
+        "package": "dotenv",
+        "version": "16.6.1"
+      },
+      {
+        "location": "node_modules/dunder-proto",
+        "package": "dunder-proto",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/elliptic",
+        "package": "elliptic",
+        "version": "6.6.1"
+      },
+      {
+        "location": "node_modules/elliptic/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.12.5"
+      },
+      {
+        "location": "node_modules/emoji-regex",
+        "package": "emoji-regex",
+        "version": "8.0.0"
+      },
+      {
+        "location": "node_modules/end-of-stream",
+        "package": "end-of-stream",
+        "version": "1.4.5"
+      },
+      {
+        "location": "node_modules/es-define-property",
+        "package": "es-define-property",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/es-errors",
+        "package": "es-errors",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/es-object-atoms",
+        "package": "es-object-atoms",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/es-set-tostringtag",
+        "package": "es-set-tostringtag",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/es6-promise",
+        "package": "es6-promise",
+        "version": "4.2.8"
+      },
+      {
+        "location": "node_modules/es6-promisify",
+        "package": "es6-promisify",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/escape-string-regexp",
+        "package": "escape-string-regexp",
+        "version": "1.0.5"
+      },
+      {
+        "location": "node_modules/ethereum-bloom-filters",
+        "package": "ethereum-bloom-filters",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/ethers",
+        "package": "ethers",
+        "version": "6.17.0"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.3.2"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/@types/node",
+        "package": "@types/node",
+        "version": "22.7.5"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/aes-js",
+        "package": "aes-js",
+        "version": "4.0.0-beta.5"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/tslib",
+        "package": "tslib",
+        "version": "2.7.0"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/undici-types",
+        "package": "undici-types",
+        "version": "6.19.8"
+      },
+      {
+        "location": "node_modules/ethers/node_modules/ws",
+        "package": "ws",
+        "version": "8.21.0"
+      },
+      {
+        "location": "node_modules/ethjs-unit",
+        "package": "ethjs-unit",
+        "version": "0.1.6"
+      },
+      {
+        "location": "node_modules/ethjs-unit/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.11.6"
+      },
+      {
+        "location": "node_modules/eventemitter3",
+        "package": "eventemitter3",
+        "version": "5.0.4"
+      },
+      {
+        "location": "node_modules/evp_bytestokey",
+        "package": "evp_bytestokey",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/expand-template",
+        "package": "expand-template",
+        "version": "2.0.3"
+      },
+      {
+        "location": "node_modules/eyes",
+        "package": "eyes",
+        "version": "0.1.8"
+      },
+      {
+        "location": "node_modules/fast-stable-stringify",
+        "package": "fast-stable-stringify",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/fastestsmallesttextencoderdecoder",
+        "package": "fastestsmallesttextencoderdecoder",
+        "version": "1.0.22"
+      },
+      {
+        "location": "node_modules/figures",
+        "package": "figures",
+        "version": "3.2.0"
+      },
+      {
+        "location": "node_modules/file-uri-to-path",
+        "package": "file-uri-to-path",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/follow-redirects",
+        "package": "follow-redirects",
+        "version": "1.16.1"
+      },
+      {
+        "location": "node_modules/for-each",
+        "package": "for-each",
+        "version": "0.3.5"
+      },
+      {
+        "location": "node_modules/form-data",
+        "package": "form-data",
+        "version": "4.0.6"
+      },
+      {
+        "location": "node_modules/fs-constants",
+        "package": "fs-constants",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/function-bind",
+        "package": "function-bind",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/generator-function",
+        "package": "generator-function",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/get-intrinsic",
+        "package": "get-intrinsic",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/get-proto",
+        "package": "get-proto",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/get-stream",
+        "package": "get-stream",
+        "version": "5.2.0"
+      },
+      {
+        "location": "node_modules/github-from-package",
+        "package": "github-from-package",
+        "version": "0.0.0"
+      },
+      {
+        "location": "node_modules/google-protobuf",
+        "package": "google-protobuf",
+        "version": "3.21.4"
+      },
+      {
+        "location": "node_modules/gopd",
+        "package": "gopd",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/got",
+        "package": "got",
+        "version": "11.8.6"
+      },
+      {
+        "location": "node_modules/has-flag",
+        "package": "has-flag",
+        "version": "4.0.0"
+      },
+      {
+        "location": "node_modules/has-property-descriptors",
+        "package": "has-property-descriptors",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/has-symbols",
+        "package": "has-symbols",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/has-tostringtag",
+        "package": "has-tostringtag",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/hash-base",
+        "package": "hash-base",
+        "version": "3.1.2"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/isarray",
+        "package": "isarray",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/readable-stream",
+        "package": "readable-stream",
+        "version": "2.3.8"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/readable-stream/node_modules/safe-buffer",
+        "package": "safe-buffer",
+        "version": "5.1.2"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/string_decoder",
+        "package": "string_decoder",
+        "version": "1.1.1"
+      },
+      {
+        "location": "node_modules/hash-base/node_modules/string_decoder/node_modules/safe-buffer",
+        "package": "safe-buffer",
+        "version": "5.1.2"
+      },
+      {
+        "location": "node_modules/hash.js",
+        "package": "hash.js",
+        "version": "1.1.7"
+      },
+      {
+        "location": "node_modules/hasown",
+        "package": "hasown",
+        "version": "2.0.4"
+      },
+      {
+        "location": "node_modules/hi-base32",
+        "package": "hi-base32",
+        "version": "0.5.1"
+      },
+      {
+        "location": "node_modules/hmac-drbg",
+        "package": "hmac-drbg",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/http-cache-semantics",
+        "package": "http-cache-semantics",
+        "version": "4.3.0"
+      },
+      {
+        "location": "node_modules/http-errors",
+        "package": "http-errors",
+        "version": "1.8.1"
+      },
+      {
+        "location": "node_modules/http-errors/node_modules/depd",
+        "package": "depd",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/http2-wrapper",
+        "package": "http2-wrapper",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/https-proxy-agent",
+        "package": "https-proxy-agent",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/humanize-ms",
+        "package": "humanize-ms",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/iconv-lite",
+        "package": "iconv-lite",
+        "version": "0.7.3"
+      },
+      {
+        "location": "node_modules/ieee754",
+        "package": "ieee754",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/inherits",
+        "package": "inherits",
+        "version": "2.0.4"
+      },
+      {
+        "location": "node_modules/ini",
+        "package": "ini",
+        "version": "1.3.8"
+      },
+      {
+        "location": "node_modules/inquirer",
+        "package": "inquirer",
+        "version": "8.2.7"
+      },
+      {
+        "location": "node_modules/inquirer/node_modules/chalk",
+        "package": "chalk",
+        "version": "4.1.2"
+      },
+      {
+        "location": "node_modules/is-arguments",
+        "package": "is-arguments",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/is-callable",
+        "package": "is-callable",
+        "version": "1.2.7"
+      },
+      {
+        "location": "node_modules/is-fullwidth-code-point",
+        "package": "is-fullwidth-code-point",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/is-generator-function",
+        "package": "is-generator-function",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/is-hex-prefixed",
+        "package": "is-hex-prefixed",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/is-interactive",
+        "package": "is-interactive",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/is-regex",
+        "package": "is-regex",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/is-typed-array",
+        "package": "is-typed-array",
+        "version": "1.1.15"
+      },
+      {
+        "location": "node_modules/is-unicode-supported",
+        "package": "is-unicode-supported",
+        "version": "0.1.0"
+      },
+      {
+        "location": "node_modules/isarray",
+        "package": "isarray",
+        "version": "2.0.5"
+      },
+      {
+        "location": "node_modules/isomorphic-ws",
+        "package": "isomorphic-ws",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/isows",
+        "package": "isows",
+        "version": "1.0.7"
+      },
+      {
+        "location": "node_modules/jayson",
+        "package": "jayson",
+        "version": "4.3.0"
+      },
+      {
+        "location": "node_modules/jayson/node_modules/@types/node",
+        "package": "@types/node",
+        "version": "12.20.55"
+      },
+      {
+        "location": "node_modules/jayson/node_modules/commander",
+        "package": "commander",
+        "version": "2.20.3"
+      },
+      {
+        "location": "node_modules/js-base64",
+        "package": "js-base64",
+        "version": "3.9.4"
+      },
+      {
+        "location": "node_modules/js-sha512",
+        "package": "js-sha512",
+        "version": "0.8.0"
+      },
+      {
+        "location": "node_modules/json-bigint",
+        "package": "json-bigint",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/json-buffer",
+        "package": "json-buffer",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/json-stringify-safe",
+        "package": "json-stringify-safe",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/jssha",
+        "package": "jssha",
+        "version": "3.2.0"
+      },
+      {
+        "location": "node_modules/keccak",
+        "package": "keccak",
+        "version": "3.0.2"
+      },
+      {
+        "location": "node_modules/keyv",
+        "package": "keyv",
+        "version": "4.5.4"
+      },
+      {
+        "location": "node_modules/lodash",
+        "package": "lodash",
+        "version": "4.18.1"
+      },
+      {
+        "location": "node_modules/lodash.clonedeep",
+        "package": "lodash.clonedeep",
+        "version": "4.5.0"
+      },
+      {
+        "location": "node_modules/log-symbols",
+        "package": "log-symbols",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/log-symbols/node_modules/chalk",
+        "package": "chalk",
+        "version": "4.1.2"
+      },
+      {
+        "location": "node_modules/lowercase-keys",
+        "package": "lowercase-keys",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/math-intrinsics",
+        "package": "math-intrinsics",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/md5.js",
+        "package": "md5.js",
+        "version": "1.3.5"
+      },
+      {
+        "location": "node_modules/micro-ftch",
+        "package": "micro-ftch",
+        "version": "0.3.1"
+      },
+      {
+        "location": "node_modules/mime",
+        "package": "mime",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/mime-db",
+        "package": "mime-db",
+        "version": "1.52.0"
+      },
+      {
+        "location": "node_modules/mime-types",
+        "package": "mime-types",
+        "version": "2.1.35"
+      },
+      {
+        "location": "node_modules/mimic-fn",
+        "package": "mimic-fn",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/mimic-response",
+        "package": "mimic-response",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/minimalistic-assert",
+        "package": "minimalistic-assert",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/minimalistic-crypto-utils",
+        "package": "minimalistic-crypto-utils",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/minimist",
+        "package": "minimist",
+        "version": "1.2.8"
+      },
+      {
+        "location": "node_modules/mkdirp-classic",
+        "package": "mkdirp-classic",
+        "version": "0.5.3"
+      },
+      {
+        "location": "node_modules/ms",
+        "package": "ms",
+        "version": "2.1.3"
+      },
+      {
+        "location": "node_modules/mustache",
+        "package": "mustache",
+        "version": "4.2.0"
+      },
+      {
+        "location": "node_modules/mute-stream",
+        "package": "mute-stream",
+        "version": "0.0.8"
+      },
+      {
+        "location": "node_modules/nan",
+        "package": "nan",
+        "version": "2.29.0"
+      },
+      {
+        "location": "node_modules/napi-build-utils",
+        "package": "napi-build-utils",
+        "version": "2.0.0"
+      },
+      {
+        "location": "node_modules/near-api-js/node_modules/node-fetch",
+        "package": "node-fetch",
+        "version": "2.6.7"
+      },
+      {
+        "location": "node_modules/near-hd-key",
+        "package": "near-hd-key",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/near-hd-key/node_modules/@types/node",
+        "package": "@types/node",
+        "version": "11.11.6"
+      },
+      {
+        "location": "node_modules/near-hd-key/node_modules/bip39",
+        "package": "bip39",
+        "version": "3.0.2"
+      },
+      {
+        "location": "node_modules/near-seed-phrase",
+        "package": "near-seed-phrase",
+        "version": "0.2.1"
+      },
+      {
+        "location": "node_modules/near-seed-phrase/node_modules/base-x",
+        "package": "base-x",
+        "version": "3.0.11"
+      },
+      {
+        "location": "node_modules/near-seed-phrase/node_modules/bs58",
+        "package": "bs58",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/node-abi",
+        "package": "node-abi",
+        "version": "3.99.0"
+      },
+      {
+        "location": "node_modules/node-addon-api",
+        "package": "node-addon-api",
+        "version": "2.0.2"
+      },
+      {
+        "location": "node_modules/node-fetch",
+        "package": "node-fetch",
+        "version": "2.7.0"
+      },
+      {
+        "location": "node_modules/node-gyp-build",
+        "package": "node-gyp-build",
+        "version": "4.8.4"
+      },
+      {
+        "location": "node_modules/normalize-url",
+        "package": "normalize-url",
+        "version": "6.1.0"
+      },
+      {
+        "location": "node_modules/number-to-bn",
+        "package": "number-to-bn",
+        "version": "1.7.0"
+      },
+      {
+        "location": "node_modules/number-to-bn/node_modules/bn.js",
+        "package": "bn.js",
+        "version": "4.11.6"
+      },
+      {
+        "location": "node_modules/object-keys",
+        "package": "object-keys",
+        "version": "1.1.1"
+      },
+      {
+        "location": "node_modules/once",
+        "package": "once",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/onetime",
+        "package": "onetime",
+        "version": "5.1.2"
+      },
+      {
+        "location": "node_modules/ora",
+        "package": "ora",
+        "version": "5.4.1"
+      },
+      {
+        "location": "node_modules/ora/node_modules/chalk",
+        "package": "chalk",
+        "version": "4.1.2"
+      },
+      {
+        "location": "node_modules/p-cancelable",
+        "package": "p-cancelable",
+        "version": "2.1.1"
+      },
+      {
+        "location": "node_modules/pbkdf2",
+        "package": "pbkdf2",
+        "version": "3.1.7"
+      },
+      {
+        "location": "node_modules/possible-typed-array-names",
+        "package": "possible-typed-array-names",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/prebuild-install",
+        "package": "prebuild-install",
+        "version": "7.1.3"
+      },
+      {
+        "location": "node_modules/process-nextick-args",
+        "package": "process-nextick-args",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/proxy-from-env",
+        "package": "proxy-from-env",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/pump",
+        "package": "pump",
+        "version": "3.0.4"
+      },
+      {
+        "location": "node_modules/quick-lru",
+        "package": "quick-lru",
+        "version": "5.1.1"
+      },
+      {
+        "location": "node_modules/randombytes",
+        "package": "randombytes",
+        "version": "2.1.0"
+      },
+      {
+        "location": "node_modules/rc",
+        "package": "rc",
+        "version": "1.2.8"
+      },
+      {
+        "location": "node_modules/readable-stream",
+        "package": "readable-stream",
+        "version": "3.6.2"
+      },
+      {
+        "location": "node_modules/resolve-alpn",
+        "package": "resolve-alpn",
+        "version": "1.2.1"
+      },
+      {
+        "location": "node_modules/responselike",
+        "package": "responselike",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/restore-cursor",
+        "package": "restore-cursor",
+        "version": "3.1.0"
+      },
+      {
+        "location": "node_modules/retry",
+        "package": "retry",
+        "version": "0.13.1"
+      },
+      {
+        "location": "node_modules/ripemd160",
+        "package": "ripemd160",
+        "version": "2.0.3"
+      },
+      {
+        "location": "node_modules/rpc-websockets",
+        "package": "rpc-websockets",
+        "version": "9.3.9"
+      },
+      {
+        "location": "node_modules/rpc-websockets/node_modules/@types/ws",
+        "package": "@types/ws",
+        "version": "8.18.2"
+      },
+      {
+        "location": "node_modules/rpc-websockets/node_modules/uuid",
+        "package": "uuid",
+        "version": "14.0.3"
+      },
+      {
+        "location": "node_modules/rpc-websockets/node_modules/ws",
+        "package": "ws",
+        "version": "8.22.0"
+      },
+      {
+        "location": "node_modules/run-async",
+        "package": "run-async",
+        "version": "2.4.1"
+      },
+      {
+        "location": "node_modules/rxjs",
+        "package": "rxjs",
+        "version": "7.8.2"
+      },
+      {
+        "location": "node_modules/safe-buffer",
+        "package": "safe-buffer",
+        "version": "5.2.1"
+      },
+      {
+        "location": "node_modules/safe-regex-test",
+        "package": "safe-regex-test",
+        "version": "1.1.0"
+      },
+      {
+        "location": "node_modules/safer-buffer",
+        "package": "safer-buffer",
+        "version": "2.1.2"
+      },
+      {
+        "location": "node_modules/scrypt-js",
+        "package": "scrypt-js",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/semver",
+        "package": "semver",
+        "version": "7.8.5"
+      },
+      {
+        "location": "node_modules/set-function-length",
+        "package": "set-function-length",
+        "version": "1.2.2"
+      },
+      {
+        "location": "node_modules/setimmediate",
+        "package": "setimmediate",
+        "version": "1.0.5"
+      },
+      {
+        "location": "node_modules/setprototypeof",
+        "package": "setprototypeof",
+        "version": "1.2.0"
+      },
+      {
+        "location": "node_modules/sha.js",
+        "package": "sha.js",
+        "version": "2.4.12"
+      },
+      {
+        "location": "node_modules/signal-exit",
+        "package": "signal-exit",
+        "version": "3.0.7"
+      },
+      {
+        "location": "node_modules/simple-concat",
+        "package": "simple-concat",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/simple-get",
+        "package": "simple-get",
+        "version": "4.0.1"
+      },
+      {
+        "location": "node_modules/statuses",
+        "package": "statuses",
+        "version": "1.5.0"
+      },
+      {
+        "location": "node_modules/stream-chain",
+        "package": "stream-chain",
+        "version": "2.2.5"
+      },
+      {
+        "location": "node_modules/stream-json",
+        "package": "stream-json",
+        "version": "1.9.1"
+      },
+      {
+        "location": "node_modules/string-width",
+        "package": "string-width",
+        "version": "4.2.3"
+      },
+      {
+        "location": "node_modules/string_decoder",
+        "package": "string_decoder",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/strip-ansi",
+        "package": "strip-ansi",
+        "version": "6.0.1"
+      },
+      {
+        "location": "node_modules/strip-hex-prefix",
+        "package": "strip-hex-prefix",
+        "version": "1.0.0"
+      },
+      {
+        "location": "node_modules/strip-json-comments",
+        "package": "strip-json-comments",
+        "version": "2.0.1"
+      },
+      {
+        "location": "node_modules/supports-color",
+        "package": "supports-color",
+        "version": "7.2.0"
+      },
+      {
+        "location": "node_modules/tar-fs",
+        "package": "tar-fs",
+        "version": "2.1.5"
+      },
+      {
+        "location": "node_modules/tar-stream",
+        "package": "tar-stream",
+        "version": "2.2.0"
+      },
+      {
+        "location": "node_modules/text-encoding-utf-8",
+        "package": "text-encoding-utf-8",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/through",
+        "package": "through",
+        "version": "2.3.8"
+      },
+      {
+        "location": "node_modules/to-buffer",
+        "package": "to-buffer",
+        "version": "1.2.2"
+      },
+      {
+        "location": "node_modules/toidentifier",
+        "package": "toidentifier",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/tr46",
+        "package": "tr46",
+        "version": "0.0.3"
+      },
+      {
+        "location": "node_modules/tronweb",
+        "package": "tronweb",
+        "version": "6.5.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/axios",
+        "package": "axios",
+        "version": "1.18.0"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/bignumber.js",
+        "package": "bignumber.js",
+        "version": "9.1.2"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/eventemitter3",
+        "package": "eventemitter3",
+        "version": "5.0.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/semver",
+        "package": "semver",
+        "version": "7.7.1"
+      },
+      {
+        "location": "node_modules/tronweb/node_modules/tslib",
+        "package": "tslib",
+        "version": "2.7.0"
+      },
+      {
+        "location": "node_modules/tslib",
+        "package": "tslib",
+        "version": "2.8.1"
+      },
+      {
+        "location": "node_modules/tunnel-agent",
+        "package": "tunnel-agent",
+        "version": "0.6.0"
+      },
+      {
+        "location": "node_modules/tweetnacl",
+        "package": "tweetnacl",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/type-fest",
+        "package": "type-fest",
+        "version": "0.21.3"
+      },
+      {
+        "location": "node_modules/typed-array-buffer",
+        "package": "typed-array-buffer",
+        "version": "1.0.3"
+      },
+      {
+        "location": "node_modules/typeforce",
+        "package": "typeforce",
+        "version": "1.18.0"
+      },
+      {
+        "location": "node_modules/utf8",
+        "package": "utf8",
+        "version": "3.0.0"
+      },
+      {
+        "location": "node_modules/util",
+        "package": "util",
+        "version": "0.12.5"
+      },
+      {
+        "location": "node_modules/util-deprecate",
+        "package": "util-deprecate",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/uuid",
+        "package": "uuid",
+        "version": "8.3.2"
+      },
+      {
+        "location": "node_modules/valibot",
+        "package": "valibot",
+        "version": "1.5.0"
+      },
+      {
+        "location": "node_modules/validator",
+        "package": "validator",
+        "version": "13.15.23"
+      },
+      {
+        "location": "node_modules/varuint-bitcoin",
+        "package": "varuint-bitcoin",
+        "version": "1.1.2"
+      },
+      {
+        "location": "node_modules/vlq",
+        "package": "vlq",
+        "version": "2.0.4"
+      },
+      {
+        "location": "node_modules/wcwidth",
+        "package": "wcwidth",
+        "version": "1.0.1"
+      },
+      {
+        "location": "node_modules/web3-core",
+        "package": "web3-core",
+        "version": "4.7.1"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-core/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-errors",
+        "package": "web3-errors",
+        "version": "1.3.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi",
+        "package": "web3-eth-abi",
+        "version": "4.4.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/abitype",
+        "package": "abitype",
+        "version": "0.7.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-abi/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts",
+        "package": "web3-eth-accounts",
+        "version": "4.3.1"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-accounts/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-contract",
+        "package": "web3-eth-contract",
+        "version": "4.7.2"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@ethereumjs/rlp",
+        "package": "@ethereumjs/rlp",
+        "version": "5.0.2"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/web3-eth",
+        "package": "web3-eth",
+        "version": "4.11.1"
+      },
+      {
+        "location": "node_modules/web3-eth-contract/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-ens",
+        "package": "web3-eth-ens",
+        "version": "4.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/web3-eth",
+        "package": "web3-eth",
+        "version": "4.11.1"
+      },
+      {
+        "location": "node_modules/web3-eth-ens/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-iban",
+        "package": "web3-eth-iban",
+        "version": "4.0.7"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-iban/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-eth-personal",
+        "package": "web3-eth-personal",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/web3-eth",
+        "package": "web3-eth",
+        "version": "4.11.1"
+      },
+      {
+        "location": "node_modules/web3-eth-personal/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-net",
+        "package": "web3-net",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-net/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-providers-http",
+        "package": "web3-providers-http",
+        "version": "4.2.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/cross-fetch",
+        "package": "cross-fetch",
+        "version": "4.1.0"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-providers-http/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-providers-ws",
+        "package": "web3-providers-ws",
+        "version": "4.0.8"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/@types/ws",
+        "package": "@types/ws",
+        "version": "8.5.3"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/isomorphic-ws",
+        "package": "isomorphic-ws",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-providers-ws/node_modules/ws",
+        "package": "ws",
+        "version": "8.22.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-methods",
+        "package": "web3-rpc-methods",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers",
+        "package": "web3-rpc-providers",
+        "version": "1.0.0-rc.4"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-rpc-providers/node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "4.3.3"
+      },
+      {
+        "location": "node_modules/web3-types",
+        "package": "web3-types",
+        "version": "1.10.0"
+      },
+      {
+        "location": "node_modules/web3-utils",
+        "package": "web3-utils",
+        "version": "1.10.4"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-utils/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/web3-validator",
+        "package": "web3-validator",
+        "version": "2.0.6"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@noble/curves",
+        "package": "@noble/curves",
+        "version": "1.4.2"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@noble/hashes",
+        "package": "@noble/hashes",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@scure/base",
+        "package": "@scure/base",
+        "version": "1.1.9"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@scure/bip32",
+        "package": "@scure/bip32",
+        "version": "1.4.0"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/@scure/bip39",
+        "package": "@scure/bip39",
+        "version": "1.3.0"
+      },
+      {
+        "location": "node_modules/web3-validator/node_modules/ethereum-cryptography",
+        "package": "ethereum-cryptography",
+        "version": "2.2.1"
+      },
+      {
+        "location": "node_modules/whatwg-url",
+        "package": "whatwg-url",
+        "version": "5.0.0"
+      },
+      {
+        "location": "node_modules/whatwg-url/node_modules/webidl-conversions",
+        "package": "webidl-conversions",
+        "version": "3.0.1"
+      },
+      {
+        "location": "node_modules/which-typed-array",
+        "package": "which-typed-array",
+        "version": "1.1.24"
+      },
+      {
+        "location": "node_modules/wrap-ansi",
+        "package": "wrap-ansi",
+        "version": "6.2.0"
+      },
+      {
+        "location": "node_modules/wrappy",
+        "package": "wrappy",
+        "version": "1.0.2"
+      },
+      {
+        "location": "node_modules/ws",
+        "package": "ws",
+        "version": "7.5.13"
+      },
+      {
+        "location": "node_modules/xtend",
+        "package": "xtend",
+        "version": "4.0.2"
+      },
+      {
+        "location": "node_modules/zod",
+        "package": "zod",
+        "version": "3.25.76"
+      }
+    ],
+    "only_lock": [],
+    "interpretation": "Lock-only omission is not a complete installed-tree SBOM; physical instance export retains the original range conflicts."
+  }
+]

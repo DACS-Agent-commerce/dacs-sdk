@@ -1,0 +1,8 @@
+{
+  "migration": {
+    "repository": "DACS-Agent-commerce/dacs-sdk",
+    "branch": "prep/demos-native-full-parity-20260902",
+    "commit": "d95aff688e31e4a6ebacf703b490925eec217d72",
+    "observed_on": "2026-10-16"
+  }
+}

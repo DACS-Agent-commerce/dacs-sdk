@@ -1,0 +1,231 @@
+{
+  "source_head": "3904d704fb540e6e1d7dd502a0be29f20569c92d",
+  "branch": "work",
+  "created_utc": "2026-10-15T17:50:02.770438+00:00",
+  "node": "22.23.3",
+  "npm_install_pack_audit": "10.9.9",
+  "npm_additional_sbom_probe": "11.19.0",
+  "scope": "Five packed consumers and two native comparison trees; no SDK dependency or override changes.",
+  "raw_policy": "Original archives are unavailable; the historical catalog is preserved at commit 2ee2fe41844487f9195d8ae42c97fed55227b12a. Current inputs are indexed by recollection-2026-10-16.json; --recollection verifies their files and archive.",
+  "path_policy": "Authored tarball paths use <collection>/tarballs; supplementary SBOM file references use collection-relative file:tarballs URLs. These derived path substitutions do not alter original raw bytes. Supplementary SBOM licenses move a user-defined LicenseRef- or DocumentRef- identifier from license.id to license.name, as the CycloneDX 1.5 schema requires; tools/validate.py applies the same rule to the original raw exports.",
+  "native_artifact": {
+    "package": "@demosnetwork/demos-native",
+    "version": "0.1.0-alpha.2",
+    "tarball": "<collection>/tarballs/demosnetwork-demos-native-0.1.0-alpha.2.tgz",
+    "sha256": "c0c8432f24250ed0050f0d79375535337270b1828c6783e6f3f3760ee82df6af",
+    "integrity": "sha512-aFeUyEJlJLvT1RQS3jyoBKtWtL2ZzuB+/NQElC5Os5ZxcCIu1WNcsoKjDRTNz9e5YWcRmPDWiycnsLYcP2iksg==",
+    "registry_git_head": "855884d6418a3ab0e1369e0d457d98e6fdc57993"
+  },
+  "install_path_gaps": [],
+  "catalog_files": [
+    {
+      "path": "cyclonedx/bom-1.5.schema.json",
+      "sha256": "067f7824b08653839ea050ae9e09ca48375eadc2652b0e2a299476e7db90335b",
+      "bytes": 164769
+    },
+    {
+      "path": "cyclonedx/jsf-0.82.schema.json",
+      "sha256": "8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae",
+      "bytes": 8058
+    },
+    {
+      "path": "cyclonedx/spdx.schema.json",
+      "sha256": "4f6e2b05c05d26a4f2dc5879fbc2fca94b0a28db46289d0c51345621b71cfbfc",
+      "bytes": 12322
+    },
+    {
+      "path": "native-api.json",
+      "sha256": "4d954f309714575885535cd2b79ef6e34042126d49b8919b26a100a5ad7ae422",
+      "bytes": 4991
+    },
+    {
+      "path": "native-delta.json",
+      "sha256": "ad66700e77842219d1ec4704a95c441ac325439f7a442bc051f18626079784ff",
+      "bytes": 47262
+    },
+    {
+      "path": "package-findings.json",
+      "sha256": "c3b6d1c526bfdb7678c7c030fc78bad6cc0608b32db0f3c079ab526f367caed7",
+      "bytes": 1865782
+    },
+    {
+      "path": "packs.json",
+      "sha256": "5e439497c5db5a21368def5082350bd3b5f8a6cecfb1530b6066c5231e05902f",
+      "bytes": 761
+    },
+    {
+      "path": "qualification-sources.json",
+      "sha256": "389da2fdf0db031b15991e527c1064af983418622f8263ce59ae581721c88952",
+      "bytes": 221
+    },
+    {
+      "path": "recollection-2026-10-16.json",
+      "sha256": "e1d96bf3241318bd35eb41f100cd18734de76a032f2a1bf9445c55a9365eba79",
+      "bytes": 59398
+    },
+    {
+      "path": "recollection-validation.json",
+      "sha256": "3fefcd6ae884538fa6fe9ffe8bf850cb1cf84ec9a3963a639bb3d151ad3303c5",
+      "bytes": 3296
+    },
+    {
+      "path": "release-checks.json",
+      "sha256": "45f0fd128a16114fcd6d22be678c647c6065334de301f5e79f16f72772fa758c",
+      "bytes": 19794
+    },
+    {
+      "path": "sbom-comparison.json",
+      "sha256": "27cf05fa648765d297566afd888e60240181251b858474e2b9074f4cab8db9fb",
+      "bytes": 138536
+    },
+    {
+      "path": "sboms/bare-core.npm.cdx.json",
+      "sha256": "763fe6c00735a5ad3b8c15652c4e341765360c373003154aff0400d47f8d372e",
+      "bytes": 23661
+    },
+    {
+      "path": "sboms/bare-core.physical.cdx.json",
+      "sha256": "d7f15ca0c749484c058139c23ad0898d0a998219d7ac4230c934b8fed5280744",
+      "bytes": 24678
+    },
+    {
+      "path": "sboms/bare-generator.npm.cdx.json",
+      "sha256": "5cac05de79b953683c97300d0f86709a475a6c223f1fdc1716aee99f67bc3c2e",
+      "bytes": 2540
+    },
+    {
+      "path": "sboms/bare-generator.physical.cdx.json",
+      "sha256": "65c70cb9634c6b0479117d8143f6715152c401f20f378b603afcafc3d918819c",
+      "bytes": 2962
+    },
+    {
+      "path": "sboms/bare-node.npm.cdx.json",
+      "sha256": "18e4648b77c410cc736135aa57a835664e8d681d4b14fbb9035534c83624c24e",
+      "bytes": 78815
+    },
+    {
+      "path": "sboms/bare-node.physical.cdx.json",
+      "sha256": "14b47e056256c1699faed17e8a37656b194687a1c382b6c57da61be5a984b9f9",
+      "bytes": 81202
+    },
+    {
+      "path": "sboms/live-buyer.physical.cdx.json",
+      "sha256": "5ed14dc0d691e34091bd8b147ba3f1368315e2c3e1e79339952faa8c6693b5e0",
+      "bytes": 1463953
+    },
+    {
+      "path": "sboms/live-seller.physical.cdx.json",
+      "sha256": "0a33b9aedae5873353d46dc08c2980deb464abc4e4f0eee835509282902a1da6",
+      "bytes": 1463955
+    },
+    {
+      "path": "sboms/native-alpha2.npm.cdx.json",
+      "sha256": "aa181a4f915a7fc426639fa4489715759ac1b437c03d64c7ad163116c6020a52",
+      "bytes": 6789
+    },
+    {
+      "path": "sboms/native-alpha2.physical.cdx.json",
+      "sha256": "57a1983fba34e7e2da24de1e52d9324f51727cf25beab13b23524d479f78d973",
+      "bytes": 7309
+    },
+    {
+      "path": "sboms/native-candidate.npm.cdx.json",
+      "sha256": "bfa49fc74e2ed8fcbf3dd49323b605f39f196d6a6023e8410cad5f9557004455",
+      "bytes": 114530
+    },
+    {
+      "path": "sboms/native-candidate.physical.cdx.json",
+      "sha256": "b248a5afdd072650a9f9cdc13addabae62a57dadce229d37d0d153e9b2277cf0",
+      "bytes": 118325
+    },
+    {
+      "path": "source-range-findings.json",
+      "sha256": "dd45124879ca06b0e0c810845fde50d2bc24d329de1c993bcbbd0d27ecec4e21",
+      "bytes": 2699031
+    },
+    {
+      "path": "summary.json",
+      "sha256": "4b5717a00278310b83a2958173d670c74e3fe7fd9e8472afa6ae30324bb0fd10",
+      "bytes": 7629
+    },
+    {
+      "path": "tools/assess.py",
+      "sha256": "87c495637f5fcc0a91db31044a3ac30d1805652ce8ec14074541af0f84d9f60a",
+      "bytes": 14845
+    },
+    {
+      "path": "tools/engines-check.cjs",
+      "sha256": "5f88527ec5ab2f51cc61af332dbc7a9f56475ba79345111dba01b8094e7ba9c8",
+      "bytes": 2151
+    },
+    {
+      "path": "tools/native-data-compat.mjs",
+      "sha256": "daef5aa1418ae619d9fc6634c4d3c9571aaa45e5e9ee1be97e337ed6268169a4",
+      "bytes": 2939
+    },
+    {
+      "path": "tools/native-nonce-poll.mjs",
+      "sha256": "6031eb51df66666b926d6086748c53dd9dbbcea8c0ac31d850990deb828ce19e",
+      "bytes": 2187
+    },
+    {
+      "path": "tools/physical-sbom.cjs",
+      "sha256": "34241c34ef6025e48bec96506eda3863cb2179f0f7fe9af9a41dd455f6a221d0",
+      "bytes": 3393
+    },
+    {
+      "path": "tools/requirements-validation.txt",
+      "sha256": "aa1fc8926c4a6b6f682fee7e6c19e62fa79db2b3e8fe927bb2dc51e897b4e82c",
+      "bytes": 224
+    },
+    {
+      "path": "tools/semver-match.cjs",
+      "sha256": "790f625eec857a9984524e301d48628821ee8c84de22e9bd1165f466663215bf",
+      "bytes": 3446
+    },
+    {
+      "path": "tools/supplement.py",
+      "sha256": "a9c09aa96c9eebb0dbef0d71eac7d0986137d7fe0fe06d4b46c881b9027f9ff8",
+      "bytes": 2744
+    },
+    {
+      "path": "tools/supplement_test.py",
+      "sha256": "09c0aca781a27e18b06d094c765b879c961401483587a7c64ccb150371145244",
+      "bytes": 3029
+    },
+    {
+      "path": "tools/tools.test.mjs",
+      "sha256": "a6cdc85f67e1b95767fb06c895f37d81ebec1d640a986f739edf66aa50a19b14",
+      "bytes": 6246
+    },
+    {
+      "path": "tools/trace-full.mjs",
+      "sha256": "417147c4944ac649f6026978984ca7308dc5543c4e05fac13f9f9c5467dd7d22",
+      "bytes": 4788
+    },
+    {
+      "path": "tools/trace-imports.mjs",
+      "sha256": "1e20d02cbdc4003a9d568969e2f7d2766675cb6abfc03f500fd52c7331ad33b8",
+      "bytes": 3649
+    },
+    {
+      "path": "tools/validate.py",
+      "sha256": "b9c35fb66718571c6ebedfd7676303f8c9b09a54ad7cabb8abbab98849cc618d",
+      "bytes": 25001
+    },
+    {
+      "path": "tools/validate_test.py",
+      "sha256": "ebab9ed7e2eb52e8fc2269e0f0e127cef4e8b9fd029e48dd89a0b026a8ae7e24",
+      "bytes": 12820
+    },
+    {
+      "path": "upstream-actions.json",
+      "sha256": "0334fa57b2af666319beb609c0320bc799fbae6819f7f9afa56295bac07b27d3",
+      "bytes": 8576
+    }
+  ],
+  "report_sha256": "2525f0fe55465306a3187df0efd846bcae0d16a70ed2ec70caa3f81f16df6780",
+  "active_evidence": "recollection-2026-10-16.json",
+  "historical_catalog_head": "2ee2fe41844487f9195d8ae42c97fed55227b12a",
+  "catalog_refreshed_utc": "2026-10-16T15:05:04.780025+00:00"
+}
