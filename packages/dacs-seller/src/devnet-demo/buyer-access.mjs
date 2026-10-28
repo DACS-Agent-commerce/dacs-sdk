@@ -8,10 +8,16 @@ const capabilities=new WeakSet();
 const claimOrNull=(wallet)=>{try{return claimForAddress(wallet);}catch{return null;}};
 
 // buyerLookupReady is false until the operator's purchase store is attached:
-// a job's buyer cannot be told yet, so jobAccess says 'unknown' (and the
-// seller checks refuse, as buyerForJob has nothing to return).
+// a job's buyer cannot be told yet, so jobAccess says 'unknown' and the seller
+// checks refuse even if buyerForJob still returns a value.
+// Public contract: openBuyerAccess widens admission for new buyer requests
+// only. Every seller operation on a job still joins that job's retained buyer,
+// so a missing/late lookup or unknown job refuses. custodySeller, when supplied,
+// must be the seller's claim (an address would silently disarm the relay
+// exclusion). Throws OperationError('buyer_access_closed' | 'seller_wallet_in_process').
 export function createOperatorBuyerAccess({openBuyerAccess,custodyBuyer,custodySeller=null,paymentObserved=()=>false,buyerForJob=()=>null,buyerLookupReady=()=>true}){
   if(openBuyerAccess!==true&&!/^did:demos:agent:[0-9a-f]{64}$/.test(custodyBuyer??''))throw new TypeError('closed buyer access requires the configured custody buyer');
+  if(custodySeller!==null&&!/^did:demos:agent:[0-9a-f]{64}$/.test(custodySeller??''))throw new TypeError('custodySeller must be the configured seller claim when supplied');
   const allowsWallet=(wallet)=>{
     // A malformed wallet never becomes an allowed identity, even in open mode.
     const claim=claimOrNull(wallet);
@@ -32,12 +38,14 @@ export function createOperatorBuyerAccess({openBuyerAccess,custodyBuyer,custodyS
     if(custodySeller&&claimOrNull(wallet)===custodySeller)throw new OperationError('seller_wallet_in_process','this relay never acts for the operator custody seller; nothing was read, signed or sent');
     assertWallet(wallet);
   },assertSellerJob(jobId){
-    if(openBuyerAccess===true)return;
+    // A seller job exists only once its retained buyer can be resolved: open
+    // admission changes who may buy, never which job a seller may act on.
     const wallet=buyerForJob(jobId);
-    if(!wallet)throw new OperationError('buyer_access_closed','the seller job has no retained authorized buyer');
+    if(!retainedBuyer(jobId))throw new OperationError('buyer_access_closed','the seller job has no retained authorized buyer');
     capability.assertSellerWallet(wallet,jobId);
   },assertSellerWallet(wallet,jobId){
-    if(openBuyerAccess===true){assertWallet(wallet);return;}
+    // The join with the job's retained buyer precedes every other policy,
+    // including open admission: no wallet acts for another buyer's job.
     const buyer=retainedBuyer(jobId);
     if(!buyer||claimOrNull(wallet)!==buyer)refuse();
     if(!allowsWallet(wallet)&&paymentObserved(jobId)!==true)refuse();
@@ -49,13 +57,14 @@ export function createOperatorBuyerAccess({openBuyerAccess,custodyBuyer,custodyS
     const wallet=buyerForJob(jobId);
     return wallet&&allowsWallet(wallet)?'custody':'outside';
   },sellerNotice(wallet,jobId){
-    if(openBuyerAccess===true){assertWallet(wallet);return null;}
     capability.assertSellerWallet(wallet,jobId);
     return allowsWallet(wallet)?null:'This buyer is outside closed access. Payment was already observed. Approve this exact seller transaction manually to continue delivery.';
   }});
   capabilities.add(capability);return capability;
 }
 
+// Returns the constructed capability unchanged (null stays null); throws
+// TypeError for any value this module did not construct.
 export function operatorBuyerAccessConfig(value){
   if(value==null)return null;
   if(!capabilities.has(value))throw new TypeError('buyerAccess requires a constructed operator capability');
