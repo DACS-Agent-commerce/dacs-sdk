@@ -23,16 +23,16 @@ uplinks:
 packages:
   '@kynesyslabs/dacs':
     access: $all
-    publish: $all
-    unpublish: $all
+    publish: dacs-ci
+    unpublish: dacs-ci
   '@kynesyslabs/dacs-node':
     access: $all
-    publish: $all
-    unpublish: $all
+    publish: dacs-ci
+    unpublish: dacs-ci
   'create-dacs-agent':
     access: $all
-    publish: $all
-    unpublish: $all
+    publish: dacs-ci
+    unpublish: dacs-ci
   '@kynesyslabs/demosdk':
     access: $all
     proxy: npmjs
@@ -40,7 +40,6 @@ packages:
     access: $all
   '**':
     access: $all
-    publish: $all
     proxy: npmjs
 log:
   type: stdout
@@ -139,11 +138,13 @@ wait_for_registry() {
 # Creates the run-local publishing user; sets `auth_token` from a bounded reply.
 authenticate_registry() {
   stage=registry-auth
+  local auth_password
+  auth_password=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')
   auth_response=$(curl "${http_json_curl[@]}" \
     --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 45 \
     --request PUT "$host_registry/-/user/org.couchdb.user:dacs-ci" \
     --header 'content-type: application/json' \
-    --data '{"name":"dacs-ci","password":"local-acceptance-only","email":"ci@example.invalid","type":"user","roles":[]}' \
+    --data "{\"name\":\"dacs-ci\",\"password\":\"$auth_password\",\"email\":\"ci@example.invalid\",\"type\":\"user\",\"roles\":[]}" \
     2> >(tee -a "$registry_log" >&2))
   auth_token=$(AUTH_RESPONSE="$auth_response" node -e '
 const value = JSON.parse(process.env.AUTH_RESPONSE);

@@ -18,6 +18,25 @@ function verdaccioConfig() {
 }
 
 describe("run-local Verdaccio configuration", () => {
+  it.each(["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "create-dacs-agent"]
+    .flatMap(name => ["publish", "unpublish"].map(operation => [name, operation])))(
+    "permits only the run's publisher to write %s via %s", (name, operation) => {
+      const rules = verdaccioConfig().split("\npackages:\n")[1]!.split(/\n(?=\S)/)[0]!;
+      const body = rules.split(`  '${name}':\n`)[1]!.split(/\n {2}'/)[0]!;
+      // $all includes anonymous users; $authenticated also includes other users.
+      expect(body).toMatch(/^ {4}access: \$all$/m);
+      expect(body).toMatch(new RegExp(`^ {4}${operation}: dacs-ci$`, "m"));
+    });
+
+  it.each(["@kynesyslabs/demosdk", "@kynesyslabs/*", "**"])(
+    "allows reads but no local writes through the %s rule", (pattern) => {
+      const rules = verdaccioConfig().split("\npackages:\n")[1]!.split(/\n(?=\S)/)[0]!;
+      const body = rules.split(`  '${pattern}':\n`)[1]!.split(/\n {2}'/)[0]!;
+      expect(body).toMatch(/^ {4}access: \$all$/m);
+      // Missing publish denies all users; missing unpublish falls back to publish.
+      expect(body).not.toMatch(/^ {4}(?:publish|unpublish):/m);
+    });
+
   it("serves the candidates' @kynesyslabs scope only from this run's publish", () => {
     const block = verdaccioConfig().split("\npackages:\n")[1]!.split(/\n(?=\S)/)[0]!;
     // Verdaccio applies the first rule whose pattern matches the package name.
@@ -55,6 +74,33 @@ sleep() { :; }
 docker() { :; }
 `;
 describe("bounded registry requests", () => {
+  it("keeps the named publishing account private with fresh credentials on each run", () => {
+    const root = scratch();
+    const request = join(root, "auth-request.json");
+    const passwords: string[] = [];
+    for (let run = 0; run < 2; run++) {
+      const result = runStages(`http_json_curl=()
+curl() {
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --data ]; then printf '%s' "$2" > "$request"; break; fi
+    shift
+  done
+  printf '{"token":"fixture-auth-token"}'
+}
+authenticate_registry
+printf '%s' "$auth_token"`, {
+        request, host_registry: "http://127.0.0.1:1", registry_log: join(root, "registry.log"),
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("fixture-auth-token");
+      const body = JSON.parse(readFileSync(request, "utf8")) as { name: string; password: string };
+      expect(body.name).toBe("dacs-ci");
+      expect(body.password).toMatch(/^[a-f0-9]{64}$/);
+      passwords.push(body.password);
+    }
+    expect(passwords[0]).not.toBe(passwords[1]);
+  });
+
   it.each([["readiness", "wait_for_registry"], ["authentication", "authenticate_registry"]])(
     "bounds a simulated stalled or oversized %s response and never publishes", (kind, stage) => {
       const root = scratch();
