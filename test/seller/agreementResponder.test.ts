@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -954,5 +954,325 @@ describe("durable seller fixed-price agreement proposal responder", () => {
         seller: OTHER_SELLER,
       },
     })).toBe(false);
+  });
+});
+
+describe("seller responder with fixed-price additionalTerms", () => {
+  const REQUEST_KEY = "dacs-chatgpt-plugin:public-service-request:v1";
+  const request = {
+    type: "public-data",
+    serviceId: "public-text-report",
+    version: "1",
+    input: "Solar panels make power.",
+  };
+  const terms = {
+    [REQUEST_KEY]: { request, requestHash: sha256Hex(canonicalize(request)) },
+  };
+  const oneByteDifferent = {
+    [REQUEST_KEY]: {
+      request: { ...request, input: "Solar panels make power!" },
+      requestHash: terms[REQUEST_KEY].requestHash,
+    },
+  };
+  const variants = [
+    ["AgreementDocument", JOB_ID, false],
+    ["PayeeBoundAgreementDocument", PAYEE_JOB_ID, true],
+  ] as const;
+
+  const withTerms = (
+    context: FixedPriceAgreementInput,
+    additionalTerms: Record<string, unknown> | undefined,
+  ): FixedPriceAgreementInput =>
+    additionalTerms === undefined ? context : { ...context, additionalTerms };
+
+  async function respond(
+    jobId: string,
+    payeeBound: boolean,
+    buyerTerms: Record<string, unknown> | undefined,
+    sellerTerms: Record<string, unknown> | undefined,
+  ) {
+    const buyerDraft = deriveFixedPriceAgreement(
+      withTerms(agreementContext(jobId, payeeBound), buyerTerms),
+    );
+    const request = await requestForDraft(buyerDraft);
+    const h = await harness({
+      context: withTerms(agreementContext(jobId, payeeBound), sellerTerms),
+      request,
+    });
+    const result = await respondToFixedPriceAgreementProposalDurable(
+      h.request.input,
+      h.durability,
+    );
+    return { h, result };
+  }
+
+  describe.each(variants)("%s", (_name, jobId, payeeBound) => {
+    test("equal terms on both sides are co-signed into one exact Agreement", async () => {
+      const { h, result } = await respond(jobId, payeeBound, terms, terms);
+      expect(result.disposition).toBe("complete");
+      if (result.disposition !== "complete") return;
+      const agreement = await finalizeFixedPriceAgreementContributions(
+        h.request.plan,
+        [h.request.buyerContribution, result.result.sellerContribution],
+        h.durability.verifyContribution,
+      );
+      expect(agreement.terms.additionalTerms).toEqual(terms);
+      expect("payeeBoundAgreementVersion" in agreement).toBe(payeeBound);
+      expect(contentHash(agreement as unknown as Record<string, unknown>))
+        .toBe(h.request.plan.agreementHash);
+      expect(h.state.calls.signature).toBe(1);
+      expect(h.state.calls.publication).toBe(1);
+    });
+
+    test.each([
+      ["buyer adds terms the seller context lacks", terms, undefined],
+      ["seller context has terms the buyer omitted", undefined, terms],
+      ["one byte differs", oneByteDifferent, terms],
+      ["buyer adds a second entry", { ...terms, "acme:note:v1": "x" }, terms],
+    ] as const)("%s: rejected before any signature", async (
+      _case,
+      buyerTerms,
+      sellerTerms,
+    ) => {
+      const { h, result } = await respond(
+        jobId,
+        payeeBound,
+        buyerTerms as Record<string, unknown> | undefined,
+        sellerTerms as Record<string, unknown> | undefined,
+      );
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "proposal plan differs from the independently derived seller agreement",
+      });
+      expect(h.state.calls.context).toBe(1);
+      expect(h.state.calls.verifyBuyer).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    });
+
+    test("NFC-equal values are co-signed; a differently spelled member name is not", async () => {
+      // CORE CF-1 normalises string values to NFC but leaves member names as
+      // written, so the plans compare canonical values, not raw bytes.
+      const decomposed = "Café";
+      const composed = "Café";
+      const equal = await respond(
+        jobId,
+        payeeBound,
+        { "acme:place:v1": { name: decomposed } },
+        { "acme:place:v1": { name: composed } },
+      );
+      expect(equal.result.disposition).toBe("complete");
+      if (equal.result.disposition !== "complete") return;
+      const agreement = await finalizeFixedPriceAgreementContributions(
+        equal.h.request.plan,
+        [equal.h.request.buyerContribution, equal.result.result.sellerContribution],
+        equal.h.durability.verifyContribution,
+      );
+      expect(agreement.terms.additionalTerms).toEqual({ "acme:place:v1": { name: composed } });
+      expect(equal.h.state.calls.signature).toBe(1);
+
+      const renamed = await respond(
+        jobId,
+        payeeBound,
+        { "acme:place:v1": { [decomposed]: true } },
+        { "acme:place:v1": { [composed]: true } },
+      );
+      expect(renamed.result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "proposal plan differs from the independently derived seller agreement",
+      });
+      expect(renamed.h.state.calls.signature).toBe(0);
+      expect(renamed.h.state.calls.publication).toBe(0);
+    });
+
+    test("a seller context whose own terms break the profile is rejected", async () => {
+      const { h, result } = await respond(jobId, payeeBound, terms, {
+        ...terms,
+        "acme:price:v1": { amount: "0", currency: "USDC" },
+      });
+      expect(result).toMatchObject({ disposition: "rejected", stage: "context" });
+      expect(result.disposition === "complete" ? "" : result.reason)
+        .toMatch(/seller-local agreement derivation rejected the proposal/);
+      expect(h.state.calls.signature).toBe(0);
+    });
+
+    test("a number the producer refuses is refused before any signature", async () => {
+      // The buyer's producer refuses it, so no SDK proposal can carry it.
+      expect(() => deriveFixedPriceAgreement(withTerms(
+        agreementContext(jobId, payeeBound),
+        { "acme:rating:v1": { score: 4.5 } },
+      ))).toThrow(/carry decimals as strings/);
+      // A seller context carrying one is not valid context data. The responder
+      // refuses it while capturing the context, as it refuses every number that
+      // is not a safe integer anywhere in the context: indeterminate, before
+      // derivation, buyer verification, signing, or publication.
+      for (const sellerTerms of [
+        { "acme:rating:v1": 4.5 },
+        { "acme:rating:v1": { score: 4.5 } },
+        { "acme:rating:v1": { score: 2 ** 53 } },
+      ]) {
+        const label = JSON.stringify(sellerTerms);
+        const { h, result } = await respond(
+          jobId,
+          payeeBound,
+          { "acme:rating:v1": { score: 4 } },
+          sellerTerms,
+        );
+        expect(result, label).toMatchObject({ disposition: "indeterminate", stage: "context" });
+        expect(result.disposition === "complete" ? "" : result.reason, label).toMatch(
+          /seller agreement context resolution failed: .*contains a non-canonical number/,
+        );
+        expect(h.state.calls.context, label).toBe(1);
+        expect(h.state.calls.verifyBuyer, label).toBe(0);
+        expect(h.state.calls.signature, label).toBe(0);
+        expect(h.state.calls.publication, label).toBe(0);
+      }
+    });
+  });
+
+  describe.each(variants)("%s: the resolver example in docs/fixed-price-agreement.md", (
+    _name,
+    jobId,
+    payeeBound,
+  ) => {
+    // Seller-owned schema: a fresh copy of exactly the admitted fields, or
+    // undefined. It never throws, whatever JSON the buyer sent.
+    const admitPublicServiceRequest = (value: unknown) => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+      const offered = value as Record<string, unknown>;
+      const fields = ["type", "serviceId", "version", "input"] as const;
+      if (
+        Object.keys(offered).length !== fields.length ||
+        !fields.every((field) => typeof offered[field] === "string") ||
+        offered.type !== "public-data"
+      ) {
+        return undefined;
+      }
+      return Object.fromEntries(fields.map((field) => [field, offered[field]]));
+    };
+
+    // The documented resolver, line for line, over this harness's context.
+    function documentedResolver(
+      h: Awaited<ReturnType<typeof harness>>,
+      sellerContext: FixedPriceAgreementInput,
+    ): DurableSellerFixedPriceAgreementDurability["resolveAuthenticatedAgreementContext"] {
+      const authenticatedSellerContext = async () => structuredClone(sellerContext);
+      return async (query) => {
+        h.state.calls.context += 1;
+        if (query.queryVersion !== "1") {
+          return { disposition: "rejected", reason: "unsupported query version" };
+        }
+        const context = await authenticatedSellerContext();
+        const offered = query.candidateDraft.terms.additionalTerms;
+        if (offered === undefined) return { disposition: "present", value: context };
+        if (Object.keys(offered).length !== 1 || !Object.hasOwn(offered, REQUEST_KEY)) {
+          return { disposition: "rejected", reason: "unsupported additional terms" };
+        }
+        const entry: unknown = offered[REQUEST_KEY];
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+          return { disposition: "rejected", reason: "request fails seller policy" };
+        }
+        const request = admitPublicServiceRequest(
+          (entry as { request?: unknown }).request,
+        );
+        if (request === undefined) {
+          return { disposition: "rejected", reason: "request fails seller policy" };
+        }
+        return {
+          disposition: "present",
+          value: {
+            ...context,
+            additionalTerms: {
+              [REQUEST_KEY]: { request, requestHash: sha256Hex(canonicalize(request)) },
+            },
+          },
+        };
+      };
+    }
+
+    async function respondWithDocumentedResolver(buyerTerms: Record<string, unknown>) {
+      const context = agreementContext(jobId, payeeBound);
+      const request = await requestForDraft(
+        deriveFixedPriceAgreement(withTerms(context, buyerTerms)),
+      );
+      const h = await harness({ context, request });
+      h.durability.resolveAuthenticatedAgreementContext = documentedResolver(h, context);
+      const result = await respondToFixedPriceAgreementProposalDurable(
+        h.request.input,
+        h.durability,
+      );
+      return { h, result };
+    }
+
+    test("an admitted request is rebuilt and co-signed", async () => {
+      const { h, result } = await respondWithDocumentedResolver(terms);
+      expect(result.disposition).toBe("complete");
+      expect(h.state.calls.signature).toBe(1);
+      expect(h.state.calls.publication).toBe(1);
+    });
+
+    test.each([
+      ["an extra member", { [REQUEST_KEY]: { ...terms[REQUEST_KEY], note: "x" } }],
+      ["a different requestHash", {
+        [REQUEST_KEY]: { request, requestHash: "0".repeat(64) },
+      }],
+    ] as const)("a buyer entry with %s: rejected before any signature", async (
+      _case,
+      buyerTerms,
+    ) => {
+      const { h, result } = await respondWithDocumentedResolver(buyerTerms);
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "proposal plan differs from the independently derived seller agreement",
+      });
+      expect(h.state.calls.verifyBuyer).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    });
+
+    test.each([
+      ["null", null],
+      ["an array", [terms[REQUEST_KEY]]],
+      ["a string", "request"],
+      ["a number", 7],
+      ["a boolean", true],
+      ["an object without a request", { requestHash: terms[REQUEST_KEY].requestHash }],
+      ["a null request", { request: null, requestHash: terms[REQUEST_KEY].requestHash }],
+      ["an array request", { request: [request], requestHash: terms[REQUEST_KEY].requestHash }],
+    ] as const)("a buyer entry that is %s: rejected, not indeterminate, before any signature", async (
+      _case,
+      entry,
+    ) => {
+      // The producer admits each of these: only the top level must be a record.
+      const { h, result } = await respondWithDocumentedResolver({ [REQUEST_KEY]: entry });
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "request fails seller policy",
+      });
+      expect(h.state.calls.context).toBe(1);
+      expect(h.state.calls.verifyBuyer).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    });
+  });
+
+  test("the docs example keeps the entry checks the copy above runs", async () => {
+    const docs = await readFile(
+      new URL("../../docs/fixed-price-agreement.md", import.meta.url),
+      "utf8",
+    );
+    for (const line of [
+      "if (Object.keys(offered).length !== 1 || !Object.hasOwn(offered, REQUEST_KEY)) {",
+      "const entry: unknown = offered[REQUEST_KEY];",
+      'if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {',
+      "(entry as { request?: unknown }).request,",
+      "[REQUEST_KEY]: { request, requestHash: sha256Hex(canonicalize(request)) },",
+    ]) {
+      expect(docs, line).toContain(line);
+    }
   });
 });

@@ -1450,6 +1450,63 @@ describe("verifySellerPaymentIntake", () => {
       });
   });
 
+  it.each(["pay-dem", "pay-x402"] as const)(
+    "%s: pays and claims from the outer terms when additionalTerms restates them falsely",
+    async (kind) => {
+      const ctx = makeContext(kind);
+      const terms = ctx.agreement.terms as Record<string, unknown>;
+      const outerPrice = structuredClone(terms.price);
+      terms.additionalTerms = {
+        "acme:quoted-terms:v1": {
+          price: { amount: "0.000001", currency: kind === "pay-dem" ? "DEM" : "USDC" },
+          rail: { railId: "x402:other", railVersion: 1 },
+          deadline: 0,
+          payoutBindings: [{
+            railId: "x402:other",
+            phaseIndex: PAYMENT_PHASE_INDEX,
+            payeeAddress: kind === "pay-dem" ? "cc".repeat(32) : `0x${"44".repeat(20)}`,
+          }],
+        },
+      };
+      refreshCommitment(ctx);
+
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "verified",
+        fulfilment: "claim",
+        evidenceInput: { paymentAmount: outerPrice },
+      });
+    },
+  );
+
+  it.each([
+    ["price", (terms: Record<string, unknown>) => {
+      terms.price = { amount: "0.5", currency: "DEM" };
+    }, "agreement-listing-conformance-failed"],
+    ["deadline", (terms: Record<string, unknown>) => {
+      terms.deadline = 4_000;
+    }, "payment-after-deadline"],
+    ["payee address", (terms: Record<string, unknown>) => {
+      (terms.payoutBindings as Array<{ payeeAddress: string }>)[0]!.payeeAddress =
+        "cc".repeat(32);
+    }, "payee-destination-binding-mismatch"],
+  ] as const)(
+    "rejects a wrong outer %s even when additionalTerms carries the valid one",
+    async (_term, forge, reason) => {
+      const ctx = makeContext("pay-dem");
+      const terms = ctx.agreement.terms as Record<string, unknown>;
+      const valid = structuredClone(terms);
+      terms.additionalTerms = { "acme:quoted-terms:v1": valid };
+      forge(terms);
+      refreshCommitment(ctx);
+
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "rejected",
+        fulfilment: "none",
+        reason,
+      });
+    },
+  );
+
   it("accepts fixed-price derivation from an exact negotiable bandCenter", async () => {
     const ctx = makeContext("pay-dem");
     const price = { amount: "1.25", currency: "DEM" } as const;
