@@ -128,6 +128,39 @@ test('an empty role file with unsafe permissions is refused, not replaced', asyn
   assert.deepEqual((await files(directory)).filter((name) => name !== '.wallet-repair'), [BUYER]);
 });
 
+test('bootstrap and secret initialization do not open ancestors they did not create', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-ancestor-'));
+  const custody = await loadCustody();
+  const outer = join(root, 'outer'), directory = join(outer, 'wallets');
+  t.after(async () => { await chmod(outer, 0o700).catch(() => {}); custody.release(); await rm(root, { recursive: true, force: true }); });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  // `outer` is an established ancestor: it must not be opened for syncing,
+  // because a directory that cannot be read is still a usable parent.
+  await chmod(outer, 0o300);
+  try {
+    const result = await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+    assert.deepEqual(result.wallets.map((wallet) => wallet.role), ['buyer', 'seller']);
+    const key = await custody.ensureOperatorSecret({ directory });
+    assert.equal(JSON.parse(await read(directory, SECRET)).cookieKey, key);
+  } finally { await chmod(outer, 0o700); }
+  assert.deepEqual(await files(directory).then((names) => names.filter((name) => name !== '.wallet-repair')), [SECRET, BUYER, SELLER].sort());
+});
+
+test('a failed directory-name marker removes created directories so a retry syncs their names', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-marker-'));
+  const custody = await loadCustody();
+  t.after(async () => { custody.release(); await rm(root, { recursive: true, force: true }); });
+  const one = join(root, 'one'), directory = join(one, 'wallets');
+  custody.state.failWrite = (path) => path.includes('.directory-sync-pending');
+  await assert.rejects(custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN }), /TEST disk full/);
+  assert.deepEqual(await files(root), [], 'nothing remains that a retry could mistake for an established directory');
+  custody.state.failWrite = null; custody.state.events.length = 0;
+  await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+  for (const parent of [root, one]) {
+    assert.ok(custody.state.events.includes(`sync ${parent}`), `the retry must sync ${parent}`);
+  }
+});
+
 test('a retry after a failed parent sync makes every created directory name durable', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'TEST-custody-parent-retry-'));
   const custody = await loadCustody();
