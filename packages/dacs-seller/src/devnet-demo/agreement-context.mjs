@@ -236,12 +236,24 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     && sameCanonicalClaimIdentity(read.issuer,request.buyer) && read.jobId===request.jobId
     && read.bundleHash===identityBundleHash(request.identityBundle)
     && read.requirementHash===sha256Hex(canonicalize(request.requirement));
+  // The buyer's ledger answers indeterminate while another provider has
+  // consumed the challenge but has not retained its result yet. Retry that
+  // authoritative read over a bounded interval instead of losing the race;
+  // any record it returns is still strictly verified by the caller.
+  const READ_POLL_MS=25,READ_POLL_ATTEMPTS=40;
+  async function readRecordSettled(request) {
+    for(let attempt=1;;attempt+=1){
+      const read=await callCounterparty('readRecord',request);
+      if(read?.status!=='indeterminate'||attempt>=READ_POLL_ATTEMPTS)return read;
+      await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
+    }
+  }
   async function sellerSession(job) {
     let kept=(await state.read(job.jobId))?.presentation;
     let expired=null;
     if(kept&&!kept.bundle.presentation&&kept.challenge.expiresAt<=now()){
       const request={jobId:job.jobId,buyer:job.binding.buyerIdentityBundle.presentedBy,seller:wallet.claim,identityBundle:kept.bundle,requirement:SELLER_REQUIREMENT};
-      if(!unattempted(await callCounterparty('readRecord',request),request))fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
+      if(!unattempted(await readRecordSettled(request),request))fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
       expired=kept;kept=null;
     }
     if(!kept){
@@ -302,7 +314,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function evaluateOrReadRetained(request) {
     try{return await callCounterparty('evaluate',request);}
     catch(error){
-      const retained=await callCounterparty('readRecord',request).catch(()=>null);
+      const retained=await readRecordSettled(request).catch(()=>null);
       if(retained?.status==='present')return retained.record;
       throw error;
     }
@@ -317,7 +329,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // Buyer retains its result before answering evaluate. A lost seller save
       // reads that result; only an exact, authoritative unattempted nonce may
       // start evaluation. Absence/unknown never authorizes another consumption.
-      const retained=await callCounterparty('readRecord',request);
+      const retained=await readRecordSettled(request);
       if(retained?.status==='present')record=retained.record;
       else if(unattempted(retained,request))record=await evaluateOrReadRetained(request);
       else fail('seller_vet_reconciliation_required','the buyer nonce ledger has no authoritative outcome');

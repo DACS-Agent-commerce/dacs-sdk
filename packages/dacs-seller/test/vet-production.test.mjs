@@ -84,3 +84,22 @@ test('a retained record read after a failed evaluate is still verified against t
  f.counterparty.evaluate=async input=>{await evaluate(input);throw new Error('TEST reply lost');};
  await assert.rejects(f.run(),e=>e.code==='seller_vet_invalid');assert.equal(f.local.writes.length,1);f.base.close();
 });
+test('a losing evaluate race waits for the winner to retain its record',async()=>{
+ const f=productionFixture(),first=await f.provider(),second=await f.provider(),input=f.input(),read=f.counterparty.readRecord,buyerSign=buyer.signBytes;
+ let arrived=0,releaseReads;const both=new Promise(resolve=>{releaseReads=resolve;});
+ let held=false,releaseSign;const holdSign=new Promise(resolve=>{releaseSign=resolve;});
+ f.counterparty.readRecord=async request=>{
+  const answer=await read(request);
+  if(answer.status==='unattempted'&&++arrived<=2){if(arrived===2)releaseReads();await both;}
+  else if(answer.status==='indeterminate'&&held)setTimeout(releaseSign,0);
+  return answer;
+ };
+ // The first evaluation consumes the one-use nonce and then stalls in signing,
+ // so the second provider observes an in-progress ledger before a result exists.
+ buyer.signBytes=bytes=>{if(!held){held=true;return holdSign.then(()=>buyerSign(bytes));}return buyerSign(bytes);};
+ try{
+  const runs=await Promise.all([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
+  for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
+  assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);
+ }finally{buyer.signBytes=buyerSign;f.base.close();}
+});
