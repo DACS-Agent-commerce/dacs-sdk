@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chmodSync} from 'node:fs';
+import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
+import {connect} from 'node:net';
+import {once} from 'node:events';
+import {syncBuiltinESMExports} from 'node:module';
 import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -17,12 +20,12 @@ const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{p
 async function fixture(t,{wrap=agent=>agent}={}){
  const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;
- const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),'));
+ const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout'));
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
- const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW})});
- return{...f,start,options,dataDirectory,client};
+ const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW}),timeoutMs:60000});
+ return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout};
 }
 async function anchorAgreement(f,request,answer){
  const agreement=await core.finalizeFixedPriceAgreementContributions(request.proposal.plan,[request.proposal.buyerContribution,answer.contribution],contributionVerifier);
@@ -74,25 +77,28 @@ test('the host still refuses a native artifact capability without its readbacks'
  const host=await f.start();await host.close();
 });
 
-test('close aborts and drains an accepted native artifact readback before releasing state',async t=>{
- const entered=defer(),releaseRead=defer();let block=true;
+test('close waits for an accepted native artifact readback before releasing state',async t=>{
+ const entered=defer(),releaseRead=defer();let block=true,closedAt=false,afterClose=0;
  const f=await fixture(t),native=f.native;
  const artifactAnchor=Object.freeze({...native,readRetained:async input=>{
-  if(block&&input.artifactKind==='FinalityCommitmentRecord'){entered.resolve();await releaseRead.promise;}
+  if(block&&input.artifactKind==='FinalityCommitmentRecord'){entered.resolve();await releaseRead.promise;if(closedAt)afterClose++;}
   return native.readRetained(input);
  }});
  const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
- const answer=await client.propose(request);
- assert.equal(answer.disposition,'complete');
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
  await anchorAgreement(f,request,answer);
- const pending=client.commit(request.transportIdentity.jobId).then(()=>'answered',error=>error.code??error.name);
+ const pending=client.commit(request.transportIdentity.jobId).then(()=> 'answered',error=>error.code??error.name);
  await entered.promise;
+ let closed=false;const closing=host.close().then(()=>{closed=true;closedAt=true;});
  try{
-  const closed=await Promise.race([host.close().then(()=>'closed'),new Promise(resolve=>setTimeout(()=>resolve('stuck'),8000))]);
-  assert.equal(closed,'closed','close aborts the accepted native readback instead of waiting for it');
-  const reopened=await f.start();await reopened.close();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(closed,false,'close retains ownership while the underlying readback still runs');
+  await assert.rejects(f.start(),e=>e.code==='seller_state_locked');
  }finally{block=false;releaseRead.resolve();}
+ await closing;
+ assert.equal(afterClose,0,'a late readback never writes after ownership transfers');
  await pending;
+ const reopened=await f.start();await reopened.close();
 });
 
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
@@ -120,6 +126,23 @@ test('wrapped native artifact publish keeps its capability receiver',async t=>{
  await host.close();
 });
 
+test('host forwards capability metadata getters with the capability as receiver',async t=>{
+ const f=await fixture(t),native=f.native;
+ const artifactAnchor=new class{
+  #inner=native;
+  get writer(){return this.#inner.writer;}
+  get source(){return this.#inner.source;}
+  readRetained(input){return this.#inner.readRetained(input);}
+  verifyReceipt(input){return this.#inner.verifyReceipt(input);}
+  publish(input){return this.#inner.publish(input);}
+ }();
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
+ await anchorAgreement(f,request,answer);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
+ await host.close();
+});
+
 test('host issues no session challenge once close has begun',async t=>{
  const entered=defer(),release=defer();
  const f=await fixture(t,{wrap:agent=>({...agent,receiveProposal:async request=>{entered.resolve();await release.promise;return agent.receiveProposal(request);}})}),host=await f.start();
@@ -132,12 +155,32 @@ test('host issues no session challenge once close has begun',async t=>{
  await pending;await closing;
 });
 
-test('host close does not wait for the keep-alive timeout',async t=>{
- const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
- assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
- const started=performance.now();
- await host.close();
- assert.ok(performance.now()-started<2000,'close does not wait for the idle keep-alive timeout');
+test('host close closes an idle keep-alive connection instead of waiting for its expiry',async t=>{
+ const f=await fixture(t);
+ // With expiry disabled, close() can only finish if it actively closes the
+ // idle connection; the guard below is a hang guard, not a latency assertion.
+ f.setKeepAliveTimeout(0);
+ const host=await f.start();
+ const socket=connect({host:'127.0.0.1',port:Number(new URL(host.url).port)});
+ try{
+  await once(socket,'connect');
+  // A refusal before any effect is answered without `connection: close`, so
+  // the server keeps this connection alive after the response.
+  const body='{"transportIdentity":{}}';
+  socket.write(`POST /dacs/v1/agreements/state HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: keep-alive\r\n\r\n${body}`);
+  const [answer]=await once(socket,'data');
+  assert.match(String(answer),/^HTTP\/1\.1 4\d\d /);
+  assert.doesNotMatch(String(answer),/connection: close/i);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(socket.destroyed,false,'the connection is a live idle keep-alive connection');
+  let guard;
+  const outcome=await Promise.race([
+   host.close().then(()=> 'closed'),
+   new Promise(resolve=>{guard=setTimeout(()=>resolve('still-open'),10000);}),
+  ]);
+  clearTimeout(guard);
+  assert.equal(outcome,'closed','close closes the idle connection rather than waiting for keep-alive expiry');
+ }finally{socket.destroy();}
 });
 
 test('a listen failure releases the state lock and everything opened before it',async t=>{
@@ -153,6 +196,18 @@ test('host reports both literal loopback URLs',async t=>{
  const f=await fixture(t);
  const v4=await f.start();assert.match(v4.url,/^http:\/\/127\.0\.0\.1:\d+$/);await v4.close();
  const v6=await f.start({host:'::1'});assert.match(v6.url,/^http:\/\/\[::1\]:\d+$/);await v6.close();
+});
+
+test('host makes newly created seller and transport directories durable before listening',async t=>{
+ const f=await fixture(t),original=fs.fsyncSync,synced=[];
+ try{
+  fs.fsyncSync=descriptor=>{try{synced.push(fs.realpathSync(`/proc/self/fd/${descriptor}`));}catch{}return original(descriptor);};
+  syncBuiltinESMExports();
+  const host=await f.start();
+  assert.ok(synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
+  assert.ok(synced.includes(f.dataDirectory),'the new seller and transport directory entries are synced in dataDirectory');
+  await host.close();
+ }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
 });
 
 test('host refuses malformed options before opening any state',async t=>{
