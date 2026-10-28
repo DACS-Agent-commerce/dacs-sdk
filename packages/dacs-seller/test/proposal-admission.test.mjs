@@ -50,6 +50,11 @@ test('an oversized admission reply holds with its real bound failure',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);f.admission.sessionAdmission.admit=async()=>({extra:'x'.repeat(65537)});
  await assert.rejects(agent.stagedProposal(input),error=>error.code==='session_admission_unavailable'&&error.cause instanceof RangeError);
 });
+test('an admission reply with a non-JSON member is refused before normalization can drop it',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);f.admission.answerWith(answer=>({...answer,unexpected:undefined}));
+ await assert.rejects(agent.stagedProposal(input),error=>error.code==='session_admission_unavailable'&&error.cause instanceof TypeError);
+ assert.equal(f.admission.calls.some(([method])=>method==='admit'),true);assert.equal(f.signed.some(text=>text.startsWith('dacs-agreement:')),false);
+});
 test('a stalled admission is aborted at its deadline without proposal signing',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);let entered,limits;const started=new Promise(r=>entered=r);
  f.admission.sessionAdmission.admit=(_input,options)=>{limits=options;entered();return new Promise(()=>{});};t.mock.timers.enable({apis:['setTimeout']});const waiting=assert.rejects(agent.stagedProposal(input),error=>error.code==='session_admission_unavailable'&&error.cause?.name==='TimeoutError');await started;t.mock.timers.tick(10001);await waiting;assert.equal(limits.signal.aborted,true);assert.equal(limits.maxBytes,65536);

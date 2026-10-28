@@ -124,8 +124,32 @@ export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash,
 // stamped by the same clock is never taken for one from the future.
 const REVOCATION_READ_LIMITS = Object.freeze({ maxBytes: 64 * 1024, maxValues: 4096, timeoutMs: 10_000 });
 const revocationUnavailable = reason => ({ code: 'session_admission_unavailable', status: 503, message: `the Listing revocation check is indeterminate: ${String(reason).slice(0, 160)}` });
+// A decoded answer must already be exactly a JSON value. The bounded
+// serialization below is also its normalization, and JSON silently drops an
+// `undefined` member, a function or a symbol (and renders NaN, array holes and
+// a toJSON result as something else), so an answer could otherwise be admitted
+// by losing a member it carried: sessionAdmissionProblem checks the original
+// keys and would refuse it.
+function assertJsonMember(value, ancestors = [], seen = { values: 0 }) {
+  if (++seen.values > REVOCATION_READ_LIMITS.maxValues) throw new RangeError('revocation reply exceeds its value limit');
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number' && Number.isFinite(value)) return;
+  if (typeof value !== 'object') throw new TypeError('revocation reply contains a non-JSON member');
+  if (ancestors.includes(value)) throw new TypeError('revocation reply contains a cycle');
+  ancestors.push(value);
+  if (Array.isArray(value)) {
+    if (Object.keys(value).length !== value.length) throw new TypeError('revocation reply contains a non-JSON member');
+    for (const member of value) assertJsonMember(member, ancestors, seen);
+  } else {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError('revocation reply contains a non-JSON member');
+    for (const key of Object.keys(value)) assertJsonMember(value[key], ancestors, seen);
+  }
+  ancestors.pop();
+}
 function boundedRevocationValue(value) {
   if (value instanceof Uint8Array) return admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+  assertJsonMember(value);
   let remaining = REVOCATION_READ_LIMITS.maxBytes, values = 0;
   const text = JSON.stringify(value, (key, child) => {
     if (++values > REVOCATION_READ_LIMITS.maxValues || key.length > remaining || (typeof child === 'string' && child.length > remaining)) throw new RangeError('revocation reply exceeds its byte or value limit');
