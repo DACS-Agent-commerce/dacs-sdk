@@ -40,6 +40,17 @@ test('the runtime requirement matches the repository engines and the sqlite modu
   assert.match(readme, /better-sqlite3/);
 });
 
+test('the host option example documents every option the host accepts', () => {
+  // host.mjs:33-35 is the authority for the accepted option names.
+  const hostSource = readFileSync(new URL('src/host.mjs', packageUrl), 'utf8');
+  const list = (name) => JSON.parse(hostSource.match(new RegExp(`const ${name} = Object\\.freeze\\((\\[[^\\]]*\\])\\)`))[1].replace(/'/g, '"'));
+  const start = readme.indexOf('const host = await startSellerHost({');
+  const block = readme.slice(start, readme.indexOf('```', start));
+  for (const name of [...list('REQUIRED'), ...list('OPTIONAL')]) {
+    assert.match(block, new RegExp(`\\b${name}\\b`), `the README option example documents ${name}`);
+  }
+});
+
 test('the sessionAdmission option states the exact PROFILE.json revision and tuple', () => {
   // session-admission.mjs compares each participant's standardRevision and
   // documentVersions with SELLER_PROFILE, which PROFILE.json pins.

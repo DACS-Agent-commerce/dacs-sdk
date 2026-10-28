@@ -41,6 +41,10 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
+  host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
+  port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
+  now,                   // optional () -> epoch milliseconds; default Date.now
   observeDemosTransfer, // optional compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
