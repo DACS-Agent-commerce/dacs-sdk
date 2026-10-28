@@ -3,20 +3,19 @@
 // container could have written. Nothing here follows a link or replaces a file.
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join, posix } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readBoundedFile } from "./acceptance-evidence-io.mjs";
+import { requireDirectory } from "./acceptance-directory.mjs";
 
 export const SEALED_CONTEXT_SCHEMA = "dacs-sealed-context/v1";
-
-function requireDirectory(path) {
-  if (!lstatSync(path).isDirectory()) throw new Error("not a directory (or a link to one): " + path);
-}
 
 // Copies one regular file to a destination that must not exist yet, keeping its permission bits.
 function copyRegularFile(source, destination, label) {
   let file;
   try {
+    requireDirectory(dirname(source));
+    requireDirectory(dirname(destination));
     file = readBoundedFile(source, { noFollow: true });
     if (file !== undefined) writeFileSync(destination, file.bytes, { flag: "wx", mode: file.mode });
   } catch (error) { throw new Error(`cannot copy ${label}: ${error.message}`, { cause: error }); }
@@ -29,6 +28,7 @@ function copyRegularFile(source, destination, label) {
  * and for a missing file unless `optional` (then it is skipped). */
 export function collectEvidence(sourceDirectory, destinationDirectory, names, { optional = false } = {}) {
   requireDirectory(sourceDirectory);
+  requireDirectory(destinationDirectory);
   const copied = [];
   for (const entry of names) {
     const [source, destination] = Array.isArray(entry) ? entry : [entry, entry];
@@ -53,6 +53,7 @@ export function sealProject(project, context, names) {
   const listed = new Set(names.map(name => posix.normalize(name)));
   const directories = new Set([...listed].flatMap(ancestors));
   requireDirectory(project);
+  requireDirectory(dirname(context));
   // readdir reports a link as a link, so only real directories are entered.
   const visit = relative => {
     for (const entry of readdirSync(join(project, relative), { withFileTypes: true })) {
@@ -65,6 +66,7 @@ export function sealProject(project, context, names) {
   visit("");
   mkdirSync(context);
   for (const directory of [...directories].sort()) {
+    requireDirectory(join(project, directory));
     mkdirSync(join(context, directory), { mode: lstatSync(join(project, directory)).mode & 0o777 });
   }
   const files = {};
