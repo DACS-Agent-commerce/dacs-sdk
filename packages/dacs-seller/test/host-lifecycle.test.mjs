@@ -15,7 +15,7 @@ import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
-import {createSellerTransportClientAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER} from '../src/dacs/seller-transport-auth.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent}={}){
  const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
@@ -77,55 +77,6 @@ test('the host still refuses a native artifact capability without its readbacks'
  const host=await f.start();await host.close();
 });
 
-test('close waits for an accepted native artifact readback before releasing state',async t=>{
- const entered=defer(),releaseRead=defer();let block=true,closedAt=false,afterClose=0;
- const f=await fixture(t),native=f.native;
- const artifactAnchor=Object.freeze({...native,readRetained:async input=>{
-  if(block&&input.artifactKind==='FinalityCommitmentRecord'){entered.resolve();await releaseRead.promise;if(closedAt)afterClose++;}
-  return native.readRetained(input);
- }});
- const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
- const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
- await anchorAgreement(f,request,answer);
- const pending=client.commit(request.transportIdentity.jobId).then(()=> 'answered',error=>error.code??error.name);
- await entered.promise;
- let closed=false;const closing=host.close().then(()=>{closed=true;closedAt=true;});
- try{
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(closed,false,'close retains ownership while the underlying readback still runs');
-  await assert.rejects(f.start(),e=>e.code==='seller_state_locked');
- }finally{block=false;releaseRead.resolve();}
- await closing;
- assert.equal(afterClose,0,'a late readback never writes after ownership transfers');
- await pending;
- const reopened=await f.start();await reopened.close();
-});
-
-test('wrapped native artifact readbacks keep their capability receiver',async t=>{
- const f=await fixture(t),native=f.native;
- const artifactAnchor={...native,reads:0,verifies:0,
-  async readRetained(input){this.reads++;return native.readRetained(input);},
-  async verifyReceipt(input){this.verifies++;return native.verifyReceipt(input);}};
- const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
- const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
- await anchorAgreement(f,request,answer);
- assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
- assert.ok(artifactAnchor.reads>=1,'readRetained ran with its capability as receiver');
- assert.ok(artifactAnchor.verifies>=1,'verifyReceipt ran with its capability as receiver');
- await host.close();
-});
-
-test('wrapped native artifact publish keeps its capability receiver',async t=>{
- const f=await fixture(t),native=f.native;
- const artifactAnchor={...native,published:0,async publish(input){this.published++;return native.publish(input);}};
- const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
- const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
- await anchorAgreement(f,request,answer);
- assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
- assert.equal(artifactAnchor.published,1,'publish ran with its capability as receiver');
- await host.close();
-});
-
 test('host forwards capability metadata getters with the capability as receiver',async t=>{
  const f=await fixture(t),native=f.native;
  const artifactAnchor=new class{
@@ -139,7 +90,7 @@ test('host forwards capability metadata getters with the capability as receiver'
  const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
  const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
  await anchorAgreement(f,request,answer);
- assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
+ await assertStagedCommit(host,request);
  await host.close();
 });
 
@@ -237,3 +188,21 @@ test('host refuses malformed options before opening any state',async t=>{
  ];
  for(const [label,options,expected] of cases)await assert.rejects(startSellerHost(options),expected,label);
 });
+
+for(const method of ['readRetained','verifyReceipt','publish'])test(`staged native commitment enters no ${method} and host closes cleanly`,async t=>{
+ const f=await fixture(t),native=f.native;let calls=0;
+ const artifactAnchor={...native,[method]:async input=>{calls++;return native[method](input);}};
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');await anchorAgreement(f,request,answer);
+ await assertStagedCommit(host,request);
+ assert.equal(calls,0);await host.close();const reopened=await f.start();await reopened.close();
+});
+
+async function assertStagedCommit(host,request){
+ const body={jobId:request.transportIdentity.jobId},text=JSON.stringify(body),path='/dacs/v1/commitments';
+ const auth=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW});
+ const signed=await auth.request(path,body,text);
+ const response=await fetch(host.url+path,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:text});
+ const answer=await response.text();auth.verifyResponse(signed.payload,{header:response.headers.get(SELLER_TRANSPORT_HEADER),status:response.status,text:answer});
+ assert.equal(response.status,503);assert.equal(JSON.parse(answer).error,'settlement_profile_unavailable');
+}
