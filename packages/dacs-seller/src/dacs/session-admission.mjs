@@ -62,8 +62,9 @@
 //    before any signature. The receipt's writer is not compared with the
 //    record's signer: the Standard does not tie them (SR2-5 binds the writer
 //    the receipt names, not the record's verifier).
-import { ARTIFACT_SEPARATORS, admitRawJson, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, publicKeyFromRaw, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
+import { isCanonicalEd25519Signature, isSmallOrderPublicKey } from './demos-claims.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
 // Standard's JID-1 candidate tuple at standardRevision, spec/PROFILE.md).
@@ -398,6 +399,20 @@ function vetEvidenceContent(reply, resultContent = false) {
   throw malformedEvidence('the Vet evidence content reply is malformed');
 }
 
+// The self-certifying Ed25519 key a signer claim names, or null: the Demos
+// agent claim the session participants use, or the canonical
+// `key:<32-byte lowercase hex>` claim a recipe steward or VerifyResult signer
+// may use. A small-order point proves only trivial signatures and is refused.
+const KEY_CLAIM = /^key:([0-9a-f]{64})$/;
+function evidenceSignerKey(claim) {
+  if (typeof claim !== 'string') return null;
+  const match = KEY_CLAIM.exec(claim);
+  let raw;
+  try { raw = match ? Uint8Array.from(Buffer.from(match[1], 'hex')) : canonicalDemosAgentPublicKey(claim); }
+  catch { return null; }
+  return raw && !isSmallOrderPublicKey(raw) ? raw : null;
+}
+
 // The core verifier's resolvers over the operator's readers. Content is
 // authenticated by the verifier itself (hash against its reference, both
 // signatures); the operator decides which signers may sign and whether the
@@ -446,9 +461,13 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
   const unpinned = unpinnedVerifiedClaims(invocation);
   const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
-  // The verifier checks every signature itself with the signer's own key; the
-  // operator's policy decides which signers other than the verifier may sign.
-  const resolvePublicKey = (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : reads && signature.algorithm === 'ed25519' ? signature.signer : null);
+  // Every signature is verified with the key its own signer claim names (a
+  // Demos agent or a canonical `key:` claim); the operator's policy decides
+  // which signers other than the verifier may sign.
+  const resolvePublicKey = (signature) => (signature?.algorithm !== 'ed25519'
+    || (!sameCanonicalClaimIdentity(signature.signer, verifier) && !reads) ? null : evidenceSignerKey(signature.signer));
+  const verify = ({ signedBytes: bytes, signature, publicKey }) => publicKey instanceof Uint8Array
+    && isCanonicalEd25519Signature(signature?.value) && ed25519Verify(bytes, Buffer.from(signature.value, 'base64url'), publicKeyFromRaw(publicKey));
   const pins = sessionRegistryPins ?? [];
   let strict, thrown, problem;
   try {
@@ -458,7 +477,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
     }
     if (!problem) strict = await verifyCompositeVerificationRecord(record,
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific) },
-      { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }) });
+      { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify });
   } catch (error) { thrown = error; } finally { reads?.close(); }
   if (reads?.malformed()) return reads.malformed();
   if (reads?.hasFailure()) throw reads.failure();

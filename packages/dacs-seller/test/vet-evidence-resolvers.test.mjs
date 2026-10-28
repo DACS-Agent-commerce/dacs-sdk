@@ -8,6 +8,12 @@ import { sessionAdmissionConfig, vetRecordProblem } from '../src/dacs/session-ad
 import { buyer, seller, testWallet, JOB, NOW } from './helpers/protocol-fixture.mjs';
 
 const resultSigner = testWallet(31), recipeSteward = testWallet(32);
+// A self-certifying `key:<32-byte hex>` wallet: the canonical representation a
+// recipe steward or VerifyResult signer may use instead of a Demos agent claim.
+const keyWallet = (tag) => {
+  const seed = new Uint8Array(32).fill(tag), privateKey = core.privateKeyFromSeed(seed);
+  return { claim: `key:${Buffer.from(core.rawPublicKey(core.publicKeyFromSeed(seed))).toString('hex')}`, signBytes: (bytes) => Buffer.from(core.ed25519Sign(bytes, privateKey)) };
+};
 const requirement = { requirementVersion: '1', required: [{ scheme: 'domain', verificationRequired: true, recipeVersion: 1 }] };
 const AUTHORITY_LOCATOR = 'https://authority.example/evidence-1';
 const RESULT_LOCATOR = `dacs2:${JOB}:domain:alice.example:v1`;
@@ -17,10 +23,10 @@ const sign = (unsigned, separator, wallet) => core.signComponentArtifact(unsigne
 
 // A counterparty-signed record of `buyer` (verified by `seller`) whose requirement names one verified claim,
 // with that claim's VerifyResult, recipe and authority content kept as an operator would hold them.
-async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0] } = {}) {
+async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0], steward = recipeSteward, resultWallet = resultSigner } = {}) {
   const recipe = await sign({ recipeVersion: 1, scheme: 'domain', defaultMethod: { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate: 'https://authority.example/{identifier}' } },
     defaultMaxAgeSec: 3600, parserRules: { format: 'json', successJsonPath: '$.active' }, retryClass: 'permanent', availability: 'live',
-    governance: { proposedBy: recipeSteward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' } }, 'dacs-recipe:v1:', recipeSteward);
+    governance: { proposedBy: steward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' } }, 'dacs-recipe:v1:', steward);
   const authorityValue = { active: true };
   const authorityContent = authority === 'bytes'
     ? { encoding: 'bytes', value: Buffer.from('{"active":true}').toString('base64url'), hash: core.sha256Hex(Buffer.from('{"active":true}')) }
@@ -28,8 +34,8 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
       ? { encoding: 'bytes', value: '', hash: core.sha256Hex(new Uint8Array(0)) }
       : { encoding: 'canonical-json', value: authorityValue, hash: core.sha256Hex(core.canonicalize(authorityValue)) };
   const result = await sign({ resultVersion: '1', scheme: 'domain', identifier: 'alice.example', recipeVersion: 1, method: 'consensus-backed-proxy', decision: 'pass',
-    reason: 'authority confirmed the claim', attestation: { anchor: { kind: 'https', locator: AUTHORITY_LOCATOR }, contentHash: authorityContent.hash, signer: resultSigner.claim },
-    data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultSigner);
+    reason: 'authority confirmed the claim', attestation: { anchor: { kind: 'https', locator: AUTHORITY_LOCATOR }, contentHash: authorityContent.hash, signer: resultWallet.claim },
+    data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultWallet);
   const resultRef = { anchor: { kind: 'storage-program', locator: RESULT_LOCATOR }, contentHash: core.contentHash(result), recipeVersion: 1 };
   const bundleHash = core.sha256Hex('TEST evaluated bundle');
   const record = await sign({ recordVersion: '1', jobId: JOB, evaluatedParty: party.claim, bundleHash, requirementHash: core.sha256Hex(core.canonicalize(bundleRequirement)),
@@ -44,8 +50,8 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
     resolveContent: async (input) => { calls.push(['resolveContent', input]); return contents.has(input.anchor.locator) ? structuredClone(contents.get(input.anchor.locator)) : null; },
     resolveRecipe: async (input) => { calls.push(['resolveRecipe', input]); return structuredClone(recipe); },
     resolveLatestRecipe: async (input) => { calls.push(['resolveLatestRecipe', input]); return { sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: recipe.recipeVersion, availability: 'live' }; },
-    isRecipeSignerAuthorized: async ({ signature }) => signature.signer === recipeSteward.claim,
-    isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === resultSigner.claim,
+    isRecipeSignerAuthorized: async ({ signature }) => signature.signer === steward.claim,
+    isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === resultWallet.claim,
     verifyAuthorityAttestation: async ({ content }) => (content.encoding === 'bytes' ? Buffer.from(content.value).toString() === '{"active":true}' : content.value.active === true) ? 'valid' : 'invalid',
   };
   const replay = (overrides = {}) => vetRecordProblem(record, { ref, jobId: JOB, role: party === buyer ? 'buyer' : 'seller', party: party.claim, bundleHash, verifier: verifier.claim, invocation, now: () => NOW,
@@ -331,6 +337,24 @@ test('a compatible unpinned oneOf member is qualified even when the result is bo
   const fixture = await verifiedClaimFixture({ bundleRequirement, boundRequirement: pinned, data: { active: true, jurisdiction: 'GB' } });
   assert.equal(await fixture.replay(), null);
   assert.ok(fixture.calls.some(([name, input]) => name === 'resolveLatestRecipe' && input.scheme === 'domain' && input.method === 'consensus-backed-proxy'));
+});
+
+test('a recipe steward using a canonical key: claim passes operator evidence', async () => {
+  const fixture = await verifiedClaimFixture({ steward: keyWallet(41) });
+  assert.equal(await fixture.replay(), null);
+});
+
+test('a VerifyResult signer using a canonical key: claim passes operator evidence', async () => {
+  const fixture = await verifiedClaimFixture({ resultWallet: keyWallet(42) });
+  assert.equal(await fixture.replay(), null);
+});
+
+test('a key: VerifyResult signer whose signature does not verify is refused', async () => {
+  const claimed = keyWallet(43), actual = keyWallet(44);
+  const fixture = await verifiedClaimFixture({ resultWallet: { claim: claimed.claim, signBytes: actual.signBytes } });
+  // The operator authorizes the claimed signer; the signature still has to
+  // verify under the key that claim names.
+  assert.match(await fixture.replay({ evidence: { isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === claimed.claim } }), /verify-result-signature/);
 });
 
 test('vetEvidence must expose every reader', () => {
