@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -409,6 +409,20 @@ describe("bounded generated build", () => {
       })).toThrow("interrupted write");
       expect(readFileSync(target, "utf8")).toBe("**\n");
       expect(existsSync(`${target}.${process.pid}.tmp`)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("flushes a replacement to durable storage before publishing it", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-flush-"));
+    try {
+      const target = join(root, ".dockerignore");
+      writeFileSync(target, "**\n");
+      let writeOptions: unknown;
+      replaceFile(target, "!acceptance-npm-http.cjs\n", {
+        write: (temporary: string, contents: string, options: unknown) => { writeFileSync(temporary, contents); writeOptions = options; },
+        rename: (temporary: string, path: string) => renameSync(temporary, path),
+      });
+      expect(writeOptions).toEqual({ flush: true });
+      expect(readFileSync(target, "utf8")).toBe("!acceptance-npm-http.cjs\n");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("does not duplicate the ignore exception when preparation repeats", () => {

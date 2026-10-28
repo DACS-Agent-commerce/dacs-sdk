@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { requireDirectory } from "./acceptance-directory.mjs";
 
-/** Publishes a complete file by renaming it over its target, so an interrupted
- * or overlapping preparation can never expose a truncated version to a reader. */
+/** Publishes a complete file by flushing it to storage, then renaming it over
+ * its target, so an interrupted preparation or power loss cannot expose a
+ * truncated version to a reader. */
 export function replaceFile(path, contents, { write = writeFileSync, rename = renameSync,
   unlink = unlinkSync } = {}) {
   const temporary = `${path}.${process.pid}.tmp`;
   try {
-    write(temporary, contents);
+    write(temporary, contents, { flush: true });
     rename(temporary, path);
   } catch (error) {
     try { unlink(temporary); } catch {}
