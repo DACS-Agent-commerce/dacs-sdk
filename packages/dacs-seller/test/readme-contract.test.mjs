@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const packageUrl = new URL('../', import.meta.url);
 const readme = readFileSync(new URL('README.md', packageUrl), 'utf8');
+const rootPackage = JSON.parse(readFileSync(new URL('../../package.json', packageUrl), 'utf8'));
 
 test('the fixture-only claim names the packaged readers and excludes operator-supplied callbacks', () => {
   // The host and createSellerAgent check agreementAnchor and artifactAnchor only
@@ -26,4 +27,14 @@ test('the absence proof is a contract for an operator-supplied anchor, not the u
   assert.match(readme, /createDevnetDemoArtifactAnchor[\s\S]{0,300}cannot be constructed/);
   assert.match(readme, /isDevnetDemoTransport[\s\S]{0,100}`false`/);
   assert.match(readme, /src\/dacs\/devnet-source\.mjs/);
+});
+
+test('the runtime requirement matches the repository engines and the sqlite module the code imports', () => {
+  // The durable stores import better-sqlite3 (seller-durable-state.mjs:10,
+  // seller-transport-auth.mjs:8, payment-evidence-wallet-journal.mjs:85,
+  // party-vet-store.mjs:21), not node:sqlite, and CI runs the seller suite on
+  // Node 20.19.
+  assert.ok(readme.includes(rootPackage.engines.node), `the README states the engines range ${rootPackage.engines.node}`);
+  assert.doesNotMatch(readme, /node:sqlite/);
+  assert.match(readme, /better-sqlite3/);
 });

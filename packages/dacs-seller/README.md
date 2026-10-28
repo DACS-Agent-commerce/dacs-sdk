@@ -22,8 +22,9 @@ bundle completion and transport-row reclamation are not wired.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
-Requires Node.js 22.13 or later (`node:sqlite`) and the same version of
-`@kynesyslabs/dacs` as a peer.
+The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
+durable stores use the native `better-sqlite3` module. Use the same version of
+`@kynesyslabs/dacs` as this kit.
 
 ```js
 import { startSellerHost } from './src/index.mjs';
