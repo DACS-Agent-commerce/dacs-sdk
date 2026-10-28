@@ -56,13 +56,15 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
         // A leader's exit does not imply its descendants have stopped. Reap
         // this attempt's group before returning or replacing the active child.
         cleanGroup();
-        if (code === 0 || attempt >= attempts) finish(code ?? 1);
-        else if (now() >= deadlineAt) {
-          // A delayed deadline callback must not let a new attempt start; the
-          // group was already reaped above, so only the grace timer remains.
+        // An exit observed at or after the absolute deadline is a timeout even
+        // when the deadline callback has not run yet; never report a command
+        // status that was produced past its total budget.
+        if (now() >= deadlineAt) {
+          // The group was already reaped above, so only the grace timer remains.
           child = undefined;
           terminate(124, "ETIMEDOUT command deadline: " + command);
-        } else next();
+        } else if (code === 0 || attempt >= attempts) finish(code ?? 1);
+        else next();
       });
     };
     next();
