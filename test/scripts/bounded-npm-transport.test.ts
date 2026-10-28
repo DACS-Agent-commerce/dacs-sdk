@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -247,7 +247,7 @@ describe("total command deadline and retry budget", () => {
 });
 
 const buildModule = "../../scripts/bounded-build.mjs";
-const { prepareBoundedBuild } = await import(buildModule);
+const { prepareBoundedBuild, replaceFile } = await import(buildModule);
 describe("bounded generated build", () => {
   it("inserts admission into the build stage and keeps the generated source available for review", () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-bounded-build-"));
@@ -259,6 +259,40 @@ describe("bounded generated build", () => {
       expect(built.indexOf("NODE_OPTIONS=")).toBeLessThan(built.indexOf("RUN npm ci"));
       expect(readFileSync(join(root, "Dockerfile"), "utf8")).toBe(original);
       expect(readFileSync(join(root, ".dockerignore"), "utf8")).toContain("!acceptance-npm-http.cjs");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("inserts admission into a CRLF build stage instead of returning the source unchanged", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-build-crlf-"));
+    try {
+      const original = "FROM node:20 AS build\r\nRUN npm ci\r\n";
+      writeFileSync(join(root, "Dockerfile"), original); writeFileSync(join(root, ".dockerignore"), "**\n");
+      const built = readFileSync(prepareBoundedBuild(root), "utf8");
+      expect(built).toContain("COPY acceptance-npm-http.cjs /acceptance-npm-http.cjs");
+      expect(built.indexOf("NODE_OPTIONS=")).toBeLessThan(built.indexOf("RUN npm ci"));
+      expect(readFileSync(join(root, "Dockerfile"), "utf8")).toBe(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("keeps the original file when a replacement write is interrupted", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-replace-"));
+    try {
+      const target = join(root, ".dockerignore");
+      writeFileSync(target, "**\n");
+      expect(() => replaceFile(target, "!acceptance-npm-http.cjs\n", {
+        write: (temporary: string) => { writeFileSync(temporary, "truncated"); throw new Error("interrupted write"); },
+        rename: () => { throw new Error("rename ran after a failed write"); },
+      })).toThrow("interrupted write");
+      expect(readFileSync(target, "utf8")).toBe("**\n");
+      expect(existsSync(`${target}.${process.pid}.tmp`)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("refuses an empty ignore file without publishing generated files", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-empty-"));
+    try {
+      writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
+      writeFileSync(join(root, ".dockerignore"), "");
+      expect(() => prepareBoundedBuild(root)).toThrow("empty .dockerignore");
+      expect(existsSync(join(root, "acceptance-npm-http.cjs"))).toBe(false);
+      expect(existsSync(join(root, "Dockerfile.acceptance"))).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
