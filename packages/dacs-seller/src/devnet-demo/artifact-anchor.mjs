@@ -1,6 +1,7 @@
 import {assertQualifiedDeployment} from './deployment-qualification.mjs';
 import { verifyComponent } from '../dacs/listing.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
+import { boundedResolutionValue, resolveWithDeadline } from '../util/bounded-resolution.mjs';
 import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // Application-owned native publication for the real demo composition. Every
 // CREATE is produced by the packaged seller wallet and then accepted only
@@ -50,8 +51,8 @@ const HASH=/^[0-9a-f]{64}$/;
 const NO_INTENT_ABSENT='no seller-owned demo CREATE intent';
 const UNSIGNED_ABSENT='the wallet never signed this CREATE (no signed transaction is retained for it); publishing it asks again';
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
-// Every node read made while the shared wallet nonce lane is held has a reply
-// byte cap the source applies before decoding, and a deadline enforced here.
+// The nonce reply has a byte cap before decoding in the source, and a
+// deadline and strict decoded JSON budgets enforced at this boundary.
 const NONCE_READ_LIMITS=Object.freeze({maxBytes:4096,timeoutMs:10_000});
 // A signed CREATE carries one artifact of at most MAX_STORAGE_ARTIFACT_BYTES
 // plus its fixed CREATE fields and bindings; a caller's projection larger than
@@ -72,19 +73,38 @@ function artifactValid(kind,value,writer,expectedSigner=writer) {
   if(kind==='SettlementEvidence')return isNativeDeliveryEvidence(value,writer,`dacs4:evidence:${value.jobId}`);
   return kind==='Deliverable' && isDevnetPurchasedReport(value,{producer:writer});
 }
-// Journal snapshots are local authority only. Missing/uncertain observations
-// never manufacture absence; callers await both journals before this decision.
-function unsignedIntent(logicalAddress,retained,sourceRows,walletRows) {
-  if(!retained || Object.hasOwn(retained,'hash') || Object.hasOwn(retained,'signedTransaction')) return false;
-  if(retained.transaction?.content?.data?.[1]?.metadata?.logicalAddress!==logicalAddress) return false;
-  if(retained.stage==='closing'){if(retained.error!==OPERATOR_CLOSING)return false;}
-  else if(retained.stage!=='unsigned'&&retained.stage!=='intent')return false;
-  const names=value=>value?.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress===logicalAddress;
-  return Array.isArray(sourceRows)&&Array.isArray(walletRows)&&!sourceRows.some(([,value])=>names(value))
-    && !walletRows.some(([key,value])=>key.startsWith('demo/wallet/')&&names(value));
-}
-async function unsignedJournalIntent(logicalAddress,retained,sourceJournal,walletJournal) {
-  return unsignedIntent(logicalAddress,retained,await sourceJournal.entries(),await walletJournal.entries());
+// One successfully read snapshot supplies unsignedness, projection identity and
+// nonce reservations. Index historical evidence once, never inside a row loop.
+function publicationSnapshot(sourceRows,walletRows) {
+  const addresses=new Set(), projections=new Map(), addressHashes=new Map();
+  const lane=tx=>JSON.stringify([tx?.content?.from,tx?.content?.nonce,tx?.content?.data?.[1]?.metadata?.logicalAddress]);
+  const rejected=new Set(walletRows.filter(([,row])=>broadcastRejected(row)).map(([,row])=>lane(row.transaction)));
+  for(const [key,row] of [...sourceRows,...walletRows.filter(([key])=>key.startsWith('demo/wallet/'))]) {
+    const tx=row?.signedTransaction, address=tx?.content?.data?.[1]?.metadata?.logicalAddress;
+    if(address) addresses.add(address);
+    if(address && typeof row.hash==='string') {
+      if(!addressHashes.has(address)) addressHashes.set(address,new Set());
+      addressHashes.get(address).add(row.hash);
+    }
+  }
+  for(const [,row] of sourceRows) {
+    if(!row?.signedTransaction || typeof row.hash!=='string') continue;
+    const prior=projections.get(row.hash), text=JSON.stringify(row.signedTransaction);
+    projections.set(row.hash,prior===undefined?text:prior===text?prior:null);
+  }
+  const classify=(address,row,{reaskDenied=false}={})=>{
+    if(broadcastRejected(row)) return 'rejected';
+    if(row?.error==='user_rejected'&&!reaskDenied) return 'denied';
+    const unsigned=row && !Object.hasOwn(row,'hash') && !Object.hasOwn(row,'signedTransaction')
+      && row.transaction?.content?.data?.[1]?.metadata?.logicalAddress===address
+      && (['intent','unsigned'].includes(row.stage) || row.stage==='closing'&&row.error===OPERATOR_CLOSING || reaskDenied&&row.stage==='denied');
+    return !addresses.has(address)&&(!row||unsigned)?'unsigned':'signed';
+  };
+  const live=rows=>rows.filter(([,row])=>{
+    const address=row?.transaction?.content?.data?.[1]?.metadata?.logicalAddress;
+    return row?.signedTransaction || row?.hash || classify(address,row)!=='unsigned' && row?.error!=='user_rejected' && !['closing','unsigned','rejected'].includes(row?.stage);
+  });
+  return {classify,live,addresses,addressHashes,sourceRows,walletRows,rejected:row=>rejected.has(lane(row.signedTransaction)),projection:hash=>{const text=projections.get(hash);return text?JSON.parse(text):null;}};
 }
 function deliveryBindingValid(value,artifact,logicalAddress,hash) {
   return value?.version==='1' && value.profile==='dacs-native-delivery-publication/v1' && value.jobId===artifact.jobId
@@ -96,8 +116,11 @@ function deliveryBindingValid(value,artifact,logicalAddress,hash) {
     && value.payloadHash===hash && logicalAddress===`dacs4:deliverable:${artifact.jobId}`;
 }
 
-export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, walletFactory, network, signer, buyerAccess=null, now=()=>Date.now() }) {
-  if(!isDevnetDemoTransport(sourceCapability)) throw new TypeError('the explicit devnet demo source capability is required');
+export function createDevnetDemoArtifactAnchor(options) {
+  if(!isDevnetDemoTransport(options.sourceCapability)) throw new TypeError('the explicit devnet demo source capability is required');
+  return assembleArtifactAnchor(options);
+}
+function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now()},ports={}) {
   // Only the seller's own Listing has no purchase. Every other write, new or
   // retained, belongs to a job whose current buyer must be admitted first.
   const access=operatorBuyerAccessConfig(buyerAccess);
@@ -129,10 +152,10 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // its own journal readback intentionally uses byte-for-byte JSON.stringify.
   delegate={get:(key)=>journal.get(`demo/wallet/${key}`),put:(key,value)=>journal.put(`demo/wallet/${key}`,structuredClone(value)),withWalletLock:(key,work)=>journal.withWalletLock(`demo/wallet/${key}`,work)};
   if(!wallet || typeof wallet.request!=='function' || typeof wallet.getPublicAccount!=='function' || typeof wallet.getWriteProfile!=='function') throw new TypeError('the packaged seller wallet contract is unavailable');
-  const reader=createDemosSr2Adapter({rpcUrl:sourceCapability.pins.endpoint,journal:createInMemoryDemosSr2Journal(),sourceCapability,now});
+  const reader=ports.reader ?? createDemosSr2Adapter({rpcUrl:sourceCapability.pins.endpoint,journal:createInMemoryDemosSr2Journal(),sourceCapability,now});
   const owner=wallet.getPublicAccount()?.address;
   const claim=owner ? `did:demos:agent:${owner.slice(2)}` : null;
-  const signRpc=storageWriteRpcSigner(signer,claim);
+  const signRpc=Object.hasOwn(ports,'signRpc')?ports.signRpc:storageWriteRpcSigner(signer,claim);
   if(!owner || wallet.getWriteProfile()?.demoArtifactPublication?.policy!==DEVNET_DEMO_ARTIFACT_POLICY) throw new TypeError('the packaged seller wallet does not carry the demo artifact publication policy');
   const keyFor=(logicalAddress)=>{
     const jobPrefix=/^(?:dacs2:composite:|dacs3:commit:|dacs4:deliverable:|dacs4:evidence:)/.exec(logicalAddress);
@@ -140,41 +163,24 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     return `demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
   };
 
-  const signedNothing=(address,retained)=>unsignedJournalIntent(address,retained,sourceCapability.journal,journal);
+  const snapshot=async()=>publicationSnapshot(await sourceCapability.journal.entries(),await journal.entries());
+  const signedNothing=async(address,row)=>(await snapshot()).classify(address,row)==='unsigned';
 
-  async function liveNonceRows(rows,outcomes=rows) {
-    const rejected=outcomes.map(([,row])=>row).filter(row=>broadcastRejected(row)&&row.transaction?.content?.from===owner);
-    // An abandoned unsigned intent reserves no nonce. Use the same proof as
-    // read/publish, including both signed journals, for this and other jobs.
-    const unsigned=new Set();
-    for(const [,row] of rows) {
-      const address=row?.transaction?.content?.data?.[1]?.metadata?.logicalAddress;
-      if(address && await signedNothing(address,row)) unsigned.add(row);
-    }
-    return rows.filter(([,row])=>!unsigned.has(row)).filter(([,row])=>!rejected.some(done=>canonicalize(done.transaction.content)===canonicalize((row?.signedTransaction??row?.transaction)?.content??null)))
-      .filter(([,row])=>!(!row?.hash&&!row?.signedTransaction&&(['closing','unsigned','rejected'].includes(row?.stage)||(row?.stage==='denied'&&row.error==='user_rejected'))));
-  }
-
-  // The seller account nonce, read under the shared nonce lane: the source caps
-  // the reply at NONCE_READ_LIMITS.maxBytes before decoding and honors signal;
-  // a reply that misses the deadline, decodes larger or is malformed releases
-  // the lane as indeterminate, and nothing is signed.
   async function accountNonce() {
-    const controller=new AbortController(),timedOut=Symbol('timed out');let timer;
-    const deadline=new Promise(resolve=>{timer=setTimeout(()=>{controller.abort();resolve(timedOut);},NONCE_READ_LIMITS.timeoutMs);});
-    try{
-      const response=await Promise.race([sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},{...NONCE_READ_LIMITS,signal:controller.signal}),deadline]);
-      if(response===timedOut) fail('indeterminate',`seller nonce read exceeded its ${NONCE_READ_LIMITS.timeoutMs} ms deadline`);
-      if(Buffer.byteLength(JSON.stringify(response)??'')>NONCE_READ_LIMITS.maxBytes) fail('indeterminate','seller nonce reply exceeds its byte limit');
+    try {
+      const response=boundedResolutionValue(await resolveWithDeadline(limits=>sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},limits),NONCE_READ_LIMITS),
+        {...NONCE_READ_LIMITS,maxValues:64,maxDepth:8,maxListEntries:16});
       const current=storageWriteAccountNonce(response?.response);
       if(!rpcEnvelope(response,200,null) || current===null) fail('indeterminate','seller nonce is unavailable');
       return current;
-    }finally{clearTimeout(timer);controller.abort();}
+    } catch(cause) {
+      throw Object.assign(new Error(`seller nonce read failed or exceeded its deadline: ${cause.message}`,{cause}),{code:'indeterminate'});
+    }
   }
-
   async function liveSourceRows() {
     const sourceRows=await sourceCapability.journal.entries();
-    return liveNonceRows(sourceRows,[...sourceRows,...await journal.entries()]);
+    const state=publicationSnapshot(sourceRows,await journal.entries());
+    return state.live(sourceRows).filter(([,row])=>!state.rejected(row));
   }
 
   async function observeSource(hash,projection,writeProof) {
@@ -216,9 +222,10 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // seller CREATE. Release it only after a fresh authenticated readback shows
   // that exact original signed CREATE included; no new transaction is signed.
   async function reconcilePriorWalletLane() {
-    const rows=(await liveNonceRows(await journal.entries())).filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.stage==='broadcast-started'&&value?.signedTransaction?.content?.from===owner);
+    const walletRows=await journal.entries(), state=publicationSnapshot(await sourceCapability.journal.entries(),walletRows);
+    const rows=state.live(walletRows).filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.stage==='broadcast-started'&&!state.rejected(value)&&value?.signedTransaction?.content?.from===owner);
     for(const [key,value] of rows){
-      const projection=typeof value.hash==='string'?await publicProjection(value.hash):null;
+      const projection=typeof value.hash==='string'?state.projection(value.hash):null;
       if(!projection||value.signedTransaction?.hash!==value.hash||canonicalize(projection)!==canonicalize(value.signedTransaction)) fail('indeterminate','the retained seller wallet CREATE differs from its original public projection');
       const observed=await sourceCapability.binding({phase:'readback',address:owner,hash:value.hash});
       if(observed.disposition!=='included') fail('indeterminate',`the retained seller wallet CREATE requires readback (${observed.disposition})`);
@@ -230,22 +237,15 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   }
 
   async function publicProjection(hash) {
-    const records=(await sourceCapability.journal.entries()).map(([,value])=>value).filter((value)=>value?.hash===hash && value?.signedTransaction);
-    if(records.length<1) return null;
-    const first=records[0].signedTransaction;
-    // The transaction hash signs insertion-ordered JSON, so never rebuild the
-    // public projection through canonical JSON even though equality is
-    // compared canonically.
-    return records.every((entry)=>canonicalize(entry.signedTransaction)===canonicalize(first)) ? structuredClone(first) : null;
+    return (await snapshot()).projection(hash);
   }
   async function observe(input,retained,writeProof,{fresh=false}={}) {
+    if(retained.error==='user_rejected') return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};
     if(broadcastRejected(retained)) return {status:'rejected',reason:'broadcast_rejected: the original demo CREATE was definitively rejected',noResend:true};
     let hash=retained.hash;
     if(!hash) {
-      const candidates=(await sourceCapability.journal.entries()).map(([,value])=>value).filter((value)=>value?.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress===input.logicalAddress
-        && value.signedTransaction.content.from===owner);
-      const hashes=new Set(candidates.map((candidate)=>candidate.hash).filter((candidate)=>typeof candidate==='string'&&candidate.length>0));
-      if(hashes.size!==1) return {status:'indeterminate',reason:'the original demo CREATE hash is not uniquely retained',noResend:true};
+      const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
+      if(hashes?.size!==1) return {status:'indeterminate',reason:'the original demo CREATE hash is not uniquely retained',noResend:true};
       hash=[...hashes][0];
       // Every caller holds the artifact lock from intent lookup through save,
       // so an observation cannot overwrite a newer wallet outcome.
@@ -306,8 +306,9 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
         // Listing is also asked again, when the caller says so, on the same
         // proof: its row is unsigned and neither journal retains a signed CREATE.
         const deniedListing=reaskDenied===true&&artifactKind==='Listing'&&retained.stage==='denied'&&retained.error==='user_rejected';
-        if(!(await signedNothing(logicalAddress,deniedListing?{...retained,stage:'unsigned'}:retained))) return observe(input,retained);
+        if((await snapshot()).classify(logicalAddress,retained,{reaskDenied:deniedListing})!=='unsigned') return observe(input,retained);
       }
+      if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
       authorizeJob(artifactKind,jobId);
       await assertQualifiedDeployment(sourceCapability);
       // Another application seam (for example native SettlementEvidence)
@@ -319,8 +320,8 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       const current=await accountNonce();
       // Retained signed or reserved bytes fence this nonce even after inclusion.
       // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
-      const priorRows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
-      const retainedNonces=(await liveNonceRows(priorRows)).flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
+      const prior=await snapshot();
+      const retainedNonces=prior.live([...prior.sourceRows,...prior.walletRows]).flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
         .filter(tx=>tx?.content?.from===owner).map(tx=>tx.content.nonce);
       if(retainedNonces.some(n=>!Number.isSafeInteger(n)||n<0)) fail('indeterminate','retained seller nonce is invalid');
       if(current===Number.MAX_SAFE_INTEGER||retainedNonces.some(n=>n>current)) fail('indeterminate','seller nonce RPC has not caught up with retained CREATEs');
@@ -361,20 +362,27 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
         // The packaged wallet journals signed bytes before submission. Only a
         // completed failure with no signed transaction in either durable journal
         // proves an unsigned attempt. Ambiguous signed outcomes keep the floor.
-        const rows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
-        const signed=(await liveNonceRows(rows)).some(([,row])=>row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
+        const state=await snapshot();
+        const signed=state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
         const code=answer?.error?.code;
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
         return {status:answer?.error?.code==='user_rejected'?'rejected':'indeterminate',reason:`${answer?.error?.code ?? 'wallet-response-missing'}: ${answer?.error?.message ?? 'wallet response missing'}`.slice(0,240),noResend:true};
       }
-      const issued={...intent,stage:'issued',hash:answer.data.hash};
+      const hash=answer?.data?.hash;
+      const projection=(await snapshot()).projection(hash);
+      if(!HASH.test(hash ?? '') || !projection || !projectionAuthentic(projection,{transactionRef:{value:hash}}) || projection.content.from!==owner || canonicalize(projection.content.data?.[1]?.data)!==canonicalize(value)) {
+        await journal.put(keyFor(logicalAddress),{...intent,stage:'issued',error:'wallet-answer-unbound'});
+        return {status:'indeterminate',reason:'wallet answer has no matching retained signed CREATE',noResend:true};
+      }
+      const issued={...intent,stage:'issued',hash};
       await journal.put(keyFor(logicalAddress),issued);
       return observe(input,issued,answer.data.writeProof);
     })));
   }
   async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false}) {
     if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};
+    authorizeJob(artifactKind,artifact?.jobId);
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return noIntentAbsence(logicalAddress);
@@ -386,31 +394,12 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       return observe(input,retained,undefined,{fresh});
     });
   }
-  // Whether a retained row proves the wallet never signed this CREATE. The
-  // packaged wallet journals the signed bytes (its own journal, and the
-  // source's before it broadcasts) before anything leaves the process, and
-  // publish holds this address's lock from the intent through the wallet's
-  // answer, so a row this read finds is never mid-request. The row must be one
-  // publish writes before or without a signature, carry no hash, and have no
-  // signed CREATE for its address retained by the source or this seller's
-  // wallet, checked again on every read: a 'closing' row exactly as publish
-  // writes it (a shutdown ended the approval), an 'unsigned' one (the wallet
-  // answered without signing), or an 'intent' one (the process died while the
-  // wallet was asked: a signature it made but did not journal was never sent).
-  // Any other row reads as before (plain absence for 'closing', else a readback).
-  // Whether the source or this seller's wallet retains a signed CREATE for the
-  // address.
-  async function signedCreateRetained(logicalAddress) {
-    const names=(value)=>value?.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress===logicalAddress;
-    return (await sourceCapability.journal.entries()).some(([,value])=>names(value))
-      || (await journal.entries()).some(([key,value])=>key.startsWith('demo/wallet/')&&names(value));
-  }
   // publish stores its intent before it asks the wallet to sign anything, and
   // this read holds the address's lock, so an address with no intent row (and
   // no signed CREATE retained anywhere for it) was never asked of the wallet:
   // the proven absence a held native Deliverable needs to be asked again.
   async function noIntentAbsence(logicalAddress) {
-    return (await signedCreateRetained(logicalAddress)) ? {status:'absent',reason:NO_INTENT_ABSENT} : provenUnsignedAbsence(NO_INTENT_ABSENT);
+    return (await snapshot()).addresses.has(logicalAddress) ? {status:'absent',reason:NO_INTENT_ABSENT} : provenUnsignedAbsence(NO_INTENT_ABSENT);
   }
   // Passive: whether this seller's journal retains a CREATE intent for the
   // address. No readback, resend or write, and nothing is authorized by it.
@@ -419,6 +408,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   }
   async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false}) {
     if(writer!==claim || !kinds.has(artifactKind)) return {status:'rejected',reason:'demo retained read scope differs'};
+    authorizeJob(artifactKind,logicalAddress.split(':')[2]);
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
@@ -437,6 +427,8 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // other retained read, the buyer-access check comes first; a refusal offers nothing.
   async function retainedSignedCreate({logicalAddress,artifactKind}) {
     if(!kinds.has(artifactKind)) return null;
+    keyFor(logicalAddress);
+    try { authorizeJob(artifactKind,logicalAddress.split(':')[2]); } catch { return null; }
     const retained=await journal.get(keyFor(logicalAddress));
     if(retained?.stage!=='verified' || retained.input?.artifactKind!==artifactKind || retained.input?.writer!==claim || retained.input?.logicalAddress!==logicalAddress
       || !HASH.test(retained.hash ?? '') || retained.signedProjection?.hash!==retained.hash || typeof retained.signedProjection.content!=='object' || sha256Hex(JSON.stringify(retained.signedProjection.content))!==retained.hash) return null;
@@ -449,7 +441,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // then may its job and kind choose the access check.
   const projectionContentText=(content)=>{
     if(content===null || typeof content!=='object') return null;
-    try { const text=JSON.stringify(content); return Buffer.byteLength(text,'utf8')<=SIGNED_CREATE_MAX_BYTES ? text : null; } catch { return null; }
+    try { return JSON.stringify(boundedResolutionValue(content,{maxBytes:SIGNED_CREATE_MAX_BYTES,maxValues:8192,maxDepth:32,maxListEntries:4096})); } catch { return null; }
   };
   const projectionAuthentic=(projection,receipt)=>{
     const text=HASH.test(projection?.hash ?? '') ? projectionContentText(projection.content) : null;
