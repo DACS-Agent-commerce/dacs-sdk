@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import DatabaseSync from 'better-sqlite3';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -728,4 +728,70 @@ test('a journal in a directory others can write, or reached through a symbolic l
   assert.equal(existsSync(join(shared, 'journal.sqlite')), false, 'no file was made');
   chmodSync(shared, 0o700);
   open(join(shared, 'journal.sqlite')).close();
+});
+
+for(const failedSigner of [false,true])test(`owning journal recovers an unknown empty attempt after restart, signer failed=${failedSigner}`,async t=>{
+ const w=wallet(t);let journal=w.open(),id=journal.journalId;
+ if(failedSigner){w.faults.sign.push('throw');await assert.rejects(journal.anchorEvidence(w.input()),/before signing/);}
+ const attempt={outcome:'unknown'};
+ await assert.rejects(journal.reconcilePaymentEvidence({...w.input(),attempt}),{code:'wallet_journal_unknown_attempt'});
+ journal.close();journal=w.open();t.after(()=>journal.close());
+ const result=await journal.ensureEvidence({...w.input(),expectedJournalId:id,attempt});
+ assert.equal(result.status,'submitted');assert.equal(w.calls.signed.length,1);assert.equal(w.chain.applied.length,1);
+ assert.equal((await journal.ensureEvidence({...w.input(),expectedJournalId:id,attempt})).status,'applied');
+ assert.equal(w.calls.signed.length,1);
+});
+
+for(const expected of [undefined,'TEST-other-owner'])test(`owner-checked evidence refuses a missing or changed journal owner ${expected}`,async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:expected}),{code:'wallet_journal_changed'});
+ assert.equal(w.calls.sign,0);assert.equal(w.calls.broadcast.length,0);
+});
+
+test('owner-checked preparation rechecks the job authorization before signing and broadcasting',async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize:async()=>false}),{code:'wallet_not_authorized'});
+ assert.equal(w.calls.sign,0);
+ let checks=0;
+ await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize:()=>++checks===1}),{code:'wallet_not_authorized'});
+ const kept=await journal.readSignedProjection(w.input());assert.ok(kept);assert.equal(w.calls.broadcast.length,0);
+ await journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize:()=>true});
+ assert.equal(w.calls.signed.length,1);assert.equal(w.calls.broadcast.length,1);assert.equal(w.chain.applied.length,1);
+});
+
+test('an accepted legacy name survives a lost successor broadcast answer',async t=>{
+ const w=wallet(t);let journal=w.open();
+ w.faults.broadcast.push('drop');const first=await journal.anchorEvidence(w.input());w.other();w.other();
+ const attempt={outcome:'sent',answer:first},input={...w.input(),expectedJournalId:journal.journalId,attempt};
+ w.faults.broadcast.push('throw');await assert.rejects(journal.ensureEvidence(input),/unreachable/);
+ const kept=await journal.readSignedProjection(w.input());assert.notEqual(kept.hash,first.txHash);journal.close();
+ journal=w.open();t.after(()=>journal.close());
+ const result=await journal.ensureEvidence(input);assert.equal(result.txHash,kept.hash);assert.equal(w.calls.signed.length,2);assert.equal(w.chain.applied.length,1);
+});
+
+for(const attempt of [{outcome:'sent'},{outcome:'unknown',answer:{txHash:null}},{outcome:'unknown',answer:{txHash:'TEST-malformed'}},{outcome:'sent',answer:{txHash:'a'.repeat(64)}}])test(`owner recovery rejects an unbound legacy answer ${JSON.stringify(attempt)}`,async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ await journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId});
+ await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,attempt}),{code:'wallet_journal_unknown_attempt'});
+ assert.equal(w.calls.signed.length,1);assert.equal(w.calls.broadcast.length,1);
+});
+
+for(const cut of ['checkpoint','signing','committed','broadcast','answer'])test(`owner checkpoint survives process interruption at ${cut}`,async t=>{
+ const w=wallet(t,{file:true}),checkpoint=join(w.dir,'work.json'),initialized=w.open(),owner=initialized.journalId;initialized.close();
+ const child=spawnSync(process.execPath,[fileURLToPath(new URL('./helpers/payment-evidence-owner-crash.mjs',import.meta.url)),w.path,w.chainFile,checkpoint,cut],{encoding:'utf8',timeout:60000});
+ assert.equal(child.signal,'SIGKILL',child.stderr);const work=JSON.parse(readFileSync(checkpoint,'utf8'));assert.equal(work.expectedJournalId,owner);w.reload();
+ const journal=w.open();t.after(()=>journal.close());const answer=await journal.ensureEvidence(work);
+ assert.ok(['submitted','applied'].includes(answer.status));assert.equal(w.chain.applied.length,1);
+ const projection=await journal.readSignedProjection(work);assert.equal(projection.hash,answer.txHash);assert.deepEqual(work.artifact,w.input().artifact);
+ assert.equal((await journal.ensureEvidence(work)).status,'applied');assert.equal(w.chain.applied.length,1);
+ assert.equal(new Set(w.calls.broadcast).size,w.calls.broadcast.length?1:0);
+});
+
+
+test('concurrent owner-checked handles reuse the CREATE prepared under the signing lock',async t=>{
+ const w=wallet(t),node=walletChain({state:w.chain});let enter,release,signs=0;
+ const entered=new Promise(resolve=>{enter=resolve;}),gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+ const first=w.open({signCreate:async input=>{signs++;enter();await gate;return node.signCreate(input);}}),second=w.open();t.after(()=>{first.close();second.close();});
+ const input={...w.input(),expectedJournalId:first.journalId,attempt:{outcome:'unknown'}},one=first.ensureEvidence(input);await entered;const two=second.ensureEvidence(input);release();
+ const [a,b]=await Promise.all([one,two]);assert.equal(a.txHash,b.txHash);assert.equal(signs+w.calls.sign,1);assert.equal(w.chain.applied.length,1);assert.equal(new Set(w.calls.broadcast).size,1);
 });
