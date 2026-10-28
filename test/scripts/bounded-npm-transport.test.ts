@@ -168,18 +168,18 @@ describe("total command deadline and retry budget", () => {
       offSignal: (signal: string, handler: () => void) => { if (signals.get(signal) === handler) { signals.delete(signal); removed.push(signal); } },
       now: () => 0 } };
   }
-  it.each([["SIGINT", 130], ["SIGTERM", 143]] as const)("terminates the active group and stops retrying on %s", async (signal, code) => {
+  it.each([["SIGHUP", 129], ["SIGINT", 130], ["SIGQUIT", 131], ["SIGTERM", 143]] as const)("terminates the active group and stops retrying on %s", async (signal, code) => {
     const h = signalHarness(); const result = runBoundedCommand("docker", ["pull", "fixture"], { ...h.options, attempts: 3 });
     expect(h.signals.has(signal)).toBe(true); h.signals.get(signal)?.();
     expect(h.children).toHaveLength(1); expect(h.kills).toEqual([[100, "SIGTERM"]]);
     h.timers[1]?.(); expect(await result).toBe(code);
     expect(h.kills).toEqual([[100, "SIGTERM"], [100, "SIGKILL"]]);
-    expect(h.removed.sort()).toEqual(["SIGINT", "SIGTERM"]);
+    expect(h.removed.sort()).toEqual(["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]);
   });
   it("removes termination handlers after a normal exit", async () => {
     const h = signalHarness(); const result = runBoundedCommand("npm", ["install"], h.options);
     h.children[0]?.emit("exit", 0); expect(await result).toBe(0);
-    expect(h.signals.size).toBe(0); expect(h.removed.sort()).toEqual(["SIGINT", "SIGTERM"]);
+    expect(h.signals.size).toBe(0); expect(h.removed.sort()).toEqual(["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]);
   });
   it("does not retry once the absolute deadline has passed", async () => {
     const h = signalHarness(); let clock = 0;
@@ -203,7 +203,7 @@ describe("total command deadline and retry budget", () => {
     try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
     try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z"); } catch { return false; }
   }
-  it("stops a running command when the wrapper receives SIGTERM", async () => {
+  it.each([["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]] as const)("stops a running command when the wrapper receives %s", async (signal, expectedCode) => {
     const wrapper = spawn(process.execPath, ["scripts/bounded-command.mjs", "30", "1", process.execPath, "-e", "console.log(process.pid);setInterval(()=>{},1000)"],
       { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
     let output = "", commandPid = 0;
@@ -216,10 +216,10 @@ describe("total command deadline and retry budget", () => {
         wrapper.on("error", reject);
       });
       expect(running(commandPid)).toBe(true);
-      const exited = new Promise<{ code: number | null; signal: string | null }>(resolve => wrapper.on("exit", (code, signal) => resolve({ code, signal })));
-      wrapper.kill("SIGTERM");
+      const exited = new Promise<{ code: number | null; signal: string | null }>(resolve => wrapper.on("exit", (code, exitSignal) => resolve({ code, signal: exitSignal })));
+      wrapper.kill(signal);
       expect(await Promise.race([exited, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("wrapper did not exit")), 5000))]))
-        .toEqual({ code: 143, signal: null });
+        .toEqual({ code: expectedCode, signal: null });
       const stopped = Date.now() + 2000; while (running(commandPid) && Date.now() < stopped) await new Promise(resolve => setTimeout(resolve, 25));
       expect(running(commandPid)).toBe(false);
     } finally {

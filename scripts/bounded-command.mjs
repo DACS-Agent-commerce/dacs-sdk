@@ -6,7 +6,9 @@ export const COMMAND_TIMEOUT_SECONDS = 900;
 export const DOCKER_PULL_TIMEOUT_SECONDS = 180;
 export const COMMAND_MAX_ATTEMPTS = 3;
 const COMMAND_KILL_GRACE_MS = 250;
-const TERMINATION_SIGNALS = { SIGINT: 130, SIGTERM: 143 };
+// Signals whose default action ends the wrapper; each must reap the detached
+// command group first, including SIGHUP from a disconnected session.
+const TERMINATION_SIGNALS = { SIGHUP: 129, SIGINT: 130, SIGQUIT: 131, SIGTERM: 143 };
 
 /** Runs attempts within one total deadline, kills the process group on timeout or
  * termination, and returns its exit code. Injectable process/timer/signal operations
