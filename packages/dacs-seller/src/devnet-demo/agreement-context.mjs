@@ -1,6 +1,6 @@
 import { isProvenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
 import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
-import { DEM_RAIL, verifyComponent } from '../dacs/listing.mjs';
+import { attachIdentityPresentation, DEM_RAIL, verifyComponent } from '../dacs/listing.mjs';
 import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass } from '@kynesyslabs/dacs';
 import { addressForClaim } from '../dacs/demos-claims.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
@@ -23,6 +23,9 @@ const freshOps=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoi
 // The demo requirement is empty, so a party Vet has no attempts and signs only
 // its composite record, in this SDK step.
 const SIGNING_STEP='composite';
+const PRESENTATION_LOOKUP_MAX_BYTES=4096, PRESENTATION_LOOKUP_TIMEOUT_MS=10000;
+const presentationBytes=bundle=>Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`).toString('hex');
+const presentationUnknown=(message,cause)=>fail('seller_presentation_indeterminate',message,cause);
 // A job with anchor intents but no party Vet state: its Vets were started by
 // an earlier server version (or its state was deleted after its purchase
 // ended). It is refused for good, before anything is read back, signed or sent.
@@ -241,8 +244,81 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const validReceipt = async (read,logicalAddress,artifact,authority) => read?.status==='present'
     && read.receipt?.state==='finalized' && read.receipt?.observationDisposition==='established'
     && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority})==='valid';
+  // A read-only wallet receipt can recover an interrupted signer, never grant
+  // permission to sign again. Remote adapters bound wire bytes before returning.
+  async function readPresentationSignature(request) {
+    if(typeof wallet.reconcilePresentationSignature!=='function')presentationUnknown('the seller presentation signer outcome requires wallet reconciliation');
+    const controller=new AbortController();let timer;
+    try{
+      const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('presentation signature lookup deadline expired','TimeoutError'));},PRESENTATION_LOOKUP_TIMEOUT_MS);});
+      const raw=await Promise.race([Promise.resolve().then(()=>wallet.reconcilePresentationSignature(Object.freeze({...request}),{
+        signal:controller.signal,maxBytes:PRESENTATION_LOOKUP_MAX_BYTES,timeoutMs:PRESENTATION_LOOKUP_TIMEOUT_MS,
+      })),deadline]);
+      if(!(raw instanceof Uint8Array))throw new TypeError('wallet signature lookup must return bounded raw JSON bytes');
+      const {status,signature,...identity}=admitRawJson(raw,{maxBytes:PRESENTATION_LOOKUP_MAX_BYTES});
+      if(status!=='signed'||!same(identity,request))presentationUnknown('the wallet has no matching signed seller presentation receipt');
+      return signature;
+    }catch(cause){presentationUnknown('seller presentation signature reconciliation failed',cause);}
+    finally{clearTimeout(timer);controller.abort();}
+  }
+  function verifiedPresentation(kept,signature) {
+    try{return attachIdentityPresentation({bundle:kept.bundle,bundleHash:identityBundleHash(kept.bundle)},signature);}
+    catch(cause){presentationUnknown('the seller presentation signature does not authenticate the retained bytes',cause);}
+  }
+  function retainedPresentation(kept) {
+    if(!kept?.bundle)presentationUnknown('the retained seller presentation bundle is missing');
+    const signing=kept.signing;
+    if(kept.bundle.presentedBy!==wallet.claim)presentationUnknown('the retained presentation does not belong to the seller');
+    if(signing&&signing.signedBytes!==presentationBytes(kept.bundle))presentationUnknown('the retained seller presentation bytes changed');
+    if(!kept.bundle.presentation)return null;
+    const proof=kept.bundle.presentation;
+    if(proof.kind!=='per-claim'||proof.signatures?.length!==1||proof.signatures[0]?.ref!==wallet.claim
+      ||(signing&&(signing.state!=='complete'||signing.signature!==proof.signatures[0].signature)))presentationUnknown('the retained seller presentation outcome is inconsistent');
+    return verifiedPresentation(kept,proof.signatures[0].signature);
+  }
+  async function signPresentation(job,kept) {
+    const completed=retainedPresentation(kept);if(completed)return completed;
+    if(!kept.signing||!['prepared','pending'].includes(kept.signing.state))presentationUnknown('the unsigned seller presentation has no safe signing reservation');
+    let mine=false;
+    if(kept.signing.state==='prepared'){
+      if(kept.challenge.expiresAt<=now())fail('seller_challenge_expired','seller challenge expired before presentation');
+      guard(job,'seller presentation');await markWrite(job);
+      const expected=kept,reservation=randomUUID();
+      kept=(await state.update(job.jobId,current=>{
+        if(!current?.binding||!same(current.binding,job.binding))fail('binding-changed','seller presentation binding changed');
+        if(!same(current.presentation,expected))return undefined;
+        current.presentation.signing={...expected.signing,state:'pending',reservation};mine=true;return current;
+      })).presentation;
+      const raced=retainedPresentation(kept);if(raced)return raced;
+    }
+    if(kept.signing?.state!=='pending'||typeof kept.signing.reservation!=='string'||!kept.signing.reservation)presentationUnknown('the seller presentation reservation is unavailable');
+    const request=Object.freeze({jobId:job.jobId,signer:wallet.claim,reservation:kept.signing.reservation,signedBytes:kept.signing.signedBytes});
+    let signature;
+    if(mine){
+      guard(job,'seller presentation');
+      const raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);
+      signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
+    }else signature=await readPresentationSignature(request);
+    const bundle=verifiedPresentation(kept,signature);
+    signature=bundle.presentation.signatures[0].signature;
+    const saved=await state.update(job.jobId,current=>{
+      if(!current?.binding||!same(current.binding,job.binding))fail('binding-changed','seller presentation binding changed');
+      const other=current.presentation;
+      if(!other||!same(other.challenge,kept.challenge)||identityBundleHash(other.bundle)!==identityBundleHash(kept.bundle)
+        ||other.signing?.reservation!==request.reservation||other.signing?.signedBytes!==request.signedBytes)fail('binding-changed','seller presentation signing reservation changed');
+      if(other.signing.state==='complete'){
+        if(!same(other.bundle,bundle)||other.signing.signature!==signature)fail('conflict','seller presentation signature outcome changed');
+        return undefined;
+      }
+      if(other.signing.state!=='pending')fail('binding-changed','seller presentation signing outcome changed');
+      current.presentation={...other,bundle,signing:{...other.signing,state:'complete',signature}};return current;
+    });
+    return retainedPresentation(saved.presentation);
+  }
   async function sellerSession(job) {
-    let kept=(await state.read(job.jobId))?.presentation;
+    const row=await state.read(job.jobId);
+    if(!row?.binding||!same(row.binding,job.binding))fail('binding-changed','seller presentation binding changed');
+    let kept=row.presentation;
     if(!kept){
       if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
       const buyer=job.binding.buyerIdentityBundle.presentedBy;
@@ -251,6 +327,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         || typeof challenge.sessionNonce!=='string' || !/^(?:[a-f0-9]{2}){16,128}$/.test(challenge.sessionNonce) || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
       const {presentation:_publicationProof,...identity}=listing.seller.identity;
       const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
+      value.signing={state:'prepared',signedBytes:presentationBytes(value.bundle)};
       kept=(await state.update(job.jobId,(current,rows)=>{
         // Claim the nonce in the job row, under the store transaction. It is
         // retained across restarts and released with the ended purchase.
@@ -263,19 +340,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         return {...current,presentation:value};
       })).presentation;
     }
-    if(!kept.bundle.presentation){
-      if(kept.challenge.expiresAt<=now()) fail('seller_challenge_expired','seller challenge expired before presentation');
-      guard(job,'seller presentation');await markWrite(job);guard(job,'seller presentation');
-      const raw=await wallet.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(kept.bundle)}`));
-      const signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
-      const bundle={...kept.bundle,presentation:{kind:'per-claim',signatures:[{ref:wallet.claim,signature}]}};
-      kept=(await state.update(job.jobId,current=>{
-        if(!current?.binding || !same(current.binding,job.binding) || !same(current.presentation.challenge,kept.challenge)) fail('binding-changed','seller presentation binding changed');
-        if(current.presentation.bundle.presentation)return undefined;
-        return {...current,presentation:{...current.presentation,bundle}};
-      })).presentation;
-    }
-    return clone(kept.bundle);
+    return clone(await signPresentation(job,kept));
   }
   async function contextAuthentic(input) {
     for(const [role,authority,requirement] of [['buyer',wallet.claim,listing.buyerRequirement],['seller',input.buyer.identityBundle.presentedBy,SELLER_REQUIREMENT]]){
