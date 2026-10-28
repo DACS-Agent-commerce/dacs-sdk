@@ -117,6 +117,9 @@
     "package:verify": "node scripts/verify-package.mjs",
     "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
     "release:set:verify": "node scripts/verify-release-set.mjs",
+    "release:check": "node scripts/check-release-packages.mjs",
+    "release:dry-run": "node scripts/release-dry-run.mjs",
+    "release:test": "node --test --test-concurrency=1 test/scripts/release-checks.test.mjs",
     "release:set:publish": "node scripts/publish-release-set.mjs"
   },
   "publishConfig": {
@@ -160,6 +163,8 @@
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
     "ganache": "7.9.2",
+    "npm-package-arg": "12.0.2",
+    "semver": "7.7.4",
     "typescript": "^5",
     "viem": "^2.55.19",
     "vitest": "^4.0.18"
