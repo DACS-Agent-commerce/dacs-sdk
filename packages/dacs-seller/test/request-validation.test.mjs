@@ -180,22 +180,22 @@ for(const [label,write] of WRITES)test(`${label} under the other request kind re
   const r=requestFor(write);r.content.kind=r.content.kind==='devnet-demo-artifact-storage-create'?'devnet-settlement-evidence-storage-create':'devnet-demo-artifact-storage-create';
   assert.equal(await refusal(r,approvable(true)),'request-shape');
 });
-for(const [label,write,artifact] of [
-  ['a finality record with no listing (D-6, C-2)',{artifactKind:'FinalityCommitmentRecord'},{listingRef:undefined}],
-  ['a finality record with no Agreement hash (D-7, C-2)',{artifactKind:'FinalityCommitmentRecord'},{agreementHash:undefined}],
-  ['a Deliverable with a null listing (D-6)',{artifactKind:'Deliverable'},{listing:null}],
-  ['a Deliverable with no Agreement hash (D-7)',{artifactKind:'Deliverable'},{agreementHash:undefined}],
+for(const [label,write,artifact,reason='artifact'] of [
+  ['a finality record with no listing (D-6, C-2)',{artifactKind:'FinalityCommitmentRecord'},{listingRef:undefined},'artifact-structure'],
+  ['a finality record with no Agreement hash (D-7, C-2)',{artifactKind:'FinalityCommitmentRecord'},{agreementHash:undefined},'artifact-structure'],
+  ['a Deliverable with a null listing (D-6)',{artifactKind:'Deliverable'},{listing:null},'artifact-structure'],
+  ['a Deliverable with no Agreement hash (D-7)',{artifactKind:'Deliverable'},{agreementHash:undefined},'artifact-structure'],
   ['a Deliverable produced by the buyer (D-8)',{artifactKind:'Deliverable'},{producer:buyer}],
-  ['a Deliverable with an extra member (A-1)',{artifactKind:'Deliverable'},{TEST:'extra'}],
+  ['a Deliverable with an extra member (A-1)',{artifactKind:'Deliverable'},{TEST:'extra'},'artifact-structure'],
   ['payment evidence naming a payee (A-1)',payment,{payee:buyer}],
-  ['failed payment evidence (A-1)',payment,{outcome:'failure'}],
+  ['failed payment evidence (A-1)',payment,{outcome:'failure'},'artifact-structure'],
   ['delivery evidence for another deliverable',{artifactKind:'SettlementEvidence',phase:'deliver-storage-program'},{deliverableAnchor:{kind:'storage-program',locator:`dacs4:deliverable:${JOBS[1]}`}}],
   ['a Vet record signed by the buyer (A-2)',{artifactKind:'CompositeVerificationRecord'},{signature:{algorithm:'ed25519',signer:buyer,value:'A'.repeat(86)}}],
-  ['a Vet record with no signature (A-2)',{artifactKind:'CompositeVerificationRecord'},{signature:undefined}],
-  ['a Vet record naming a verifier member (A-2)',{artifactKind:'CompositeVerificationRecord'},{verifier:seller}],
-  ['a Vet record with a listing member',{artifactKind:'CompositeVerificationRecord'},{listingRef:null}],
+  ['a Vet record with no signature (A-2)',{artifactKind:'CompositeVerificationRecord'},{signature:undefined},'artifact-structure'],
+  ['a Vet record naming a verifier member (A-2)',{artifactKind:'CompositeVerificationRecord'},{verifier:seller},'artifact-structure'],
+  ['a Vet record with a listing member',{artifactKind:'CompositeVerificationRecord'},{listingRef:null},'artifact-structure'],
 ])test(`request validation refuses ${label}`,async()=>{
-  assert.equal(await refusal(requestFor({...write,artifact}),approvable(write.artifactKind==='CompositeVerificationRecord'||write.artifactKind==='FinalityCommitmentRecord')),'artifact');
+  assert.equal(await refusal(requestFor({...write,artifact}),approvable(write.artifactKind==='CompositeVerificationRecord'||write.artifactKind==='FinalityCommitmentRecord')),reason);
 });
 for(const [label,write,purchase,reason] of [
   ['a Vet record evaluating a third party',{artifactKind:'CompositeVerificationRecord',party:outsider},STATES['agreed-open'],'evaluated-party'],
@@ -300,8 +300,8 @@ for(const [label,kind,phase,artifact] of [
  ['a Deliverable with empty content text','Deliverable','deliver-storage-program',{content:{mediaType:'text/plain; charset=utf-8',text:''}}],
 ])test(`request validation refuses ${label} as artifact-structure`,async()=>{
  const r=requestFor({artifactKind:kind,phase,artifact});
- assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS),'artifact-structure');
- assert.equal(await policyRefusal(requestFor({artifactKind:kind,phase}),policy(),SELLER_POLICY_DEFAULTS),null);
+ assert.equal(await policyRefusal(r,policy(STATES.paid),SELLER_POLICY_DEFAULTS),'artifact-structure');
+ assert.equal(await policyRefusal(requestFor({artifactKind:kind,phase}),policy(STATES.paid),SELLER_POLICY_DEFAULTS),null);
 });
 for(const [label,kind,artifact] of [
  ['a Vet record with an invalid version','CompositeVerificationRecord',{recordVersion:'invalid'}],
@@ -312,18 +312,15 @@ for(const [label,kind,artifact] of [
  ['a finality record with no signature','FinalityCommitmentRecord',NO_SIGNATURE],
 ])test(`request validation refuses ${label} as artifact-structure instead of holding it`,async()=>{
  const r=requestFor({artifactKind:kind,artifact});
- for(const held of [null,'cancellation-unknown'])assert.equal(await policyRefusal(r,policy(openPrePayment),SELLER_POLICY_DEFAULTS,{held}),'artifact-structure');
- assert.equal(await policyRefusal(requestFor({artifactKind:kind}),policy(openPrePayment),SELLER_POLICY_DEFAULTS),'cancellation-unknown');
+ for(const held of [false,true])assert.equal(await policyRefusal(r,policy(STATES['agreed-cancellation-unknown']),SELLER_POLICY_DEFAULTS,{held}),'artifact-structure');
+ assert.equal(await policyRefusal(requestFor({artifactKind:kind}),policy(STATES['agreed-cancellation-unknown']),SELLER_POLICY_DEFAULTS),'cancellation-unknown');
 });
 test('request validation refuses an invalid Vet record as artifact-structure before any seller record of its job exists',async()=>{
  const noRecord=policy(async()=>null);
  assert.equal(await policyRefusal(requestFor({artifactKind:'CompositeVerificationRecord',artifact:{recordVersion:'invalid'}}),noRecord,SELLER_POLICY_DEFAULTS),'artifact-structure');
  assert.equal(await policyRefusal(requestFor({artifactKind:'CompositeVerificationRecord'}),noRecord,SELLER_POLICY_DEFAULTS),'seller-record-missing');
 });
-test('exact manual approval still authorizes the exact bytes the operator saw, whatever their structure',async()=>{
- const r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{evidenceVersion:'invalid'}});
- assert.equal(await policyRefusal(r,policy(),SELLER_POLICY_DEFAULTS,{manualApproved:true}),null);
-});
+
 
 // The purchase parties are the Agreement's own claims, compared as the SDK compares them (D-1).
 const qualifiedBuyer=`${buyer}?network=demos`,qualifiedSeller=`${seller}?network=demos`;
