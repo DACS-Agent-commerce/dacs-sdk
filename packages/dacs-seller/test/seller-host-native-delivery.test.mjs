@@ -675,11 +675,12 @@ test('a payment claim a crash left reserved and unfinished is not stranded: the 
 });
 
 test('a paid outside buyer recovers an uncertain payment after access closes and restart, with one signed evidence CREATE', async (t) => {
-  const paidJobs = new Set(), buyers = new Map();
-  const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId), buyerForJob: jobId => buyers.get(jobId) };
+  // The job-bound buyer lookup is world's own: open admission admits the
+  // proposal, and every later operation joins the job's retained buyer.
+  const paidJobs = new Set();
+  const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId) };
   const w = await world(t, { buyerAccessOptions: access });
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  buyers.set(p.jobId,w.buyerKey.address);
   w.faults.broadcast.push('drop');
   assert.equal((await p.claim(tx)).status, 'held');
   const retained = await w.retainedSession(p.jobId);
@@ -694,7 +695,8 @@ test('a paid outside buyer recovers an uncertain payment after access closes and
     headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
   const pending = await response.json();
   assert.equal(response.status, 200, shown(pending));
-  assert.equal(pending.status, 'held', 'the rebroadcast is read back on the next retry');
+  assert.equal(pending.status, 'payment-evidenced', 'the rebroadcast is read back on this retry');
+  assert.equal(pending.delivery?.status, 'delivery-ready', shown(pending.delivery));
   const answer = await p.claim(tx);
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
@@ -708,11 +710,10 @@ test('a paid outside buyer recovers an uncertain payment after access closes and
 
 test('closed-access recovery uses paid-job authority for reconcile and resume; unpaid outsiders only inspect issued unknown writes', async (t) => {
   for (const paid of [true, false]) {
-    const paidJobs = new Set(), buyers = new Map();
-    const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId), buyerForJob: jobId => buyers.get(jobId) };
+    const paidJobs = new Set();
+    const access = { openBuyerAccess: true, custodyBuyer: key().claim, paymentObserved: jobId => paidJobs.has(jobId) };
     const w = await world(t, { buyerAccessOptions: access });
     const p = await w.purchase(), tx = paid ? p.pay() : core.sha256Hex('TEST-unpaid-claim'), address = paymentAddress(p);
-    buyers.set(p.jobId,w.buyerKey.address);
     if (paid) {
       w.faults.signCreate.push('throw');
       assert.equal((await p.claim(tx)).status, 'held');
