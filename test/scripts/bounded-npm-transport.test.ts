@@ -42,7 +42,6 @@ describe("inert bounded npm HTTP admission", () => {
   it.each([
     ["a HEAD request", 200, "HEAD"],
     ["a 204 response", 204, "GET"],
-    ["a 205 response", 205, "GET"],
     ["a 304 response", 304, "GET"],
   ] as const)("forwards %s without decoding its empty body or rewriting its headers", async (_label, statusCode, method) => {
     const pending = Object.assign(new EventEmitter(), { path: "/pkg", method, destroy: () => {} });
@@ -55,6 +54,17 @@ describe("inert bounded npm HTTP admission", () => {
     transport.request().emit("response", original);
     expect(await admitted).toBe(original);
     expect(original.headers).toEqual({ "content-encoding": "gzip", "content-length": "123" });
+  });
+  it("keeps a 205 response subject to the byte budget because Node frames its body", async () => {
+    const pending = Object.assign(new EventEmitter(), { path: "/pkg", method: "GET", destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const original = Object.assign(response([], { "content-length": String(NPM_METADATA_MAX_BYTES + 1) }), { statusCode: 205 });
+    const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
+    transport.request().emit("response", original);
+    const error = await rejected;
+    expect(error.message).toContain("ELIMIT");
+    expect(error).toMatchObject({ code: "ELIMIT" });
   });
   it("bounds gzip archive expansion before npm's tar decoder receives it", async () => {
     const archive = gzipSync(Buffer.alloc(8));

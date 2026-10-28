@@ -16,9 +16,10 @@ const NPM_JSON_MAX_ENTRIES = 2_000_000, NPM_JSON_MAX_DEPTH = 128;
 const limitError = () => Object.assign(new Error("ELIMIT npm HTTP response byte limit exceeded"), { code: "ELIMIT" });
 
 const isArchiveResponse = (path, statusCode = 200) => statusCode < 300 && /\/-\/[^/?]+\.(?:tgz|tar\.gz)(?:\?[^#]*)?$/.test(path);
-// HEAD, 204, 205 and 304 responses carry no body, so there is nothing to decode
-// or admit; npm's fetch passes them through untouched as well.
-const isBodylessResponse = (method, statusCode) => method === "HEAD" || statusCode === 204 || statusCode === 205 || statusCode === 304;
+// HEAD, 204 and 304 responses carry no body, so there is nothing to decode or
+// admit; npm's fetch passes them through untouched as well. A 205 response is
+// framed with a body by Node, so it stays subject to all admission limits.
+const isBodylessResponse = (method, statusCode) => method === "HEAD" || statusCode === 204 || statusCode === 304;
 
 /** Returns the HTTP response byte budget for an npm request path. */
 function responseBudget(path, statusCode = 200) {
