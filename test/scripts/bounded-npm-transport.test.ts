@@ -63,7 +63,7 @@ describe("inert bounded npm HTTP admission", () => {
   });
   it("admits full npm metadata with more than 1.24 million aggregate entries", async () => {
     // npm 10 requests the full npm packument for a global self-install. Its
-    // observed 1,245,605 entries fit the 32 MiB decoded-byte budget.
+    // observed 1,245,605 entries fit the finite decoded-byte budget.
     const metadata = Buffer.from(JSON.stringify({ name: "npm", versions: {
       "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
     } }));
@@ -72,7 +72,7 @@ describe("inert bounded npm HTTP admission", () => {
   });
   it("lets the selected npm read a full self-install packument through the guard", async () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-packument-"));
-    const metadata = JSON.stringify({ name: "npm", "dist-tags": { latest: "11.19.0" }, versions: {
+    const metadata = JSON.stringify({ readme: "x".repeat(33 * 1024 * 1024), name: "npm", "dist-tags": { latest: "11.19.0" }, versions: {
       "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
     } });
     const server = createServer((_request, reply) => { reply.writeHead(200, { "content-type": "application/json" }); reply.end(metadata); });
@@ -87,6 +87,20 @@ describe("inert bounded npm HTTP admission", () => {
       const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
       expect(code, diagnostic).toBe(0); expect(JSON.parse(output)).toBe("11.19.0");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each(["declared", "chunked", "gzip"])("admits full npm metadata above 32 MiB via %s while retaining a finite ceiling", async kind => {
+    const metadata = Buffer.from(JSON.stringify({ name: "npm", versions: {
+      "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
+    }, readme: "x".repeat(33 * 1024 * 1024) }));
+    const bytes = kind === "gzip" ? gzipSync(metadata) : metadata;
+    const headers = kind === "gzip" ? { "content-encoding": "gzip" } :
+      kind === "declared" ? { "content-length": String(bytes.length) } : {};
+    expect((await readBoundedResponse(response([bytes], headers), NPM_METADATA_MAX_BYTES)).equals(metadata)).toBe(true);
+    expect(NPM_METADATA_MAX_BYTES).toBe(64 * 1024 * 1024);
+    const overflow = Buffer.alloc(NPM_METADATA_MAX_BYTES + 1, 120);
+    const excessive = kind === "gzip" ? gzipSync(overflow) : overflow;
+    const overflowHeaders = kind === "gzip" ? headers : kind === "declared" ? { "content-length": String(excessive.length) } : {};
+    await expect(readBoundedResponse(response([excessive], overflowHeaders), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
   });
   it("bounds decoded JSON list sizes", async () => {
     await expect(readBoundedResponse(response([Buffer.from(JSON.stringify(Array(NPM_JSON_MAX_ENTRIES + 1).fill(0)))], { "content-type": "application/json" }), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
