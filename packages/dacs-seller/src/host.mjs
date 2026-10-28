@@ -159,6 +159,9 @@ export async function startSellerHost(options) {
       server.closeIdleConnections();
       await Promise.allSettled([...active]);
       await artifact.drain();
+      // A connection that became idle while its last response was written is
+      // swept here; the first sweep could only see it still busy.
+      server.closeIdleConnections();
       await socketsClosed;
       await release();
     })();

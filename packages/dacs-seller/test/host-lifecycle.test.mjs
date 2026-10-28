@@ -98,3 +98,11 @@ test('host issues no session challenge once close has begun',async t=>{
  }finally{release.resolve();}
  await pending;await closing;
 });
+
+test('host close does not wait for the keep-alive timeout',async t=>{
+ const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
+ assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
+ const started=performance.now();
+ await host.close();
+ assert.ok(performance.now()-started<2000,'close does not wait for the idle keep-alive timeout');
+});
