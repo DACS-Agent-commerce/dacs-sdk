@@ -14,20 +14,14 @@ const FILES=Object.freeze({buyer:'buyer-wallet.json',seller:'seller-wallet.json'
 const MAX_CUSTODY_RECORD_BYTES=64*1024;
 const checkRole=(role)=>{if(!Object.hasOwn(FILES,role))throw new TypeError('wallet role must be buyer or seller');return role;};
 
-async function deepestExisting(path){
-  for(let current=path;;current=dirname(current)){
-    try{await lstat(current);return current;}catch(error){if(error?.code!=='ENOENT')throw error;}
-    if(dirname(current)===current)return current;
-  }
-}
 async function privateDirectory(path){
-  path=resolve(path);const existed=await deepestExisting(path);
+  path=resolve(path);
   await mkdir(path,{recursive:true,mode:0o700});
   path=await realpath(path);const info=await lstat(path);if(!info.isDirectory()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid()))throw new Error('operator custody directory must be a private real mode-0700 directory owned by this process user');
-  // mkdir may have created ancestors too. A new directory's name is durable only
-  // once the entry is synced in its parent, so sync every parent that got one.
-  const oldest=await realpath(existed);
-  for(let current=path;current!==oldest;){const parent=dirname(current);if(parent===current)break;await syncDirectory(parent);current=parent;}
+  // A directory's name is durable only once the entry is synced in its parent.
+  // mkdir may have created several ancestors, and a retry cannot tell which
+  // earlier attempt synced, so sync every parent on every successful return.
+  for(let current=path;;){const parent=dirname(current);if(parent===current)break;await syncDirectory(parent);current=parent;}
   return path;
 }
 async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');return info;}

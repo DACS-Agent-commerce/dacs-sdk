@@ -128,6 +128,20 @@ test('an empty role file with unsafe permissions is refused, not replaced', asyn
   assert.deepEqual((await files(directory)).filter((name) => name !== '.wallet-repair'), [BUYER]);
 });
 
+test('a retry after a failed parent sync makes every created directory name durable', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-parent-retry-'));
+  const custody = await loadCustody();
+  t.after(async () => { custody.release(); await rm(root, { recursive: true, force: true }); });
+  const one = join(root, 'one'), directory = join(one, 'wallets');
+  custody.state.failSync = (path) => path === root;
+  await assert.rejects(custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN }), /TEST sync failed/);
+  custody.state.failSync = null; custody.state.events.length = 0;
+  await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
+  for (const parent of [root, one]) {
+    assert.ok(custody.state.events.includes(`sync ${parent}`), `the retry must sync ${parent} again`);
+  }
+});
+
 test('bootstrap syncs each file before publishing it and the directory after', async (t) => {
   const { bootstrap, directory, normalized } = await fixture(t);
   await bootstrap();
