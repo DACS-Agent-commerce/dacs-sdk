@@ -35,4 +35,3 @@ test('native delivery readers and publication callbacks refuse malformed jobs be
  assert.equal(calls,0);
  assert.equal((await readDevnetDeliveryEvidence(capability,{jobId:JOB,seller})).status,'absent');assert.equal(calls,1);
 });
-
