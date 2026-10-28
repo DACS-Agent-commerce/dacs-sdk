@@ -5,13 +5,20 @@ Listing, behind the authenticated seller transport and its durable journal, on
 loopback. The agent runs negotiation (DACS-3), the finalized commitment,
 `pay-dem` payment intake and delivery through the core SDK
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
-evidence and native DEM delivery capabilities, which the host requires. This is the devnet-demo seller kit, ported from the
-plugin seller kit (see [SOURCES.md](SOURCES.md)). It is a **fixture-only kit**: its native capabilities accept
-only `TEST-` authorities and a loopback fixture node, so it cannot start
-against, or read from, a real Demos node (see "What the host does and does
-not do"). It is not qualified for mainnet. The standalone host retains
-all jobs and refuses new jobs before admission after `maxJobs` (default 10,000); terminal
-DACS-5 bundle completion and transport-row reclamation are not wired.
+evidence and native DEM delivery capabilities, which the host requires. This
+is the devnet-demo seller kit, ported from the plugin seller kit (see
+[SOURCES.md](SOURCES.md)). It is a **fixture-only kit** as packaged: the
+native DEM delivery capability and the DEM delivery context accept only a
+`TEST-` authority (`src/dacs/native-dem-delivery-consumer.mjs`,
+`src/dacs/dem-delivery-context-consumer.mjs`), and
+`createNativePaymentEvidenceConsumer` accepts only a literal `127.0.0.1` RPC
+origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
+`agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
+`broadcast` is the operator's own callback, so an operator-supplied anchor or
+broadcast can still reach a real Demos node: keep them on the fixture too. It
+is not qualified for mainnet. The standalone host retains all jobs and refuses
+new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
+bundle completion and transport-row reclamation are not wired.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
