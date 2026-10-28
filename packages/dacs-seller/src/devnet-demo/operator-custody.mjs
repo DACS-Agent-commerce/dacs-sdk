@@ -111,8 +111,11 @@ async function removeEmptyFile(path){
     // Every deleter holds this lock and rechecks: no stale empty observation can
     // unlink a whole record published since it was made. Live contention refuses.
     if(!await isEmptyFile(path))return;
-    // Privacy and ownership are checked while the lock is held, before removal.
-    try{await exactPrivateFile(path);}catch(error){if(error?.code==='ENOENT')return;throw error;}
+    // Privacy and ownership are checked while the lock is held, and the file
+    // must still be the zero-byte one observed above, before it is removed.
+    let info;
+    try{info=await exactPrivateFile(path);}catch(error){if(error?.code==='ENOENT')return;throw error;}
+    if(info.size!==0)return;
     await unlink(path);
   }finally{lock.release();}
 }
