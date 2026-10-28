@@ -350,7 +350,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // start evaluation. Absence/unknown never authorizes another consumption.
       const retained=await readRecordSettled(request);
       if(retained?.status==='present')record=retained.record;
-      else if(unattempted(retained,request))record=await evaluateOrReadRetained(request);
+      else if(unattempted(retained,request)){
+        // The ledger read is awaited. A purchase cancelled meanwhile starts no
+        // evaluation: its one-use challenge would otherwise be consumed and a
+        // record signed after the purchase closed.
+        guard(job,'counterparty Vet');
+        record=await evaluateOrReadRetained(request);
+      }
       else fail('seller_vet_reconciliation_required','the buyer nonce ledger has no authoritative outcome');
       const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
       if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid') fail('seller_vet_invalid',`buyer-issued seller Vet failed strict verification: ${strict.status}:${strict.code}`);

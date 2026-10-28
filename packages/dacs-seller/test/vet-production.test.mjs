@@ -108,6 +108,16 @@ test('two provider instances that both see an unattempted nonce converge on the 
  for(const run of runs)assert.equal(run.sellerVet.record.overallDecision,'pass');
  assert.equal(runs[0].sellerVet.recordRef.contentHash,runs[1].sellerVet.recordRef.contentHash);assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);f.base.close();
 });
+test('a purchase closed during the ledger read starts no evaluation',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ let closed=false,evaluations=0;
+ const read=f.counterparty.readRecord;
+ f.counterparty.readRecord=async request=>{const out=await read(request);closed=true;return out;};
+ const evaluate=f.counterparty.evaluate;
+ f.counterparty.evaluate=async request=>{evaluations++;return evaluate(request);};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>closed?'closed':true),e=>e.code==='not-pending');
+ assert.equal(evaluations,0);assert.equal(f.seen.length,0);f.base.close();
+});
 test('a failed evaluate with no retained record stays a failure that keeps its cause',async()=>{
  const f=productionFixture(),cause=new Error('TEST evaluate failed');f.counterparty.evaluate=async()=>{throw cause;};
  await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause===cause);assert.equal(f.local.writes.length,1);f.base.close();
