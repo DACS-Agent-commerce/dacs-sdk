@@ -189,3 +189,34 @@ for(const status of ['failed','unavailable','changed'])test(`interrupted fixture
   assert.equal(w.anchors.writes.filter(value=>value===address).length,1,'recovery reuses the original payment evidence CREATE');
  }finally{w.close();}
 });
+
+for(const selector of ['', 'TEST-unknown'])test(`unknown payment selector ${JSON.stringify(selector)} has no effects`,async()=>{
+ const w=await agentFixture();try{await w.agent.commit({jobId});const before=w.anchors.writes.length;
+ await assert.rejects(w.agent.submitPayment({...payment(w),nativePaymentEvidence:selector}),{code:'native_evidence_selector_invalid'});
+ assert.equal(w.anchors.writes.length,before);assert.equal(w.agent.durableSessionOf(jobId).paymentWork,undefined);
+ }finally{w.close();}
+});
+
+test('prefixed and plain transaction hashes replay one retained fixture settlement',async()=>{
+ const w=await agentFixture();try{await w.agent.commit({jobId});const answer=await w.agent.submitPayment({...payment(w),txHash:'0x'+HASH}),before=w.anchors.writes.length;
+ await w.reopen();assert.deepEqual(await w.agent.submitPayment(payment(w)),answer);assert.equal(w.anchors.writes.length,before);
+ }finally{w.close();}
+});
+
+test('observer limits and cancellation reach the configured fixture observer',async()=>{
+ const w=await agentFixture();try{await w.agent.commit({jobId});let options;
+ w.config.observeDemosTransfer=async(hash,limits)=>{options=limits;return {status:'unavailable',reason:'TEST source unavailable'};};
+ const agent=await w.createAgent();try{assert.notEqual((await agent.submitPayment(payment(w))).status,'delivered');assert.equal(options.maxBytes,65536);assert.equal(options.timeoutMs,10000);assert.equal(options.signal.aborted,true);}finally{agent.close();}
+ }finally{w.close();}
+});
+
+test('authenticated fixture payments refuse before reserving transport work',async()=>{
+ const w=await agentFixture();try{await w.agent.commit({jobId});
+ const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs'),{exchange}=await import('./helpers/d5-http-fixture.mjs');
+ const before=w.anchors.writes.length,request={jobId};
+ const authentication={seller:w.agent.claim,listingPin:w.agent.listingPin,store:{reserve(){assert.fail('payment reached transport reservation');}},readRequest:()=>request,validate(){},responseHeader:async()=> 'TEST-header'};
+ const handler=createSellerHttpHandler(w.agent,{authentication});
+ const result=await exchange(handler,{url:'/dacs/v1/payments',text:JSON.stringify(payment(w))});
+ assert.equal(result.status,503);assert.equal(JSON.parse(result.text).error,'settlement_profile_unavailable');assert.equal(w.anchors.writes.length,before);
+ }finally{w.close();}
+});
