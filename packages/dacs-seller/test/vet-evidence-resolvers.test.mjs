@@ -339,6 +339,19 @@ test('a compatible unpinned oneOf member is qualified even when the result is bo
   assert.ok(fixture.calls.some(([name, input]) => name === 'resolveLatestRecipe' && input.scheme === 'domain' && input.method === 'consensus-backed-proxy'));
 });
 
+test('an unbound unpinned alternative the core cannot project does not refuse a satisfied pinned oneOf member', async () => {
+  // compatibleVerifiedExpectations never projects onto a member that carries
+  // its own `identifier` parameter, so this alternative can never use the v1
+  // result: the pinned DE member alone satisfies the group at its own version,
+  // and the registry head (v2) does not apply to it.
+  const pinned = { scheme: 'domain', verificationRequired: true, recipeVersion: 1, parameters: { jurisdiction: 'DE' } };
+  const identified = { scheme: 'domain', verificationRequired: true, parameters: { identifier: 'bob' } };
+  const bundleRequirement = { requirementVersion: '1', required: [], oneOf: [[pinned, identified]] };
+  const fixture = await verifiedClaimFixture({ bundleRequirement, boundRequirement: pinned, data: { active: true, jurisdiction: 'DE' } });
+  assert.equal(await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability: 'live' }) } }), null);
+  assert.equal(fixture.calls.some(([name]) => name === 'resolveLatestRecipe'), false);
+});
+
 test('a recipe steward using a canonical key: claim passes operator evidence', async () => {
   const fixture = await verifiedClaimFixture({ steward: keyWallet(41) });
   assert.equal(await fixture.replay(), null);
