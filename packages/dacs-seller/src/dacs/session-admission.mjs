@@ -238,11 +238,12 @@ const vetEvidenceTimeout = () => new DOMException('the Vet evidence deadline exp
 // The evidence reads of one replay, each bounded by readAdmissionCapability
 // and all by one deadline. The deadline also aborts the read in flight, so a
 // reader that ignores its own per-read limit cannot hold the replay past 30 s.
-// The first failure is kept so the caller sees the real cause (timeout,
-// oversize, throw), not the verifier's "unresolved".
+// The first failure is kept (even a rejection with `undefined`) so the caller
+// sees the real cause (timeout, oversize, throw), not the verifier's
+// "unresolved".
 function vetEvidenceReads(evidence, scope) {
   const controller = new AbortController();
-  let expired = false, failure, timer;
+  let expired = false, failed = false, failure, timer;
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => { expired = true; controller.abort(); reject(vetEvidenceTimeout()); }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
   });
@@ -254,9 +255,9 @@ function vetEvidenceReads(evidence, scope) {
       const reply = await Promise.race([readAdmissionCapability(evidence, method, { ...scope, ...input }, controller.signal), deadline]);
       if (expired) throw vetEvidenceTimeout();
       return decode(reply);
-    } catch (error) { failure ??= error; throw error; }
+    } catch (error) { const cause = expired ? vetEvidenceTimeout() : error; if (!failed) { failed = true; failure = cause; } throw cause; }
   };
-  return { read, failure: () => failure, close: () => { clearTimeout(timer); controller.abort(); } };
+  return { read, failure: () => (failed ? failure : undefined), hasFailure: () => failed, close: () => { clearTimeout(timer); controller.abort(); } };
 }
 
 // The content shape the core verifier takes from an operator reply: null
@@ -319,7 +320,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific) },
       { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }) });
   } catch (error) { thrown = error; } finally { reads?.close(); }
-  if (reads?.failure() !== undefined) throw reads.failure();
+  if (reads?.hasFailure()) throw reads.failure();
   if (thrown) return `the Vet record does not verify against its requirement: ${String(thrown?.message ?? thrown).slice(0, 120)}`;
   if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;
   return null;

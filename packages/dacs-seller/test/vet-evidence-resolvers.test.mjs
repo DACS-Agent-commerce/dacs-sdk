@@ -184,6 +184,15 @@ test('the total deadline aborts the read in flight instead of waiting for its pe
   assert.equal(signal.aborted, true);
 });
 
+test('an evidence reader that rejects with undefined is still an unavailable read', async () => {
+  const fixture = await verifiedClaimFixture();
+  let rejected = false, reason = 'sentinel';
+  try { await fixture.replay({ evidence: { resolveContent: async () => { throw undefined; } } }); }
+  catch (error) { rejected = true; reason = error; }
+  assert.equal(rejected, true);
+  assert.equal(reason, undefined);
+});
+
 test('vetEvidence must expose every reader', () => {
   const admission = Object.fromEntries(['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].map((name) => [name, async () => null]));
   const complete = Object.fromEntries(['resolveContent', 'resolveRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'].map((name) => [name, async () => null]));
