@@ -15,10 +15,11 @@ export const evidenceInput = (writer, extra = {}) => ({ logicalAddress: 'dacs4:p
   artifactKind: 'SettlementEvidence', jobId: 'TEST-job', receiptContentHash: 'e1'.repeat(32), ...extra });
 
 // What the agent asks a Deliverable journal about: the report, its canonical hash and its fulfilment binding.
-const DELIVERABLE_REPORT = { reportVersion: '1', kind: 'TEST/report', jobId: 'TEST-job', body: ['TEST report'] };
+const DELIVERABLE_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0A';
+const DELIVERABLE_REPORT = { reportVersion: '1', kind: 'TEST/report', jobId: DELIVERABLE_JOB, body: ['TEST report'] };
 export const deliverableInput = (writer, extra = {}) => ({ logicalAddress: 'dacs4:deliverable:TEST-job', report: DELIVERABLE_REPORT, writer,
-  jobId: 'TEST-job', receiptContentHash: sha256Hex(canonicalize(DELIVERABLE_REPORT)),
-  deliveryBinding: { version: '1', jobId: 'TEST-job', fulfilmentId: 'f1'.repeat(32), payloadHash: sha256Hex(canonicalize(DELIVERABLE_REPORT)) }, ...extra });
+  jobId: DELIVERABLE_JOB, receiptContentHash: sha256Hex(canonicalize(DELIVERABLE_REPORT)),
+  deliveryBinding: { version: '1', jobId: DELIVERABLE_JOB, fulfilmentId: 'f1'.repeat(32), payloadHash: sha256Hex(canonicalize(DELIVERABLE_REPORT)) }, ...extra });
 
 export function newWalletChainState() {
   return { accountNonce: 0, nextNonce: 1, timestamp: 1, signed: {}, applied: [], pending: [] };

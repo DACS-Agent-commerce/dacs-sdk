@@ -1,5 +1,6 @@
 // The seller wallet's Deliverable journal on its own: what the agent relies on
-// from `submit` and `reconcile` (DACS-4 PC-7(b), write-once): the exact signed
+// from `submit` and `reconcile` (the payment-evidence journal's retry rule,
+// DACS-4 PC-7(b), applied to the Deliverable; CORE §5.1): the exact signed
 // CREATE is kept before it is broadcast, sent again as the same bytes while it
 // can still land, and only an address with no live CREATE is signed anew.
 import test from 'node:test';
@@ -119,6 +120,21 @@ test('a report that is not hashed as its receiptContentHash, or no report, is re
     await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
   }
   assert.equal(w.calls.sign, 0);
+});
+
+test('a job id that is not a canonical ULID is refused before the wallet is asked', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  // CORE §B.1/JID: the 26-character uppercase Crockford-Base32 form only; an
+  // alternate spelling is not silently accepted as another idempotency key.
+  for (const jobId of ['TEST-job', '01j8n4yv7yvyq4db7m8t4c7w0a', '01J8N4YV7YVYQ4DB7M8T4C7W0', '01J8N4YV7YVYQ4DB7M8T4C7W0AA',
+    '01J8N4YV7YVYQ4DB7M8T4C7W0I', '81J8N4YV7YVYQ4DB7M8T4C7W0A', 42]) {
+    await assert.rejects(journal.submit(w.input({ jobId })), TypeError, String(jobId));
+    await assert.rejects(journal.reconcile(w.input({ jobId })), TypeError, String(jobId));
+  }
+  assert.equal(w.calls.sign, 0, 'no signature is asked for a malformed job');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
 });
 
 test('the question belongs to the capability only when both are one journal\'s: a wrapper, two journals, an evidence journal or a scripted question is refused', async (t) => {
