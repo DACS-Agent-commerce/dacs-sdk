@@ -237,6 +237,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     return fn(input);
   }).catch((error) => {
     if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
+    // The store's fence rejects a non-canonical job before the operation's own
+    // validation runs. It is the same definite no-effect refusal the operation
+    // would have raised, not an uncertain outcome.
+    if (error.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     throw error;
   }) : fn;
 
@@ -386,11 +390,19 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
           if (query.seller !== claim || canonicalize(query.listingPin) !== canonicalize(pin)) return { disposition: 'rejected', reason: 'proposal names another Listing or seller' };
           if (query.buyer !== session.buyerBundle.presentedBy || query.jobId !== jobId) return { disposition: 'rejected', reason: 'proposal names another buyer or job' };
           const generatedAt = draft?.generatedAt;
-          const observedAt = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission.observedAt : now();
+          // The admission decision belongs to the exact proposal the seller
+          // first saw: an exact retry after a crash replays the retained
+          // contribution, so it must not re-ask a callback that has since been
+          // lost or changed. An older retained admission is therefore reused
+          // as it was decided, with the observation time it was decided at.
+          const priorAdmission = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
+          const observedAt = priorAdmission?.observedAt ?? now();
+          const admitted = typeof priorAdmission?.admitted === 'boolean' ? priorAdmission.admitted
+            : admittedContextRequest({ jobId, buyerBundle: session.buyerBundle, generatedAt });
           const timeProblem = proposalTimeProblem({ generatedAt, observedAt, deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit,
-            admitted: admittedContextRequest({ jobId, buyerBundle: session.buyerBundle, generatedAt }) });
+            admitted });
           if (timeProblem) return { disposition: 'rejected', reason: timeProblem };
-          session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt };
+          if (!priorAdmission) session.proposalAdmission = { proposalHash: proposal.proposalHash, observedAt, admitted };
           if (deliveryContext) {
             const retained = session.demDeliveryContext;
             const resolved = retained ?? await resolveDemDeliverySellerContext(deliveryContext, { jobId, listing, buyerBundle: session.buyerBundle, generatedAt });
@@ -497,7 +509,13 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if(status==='absent')throw new SellerAgentError('agreement_not_anchored','the buyer has not anchored the Agreement');
     if(status==='rejected'||status==='invalid')throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor does not authenticate the buyer write',422,{cause:returnedAgreementCause??read});
     if(status!=='present')throw new SellerAgentError('substrate_unavailable','SR-2 Agreement readback is unavailable',503,{cause:returnedAgreementCause??read});
-    if(agreementAnchor)return{agreement:read.artifact,ref:read.ref,native:read.native};
+    if(agreementAnchor){
+      // The capability's present answer is caller data: hash it before any
+      // commitment effect so malformed bytes are a definite refusal, not an
+      // uncertain transport outcome after a write.
+      try{contentHash(read.artifact);}catch(cause){throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor artifact is malformed',422,{cause});}
+      return{agreement:read.artifact,ref:read.ref,native:read.native};
+    }
     let verdict;
     try{verdict=verifyFixtureRecord(read,{logicalAddress:agreementAddress,expectedWriter:buyer});}
     catch(cause){throw new SellerAgentError('agreement_anchor_invalid','Agreement anchor is malformed',422,{cause});}
@@ -531,7 +549,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   // ---- DACS-3: finalized commitment (orchestrator) ----
   // `readbackOnly` is internal (never an HTTP body field): a retained
   // commitment is authenticated again, but an absent one is never published.
-  async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement } = {}) {
+  // `adopt` is internal to transport reconciliation: a publisher readback may
+  // adopt a commitment that was anchored before its session save, still with
+  // no signing or submission.
+  async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement, adopt = false } = {}) {
     assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
@@ -546,7 +567,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     // early commitment has been seen present; after that it only reads back.
     readbackOnly ||= early ? !attempt || Boolean(session.signatureCommitmentAttempt) : Boolean(session.signatureCommitmentHeld);
     const readbackRequired = () => { throw new SellerAgentError('commitment_readback_required', 'only the retained commitment may be read back here', 503); };
-    if(readbackOnly&&!session.commitment&&!session.signatureCommitmentAttempt)readbackRequired();
+    if(readbackOnly&&!session.commitment&&!session.signatureCommitmentAttempt&&!adopt)readbackRequired();
     // Once a native commitment has been finalized, every later entry through
     // the public commit path is reconciliation. An absent fresh observation is
     // not authority to publish another CREATE for the same logical address.
@@ -647,17 +668,21 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       if (attempt && !session.signatureCommitmentHeld) { session.signatureCommitmentHeld = true; persist(session); }
       return { status: 'commitment-held', address: finalized.logicalAddress, resumed: finalized.resumed };
     }
-    // A native fresh read creates a new observation timestamp, not a new
-    // commitment or phase result. Authenticate it above, then retain the exact
-    // original SDK commitment/phase bytes when the immutable record, tx and
-    // receipt binding are unchanged.
-    if (nativeArtifactAnchor && session.commitment) {
+    // A fresh read creates a new observation timestamp, not a new commitment
+    // or phase result. Authenticate it above, then retain the exact original
+    // SDK commitment/phase bytes when the immutable record, tx and receipt
+    // binding are unchanged. This holds for the native readback and for the
+    // fixture substrate, whose receipt also carries a read observation time.
+    if (session.commitment) {
       const retained=session.commitment;
       if(contentHash(retained.record)!==contentHash(finalized.record) || retained.logicalAddress!==finalized.logicalAddress || retained.committedAt!==finalized.committedAt ||
           canonicalize(retained.anchorTxRef)!==canonicalize(finalized.anchorTxRef) || !sameNativeCommitmentReceipt(retained.anchorReceipt,finalized.anchorReceipt)) {
-        throw new SellerAgentError('commitment_changed','fresh native commitment readback differs from the retained finalized commitment',503);
+        throw new SellerAgentError('commitment_changed','fresh commitment readback differs from the retained finalized commitment',503);
       }
-      if(await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:retained.logicalAddress,artifact:retained.record,artifactKind:'FinalityCommitmentRecord',receipt:retained.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true})!=='valid')throw new SellerAgentError('commitment_changed','retained commitment proof no longer authenticates',503);
+      const verdict=nativeArtifactAnchor
+        ? await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:retained.logicalAddress,artifact:retained.record,artifactKind:'FinalityCommitmentRecord',receipt:retained.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true})
+        : commitmentReader(anchors, claim).verifyAnchorReceipt({record:retained.record,anchorReceipt:retained.anchorReceipt});
+      if(verdict!=='valid')throw new SellerAgentError('commitment_changed','retained commitment proof no longer authenticates',503);
       retainCommitmentPhase(session,retained);
       session.agreement=agreement;session.agreementRef=agreementRef;
       if(native)session.agreementAnchor=nativeAgreementView(native);
@@ -692,6 +717,47 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       canonicalize(left.blockRef)===canonicalize(right.blockRef);
   }
 
+  // ---- DACS-3: authenticated commitment transport reconciliation ----
+  // Reduces an already reserved, authenticated /commitments[/signature]
+  // command from this seller's retained state plus a fresh native readback. It
+  // never signs or publishes to complete an uncertain effect: a finalized (or
+  // early held) commitment answers what the same request would answer now.
+  // Only a native read that proves nothing was ever signed may hand the request
+  // back to its ordinary start once, under the same job lock.
+  const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
+  const provenUnsignedCommitment = async (jobId) => {
+    if (!nativeArtifactAnchor) return false;
+    try {
+      const read = await nativeArtifactAnchor.readRetained({ logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true });
+      return read?.status === 'absent' && isProvenUnsignedAbsence(read);
+    } catch { return false; }
+  };
+  async function reconcileCommitmentTransport({ request, body, readOnly = false } = {}) {
+    if (!COMMITMENT_PATHS.has(request?.path)) return undefined;
+    const held = (reason) => ({ disposition: 'indeterminate', reason: String(reason).slice(0, 240) });
+    const bound = () => {
+      try {
+        return request.method === 'POST' && isCanonicalJobId(request.jobId) && Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
+          body.jobId === request.jobId && request.seller === claim && typeof request.buyer === 'string' && canonicalize(request.listingPin) === canonicalize(pin);
+      } catch { return false; }
+    };
+    if (!bound()) return held('commitment transport context differs');
+    const session = sessions.get(request.jobId);
+    if (!session || request.buyer !== session.buyerBundle.presentedBy || request.agreementHash !== session.agreementHash) return held('no retained session for this authenticated commitment request');
+    const early = request.path === '/dacs/v1/commitments/signature';
+    if (early && !commitOnSignature) return held('early commitment is disabled');
+    const input = { jobId: request.jobId, signedProjection: body.signedProjection };
+    const options = { readbackOnly: true, adopt: !early, ...(early ? { signatureAgreement: body.agreement } : {}) };
+    let answer;
+    try { answer = await commit(input, options); }
+    catch (error) {
+      if (readOnly || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return held(error?.message ?? error);
+      try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
+      catch (retryError) { return held(retryError?.message ?? retryError); }
+    }
+    return answer?.status === 'committed' || answer?.status === 'commitment-held' ? { disposition: 'present', value: answer } : held('commitment readback did not establish a retained outcome');
+  }
+
   const api = {
     assertSettlementCredit,
     claim,
@@ -702,6 +768,18 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     commit: recoveryCall(commit),
     // Reauthenticates cached transport answers without authorizing a new CREATE.
     readCommitment: recoveryCall(({jobId,signedProjection,signatureAgreement}) => commit({jobId,signedProjection}, {readbackOnly:true,signatureAgreement})),
+    // Read-only reduction of an uncertain commitment HTTP reservation. Other
+    // routes keep their own (or no) reconciliation.
+    reconcileTransport: durable ? async (input) => {
+      const jobId = input?.request?.jobId;
+      if (!COMMITMENT_PATHS.has(input?.request?.path) || !isCanonicalJobId(jobId)) return undefined;
+      try {
+        return await durable.withJob(jobId, async (session) => { sessions.delete(jobId); restore(session); return reconcileCommitmentTransport(input); });
+      } catch (error) {
+        if (error?.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
+        throw error;
+      }
+    } : reconcileCommitmentTransport,
     commitOnSignature: recoveryCall((input) => {
       if (!input || canonicalize(Object.keys(input).sort()) !== canonicalize(['agreement', 'jobId', 'signedProjection']) || !input.agreement || typeof input.agreement !== 'object') throw new SellerAgentError('signature_agreement_invalid', 'expected exactly jobId, Agreement and signedProjection');
       return commit({ jobId: input.jobId, signedProjection: input.signedProjection }, { signatureAgreement: input.agreement });
