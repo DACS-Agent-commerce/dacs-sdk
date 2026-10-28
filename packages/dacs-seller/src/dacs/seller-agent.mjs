@@ -2,7 +2,7 @@ import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
-import { contentHash, isListing, canonicalize, createInMemoryFencedSessionStore, fixedPriceAgreementLogicalAddress, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex } from '@kynesyslabs/dacs';
+import { contentHash, isListing, canonicalize, createInMemoryFencedSessionStore, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
@@ -194,22 +194,6 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     return copy;
   };
   const persist = (session) => durable?.saveSession(session);
-  function recordPhase(session, index, invokedAt, result) {
-    const contextDelta = structuredClone(result.contextDelta ?? {});
-    const entry = { index, step: structuredClone(listing.pipeline[index]), invokedAt, result: { ...structuredClone(result), contextDelta }, contextDelta };
-    session.phaseResults ??= [];
-    const existing = session.phaseResults[index];
-    if (existing) {
-      if (canonicalize(existing) !== canonicalize(entry)) throw new SellerAgentError('seller_phase_conflict', `retained phase ${index} differs from the completed operation`, 503);
-      return existing;
-    }
-    if (session.phaseResults.length !== index || !Number.isSafeInteger(invokedAt) || invokedAt < 0) throw new SellerAgentError('seller_phase_order', `phase ${index} cannot be recorded out of order`, 503);
-    session.startedAt ??= invokedAt;
-    session.phaseResults.push(entry);
-    session.lastUpdatedAt = Math.max(session.lastUpdatedAt ?? session.startedAt, invokedAt);
-    persist(session);
-    return entry;
-  }
   function restore(session) {
     if (!session) return;
     authenticateBuyerBundle(session.buyerBundle);
@@ -457,9 +441,6 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     session.proposal = structuredClone(proposal);
     session.transportIdentity = structuredClone(transportIdentity);
     session.agreementHash = transportIdentity.agreementHash;
-    const agreementRef = { anchor: { kind: 'storage-program', locator: fixedPriceAgreementLogicalAddress(jobId) }, contentHash: session.agreementHash };
-    recordPhase(session, 0, session.proposalAdmission.observedAt, { ok: true,
-      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } });
     persist(session);
     return { disposition: 'complete', contribution: progress.result.sellerContribution };
   }
