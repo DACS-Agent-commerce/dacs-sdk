@@ -32,6 +32,9 @@ describe("inert bounded npm HTTP admission", () => {
     const encoding = compress === gzipSync ? "gzip" : compress === deflateSync ? "deflate" : "br";
     await expect(readBoundedResponse(response([compress(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
   });
+  it.each(["constructor", "__proto__"])("refuses unsupported content encoding %s instead of admitting it", async encoding => {
+    await expect(readBoundedResponse(response([Buffer.from("{}")], { "content-encoding": encoding }), 1024)).rejects.toThrow("unsupported npm HTTP content encoding");
+  });
   it("bounds gzip archive expansion before npm's tar decoder receives it", async () => {
     const archive = gzipSync(Buffer.alloc(8));
     expect(await readBoundedResponse(response([archive]), 1024)).toEqual(archive);

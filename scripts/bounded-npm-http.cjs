@@ -58,7 +58,8 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   }
   let bytes = Buffer.concat(chunks, length);
   const encoding = response.headers["content-encoding"]?.toLowerCase();
-  const decode = { gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync }[encoding];
+  const decoders = { gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync };
+  const decode = Object.hasOwn(decoders, encoding) ? decoders[encoding] : undefined;
   if (encoding && encoding !== "identity" && !decode) throw new Error("unsupported npm HTTP content encoding");
   if (decode) bytes = decodeBounded(bytes, decode, maximum);
   if (bytes.length > maximum) throw limitError();
