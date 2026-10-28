@@ -35,6 +35,23 @@ describe("inert bounded npm HTTP admission", () => {
   it.each(["constructor", "__proto__"])("refuses unsupported content encoding %s instead of admitting it", async encoding => {
     await expect(readBoundedResponse(response([Buffer.from("{}")], { "content-encoding": encoding }), 1024)).rejects.toThrow("unsupported npm HTTP content encoding");
   });
+  it.each([
+    ["a HEAD request", 200, "HEAD"],
+    ["a 204 response", 204, "GET"],
+    ["a 205 response", 205, "GET"],
+    ["a 304 response", 304, "GET"],
+  ] as const)("forwards %s without decoding its empty body or rewriting its headers", async (_label, statusCode, method) => {
+    const pending = Object.assign(new EventEmitter(), { path: "/pkg", method, destroy: () => {} });
+    const transport = { request: () => pending };
+    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+    const original = Object.assign(response([], { "content-encoding": "gzip", "content-length": "123" }), { statusCode });
+    const admitted = new Promise<unknown>((resolve, reject) => {
+      pending.once("error", reject); pending.once("response", resolve);
+    });
+    transport.request().emit("response", original);
+    expect(await admitted).toBe(original);
+    expect(original.headers).toEqual({ "content-encoding": "gzip", "content-length": "123" });
+  });
   it("bounds gzip archive expansion before npm's tar decoder receives it", async () => {
     const archive = gzipSync(Buffer.alloc(8));
     expect(await readBoundedResponse(response([archive]), 1024)).toEqual(archive);
