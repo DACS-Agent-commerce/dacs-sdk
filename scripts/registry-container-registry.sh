@@ -96,7 +96,7 @@ start_registry() {
   registry_started=1
   docker run --detach \
     --name "$registry_container" \
-    --network "$registry_network" \
+    --network "$registry_network" --network-alias host.docker.internal \
     --publish 127.0.0.1::4873 \
     --volume "$registry_config:/verdaccio/conf/config.yaml:ro" \
     "$registry_image" \
@@ -108,7 +108,9 @@ start_registry() {
     ''|*[!0-9]*) echo "Verdaccio host port is invalid" >&2; exit 1 ;;
   esac
   host_registry="http://127.0.0.1:$host_port"
-  consumer_registry="http://$registry_container:4873"
+  # Resolve the policy-approved alias to Verdaccio inside this run's bridge,
+  # including the dedicated builder, rather than to the machine's gateway.
+  consumer_registry="http://host.docker.internal:4873"
   consumer_network_args=(--network "$registry_network")
   # Host mode shares the dedicated builder container's bridge namespace,
   # retaining Docker DNS for the run-local registry during RUN instructions.
