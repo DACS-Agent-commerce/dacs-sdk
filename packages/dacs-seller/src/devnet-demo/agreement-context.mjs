@@ -254,6 +254,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   }
   async function sellerSession(job) {
     const retained=await state.read(job.jobId);
+    // A retained buyer-issued record is replayed without the buyer's ledger. An
+    // unfinished job still needs its verifier first: resuming a retained
+    // presentation must not sign it, or anchor the buyer CVR, before the
+    // missing capability is discovered.
+    if(!retained?.counterpartyRecord&&!counterpartyReady())
+      fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
     let kept=retained?.presentation;
     let expired=null;
     // A retained buyer-issued record already proves what happened; a finished

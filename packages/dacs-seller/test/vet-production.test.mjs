@@ -216,6 +216,30 @@ test('a resumed signed presentation without a buyer verifier is refused before a
  await assert.rejects(provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_required'&&e.cause===undefined);
  f.base.close();
 });
+test('a resumed unsigned presentation without a buyer verifier makes no signature or write',async()=>{
+ const f=productionFixture(),sign=f.config.wallet.signBytes;let interrupt=true;
+ f.config.wallet.signBytes=bytes=>{if(interrupt){interrupt=false;throw new Error('TEST interrupted signer');}return sign(bytes);};
+ await assert.rejects(f.run(),/TEST interrupted signer/);
+ // The interrupted attempt kept an unsigned presentation (and its binding)
+ // before the signer. A resume must not sign it, or anchor the buyer CVR,
+ // before it discovers that the buyer verifier is missing.
+ f.config.counterparty=null;
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_required'&&e.cause===undefined);
+ assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);
+ f.base.close();
+});
+test('a finished job replays its retained seller Vet without a buyer verifier',async()=>{
+ // A retained buyer-issued record proves what happened: a repeat does not need
+ // the buyer's ledger, so an absent capability must not block it.
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ const signs=f.controls.signs;
+ f.config.counterparty=null;
+ const repeat=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ assert.equal(repeat.sellerVet.record.overallDecision,'pass');
+ assert.equal(f.controls.signs,signs);
+ f.base.close();
+});
 test('context authentication binds the supplied references to the canonical anchor',async()=>{
  const f=productionFixture(),p=await f.provider(),input=f.input();
  const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
