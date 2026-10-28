@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 const packageUrl = new URL('../', import.meta.url);
 const readme = readFileSync(new URL('README.md', packageUrl), 'utf8');
 const rootPackage = JSON.parse(readFileSync(new URL('../../package.json', packageUrl), 'utf8'));
+const profile = JSON.parse(readFileSync(new URL('PROFILE.json', packageUrl), 'utf8'));
 
 test('the fixture-only claim names the packaged readers and excludes operator-supplied callbacks', () => {
   // The host and createSellerAgent check agreementAnchor and artifactAnchor only
@@ -37,4 +38,15 @@ test('the runtime requirement matches the repository engines and the sqlite modu
   assert.ok(readme.includes(rootPackage.engines.node), `the README states the engines range ${rootPackage.engines.node}`);
   assert.doesNotMatch(readme, /node:sqlite/);
   assert.match(readme, /better-sqlite3/);
+});
+
+test('the sessionAdmission option states the exact PROFILE.json revision and tuple', () => {
+  // session-admission.mjs compares each participant's standardRevision and
+  // documentVersions with SELLER_PROFILE, which PROFILE.json pins.
+  const block = readme.slice(readme.indexOf('sessionAdmission,'));
+  assert.match(block, /PROFILE\.json/);
+  assert.ok(block.includes(profile.standardRevision), 'the README states the pinned standardRevision');
+  for (const [document, version] of Object.entries(profile.documentVersions)) {
+    assert.match(block, new RegExp(`${document.replace('-', '-')} ${version.replace('.', '\\.')}`), `the README states ${document} ${version}`);
+  }
 });
