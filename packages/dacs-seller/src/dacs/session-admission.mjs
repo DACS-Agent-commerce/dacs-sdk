@@ -232,8 +232,19 @@ const VET_EVIDENCE_REPLAY_TIMEOUT_MS = 30_000;
 // Without `vetEvidence` nothing resolves, so a requirement whose decision needs
 // a result body is unresolved and refused.
 const NO_EVIDENCE_DEPS = Object.freeze({ resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
-  verifyAuthorityAttestation: () => 'unresolved' });
+  verifyAuthorityAttestation: () => 'unresolved', verifyRequirementParameters: (input) => requirementParametersMatch(input) });
 const vetEvidenceTimeout = () => new DOMException('the Vet evidence deadline expired', 'TimeoutError');
+
+// DACS-2 §7.5.2: a ClaimRequirement's exact parameters are re-derived from the
+// authenticated result. `verificationMethod` is the result's method; every
+// other parameter must occur, canonically equal, in the result's `data`.
+function requirementParametersMatch({ result, expected }) {
+  for (const [key, expectedValue] of Object.entries(expected.requirement.parameters ?? {})) {
+    if (key === 'verificationMethod') { if (result.method !== expectedValue) return false; }
+    else if (!object(result.data) || !Object.prototype.hasOwnProperty.call(result.data, key) || !same(result.data[key], expectedValue)) return false;
+  }
+  return true;
+}
 
 // The evidence reads of one replay, each bounded by readAdmissionCapability
 // and all by one deadline. The deadline also aborts the read in flight, so a
@@ -292,6 +303,7 @@ const vetEvidenceDeps = (read) => ({
     const verdict = await read('verifyAuthorityAttestation', input);
     return verdict === 'valid' || verdict === 'unresolved' ? verdict : 'invalid';
   },
+  verifyRequirementParameters: (input) => requirementParametersMatch(input),
 });
 
 // The core verifier's expectation for each invocation result: the retained
