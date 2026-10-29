@@ -707,6 +707,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 774830956c755f0d28393d11443c3036efb54187 |
 | | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` | a3c2c1f30dde168de241dd1d8845b67f18b7b3bd |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 72479ddb615e6ad1f1002f588eabbb9e0dab4d1a |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -1720,6 +1723,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/host-observations.test.mjs:1` |
 | fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` |
 | fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
