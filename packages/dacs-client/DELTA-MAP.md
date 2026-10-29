@@ -929,6 +929,10 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | D11 | fix(client): D11 guard iterator-owned steps on supported runtimes | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 70e4369be0d0a9546ea5a0a96367cfb750fdf47b |
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | 3a05a6cfc5529d0b44a6b9b3653f947d05083391 |
+| D11 | fix(client): D11 preserve statement policy on integer-reading connections | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 2df38c12b041aa1572302580dc7e11a5b44104df |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | e6154a6bdf929af005b39ef394befa2800b43431 |
+| | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` | 8bdb94975979ee6da61abb7dae0f0b1266327da3 |
 
 ## Complete commit and file inventory
 
@@ -2507,6 +2511,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
 | fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` |
 
 ## Original moved files
 
