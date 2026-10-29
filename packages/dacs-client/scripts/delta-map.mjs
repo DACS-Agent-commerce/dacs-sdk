@@ -124,7 +124,7 @@ export function checkDeltas(packageDir=pkg) {
     const actual=existsSync(local)?blob(readFileSync(local)):null;
     if(actual!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
   }
-  if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(data)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
+  if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(active)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
   return {failures,allowed};
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)) {
