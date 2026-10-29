@@ -26,8 +26,8 @@ const { withSqliteStatementGuard } = await import('../src/util/sqlite-statement-
 withSqliteStatementGuard(probe, () => {}, () => {});
 probe.close();
 
-function world(t) {
-  const db = new DatabaseSync(':memory:');
+function world(t, readBigInts = false) {
+  const db = new DatabaseSync(':memory:', { readBigInts });
   db.exec('CREATE TABLE records(id TEXT PRIMARY KEY)');
   t.after(() => db.close());
   return db;
@@ -52,17 +52,19 @@ test('a guarded iterator with its own next checks liveness on every step', t => 
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
 });
 
-test('a guarded iterator with its own next opens the writable fence for its steps', t => {
-  const db = world(t), statement = db.prepare('INSERT INTO records VALUES (?) RETURNING id');
-  db.exec('BEGIN IMMEDIATE');
-  withSqliteStatementGuard(db, () => {}, () => {
-    const iterator = statement.iterate('TEST-row');
-    assert.equal(iterator.next().value.id, 'TEST-row');
-    iterator.return();
+for (const readBigInts of [false, true]) {
+  test(`a guarded iterator with its own next opens the writable fence with readBigInts=${readBigInts}`, t => {
+    const db = world(t, readBigInts), statement = db.prepare('INSERT INTO records VALUES (?) RETURNING id');
+    db.exec('BEGIN IMMEDIATE');
+    withSqliteStatementGuard(db, () => {}, () => {
+      const iterator = statement.iterate('TEST-row');
+      assert.equal(iterator.next().value.id, 'TEST-row');
+      iterator.return();
+    });
+    db.exec('COMMIT');
+    assert.equal(Number(db.prepare('SELECT count(*) n FROM records').get().n), 1);
   });
-  db.exec('COMMIT');
-  assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
-});
+}
 
 test('a read iterator with its own next checks changed liveness between rows', t => {
   const db = world(t), statement = db.prepare('SELECT 1 AS one UNION ALL SELECT 2');
