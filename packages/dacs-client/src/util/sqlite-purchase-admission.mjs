@@ -49,7 +49,7 @@ export function checkSqlitePurchaseDatabase(db) {
       throw new OperationError('purchase_store_unsupported_synchronous', 'persistent purchase transactions require synchronous FULL or EXTRA for WAL, and EXTRA for rollback journals');
     }
   }
-  if (!TEMP_JOURNAL_MODES.has(db.prepare('PRAGMA temp.journal_mode').get()?.journal_mode)) {
+  if (databases.some(({ name }) => name === 'temp') && !TEMP_JOURNAL_MODES.has(metadataStatement(db, 'PRAGMA temp.journal_mode').get()?.journal_mode)) {
     throw new OperationError('purchase_store_unsupported_temp_journal_mode', 'purchase transactions require a TEMP journal mode that can roll back');
   }
 }

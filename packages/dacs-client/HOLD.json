@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "eb1bcf54170bd58482ab4821134b37255e4acaf9"
+        "blob": "946929613b5613d90b0d466efa6f2a6b86fabed5"
       },
       "DELTA-LEDGER.json": {
-        "blob": "369893603cda4216ef9a57aca4e42a820566bf32"
+        "blob": "3b05b6c5383dcbdfce0b8c880964e30663b0ecae"
       },
       "DELTA-MAP.md": {
-        "blob": "24ce1835d221a21178e99dac135d96f89edcc11e"
+        "blob": "5d864e7cd86e38bcbd165c554b912935b489f27e"
       },
       "DELTA-NOTES.md": {
         "blob": "c3fe5e2ebb6cd9a3bae757facf66046d747f31bf"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e53cf8e5eac3d4bcd2ade0198b7d003fd6cf036a"
+        "blob": "a1d02922a26985ad0c614e81950d94c2d1776eb1"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1271,7 +1271,7 @@
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
       },
       "src/util/sqlite-purchase-admission.mjs": {
-        "blob": "7793b41c617ac2e9603c32553689b4f1fb62787f"
+        "blob": "6d91edffe9bb3cabf090c064fed91c1d92f34ad4"
       },
       "src/util/sqlite-statement-boundary.mjs": {
         "blob": "24eca32b5d2d40ba05d1864f14cd0d0b209755c4"
@@ -1694,7 +1694,7 @@
         "blob": "940e94f63ffc2a65f42ea03bf262fb42fc200525"
       },
       "test/purchase-tx-admission.test.mjs": {
-        "blob": "bd3935f98efac1f1eb1fefae04760e7f1e5a80a8"
+        "blob": "69b53df409d1cc27fc4086ee7becdf92737867bb"
       },
       "test/purchase-tx-boundary.test.mjs": {
         "blob": "4ca7e68bae461c30923327c7f149d59a7cd94858"
@@ -1719,6 +1719,9 @@
       },
       "test/sqlite-purchase-result-options.test.mjs": {
         "blob": "92367b51064c4a9e1dabbdbdba6476ae58392906"
+      },
+      "test/sqlite-purchase-temp-admission.test.mjs": {
+        "blob": "dd6bd486f4e2e594df046ac053c44b9d1eed0bee"
       },
       "test/sqlite-statement-boundary-regressions.test.mjs": {
         "blob": "8bbbb0d64a1faca5dba3f8ff1a6d570e5dd64228"
