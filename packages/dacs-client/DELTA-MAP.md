@@ -830,6 +830,11 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/purchase-tx-nesting.test.mjs:1` | 124ddbf578822f8bfe3298e01e83626f40de071d |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 7366ab01bbe3be7bc444fc6fb57eae000093c42b |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2 |
+| D11 | fix(client): D11 record the merged part 11 package snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 24eca32b5d2d40ba05d1864f14cd0d0b209755c4 |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | cc652d18792a64c8ab106e4a16eef68eebe6ed11 |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | e6154a6bdf929af005b39ef394befa2800b43431 |
+| | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 7366ab01bbe3be7bc444fc6fb57eae000093c42b |
 
 ## Complete commit and file inventory
 
@@ -3023,6 +3028,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | f9e3c59513752322f5da668b0d542f8084d79bdf | `packages/dacs-client/DELTA-MAP.md:1` |
 | f9e3c59513752322f5da668b0d542f8084d79bdf | `packages/dacs-client/HOLD.json:1` |
 | f9e3c59513752322f5da668b0d542f8084d79bdf | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the merged part 11 package snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged part 11 package snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged part 11 package snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged part 11 package snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged part 11 package snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

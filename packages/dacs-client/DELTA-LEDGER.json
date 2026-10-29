@@ -5319,6 +5319,32 @@
         }
       ],
       "sha": "41ac5c60f5a9716ae009e23fbcde24260c6ce2e7"
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the merged part 11 package snapshot",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/sqlite-statement-boundary.mjs",
+          "before": "24eca32b5d2d40ba05d1864f14cd0d0b209755c4",
+          "after": "24eca32b5d2d40ba05d1864f14cd0d0b209755c4"
+        },
+        {
+          "path": "packages/dacs-client/src/util/sqlite-write-lease.mjs",
+          "before": "cc652d18792a64c8ab106e4a16eef68eebe6ed11",
+          "after": "cc652d18792a64c8ab106e4a16eef68eebe6ed11"
+        },
+        {
+          "path": "packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs",
+          "before": "e6154a6bdf929af005b39ef394befa2800b43431",
+          "after": "e6154a6bdf929af005b39ef394befa2800b43431"
+        },
+        {
+          "path": "packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs",
+          "before": "7366ab01bbe3be7bc444fc6fb57eae000093c42b",
+          "after": "7366ab01bbe3be7bc444fc6fb57eae000093c42b"
+        }
+      ]
     }
   ]
 }
