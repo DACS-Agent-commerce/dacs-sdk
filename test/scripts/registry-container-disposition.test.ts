@@ -1457,7 +1457,7 @@ describe("dependency policy over npm ci installations", () => {
     expect(loaded.status, loaded.stderr).toBe(0);
     expect(loaded.stdout).toBe("unreleased-copy\n");
     expect(policy.status, policy.stderr).not.toBe(0);
-    expect(policy.stderr).toContain("executable link target is not a reference file: node_modules/plugin/node_modules/.bin/node_modules");
+    expect(policy.stderr).toContain("link target is not a reference file or package directory: node_modules/plugin/node_modules/.bin/node_modules");
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
