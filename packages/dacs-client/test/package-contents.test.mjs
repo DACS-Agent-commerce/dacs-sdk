@@ -48,7 +48,7 @@ test('npm pack ships only the two entry points and their reviewed import closure
   assert.deepEqual(files, [...entryPointClosure(), 'package.json', 'README.md', 'LICENSE'].sort());
 });
 
-test('paired packed artifacts supply the schema needed by every buyer factory', t => {
+test('paired packed artifacts supply the schema needed by every buyer factory', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-consumer-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const run = (command, args, cwd) => {
@@ -91,6 +91,15 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
   }
   writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
   run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+  await t.test('installed root resolves the complete diagnostic factory graph', () => {
+    run(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      const client = await import('@kynesyslabs/dacs-client');
+      for (const name of ['createPurchaseService', 'createProtocolPurchases']) {
+        assert.equal(typeof client[name], 'function', name);
+      }
+    `], app);
+  });
   // This consumer has no source-tree imports or test database helper.
   writeFileSync(join(app, 'consumer.mjs'), `
     import assert from 'node:assert/strict';
@@ -154,7 +163,7 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       const result = await service.verifyDeal({ accountId: 'buyer', operationId: 'first', token: 'TEST-token', txHash: hash });
       assert.equal(result.verification.outcome, 'readback_only');
       assert.equal(result.verification.authority, 'unqualified_host');
-      assert.equal(result.verification.observation.status, 'included');
+      assert.equal(result.verification.observation.status, 'included', JSON.stringify(result.verification.observation));
       assert.equal(result.verification.termsMatch, true);
       assert.deepEqual(coordinates.get('first'), snapshot);
       assert.equal(db.prepare('SELECT status FROM operations WHERE id=?').get('first').status, 'broadcast_reported');
