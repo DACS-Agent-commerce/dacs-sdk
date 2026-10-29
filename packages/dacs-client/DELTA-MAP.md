@@ -213,6 +213,8 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 
 Persistent admission also reads main.synchronous on every attempt: WAL requires FULL or EXTRA, and rollback journals require EXTRA for power-loss durability. Weaker settings are refused before transactions or callbacks, without changing the connection configuration or host work. Volatile main databases have no persistent synchronization requirement.
 
+Purchase admission normalizes its internal PRAGMA statements to object rows and numeric metadata. Native connections may retain array-row and BigInt defaults for all caller statements; admission and refusal preserve those defaults and host work.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -866,6 +868,11 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 2df38c12b041aa1572302580dc7e11a5b44104df |
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | e6154a6bdf929af005b39ef394befa2800b43431 |
 | | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` | 8bdb94975979ee6da61abb7dae0f0b1266327da3 |
+| D11 | fix(client): D11 normalize purchase admission metadata | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 5a40a2391abf1ebec9fce21ec4b0d22469c45be8 |
+| | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` | 92367b51064c4a9e1dabbdbdba6476ae58392906 |
+| D11 | fix(client): D11 record 03c admission merge integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 7793b41c617ac2e9603c32553689b4f1fb62787f |
 
 ## Complete commit and file inventory
 
@@ -2294,6 +2301,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
 | fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 | fix(client): D11 preserve statement policy on integer-reading connections | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
