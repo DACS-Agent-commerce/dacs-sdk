@@ -25,13 +25,13 @@ function exchange(handler,{text='{}',header,url=SELLER_CONTEXT_PATH,headers={},m
 }
 // A present context answer; as recover it reads back and verifies both Vet records.
 const presentContext=async body=>({disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}});
-async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},maxNoncesPerBuyerPerWindow=120,releaseFails=false,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
+async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},maxNoncesPerBuyerPerWindow=120,releaseFails=false,releaseWrites=null,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
  const seller=key(),buyer=key(),other=key(),listing=fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
  const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,maxNoncesPerBuyerPerWindow,now:()=>time});t.after(()=>store.close());
  const auth=createSellerTransportServerAuth({sellerSigner:seller,listingPin:pin,store,now:()=>time});let holds=0,writes=0,logs=0,releases=0;
  const route=createSellerContextRoute({listing,resolveBuyer:async (body,options)=>{writes++;return perform(body,options)},assertBuyerAccess,now:()=>time,limits,recover,resumable,writable,
-  admitWrites:async input=>{holds++;return admitWrites?admitWrites(input):null},releaseWrites:async()=>{releases++;if(releaseFails)throw new Error('release fixture failure')}});
+  admitWrites:async input=>{holds++;return admitWrites?admitWrites(input):null},releaseWrites:async input=>{releases++;if(releaseFails)throw new Error('release fixture failure');return releaseWrites?.(input)}});
  const agent={claim:seller.claim,listingPin:pin,agreementState:()=>({proposal:null,contribution:null})};
  const handler=createSellerHttpHandler(agent,{authentication:auth,context:route,...http});
  const bundles=new Map();
