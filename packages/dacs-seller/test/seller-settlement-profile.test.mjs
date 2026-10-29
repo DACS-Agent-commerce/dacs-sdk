@@ -67,7 +67,7 @@ async function world(t, { listingChanges = () => {} } = {}) {
   const issuer = await seller.createSellerAgent({ ...capabilities, durableDirectory: issuerDirectory,
     now: () => Math.max(now, listing.validity.notBefore) });
   let challenge;
-  try { challenge = issuer.issueSessionChallenge({ jobId, buyer: buyerKey.claim }); }
+  try { challenge = await issuer.issueSessionChallenge({ jobId, buyer: buyerKey.claim }); }
   finally { issuer.close(); }
   challengeSnapshot = join(issuerDirectory, 'seller-state.sqlite');
   const buyerBundle = presentWith(buyerKey, now, challenge.sessionNonce);
@@ -158,16 +158,16 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
 test('the seller issues a fresh 256-bit challenge bound to one job and buyer; a nonce is issued once', async (t) => {
   const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
-  const issued = agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }), again = agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim });
+  const issued = await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }), again = await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim });
   assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
   assert.notEqual(issued.sessionNonce, again.sessionNonce, 'every challenge is fresh');
   assert.deepEqual({ ...issued, sessionNonce: null }, { jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: null, issuedAt: w.now, expiresAt: w.now + SESSION_CHALLENGE_LIFETIME_MS });
-  const failed = (input) => { try { agent.issueSessionChallenge(input); return null; } catch (error) { return error.code; } };
-  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: issued.sessionNonce }), 'challenge_invalid', 'callers cannot reissue a nonce');
-  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'AB'.repeat(32) }), 'challenge_invalid');
-  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'ab'.repeat(15) }), 'challenge_invalid', 'fewer than 128 bits');
-  assert.equal(failed({ jobId: 'not-a-job', buyer: w.buyerKey.claim }), 'job_invalid');
-  assert.equal(failed({ jobId: w.jobId, buyer: w.sellerKey.claim }), 'buyer_invalid', 'the seller is no buyer');
+  const failed = async (input) => { try { await agent.issueSessionChallenge(input); return null; } catch (error) { return error.code; } };
+  assert.equal(await failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: issued.sessionNonce }), 'challenge_invalid', 'callers cannot reissue a nonce');
+  assert.equal(await failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'AB'.repeat(32) }), 'challenge_invalid');
+  assert.equal(await failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'ab'.repeat(15) }), 'challenge_invalid', 'fewer than 128 bits');
+  assert.equal(await failed({ jobId: 'not-a-job', buyer: w.buyerKey.claim }), 'job_invalid');
+  assert.equal(await failed({ jobId: w.jobId, buyer: w.sellerKey.claim }), 'buyer_invalid', 'the seller is no buyer');
 });
 
 test('rail key history authenticates only in-flight pins, including legacy pins, and never trusts a saved key or altered definition', () => {
