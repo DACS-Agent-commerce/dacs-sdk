@@ -111,10 +111,15 @@ export function checkDeltas(packageDir=pkg) {
     }
   }
   const inventory=[...(data.supersededCommits??[]),...JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'))];
-  const reachable=new Set(history.map(h=>h.sha));
+  // Each row selects at most one reachable commit, and no commit is selected by
+  // two rows; a hashed row must name a reachable commit with its exact subject.
+  const reachable=new Map(history.map(h=>[h.sha,h.subject])), selected=new Map();
   for(const c of inventory) {
     if(c.sha!=null&&!reachable.has(c.sha)) failures.push(`commit inventory names an unreachable commit ${c.sha}`);
-    if(c.sha==null&&history.filter(h=>h.subject===c.subject).length>1) failures.push(`commit inventory selector must resolve once: ${c.subject}`);
+    else if(c.sha!=null&&reachable.get(c.sha)!==c.subject) failures.push(`commit inventory subject differs from commit ${c.sha}: ${c.subject}`);
+    const hits=c.sha==null?history.filter(h=>h.subject===c.subject):history.filter(h=>h.sha===c.sha&&h.subject===c.subject);
+    if(c.sha==null&&hits.length>1) failures.push(`commit inventory selector must resolve once: ${c.subject}`);
+    if(hits.length===1) { if(selected.has(hits[0].sha)) failures.push(`commit inventory selects ${hits[0].sha} more than once`); selected.set(hits[0].sha,c); }
   }
   for(const h of history) {
     const item=recordFor(inventory,h);
