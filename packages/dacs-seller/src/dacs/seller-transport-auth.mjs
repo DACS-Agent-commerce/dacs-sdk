@@ -552,6 +552,27 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       const row = get('SELECT owner, state FROM peer_effects WHERE effect = ?', reservation?.effectKey);
       if (!row || row.owner !== reservation.owner || row.state !== 'pending') fail('peer_store_conflict', 503);
     },
+    // Called inside the seller job fence, before any restore or work, by the
+    // one recovery of an uncertain seller command (not the context step). The
+    // effect must still be this exact command's, bound to its job, unfinished
+    // and held by the owner the reservation saw. A new owner takes it, so an
+    // earlier reservation of the same effect, and the original worker, can
+    // no longer start work or settle it. Running a proposal again after its
+    // context session ended is refused, as a fresh reservation would be.
+    claim(reservation, request, { live = true } = {}) {
+      requireJobId(request?.jobId);
+      return transaction(() => {
+        const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation?.effectKey);
+        if (request.path === CONTEXT || reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
+            !current || current.owner !== reservation.owner || !['pending', 'uncertain'].includes(current.state) ||
+            get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey)?.job !== request.jobId ||
+            get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request))) fail('peer_reconciliation_conflict', 503);
+        if (live && request.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
+        const owner = randomBytes(24).toString('hex');
+        run('UPDATE peer_effects SET owner = ?, state = ? WHERE effect = ?', owner, 'uncertain', reservation.effectKey);
+        return Object.freeze({ disposition: 'uncertain', effectKey: reservation.effectKey, owner });
+      });
+    },
     // noEffect: a definite answer that started nothing (its rows go). retry:
     // an answer the agent marks as not final yet (a 200 answer, or a refusal
     // of a claim whose work the agent retains); its effect stays bound to its
@@ -577,22 +598,22 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // The host may resolve only the SAME retained operation, after its seller
     // reducer has authenticated durable context and fresh native readback. No
     // reservation, slot or transaction is released; no expired intent retries.
-    // A pending retry/release requires settlement inside the seller job fence.
-    // Original workers check their owner inside that fence before doing work.
+    // A pending effect may be performed by a live run: only readback of a
+    // finished effect (200) can complete it; retry and noEffect need `uncertain`.
     // retry (payments and proposals): the agent resumed its durable operation;
     // the effect goes back to `retry`, so the next claim runs it again.
-    // noEffect (payments and proven unsigned proposals): the claim ended before
-    // the work checkpoint with a definite answer that kept nothing; its effect,
-    // slot and transaction go.
-    reconcile(reservation, request, status, text, { retry = false, noEffect = false, pendingFenced = false } = {}) {
+    // noEffect (payments and proven unsigned proposals): the command ended
+    // with a definite answer that kept nothing; its effect, slot and
+    // transaction go. Like finish, it keeps the refusal's own status.
+    reconcile(reservation, request, status, text, { retry = false, noEffect = false } = {}) {
       requireJobId(request?.jobId);
-      if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
+      if (!uint(status) || status < 200 || status > 599 || (status !== 200 && !retry && !noEffect) || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
       if ((noEffect && request.path !== PAYMENT && request.path !== PROPOSAL) || (retry && request.path !== PAYMENT && request.path !== '/dacs/v1/agreements/proposals')) fail('peer_reconciliation_invalid', 503);
       if (retry && noEffect) fail('peer_reconciliation_invalid', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
-            !current || current.owner !== reservation.owner || !(current.state === 'uncertain' || (current.state === 'pending' && (pendingFenced || (!retry && !noEffect)))) ||
+            !current || current.owner !== reservation.owner || !(current.state === 'uncertain' || (current.state === 'pending' && !retry && !noEffect)) ||
             // The context step is bound by its admission record, the other steps by the job's Agreement row.
             (request.path === CONTEXT ? !admissions() || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
               : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
@@ -656,6 +677,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     ...(typeof store.contextAnswer === 'function' ? { contextAnswer: (jobId) => store.contextAnswer(jobId) } : {}),
     finish: (...args) => store.finish(...args),
     ...(typeof store.assertPending === 'function' ? { assertPending: reservation => store.assertPending(reservation) } : {}),
+    // An expired delegation may still take an effect to read it back, never to run it again.
+    ...(typeof store.claim === 'function' ? { claim: (reservation, request, options = {}) => store.claim(reservation, request, isReadbackOnly(request) ? { ...options, live: false } : options) } : {}),
     // Handing an effect back to the retry, or releasing it, lets a later claim run it: never for an expired delegation.
     ...(typeof store.reconcile === 'function' ? { reconcile: (reservation, request, status, text, options = {}) => isReadbackOnly(request) && (options.retry || options.noEffect)
       ? refuseExpired(request) : store.reconcile(reservation, request, status, text, options) } : {}),
