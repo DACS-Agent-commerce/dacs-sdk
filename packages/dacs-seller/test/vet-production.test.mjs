@@ -205,6 +205,29 @@ test('a losing evaluate race waits for the winner to retain its record',async()=
   assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);
  }finally{buyer.signBytes=buyerSign;f.base.close();}
 });
+test('a losing evaluate race waits through the whole permitted evaluation interval',async()=>{
+ const f=productionFixture(),first=await f.provider(),second=await f.provider(),input=f.input(),read=f.counterparty.readRecord,buyerSign=buyer.signBytes;
+ let arrived=0,releaseReads;const both=new Promise(resolve=>{releaseReads=resolve;});
+ let held=false,released=false,releaseSign;const holdSign=new Promise(resolve=>{releaseSign=resolve;});
+ const release=()=>{if(!released){released=true;releaseSign();}};
+ let inProgress=0;
+ f.counterparty.readRecord=async request=>{
+  const answer=await read(request);
+  if(answer.status==='unattempted'&&++arrived<=2){if(arrived===2)releaseReads();await both;}
+  // The winning evaluation is slow: it holds its record signature beyond the
+  // short 40-read window, but inside the counterparty's own ten-second deadline.
+  else if(answer.status==='indeterminate'&&held&&++inProgress>=41)release();
+  return answer;
+ };
+ buyer.signBytes=bytes=>{if(!held){held=true;return holdSign.then(()=>buyerSign(bytes));}return buyerSign(bytes);};
+ const fallback=setTimeout(release,5000);
+ try{
+  const runs=await Promise.allSettled([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
+  for(const run of runs)assert.equal(run.status,'fulfilled',run.status==='rejected'?`${run.reason?.code}: ${run.reason?.message}`:'');
+  for(const run of runs)assert.equal(run.value.sellerVet.record.overallDecision,'pass');
+  assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);
+ }finally{clearTimeout(fallback);buyer.signBytes=buyerSign;f.base.close();}
+});
 test('a finished job fresh-reads and fresh-verifies the seller receipt',async()=>{
  const f=productionFixture(),p=await f.provider(),input=f.input(),read=f.anchor.readRetained,verify=f.anchor.verifyReceipt;
  const sellerAddress=compositeVerificationAddress(JOB,seller.claim),cached=new Map();let staleRead=false,staleVerify=false;

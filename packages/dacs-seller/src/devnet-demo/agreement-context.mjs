@@ -209,9 +209,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const counterpartyReady = () => counterparty && ['issueChallenge','readRecord','evaluate'].every(key=>typeof counterparty[key]==='function');
   // Capabilities must bound wire bytes before decoding. Independently bound
   // their returned representation and deadline, including a stalled callback.
+  // A buyer evaluation may legitimately hold its one-use nonce for this whole
+  // deadline while it signs its record.
+  const COUNTERPARTY_TIMEOUT_MS=10000;
   const callCounterparty = async(method,input)=>{
     if(!counterpartyReady())fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
-    const controller=new AbortController(),maxBytes=65536,timeoutMs=10000;
+    const controller=new AbortController(),maxBytes=65536,timeoutMs=COUNTERPARTY_TIMEOUT_MS;
     let timer;
     try{
       const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('counterparty deadline expired','TimeoutError'));},timeoutMs);});
@@ -242,13 +245,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     && read.requirementHash===sha256Hex(canonicalize(request.requirement));
   // The buyer's ledger answers indeterminate while another provider has
   // consumed the challenge but has not retained its result yet. Retry that
-  // authoritative read over a bounded interval instead of losing the race;
-  // any record it returns is still strictly verified by the caller.
-  const READ_POLL_MS=25,READ_POLL_ATTEMPTS=40;
+  // authoritative read for the counterparty's whole permitted evaluation
+  // interval; a winning evaluation may hold its record signature until that
+  // deadline. Any record it returns is still strictly verified by the caller.
+  const READ_POLL_MS=25;
   async function readRecordSettled(request) {
-    for(let attempt=1;;attempt+=1){
+    const deadline=Date.now()+COUNTERPARTY_TIMEOUT_MS;
+    for(;;){
       const read=await callCounterparty('readRecord',request);
-      if(read?.status!=='indeterminate'||attempt>=READ_POLL_ATTEMPTS)return read;
+      if(read?.status!=='indeterminate'||Date.now()>=deadline)return read;
       await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
     }
   }
@@ -356,12 +361,14 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   }
   // Another provider instance may consume the one-use challenge first. After a
   // failed evaluate the buyer is asked again; only a retained record is taken,
-  // and it is verified like any other. Otherwise the evaluate failure stands.
+  // and it is verified like any other. A nonce still consumed with no record
+  // after the whole evaluation interval is in progress, not terminally lost.
   async function evaluateOrReadRetained(request) {
     try{return await callCounterparty('evaluate',request);}
     catch(error){
       const retained=await readRecordSettled(request).catch(()=>null);
       if(retained?.status==='present')return retained.record;
+      if(retained?.status==='indeterminate')fail('indeterminate','the counterparty evaluation has no authoritative outcome yet',error);
       throw error;
     }
   }
